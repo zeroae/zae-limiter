@@ -214,8 +214,12 @@ for everyone else — resolution walks entity (resource-specific) → entity (`_
 resource, and the first level with an explicit value wins regardless of which level supplies
 the limits. There is no system-level disable.
 
-`resource get-defaults` and `entity get-limits` report the resolved disabled state when it is
-explicitly set at that level:
+`resource get-defaults` and `entity get-limits` report that level's own explicit `disabled`
+value when it has one — not the fully resolved state across the entity → resource walk. A
+resource showing no `Status:` line can still be effectively disabled for a given entity because
+some other level in the walk sets it; use `resolve_disabled()` (see
+[Resource or Entity Disabled](operations/rate-limits.md#resource-or-entity-disabled)) to get the
+actual resolved outcome for a specific entity+resource pair.
 
 ```
 Defaults for resource 'gpt-4':

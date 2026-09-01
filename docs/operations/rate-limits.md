@@ -117,7 +117,7 @@ never succeed until the disable is cleared — treat it as a 403, not a 429.
 
 **Check the resolved state:**
 
-```
+```python
 repo = await Repository.open()
 disabled, level = await repo.resolve_disabled("<entity_id>", "<resource>")
 print(f"disabled={disabled} (decided at {level} level)")
@@ -137,9 +137,13 @@ zae-limiter resource clear-disabled <resource>
 zae-limiter entity enable <entity_id> --resource <resource>
 ```
 
-Because disabling stamps every existing bucket, an `enable`/`clear-disabled` call also stamps
-every bucket before returning — the fix takes effect on the next request, not after a TTL or
-cache delay. See [CLI: Disabling Resources and Entities](../cli.md#disabling-resources-and-entities)
+Because disabling stamps every existing bucket, an `enable`/`clear-disabled` call also
+re-stamps eagerly before returning, so the fix takes effect on the next request, not after a
+TTL or cache delay. It does not necessarily touch *every* bucket: `resource enable`/
+`clear-disabled` skip any bucket whose entity has its own disagreeing override (that carve-out
+is left alone, by design), and the unscoped `entity clear-disabled` (no `--resource`) restamps
+every bucket the entity has to its own freshly re-resolved value rather than to a single
+directive. See [CLI: Disabling Resources and Entities](../cli.md#disabling-resources-and-entities)
 and [ADR-125](../adr/125-resource-disable.md).
 
 ### Cascade Not Working

@@ -3079,9 +3079,15 @@ class TestResourceCommands:
 
     @patch("zae_limiter.repository.Repository")
     def test_resource_get_no_limits(self, mock_repo_class: Mock, runner: CliRunner) -> None:
-        """Test resource get-defaults when no limits configured."""
+        """Test resource get-defaults when no limits configured.
+
+        The disabled status is read regardless of whether limits exist (I2,
+        ADR-125): disable_resource() deliberately works on a resource with no
+        config item, so get-defaults must still surface that status here.
+        """
         mock_repo = Mock()
         mock_repo.get_resource_defaults = AsyncMock(return_value=[])
+        mock_repo.get_resource_disabled = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
         mock_repo_class.open = AsyncMock(return_value=mock_repo)
@@ -3090,6 +3096,28 @@ class TestResourceCommands:
 
         assert result.exit_code == 0
         assert "No defaults configured for resource 'gpt-4'" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_resource_get_no_limits_shows_disabled_status(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Regression (I2): a disabled resource with no config item (the
+        exact state disable_resource() produces on a resource with no prior
+        defaults) must still show its Status -- the pre-fix early `return`
+        on empty limits skipped the disabled read entirely, making a killed
+        resource with no configured limits look unremarkable."""
+        mock_repo = Mock()
+        mock_repo.get_resource_defaults = AsyncMock(return_value=[])
+        mock_repo.get_resource_disabled = AsyncMock(return_value=True)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+
+        result = runner.invoke(cli, ["resource", "get-defaults", "gpt-4"])
+
+        assert result.exit_code == 0
+        assert "No defaults configured for resource 'gpt-4'" in result.output
+        assert "Status: DISABLED" in result.output
 
     @patch("zae_limiter.repository.Repository")
     def test_resource_delete_with_confirmation(
@@ -4254,9 +4282,15 @@ class TestEntityCommands:
 
     @patch("zae_limiter.repository.Repository")
     def test_entity_get_limits_no_limits(self, mock_repo_class: Mock, runner: CliRunner) -> None:
-        """Test entity get-limits when no limits configured."""
+        """Test entity get-limits when no limits configured.
+
+        The disabled status is read regardless of whether limits exist (I2,
+        ADR-125): disable_entity() deliberately works on an entity with no
+        config item, so get-limits must still surface that status here.
+        """
         mock_repo = Mock()
         mock_repo.get_limits = AsyncMock(return_value=[])
+        mock_repo.get_entity_disabled = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
         mock_repo_class.open = AsyncMock(return_value=mock_repo)
@@ -4266,6 +4300,28 @@ class TestEntityCommands:
         assert result.exit_code == 0
         assert "No limits configured for entity 'user-123'" in result.output
         assert "gpt-4" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_get_limits_no_limits_shows_disabled_status(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Regression (I2): a disabled entity with no config item (the exact
+        state disable_entity() produces on an entity with no prior limits)
+        must still show its Status -- the pre-fix early `return` on empty
+        limits skipped the disabled read entirely, making a killed entity
+        with no configured limits look unremarkable."""
+        mock_repo = Mock()
+        mock_repo.get_limits = AsyncMock(return_value=[])
+        mock_repo.get_entity_disabled = AsyncMock(return_value=True)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+
+        result = runner.invoke(cli, ["entity", "get-limits", "user-123", "-r", "gpt-4"])
+
+        assert result.exit_code == 0
+        assert "No limits configured for entity 'user-123'" in result.output
+        assert "Status: DISABLED" in result.output
 
     @patch("zae_limiter.repository.Repository")
     def test_entity_get_limits_validation_error(

@@ -2305,12 +2305,14 @@ def resource_get_defaults(
             limits = await repo.get_resource_defaults(resource_name)
             if not limits:
                 click.echo(f"No defaults configured for resource '{resource_name}'")
-                return
+            else:
+                click.echo(f"Defaults for resource '{resource_name}':")
+                for limit in limits:
+                    click.echo(f"  {_format_limit(limit)}")
 
-            click.echo(f"Defaults for resource '{resource_name}':")
-            for limit in limits:
-                click.echo(f"  {_format_limit(limit)}")
-
+            # Read the disabled flag regardless of whether limits exist:
+            # disable_resource() deliberately works on a resource with no
+            # config, producing a stub with `disabled` and no limits (ADR-125).
             disabled = await repo.get_resource_disabled(resource_name)
             if disabled is True:
                 click.echo("Status: DISABLED")
@@ -2502,8 +2504,9 @@ def resource_enable(
     """Explicitly enable a resource.
 
     RESOURCE_NAME is the resource to enable (e.g., 'gpt-4'). Stores an explicit
-    `disabled: false`, so the resource stays enabled even if a system-level
-    default would otherwise disable it.
+    `disabled: false` at the resource level, which is the same value the
+    resource resolves to when nothing sets it; use `clear-disabled` to go back
+    to inheriting instead. There is no system-level disable.
 
     \f
 
@@ -3311,12 +3314,14 @@ def entity_get_limits(
                 click.echo(
                     f"No limits configured for entity '{entity_id}' on resource '{resource_name}'"
                 )
-                return
+            else:
+                click.echo(f"Limits for entity '{entity_id}' on resource '{resource_name}':")
+                for limit in limits:
+                    click.echo(f"  {_format_limit(limit)}")
 
-            click.echo(f"Limits for entity '{entity_id}' on resource '{resource_name}':")
-            for limit in limits:
-                click.echo(f"  {_format_limit(limit)}")
-
+            # Read the disabled flag regardless of whether limits exist:
+            # disable_entity() deliberately works on an entity with no config,
+            # producing a stub with `disabled` and no limits (ADR-125).
             disabled = await repo.get_entity_disabled(entity_id, resource_name)
             if disabled is True:
                 click.echo("Status: DISABLED")
@@ -3603,9 +3608,9 @@ def entity_clear_disabled(
 
     ENTITY_ID is the entity to clear (e.g., 'user-123', 'api-key-abc'). Removes
     any explicit disable/enable value, so the entity resolves whatever it
-    would inherit from the resource or system level. Omit --resource to apply
-    across every resource for this entity (targets the entity's `_default_`
-    config).
+    would inherit from the resource level (there is no system level). Omit
+    --resource to apply across every resource for this entity (targets the
+    entity's `_default_` config).
 
     \f
 
