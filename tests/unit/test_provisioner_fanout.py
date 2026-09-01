@@ -46,6 +46,16 @@ def _item_router(items: dict[tuple[str, str], bool]):
     return _get_item
 
 
+def _resource_disabled(value: bool, resource: str = "gpt-4", namespace_id: str = "ns123"):
+    """A `get_item` side_effect where only the resource level sets `disabled`.
+
+    fanout_resource re-resolves every discovered bucket's entity, so a test
+    that expects stamping has to make the resource level agree with the
+    directive being applied.
+    """
+    return _item_router({(pk_resource(namespace_id, resource), sk_config()): value})
+
+
 class TestStampBucket:
     """Tests for stamp_bucket's SET/REMOVE branching and error swallowing."""
 
@@ -114,6 +124,7 @@ class TestFanoutResource:
                 {"PK": {"S": "ns123/BUCKET#user-2#gpt-4#0"}},
             ]
         }
+        client.get_item.side_effect = _resource_disabled(True)
 
         count = fanout_resource(client, "test-table", "ns123", "gpt-4", disabled=True)
 
@@ -135,6 +146,7 @@ class TestFanoutResource:
             # Second pass (Finding 2): nothing new discovered.
             {"Items": []},
         ]
+        client.get_item.side_effect = _resource_disabled(True)
 
         count = fanout_resource(client, "test-table", "ns123", "gpt-4", disabled=True)
 
@@ -161,6 +173,7 @@ class TestFanoutResource:
             # Second pass rediscovers the same bucket again.
             {"Items": [{"PK": {"S": "ns123/BUCKET#user-1#gpt-4#0"}}]},
         ]
+        client.get_item.side_effect = _resource_disabled(True)
 
         count = fanout_resource(client, "test-table", "ns123", "gpt-4", disabled=True)
 
@@ -187,6 +200,7 @@ class TestFanoutResource:
                 ]
             },
         ]
+        client.get_item.side_effect = _resource_disabled(True)
 
         count = fanout_resource(client, "test-table", "ns123", "gpt-4", disabled=True)
 
@@ -322,7 +336,11 @@ class TestFanoutEntityUnscopedOverride:
 
     def test_resource_specific_override_wins_over_entity_wide_directive(self):
         """An entity's own explicit `disabled: false` for one resource must not
-        be clobbered by an entity-wide `disabled: true` directive (ADR-125)."""
+        be clobbered by an entity-wide `disabled: true` directive (ADR-125).
+
+        Every bucket is stamped with its OWN resolved value, so claude-3 gets a
+        REMOVE (its carve-out resolves False) while gpt-4 gets a SET.
+        """
         client = _make_client()
         client.query.return_value = {
             "Items": [
@@ -342,11 +360,41 @@ class TestFanoutEntityUnscopedOverride:
             client, "test-table", self.NS, self.ENTITY, resource=None, disabled=True
         )
 
-        # Only gpt-4 (no override, inherits the True directive) is stamped;
-        # claude-3's own False override is left alone.
+        assert count == 2
+        by_pk = {
+            c.kwargs["Key"]["PK"]["S"]: c.kwargs["UpdateExpression"]
+            for c in client.update_item.call_args_list
+        }
+        assert by_pk["ns123/BUCKET#vip-1#gpt-4#0"] == "SET #disabled = :true"
+        # The carve-out is preserved as "not disabled", never stamped True.
+        assert by_pk["ns123/BUCKET#vip-1#claude-3#0"] == "REMOVE #disabled"
+
+    def test_clear_restamps_resource_whose_own_config_now_decides(self):
+        """Regression (Critical 1): unscoped clear must stamp a bucket that
+        must BECOME disabled.
+
+        After the entity's `_default_` carve-out is removed, gpt-4's own
+        resource-level `disabled: true` becomes the deciding level. Skipping
+        buckets whose resolution disagrees with the directive would leave the
+        bucket unstamped forever — a kill-switch bypass.
+        """
+        client = _make_client()
+        client.query.return_value = {"Items": [{"PK": {"S": "ns123/BUCKET#vip-1#gpt-4#0"}}]}
+        # The entity `_default_` value is already gone; gpt-4 says disabled.
+        client.get_item.side_effect = _item_router(
+            {(pk_resource(self.NS, "gpt-4"), sk_config()): True}
+        )
+
+        # The directive being applied is "not disabled" (what `_default_` now
+        # inherits), but gpt-4 resolves to disabled and must be stamped.
+        count = fanout_entity(
+            client, "test-table", self.NS, self.ENTITY, resource=None, disabled=False
+        )
+
         assert count == 1
-        stamped_pks = {c.kwargs["Key"]["PK"]["S"] for c in client.update_item.call_args_list}
-        assert stamped_pks == {"ns123/BUCKET#vip-1#gpt-4#0"}
+        kwargs = client.update_item.call_args.kwargs
+        assert kwargs["Key"]["PK"]["S"] == "ns123/BUCKET#vip-1#gpt-4#0"
+        assert kwargs["UpdateExpression"] == "SET #disabled = :true"
 
     def test_scoped_call_skips_the_override_check_entirely(self):
         """When `resource` is given (not None), the caller's directive is

@@ -11,11 +11,12 @@ already in flight when the first pass's query ran -- without it, a bucket
 created between the first pass's query and its stamp would never be visited
 (ADR-125).
 
-Limitation: unlike Repository._fanout_resource, fanout_resource does not
-evaluate per-entity overrides. The handler compensates by applying
-resource-level changes before entity-level ones, so an entity carve-out
-re-stamps its own buckets last. fanout_entity DOES evaluate per-resource
-overrides for its unscoped (`resource=None`) form -- see its docstring.
+Both fan-outs re-resolve per bucket, mirroring the async Repository:
+fanout_resource skips buckets whose entity has its own overriding value, and
+the unscoped (`resource=None`) form of fanout_entity stamps each bucket with
+its own resource's resolved value. The handler still applies resource-level
+changes before entity-level ones so that within a single apply the entity
+level is written before anything reads it back.
 """
 
 from __future__ import annotations
@@ -104,7 +105,31 @@ def resolve_disabled(
 def fanout_resource(
     client: Any, table_name: str, namespace_id: str, resource: str, disabled: bool
 ) -> int:
-    """Stamp every bucket for a resource. Returns the number stamped."""
+    """Stamp every bucket for a resource, honoring per-entity overrides.
+
+    Mirrors ``Repository._fanout_resource``: an entity whose own config
+    resolves to a different value than the resource-level directive is
+    skipped, which is what makes an entity-level `disabled: false` a
+    carve-out from a disabled resource (ADR-125). Without this check every
+    apply would clobber out-of-band per-entity state on manifest-managed
+    resources, because `differ.py` emits a change for every resource in the
+    manifest on every apply whether or not anything changed.
+
+    Returns the number of buckets stamped.
+    """
+    effective_by_entity: dict[str, bool] = {}
+
+    def _decide(pk: str) -> bool | None:
+        _ns, entity_id, _res, _shard = parse_bucket_pk(pk)
+        if entity_id not in effective_by_entity:
+            effective_by_entity[entity_id] = resolve_disabled(
+                client, table_name, namespace_id, entity_id, resource
+            )
+        if effective_by_entity[entity_id] != disabled:
+            # This entity overrides the resource-level value; leave it alone.
+            return None
+        return disabled
+
     return _fanout(
         client,
         table_name,
@@ -114,6 +139,7 @@ def fanout_resource(
         pk_value=gsi2_pk_resource(namespace_id, resource),
         sk_prefix="BUCKET#",
         disabled=disabled,
+        decide=_decide,
     )
 
 
@@ -134,23 +160,26 @@ def fanout_entity(
     `_default_` directive in `resolve_disabled`'s walk, exactly as an
     entity's own override outranks a resource-level fan-out in
     `fanout_resource`. Each discovered bucket's own resource is therefore
-    re-resolved via `resolve_disabled`, and buckets whose effective value
-    disagrees with the directive being applied are left alone (ADR-125),
-    mirroring `Repository._fanout_entity`. When scoped to one resource, the
-    caller's directive is unambiguous for every discovered bucket, so this
-    check is skipped and all buckets are stamped unconditionally.
+    re-resolved via `resolve_disabled` and stamped with its OWN resolved
+    value, ignoring `disabled` (ADR-125), mirroring
+    `Repository._fanout_entity`. Skipping the buckets whose resolution
+    disagrees would be wrong for a *clear*: once the entity's `_default_`
+    value is gone, a resource whose own config says the opposite becomes the
+    deciding level and its buckets must be restamped to that new value. When
+    scoped to one resource, the caller's directive is unambiguous for every
+    discovered bucket, so all buckets are stamped with `disabled` directly.
     """
     effective_by_resource: dict[str, bool] = {}
 
-    def _should_stamp(pk: str) -> bool:
+    def _decide(pk: str) -> bool | None:
         if resource is not None:
-            return True
+            return disabled
         _ns, _eid, bucket_resource, _shard = parse_bucket_pk(pk)
         if bucket_resource not in effective_by_resource:
             effective_by_resource[bucket_resource] = resolve_disabled(
                 client, table_name, namespace_id, entity_id, bucket_resource
             )
-        return effective_by_resource[bucket_resource] == disabled
+        return effective_by_resource[bucket_resource]
 
     return _fanout(
         client,
@@ -161,7 +190,7 @@ def fanout_entity(
         pk_value=gsi3_pk_entity(namespace_id, entity_id),
         sk_prefix=f"BUCKET#{resource}#" if resource else "BUCKET#",
         disabled=disabled,
-        should_stamp=_should_stamp,
+        decide=_decide,
     )
 
 
@@ -174,17 +203,16 @@ def _fanout(
     pk_value: str,
     sk_prefix: str,
     disabled: bool,
-    should_stamp: Callable[[str], bool] | None = None,
+    decide: Callable[[str], bool | None] | None = None,
 ) -> int:
     """Discover and stamp matching bucket items, across two passes.
 
     Runs the paginated discovery query twice (see module docstring), with
     `stamped` shared across both passes so a PK visited on pass one is never
-    re-stamped on pass two. `should_stamp`, when given, is consulted for
-    each newly-discovered PK before stamping; a PK it rejects is left alone
-    and NOT added to `stamped`, so it is re-considered (cheaply, since any
-    per-resource resolution the caller does is expected to be memoized) on
-    a later pass or page.
+    re-stamped on pass two. `decide`, when given, chooses the value to stamp
+    on each newly-discovered PK, or returns None to leave it alone; a PK it
+    declines is NOT added to `stamped`, so it is re-considered (cheaply,
+    since the caller's resolutions are memoized) on a later pass or page.
     """
     stamped: set[str] = set()
 
@@ -207,9 +235,10 @@ def _fanout(
             for item in response.get("Items", []):
                 pk = item.get("PK", {}).get("S", "")
                 if pk and pk not in stamped:
-                    if should_stamp is not None and not should_stamp(pk):
+                    value = disabled if decide is None else decide(pk)
+                    if value is None:
                         continue
-                    stamp_bucket(client, table_name, pk, disabled)
+                    stamp_bucket(client, table_name, pk, value)
                     stamped.add(pk)
             start_key = response.get("LastEvaluatedKey")
             if not start_key:

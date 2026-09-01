@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
-from zae_limiter.schema import DEFAULT_RESOURCE, pk_entity, sk_config
+from zae_limiter.schema import DEFAULT_RESOURCE, pk_entity, pk_resource, sk_config
 from zae_limiter_provisioner.handler import _cfn_properties_to_manifest, on_event
 
 
@@ -97,10 +97,32 @@ class TestCfnPropertiesToManifestDisabled:
 class TestProvisionerHandler:
     """Tests for the provisioner Lambda handler."""
 
-    def _setup_client(self, mock_handler_boto3, mock_applier_boto3, get_item_return=None):
-        """Set up shared mock client for both handler and applier boto3."""
+    def _setup_client(
+        self, mock_handler_boto3, mock_applier_boto3, get_item_return=None, disabled_items=None
+    ):
+        """Set up shared mock client for both handler and applier boto3.
+
+        `disabled_items` maps (PK, SK) -> bool and stands in for the config
+        items `apply_changes` has already written when the fan-out resolves
+        them back: both `fanout_resource` and `fanout_entity` re-resolve per
+        bucket (ADR-125), so a test that expects stamping has to supply the
+        level that decides `disabled`. Any other key falls back to
+        `get_item_return`, which is what `_read_provisioner_state` reads.
+        """
         mock_client = MagicMock()
-        mock_client.get_item.return_value = get_item_return or {}
+        default_get_item = get_item_return or {}
+        if disabled_items:
+
+            def _get_item(*_args, **kwargs):
+                raw_key = kwargs["Key"]
+                key = (raw_key["PK"]["S"], raw_key["SK"]["S"])
+                if key in disabled_items:
+                    return {"Item": {"disabled": {"BOOL": disabled_items[key]}}}
+                return default_get_item
+
+            mock_client.get_item.side_effect = _get_item
+        else:
+            mock_client.get_item.return_value = default_get_item
         # Default to "no buckets discovered" so fan-out (now unconditional on every
         # create/update, per the fix below) doesn't hang: an unconfigured MagicMock
         # response is truthy for `LastEvaluatedKey`, which would loop forever.
@@ -227,7 +249,14 @@ class TestProvisionerHandler:
         self, mock_handler_boto3, mock_applier_boto3, mock_urlopen
     ):
         """A resource-level `disabled` key in the manifest triggers bucket fan-out."""
-        mock_client = self._setup_client(mock_handler_boto3, mock_applier_boto3)
+        # fanout_resource re-resolves the discovered bucket's entity (C3, ADR-125);
+        # user-1 has no override, so it falls through to the resource-level config
+        # apply_changes has just written, which must agree with the True directive.
+        mock_client = self._setup_client(
+            mock_handler_boto3,
+            mock_applier_boto3,
+            disabled_items={(pk_resource("ns123", "gpt-4"), sk_config()): True},
+        )
         mock_client.query.return_value = {"Items": [{"PK": {"S": "ns123/BUCKET#user-1#gpt-4#0"}}]}
 
         event = {
@@ -298,6 +327,25 @@ class TestProvisionerHandler:
         mock_client = self._setup_client(mock_handler_boto3, mock_applier_boto3)
         mock_client.query.return_value = {"Items": [{"PK": {"S": "ns123/BUCKET#user-1#gpt-4#0"}}]}
 
+        # fanout_resource re-resolves the discovered bucket's entity (C3, ADR-125);
+        # user-1 has no override, so it falls through to the resource-level config
+        # apply_changes has just written. Model that config item's state explicitly
+        # (as a real DynamoDB item would look right after each PutItem) and mutate
+        # it between the two applies below, rather than letting a stale mock decide.
+        resource_key = (pk_resource("ns123", "gpt-4"), sk_config())
+        resource_state: dict[str, bool | None] = {"disabled": None}
+
+        def _get_item(*_args, **kwargs):
+            raw_key = kwargs["Key"]
+            key = (raw_key["PK"]["S"], raw_key["SK"]["S"])
+            if key == resource_key:
+                if resource_state["disabled"] is None:
+                    return {}
+                return {"Item": {"disabled": {"BOOL": resource_state["disabled"]}}}
+            return {}
+
+        mock_client.get_item.side_effect = _get_item
+
         # First apply: `disabled: true` stamps the bucket.
         disable_event = {
             "action": "apply",
@@ -308,6 +356,10 @@ class TestProvisionerHandler:
                 "resources": {"gpt-4": {"disabled": True, "limits": {"rpm": {"capacity": 1000}}}},
             },
         }
+        # apply_changes (mocked put_item) doesn't actually persist anything a
+        # later get_item would see, so mirror what it just wrote by hand: the
+        # resource config item now has an explicit `disabled: true`.
+        resource_state["disabled"] = True
         on_event(disable_event, MagicMock())
         mock_client.update_item.assert_called_once()
         assert (
@@ -317,7 +369,11 @@ class TestProvisionerHandler:
         mock_client.update_item.reset_mock()
 
         # Second apply: the operator deletes the `disabled: true` line and
-        # re-applies. The manifest dict now has no `disabled` key at all.
+        # re-applies. The manifest dict now has no `disabled` key at all, so
+        # the PutItem apply_changes issues is a full replace that drops the
+        # attribute -- mirror that: the config item still exists but no
+        # longer sets `disabled` explicitly.
+        resource_state["disabled"] = None
         reenable_event = {
             "action": "apply",
             "table_name": "test-table",
@@ -335,11 +391,38 @@ class TestProvisionerHandler:
     def test_apply_disabled_resource_and_entity_fans_out_resource_first(
         self, mock_handler_boto3, mock_applier_boto3, mock_urlopen
     ):
-        """Resource-level fan-out runs before entity-level, so a carve-out wins (ADR-125)."""
-        mock_client = self._setup_client(mock_handler_boto3, mock_applier_boto3)
-        # Both fan-out queries return the same single discovered bucket so we
-        # can inspect update_item call ordering directly.
-        mock_client.query.return_value = {"Items": [{"PK": {"S": "ns123/BUCKET#vip-1#gpt-4#0"}}]}
+        """Resource-level fan-out runs before entity-level, so a carve-out wins (ADR-125).
+
+        fanout_resource now re-resolves each discovered bucket's entity (C3):
+        given both user-1 (no override) and vip-1 (explicit `disabled: false`)
+        on gpt-4, the resource-level pass must stamp only user-1 and defer
+        vip-1 to the entity-level pass that follows -- it must not blindly
+        stamp vip-1 and rely on the entity-level pass to undo it, which was
+        the pre-C3 (wasteful, and briefly-inconsistent) behavior this test
+        used to pin. GSI2 (resource-level discovery) returns both buckets;
+        GSI3 (entity-level discovery) returns only vip-1's, exactly as
+        production's differently-indexed queries would.
+        """
+        mock_client = self._setup_client(
+            mock_handler_boto3,
+            mock_applier_boto3,
+            disabled_items={
+                (pk_resource("ns123", "gpt-4"), sk_config()): True,
+                (pk_entity("ns123", "vip-1"), sk_config("gpt-4")): False,
+            },
+        )
+
+        def _query(*_args, **kwargs):
+            if kwargs["IndexName"] == "GSI2":
+                return {
+                    "Items": [
+                        {"PK": {"S": "ns123/BUCKET#user-1#gpt-4#0"}},
+                        {"PK": {"S": "ns123/BUCKET#vip-1#gpt-4#0"}},
+                    ]
+                }
+            return {"Items": [{"PK": {"S": "ns123/BUCKET#vip-1#gpt-4#0"}}]}
+
+        mock_client.query.side_effect = _query
 
         event = {
             "action": "apply",
@@ -362,12 +445,17 @@ class TestProvisionerHandler:
         }
         on_event(event, MagicMock())
 
-        # Two stamp calls: resource-level SET first, entity-level REMOVE last.
+        # Two stamp calls: resource-level SET on user-1 (no override) first,
+        # entity-level REMOVE on vip-1 (its own carve-out) last. vip-1 is
+        # never SET by the resource-level pass -- that would be the wasted,
+        # briefly-wrong write the pre-C3 behavior produced.
         assert mock_client.update_item.call_count == 2
-        first_expr = mock_client.update_item.call_args_list[0].kwargs["UpdateExpression"]
-        second_expr = mock_client.update_item.call_args_list[1].kwargs["UpdateExpression"]
-        assert first_expr == "SET #disabled = :true"
-        assert second_expr == "REMOVE #disabled"
+        first_call = mock_client.update_item.call_args_list[0]
+        second_call = mock_client.update_item.call_args_list[1]
+        assert first_call.kwargs["Key"]["PK"] == {"S": "ns123/BUCKET#user-1#gpt-4#0"}
+        assert first_call.kwargs["UpdateExpression"] == "SET #disabled = :true"
+        assert second_call.kwargs["Key"]["PK"] == {"S": "ns123/BUCKET#vip-1#gpt-4#0"}
+        assert second_call.kwargs["UpdateExpression"] == "REMOVE #disabled"
 
     def test_entity_wide_default_directive_fans_out_unscoped_across_resources(
         self, mock_handler_boto3, mock_applier_boto3, mock_urlopen
@@ -440,7 +528,14 @@ class TestProvisionerHandler:
         through to the manifest's `disabled` key, so this end-to-end path must
         fan out exactly like the CLI/YAML path does.
         """
-        mock_client = self._setup_client(mock_handler_boto3, mock_applier_boto3)
+        # fanout_resource re-resolves the discovered bucket's entity (C3, ADR-125);
+        # user-1 has no override, so it falls through to the resource-level config
+        # apply_changes has just written, which must agree with the True directive.
+        mock_client = self._setup_client(
+            mock_handler_boto3,
+            mock_applier_boto3,
+            disabled_items={(pk_resource("ns123", "gpt-4"), sk_config()): True},
+        )
         mock_client.query.return_value = {"Items": [{"PK": {"S": "ns123/BUCKET#user-1#gpt-4#0"}}]}
 
         event = {

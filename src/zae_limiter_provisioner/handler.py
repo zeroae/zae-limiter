@@ -167,7 +167,10 @@ def _fanout_disabled_changes(
     namespace_id: str,
     changes: list[Change],
 ) -> None:
-    """Eagerly stamp bucket items for every resource/entity create or update (ADR-125).
+    """Eagerly stamp bucket items for every resource/entity change (ADR-125).
+
+    Runs AFTER `apply_changes`, so every level it resolves already reflects
+    this apply's writes and deletes.
 
     Fans out unconditionally for every create/update at the resource and
     entity levels — NOT only when the change's data happens to carry a
@@ -183,7 +186,11 @@ def _fanout_disabled_changes(
     resource's own (possibly absent -> False) `disabled` value — there is no
     level above resource in the walk (system-level disable is out of scope
     per ADR-125), mirroring ``Repository._set_resource_disabled``'s
-    ``disabled=bool(value)``.
+    ``disabled=bool(value)``. ``fanout_resource`` then re-resolves each
+    bucket's entity and skips the ones with their own overriding value, so a
+    per-entity carve-out made out of band survives an apply that merely
+    re-asserts the resource's unchanged state (``differ.py`` emits a change
+    for every manifest resource on every apply).
 
     For an entity-level change, the effective value is NOT `data.get(
     "disabled", False)` — that would be wrong whenever the entity's own
@@ -194,14 +201,19 @@ def _fanout_disabled_changes(
     `apply_changes` has already written for this apply (see
     ``fanout.resolve_disabled``).
 
-    Resource-level changes are applied before entity-level ones so that an
-    entity-level carve-out re-stamps its own buckets last and wins — see
-    ``fanout.py``'s module docstring for why the fan-out is order-dependent.
-    Deletes never fan out (`Change.data` is `None` for deletes, and they are
-    excluded by the action filter below), so removing a managed item never
-    touches bucket stamps; that mirrors delete_resource_defaults()/
-    delete_limits() on the async Repository, which are likewise decoupled
-    from disable_resource()/disable_entity().
+    Resource-level changes are applied before entity-level ones so that the
+    entity level is written before anything resolves it back.
+
+    Deletes fan out too. Removing a managed config item removes the level
+    that was deciding `disabled`, which changes the resolution in either
+    direction — dropping a carve-out re-disables an entity, dropping a
+    disabled resource's config re-enables it — so the stamps have to follow.
+    Since the delete has already been applied, `Change.data` being `None`
+    is exactly right for a resource-level delete's effective value (`False`,
+    with no level above resource), and the entity-level branch re-resolves
+    from DynamoDB and so sees the post-delete state. This mirrors
+    ``Repository.delete_limits()`` / ``delete_resource_defaults()``, which
+    also re-run their fan-out against the post-delete resolution (ADR-125).
 
     An entity-level change whose resource is the `_default_` sentinel is an
     entity-wide directive (applies across every resource the entity has a
@@ -217,13 +229,7 @@ def _fanout_disabled_changes(
     every existing bucket un-stamped despite the config being written
     correctly and the apply reporting success.
     """
-    candidates = [
-        c
-        for c in changes
-        if c.data is not None
-        and c.action in ("create", "update")
-        and c.level in ("resource", "entity")
-    ]
+    candidates = [c for c in changes if c.level in ("resource", "entity") and c.target]
     if not candidates:
         return
 
