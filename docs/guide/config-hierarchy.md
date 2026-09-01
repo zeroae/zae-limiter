@@ -322,6 +322,14 @@ current_dict["rpm"] = Limit.per_minute("rpm", 200)
 await limiter.set_system_defaults(list(current_dict.values()))
 ```
 
+!!! note "Disabling is a separate, narrower walk"
+    The `disabled` flag (ADR-125) does **not** follow this four-level hierarchy. It resolves
+    independently over only three levels — entity (resource-specific) → entity (`_default_`)
+    → resource — and stops there: there is no system-level disable. The first level with an
+    explicit `disabled` value wins, regardless of which level supplies the limits, which is
+    what lets an entity-level `disabled: false` re-admit one entity to a resource that is
+    disabled for everyone else. See [Turning a Resource Off](basic-usage.md#turning-a-resource-off).
+
 ## Next Steps
 
 - [Basic Usage](basic-usage.md) - Rate limiting patterns

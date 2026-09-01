@@ -141,9 +141,11 @@ ZAELimiterError (base)
 
 ## Configuration State Exceptions
 
-### ResourceDisabled
-
-::: zae_limiter.ResourceDisabled
+::: zae_limiter.exceptions.ResourceDisabled
+    options:
+      show_root_heading: true
+      show_source: false
+      heading_level: 3
 
 ## Exception Handling Examples
 

@@ -173,6 +173,65 @@ The generated template uses `Custom::ZaeLimiterLimits` backed by the provisioner
 !!! note "Provisioner Lambda"
     The `plan`, `apply`, and `diff` subcommands invoke the `{name}-limits-provisioner` Lambda function. This function must be deployed as part of the main stack before using these commands.
 
+## Disabling Resources and Entities
+
+The `resource` and `entity` command groups include `disable`, `enable`, and `clear-disabled`
+subcommands for turning access off without deleting stored limits. See
+[ADR-125](adr/125-resource-disable.md) for the full design.
+
+Disabling is eager: existing buckets are stamped immediately, so the change takes effect on
+the very next request — no cache TTL or refill delay to wait out. `acquire()` raises a
+distinct `ResourceDisabled` exception (not `RateLimitExceeded`) for a disabled resource or
+entity; map it to HTTP 403, not 429, since retrying will not help.
+
+```bash
+# Turn off a resource for everyone without an entity-level override
+zae-limiter resource disable gpt-4
+
+# Explicitly enable a resource that is disabled by default
+zae-limiter resource enable gpt-4
+
+# Revert a resource to inheriting the disabled state
+zae-limiter resource clear-disabled gpt-4
+```
+
+```bash
+# Disable an entity across all resources
+zae-limiter entity disable user-123
+
+# Disable an entity for a specific resource only
+zae-limiter entity disable user-123 --resource gpt-4
+
+# Re-admit an entity to a resource that is disabled for everyone else
+zae-limiter entity enable user-123 --resource gpt-4
+
+# Revert an entity to inheriting the resource's disabled state
+zae-limiter entity clear-disabled user-123 --resource gpt-4
+```
+
+An entity-level `disabled: false` override always wins, even when the resource is disabled
+for everyone else — resolution walks entity (resource-specific) → entity (`_default_`) →
+resource, and the first level with an explicit value wins regardless of which level supplies
+the limits. There is no system-level disable.
+
+`resource get-defaults` and `entity get-limits` report the resolved disabled state when it is
+explicitly set at that level:
+
+```
+Defaults for resource 'gpt-4':
+  rpm: 500/min
+Status: DISABLED
+```
+
+```
+Limits for entity 'user-123' on resource 'gpt-4':
+  rpm: 1000/min
+Status: enabled (explicit override)
+```
+
+No `Status:` line is printed when the level has no explicit `disabled` value (i.e. it
+inherits from elsewhere in the resolution walk).
+
 ## Namespace Lifecycle
 
 The `namespace` command group manages the namespace registry:

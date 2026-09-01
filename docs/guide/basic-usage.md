@@ -265,6 +265,49 @@ except RateLimiterUnavailable as e:
     print(f"Service unavailable: {e}")
 ```
 
+## Turning a Resource Off
+
+Beyond throttling, you can disable a resource or entity outright — useful for
+incident response, deprecating a model, or blocking a single caller without
+touching its stored limits. See [ADR-125](../adr/125-resource-disable.md) for
+the full design.
+
+These methods live on `Repository` (not `RateLimiter`) — the same object
+returned by `Repository.open()` that you passed to `RateLimiter(repository=repo)`:
+
+```python
+await repo.disable_resource("gpt-4")                  # off for everyone
+await repo.enable_entity("vip-1", resource="gpt-4")    # carve out one entity
+```
+
+Disabling is **eager**: the call stamps every existing bucket for the
+resource (or entity) before it returns, so the change takes effect on the
+very next `acquire()` — no cache TTL or refill delay to wait out.
+
+`acquire()` signals this with a distinct exception, `ResourceDisabled`, not
+`RateLimitExceeded`. It is not a throttling signal — retrying will not help —
+so map it to HTTP 403, not 429:
+
+```{.python .lint-only}
+from zae_limiter import RateLimitExceeded, ResourceDisabled
+
+try:
+    async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+        ...
+except ResourceDisabled:
+    # Not retryable -- the resource is intentionally off for this caller.
+    return http_403()
+except RateLimitExceeded as e:
+    return http_429(retry_after=e.retry_after_seconds)
+```
+
+An entity-level `disabled: false` override wins even when the resource is
+disabled for everyone else — the resolution walk is entity(resource) →
+entity(`_default_`) → resource, and the first level with an explicit value
+wins regardless of which level supplies the limits. System-level disable is
+not supported; disabling always targets a specific resource, or an entity's
+access to one.
+
 ## Config Cache
 
 zae-limiter caches config data (system defaults, resource defaults, entity limits) to reduce DynamoDB reads. The cache has a 60-second TTL by default.

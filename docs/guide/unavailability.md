@@ -20,6 +20,7 @@ The `on_unavailable` mode **only applies to infrastructure errors**. These excep
 
 - `RateLimitExceeded` — Rate limit violated (business logic)
 - `ValidationError` — Invalid configuration (user error)
+- `ResourceDisabled` — Resource or entity explicitly disabled (ADR-125; not a retryable condition, so it is never suppressed by `ALLOW` mode)
 
 Infrastructure errors that trigger on_unavailable:
 

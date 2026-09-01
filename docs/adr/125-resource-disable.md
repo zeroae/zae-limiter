@@ -1,6 +1,6 @@
 # ADR-125: Resource and Entity Disable
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-08-30
 **Issue:** TBD — link the tracking issue once filed
 

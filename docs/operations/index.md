@@ -99,6 +99,7 @@ flowchart LR
 | `VersionMismatchError` | Client/Lambda version mismatch | [Version](version/) |
 | `IncompatibleSchemaError` | Major version difference | [Version](version/) |
 | `StackOperationError` | CloudFormation failed | [Recovery](recovery/) |
+| `ResourceDisabled` | Resource or entity explicitly disabled (ADR-125) — not retryable | [Rate Limits](rate-limits/#resource-or-entity-disabled) |
 
 ## Related Documentation
 
