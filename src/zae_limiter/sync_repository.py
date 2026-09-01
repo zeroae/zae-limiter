@@ -254,6 +254,96 @@ class SyncRepository:
         repo._builder_initialized = True
         return repo
 
+    @classmethod
+    def connect(
+        cls,
+        namespace: str | None = None,
+        *,
+        stack: str | None = None,
+        region: str | None = None,
+        endpoint_url: str | None = None,
+        config_cache_ttl: int = 60,
+    ) -> "SyncRepository":
+        """Connect to existing infrastructure without provisioning anything.
+
+        Use this when the CloudFormation stack, the DynamoDB table, and the
+        namespace registry are managed outside the library — a packaged
+        CloudFormation template, Terraform, or CDK. Unlike :meth:`open`,
+        ``connect()`` never creates or mutates infrastructure: it issues
+        reads only and raises when something it needs is absent.
+
+        **Differences from :meth:`open`:**
+
+        ============================  ===============  ==========================
+        Situation                     ``open()``       ``connect()``
+        ============================  ===============  ==========================
+        Table missing                 Deploys stack    ``InfrastructureNotFound``
+        Namespace unregistered        Registers it     ``NamespaceNotFoundError``
+        Version record missing        Writes it        ``InfrastructureNotFound``
+        Lambda version behind client  Updates Lambda   ``VersionMismatchError``
+        ============================  ===============  ==========================
+
+        **Stack resolution:** ``stack`` arg → ``ZAEL_STACK`` env var
+        → ``"zae-limiter"``.
+
+        **Namespace resolution:** ``namespace`` arg → ``ZAEL_NAMESPACE``
+        env var → ``"default"``.
+
+        Args:
+            namespace: Namespace to connect to. Defaults to
+                ``ZAEL_NAMESPACE`` env var or ``"default"``.
+            stack: Stack name. Defaults to ``ZAEL_STACK`` env var
+                or ``"zae-limiter"``.
+            region: AWS region (e.g., ``"us-east-1"``).
+            endpoint_url: Custom endpoint URL (e.g., LocalStack).
+            config_cache_ttl: Config cache TTL in seconds (default: 60,
+                0 to disable).
+
+        Returns:
+            SyncRepository bound to the existing infrastructure.
+
+        Raises:
+            InfrastructureNotFoundError: If the table doesn't exist, or
+                exists but was never initialized by ``zae-limiter deploy``.
+            NamespaceNotFoundError: If the namespace isn't registered.
+            VersionMismatchError: If the deployed Lambda version is behind
+                the client version. Redeploy your stack to resolve.
+            IncompatibleSchemaError: If schema migration is required.
+
+        Example::
+
+            # Infrastructure deployed by your own CloudFormation
+            repo = SyncRepository.connect("my-app")
+            limiter = SyncRateLimiter(repository=repo)
+        """
+        from .exceptions import InfrastructureNotFoundError, NamespaceNotFoundError
+        from .naming import resolve_namespace_name, resolve_stack_name
+
+        name = resolve_stack_name(stack)
+        ns_name = resolve_namespace_name(namespace)
+        repo = cls(
+            name=name,
+            region=region,
+            endpoint_url=endpoint_url,
+            config_cache_ttl=config_cache_ttl,
+            _skip_deprecation_warning=True,
+        )
+        repo._auto_update = False
+        try:
+            namespace_id = repo._resolve_namespace(ns_name)
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ResourceNotFoundException":
+                raise InfrastructureNotFoundError(name) from e
+            raise
+        if namespace_id is None:
+            raise NamespaceNotFoundError(ns_name)
+        repo._namespace_id = namespace_id
+        repo._namespace_name = ns_name
+        repo._reinitialize_config_cache(namespace_id)
+        repo._check_version_strict(initialize_if_missing=False)
+        repo._builder_initialized = True
+        return repo
+
     @property
     def namespace_name(self) -> str:
         """The human-readable namespace name."""
@@ -975,18 +1065,27 @@ class SyncRepository:
         if compatibility.requires_lambda_update:
             self._perform_lambda_update()
 
-    def _check_version_strict(self) -> None:
+    def _check_version_strict(self, *, initialize_if_missing: bool = True) -> None:
         """Check version compatibility in strict mode (no auto-update).
 
         Raises ``VersionMismatchError`` if the Lambda version differs
         from the client version.
+
+        Args:
+            initialize_if_missing: When True (default), write the version
+                record if it is absent. When False, raise
+                ``InfrastructureNotFoundError`` instead — used by
+                ``connect()``, which must not write to externally
+                managed infrastructure.
         """
         from . import __version__
-        from .exceptions import VersionMismatchError
+        from .exceptions import InfrastructureNotFoundError, VersionMismatchError
         from .version import InfrastructureVersion, check_compatibility
 
         version_record = self.get_version_record()
         if version_record is None:
+            if not initialize_if_missing:
+                raise InfrastructureNotFoundError(self.stack_name)
             self._initialize_version_record()
             return
         infra_version = InfrastructureVersion.from_record(version_record)
