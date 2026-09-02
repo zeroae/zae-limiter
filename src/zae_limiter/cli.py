@@ -131,6 +131,11 @@ Examples:
     help="Deploy Lambda aggregator for usage snapshots",
 )
 @click.option(
+    "--enable-provisioner/--no-provisioner",
+    default=True,
+    help="Deploy Lambda provisioner for declarative limits",
+)
+@click.option(
     "--pitr-recovery-days",
     type=int,
     help="Point-in-Time Recovery period in days (1-35, default: AWS default of 35)",
@@ -280,6 +285,7 @@ def deploy(
     usage_retention_days: int,
     audit_retention_days: int,
     enable_aggregator: bool,
+    enable_provisioner: bool,
     pitr_recovery_days: int | None,
     log_retention_days: str,
     lambda_timeout: int,
@@ -347,6 +353,12 @@ def deploy(
         )
         effective_enable_aggregator = False
 
+    # Auto-disable provisioner with --no-iam (provisioner Lambda needs an IAM role)
+    effective_enable_provisioner = enable_provisioner
+    if not create_iam and enable_provisioner:
+        click.echo("Note: --no-iam disables the limits provisioner (no IAM role).")
+        effective_enable_provisioner = False
+
     try:
         manager = StackManager(name, region, endpoint_url)
     except ValidationError as e:
@@ -375,6 +387,7 @@ def deploy(
                 usage_retention_days=usage_retention_days,
                 audit_retention_days=audit_retention_days,
                 enable_aggregator=effective_enable_aggregator,
+                enable_provisioner=effective_enable_provisioner,
                 pitr_recovery_days=pitr_recovery_days,
                 log_retention_days=int(log_retention_days),
                 lambda_timeout=lambda_timeout,
@@ -404,6 +417,8 @@ def deploy(
             click.echo(
                 f"  Aggregator: {'enabled' if stack_options.enable_aggregator else 'disabled'}"
             )
+            provisioner_status = "enabled" if stack_options.enable_provisioner else "disabled"
+            click.echo(f"  Provisioner: {provisioner_status}")
             if stack_options.enable_aggregator:
                 click.echo(f"  Lambda timeout: {stack_options.lambda_timeout}s")
                 click.echo(f"  Lambda memory: {stack_options.lambda_memory}MB")
@@ -474,8 +489,8 @@ def deploy(
                         )
                         sys.exit(1)
 
-                # Step 3: Deploy provisioner Lambda code (always created)
-                if wait:
+                # Step 3: Deploy provisioner Lambda code if the provisioner is enabled
+                if stack_options.enable_provisioner and wait:
                     click.echo()
                     click.echo("Deploying provisioner Lambda function code...")
 

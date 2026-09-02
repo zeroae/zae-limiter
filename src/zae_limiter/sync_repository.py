@@ -580,7 +580,8 @@ class SyncRepository:
             manager.create_stack(stack_options=self._stack_options)
             if self._stack_options.enable_aggregator:
                 manager.deploy_lambda_code()
-            manager.deploy_provisioner_code()
+            if self._stack_options.enable_provisioner:
+                manager.deploy_provisioner_code()
         self._write_audit_retention_config()
 
     def create_stack(self, stack_options: StackOptions | None = None) -> None:

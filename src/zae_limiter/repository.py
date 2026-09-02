@@ -658,8 +658,9 @@ class Repository:
             if self._stack_options.enable_aggregator:
                 await manager.deploy_lambda_code()
 
-            # Deploy provisioner Lambda code (always created, unconditional)
-            await manager.deploy_provisioner_code()
+            # Deploy provisioner Lambda code if the provisioner is enabled
+            if self._stack_options.enable_provisioner:
+                await manager.deploy_provisioner_code()
 
         # Write retention config to system config item
         await self._write_audit_retention_config()

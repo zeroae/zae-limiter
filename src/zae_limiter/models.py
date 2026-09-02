@@ -696,6 +696,7 @@ class StackOptions:
         usage_retention_days: Number of days to retain usage snapshots
         audit_retention_days: Number of days to retain audit records in DynamoDB
         enable_aggregator: Deploy Lambda aggregator for usage snapshots
+        enable_provisioner: Deploy Lambda provisioner for declarative limits
         pitr_recovery_days: Point-in-Time Recovery period (1-35, None for AWS default)
         log_retention_days: CloudWatch log retention period in days (must be valid CloudWatch value)
         lambda_timeout: Lambda timeout in seconds (1-900)
@@ -726,6 +727,7 @@ class StackOptions:
     usage_retention_days: int = 90
     audit_retention_days: int = 90
     enable_aggregator: bool = True
+    enable_provisioner: bool = True
     pitr_recovery_days: int | None = None
     log_retention_days: int = 30
     lambda_timeout: int = 60
@@ -911,6 +913,7 @@ class StackOptions:
             "snapshot_windows": self.snapshot_windows,
             "usage_retention_days": str(self.usage_retention_days),
             "enable_aggregator": "true" if self.enable_aggregator else "false",
+            "enable_provisioner": "true" if self.enable_provisioner else "false",
             "log_retention_days": str(self.log_retention_days),
             "lambda_timeout": str(self.lambda_timeout),
             "lambda_memory_size": str(self.lambda_memory),

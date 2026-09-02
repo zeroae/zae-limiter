@@ -922,6 +922,45 @@ class TestCLI:
         call_args = mock_instance.create_stack.call_args
         stack_options = call_args[1]["stack_options"]
         assert stack_options.create_iam is False
+        # --no-iam also disables the provisioner (it needs an IAM role)
+        assert stack_options.enable_provisioner is False
+        mock_instance.deploy_provisioner_code.assert_not_called()
+
+    @patch("zae_limiter.repository.Repository")
+    @patch("zae_limiter.cli.StackManager")
+    def test_deploy_with_no_provisioner_flag(
+        self, mock_stack_manager: Mock, mock_repository: Mock, runner: CliRunner
+    ) -> None:
+        """Test deploy command with --no-provisioner flag skips provisioner code."""
+        mock_instance = Mock()
+        mock_instance.stack_name = "test-stack"
+        mock_instance.table_name = "test-stack"
+        mock_instance.create_stack = AsyncMock(
+            return_value={
+                "status": "CREATE_COMPLETE",
+                "stack_id": "test-stack-id",
+            }
+        )
+        mock_instance.deploy_provisioner_code = AsyncMock()
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=None)
+        mock_stack_manager.return_value = mock_instance
+
+        mock_repo_instance = Mock()
+        mock_repo_instance.set_version_record = AsyncMock()
+        mock_repo_instance.register_namespace = AsyncMock(return_value="test-ns-id")
+        mock_repository.return_value = mock_repo_instance
+
+        result = runner.invoke(
+            cli,
+            ["deploy", "--name", "test-stack", "--no-provisioner", "--no-aggregator"],
+        )
+
+        assert result.exit_code == 0
+        stack_options = mock_instance.create_stack.call_args[1]["stack_options"]
+        assert stack_options.enable_provisioner is False
+        mock_instance.deploy_provisioner_code.assert_not_called()
+        assert "Provisioner: disabled" in result.output
 
     @patch("zae_limiter.repository.Repository")
     @patch("zae_limiter.cli.StackManager")

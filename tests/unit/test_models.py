@@ -158,6 +158,7 @@ class TestStackOptions:
         assert opts.snapshot_windows == "hourly,daily"
         assert opts.usage_retention_days == 90
         assert opts.enable_aggregator is True
+        assert opts.enable_provisioner is True
         assert opts.pitr_recovery_days is None
         assert opts.log_retention_days == 30
         assert opts.lambda_timeout == 60
@@ -266,7 +267,15 @@ class TestStackOptions:
         assert params["lambda_duration_threshold"] == "48000"
         assert params["lambda_timeout"] == "60"
         assert params["enable_aggregator"] == "true"
+        assert params["enable_provisioner"] == "true"
         assert params["enable_alarms"] == "true"
+
+    def test_to_parameters_provisioner_disabled(self):
+        """Test enable_provisioner=False maps to the CFN parameter."""
+        opts = StackOptions(enable_provisioner=False)
+        params = opts.to_parameters()
+
+        assert params["enable_provisioner"] == "false"
 
     def test_to_parameters_with_optional_fields(self):
         """Test to_parameters with optional fields set."""
