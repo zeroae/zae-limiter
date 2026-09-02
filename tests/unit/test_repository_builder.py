@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from botocore.exceptions import ClientError
 
+import zae_limiter
 from zae_limiter.exceptions import (
     IncompatibleSchemaError,
     InfrastructureNotFoundError,
@@ -1111,33 +1112,39 @@ class TestConnect:
     @pytest.mark.asyncio
     async def test_connect_raises_on_version_mismatch(self, mock_dynamodb):
         """connect() raises VersionMismatchError instead of updating the Lambda."""
-        setup = await _create_deployed_table("test-conn-stale", version_record=False)
-        await setup.set_version_record(
-            schema_version=get_schema_version(),
-            lambda_version="0.0.1",
-            client_min_version="0.0.0",
-            updated_by="test",
-        )
+        from zae_limiter.version import CompatibilityResult
+
+        setup = await _create_deployed_table("test-conn-stale")
         await setup.close()
 
-        with pytest.raises(VersionMismatchError):
-            await Repository.connect(stack="test-conn-stale")
+        compat = CompatibilityResult(
+            is_compatible=True,
+            requires_lambda_update=True,
+            message="Lambda update available",
+        )
+        with patch("zae_limiter.version.check_compatibility", return_value=compat):
+            with pytest.raises(VersionMismatchError):
+                await Repository.connect(stack="test-conn-stale")
 
     @pytest.mark.asyncio
     async def test_connect_does_not_update_lambda_on_version_mismatch(self, mock_dynamodb):
         """connect() does not deploy Lambda code when versions differ."""
-        setup = await _create_deployed_table("test-conn-nolambda", version_record=False)
-        await setup.set_version_record(
-            schema_version=get_schema_version(),
-            lambda_version="0.0.1",
-            client_min_version="0.0.0",
-            updated_by="test",
-        )
+        from zae_limiter.version import CompatibilityResult
+
+        setup = await _create_deployed_table("test-conn-nolambda")
         await setup.close()
 
-        with patch.object(
-            Repository, "_perform_lambda_update", new_callable=AsyncMock
-        ) as mock_update:
+        compat = CompatibilityResult(
+            is_compatible=True,
+            requires_lambda_update=True,
+            message="Lambda update available",
+        )
+        with (
+            patch("zae_limiter.version.check_compatibility", return_value=compat),
+            patch.object(
+                Repository, "_perform_lambda_update", new_callable=AsyncMock
+            ) as mock_update,
+        ):
             with pytest.raises(VersionMismatchError):
                 await Repository.connect(stack="test-conn-nolambda")
             mock_update.assert_not_called()
@@ -1145,17 +1152,46 @@ class TestConnect:
     @pytest.mark.asyncio
     async def test_connect_raises_on_schema_migration_required(self, mock_dynamodb):
         """connect() raises IncompatibleSchemaError when a migration is needed."""
-        setup = await _create_deployed_table("test-conn-schema", version_record=False)
+        from zae_limiter.version import CompatibilityResult
+
+        setup = await _create_deployed_table("test-conn-schema")
+        await setup.close()
+
+        compat = CompatibilityResult(
+            is_compatible=False,
+            requires_schema_migration=True,
+            message="Major schema version mismatch",
+        )
+        with patch("zae_limiter.version.check_compatibility", return_value=compat):
+            with pytest.raises(IncompatibleSchemaError):
+                await Repository.connect(stack="test-conn-schema")
+
+    @pytest.mark.asyncio
+    async def test_connect_tolerates_unparseable_client_version(self, mock_dynamodb):
+        """connect() does not raise when the client version cannot be parsed.
+
+        Source checkouts without git tags build as ``0.1.devN+g<sha>``, which
+        ``parse_version()`` rejects. ``check_compatibility()`` then reports
+        ``is_compatible=False`` with no specific flag set, and the version
+        check has nothing actionable to raise on. Tests that assert a version
+        raise must therefore patch ``check_compatibility`` rather than rely on
+        the ambient ``__version__``.
+        """
+        setup = await _create_deployed_table("test-conn-devver", version_record=False)
         await setup.set_version_record(
-            schema_version="99.0.0",
-            lambda_version="99.0.0",
+            schema_version=get_schema_version(),
+            lambda_version="0.0.1",
             client_min_version="0.0.0",
             updated_by="test",
         )
         await setup.close()
 
-        with pytest.raises(IncompatibleSchemaError):
-            await Repository.connect(stack="test-conn-schema")
+        with patch.object(zae_limiter, "__version__", "0.1.dev1+g55b199090"):
+            repo = await Repository.connect(stack="test-conn-devver")
+            try:
+                assert repo.namespace_name == "default"
+            finally:
+                await repo.close()
 
     @pytest.mark.asyncio
     async def test_connect_reraises_non_resource_not_found_errors(self, mock_dynamodb):
