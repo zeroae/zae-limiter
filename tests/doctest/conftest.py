@@ -75,6 +75,10 @@ def doctest_env(moto_env, monkeypatch):
             saved_ns_id = self._namespace_id
             for ns_name in [
                 "default",
+                # connect() refuses to register namespaces, so examples using
+                # Repository.connect("my-app") need it pre-registered here —
+                # the same way a user's own CloudFormation would.
+                "my-app",
                 "tenant-alpha",
                 "tenant-beta",
                 "billing",
@@ -104,8 +108,9 @@ def doctest_env(moto_env, monkeypatch):
 
     monkeypatch.setattr(_Repository, "_resolve_namespace", _auto_resolve_namespace)
 
-    # connect() calls version check methods (skip for doctests)
-    async def _noop_version_check(self):
+    # connect() calls version check methods (skip for doctests).
+    # connect() passes initialize_if_missing=False, so accept **kwargs.
+    async def _noop_version_check(self, **kwargs):
         pass
 
     monkeypatch.setattr(_Repository, "_check_and_update_version_auto", _noop_version_check)
@@ -123,6 +128,10 @@ def doctest_env(moto_env, monkeypatch):
             saved_ns_id = self._namespace_id
             for ns_name in [
                 "default",
+                # connect() refuses to register namespaces, so examples using
+                # Repository.connect("my-app") need it pre-registered here —
+                # the same way a user's own CloudFormation would.
+                "my-app",
                 "tenant-alpha",
                 "tenant-beta",
                 "billing",
@@ -150,7 +159,7 @@ def doctest_env(moto_env, monkeypatch):
 
     monkeypatch.setattr(_SyncRepository, "_resolve_namespace", _sync_auto_resolve_namespace)
 
-    def _sync_noop_version_check(self):
+    def _sync_noop_version_check(self, **kwargs):
         pass
 
     monkeypatch.setattr(_SyncRepository, "_check_and_update_version_auto", _sync_noop_version_check)

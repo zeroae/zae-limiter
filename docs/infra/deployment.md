@@ -208,6 +208,43 @@ async with limiter.acquire(
     await call_api()
 ```
 
+#### Strict Connect (No Auto-Provisioning)
+
+When infrastructure is owned entirely by your own CloudFormation, Terraform, or
+CDK, use `Repository.connect()`. It reads only — it never creates a stack,
+registers a namespace, writes the version record, or updates the Lambda, so an
+application role needs no CloudFormation or Lambda permissions at all:
+
+```python
+from zae_limiter import Repository, RateLimiter
+
+# Raises rather than provisioning anything that's missing
+repo = await Repository.connect("my-app")
+limiter = RateLimiter(repository=repo)
+
+# Limits are automatically resolved from stored config
+async with limiter.acquire(
+    entity_id="user-123",
+    resource="gpt-4",
+    limits=None,  # Auto-resolves: Entity > Resource > System
+    consume={"rpm": 1},
+) as lease:
+    await call_api()
+```
+
+`connect()` raises instead of repairing whatever it finds missing:
+
+| Situation | `open()` | `connect()` |
+|-----------|----------|-------------|
+| Table missing | Deploys the stack | `InfrastructureNotFoundError` |
+| Namespace unregistered | Registers it | `NamespaceNotFoundError` |
+| Version record missing | Writes it | `InfrastructureNotFoundError` |
+| Lambda version behind client | Updates the Lambda | `VersionMismatchError` |
+
+Register namespaces up front with `zae-limiter namespace register` (or from
+your own template) so `connect()` can resolve them. A `SyncRepository.connect()`
+counterpart is available with the same signature.
+
 ### Benefits
 
 | Concern | Admin | Application |

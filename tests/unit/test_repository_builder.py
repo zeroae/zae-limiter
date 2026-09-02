@@ -7,14 +7,17 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from botocore.exceptions import ClientError
 
+import zae_limiter
 from zae_limiter.exceptions import (
     IncompatibleSchemaError,
+    InfrastructureNotFoundError,
     NamespaceNotFoundError,
     VersionMismatchError,
 )
 from zae_limiter.models import StackOptions
 from zae_limiter.repository import Repository
 from zae_limiter.repository_builder import RepositoryBuilder
+from zae_limiter.version import get_schema_version
 
 
 async def _create_table(
@@ -967,3 +970,354 @@ class TestRepositoryDeprecationWarning:
             deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
             assert len(deprecation_warnings) == 0
         await repo.close()
+
+
+async def _create_deployed_table(
+    name: str,
+    region: str = "us-east-1",
+    *,
+    register_default_ns: bool = True,
+    version_record: bool = True,
+) -> Repository:
+    """Create a table that looks like a fully deployed stack.
+
+    Unlike :func:`_create_table`, this also writes the ``#VERSION`` record
+    that ``zae-limiter deploy`` initializes, so ``Repository.connect()``
+    can attach without writing anything.
+    """
+    repo = await _create_table(name, region, register_default_ns=register_default_ns)
+    if version_record:
+        await repo._initialize_version_record()
+    return repo
+
+
+class TestConnect:
+    """Test Repository.connect() classmethod (no auto-provisioning)."""
+
+    @pytest.mark.asyncio
+    async def test_connect_returns_initialized_repository(self, mock_dynamodb):
+        """connect() returns a fully initialized Repository."""
+        setup = await _create_deployed_table("test-conn")
+        await setup.close()
+
+        repo = await Repository.connect(stack="test-conn")
+        try:
+            assert isinstance(repo, Repository)
+            assert repo.stack_name == "test-conn"
+            assert repo._builder_initialized is True
+            assert repo.namespace_name == "default"
+            assert len(repo.namespace_id) == 11
+        finally:
+            await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_connect_resolves_requested_namespace(self, mock_dynamodb):
+        """connect() resolves an already-registered namespace."""
+        setup = await _create_deployed_table("test-conn-ns")
+        await setup._register_namespace("tenant-a")
+        await setup.close()
+
+        repo = await Repository.connect("tenant-a", stack="test-conn-ns")
+        try:
+            assert repo.namespace_name == "tenant-a"
+            assert len(repo.namespace_id) == 11
+        finally:
+            await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_connect_passes_config_cache_ttl(self, mock_dynamodb):
+        """connect() passes config_cache_ttl to the Repository."""
+        setup = await _create_deployed_table("test-conn-ttl")
+        await setup.close()
+
+        repo = await Repository.connect(stack="test-conn-ttl", config_cache_ttl=120)
+        try:
+            assert repo._config_cache_ttl == 120
+        finally:
+            await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_connect_leaves_stack_options_unset(self, mock_dynamodb):
+        """connect() never sets stack_options, so provisioning is impossible."""
+        setup = await _create_deployed_table("test-conn-noso")
+        await setup.close()
+
+        repo = await Repository.connect(stack="test-conn-noso")
+        try:
+            assert repo._stack_options is None
+            assert repo._auto_update is False
+        finally:
+            await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_connect_raises_when_table_missing(self, mock_dynamodb):
+        """connect() raises InfrastructureNotFoundError instead of deploying."""
+        with pytest.raises(InfrastructureNotFoundError) as exc_info:
+            await Repository.connect(stack="test-conn-missing")
+        assert exc_info.value.stack_name == "test-conn-missing"
+
+    @pytest.mark.asyncio
+    async def test_connect_does_not_provision_when_table_missing(self, mock_dynamodb):
+        """connect() does not touch CloudFormation when the table is missing."""
+        with patch.object(
+            Repository, "_ensure_infrastructure_internal", new_callable=AsyncMock
+        ) as mock_ensure:
+            with pytest.raises(InfrastructureNotFoundError):
+                await Repository.connect(stack="test-conn-noprov")
+            mock_ensure.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_connect_raises_when_namespace_missing(self, mock_dynamodb):
+        """connect() raises NamespaceNotFoundError for an unregistered namespace."""
+        setup = await _create_deployed_table("test-conn-nons")
+        await setup.close()
+
+        with pytest.raises(NamespaceNotFoundError) as exc_info:
+            await Repository.connect("tenant-ghost", stack="test-conn-nons")
+        assert exc_info.value.namespace_name == "tenant-ghost"
+
+    @pytest.mark.asyncio
+    async def test_connect_does_not_register_namespace(self, mock_dynamodb):
+        """connect() never registers a missing namespace."""
+        setup = await _create_deployed_table("test-conn-noreg")
+        await setup.close()
+
+        with patch.object(
+            Repository, "_register_namespace", new_callable=AsyncMock
+        ) as mock_register:
+            with pytest.raises(NamespaceNotFoundError):
+                await Repository.connect("tenant-ghost", stack="test-conn-noreg")
+            mock_register.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_connect_raises_when_version_record_missing(self, mock_dynamodb):
+        """connect() raises when the stack was never initialized by deploy."""
+        setup = await _create_deployed_table("test-conn-nover", version_record=False)
+        await setup.close()
+
+        with pytest.raises(InfrastructureNotFoundError):
+            await Repository.connect(stack="test-conn-nover")
+
+    @pytest.mark.asyncio
+    async def test_connect_does_not_write_version_record(self, mock_dynamodb):
+        """connect() leaves the version record absent rather than creating it."""
+        setup = await _create_deployed_table("test-conn-nowrite", version_record=False)
+        try:
+            with pytest.raises(InfrastructureNotFoundError):
+                await Repository.connect(stack="test-conn-nowrite")
+            assert await setup.get_version_record() is None
+        finally:
+            await setup.close()
+
+    @pytest.mark.asyncio
+    async def test_connect_raises_on_version_mismatch(self, mock_dynamodb):
+        """connect() raises VersionMismatchError instead of updating the Lambda."""
+        from zae_limiter.version import CompatibilityResult
+
+        setup = await _create_deployed_table("test-conn-stale")
+        await setup.close()
+
+        compat = CompatibilityResult(
+            is_compatible=True,
+            requires_lambda_update=True,
+            message="Lambda update available",
+        )
+        with patch("zae_limiter.version.check_compatibility", return_value=compat):
+            with pytest.raises(VersionMismatchError):
+                await Repository.connect(stack="test-conn-stale")
+
+    @pytest.mark.asyncio
+    async def test_connect_does_not_update_lambda_on_version_mismatch(self, mock_dynamodb):
+        """connect() does not deploy Lambda code when versions differ."""
+        from zae_limiter.version import CompatibilityResult
+
+        setup = await _create_deployed_table("test-conn-nolambda")
+        await setup.close()
+
+        compat = CompatibilityResult(
+            is_compatible=True,
+            requires_lambda_update=True,
+            message="Lambda update available",
+        )
+        with (
+            patch("zae_limiter.version.check_compatibility", return_value=compat),
+            patch.object(
+                Repository, "_perform_lambda_update", new_callable=AsyncMock
+            ) as mock_update,
+        ):
+            with pytest.raises(VersionMismatchError):
+                await Repository.connect(stack="test-conn-nolambda")
+            mock_update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_connect_raises_on_schema_migration_required(self, mock_dynamodb):
+        """connect() raises IncompatibleSchemaError when a migration is needed."""
+        from zae_limiter.version import CompatibilityResult
+
+        setup = await _create_deployed_table("test-conn-schema")
+        await setup.close()
+
+        compat = CompatibilityResult(
+            is_compatible=False,
+            requires_schema_migration=True,
+            message="Major schema version mismatch",
+        )
+        with patch("zae_limiter.version.check_compatibility", return_value=compat):
+            with pytest.raises(IncompatibleSchemaError):
+                await Repository.connect(stack="test-conn-schema")
+
+    @pytest.mark.asyncio
+    async def test_connect_tolerates_unparseable_client_version(self, mock_dynamodb):
+        """connect() does not raise when the client version cannot be parsed.
+
+        Source checkouts without git tags build as ``0.1.devN+g<sha>``, which
+        ``parse_version()`` rejects. ``check_compatibility()`` then reports
+        ``is_compatible=False`` with no specific flag set, and the version
+        check has nothing actionable to raise on. Tests that assert a version
+        raise must therefore patch ``check_compatibility`` rather than rely on
+        the ambient ``__version__``.
+        """
+        setup = await _create_deployed_table("test-conn-devver", version_record=False)
+        await setup.set_version_record(
+            schema_version=get_schema_version(),
+            lambda_version="0.0.1",
+            client_min_version="0.0.0",
+            updated_by="test",
+        )
+        await setup.close()
+
+        with patch.object(zae_limiter, "__version__", "0.1.dev1+g55b199090"):
+            repo = await Repository.connect(stack="test-conn-devver")
+            try:
+                assert repo.namespace_name == "default"
+            finally:
+                await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_connect_reraises_non_resource_not_found_errors(self, mock_dynamodb):
+        """connect() re-raises ClientError when it's not ResourceNotFoundException."""
+        with patch.object(
+            Repository,
+            "_resolve_namespace",
+            new_callable=AsyncMock,
+            side_effect=ClientError(
+                {"Error": {"Code": "AccessDeniedException", "Message": "Access denied"}},
+                "GetItem",
+            ),
+        ):
+            with pytest.raises(ClientError, match="AccessDeniedException"):
+                await Repository.connect(stack="test-conn-denied")
+
+    @pytest.mark.asyncio
+    async def test_connect_does_not_emit_deprecation_warning(self, mock_dynamodb):
+        """connect() does NOT emit DeprecationWarning."""
+        setup = await _create_deployed_table("test-conn-nowarn")
+        await setup.close()
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            repo = await Repository.connect(stack="test-conn-nowarn")
+            deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
+            assert len(deprecation_warnings) == 0
+        await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_connect_resolves_stack_from_env(self, mock_dynamodb):
+        """connect() resolves stack name from ZAEL_STACK env var."""
+        setup = await _create_deployed_table("test-conn-env-stack")
+        await setup.close()
+
+        old_val = os.environ.get("ZAEL_STACK")
+        try:
+            os.environ["ZAEL_STACK"] = "test-conn-env-stack"
+            repo = await Repository.connect()
+            try:
+                assert repo.stack_name == "test-conn-env-stack"
+            finally:
+                await repo.close()
+        finally:
+            if old_val is None:
+                os.environ.pop("ZAEL_STACK", None)
+            else:
+                os.environ["ZAEL_STACK"] = old_val
+
+    @pytest.mark.asyncio
+    async def test_connect_resolves_namespace_from_env(self, mock_dynamodb):
+        """connect() resolves namespace from ZAEL_NAMESPACE env var."""
+        setup = await _create_deployed_table("test-conn-env-ns")
+        await setup._register_namespace("env-ns")
+        await setup.close()
+
+        old_stack = os.environ.get("ZAEL_STACK")
+        old_ns = os.environ.get("ZAEL_NAMESPACE")
+        try:
+            os.environ["ZAEL_STACK"] = "test-conn-env-ns"
+            os.environ["ZAEL_NAMESPACE"] = "env-ns"
+            repo = await Repository.connect()
+            try:
+                assert repo.namespace_name == "env-ns"
+            finally:
+                await repo.close()
+        finally:
+            if old_stack is None:
+                os.environ.pop("ZAEL_STACK", None)
+            else:
+                os.environ["ZAEL_STACK"] = old_stack
+            if old_ns is None:
+                os.environ.pop("ZAEL_NAMESPACE", None)
+            else:
+                os.environ["ZAEL_NAMESPACE"] = old_ns
+
+
+class TestSyncConnect:
+    """Test the generated SyncRepository.connect() counterpart."""
+
+    @pytest.mark.asyncio
+    async def test_sync_connect_returns_initialized_repository(self, mock_dynamodb):
+        """SyncRepository.connect() attaches to existing infrastructure."""
+        from zae_limiter.sync_repository import SyncRepository
+
+        setup = await _create_deployed_table("test-sync-conn")
+        await setup.close()
+
+        repo = SyncRepository.connect(stack="test-sync-conn")
+        try:
+            assert repo.stack_name == "test-sync-conn"
+            assert repo.namespace_name == "default"
+            assert repo._stack_options is None
+            assert repo._auto_update is False
+        finally:
+            repo.close()
+
+    @pytest.mark.asyncio
+    async def test_sync_connect_raises_when_table_missing(self, mock_dynamodb):
+        """SyncRepository.connect() raises instead of deploying."""
+        from zae_limiter.sync_repository import SyncRepository
+
+        with pytest.raises(InfrastructureNotFoundError):
+            SyncRepository.connect(stack="test-sync-conn-missing")
+
+
+class TestCheckVersionStrictInitialize:
+    """Test _check_version_strict(initialize_if_missing=...)."""
+
+    @pytest.mark.asyncio
+    async def test_strict_check_initializes_version_record_by_default(self, mock_dynamodb):
+        """Default behavior writes the version record when missing."""
+        repo = await _create_table("test-strict-init")
+        try:
+            await repo._check_version_strict()
+            assert await repo.get_version_record() is not None
+        finally:
+            await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_strict_check_raises_when_initialize_disabled(self, mock_dynamodb):
+        """initialize_if_missing=False raises instead of writing."""
+        repo = await _create_table("test-strict-noinit")
+        try:
+            with pytest.raises(InfrastructureNotFoundError):
+                await repo._check_version_strict(initialize_if_missing=False)
+            assert await repo.get_version_record() is None
+        finally:
+            await repo.close()

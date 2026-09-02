@@ -173,8 +173,9 @@ Other builder methods: `.stack()`, `.region()`, `.endpoint_url()`, `.namespace()
 - **Skip all IAM** with `create_iam=False` or `--no-iam` for restricted IAM environments
 - **External Lambda role** with `aggregator_role_arn` or `--aggregator-role-arn` to use pre-existing role
 
-**When to use `open()` vs `builder()` vs CLI:**
+**When to use `open()` vs `connect()` vs `builder()` vs CLI:**
 - **`open()`**: 90% of users. Application code, prototyping, LocalStack dev. Auto-provisions infrastructure if missing
+- **`connect()`**: Infrastructure managed externally (packaged CloudFormation, Terraform, CDK). Reads only — never provisions, registers, or updates anything
 - **`builder().build()`**: Enterprise deployments needing permission boundaries, custom Lambda config, IAM role naming
 - **CLI**: Strict infra/app separation, audit requirements, Terraform/CDK integration
 
@@ -407,6 +408,41 @@ repo = await Repository.open(endpoint_url="http://localhost:4566")
 4. Reinitialize config cache with resolved namespace ID
 5. Version check and Lambda auto-update
 
+#### Repository.connect() (Externally Managed Infrastructure)
+
+Use `Repository.connect()` when the stack, table, and namespace registry are
+deployed by your own CloudFormation, Terraform, or CDK. It issues reads only —
+it never creates infrastructure, registers namespaces, writes the version
+record, or updates the Lambda:
+
+```python
+from zae_limiter import RateLimiter, Repository
+
+repo = await Repository.connect("my-app")
+limiter = RateLimiter(repository=repo)
+```
+
+**`connect()` signature:** `Repository.connect(namespace, *, stack=..., region=..., endpoint_url=..., config_cache_ttl=...)`
+- Same `ZAEL_NAMESPACE` / `ZAEL_STACK` resolution as `open()`
+- No `auto_update` parameter — Lambda updates are always off
+
+**`connect()` steps:**
+1. Resolve namespace name to opaque ID (`InfrastructureNotFoundError` if the table is missing)
+2. Raise `NamespaceNotFoundError` if the namespace is not registered
+3. Reinitialize config cache with resolved namespace ID
+4. Strict version check with `initialize_if_missing=False`
+
+**`connect()` vs `open()` on missing state:**
+
+| Situation | `open()` | `connect()` |
+|-----------|----------|-------------|
+| Table missing | Deploys stack | `InfrastructureNotFoundError` |
+| Namespace unregistered | Registers it | `NamespaceNotFoundError` |
+| Version record missing | Writes it | `InfrastructureNotFoundError` |
+| Lambda version behind client | Updates Lambda | `VersionMismatchError` |
+
+`SyncRepository.connect()` is generated from the async source with the same signature.
+
 #### RepositoryBuilder (Infrastructure Provisioning)
 
 Use `Repository.builder()` for enterprise infrastructure provisioning (like `terraform deploy`):
@@ -450,8 +486,9 @@ repo = await (
 5. Reinitialize config cache with resolved namespace ID
 6. Version check and Lambda auto-update
 
-**When to use `open()` vs `builder()`:**
+**When to use `open()` vs `connect()` vs `builder()`:**
 - **`open()`**: 90% of users. Application code, prototyping, LocalStack dev. Auto-provisions infrastructure
+- **`connect()`**: Infrastructure managed by your own CloudFormation/Terraform/CDK. Reads only, raises on anything missing
 - **`builder().build()`**: Enterprise deployments needing permission boundaries, custom Lambda config, IAM role naming
 
 **Config ownership (open/builder vs deprecated RateLimiter params):**
