@@ -3975,22 +3975,61 @@ class SyncRepository:
                 if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
                     raise
         else:
-            client.update_item(
-                TableName=self.table_name,
-                Key=key,
-                UpdateExpression="SET #disabled = :v, entity_id = if_not_exists(entity_id, :eid), #resource = if_not_exists(#resource, :res), GSI4PK = if_not_exists(GSI4PK, :ns), GSI4SK = if_not_exists(GSI4SK, :gsi4sk)",
-                ExpressionAttributeNames={
-                    "#disabled": schema.CONFIG_FIELD_DISABLED,
-                    "#resource": "resource",
-                },
-                ExpressionAttributeValues={
-                    ":v": {"BOOL": value},
-                    ":eid": {"S": entity_id},
-                    ":res": {"S": target_resource},
-                    ":ns": {"S": self._namespace_id},
-                    ":gsi4sk": {"S": schema.pk_entity(self._namespace_id, entity_id)},
-                },
-            )
+            update_expression = "SET #disabled = :v, entity_id = if_not_exists(entity_id, :eid), #resource = if_not_exists(#resource, :res), GSI3PK = if_not_exists(GSI3PK, :gsi3pk), GSI3SK = if_not_exists(GSI3SK, :gsi3sk), GSI4PK = if_not_exists(GSI4PK, :ns), GSI4SK = if_not_exists(GSI4SK, :gsi4sk)"
+            names = {"#disabled": schema.CONFIG_FIELD_DISABLED, "#resource": "resource"}
+            values = {
+                ":v": {"BOOL": value},
+                ":eid": {"S": entity_id},
+                ":res": {"S": target_resource},
+                ":gsi3pk": {"S": schema.gsi3_pk_entity_config(self._namespace_id, target_resource)},
+                ":gsi3sk": {"S": schema.gsi3_sk_entity(entity_id)},
+                ":ns": {"S": self._namespace_id},
+                ":gsi4sk": {"S": schema.pk_entity(self._namespace_id, entity_id)},
+            }
+            try:
+                client.transact_write_items(
+                    TransactItems=[
+                        {
+                            "Update": {
+                                "TableName": self.table_name,
+                                "Key": key,
+                                "UpdateExpression": update_expression,
+                                "ConditionExpression": "attribute_not_exists(PK)",
+                                "ExpressionAttributeNames": names,
+                                "ExpressionAttributeValues": values,
+                            }
+                        },
+                        {
+                            "Update": {
+                                "TableName": self.table_name,
+                                "Key": {
+                                    "PK": {"S": schema.pk_system(self._namespace_id)},
+                                    "SK": {"S": schema.sk_entity_config_resources()},
+                                },
+                                "UpdateExpression": "SET GSI4PK = if_not_exists(GSI4PK, :reg_gsi4pk), GSI4SK = if_not_exists(GSI4SK, :reg_gsi4sk) ADD #reg_resource :one",
+                                "ExpressionAttributeNames": {"#reg_resource": target_resource},
+                                "ExpressionAttributeValues": {
+                                    ":one": {"N": "1"},
+                                    ":reg_gsi4pk": {"S": self._namespace_id},
+                                    ":reg_gsi4sk": {"S": schema.pk_system(self._namespace_id)},
+                                },
+                            }
+                        },
+                    ]
+                )
+            except ClientError as e:
+                if e.response["Error"]["Code"] != "TransactionCanceledException":
+                    raise
+                reasons = e.response.get("CancellationReasons", [])
+                if not (reasons and reasons[0].get("Code") == "ConditionalCheckFailed"):
+                    raise
+                client.update_item(
+                    TableName=self.table_name,
+                    Key=key,
+                    UpdateExpression=update_expression,
+                    ExpressionAttributeNames=names,
+                    ExpressionAttributeValues=values,
+                )
         self._config_cache.evict_entity(entity_id, target_resource)
         if value is None:
             effective, _level = self.resolve_disabled(entity_id, target_resource)

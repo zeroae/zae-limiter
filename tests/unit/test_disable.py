@@ -869,3 +869,66 @@ class TestEnforcement:
         # compensated (returned) rather than left consumed.
         tk_after = {b.limit_name: b.tokens_milli for b in await disable_repo.get_buckets("child-3")}
         assert tk_after == tk_before
+
+
+class TestEntityDisableRegistryParity:
+    """`disable_entity` must register its config item like `set_limits` does.
+
+    `set_limits` writes an entity config item as a TransactWriteItems that
+    also does `ADD #resource :one` on `#ENTITY_CONFIG_RESOURCES`, and sets
+    GSI3PK/GSI3SK so the item is discoverable. `_set_entity_disabled`'s
+    explicit-value branch creates the same kind of item with a bare
+    UpdateItem, doing neither -- so the registry ref count and the sparse
+    GSI3 index both end up out of step with what is actually on the table.
+    """
+
+    async def test_disable_entity_is_visible_to_gsi3_listing(self, disable_repo):
+        """An entity disabled for a resource should be discoverable.
+
+        `list_entities_with_custom_limits` queries GSI3, which is sparse --
+        an item with no GSI3PK/GSI3SK simply is not in the index, so the
+        entity is invisible to every discovery and cleanup path even though
+        its config item exists and governs admission.
+        """
+        # Control: set_limits' item is indexed, proving the query works here.
+        await disable_repo.set_limits("user-a", [Limit.per_minute("rpm", 100)], "gpt-4")
+        entities, _cursor = await disable_repo.list_entities_with_custom_limits("gpt-4")
+        assert "user-a" in entities
+
+        await disable_repo.disable_entity("user-b", "gpt-4")
+
+        entities, _cursor = await disable_repo.list_entities_with_custom_limits("gpt-4")
+
+        assert "user-b" in entities, (
+            "disable_entity created a config item that GSI3 cannot see; "
+            "set_limits sets GSI3PK/GSI3SK on the equivalent item"
+        )
+
+    async def test_disable_then_delete_does_not_deregister_another_entitys_resource(
+        self, disable_repo
+    ):
+        """A disable+delete on one entity must not unregister a resource
+        another entity still has a config for.
+
+        The ref count is maintained by set_limits (+1) and delete_limits
+        (-1 then cleanup at zero). Because disable_entity skips the
+        increment, the count is already too low, and the later delete drives
+        it to zero while user-a's config is still on the table -- so the
+        resource disappears from the registry that
+        `list_resources_with_entity_configs` reads.
+        """
+        await disable_repo.set_limits("user-a", [Limit.per_minute("rpm", 100)], "gpt-4")
+        assert "gpt-4" in await disable_repo.list_resources_with_entity_configs()
+
+        # user-b gets an explicit disable -- a config item, but no increment.
+        await disable_repo.disable_entity("user-b", "gpt-4")
+
+        # Removing user-b's config decrements the count user-b never added.
+        await disable_repo.delete_limits("user-b", "gpt-4")
+
+        resources = await disable_repo.list_resources_with_entity_configs()
+        assert "gpt-4" in resources, (
+            "gpt-4 was dropped from #ENTITY_CONFIG_RESOURCES while user-a still "
+            "has an entity config for it -- the ref count went negative-by-omission "
+            "because disable_entity never incremented it"
+        )

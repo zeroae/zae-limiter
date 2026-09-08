@@ -4854,28 +4854,90 @@ class Repository:
         else:
             # The entity may have no config item yet — create a minimal one so
             # the override is durable even with no entity-level limits.
-            await client.update_item(
-                TableName=self.table_name,
-                Key=key,
-                UpdateExpression=(
-                    "SET #disabled = :v,"
-                    " entity_id = if_not_exists(entity_id, :eid),"
-                    " #resource = if_not_exists(#resource, :res),"
-                    " GSI4PK = if_not_exists(GSI4PK, :ns),"
-                    " GSI4SK = if_not_exists(GSI4SK, :gsi4sk)"
-                ),
-                ExpressionAttributeNames={
-                    "#disabled": schema.CONFIG_FIELD_DISABLED,
-                    "#resource": "resource",
-                },
-                ExpressionAttributeValues={
-                    ":v": {"BOOL": value},
-                    ":eid": {"S": entity_id},
-                    ":res": {"S": target_resource},
-                    ":ns": {"S": self._namespace_id},
-                    ":gsi4sk": {"S": schema.pk_entity(self._namespace_id, entity_id)},
-                },
+            #
+            # A created item has to be registered exactly the way set_limits
+            # registers the equivalent one: GSI3 attributes so the sparse
+            # index can see it, and +1 on #ENTITY_CONFIG_RESOURCES so the ref
+            # count matches the number of live entity config items. Skipping
+            # the increment leaves the count low, and a later delete_limits on
+            # *any* entity drives it to zero and unregisters the resource
+            # while other entities still hold configs for it.
+            #
+            # Updating an item that already exists must not increment again,
+            # so the create is attempted under attribute_not_exists(PK) inside
+            # a transaction and falls back to a plain update — the same
+            # create-vs-update split set_limits uses.
+            update_expression = (
+                "SET #disabled = :v,"
+                " entity_id = if_not_exists(entity_id, :eid),"
+                " #resource = if_not_exists(#resource, :res),"
+                " GSI3PK = if_not_exists(GSI3PK, :gsi3pk),"
+                " GSI3SK = if_not_exists(GSI3SK, :gsi3sk),"
+                " GSI4PK = if_not_exists(GSI4PK, :ns),"
+                " GSI4SK = if_not_exists(GSI4SK, :gsi4sk)"
             )
+            names = {
+                "#disabled": schema.CONFIG_FIELD_DISABLED,
+                "#resource": "resource",
+            }
+            values = {
+                ":v": {"BOOL": value},
+                ":eid": {"S": entity_id},
+                ":res": {"S": target_resource},
+                ":gsi3pk": {"S": schema.gsi3_pk_entity_config(self._namespace_id, target_resource)},
+                ":gsi3sk": {"S": schema.gsi3_sk_entity(entity_id)},
+                ":ns": {"S": self._namespace_id},
+                ":gsi4sk": {"S": schema.pk_entity(self._namespace_id, entity_id)},
+            }
+            try:
+                await client.transact_write_items(
+                    TransactItems=[
+                        {
+                            "Update": {
+                                "TableName": self.table_name,
+                                "Key": key,
+                                "UpdateExpression": update_expression,
+                                "ConditionExpression": "attribute_not_exists(PK)",
+                                "ExpressionAttributeNames": names,
+                                "ExpressionAttributeValues": values,
+                            }
+                        },
+                        {
+                            "Update": {
+                                "TableName": self.table_name,
+                                "Key": {
+                                    "PK": {"S": schema.pk_system(self._namespace_id)},
+                                    "SK": {"S": schema.sk_entity_config_resources()},
+                                },
+                                "UpdateExpression": (
+                                    "SET GSI4PK = if_not_exists(GSI4PK, :reg_gsi4pk),"
+                                    " GSI4SK = if_not_exists(GSI4SK, :reg_gsi4sk)"
+                                    " ADD #reg_resource :one"
+                                ),
+                                "ExpressionAttributeNames": {"#reg_resource": target_resource},
+                                "ExpressionAttributeValues": {
+                                    ":one": {"N": "1"},
+                                    ":reg_gsi4pk": {"S": self._namespace_id},
+                                    ":reg_gsi4sk": {"S": schema.pk_system(self._namespace_id)},
+                                },
+                            }
+                        },
+                    ]
+                )
+            except ClientError as e:
+                if e.response["Error"]["Code"] != "TransactionCanceledException":
+                    raise
+                reasons = e.response.get("CancellationReasons", [])
+                if not (reasons and reasons[0].get("Code") == "ConditionalCheckFailed"):
+                    raise
+                # Config item already exists — update it without double-counting.
+                await client.update_item(
+                    TableName=self.table_name,
+                    Key=key,
+                    UpdateExpression=update_expression,
+                    ExpressionAttributeNames=names,
+                    ExpressionAttributeValues=values,
+                )
 
         self._config_cache.evict_entity(entity_id, target_resource)
 

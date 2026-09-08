@@ -595,6 +595,69 @@ class TestEntityConfigRegistry:
         assert "gpt-4" not in resources
 
     @pytest.mark.asyncio
+    async def test_disable_entity_increments_registry_like_set_limits(self, test_repo):
+        """disable_entity creates a config item, so it must register it too.
+
+        `_set_entity_disabled` creates the same shape of entity config item
+        that `set_limits` does, just without limits. If it skips the
+        `ADD #resource :one` on `#ENTITY_CONFIG_RESOURCES`, the ref count
+        undercounts the live config items, and a later `delete_limits` on an
+        unrelated entity drives it to zero -- unregistering a resource that
+        other entities still have configs for.
+
+        Runs against real DynamoDB because the fix relies on a
+        TransactWriteItems whose first Update carries
+        `attribute_not_exists(PK)` and whose second does a wide-column ADD;
+        moto's transaction emulation agreeing is not evidence that DynamoDB
+        does.
+        """
+        repo = test_repo
+
+        await repo.set_limits("user-a", [Limit.per_minute("rpm", 100)], resource="gpt-4")
+        await repo.disable_entity("user-b", "gpt-4")
+
+        # Both entities now hold a config for gpt-4 and both are indexed.
+        entities, _ = await repo.list_entities_with_custom_limits("gpt-4")
+        assert set(entities) == {"user-a", "user-b"}
+
+        # Dropping user-b's config must not deregister a resource user-a uses.
+        await repo.delete_limits("user-b", resource="gpt-4")
+
+        resources = await repo.list_resources_with_entity_configs()
+        assert "gpt-4" in resources, (
+            "gpt-4 was unregistered while user-a still has an entity config for it"
+        )
+
+        # And once the last config goes, the resource does deregister.
+        await repo.delete_limits("user-a", resource="gpt-4")
+        resources = await repo.list_resources_with_entity_configs()
+        assert "gpt-4" not in resources
+
+    @pytest.mark.asyncio
+    async def test_repeated_disable_entity_does_not_double_count(self, test_repo):
+        """Disabling twice must increment the ref count only once.
+
+        The increment is guarded by `attribute_not_exists(PK)` so only a
+        create counts. If the guard were dropped, the count would outrun the
+        number of live config items and the resource would never deregister.
+        """
+        repo = test_repo
+
+        await repo.disable_entity("user-c", "gpt-4")
+        await repo.disable_entity("user-c", "gpt-4")
+        await repo.enable_entity("user-c", "gpt-4")
+
+        assert "gpt-4" in await repo.list_resources_with_entity_configs()
+
+        # One config item was ever created, so one delete must clear it.
+        await repo.delete_limits("user-c", resource="gpt-4")
+        resources = await repo.list_resources_with_entity_configs()
+        assert "gpt-4" not in resources, (
+            "ref count outran the number of config items -- the create guard "
+            "let a repeat disable increment again"
+        )
+
+    @pytest.mark.asyncio
     async def test_delete_nonexistent_config_no_side_effects(self, test_repo):
         """Deleting non-existent config should not affect registry or create audit."""
         repo = test_repo
