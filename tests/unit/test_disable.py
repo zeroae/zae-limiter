@@ -4,7 +4,11 @@ import pytest
 from botocore.exceptions import ClientError
 
 from zae_limiter import RateLimiter, schema
-from zae_limiter.exceptions import RateLimitError, ResourceDisabled
+from zae_limiter.exceptions import (
+    RateLimitError,
+    RateLimiterUnavailable,
+    ResourceDisabled,
+)
 from zae_limiter.models import Limit
 from zae_limiter.repository import Repository
 
@@ -973,3 +977,98 @@ class TestResourceDisableRegistryParity:
         # The limits must survive the disable write.
         limits = await disable_repo.get_resource_defaults("gpt-4")
         assert any(lim.name == "rpm" for lim in limits)
+
+
+@pytest.mark.asyncio
+class TestResolveDisabledPartialBatchResponse:
+    """`resolve_disabled` must not fail open on a partial BatchGetItem.
+
+    DynamoDB may return fewer items than requested and report the rest in
+    `UnprocessedKeys` -- documented behaviour under throttling, not an
+    error. `resolve_disabled` reads only `Responses`, and a missing item is
+    indistinguishable there from "this level sets no value", so the walk
+    falls through to the next level. On a gate that decides admission, that
+    means an entity explicitly marked `disabled: true` gets ADMITTED.
+
+    These tests wrap the real moto-backed client and move an item from
+    `Responses` into `UnprocessedKeys`, leaving the stored data untouched --
+    the response shape is simulated, the code under test is real.
+    """
+
+    @staticmethod
+    def _withhold_once(repo, monkeypatch, withheld_pk: str, *, forever: bool = False):
+        """Move items matching `withheld_pk` into UnprocessedKeys.
+
+        By default only the first call is degraded, so a retry sees the full
+        response. With `forever=True` every call is degraded, standing in for
+        sustained throttling.
+        """
+        client_holder = {}
+
+        async def flaky_batch_get_item(**kwargs):
+            client = client_holder["client"]
+            response = await client_holder["original"](**kwargs)
+            client_holder["calls"] = client_holder.get("calls", 0) + 1
+            if not forever and client_holder["calls"] > 1:
+                return response
+            table = repo.table_name
+            items = response.get("Responses", {}).get(table, [])
+            withheld = [i for i in items if i.get("PK", {}).get("S") == withheld_pk]
+            if not withheld:
+                return response
+            response["Responses"][table] = [
+                i for i in items if i.get("PK", {}).get("S") != withheld_pk
+            ]
+            response["UnprocessedKeys"] = {
+                table: {
+                    "Keys": [{"PK": i["PK"], "SK": i["SK"]} for i in withheld],
+                    "ConsistentRead": False,
+                }
+            }
+            del client  # only used for the closure's original reference
+            return response
+
+        return flaky_batch_get_item, client_holder
+
+    async def test_withheld_entity_item_does_not_admit_a_disabled_entity(
+        self, disable_repo, monkeypatch
+    ):
+        """A retryable partial response must still resolve to disabled."""
+        await disable_repo.disable_entity("user-b", "gpt-4")
+        entity_pk = schema.pk_entity(disable_repo._namespace_id, "user-b")
+
+        client = await disable_repo._get_client()
+        flaky, holder = self._withhold_once(disable_repo, monkeypatch, entity_pk)
+        holder["client"] = client
+        holder["original"] = client.batch_get_item
+        monkeypatch.setattr(client, "batch_get_item", flaky)
+
+        effective, level = await disable_repo.resolve_disabled("user-b", "gpt-4")
+
+        assert effective is True, (
+            "the entity's disabled=true was dropped into UnprocessedKeys and the "
+            "walk fell through, admitting an entity that is explicitly disabled"
+        )
+        assert level == "entity"
+
+    async def test_persistently_withheld_item_raises_rather_than_admitting(
+        self, disable_repo, monkeypatch
+    ):
+        """When retries cannot complete the read, refuse to answer.
+
+        Returning (False, None) here is the fail-open case: the caller cannot
+        tell "nothing is disabled" from "we never managed to look". Raising
+        lets the existing unavailability handling decide, which is what
+        on_unavailable is for.
+        """
+        await disable_repo.disable_entity("user-b", "gpt-4")
+        entity_pk = schema.pk_entity(disable_repo._namespace_id, "user-b")
+
+        client = await disable_repo._get_client()
+        flaky, holder = self._withhold_once(disable_repo, monkeypatch, entity_pk, forever=True)
+        holder["client"] = client
+        holder["original"] = client.batch_get_item
+        monkeypatch.setattr(client, "batch_get_item", flaky)
+
+        with pytest.raises(RateLimiterUnavailable):
+            await disable_repo.resolve_disabled("user-b", "gpt-4")

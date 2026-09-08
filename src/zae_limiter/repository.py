@@ -13,7 +13,12 @@ from ulid import ULID
 
 from . import schema
 from .config_cache import CacheStats, ConfigCache, ConfigSource
-from .exceptions import EntityExistsError, NamespaceStateError, ValidationError
+from .exceptions import (
+    EntityExistsError,
+    NamespaceStateError,
+    RateLimiterUnavailable,
+    ValidationError,
+)
 from .models import (
     AuditAction,
     AuditEvent,
@@ -39,6 +44,13 @@ logger = logging.getLogger(__name__)
 #: Sentinel meaning "keep whatever `disabled` value is already stored" (ADR-125).
 #: Distinct from None, which explicitly means "inherit from the level above".
 _PRESERVE_DISABLED: Any = object()
+
+# resolve_disabled() decides admission, so a partial BatchGetItem must be
+# retried rather than treated as "nothing set" (ADR-125). Three retries with
+# exponential backoff from 50ms covers a transient throttle without stalling
+# the slow path; beyond that the caller is told the answer is unknown.
+_RESOLVE_DISABLED_MAX_RETRIES = 3
+_RESOLVE_DISABLED_RETRY_BASE_DELAY = 0.05
 
 
 class Repository:
@@ -4462,16 +4474,41 @@ class Repository:
         levels.append(("resource", schema.pk_resource(ns, resource), schema.sk_config()))
 
         client = await self._get_client()
-        response = await client.batch_get_item(
-            RequestItems={
-                self.table_name: {
-                    "Keys": [{"PK": {"S": pk}, "SK": {"S": sk}} for _, pk, sk in levels],
-                    "ConsistentRead": False,
-                }
-            }
-        )
-        items = response.get("Responses", {}).get(self.table_name, [])
-        by_key = {(i.get("PK", {}).get("S", ""), i.get("SK", {}).get("S", "")): i for i in items}
+
+        # DynamoDB may answer a BatchGetItem partially, reporting the rest in
+        # UnprocessedKeys — documented behaviour under throttling, not an
+        # error. A withheld item is indistinguishable in the walk below from a
+        # level that sets no value, so accepting a partial response would let
+        # an entity marked `disabled: true` fall through and be ADMITTED.
+        # Retry the remainder, and refuse to answer rather than guess if it
+        # never completes: returning (False, None) cannot be told apart by the
+        # caller from "nothing is disabled".
+        keys = [{"PK": {"S": pk}, "SK": {"S": sk}} for _, pk, sk in levels]
+        by_key: dict[tuple[str, str], dict[str, Any]] = {}
+        attempts = 0
+        while keys:
+            response = await client.batch_get_item(
+                RequestItems={self.table_name: {"Keys": keys, "ConsistentRead": False}}
+            )
+            for i in response.get("Responses", {}).get(self.table_name, []):
+                by_key[(i.get("PK", {}).get("S", ""), i.get("SK", {}).get("S", ""))] = i
+
+            unprocessed = response.get("UnprocessedKeys", {}).get(self.table_name) or {}
+            keys = unprocessed.get("Keys", [])
+            if not keys:
+                break
+
+            attempts += 1
+            if attempts > _RESOLVE_DISABLED_MAX_RETRIES:
+                raise RateLimiterUnavailable(
+                    f"Could not resolve disabled state for {entity_id!r}/{resource!r}: "
+                    f"DynamoDB left {len(keys)} key(s) unprocessed after "
+                    f"{_RESOLVE_DISABLED_MAX_RETRIES} retries",
+                    stack_name=self.stack_name,
+                    entity_id=entity_id,
+                    resource=resource,
+                )
+            await asyncio.sleep(_RESOLVE_DISABLED_RETRY_BASE_DELAY * 2 ** (attempts - 1))
 
         for level, pk, sk in levels:
             item = by_key.get((pk, sk))
