@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788316615309,
+  "lastUpdate": 1788900236366,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -26405,6 +26405,240 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.00009343951759994484",
             "extra": "mean: 4.060129571427916 msec\nrounds: 245"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7c8590b8338a47fe8ed03aa076f4c0b26ea86902",
+          "message": "build(deps): bump actions/setup-python from 6 to 7 (#432)\n\nBumps [actions/setup-python](https://github.com/actions/setup-python)\nfrom 6 to 7.\n<details>\n<summary>Release notes</summary>\n<p><em>Sourced from <a\nhref=\"https://github.com/actions/setup-python/releases\">actions/setup-python's\nreleases</a>.</em></p>\n<blockquote>\n<h2>v7.0.0</h2>\n<h2>What's Changed</h2>\n<h3>Enhancements</h3>\n<ul>\n<li>Migrate to ESM and upgrade dependencies by <a\nhref=\"https://github.com/priyagupta108\"><code>@​priyagupta108</code></a>\nin <a\nhref=\"https://redirect.github.com/actions/setup-python/pull/1330\">actions/setup-python#1330</a></li>\n<li>Pin SHA commits and update docs with latest versions by <a\nhref=\"https://github.com/HarithaVattikuti\"><code>@​HarithaVattikuti</code></a>\nin <a\nhref=\"https://redirect.github.com/actions/setup-python/pull/1338\">actions/setup-python#1338</a></li>\n<li>Remove the pip-install input by <a\nhref=\"https://github.com/gowridurgad\"><code>@​gowridurgad</code></a> in\n<a\nhref=\"https://redirect.github.com/actions/setup-python/pull/1336\">actions/setup-python#1336</a></li>\n</ul>\n<h3>Bug Fix</h3>\n<ul>\n<li>Fix to Classify stderr warning messages as warnings instead of\nerrors in annotations by <a\nhref=\"https://github.com/lmvysakh\"><code>@​lmvysakh</code></a> in <a\nhref=\"https://redirect.github.com/actions/setup-python/pull/1335\">actions/setup-python#1335</a></li>\n<li>Validate and retry manifest fetch to prevent silent failures by <a\nhref=\"https://github.com/priyagupta108\"><code>@​priyagupta108</code></a>\nin <a\nhref=\"https://redirect.github.com/actions/setup-python/pull/1332\">actions/setup-python#1332</a></li>\n</ul>\n<h3>Dependency Upgrade</h3>\n<ul>\n<li>Bump certifi from 2020.6.20 to 2024.7.4 in\n/<strong>tests</strong>/data by <a\nhref=\"https://github.com/dependabot\"><code>@​dependabot</code></a> in <a\nhref=\"https://redirect.github.com/actions/setup-python/pull/1328\">actions/setup-python#1328</a></li>\n<li>Remove EOL Python versions and Bumps numpy text fixture by <a\nhref=\"https://github.com/priya-kinthali\"><code>@​priya-kinthali</code></a>\nin <a\nhref=\"https://redirect.github.com/actions/setup-python/pull/1333\">actions/setup-python#1333</a></li>\n<li>Upgrade <code>@​actions/cache</code> to 6.2.0 by <a\nhref=\"https://github.com/philip-gai\"><code>@​philip-gai</code></a> in <a\nhref=\"https://redirect.github.com/actions/setup-python/pull/1337\">actions/setup-python#1337</a></li>\n</ul>\n<h2>New Contributors</h2>\n<ul>\n<li><a href=\"https://github.com/lmvysakh\"><code>@​lmvysakh</code></a>\nmade their first contribution in <a\nhref=\"https://redirect.github.com/actions/setup-python/pull/1335\">actions/setup-python#1335</a></li>\n<li><a\nhref=\"https://github.com/philip-gai\"><code>@​philip-gai</code></a> made\ntheir first contribution in <a\nhref=\"https://redirect.github.com/actions/setup-python/pull/1337\">actions/setup-python#1337</a></li>\n</ul>\n<p><strong>Full Changelog</strong>: <a\nhref=\"https://github.com/actions/setup-python/compare/v6...v7.0.0\">https://github.com/actions/setup-python/compare/v6...v7.0.0</a></p>\n<h2>v6.3.0</h2>\n<h2>What's Changed</h2>\n<h3>Enhancement</h3>\n<ul>\n<li>Add RHEL support and include Linux distro in cache keys by <a\nhref=\"https://github.com/priyagupta108\"><code>@​priyagupta108</code></a>\nin <a\nhref=\"https://redirect.github.com/actions/setup-python/pull/1323\">actions/setup-python#1323</a></li>\n<li>Fix pip cache error handling on Windows by <a\nhref=\"https://github.com/priyagupta108\"><code>@​priyagupta108</code></a>\nin <a\nhref=\"https://redirect.github.com/actions/setup-python/pull/1040\">actions/setup-python#1040</a></li>\n</ul>\n<h3>Dependency update</h3>\n<ul>\n<li>Upgrade minimatch from 3.1.2 to 3.1.5 by <a\nhref=\"https://github.com/dependabot\"><code>@​dependabot</code></a> in <a\nhref=\"https://redirect.github.com/actions/setup-python/pull/1281\">actions/setup-python#1281</a></li>\n<li>Upgrade actions dependencies by <a\nhref=\"https://github.com/gowridurgad\"><code>@​gowridurgad</code></a>\nwith <a href=\"https://github.com/Copilot\"><code>@​Copilot</code></a> in\n<a\nhref=\"https://redirect.github.com/actions/setup-python/pull/1303\">actions/setup-python#1303</a></li>\n<li>Upgrade <code>@​actions/cache</code> to 5.1.0, log cache write\ndenied by <a\nhref=\"https://github.com/jasongin\"><code>@​jasongin</code></a> in <a\nhref=\"https://redirect.github.com/actions/setup-python/pull/1324\">actions/setup-python#1324</a></li>\n<li>Upgrade dependency versions and test workflow configuration by <a\nhref=\"https://github.com/HarithaVattikuti\"><code>@​HarithaVattikuti</code></a>\nin <a\nhref=\"https://redirect.github.com/actions/setup-python/pull/1322\">actions/setup-python#1322</a></li>\n</ul>\n<h3>Documentation</h3>\n<ul>\n<li>Update advanced-usage.md by <a\nhref=\"https://github.com/Dunky-Z\"><code>@​Dunky-Z</code></a> in <a\nhref=\"https://redirect.github.com/actions/setup-python/pull/811\">actions/setup-python#811</a></li>\n</ul>\n<h2>New Contributors</h2>\n<ul>\n<li><a\nhref=\"https://github.com/gowridurgad\"><code>@​gowridurgad</code></a>\nwith <a href=\"https://github.com/Copilot\"><code>@​Copilot</code></a>\nmade their first contribution in <a\nhref=\"https://redirect.github.com/actions/setup-python/pull/1303\">actions/setup-python#1303</a></li>\n<li><a href=\"https://github.com/jasongin\"><code>@​jasongin</code></a>\nmade their first contribution in <a\nhref=\"https://redirect.github.com/actions/setup-python/pull/1324\">actions/setup-python#1324</a></li>\n<li><a href=\"https://github.com/Dunky-Z\"><code>@​Dunky-Z</code></a> made\ntheir first contribution in <a\nhref=\"https://redirect.github.com/actions/setup-python/pull/811\">actions/setup-python#811</a></li>\n</ul>\n<p><strong>Full Changelog</strong>: <a\nhref=\"https://github.com/actions/setup-python/compare/v6.2.0...v6.3.0\">https://github.com/actions/setup-python/compare/v6.2.0...v6.3.0</a></p>\n<h2>v6.2.0</h2>\n<h2>What's Changed</h2>\n<h3>Dependency Upgrades</h3>\n<ul>\n<li>Upgrade dependencies to Node 24 compatible versions by <a\nhref=\"https://github.com/salmanmkc\"><code>@​salmanmkc</code></a> in <a\nhref=\"https://redirect.github.com/actions/setup-python/pull/1259\">actions/setup-python#1259</a></li>\n</ul>\n<!-- raw HTML omitted -->\n</blockquote>\n<p>... (truncated)</p>\n</details>\n<details>\n<summary>Commits</summary>\n<ul>\n<li><a\nhref=\"https://github.com/actions/setup-python/commit/5fda3b95a4ea91299a34e894583c3862153e4b97\"><code>5fda3b9</code></a>\nPin SHA commits and update docs with latest versions (<a\nhref=\"https://redirect.github.com/actions/setup-python/issues/1338\">#1338</a>)</li>\n<li><a\nhref=\"https://github.com/actions/setup-python/commit/4ab7e95f05e168b4356aebde89dd84f59c283d8e\"><code>4ab7e95</code></a>\nMerge pull request <a\nhref=\"https://redirect.github.com/actions/setup-python/issues/1337\">#1337</a>\nfrom actions/philip-gai/bump-actions-cache-6-2-0</li>\n<li><a\nhref=\"https://github.com/actions/setup-python/commit/0f3a009f475dbea83c0371cd85d099690fee8c5c\"><code>0f3a009</code></a>\nRemove the pip-install input (<a\nhref=\"https://redirect.github.com/actions/setup-python/issues/1336\">#1336</a>)</li>\n<li><a\nhref=\"https://github.com/actions/setup-python/commit/f8cf4291c8b8e273ddd26e569454615c7315d932\"><code>f8cf429</code></a>\nMigrate to ESM and upgrade dependencies (<a\nhref=\"https://redirect.github.com/actions/setup-python/issues/1330\">#1330</a>)</li>\n<li><a\nhref=\"https://github.com/actions/setup-python/commit/54baeea5b34417d10a7479663a23cca53ea209b5\"><code>54baeea</code></a>\nValidate and retry manifest fetch to prevent silent failures (<a\nhref=\"https://redirect.github.com/actions/setup-python/issues/1332\">#1332</a>)</li>\n<li><a\nhref=\"https://github.com/actions/setup-python/commit/c7092773a316760f4ecfe498e4af668a4dafeac5\"><code>c709277</code></a>\nAnnotation code fix (<a\nhref=\"https://redirect.github.com/actions/setup-python/issues/1335\">#1335</a>)</li>\n<li><a\nhref=\"https://github.com/actions/setup-python/commit/6849080452e69b330395e8a6d23cf90f56d76a1a\"><code>6849080</code></a>\nremove EOL Python versions and Bumps numpy text fixture (<a\nhref=\"https://redirect.github.com/actions/setup-python/issues/1333\">#1333</a>)</li>\n<li><a\nhref=\"https://github.com/actions/setup-python/commit/0903b469fbf4441aadfe4f4b249dc5b1fba3a73e\"><code>0903b46</code></a>\nBump certifi from 2020.6.20 to 2024.7.4 in /<strong>tests</strong>/data\n(<a\nhref=\"https://redirect.github.com/actions/setup-python/issues/1328\">#1328</a>)</li>\n<li>See full diff in <a\nhref=\"https://github.com/actions/setup-python/compare/v6...v7\">compare\nview</a></li>\n</ul>\n</details>\n<br />\n\n\n[![Dependabot compatibility\nscore](https://dependabot-badges.githubapp.com/badges/compatibility_score?dependency-name=actions/setup-python&package-manager=github_actions&previous-version=6&new-version=7)](https://docs.github.com/en/github/managing-security-vulnerabilities/about-dependabot-security-updates#about-compatibility-scores)\n\nDependabot will resolve any conflicts with this PR as long as you don't\nalter it yourself. You can also trigger a rebase manually by commenting\n`@dependabot rebase`.\n\n[//]: # (dependabot-automerge-start)\n[//]: # (dependabot-automerge-end)\n\n---\n\n<details>\n<summary>Dependabot commands and options</summary>\n<br />\n\nYou can trigger Dependabot actions by commenting on this PR:\n- `@dependabot rebase` will rebase this PR\n- `@dependabot recreate` will recreate this PR, overwriting any edits\nthat have been made to it\n- `@dependabot show <dependency name> ignore conditions` will show all\nof the ignore conditions of the specified dependency\n- `@dependabot ignore this major version` will close this PR and stop\nDependabot creating any more for this major version (unless you reopen\nthe PR or upgrade to it yourself)\n- `@dependabot ignore this minor version` will close this PR and stop\nDependabot creating any more for this minor version (unless you reopen\nthe PR or upgrade to it yourself)\n- `@dependabot ignore this dependency` will close this PR and stop\nDependabot creating any more for this dependency (unless you reopen the\nPR or upgrade to it yourself)\n\n\n</details>",
+          "timestamp": "2026-09-08T16:38:29-04:00",
+          "tree_id": "a28ddf09a03fe09a4e375bcb29ba63c1217e113f",
+          "url": "https://github.com/zeroae/zae-limiter/commit/7c8590b8338a47fe8ed03aa076f4c0b26ea86902"
+        },
+        "date": 1788900235023,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_single_limit_latency",
+            "value": 261.4535607944718,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00038106979827361945",
+            "extra": "mean: 3.824771010810973 msec\nrounds: 185"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_two_limits_latency",
+            "value": 217.31987001239153,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00014113172002303874",
+            "extra": "mean: 4.6015120473934585 msec\nrounds: 211"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_cascade_latency",
+            "value": 127.8782942375617,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0003879514883309816",
+            "extra": "mean: 7.819935400000588 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_available_check_latency",
+            "value": 1093.242064842532,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0000321617852775481",
+            "extra": "mean: 914.710503884643 usec\nrounds: 901"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_stored_limits_latency",
+            "value": 262.99242772948423,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00017663166070507982",
+            "extra": "mean: 3.8023908468901118 msec\nrounds: 209"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_baseline_no_cascade",
+            "value": 264.73984598350535,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0001393492769198745",
+            "extra": "mean: 3.7772931244445354 msec\nrounds: 225"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_with_cascade",
+            "value": 114.69635850707489,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009889937535319741",
+            "extra": "mean: 8.718672615384877 msec\nrounds: 130"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_one_limit",
+            "value": 263.8217955929555,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00019188746601235204",
+            "extra": "mean: 3.7904373963964555 msec\nrounds: 222"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_two_limits",
+            "value": 212.1346031180234,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00023439956283285494",
+            "extra": "mean: 4.713988125000235 msec\nrounds: 208"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_five_limits",
+            "value": 126.0003941083573,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0006108797888274812",
+            "extra": "mean: 7.936483112426016 msec\nrounds: 169"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_single_limit",
+            "value": 266.2463889911755,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00012964613742534107",
+            "extra": "mean: 3.75591948416301 msec\nrounds: 221"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_multiple_limits",
+            "value": 216.16871718856925,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00013346992810999358",
+            "extra": "mean: 4.626016257142681 msec\nrounds: 210"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_available_check",
+            "value": 1080.058157850865,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00003619993176525353",
+            "extra": "mean: 925.8760676275367 usec\nrounds: 902"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_transactional_acquire",
+            "value": 232.21177228374455,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0077728832533579964",
+            "extra": "mean: 4.306413883177631 msec\nrounds: 214"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_without_cascade",
+            "value": 266.1311172810765,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00013931814683135497",
+            "extra": "mean: 3.757546318583415 msec\nrounds: 226"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_with_cascade",
+            "value": 129.08927054904478,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00029029127798154845",
+            "extra": "mean: 7.74657720000107 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_cascade_with_stored_limits",
+            "value": 131.78526490128965,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00024369610964620526",
+            "extra": "mean: 7.588101755905899 msec\nrounds: 127"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_with_cached_config",
+            "value": 266.6554031965134,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00014832640562034003",
+            "extra": "mean: 3.7501583992394996 msec\nrounds: 263"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_cold_config",
+            "value": 244.81948770951203,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0000972107645541462",
+            "extra": "mean: 4.084642155556422 msec\nrounds: 135"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_cascade_with_cached_config",
+            "value": 106.46637624566446,
+            "unit": "iter/sec",
+            "range": "stddev: 0.019516738809562426",
+            "extra": "mean: 9.392636767241546 msec\nrounds: 116"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_sequential_acquisitions",
+            "value": 26.259745418245544,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0005675162171157477",
+            "extra": "mean: 38.081100333333374 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_same_entity_sequential",
+            "value": 26.386719392908567,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000419943778530886",
+            "extra": "mean: 37.89785251851922 msec\nrounds: 27"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_cache_disabled",
+            "value": 114.47706089807366,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00031911938517177596",
+            "extra": "mean: 8.73537451219476 msec\nrounds: 82"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_cache_enabled",
+            "value": 101.76390976462696,
+            "unit": "iter/sec",
+            "range": "stddev: 0.024636450921016236",
+            "extra": "mean: 9.826666470587975 msec\nrounds: 119"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_config_resolution_sequential",
+            "value": 124.31294515135207,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00015758231154274565",
+            "extra": "mean: 8.04421453278652 msec\nrounds: 122"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_config_resolution_batched",
+            "value": 169.74465206189183,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00044676206532869836",
+            "extra": "mean: 5.8912018013703475 msec\nrounds: 146"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_speculative_cache_cold",
+            "value": 130.23276988470266,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00014195775817915039",
+            "extra": "mean: 7.6785589439994055 msec\nrounds: 125"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_speculative_cache_warm",
+            "value": 130.62424030164013,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0003340350211576515",
+            "extra": "mean: 7.655546916030133 msec\nrounds: 131"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_stored_limits_cache_disabled",
+            "value": 200.88317988711094,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0007039160373750807",
+            "extra": "mean: 4.978017575000374 msec\nrounds: 120"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_stored_limits_cache_enabled",
+            "value": 235.40578497415467,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0002024354834988254",
+            "extra": "mean: 4.2479839656862755 msec\nrounds: 204"
           }
         ]
       }
