@@ -287,3 +287,70 @@ class TestHandlerIntegration:
 
         _, on_unavailable = await test_repo.get_system_defaults()
         assert on_unavailable == "allow"
+
+    @pytest.mark.asyncio
+    async def test_apply_with_existing_bucket_stamps_it_and_persists_state(
+        self, test_repo, localstack_limiter
+    ):
+        """An apply that fans out over a live bucket must complete fully.
+
+        Every other handler test in this file applies a manifest to a
+        namespace with no bucket items, so `_fanout_disabled_changes` finds
+        nothing to stamp and `fanout.stamp_bucket` -- the only `update_item`
+        call in the provisioner package -- never runs. That gap is what let
+        the missing `dynamodb:UpdateItem` grant on `ProvisionerRole` reach
+        `main`: the code path was only ever exercised against an empty table.
+
+        This test puts a real bucket in the table first, so the apply
+        actually reaches `update_item` against real DynamoDB, and then
+        asserts both halves of the operation landed:
+
+        1. the bucket carries the resource's `disabled` value, and
+        2. the `#PROVISIONER` state record was written.
+
+        The ordering in `_handle_cli` is apply -> fan-out -> write state, so
+        anything the fan-out raises aborts the handler *after* the config
+        items are written but *before* the state record is, leaving managed
+        state silently out of step with the table. Asserting (2) after a
+        fan-out that had real work to do is what catches that.
+
+        This test deliberately does NOT claim to cover the IAM grant, and
+        cannot: `_handle_cli` runs in-process with the test suite's own
+        credentials, so `ProvisionerRole` is never assumed. LocalStack could
+        not enforce it anyway -- `ENFORCE_IAM` is Pro-gated, and community
+        edition accepts the flag and ignores it (verified against 4.14: a
+        role without `dynamodb:UpdateItem` still performs the update).
+
+        The grant is covered in two other places instead:
+        `tests/unit/test_cfn_iam_parity.py::TestProvisionerRoleParity` guards
+        the template statically, and
+        `tests/e2e/test_aws.py::TestE2EAWSProvisionerCFNStack::test_provisioner_lambda_can_stamp_a_live_bucket`
+        invokes the deployed Lambda under its real role on AWS.
+        """
+        await test_repo.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 1_000)])
+        async with localstack_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+            pass
+
+        buckets = await test_repo.get_buckets("user-1", resource="gpt-4")
+        assert buckets, "a bucket must exist before the apply for the fan-out to have work"
+
+        manifest = {
+            "namespace": "test",
+            "resources": {"gpt-4": {"disabled": True, "limits": {"rpm": {"capacity": 1000}}}},
+        }
+        event = self._cli_event("apply", test_repo.table_name, test_repo._namespace_id, manifest)
+        result = _handle_cli(event, None)
+
+        assert result["status"] == "applied"
+        assert result["errors"] == []
+
+        # 1. the fan-out reached the live bucket
+        assert await test_repo.get_resource_disabled("gpt-4") is True
+
+        # 2. the handler got past the fan-out and persisted its state
+        state = await test_repo.get_provisioner_state()
+        assert state is not None, (
+            "#PROVISIONER was not written -- the handler aborted during fan-out, "
+            "so managed state has drifted from what apply_changes wrote"
+        )
+        assert "gpt-4" in state.get("managed_resources", [])

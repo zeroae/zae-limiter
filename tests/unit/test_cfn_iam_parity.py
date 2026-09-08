@@ -349,3 +349,88 @@ class TestNamespaceScopedPolicies:
         ):
             assert output_key in outputs, f"Missing output: {output_key}"
             assert outputs[output_key].get("Condition") == "DeployIAM"
+
+
+def _extract_role_inline_policy_actions(
+    template: dict, role_key: str, policy_name: str
+) -> set[str]:
+    """Extract DynamoDB actions from a named inline policy on an IAM role.
+
+    Roles carry their permissions under Properties.Policies (a list of
+    {PolicyName, PolicyDocument}), unlike managed policies which expose
+    PolicyDocument directly.
+    """
+    role = template["Resources"][role_key]
+    for policy in role["Properties"]["Policies"]:
+        if policy["PolicyName"] != policy_name:
+            continue
+        actions: set[str] = set()
+        for stmt in policy["PolicyDocument"]["Statement"]:
+            if stmt["Effect"] != "Allow":
+                continue
+            stmt_actions = stmt["Action"]
+            if isinstance(stmt_actions, str):
+                stmt_actions = [stmt_actions]
+            actions.update(a for a in stmt_actions if a.startswith("dynamodb:"))
+        return actions
+    raise ValueError(f"Inline policy {policy_name!r} not found on {role_key}")
+
+
+def _find_dynamodb_calls_in_package(package: str) -> set[str]:
+    """Parse every module in a source package for DynamoDB client method calls.
+
+    Same AST approach as _find_dynamodb_calls_in_repository, but across a
+    whole package rather than a single module.
+
+    Returns IAM action names (e.g., dynamodb:UpdateItem).
+    """
+    pkg_path = Path(__file__).parent.parent.parent / "src" / package
+    found_actions: set[str] = set()
+    for module in sorted(pkg_path.glob("*.py")):
+        tree = ast.parse(module.read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                func = node.func
+                if isinstance(func, ast.Attribute) and func.attr in _DYNAMODB_DATA_METHODS:
+                    found_actions.add(_snake_to_iam_action(func.attr))
+    return found_actions
+
+
+class TestProvisionerRoleParity:
+    """Verify the provisioner Lambda's role covers the operations it performs.
+
+    The provisioner runs as its own Lambda with its own inline role policy,
+    so it does not benefit from the App/Admin/FullAccess policy checks above.
+    ADR-125's disable fan-out added the first update_item call in that
+    package; without this guard a new DynamoDB verb reaches production as an
+    AccessDeniedException at runtime.
+    """
+
+    def setup_method(self) -> None:
+        self.template = _load_cfn_template()
+        self.provisioner_actions = _find_dynamodb_calls_in_package("zae_limiter_provisioner")
+
+    def test_provisioner_uses_dynamodb_operations(self) -> None:
+        """Sanity check: the provisioner package should use DynamoDB operations."""
+        assert len(self.provisioner_actions) >= 3, (
+            f"Expected at least 3 DynamoDB operations, found: {self.provisioner_actions}"
+        )
+
+    def test_provisioner_role_covers_all_provisioner_operations(self) -> None:
+        """ProvisionerRole must grant every DynamoDB action the package calls.
+
+        The fan-out added by ADR-125 calls update_item to stamp bucket items.
+        A missing action here fails at runtime *after* apply_changes has
+        written config items but *before* the #PROVISIONER state record is
+        updated, so managed state silently drifts from the table.
+        """
+        granted = _extract_role_inline_policy_actions(
+            self.template, "ProvisionerRole", "DynamoDBAccess"
+        )
+        missing = self.provisioner_actions - granted
+
+        assert not missing, (
+            f"ProvisionerRole is missing DynamoDB actions used in "
+            f"src/zae_limiter_provisioner/: {missing}. "
+            f"Add them to the DynamoDBAccess policy on ProvisionerRole in cfn_template.yaml."
+        )
