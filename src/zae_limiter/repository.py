@@ -4754,6 +4754,31 @@ class Repository:
                 },
             )
 
+            # Writing a resource config item means registering it, exactly as
+            # set_resource_defaults does — #RESOURCES is what
+            # list_resources_with_defaults() reads, so without this a resource
+            # disabled while running on system defaults is invisible to the
+            # only listing an operator has. `resources` is a String Set, so
+            # re-adding an existing member is a no-op and this needs no
+            # create-vs-update guard.
+            await client.update_item(
+                TableName=self.table_name,
+                Key={
+                    "PK": {"S": schema.pk_system(self._namespace_id)},
+                    "SK": {"S": schema.sk_resources()},
+                },
+                UpdateExpression=(
+                    "SET GSI4PK = if_not_exists(GSI4PK, :reg_gsi4pk),"
+                    " GSI4SK = if_not_exists(GSI4SK, :reg_gsi4sk)"
+                    " ADD resources :reg_resource"
+                ),
+                ExpressionAttributeValues={
+                    ":reg_resource": {"SS": [resource]},
+                    ":reg_gsi4pk": {"S": self._namespace_id},
+                    ":reg_gsi4sk": {"S": schema.pk_system(self._namespace_id)},
+                },
+            )
+
         await self.invalidate_config_cache()
 
         # 2. Fan out to existing buckets. For a clear, the effective value is

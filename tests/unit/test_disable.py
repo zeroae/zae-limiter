@@ -932,3 +932,44 @@ class TestEntityDisableRegistryParity:
             "has an entity config for it -- the ref count went negative-by-omission "
             "because disable_entity never incremented it"
         )
+
+
+class TestResourceDisableRegistryParity:
+    """`disable_resource` must register the resource like `set_resource_defaults`.
+
+    `set_resource_defaults` writes the config item and then does
+    `ADD resources :resource` on `PK={ns}/SYSTEM#, SK=#RESOURCES`, which is
+    what `list_resources_with_defaults()` (and `zae-limiter resource list`)
+    reads. `_set_resource_disabled` writes an equivalent config item without
+    that registration, so a resource disabled while running purely on system
+    defaults -- the case its own docstring calls "the common case" -- becomes
+    invisible to the only listing an operator has.
+    """
+
+    async def test_disable_resource_without_prior_defaults_is_listed(self, disable_repo):
+        """Disabling a resource with no config of its own must still list it."""
+        await disable_repo.disable_resource("gpt-4")
+
+        resources = await disable_repo.list_resources_with_defaults()
+
+        assert "gpt-4" in resources, (
+            "gpt-4 was disabled but never registered in #RESOURCES, so "
+            "`zae-limiter resource list` cannot show what was disabled"
+        )
+
+    async def test_disable_resource_with_existing_defaults_stays_listed(self, disable_repo):
+        """Disabling a resource that was already registered is idempotent.
+
+        `resources` is a DynamoDB String Set, so re-ADDing an existing member
+        is a no-op -- but the config item must not be lost either.
+        """
+        await disable_repo.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 100)])
+        await disable_repo.disable_resource("gpt-4")
+
+        resources = await disable_repo.list_resources_with_defaults()
+
+        assert resources.count("gpt-4") == 1
+        assert await disable_repo.get_resource_disabled("gpt-4") is True
+        # The limits must survive the disable write.
+        limits = await disable_repo.get_resource_defaults("gpt-4")
+        assert any(lim.name == "rpm" for lim in limits)

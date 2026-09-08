@@ -3897,6 +3897,19 @@ class SyncRepository:
                     ":gsi4sk": {"S": schema.pk_resource(self._namespace_id, resource)},
                 },
             )
+            client.update_item(
+                TableName=self.table_name,
+                Key={
+                    "PK": {"S": schema.pk_system(self._namespace_id)},
+                    "SK": {"S": schema.sk_resources()},
+                },
+                UpdateExpression="SET GSI4PK = if_not_exists(GSI4PK, :reg_gsi4pk), GSI4SK = if_not_exists(GSI4SK, :reg_gsi4sk) ADD resources :reg_resource",
+                ExpressionAttributeValues={
+                    ":reg_resource": {"SS": [resource]},
+                    ":reg_gsi4pk": {"S": self._namespace_id},
+                    ":reg_gsi4sk": {"S": schema.pk_system(self._namespace_id)},
+                },
+            )
         self.invalidate_config_cache()
         count = self._fanout_resource(resource, disabled=bool(value))
         self._log_audit_event(

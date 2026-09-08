@@ -595,6 +595,38 @@ class TestEntityConfigRegistry:
         assert "gpt-4" not in resources
 
     @pytest.mark.asyncio
+    async def test_disable_resource_registers_it_like_set_resource_defaults(self, test_repo):
+        """disable_resource must register into #RESOURCES.
+
+        `list_resources_with_defaults()` reads the `resources` String Set on
+        `PK={ns}/SYSTEM#, SK=#RESOURCES`. `set_resource_defaults` maintains
+        it; the disable path writes an equivalent config item, so it has to
+        maintain it too or an operator cannot see what they disabled.
+
+        Against real DynamoDB because the write is an `ADD` on a String Set
+        attribute that may not exist yet, alongside `if_not_exists` SETs in
+        the same expression.
+        """
+        repo = test_repo
+
+        # A resource running purely on system defaults -- no config of its own.
+        await repo.disable_resource("gpt-4")
+
+        assert "gpt-4" in await repo.list_resources_with_defaults()
+        assert await repo.get_resource_disabled("gpt-4") is True
+
+        # Registering twice must not duplicate: `resources` is a set.
+        await repo.disable_resource("gpt-4")
+        resources = await repo.list_resources_with_defaults()
+        assert resources.count("gpt-4") == 1
+
+        # Existing limits must survive a disable write on the same item.
+        await repo.set_resource_defaults("claude-3", [Limit.per_minute("rpm", 50)])
+        await repo.disable_resource("claude-3")
+        limits = await repo.get_resource_defaults("claude-3")
+        assert any(lim.name == "rpm" and lim.capacity == 50 for lim in limits)
+
+    @pytest.mark.asyncio
     async def test_disable_entity_increments_registry_like_set_limits(self, test_repo):
         """disable_entity creates a config item, so it must register it too.
 
