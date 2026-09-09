@@ -23,6 +23,7 @@ Each zae-limiter operation has specific DynamoDB capacity costs. Use this table 
 | `acquire()` rollback (on exception) | 0 | +1 per entity | Independent compensating writes (1 WCU each) |
 | Aggregator bucket refill (per active bucket) | 0 | 1 | Proactive refill via Lambda; 0 WCU if lock lost |
 | `acquire(limits=None)` with config cache miss | +3 | 0 | +3 GetItem operations for config hierarchy |
+| `acquire()` slow-path disabled walk (per entity) | +1.5 | 0 | ADR-125 gate: uncached 3-key BatchGetItem (entity, entity `_default_`, resource config). Cascade pays it per entity; the speculative fast path pays 0 |
 | `available()` | 1 | 0 | Read-only, single composite bucket item |
 | `get_limits()` | 1 | 0 | Query operation |
 | `set_limits()` | 1 | N+1 | Query + N PutItems |
@@ -45,15 +46,23 @@ Each zae-limiter operation has specific DynamoDB capacity costs. Use this table 
 Use these formulas to estimate hourly capacity requirements:
 
 ```
-Hourly RCUs = requests/hour × (1 + cascade_pct + config_cache_miss_pct × 3)
+Hourly RCUs = requests/hour × (1 + 1.5 × (1 + cascade_pct) + cascade_pct + config_cache_miss_pct × 3)
 Hourly WCUs = requests/hour × (1 + cascade_pct × 3)
 ```
 
+The `1.5 × (1 + cascade_pct)` term is the ADR-125 disabled walk, which runs once per
+entity on every slow-path acquire. It is unconditional there — passing `limits`
+explicitly short-circuits config resolution but not the disabled gate.
+
 With speculative writes enabled (`speculative_writes=True`), the steady-state formula changes:
 ```
-Hourly RCUs = requests/hour × (fallback_pct + cascade_pct × 0.5 + config_cache_miss_pct × 3)
+Hourly RCUs = requests/hour × (fallback_pct × (1 + 1.5 × (1 + cascade_pct)) + cascade_pct × 0.5 + config_cache_miss_pct × 3)
 Hourly WCUs = requests/hour × (1 + cascade_pct)
 ```
+
+The disabled walk is scaled by `fallback_pct` here: steady-state speculative traffic
+never reaches it, because the fast path enforces `disabled` with an
+`attribute_not_exists` guard on the bucket item instead (ADR-125).
 
 Where `fallback_pct` is the fraction of requests that fall back to the slow path (typically <5% for pre-warmed buckets).
 

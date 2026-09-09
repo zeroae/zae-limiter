@@ -215,6 +215,11 @@ resources:
         capacity: 500
       tpm:
         capacity: 50000
+  legacy-model:
+    disabled: true
+    limits:
+      rpm:
+        capacity: 500
 entities:
   user-premium:
     resources:
@@ -222,9 +227,19 @@ entities:
         limits:
           rpm:
             capacity: 1000
+      legacy-model:
+        disabled: false   # carve-out: re-admit this entity to a disabled resource
+        limits:
+          rpm:
+            capacity: 100
 ```
 
 **Limit shorthand defaults:** Only `capacity` is required. When omitted: `burst` defaults to `capacity`, `refill_amount` defaults to `capacity`, `refill_period` defaults to `60` (seconds).
+
+**`disabled` (ADR-125):** Optional tri-state boolean on `resources.<name>` and
+`entities.<id>.resources.<name>` entries (omit to inherit; `true`/`false` to set explicitly).
+Not supported on `system`. Round-trips through the generated CloudFormation
+`Custom::ZaeLimiterLimits` resource as a `Disabled` property.
 
 **Provisioner Lambda:**
 - Function name: `{stack}-limits-provisioner`
@@ -307,7 +322,7 @@ Cascade classes create child entities under a shared parent and set `cascade=Tru
 src/zae_limiter/
 ├── __init__.py        # Public API exports
 ├── models.py          # Limit, Entity, LimitStatus, BucketState, StackOptions, AuditEvent, AuditAction, UsageSnapshot, UsageSummary, LimiterInfo, BackendCapabilities, Status, LimitName, ResourceCapacity, EntityCapacity
-├── exceptions.py      # RateLimitExceeded, LeaseExpiredError, RateLimiterUnavailable, StackOperationError, StackAlreadyExistsError, InfrastructureNotFoundError, NamespaceNotFoundError, NamespaceStateError, EntityNotFoundError, EntityExistsError, VersionError, ValidationError
+├── exceptions.py      # RateLimitExceeded, LeaseExpiredError, RateLimiterUnavailable, StackOperationError, StackAlreadyExistsError, InfrastructureNotFoundError, NamespaceNotFoundError, NamespaceStateError, EntityNotFoundError, EntityExistsError, VersionError, ValidationError, ResourceDisabled
 ├── naming.py          # Resource name validation (ZAEL- prefix retained for legacy discovery)
 ├── bucket.py          # Token bucket math (integer arithmetic)
 ├── schema.py          # DynamoDB key builders (namespace-prefixed)
@@ -363,7 +378,8 @@ src/zae_limiter_provisioner/   # Lambda provisioner for declarative limits (#405
 ├── handler.py                # Lambda entry point (CLI + CFN custom resource events)
 ├── manifest.py               # LimitsManifest YAML parsing (LimitDecl, SystemDecl, ResourceDecl, EntityDecl)
 ├── differ.py                 # Diff engine (manifest vs #PROVISIONER state → list of Change)
-└── applier.py                # Applies changes via boto3 DynamoDB (PutItem/DeleteItem)
+├── applier.py                # Applies changes via boto3 DynamoDB (PutItem/DeleteItem)
+└── fanout.py                 # Sync boto3 mirror of Repository._fanout_resource/_fanout_entity for disable/enable (ADR-125)
 ```
 
 ### Repository Pattern (v0.5.0+)
@@ -801,6 +817,11 @@ Speculative cascade (both succeed, parallel, issue #318) = 0 RCU + 2 WCU = **$1.
 Speculative cascade fallback (parent refill helps) = 0.5 RCU + 3 WCU = **$1.94/M** (deferred compensation).
 Speculative cascade fast rejection (parent exhausted) = 0 RCU + 2 WCU = **$1.25/M** (child consumed + compensated).
 
+`resolve_disabled()` (ADR-125) is deliberately uncached and only runs on the slow path — never
+on the speculative fast path — but when it does run it costs an extra up-to-3-key
+`BatchGetItem` (entity(resource), entity(`_default_`), resource), and a second one for the
+parent on a cascade slow path (`limiter.py` resolves child and parent independently).
+
 ## DynamoDB Access Patterns
 
 All PK and GSI PK values are prefixed with `{ns}/` where `{ns}` is the opaque namespace ID (e.g., `a7x3kq`). The reserved namespace `_` is used for namespace registry records.
@@ -841,6 +862,7 @@ All PK and GSI PK values are prefixed with `{ns}/` where `{ns}` is the opaque na
 - Uses `ReturnValues=ALL_NEW` on success to reconstruct `BucketState`, `cascade`, `parent_id`, and `shard_count` from the response
 - Cascade, parent_id, and shard_count are denormalized into bucket items (via `build_composite_create`) to avoid entity metadata lookup
 - On `wcu` exhaustion, doubles `shard_count` on the current shard and retries on a new shard
+- Condition includes `attribute_not_exists(#disabled)` alongside the TTL guard (ADR-125), rejecting buckets stamped disabled without any config read
 
 **Entity metadata cache (issue #318, GHSA-76rv):**
 - `Repository._entity_cache` stores `{entity_id: (cascade, parent_id, shard_counts)}` where `shard_counts` is `dict[str, int]` (resource → shard_count)
@@ -873,6 +895,7 @@ All PK and GSI PK values are prefixed with `{ns}/` where `{ns}` is the opaque na
 | Aggregator refill | `ADD tk +refill SET rf = :now` | `rf = :expected_rf` | Yes (optimistic lock) |
 | Aggregator proactive shard | `SET shard_count = :new` | `shard_count = :old` | No |
 | Aggregator shard propagation | `SET shard_count = :new` | `attribute_not_exists(shard_count) OR shard_count < :new` | No |
+| Disable stamp (ADR-125) | `SET disabled = :true` / `REMOVE disabled` | `attribute_exists(PK)` | No |
 
 **Hot partition risk with cascade (issue #116):** See [Hot Partition Risk Mitigation](#hot-partition-risk-mitigation-issue-116) above.
 
@@ -1005,6 +1028,76 @@ Limit configs use composite items (v0.8.0+, ADR-114 for configs). All limits for
 **Caching:** 60s TTL in-memory cache per Repository instance (configurable via `config_cache_ttl` parameter on Repository constructor, 0 to disable). Use `repo.invalidate_config_cache()` for immediate refresh. Use `repo.get_cache_stats()` for monitoring. `set_limits()` and `delete_limits()` auto-evict relevant cache entries. Negative caching for entities without custom config. Config resolution is handled by `repo.resolve_limits()` (ADR-122).
 
 **Cost impact:** 1.5 RCU per cache miss (one GetItem per level, reduced from 2 RCU with per-limit items). With caching, `acquire()` costs 1-2 RCU per request regardless of limit count (O(1) via composite items, ADR-114/115).
+
+### Disabling Resources and Entities (ADR-125)
+
+`disabled` is a **tri-state** flag stored beside `limits` on resource and entity config items:
+`true`, `false`, or absent meaning "inherit from the level above". It resolves by an
+**independent** walk over entity(resource) → entity(`_default_`) → resource, where the first
+level with an explicit value wins, regardless of which level supplies the limits. That
+independence is what lets an entity-level `disabled: false` re-admit one entity to a resource
+disabled for everyone else. **System-level disable is not supported** (ADR-125 scopes it out).
+
+Disabling is **eager**: the call writes config, then stamps every existing bucket item with a
+`disabled` attribute. This matters because `acquire()`'s default fast path
+(`speculative_writes=True`) is a conditional `UpdateItem` that never reads config —
+enforcement is `attribute_not_exists(disabled)` in that condition, alongside the pre-existing
+TTL guard. `acquire()` raises `ResourceDisabled`, a direct `ZAELimiterError` subclass and
+deliberately **not** a `RateLimitError`, carrying no retry hint: map it to 403, not 429.
+`ResourceDisabled` always propagates regardless of `on_unavailable` mode, same as
+`RateLimitExceeded` and `ValidationError`.
+
+`Repository.resolve_disabled(entity_id, resource) -> tuple[bool, str | None]` performs the
+walk directly and is deliberately **uncached**: it is called only on the slow path and by the
+eager fan-out, never on the speculative fast path.
+
+**API (each returns an `int` count of bucket items written), on `Repository` (not `RateLimiter`):**
+
+| Level | Disable / Enable | Clear |
+|-------|------------------|-------|
+| Resource | `disable_resource(resource)` / `enable_resource(resource)` | `clear_resource_disabled(resource)` |
+| Entity | `disable_entity(entity_id, resource=...)` / `enable_entity(entity_id, resource=...)` | `clear_entity_disabled(entity_id, resource=...)` |
+
+`resource=None` on the entity-level methods means "all resources for that entity" (targets the
+entity's `_default_` config). `set_resource_defaults()` and `set_limits()` also accept a
+`disabled` keyword; passing it **explicitly** (not the default "preserve stored value"
+sentinel) fans out immediately, exactly like `disable_resource()`/`disable_entity()` — a setter
+call is not just a config write. `delete_limits()` and `delete_resource_defaults()` delete the
+config item that was holding `disabled`, which can change what `resolve_disabled()` returns in
+either direction, so both re-run the fan-out against the newly resolved value rather than
+leaving the deleted level's stamp in place.
+
+Cascade is out of scope for entity-level `disabled`: an entity-level `disabled: false` carve-out
+on a cascading **child** does not extend to its **parent**. `acquire()` checks the child's own
+bucket stamp only; if the parent's bucket is separately stamped disabled, the cascade still
+raises `ResourceDisabled` with `entity_id` set to the **parent**, not the child.
+
+**CLI:**
+
+```bash
+zae-limiter resource disable|enable|clear-disabled RESOURCE_NAME
+zae-limiter entity disable|enable|clear-disabled ENTITY_ID [--resource R]
+```
+
+`resource get-defaults` and `entity get-limits` show `Status: DISABLED` or
+`Status: enabled (explicit override)` when the level has an explicit value.
+
+**Declarative limits (Issue #405):** `disabled` is supported on `resources.<name>` and
+`entities.<id>.resources.<name>` in the YAML manifest (not on `system`), and carried through
+the CloudFormation `Custom::ZaeLimiterLimits` round trip in both directions via a `Disabled`
+property. The Lambda-side provisioner fan-out (`src/zae_limiter_provisioner/fanout.py`) mirrors
+the async `Repository` fan-out and consults per-entity overrides the same way, so a manifest
+apply that merely re-asserts an unchanged resource-level `disabled` (as every apply does —
+`differ.py` emits a change for every manifest resource regardless of whether anything changed)
+never clobbers a carve-out made out of band directly against the table.
+
+**Known limitations:**
+- Disabling is O(buckets for the resource) writes, not O(1).
+- A narrow race exists between the config write and the fan-out query: an in-flight
+  `acquire()` can create a bucket the fan-out's GSI query misses. Mitigated by a two-pass
+  discovery pass, not eliminated.
+
+See [ADR-125](docs/adr/125-resource-disable.md) for the full design and alternatives considered.
 
 ### Namespace Registry
 

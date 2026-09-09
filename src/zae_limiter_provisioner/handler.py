@@ -17,10 +17,17 @@ from typing import Any
 
 import boto3
 
-from zae_limiter.schema import RESERVED_NAMESPACE, pk_system, sk_namespace, sk_provisioner
+from zae_limiter.schema import (
+    DEFAULT_RESOURCE,
+    RESERVED_NAMESPACE,
+    pk_system,
+    sk_namespace,
+    sk_provisioner,
+)
 
 from .applier import apply_changes
-from .differ import compute_diff
+from .differ import Change, compute_diff
+from .fanout import fanout_entity, fanout_resource, resolve_disabled
 from .manifest import LimitsManifest
 
 logger = logging.getLogger(__name__)
@@ -86,6 +93,7 @@ def _handle_cli(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     # Apply
     result = apply_changes(changes, table_name, namespace_id)
+    _fanout_disabled_changes(table_name, namespace_id, changes)
 
     # Update provisioner state
     manifest_hash = hashlib.sha256(
@@ -132,6 +140,7 @@ def _handle_cfn(event: dict[str, Any], context: Any) -> dict[str, Any]:
     changes = compute_diff(manifest, previous)
 
     result = apply_changes(changes, table_name, namespace_id)
+    _fanout_disabled_changes(table_name, namespace_id, changes)
 
     manifest_hash = hashlib.sha256(
         json.dumps(manifest.to_dict(), sort_keys=True).encode()
@@ -153,6 +162,92 @@ def _handle_cfn(event: dict[str, Any], context: Any) -> dict[str, Any]:
     }
 
 
+def _fanout_disabled_changes(
+    table_name: str,
+    namespace_id: str,
+    changes: list[Change],
+) -> None:
+    """Eagerly stamp bucket items for every resource/entity change (ADR-125).
+
+    Runs AFTER `apply_changes`, so every level it resolves already reflects
+    this apply's writes and deletes.
+
+    Fans out unconditionally for every create/update at the resource and
+    entity levels — NOT only when the change's data happens to carry a
+    `disabled` key. `ResourceDecl.to_dict()` / `EntityResourceDecl.to_dict()`
+    omit `disabled` entirely when it is `None` ("inherit"), so an operator
+    deleting a `disabled: true` line and re-applying produces a change with
+    no `disabled` key at all. Filtering on key presence would skip that
+    change's fan-out, leaving existing buckets stamped `disabled: true`
+    forever (until TTL) even though the config item correctly lost the
+    attribute.
+
+    For a resource-level change, the effective value is simply the
+    resource's own (possibly absent -> False) `disabled` value — there is no
+    level above resource in the walk (system-level disable is out of scope
+    per ADR-125), mirroring ``Repository._set_resource_disabled``'s
+    ``disabled=bool(value)``. ``fanout_resource`` then re-resolves each
+    bucket's entity and skips the ones with their own overriding value, so a
+    per-entity carve-out made out of band survives an apply that merely
+    re-asserts the resource's unchanged state (``differ.py`` emits a change
+    for every manifest resource on every apply).
+
+    For an entity-level change, the effective value is NOT `data.get(
+    "disabled", False)` — that would be wrong whenever the entity's own
+    value is absent, since absent at entity level means "inherit from
+    resource", which may legitimately be `True`. Instead this resolves the
+    same entity(resource) -> entity(_default_) -> resource walk
+    ``Repository.resolve_disabled`` uses, reading the config items
+    `apply_changes` has already written for this apply (see
+    ``fanout.resolve_disabled``).
+
+    Resource-level changes are applied before entity-level ones so that the
+    entity level is written before anything resolves it back.
+
+    Deletes fan out too. Removing a managed config item removes the level
+    that was deciding `disabled`, which changes the resolution in either
+    direction — dropping a carve-out re-disables an entity, dropping a
+    disabled resource's config re-enables it — so the stamps have to follow.
+    Since the delete has already been applied, `Change.data` being `None`
+    is exactly right for a resource-level delete's effective value (`False`,
+    with no level above resource), and the entity-level branch re-resolves
+    from DynamoDB and so sees the post-delete state. This mirrors
+    ``Repository.delete_limits()`` / ``delete_resource_defaults()``, which
+    also re-run their fan-out against the post-delete resolution (ADR-125).
+
+    An entity-level change whose resource is the `_default_` sentinel is an
+    entity-wide directive (applies across every resource the entity has a
+    bucket for). `_default_` is only ever a config SK, never a real bucket
+    resource — a bucket is always keyed by its actual resource name — so it
+    is translated to `resource=None` (unscoped) before calling
+    `fanout_entity`, which then discovers every one of the entity's buckets
+    across all resources and re-resolves each bucket's own effective value
+    so a per-resource override still wins over the entity-wide directive
+    (see `fanout.fanout_entity`'s docstring). Passing the literal string
+    `"_default_"` through to `fanout_entity` instead would silently match
+    zero real buckets (`GSI3SK begins_with "BUCKET#_default_#"`) and leave
+    every existing bucket un-stamped despite the config being written
+    correctly and the apply reporting success.
+    """
+    candidates = [c for c in changes if c.level in ("resource", "entity") and c.target]
+    if not candidates:
+        return
+
+    client = boto3.client("dynamodb")
+    for change in sorted(candidates, key=lambda c: 0 if c.level == "resource" else 1):
+        data = change.data or {}
+        if change.level == "resource" and change.target:
+            disabled = bool(data.get("disabled"))
+            fanout_resource(client, table_name, namespace_id, change.target, disabled)
+        elif change.level == "entity" and change.target:
+            entity_id, resource = change.target.split("/", 1)
+            disabled = resolve_disabled(client, table_name, namespace_id, entity_id, resource)
+            fanout_resource_arg = None if resource == DEFAULT_RESOURCE else resource
+            fanout_entity(
+                client, table_name, namespace_id, entity_id, fanout_resource_arg, disabled
+            )
+
+
 def _cfn_properties_to_manifest(properties: dict[str, Any]) -> dict[str, Any]:
     """Convert CloudFormation ResourceProperties to manifest dict format.
 
@@ -172,9 +267,16 @@ def _cfn_properties_to_manifest(properties: dict[str, Any]) -> dict[str, Any]:
     if "Resources" in properties:
         resources = {}
         for resource_name, cfn_resource in properties["Resources"].items():
-            resources[resource_name] = {
+            resource_entry: dict[str, Any] = {
                 "limits": _cfn_limits_to_manifest(cfn_resource.get("Limits", {}))
             }
+            # Tri-state: only set "disabled" when "Disabled" is present in the CFN
+            # properties. An explicit False must survive (it's the carve-out value);
+            # an absent key must NOT be coerced to False, or every apply would
+            # re-enable anything the operator previously disabled out-of-band.
+            if "Disabled" in cfn_resource:
+                resource_entry["disabled"] = cfn_resource["Disabled"]
+            resources[resource_name] = resource_entry
         manifest["resources"] = resources
 
     if "Entities" in properties:
@@ -182,9 +284,12 @@ def _cfn_properties_to_manifest(properties: dict[str, Any]) -> dict[str, Any]:
         for entity_id, cfn_entity in properties["Entities"].items():
             entity_resources = {}
             for resource_name, cfn_res in cfn_entity.get("Resources", {}).items():
-                entity_resources[resource_name] = {
+                entity_resource_entry: dict[str, Any] = {
                     "limits": _cfn_limits_to_manifest(cfn_res.get("Limits", {}))
                 }
+                if "Disabled" in cfn_res:
+                    entity_resource_entry["disabled"] = cfn_res["Disabled"]
+                entity_resources[resource_name] = entity_resource_entry
             entities[entity_id] = {"resources": entity_resources}
         manifest["entities"] = entities
 

@@ -3300,6 +3300,7 @@ class TestResourceCommands:
 
         mock_repo = Mock()
         mock_repo.get_resource_defaults = AsyncMock(return_value=mock_limits)
+        mock_repo.get_resource_disabled = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
         mock_repo_class.open = AsyncMock(return_value=mock_repo)
@@ -3313,9 +3314,15 @@ class TestResourceCommands:
 
     @patch("zae_limiter.repository.Repository")
     def test_resource_get_no_limits(self, mock_repo_class: Mock, runner: CliRunner) -> None:
-        """Test resource get-defaults when no limits configured."""
+        """Test resource get-defaults when no limits configured.
+
+        The disabled status is read regardless of whether limits exist (I2,
+        ADR-125): disable_resource() deliberately works on a resource with no
+        config item, so get-defaults must still surface that status here.
+        """
         mock_repo = Mock()
         mock_repo.get_resource_defaults = AsyncMock(return_value=[])
+        mock_repo.get_resource_disabled = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
         mock_repo_class.open = AsyncMock(return_value=mock_repo)
@@ -3324,6 +3331,28 @@ class TestResourceCommands:
 
         assert result.exit_code == 0
         assert "No defaults configured for resource 'gpt-4'" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_resource_get_no_limits_shows_disabled_status(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Regression (I2): a disabled resource with no config item (the
+        exact state disable_resource() produces on a resource with no prior
+        defaults) must still show its Status -- the pre-fix early `return`
+        on empty limits skipped the disabled read entirely, making a killed
+        resource with no configured limits look unremarkable."""
+        mock_repo = Mock()
+        mock_repo.get_resource_defaults = AsyncMock(return_value=[])
+        mock_repo.get_resource_disabled = AsyncMock(return_value=True)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+
+        result = runner.invoke(cli, ["resource", "get-defaults", "gpt-4"])
+
+        assert result.exit_code == 0
+        assert "No defaults configured for resource 'gpt-4'" in result.output
+        assert "Status: DISABLED" in result.output
 
     @patch("zae_limiter.repository.Repository")
     def test_resource_delete_with_confirmation(
@@ -4473,6 +4502,7 @@ class TestEntityCommands:
 
         mock_repo = Mock()
         mock_repo.get_limits = AsyncMock(return_value=mock_limits)
+        mock_repo.get_entity_disabled = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
         mock_repo_class.open = AsyncMock(return_value=mock_repo)
@@ -4487,9 +4517,15 @@ class TestEntityCommands:
 
     @patch("zae_limiter.repository.Repository")
     def test_entity_get_limits_no_limits(self, mock_repo_class: Mock, runner: CliRunner) -> None:
-        """Test entity get-limits when no limits configured."""
+        """Test entity get-limits when no limits configured.
+
+        The disabled status is read regardless of whether limits exist (I2,
+        ADR-125): disable_entity() deliberately works on an entity with no
+        config item, so get-limits must still surface that status here.
+        """
         mock_repo = Mock()
         mock_repo.get_limits = AsyncMock(return_value=[])
+        mock_repo.get_entity_disabled = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
         mock_repo_class.open = AsyncMock(return_value=mock_repo)
@@ -4499,6 +4535,28 @@ class TestEntityCommands:
         assert result.exit_code == 0
         assert "No limits configured for entity 'user-123'" in result.output
         assert "gpt-4" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_get_limits_no_limits_shows_disabled_status(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Regression (I2): a disabled entity with no config item (the exact
+        state disable_entity() produces on an entity with no prior limits)
+        must still show its Status -- the pre-fix early `return` on empty
+        limits skipped the disabled read entirely, making a killed entity
+        with no configured limits look unremarkable."""
+        mock_repo = Mock()
+        mock_repo.get_limits = AsyncMock(return_value=[])
+        mock_repo.get_entity_disabled = AsyncMock(return_value=True)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+
+        result = runner.invoke(cli, ["entity", "get-limits", "user-123", "-r", "gpt-4"])
+
+        assert result.exit_code == 0
+        assert "No limits configured for entity 'user-123'" in result.output
+        assert "Status: DISABLED" in result.output
 
     @patch("zae_limiter.repository.Repository")
     def test_entity_get_limits_validation_error(
@@ -6051,3 +6109,387 @@ class TestNamespaceOption:
 
         assert result.exit_code == 0
         assert mock_repo_class.open.call_args[0][0] == "tenant-beta"
+
+
+class TestDisableCommands:
+    """Disable/enable commands (ADR-125)."""
+
+    def test_resource_disable_help(self, runner: CliRunner) -> None:
+        result = runner.invoke(cli, ["resource", "disable", "--help"])
+        assert result.exit_code == 0
+        assert "Disable a resource" in result.output
+        assert "--namespace" in result.output
+
+    def test_resource_enable_help(self, runner: CliRunner) -> None:
+        result = runner.invoke(cli, ["resource", "enable", "--help"])
+        assert result.exit_code == 0
+
+    def test_resource_clear_disabled_help(self, runner: CliRunner) -> None:
+        result = runner.invoke(cli, ["resource", "clear-disabled", "--help"])
+        assert result.exit_code == 0
+
+    @patch("zae_limiter.repository.Repository")
+    def test_resource_disable_partial_fanout_tells_operator_to_rerun(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """A half-applied disable must say so, with the count and the fix.
+
+        The config write lands before the fan-out, so a failure midway leaves
+        the resource disabled in config with only some buckets stamped — the
+        rest still pass the speculative fast path. Nothing self-heals it, so
+        the operator has to know it happened and that re-running reconciles
+        (ADR-125).
+        """
+        from zae_limiter.exceptions import FanoutIncomplete
+
+        mock_repo = Mock()
+        mock_repo.disable_resource = AsyncMock(
+            side_effect=FanoutIncomplete(7, RuntimeError("throttled"), resource="gpt-4")
+        )
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+
+        result = runner.invoke(cli, ["resource", "disable", "gpt-4"])
+
+        assert result.exit_code == 1
+        assert "7 bucket" in result.output, "operator needs the partial count"
+        assert "re-run" in result.output.lower(), "operator needs to know the remedy"
+        assert "partially applied" in result.output.lower()
+
+    def test_resource_disable_requires_resource_name(self, runner: CliRunner) -> None:
+        result = runner.invoke(cli, ["resource", "disable"])
+        assert result.exit_code != 0
+        assert "Missing argument" in result.output
+
+    def test_entity_disable_help_has_resource_option(self, runner: CliRunner) -> None:
+        result = runner.invoke(cli, ["entity", "disable", "--help"])
+        assert result.exit_code == 0
+        assert "--resource" in result.output
+
+    def test_entity_enable_help_describes_the_override(self, runner: CliRunner) -> None:
+        result = runner.invoke(cli, ["entity", "enable", "--help"])
+        assert result.exit_code == 0
+        assert "override" in result.output.lower()
+
+    def test_entity_clear_disabled_help(self, runner: CliRunner) -> None:
+        result = runner.invoke(cli, ["entity", "clear-disabled", "--help"])
+        assert result.exit_code == 0
+
+    # --- resource disable/enable/clear-disabled: success paths ---
+
+    @patch("zae_limiter.repository.Repository")
+    def test_resource_disable_success(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        mock_repo = Mock()
+        mock_repo.disable_resource = AsyncMock(return_value=3)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+
+        result = runner.invoke(cli, ["resource", "disable", "gpt-4"])
+
+        assert result.exit_code == 0
+        assert "Disabled resource 'gpt-4'" in result.output
+        assert "3 buckets stamped" in result.output
+        mock_repo.disable_resource.assert_called_once_with("gpt-4")
+
+    @patch("zae_limiter.repository.Repository")
+    def test_resource_disable_handles_exception(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        mock_repo = Mock()
+        mock_repo.disable_resource = AsyncMock(side_effect=Exception("DynamoDB error"))
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+
+        result = runner.invoke(cli, ["resource", "disable", "gpt-4"])
+
+        assert result.exit_code == 1
+        assert "Failed to disable resource" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_resource_enable_success(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        mock_repo = Mock()
+        mock_repo.enable_resource = AsyncMock(return_value=2)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+
+        result = runner.invoke(cli, ["resource", "enable", "gpt-4"])
+
+        assert result.exit_code == 0
+        assert "Enabled resource 'gpt-4'" in result.output
+        assert "2 buckets cleared" in result.output
+        mock_repo.enable_resource.assert_called_once_with("gpt-4")
+
+    @patch("zae_limiter.repository.Repository")
+    def test_resource_enable_handles_exception(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        mock_repo = Mock()
+        mock_repo.enable_resource = AsyncMock(side_effect=Exception("DynamoDB error"))
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+
+        result = runner.invoke(cli, ["resource", "enable", "gpt-4"])
+
+        assert result.exit_code == 1
+        assert "Failed to enable resource" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_resource_clear_disabled_success(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        mock_repo = Mock()
+        mock_repo.clear_resource_disabled = AsyncMock(return_value=5)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+
+        result = runner.invoke(cli, ["resource", "clear-disabled", "gpt-4"])
+
+        assert result.exit_code == 0
+        assert "Cleared disabled flag for resource 'gpt-4'" in result.output
+        assert "5 buckets updated" in result.output
+        mock_repo.clear_resource_disabled.assert_called_once_with("gpt-4")
+
+    @patch("zae_limiter.repository.Repository")
+    def test_resource_clear_disabled_handles_exception(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        mock_repo = Mock()
+        mock_repo.clear_resource_disabled = AsyncMock(side_effect=Exception("DynamoDB error"))
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+
+        result = runner.invoke(cli, ["resource", "clear-disabled", "gpt-4"])
+
+        assert result.exit_code == 1
+        assert "Failed to clear resource disabled flag" in result.output
+
+    # --- entity disable/enable/clear-disabled: success paths ---
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_disable_success_all_resources(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        mock_repo = Mock()
+        mock_repo.disable_entity = AsyncMock(return_value=4)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+
+        result = runner.invoke(cli, ["entity", "disable", "user-123"])
+
+        assert result.exit_code == 0
+        assert "Disabled entity 'user-123'" in result.output
+        assert "4 buckets stamped" in result.output
+        mock_repo.disable_entity.assert_called_once_with("user-123", resource=None)
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_disable_success_scoped_resource(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        mock_repo = Mock()
+        mock_repo.disable_entity = AsyncMock(return_value=1)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+
+        result = runner.invoke(cli, ["entity", "disable", "user-123", "--resource", "gpt-4"])
+
+        assert result.exit_code == 0
+        mock_repo.disable_entity.assert_called_once_with("user-123", resource="gpt-4")
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_disable_handles_exception(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        mock_repo = Mock()
+        mock_repo.disable_entity = AsyncMock(side_effect=Exception("DynamoDB error"))
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+
+        result = runner.invoke(cli, ["entity", "disable", "user-123"])
+
+        assert result.exit_code == 1
+        assert "Failed to disable entity" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_enable_success(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        mock_repo = Mock()
+        mock_repo.enable_entity = AsyncMock(return_value=1)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+
+        result = runner.invoke(cli, ["entity", "enable", "user-123", "--resource", "gpt-4"])
+
+        assert result.exit_code == 0
+        assert "Enabled entity 'user-123'" in result.output
+        assert "1 buckets cleared" in result.output
+        mock_repo.enable_entity.assert_called_once_with("user-123", resource="gpt-4")
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_enable_handles_exception(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        mock_repo = Mock()
+        mock_repo.enable_entity = AsyncMock(side_effect=Exception("DynamoDB error"))
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+
+        result = runner.invoke(cli, ["entity", "enable", "user-123"])
+
+        assert result.exit_code == 1
+        assert "Failed to enable entity" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_clear_disabled_success(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        mock_repo = Mock()
+        mock_repo.clear_entity_disabled = AsyncMock(return_value=2)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+
+        result = runner.invoke(cli, ["entity", "clear-disabled", "user-123"])
+
+        assert result.exit_code == 0
+        assert "Cleared disabled flag for entity 'user-123'" in result.output
+        assert "2 buckets updated" in result.output
+        mock_repo.clear_entity_disabled.assert_called_once_with("user-123", resource=None)
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_clear_disabled_handles_exception(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        mock_repo = Mock()
+        mock_repo.clear_entity_disabled = AsyncMock(side_effect=Exception("DynamoDB error"))
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+
+        result = runner.invoke(cli, ["entity", "clear-disabled", "user-123"])
+
+        assert result.exit_code == 1
+        assert "Failed to clear entity disabled flag" in result.output
+
+    # --- surfaced disabled status on read commands ---
+
+    @patch("zae_limiter.repository.Repository")
+    def test_resource_get_defaults_shows_disabled_true(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        from zae_limiter.models import Limit
+
+        mock_repo = Mock()
+        mock_repo.get_resource_defaults = AsyncMock(
+            return_value=[
+                Limit(name="rpm", capacity=500, refill_amount=500, refill_period_seconds=60)
+            ]
+        )
+        mock_repo.get_resource_disabled = AsyncMock(return_value=True)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+
+        result = runner.invoke(cli, ["resource", "get-defaults", "gpt-4"])
+
+        assert result.exit_code == 0
+        assert "Status: DISABLED" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_resource_get_defaults_shows_disabled_false_override(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        from zae_limiter.models import Limit
+
+        mock_repo = Mock()
+        mock_repo.get_resource_defaults = AsyncMock(
+            return_value=[
+                Limit(name="rpm", capacity=500, refill_amount=500, refill_period_seconds=60)
+            ]
+        )
+        mock_repo.get_resource_disabled = AsyncMock(return_value=False)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+
+        result = runner.invoke(cli, ["resource", "get-defaults", "gpt-4"])
+
+        assert result.exit_code == 0
+        assert "Status: enabled (explicit override)" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_resource_get_defaults_hides_status_when_unset(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        from zae_limiter.models import Limit
+
+        mock_repo = Mock()
+        mock_repo.get_resource_defaults = AsyncMock(
+            return_value=[
+                Limit(name="rpm", capacity=500, refill_amount=500, refill_period_seconds=60)
+            ]
+        )
+        mock_repo.get_resource_disabled = AsyncMock(return_value=None)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+
+        result = runner.invoke(cli, ["resource", "get-defaults", "gpt-4"])
+
+        assert result.exit_code == 0
+        assert "Status:" not in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_get_limits_shows_disabled_true(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        from zae_limiter.models import Limit
+
+        mock_repo = Mock()
+        mock_repo.get_limits = AsyncMock(
+            return_value=[
+                Limit(name="rpm", capacity=500, refill_amount=500, refill_period_seconds=60)
+            ]
+        )
+        mock_repo.get_entity_disabled = AsyncMock(return_value=True)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+
+        result = runner.invoke(cli, ["entity", "get-limits", "user-123", "-r", "gpt-4"])
+
+        assert result.exit_code == 0
+        assert "Status: DISABLED" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_get_limits_shows_disabled_false_override(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        from zae_limiter.models import Limit
+
+        mock_repo = Mock()
+        mock_repo.get_limits = AsyncMock(
+            return_value=[
+                Limit(name="rpm", capacity=500, refill_amount=500, refill_period_seconds=60)
+            ]
+        )
+        mock_repo.get_entity_disabled = AsyncMock(return_value=False)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+
+        result = runner.invoke(cli, ["entity", "get-limits", "user-123", "-r", "gpt-4"])
+
+        assert result.exit_code == 0
+        assert "Status: enabled (explicit override)" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_get_limits_hides_status_when_unset(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        from zae_limiter.models import Limit
+
+        mock_repo = Mock()
+        mock_repo.get_limits = AsyncMock(
+            return_value=[
+                Limit(name="rpm", capacity=500, refill_amount=500, refill_period_seconds=60)
+            ]
+        )
+        mock_repo.get_entity_disabled = AsyncMock(return_value=None)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+
+        result = runner.invoke(cli, ["entity", "get-limits", "user-123", "-r", "gpt-4"])
+
+        assert result.exit_code == 0
+        assert "Status:" not in result.output

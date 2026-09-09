@@ -133,6 +133,15 @@ Benchmarks detect performance regressions. Files in `tests/benchmark/` track lat
 
 **Important:** `-o "addopts="` disables xdist by overriding `pyproject.toml`. Only use it for benchmarks and gevent tests — all other test runs (unit, integration, E2E) must keep xdist enabled for parallel execution:
 
+> **`-o "addopts="` on a full `tests/unit/` run deadlocks.** The `@pytest.mark.gevent` tests are auto-skipped under xdist; disabling xdist un-skips them, so `gevent.monkey.patch_all()` runs in the same process as the asyncio/moto tests and the run hangs indefinitely — no output, no failure, no timeout. A normal full unit run is ~3 minutes, so anything past that is this. Run the two sets separately instead:
+>
+> ```bash
+> uv run pytest tests/unit/ -q          # xdist on, gevent auto-skipped (~3 min)
+> uv run pytest tests/unit/ -m gevent -n 0 -q   # gevent only (~2 sec)
+> ```
+>
+> If a run is already hung, `pkill -f "pytest tests/unit"` — a backgrounded pytest that reported "timed out and moved to background" keeps running and will not exit on its own.
+
 ```bash
 # Run benchmarks (disable xdist with -o "addopts=")
 uv run pytest tests/benchmark/ -o "addopts=" -v --benchmark-only

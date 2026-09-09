@@ -65,14 +65,20 @@ class ResourceDecl:
     """Resource-level limit declaration."""
 
     limits: dict[str, LimitDecl]
+    disabled: bool | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> ResourceDecl:
         limits = {name: LimitDecl.from_dict(val) for name, val in d.get("limits", {}).items()}
-        return cls(limits=limits)
+        return cls(limits=limits, disabled=d.get("disabled"))
 
     def to_dict(self) -> dict[str, Any]:
-        return {"limits": {name: lim.to_dict() for name, lim in self.limits.items()}}
+        result: dict[str, Any] = {
+            "limits": {name: lim.to_dict() for name, lim in self.limits.items()}
+        }
+        if self.disabled is not None:
+            result["disabled"] = self.disabled
+        return result
 
 
 @dataclass(frozen=True)
@@ -80,14 +86,20 @@ class EntityResourceDecl:
     """Entity-resource-level limit declaration."""
 
     limits: dict[str, LimitDecl]
+    disabled: bool | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> EntityResourceDecl:
         limits = {name: LimitDecl.from_dict(val) for name, val in d.get("limits", {}).items()}
-        return cls(limits=limits)
+        return cls(limits=limits, disabled=d.get("disabled"))
 
     def to_dict(self) -> dict[str, Any]:
-        return {"limits": {name: lim.to_dict() for name, lim in self.limits.items()}}
+        result: dict[str, Any] = {
+            "limits": {name: lim.to_dict() for name, lim in self.limits.items()}
+        }
+        if self.disabled is not None:
+            result["disabled"] = self.disabled
+        return result
 
 
 @dataclass(frozen=True)

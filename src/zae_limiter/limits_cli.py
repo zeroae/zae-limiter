@@ -173,7 +173,14 @@ def limits_cfn_template(name: str, file_path: str) -> None:
     if "resources" in manifest_data:
         resources_props = {}
         for res_name, res_data in manifest_data["resources"].items():
-            resources_props[res_name] = {"Limits": _limits_to_cfn(res_data.get("limits", {}))}
+            res_props: dict[str, Any] = {"Limits": _limits_to_cfn(res_data.get("limits", {}))}
+            # Tri-state: only emit "Disabled" when the manifest declared it. An
+            # absent key means "inherit" and must stay absent from the template;
+            # an explicit False (carve-out) must round-trip as False, not be
+            # dropped or coerced.
+            if "disabled" in res_data:
+                res_props["Disabled"] = res_data["disabled"]
+            resources_props[res_name] = res_props
         properties["Resources"] = resources_props
 
     if "entities" in manifest_data:
@@ -181,7 +188,12 @@ def limits_cfn_template(name: str, file_path: str) -> None:
         for ent_id, ent_data in manifest_data["entities"].items():
             ent_resources = {}
             for res_name, res_data in ent_data.get("resources", {}).items():
-                ent_resources[res_name] = {"Limits": _limits_to_cfn(res_data.get("limits", {}))}
+                ent_res_props: dict[str, Any] = {
+                    "Limits": _limits_to_cfn(res_data.get("limits", {}))
+                }
+                if "disabled" in res_data:
+                    ent_res_props["Disabled"] = res_data["disabled"]
+                ent_resources[res_name] = ent_res_props
             entities_props[ent_id] = {"Resources": ent_resources}
         properties["Entities"] = entities_props
 

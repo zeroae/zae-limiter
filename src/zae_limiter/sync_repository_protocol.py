@@ -31,13 +31,16 @@ class SpeculativeFailureReason(Enum):
     """Classifies why a speculative write failed (GHSA-76rv).
 
     Used by the limiter to decide the recovery path without
-    inspecting individual BucketState token values.
+    inspecting individual BucketState token values. DISABLED means the bucket
+    is stamped disabled (ADR-125); the limiter must raise ResourceDisabled
+    rather than retry or reshard.
     """
 
     APP_LIMIT_EXHAUSTED = "app_limit_exhausted"
     WCU_EXHAUSTED = "wcu_exhausted"
     BOTH_EXHAUSTED = "both_exhausted"
     BUCKET_MISSING = "bucket_missing"
+    DISABLED = "disabled"
 
 
 @dataclass
@@ -69,6 +72,9 @@ class SpeculativeResult:
     shard_id: int = 0
     shard_count: int = 1
     failure_reason: SpeculativeFailureReason | None = None
+
+
+PRESERVE_DISABLED: Any = object()
 
 
 @runtime_checkable
@@ -298,7 +304,9 @@ class SyncRepositoryProtocol(Protocol):
         """
         ...
 
-    def get_bucket(self, entity_id: str, resource: str, limit_name: str) -> "BucketState | None":
+    def get_bucket(
+        self, entity_id: str, resource: str, limit_name: str, shard_id: int = 0
+    ) -> "BucketState | None":
         """
         Get a token bucket by entity/resource/limit.
 
@@ -422,6 +430,8 @@ class SyncRepositoryProtocol(Protocol):
         ttl_seconds: int | None = 86400,
         cascade: bool = False,
         parent_id: str | None = None,
+        shard_id: int = 0,
+        shard_count: int = 1,
     ) -> dict[str, Any]:
         """Build a PutItem for creating a new composite bucket.
 
@@ -445,6 +455,7 @@ class SyncRepositoryProtocol(Protocol):
         now_ms: int,
         expected_rf: int,
         ttl_seconds: int | None = None,
+        shard_id: int = 0,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -460,7 +471,7 @@ class SyncRepositoryProtocol(Protocol):
         ...
 
     def build_composite_retry(
-        self, entity_id: str, resource: str, consumed: dict[str, int]
+        self, entity_id: str, resource: str, consumed: dict[str, int], shard_id: int = 0
     ) -> dict[str, Any]:
         """Build an UpdateItem for the retry write path (ADR-115 path 3).
 
@@ -472,7 +483,7 @@ class SyncRepositoryProtocol(Protocol):
         ...
 
     def build_composite_adjust(
-        self, entity_id: str, resource: str, deltas: dict[str, int]
+        self, entity_id: str, resource: str, deltas: dict[str, int], shard_id: int = 0
     ) -> dict[str, Any]:
         """Build an UpdateItem for the adjust write path (ADR-115 path 4).
 
@@ -589,6 +600,8 @@ class SyncRepositoryProtocol(Protocol):
         limits: "list[Limit]",
         resource: str = "_default_",
         principal: str | None = None,
+        *,
+        disabled: "bool | None" = PRESERVE_DISABLED,
     ) -> None:
         """
         Store limit configs for an entity.
@@ -657,7 +670,12 @@ class SyncRepositoryProtocol(Protocol):
         ...
 
     def set_resource_defaults(
-        self, resource: str, limits: "list[Limit]", principal: str | None = None
+        self,
+        resource: str,
+        limits: "list[Limit]",
+        principal: str | None = None,
+        *,
+        disabled: "bool | None" = PRESERVE_DISABLED,
     ) -> None:
         """
         Store default limits for a resource.
@@ -840,7 +858,10 @@ class SyncRepositoryProtocol(Protocol):
         ...
 
     def resolve_limits(
-        self, entity_id: str, resource: str
+        self,
+        entity_id: str,
+        resource: str,
+        disabled_out: "dict[tuple[str, str], bool | None] | None" = None,
     ) -> "tuple[list[Limit] | None, OnUnavailableAction | None, ConfigSource | None]":
         """
         Resolve effective limits using the four-level config hierarchy.
@@ -858,6 +879,12 @@ class SyncRepositoryProtocol(Protocol):
         Args:
             entity_id: Entity to resolve limits for
             resource: Resource being accessed
+            disabled_out: Optional dict receiving the tri-state ``disabled``
+                of each config level this call actually read, so a caller
+                needing the disable walk too can reuse the read rather than
+                issuing a second, identical one (ADR-125). Levels served from
+                a backend cache must be omitted — see
+                ``resolve_disabled_from_fetched``.
 
         Returns:
             Tuple of (limits, on_unavailable, config_source) where:
@@ -866,6 +893,70 @@ class SyncRepositoryProtocol(Protocol):
             - config_source: "entity", "entity_default", "resource", "system",
                 or None if no config found
         """
+        ...
+
+    def resolve_disabled(self, entity_id: str, resource: str) -> "tuple[bool, str | None]":
+        """Resolve the effective disabled state for an entity+resource (ADR-125)."""
+        ...
+
+    def get_entity_disabled(self, entity_id: str, resource: str) -> "bool | None":
+        """Read the tri-state disabled flag from an entity config item (ADR-125).
+
+        Returns True/False when set explicitly, None when unset (inherit).
+        In the contract because ``cli.py`` reads it directly.
+        """
+        ...
+
+    def get_resource_disabled(self, resource: str) -> "bool | None":
+        """Read the tri-state disabled flag from a resource config item (ADR-125).
+
+        Returns True/False when set explicitly, None when unset (inherit).
+        In the contract because ``cli.py`` reads it directly.
+        """
+        ...
+
+    def resolve_disabled_from_fetched(
+        self, entity_id: str, resource: str, fetched: "dict[tuple[str, str], bool | None]"
+    ) -> "tuple[bool, str | None] | None":
+        """Answer the disable walk from a config fetch, or decline (ADR-125).
+
+        Returns None when any level of the walk is absent from ``fetched``,
+        meaning the caller must fall back to ``resolve_disabled``. A backend
+        must never answer this gate from cached config: with no bucket yet,
+        the fast-path guard cannot fire, so a stale value would admit an
+        entity to a disabled resource and leave behind an unstamped bucket
+        that the completed fan-out will never revisit.
+        """
+        ...
+
+    def disable_resource(self, resource: str, principal: str | None = None) -> int:
+        """Disable a resource for all entities without an explicit override (ADR-125)."""
+        ...
+
+    def enable_resource(self, resource: str, principal: str | None = None) -> int:
+        """Explicitly enable a resource (stores `disabled: false`)."""
+        ...
+
+    def clear_resource_disabled(self, resource: str, principal: str | None = None) -> int:
+        """Remove the resource's explicit disabled value, reverting to inherit."""
+        ...
+
+    def disable_entity(
+        self, entity_id: str, resource: str | None = None, principal: str | None = None
+    ) -> int:
+        """Disable an entity, for one resource or across all of them (ADR-125)."""
+        ...
+
+    def enable_entity(
+        self, entity_id: str, resource: str | None = None, principal: str | None = None
+    ) -> int:
+        """Explicitly enable an entity, overriding a disabled resource."""
+        ...
+
+    def clear_entity_disabled(
+        self, entity_id: str, resource: str | None = None, principal: str | None = None
+    ) -> int:
+        """Remove the entity's explicit disabled value, reverting to inherit."""
         ...
 
     def resolve_on_unavailable(self) -> "OnUnavailableAction":

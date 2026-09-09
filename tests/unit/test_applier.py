@@ -195,6 +195,77 @@ class TestApplyChanges:
         item = client.put_item.call_args[1]["Item"]
         assert item["on_unavailable"]["S"] == "allow"
 
+    def test_apply_create_resource_with_disabled_true(self):
+        """Resource create with disabled=True writes a BOOL attribute."""
+        client = self._make_client()
+        apply_changes(
+            [
+                Change(
+                    action="create",
+                    level="resource",
+                    target="gpt-4",
+                    data={
+                        "disabled": True,
+                        "limits": {
+                            "rpm": {"capacity": 10, "refill_amount": 10, "refill_period": 60}
+                        },
+                    },
+                )
+            ],
+            table_name="test",
+            namespace_id="ns123",
+            client=client,
+        )
+        item = client.put_item.call_args[1]["Item"]
+        assert item["disabled"] == {"BOOL": True}
+
+    def test_apply_create_entity_with_disabled_false(self):
+        """Entity create with disabled=False writes a BOOL(False) attribute (carve-out)."""
+        client = self._make_client()
+        apply_changes(
+            [
+                Change(
+                    action="create",
+                    level="entity",
+                    target="vip-1/gpt-4",
+                    data={
+                        "disabled": False,
+                        "limits": {
+                            "rpm": {"capacity": 10, "refill_amount": 10, "refill_period": 60}
+                        },
+                    },
+                )
+            ],
+            table_name="test",
+            namespace_id="ns123",
+            client=client,
+        )
+        item = client.put_item.call_args[1]["Item"]
+        assert item["disabled"] == {"BOOL": False}
+
+    def test_apply_create_resource_without_disabled_omits_attribute(self):
+        """Resource create with no `disabled` key in the manifest omits the attribute."""
+        client = self._make_client()
+        apply_changes(
+            [
+                Change(
+                    action="create",
+                    level="resource",
+                    target="gpt-4",
+                    data={
+                        "limits": {
+                            "rpm": {"capacity": 10, "refill_amount": 10, "refill_period": 60}
+                        }
+                    },
+                )
+            ],
+            table_name="test",
+            namespace_id="ns123",
+            client=client,
+        )
+        item = client.put_item.call_args[1]["Item"]
+        assert "disabled" not in item
+
     def test_apply_error_collected(self):
         """Errors from individual operations are collected, not raised."""
         client = self._make_client()

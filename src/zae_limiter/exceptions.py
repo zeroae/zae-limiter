@@ -402,3 +402,87 @@ class InvalidNameError(ValidationError):
     """
 
     pass
+
+
+# ---------------------------------------------------------------------------
+# Configuration State Exceptions
+# ---------------------------------------------------------------------------
+
+
+class FanoutIncomplete(ZAELimiterError):  # noqa: N818
+    """
+    Raised when a disable/enable fan-out fails partway through (ADR-125).
+
+    The config write lands before the fan-out begins, so a failure here
+    leaves the table half-applied: the config item carries the new value,
+    some bucket items are stamped to match and the rest still hold the old
+    one. Unstamped buckets keep passing the speculative fast path, which
+    tests ``attribute_not_exists(#disabled)`` on the bucket and never
+    re-reads config.
+
+    Nothing reconciles this on its own. Buckets backed by entity-level
+    custom limits carry no TTL, so a stale stamp persists until the same
+    command is run again — which is safe to do, since both the config write
+    and each stamp are idempotent.
+
+    Attributes:
+        stamped: Bucket items successfully written before the failure
+        resource: Resource being disabled or enabled, if scoped to one
+        entity_id: Entity being disabled or enabled, if scoped to one
+        cause: The underlying exception that stopped the fan-out
+    """
+
+    def __init__(
+        self,
+        stamped: int,
+        cause: Exception,
+        *,
+        resource: str | None = None,
+        entity_id: str | None = None,
+    ) -> None:
+        self.stamped = stamped
+        self.resource = resource
+        self.entity_id = entity_id
+        self.cause = cause
+
+        target = (
+            f"entity '{entity_id}'"
+            if entity_id is not None and resource is None
+            else f"entity '{entity_id}' resource '{resource}'"
+            if entity_id is not None
+            else f"resource '{resource}'"
+        )
+        super().__init__(
+            f"Fan-out for {target} stopped after stamping {stamped} bucket(s): {cause}. "
+            f"Config was written, so the change is partially applied — re-run the same "
+            f"command to reconcile the remaining buckets."
+        )
+
+
+class ResourceDisabled(ZAELimiterError):  # noqa: N818
+    """
+    Raised when a resource is disabled for the requesting entity.
+
+    This is a configuration state, not a throttling signal: it does not
+    inherit from RateLimitError and carries no retry hint, because retrying
+    will not help. Map it to 403, not 429.
+
+    The resolved value comes from the first level that sets ``disabled``
+    explicitly, walking entity -> entity default -> resource (ADR-125).
+
+    Attributes:
+        entity_id: Entity that attempted the acquire
+        resource: Resource that is disabled
+        level: Config level that decided it ("entity", "entity_default",
+            "resource", or "bucket" when the decision came from the
+            denormalized bucket attribute on the fast path)
+    """
+
+    def __init__(self, entity_id: str, resource: str, level: str) -> None:
+        self.entity_id = entity_id
+        self.resource = resource
+        self.level = level
+        super().__init__(
+            f"Resource '{resource}' is disabled for entity '{entity_id}' "
+            f"(disabled at {level} level)"
+        )

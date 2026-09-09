@@ -24,6 +24,7 @@ from .config_cache import ConfigSource
 from .exceptions import (
     RateLimiterUnavailable,
     RateLimitExceeded,
+    ResourceDisabled,
     ValidationError,
 )
 from .lease import Lease, LeaseEntry
@@ -673,7 +674,7 @@ class RateLimiter:
                     limits_override=limits,
                     consume=consume,
                 )
-        except (RateLimitExceeded, ValidationError):
+        except (RateLimitExceeded, ValidationError, ResourceDisabled):
             raise
         except Exception as e:
             if mode == OnUnavailable.ALLOW:
@@ -735,6 +736,26 @@ class RateLimiter:
             if result.parent_result is not None and result.parent_result.success:
                 assert result.parent_id is not None  # set by repository cache path
                 await self._compensate_speculative(result.parent_id, resource, consume)
+
+            # Disabled: no shard retry or doubling can help (ADR-125).
+            if result.failure_reason == SpeculativeFailureReason.DISABLED:
+                raise ResourceDisabled(entity_id=entity_id, resource=resource, level="bucket")
+
+            # The parallel cascade path issues both writes at once, so both can
+            # fail — and a disabled parent has to outrank whatever the child
+            # failed on. Falling through with the child's reason reports
+            # RateLimitExceeded, whose retry_after_seconds invites a retry that
+            # will hit the same disabled parent every time. Nothing was consumed
+            # from the child here (its conditional write failed too), so unlike
+            # the parent-succeeded branch above there is nothing to compensate.
+            if (
+                result.parent_result is not None
+                and result.parent_result.failure_reason == SpeculativeFailureReason.DISABLED
+            ):
+                assert result.parent_id is not None  # set by repository cache path
+                raise ResourceDisabled(
+                    entity_id=result.parent_id, resource=resource, level="bucket"
+                )
 
             # Shard doubling: if wcu exhausted, double shard_count and update cache
             if result.failure_reason in (
@@ -824,6 +845,14 @@ class RateLimiter:
                         )
                     )
             else:
+                # Disabled wins over every other classification: no refill
+                # reasoning or slow-path fallback can help (ADR-125). The
+                # child's speculatively consumed tokens must be returned
+                # before the exception propagates.
+                if parent_result.failure_reason == SpeculativeFailureReason.DISABLED:
+                    await self._compensate_child(entity_id, resource, consume)
+                    raise ResourceDisabled(entity_id=parent_id, resource=resource, level="bucket")
+
                 if parent_result.old_buckets is None:
                     await self._compensate_child(entity_id, resource, consume)
                     return None
@@ -901,6 +930,13 @@ class RateLimiter:
         assert result.parent_id is not None  # set by repository cache path
         parent_result = result.parent_result
         parent_id = result.parent_id
+
+        # Disabled wins over every other classification: no refill or slow-path
+        # retry can help (ADR-125). The child's speculatively consumed tokens
+        # must be returned before the exception propagates.
+        if parent_result.failure_reason == SpeculativeFailureReason.DISABLED:
+            await self._compensate_child(entity_id, resource, consume)
+            raise ResourceDisabled(entity_id=parent_id, resource=resource, level="bucket")
 
         if parent_result.old_buckets is None:
             await self._compensate_child(entity_id, resource, consume)
@@ -1210,9 +1246,29 @@ class RateLimiter:
 
         # Phase 1: Resolve child limits, then fetch child META + child buckets
         # in a single BatchGetItem call (no separate get_entity round trip).
+        # The disable walk's levels are a subset of the config levels, so let
+        # the config fetch hand back what it actually read (ADR-125).
+        fetched_disabled: dict[tuple[str, str], bool | None] = {}
         child_limits, child_config_source = await self._resolve_limits(
-            entity_id, resource, limits_override
+            entity_id, resource, limits_override, fetched_disabled
         )
+
+        # Slow path gate (ADR-125). Covers first acquire — no bucket exists yet,
+        # so the fast-path guard cannot fire — and every fallback path.
+        #
+        # Reuse the config fetch only when it genuinely read every level of the
+        # walk; otherwise those levels came from the config cache and must not
+        # answer this gate. See Repository.resolve_disabled_from_fetched.
+        resolved = self._repository.resolve_disabled_from_fetched(
+            entity_id, resource, fetched_disabled
+        )
+        if resolved is None:
+            resolved = await self._repository.resolve_disabled(entity_id, resource)
+        disabled, level = resolved
+        if disabled:
+            raise ResourceDisabled(
+                entity_id=entity_id, resource=resource, level=level or "resource"
+            )
 
         entity, child_buckets = await self._fetch_entity_and_buckets(entity_id, resource)
 
@@ -1226,6 +1282,17 @@ class RateLimiter:
         if entity and entity.cascade and entity.parent_id:
             parent_id = entity.parent_id
             entity_ids.append(parent_id)
+
+            # Slow path gate for the parent (ADR-125), same reasoning as the
+            # child gate above: no parent bucket should be fetched or created
+            # once the parent is disabled.
+            parent_disabled, parent_level = await self._repository.resolve_disabled(
+                parent_id, resource
+            )
+            if parent_disabled:
+                raise ResourceDisabled(
+                    entity_id=parent_id, resource=resource, level=parent_level or "resource"
+                )
 
             # Phase 2: Resolve parent limits + fetch parent buckets
             parent_limits, parent_config_source = await self._resolve_limits(
@@ -1385,6 +1452,7 @@ class RateLimiter:
         entity_id: str,
         resource: str,
         limits_override: list[Limit] | None,
+        disabled_out: dict[tuple[str, str], bool | None] | None = None,
     ) -> tuple[list[Limit], ConfigSource | Literal["override"]]:
         """
         Resolve limits using four-tier hierarchy.
@@ -1417,6 +1485,7 @@ class RateLimiter:
         limits, _, config_source = await self._repository.resolve_limits(
             entity_id,
             resource,
+            disabled_out,
         )
 
         if limits is not None and config_source is not None:

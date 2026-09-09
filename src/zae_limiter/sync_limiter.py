@@ -25,7 +25,7 @@ from .bucket import (
     try_consume,
     would_refill_satisfy,
 )
-from .exceptions import RateLimiterUnavailable, RateLimitExceeded, ValidationError
+from .exceptions import RateLimiterUnavailable, RateLimitExceeded, ResourceDisabled, ValidationError
 from .models import (
     AuditEvent,
     BucketState,
@@ -576,7 +576,7 @@ class SyncRateLimiter:
                 lease = self._do_acquire(
                     entity_id=entity_id, resource=resource, limits_override=limits, consume=consume
                 )
-        except (RateLimitExceeded, ValidationError):
+        except (RateLimitExceeded, ValidationError, ResourceDisabled):
             raise
         except Exception as e:
             if mode == OnUnavailable.ALLOW:
@@ -623,6 +623,16 @@ class SyncRateLimiter:
             if result.parent_result is not None and result.parent_result.success:
                 assert result.parent_id is not None
                 self._compensate_speculative(result.parent_id, resource, consume)
+            if result.failure_reason == SpeculativeFailureReason.DISABLED:
+                raise ResourceDisabled(entity_id=entity_id, resource=resource, level="bucket")
+            if (
+                result.parent_result is not None
+                and result.parent_result.failure_reason == SpeculativeFailureReason.DISABLED
+            ):
+                assert result.parent_id is not None
+                raise ResourceDisabled(
+                    entity_id=result.parent_id, resource=resource, level="bucket"
+                )
             if result.failure_reason in (
                 SpeculativeFailureReason.WCU_EXHAUSTED,
                 SpeculativeFailureReason.BOTH_EXHAUSTED,
@@ -698,6 +708,9 @@ class SyncRateLimiter:
                         )
                     )
             else:
+                if parent_result.failure_reason == SpeculativeFailureReason.DISABLED:
+                    self._compensate_child(entity_id, resource, consume)
+                    raise ResourceDisabled(entity_id=parent_id, resource=resource, level="bucket")
                 if parent_result.old_buckets is None:
                     self._compensate_child(entity_id, resource, consume)
                     return None
@@ -765,6 +778,9 @@ class SyncRateLimiter:
         assert result.parent_id is not None
         parent_result = result.parent_result
         parent_id = result.parent_id
+        if parent_result.failure_reason == SpeculativeFailureReason.DISABLED:
+            self._compensate_child(entity_id, resource, consume)
+            raise ResourceDisabled(entity_id=parent_id, resource=resource, level="bucket")
         if parent_result.old_buckets is None:
             self._compensate_child(entity_id, resource, consume)
             return None
@@ -1008,9 +1024,20 @@ class SyncRateLimiter:
         validate_identifier(entity_id, "entity_id")
         validate_resource(resource)
         now_ms = int(time.time() * 1000)
+        fetched_disabled: dict[tuple[str, str], bool | None] = {}
         child_limits, child_config_source = self._resolve_limits(
-            entity_id, resource, limits_override
+            entity_id, resource, limits_override, fetched_disabled
         )
+        resolved = self._repository.resolve_disabled_from_fetched(
+            entity_id, resource, fetched_disabled
+        )
+        if resolved is None:
+            resolved = self._repository.resolve_disabled(entity_id, resource)
+        disabled, level = resolved
+        if disabled:
+            raise ResourceDisabled(
+                entity_id=entity_id, resource=resource, level=level or "resource"
+            )
         entity, child_buckets = self._fetch_entity_and_buckets(entity_id, resource)
         entity_ids = [entity_id]
         existing_buckets: dict[tuple[str, str, str], BucketState] = dict(child_buckets)
@@ -1019,6 +1046,11 @@ class SyncRateLimiter:
         if entity and entity.cascade and entity.parent_id:
             parent_id = entity.parent_id
             entity_ids.append(parent_id)
+            parent_disabled, parent_level = self._repository.resolve_disabled(parent_id, resource)
+            if parent_disabled:
+                raise ResourceDisabled(
+                    entity_id=parent_id, resource=resource, level=parent_level or "resource"
+                )
             parent_limits, parent_config_source = self._resolve_limits(
                 parent_id, resource, limits_override
             )
@@ -1138,7 +1170,11 @@ class SyncRateLimiter:
         return result
 
     def _resolve_limits(
-        self, entity_id: str, resource: str, limits_override: list[Limit] | None
+        self,
+        entity_id: str,
+        resource: str,
+        limits_override: list[Limit] | None,
+        disabled_out: dict[tuple[str, str], bool | None] | None = None,
     ) -> tuple[list[Limit], ConfigSource | Literal["override"]]:
         """
         Resolve limits using four-tier hierarchy.
@@ -1165,7 +1201,9 @@ class SyncRateLimiter:
         """
         if limits_override is not None:
             return (limits_override, "override")
-        limits, _, config_source = self._repository.resolve_limits(entity_id, resource)
+        limits, _, config_source = self._repository.resolve_limits(
+            entity_id, resource, disabled_out
+        )
         if limits is not None and config_source is not None:
             return (limits, config_source)
         raise ValidationError(

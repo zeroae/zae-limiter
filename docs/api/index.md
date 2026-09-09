@@ -17,6 +17,7 @@ The main components of the API are:
 | [`CacheStats`](models.md#zae_limiter.config_cache.CacheStats) | Cache performance statistics |
 | [`ConfigSource`](models.md#zae_limiter.config_cache.ConfigSource) | Config resolution source identifier |
 | [`RateLimitExceeded`](exceptions.md#zae_limiter.exceptions.RateLimitExceeded) | Exception when limit is exceeded |
+| [`ResourceDisabled`](exceptions.md#zae_limiter.exceptions.ResourceDisabled) | Exception when a resource or entity is disabled (ADR-125) |
 
 ## Quick Reference
 
@@ -212,6 +213,9 @@ from zae_limiter import (
     ValidationError,
     InvalidIdentifierError,
     InvalidNameError,
+
+    # Exceptions - Configuration State
+    ResourceDisabled,
 )
 ```
 

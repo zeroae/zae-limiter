@@ -1,6 +1,7 @@
 """DynamoDB repository for rate limiter data."""
 
 import asyncio
+import functools
 import logging
 import random
 import time
@@ -13,7 +14,13 @@ from ulid import ULID
 
 from . import schema
 from .config_cache import CacheStats, ConfigCache, ConfigSource
-from .exceptions import EntityExistsError, NamespaceStateError, ValidationError
+from .exceptions import (
+    EntityExistsError,
+    FanoutIncomplete,
+    NamespaceStateError,
+    RateLimiterUnavailable,
+    ValidationError,
+)
 from .models import (
     AuditAction,
     AuditEvent,
@@ -29,12 +36,27 @@ from .models import (
     validate_resource,
 )
 from .naming import normalize_stack_name
+from .repository_protocol import (
+    PRESERVE_DISABLED as _PRESERVE_DISABLED,
+)
 from .repository_protocol import SpeculativeFailureReason, SpeculativeResult
 
 if TYPE_CHECKING:
     from .repository_builder import RepositoryBuilder
 
 logger = logging.getLogger(__name__)
+
+#: Sentinel meaning "keep whatever `disabled` value is already stored" (ADR-125).
+#: Distinct from None, which explicitly means "inherit from the level above".
+# _PRESERVE_DISABLED is imported from repository_protocol so the contract and
+# this implementation compare against the same object (ADR-108/ADR-125).
+
+# resolve_disabled() decides admission, so a partial BatchGetItem must be
+# retried rather than treated as "nothing set" (ADR-125). Three retries with
+# exponential backoff from 50ms covers a transient throttle without stalling
+# the slow path; beyond that the caller is told the answer is unknown.
+_RESOLVE_DISABLED_MAX_RETRIES = 3
+_RESOLVE_DISABLED_RETRY_BASE_DELAY = 0.05
 
 
 class Repository:
@@ -1790,6 +1812,7 @@ class Repository:
     async def batch_get_configs(
         self,
         keys: list[tuple[str, str]],
+        disabled_out: dict[tuple[str, str], bool | None] | None = None,
     ) -> dict[tuple[str, str], tuple[list[Limit], OnUnavailableAction | None]]:
         """
         Batch get config items in a single DynamoDB call.
@@ -1799,6 +1822,16 @@ class Repository:
 
         Args:
             keys: List of (PK, SK) tuples identifying config items
+            disabled_out: Optional dict to receive the tri-state `disabled`
+                value of every key actually requested here, so a caller that
+                also needs the disable walk can reuse this read instead of
+                issuing an identical second BatchGetItem (ADR-125). Keys that
+                resolve to no item are recorded as None ("no explicit value"),
+                which is exactly what the walk needs — a requested-but-absent
+                level is still a *fresh* answer. Only keys present in this dict
+                may be reused; anything served from the config cache must not
+                be, since caching the gate would let a first acquire with no
+                bucket yet be admitted to a disabled resource permanently.
 
         Returns:
             Dict mapping (PK, SK) to (limits, on_unavailable) tuples.
@@ -1840,6 +1873,13 @@ class Repository:
                 }
             )
 
+            # Every key in this chunk was genuinely read, so each one gets a
+            # fresh `disabled` answer — absent item included (None = no
+            # explicit value at that level).
+            if disabled_out is not None:
+                for pk, sk in chunk:
+                    disabled_out[(pk, sk)] = None
+
             # Process responses: deserialize each item
             items = response.get("Responses", {}).get(self.table_name, [])
             for item in items:
@@ -1853,6 +1893,8 @@ class Repository:
                         cast(OnUnavailableAction, ou_str) if ou_str else None
                     )
                     result[(pk, sk)] = (limits, on_unavailable)
+                    if disabled_out is not None:
+                        disabled_out[(pk, sk)] = schema.decode_disabled(item)
 
         return result
 
@@ -2485,6 +2527,12 @@ class Repository:
         attr_values[":now_epoch"] = {"N": str(now_epoch)}
         condition_parts.append("(attribute_not_exists(#ttl) OR #ttl > :now_epoch)")
 
+        # Reject buckets stamped as disabled (ADR-125). The attribute is present
+        # only when the bucket is effectively disabled, so this costs nothing on
+        # the enabled path.
+        attr_names["#disabled"] = schema.BUCKET_FIELD_DISABLED
+        condition_parts.append("attribute_not_exists(#disabled)")
+
         condition_expr = " AND ".join(condition_parts)
 
         try:
@@ -2525,6 +2573,17 @@ class Repository:
                 if old_item:
                     old_buckets = self._deserialize_composite_bucket(old_item)
                     old_shard_count = int(old_item.get("shard_count", {}).get("N", "1"))
+
+                    # Disabled wins over every other classification: retrying on
+                    # another shard or doubling shards cannot help (ADR-125).
+                    if old_item.get(schema.BUCKET_FIELD_DISABLED, {}).get("BOOL", False):
+                        return SpeculativeResult(
+                            success=False,
+                            old_buckets=old_buckets,
+                            shard_id=shard_id,
+                            shard_count=old_shard_count,
+                            failure_reason=SpeculativeFailureReason.DISABLED,
+                        )
 
                     # Classify failure reason (GHSA-76rv)
                     wcu_exhausted = any(
@@ -2624,6 +2683,8 @@ class Repository:
         limits: list[Limit],
         resource: str = schema.DEFAULT_RESOURCE,
         principal: str | None = None,
+        *,
+        disabled: bool | None = _PRESERVE_DISABLED,
     ) -> None:
         """
         Store limit configs for an entity (composite format, ADR-114).
@@ -2637,8 +2698,19 @@ class Repository:
             limits: List of Limit configurations to store
             resource: Resource name (defaults to "_default_")
             principal: Caller identity for audit logging
+            disabled: Tri-state disabled flag. Defaults to preserving whatever
+                value is already stored (this is a full-replace PutItem, so an
+                explicit value must be passed to change it; see ADR-125).
+                Passing an explicit value also fans out to existing buckets,
+                exactly as `disable_entity()`/`enable_entity()` do.
         """
         client = await self._get_client()
+
+        # Full-replace PutItem would drop `disabled`; preserve it unless the
+        # caller passed an explicit value (ADR-125).
+        disabled_explicit = disabled is not _PRESERVE_DISABLED
+        if not disabled_explicit:
+            disabled = await self.get_entity_disabled(entity_id, resource)
 
         # Build composite config item with all limits
         item: dict[str, Any] = {
@@ -2657,6 +2729,10 @@ class Repository:
 
         # Add l_* attributes for each limit
         self._serialize_composite_limits(limits, item)
+
+        disabled_attr = schema.encode_disabled(disabled)
+        if disabled_attr is not None:
+            item[schema.CONFIG_FIELD_DISABLED] = disabled_attr
 
         # Use transaction to atomically create config + increment registry (issue #288)
         # This prevents race conditions where concurrent creates both increment
@@ -2710,6 +2786,15 @@ class Repository:
 
         # Auto-evict from config cache so next resolve reads fresh config (ADR-122)
         self._config_cache.evict_entity(entity_id, resource)
+
+        # An explicit `disabled` changes what resolve_disabled() answers, so the
+        # denormalized bucket stamp has to follow it eagerly — same contract as
+        # disable_entity()/enable_entity() (ADR-125). With the preserve sentinel
+        # the stored value is unchanged, so no fan-out is needed.
+        if disabled_explicit:
+            effective, _level = await self.resolve_disabled(entity_id, resource)
+            fanout_resource = None if resource == schema.DEFAULT_RESOURCE else resource
+            await self._fanout_entity(entity_id, fanout_resource, disabled=effective)
 
         # Log audit event
         await self._log_audit_event(
@@ -2917,6 +3002,26 @@ class Repository:
 
         return self._deserialize_composite_limits(item)
 
+    async def get_entity_disabled(self, entity_id: str, resource: str) -> bool | None:
+        """Read the tri-state disabled flag from an entity config item.
+
+        Returns:
+            True or False when explicitly set, None when unset (inherit).
+        """
+        client = await self._get_client()
+        response = await client.get_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
+                "SK": {"S": schema.sk_config(resource)},
+            },
+            ConsistentRead=False,
+        )
+        item = response.get("Item")
+        if not item:
+            return None
+        return schema.decode_disabled(item)
+
     async def delete_limits(
         self,
         entity_id: str,
@@ -2934,6 +3039,29 @@ class Repository:
             principal: Caller identity for audit logging
         """
         client = await self._get_client()
+
+        # Does this config actually decide `disabled`? If not, deleting it
+        # cannot change resolve_disabled()'s answer and the fan-out below is
+        # pure waste (two GSI3 discovery passes, a resolve per entity and an
+        # UpdateItem per bucket, all serial).
+        #
+        # delete_resource_defaults gets this for free from its DeleteItem's
+        # ALL_OLD image, but this path deletes inside a TransactWriteItems,
+        # and transactions return no old image on success — the per-item
+        # Delete shape only offers ReturnValuesOnConditionCheckFailure. So it
+        # costs one projected GetItem (~0.5 RCU) to avoid a fan-out
+        # proportional to the entity's bucket count. `disabled` is a DynamoDB
+        # reserved word, hence the alias.
+        existing = await client.get_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
+                "SK": {"S": schema.sk_config(resource)},
+            },
+            ProjectionExpression="#disabled",
+            ExpressionAttributeNames={"#disabled": schema.CONFIG_FIELD_DISABLED},
+        )
+        had_disabled = schema.CONFIG_FIELD_DISABLED in (existing.get("Item") or {})
 
         # Use transaction to atomically delete config + decrement registry (issue #288)
         # This prevents double-decrement if delete_limits is called twice
@@ -2981,6 +3109,22 @@ class Repository:
 
         # Auto-evict from config cache so next resolve reads fresh config (ADR-122)
         self._config_cache.evict_entity(entity_id, resource)
+
+        # The deleted item is where this level's `disabled` lived, so removing
+        # it can change resolve_disabled()'s answer in either direction. Re-stamp
+        # so the denormalized bucket flag never contradicts the resolution
+        # (ADR-125). Deleting the `_default_` config is an entity-wide change, so
+        # it fans out unscoped and each bucket's own resource is re-resolved.
+        # Only restamp when the deleted config was actually carrying a
+        # `disabled` value; otherwise the resolution is unchanged and every
+        # bucket already holds the right stamp. An explicit `disabled: false`
+        # counts as present — dropping a carve-out re-disables the entity.
+        if had_disabled:
+            if resource == schema.DEFAULT_RESOURCE:
+                await self._fanout_entity(entity_id, None, disabled=False)
+            else:
+                effective, _level = await self.resolve_disabled(entity_id, resource)
+                await self._fanout_entity(entity_id, resource, disabled=effective)
 
         # Log audit event
         await self._log_audit_event(
@@ -3093,6 +3237,8 @@ class Repository:
         resource: str,
         limits: list[Limit],
         principal: str | None = None,
+        *,
+        disabled: bool | None = _PRESERVE_DISABLED,
     ) -> None:
         """
         Store default limit configs for a resource (composite format, ADR-114).
@@ -3104,9 +3250,20 @@ class Repository:
             resource: Resource name
             limits: List of Limit configurations to store
             principal: Caller identity for audit logging
+            disabled: Tri-state disabled flag. Defaults to preserving whatever
+                value is already stored (this is a full-replace PutItem, so an
+                explicit value must be passed to change it; see ADR-125).
+                Passing an explicit value also fans out to existing buckets,
+                exactly as `disable_resource()`/`enable_resource()` do.
         """
         validate_resource(resource)
         client = await self._get_client()
+
+        # Full-replace PutItem would drop `disabled`; preserve it unless the
+        # caller passed an explicit value (ADR-125).
+        disabled_explicit = disabled is not _PRESERVE_DISABLED
+        if not disabled_explicit:
+            disabled = await self.get_resource_disabled(resource)
 
         # Build composite config item with all limits
         item: dict[str, Any] = {
@@ -3121,6 +3278,10 @@ class Repository:
 
         # Add l_* attributes for each limit
         self._serialize_composite_limits(limits, item)
+
+        disabled_attr = schema.encode_disabled(disabled)
+        if disabled_attr is not None:
+            item[schema.CONFIG_FIELD_DISABLED] = disabled_attr
 
         # Single PutItem replaces any existing config for this resource
         await client.put_item(TableName=self.table_name, Item=item)
@@ -3143,6 +3304,13 @@ class Repository:
                 ":gsi4sk": {"S": schema.pk_system(self._namespace_id)},
             },
         )
+
+        # An explicit `disabled` changes what resolve_disabled() answers, so the
+        # denormalized bucket stamp has to follow it eagerly — same contract as
+        # disable_resource()/enable_resource() (ADR-125). With the preserve
+        # sentinel the stored value is unchanged, so no fan-out is needed.
+        if disabled_explicit:
+            await self._fanout_resource(resource, disabled=bool(disabled))
 
         # Log audit event with special prefix
         await self._log_audit_event(
@@ -3181,6 +3349,27 @@ class Repository:
 
         return self._deserialize_composite_limits(item)
 
+    async def get_resource_disabled(self, resource: str) -> bool | None:
+        """Read the tri-state disabled flag from a resource config item.
+
+        Returns:
+            True or False when explicitly set, None when unset (inherit).
+        """
+        validate_resource(resource)
+        client = await self._get_client()
+        response = await client.get_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": schema.pk_resource(self._namespace_id, resource)},
+                "SK": {"S": schema.sk_config()},
+            },
+            ConsistentRead=False,
+        )
+        item = response.get("Item")
+        if not item:
+            return None
+        return schema.decode_disabled(item)
+
     async def delete_resource_defaults(
         self,
         resource: str,
@@ -3198,14 +3387,18 @@ class Repository:
         validate_resource(resource)
         client = await self._get_client()
 
-        # Single DeleteItem removes the composite config
-        await client.delete_item(
+        # Single DeleteItem removes the composite config. ALL_OLD returns the
+        # deleted image at no extra capacity charge, which is what decides
+        # whether the fan-out below is needed at all.
+        deleted = await client.delete_item(
             TableName=self.table_name,
             Key={
                 "PK": {"S": schema.pk_resource(self._namespace_id, resource)},
                 "SK": {"S": schema.sk_config()},
             },
+            ReturnValues="ALL_OLD",
         )
+        had_disabled = schema.CONFIG_FIELD_DISABLED in (deleted.get("Attributes") or {})
 
         # Remove resource from the registry using atomic DELETE operation
         await client.update_item(
@@ -3219,6 +3412,22 @@ class Repository:
                 ":resource": {"SS": [resource]},
             },
         )
+
+        # The deleted item is where the resource's `disabled` lived, so removing
+        # it can change resolve_disabled()'s answer. With no level above resource
+        # in the walk, the resource now resolves to "not disabled"; entities with
+        # their own override are skipped by _fanout_resource and keep their stamp
+        # (ADR-125).
+        #
+        # If the deleted item carried no `disabled` attribute at all, it was
+        # never the deciding level, so the resolution is unchanged and every
+        # bucket's stamp is already correct. Skipping is not an optimisation
+        # guess: `had_disabled` comes from the image of the item actually
+        # deleted, so there is no window in which it could be stale. An
+        # explicit `disabled: false` counts as present — removing a resource
+        # level re-enable does change the resolution.
+        if had_disabled:
+            await self._fanout_resource(resource, disabled=False)
 
         # Log audit event
         await self._log_audit_event(
@@ -4302,6 +4511,7 @@ class Repository:
         self,
         entity_id: str,
         resource: str,
+        disabled_out: dict[tuple[str, str], bool | None] | None = None,
     ) -> tuple[list[Limit] | None, OnUnavailableAction | None, ConfigSource | None]:
         """Resolve effective limits using the four-level config hierarchy.
 
@@ -4311,6 +4521,14 @@ class Repository:
         Args:
             entity_id: Entity to resolve limits for
             resource: Resource being accessed
+            disabled_out: Optional dict to receive the tri-state `disabled`
+                value of each config level this call actually read from
+                DynamoDB. The disable walk's levels are a subset of these, so
+                a caller needing both can reuse this read rather than issuing
+                an identical second BatchGetItem — see
+                `resolve_disabled_from_fetched`. Levels served from the config
+                cache are deliberately absent from the dict: they are not
+                fresh, and the gate must never be answered from cache.
 
         Returns:
             Tuple of (limits, on_unavailable, config_source)
@@ -4318,10 +4536,13 @@ class Repository:
         # Try batched resolution (1 BatchGetItem instead of up to 4 GetItem calls)
         if self.capabilities.supports_batch_operations:
             try:
+                fetch_fn = self.batch_get_configs
+                if disabled_out is not None:
+                    fetch_fn = functools.partial(self.batch_get_configs, disabled_out=disabled_out)
                 return await self._config_cache.resolve_limits(
                     entity_id,
                     resource,
-                    self.batch_get_configs,
+                    fetch_fn,
                 )
             except Exception:
                 logger.debug("Batched config resolution failed, falling back to sequential")
@@ -4404,6 +4625,655 @@ class Repository:
                 return self._on_unavailable_cache
             logger.warning("DynamoDB unavailable, defaulting on_unavailable=block")
             return "block"
+
+    def resolve_disabled_from_fetched(
+        self,
+        entity_id: str,
+        resource: str,
+        fetched: dict[tuple[str, str], bool | None],
+    ) -> tuple[bool, str | None] | None:
+        """Answer the disable walk from a config fetch, or decline (ADR-125).
+
+        `resolve_limits(disabled_out=...)` records the tri-state `disabled` of
+        every level it actually read. The disable walk's levels are a subset of
+        those, so when all of them were read in that same call, the walk can be
+        evaluated here for free instead of issuing an identical second
+        BatchGetItem.
+
+        Returns None — meaning "the caller must call `resolve_disabled`" — if
+        even one level is missing from `fetched`. A missing level is one the
+        config cache served, and a cached value must never answer this gate:
+        a first `acquire()` for an entity with no bucket yet would then be
+        admitted on a stale `false`, and would go on to create an unstamped
+        bucket that the already-finished fan-out will never stamp. That is
+        permanent admission to a disabled resource, which is why
+        `resolve_disabled` is uncached in the first place.
+
+        Note the distinction this relies on: a level present in `fetched` with
+        value None was genuinely read and has no explicit value (so the walk
+        moves on); a level absent from `fetched` was not read at all.
+        """
+        ns = self._namespace_id
+        levels: list[tuple[str, tuple[str, str]]] = [
+            ("entity", (schema.pk_entity(ns, entity_id), schema.sk_config(resource))),
+        ]
+        if resource != schema.DEFAULT_RESOURCE:
+            levels.append(
+                (
+                    "entity_default",
+                    (schema.pk_entity(ns, entity_id), schema.sk_config(schema.DEFAULT_RESOURCE)),
+                )
+            )
+        levels.append(("resource", (schema.pk_resource(ns, resource), schema.sk_config())))
+
+        if any(key not in fetched for _level, key in levels):
+            return None
+
+        for level, key in levels:
+            value = fetched[key]
+            if value is not None:
+                return value, level
+        return False, None
+
+    async def resolve_disabled(
+        self,
+        entity_id: str,
+        resource: str,
+    ) -> tuple[bool, str | None]:
+        """Resolve the effective disabled state for an entity+resource (ADR-125).
+
+        Walks entity(resource) -> entity(_default_) -> resource and returns the
+        first level that sets `disabled` explicitly. This walk is independent of
+        the limits walk in resolve_limits(): a level that sets `disabled` but
+        defines no limits still decides the outcome, which is what lets an
+        entity-level `disabled: false` re-admit one entity to a disabled resource.
+
+        Deliberately uncached — see ADR-125. Called only on the slow path and by
+        the eager fan-out, never on the speculative fast path.
+
+        Args:
+            entity_id: Entity to resolve for
+            resource: Resource being accessed
+
+        Returns:
+            (effective_disabled, deciding_level) where deciding_level is
+            "entity", "entity_default", "resource", or None if nothing set it.
+        """
+        ns = self._namespace_id
+        levels: list[tuple[str, str, str]] = [
+            ("entity", schema.pk_entity(ns, entity_id), schema.sk_config(resource)),
+        ]
+        if resource != schema.DEFAULT_RESOURCE:
+            levels.append(
+                (
+                    "entity_default",
+                    schema.pk_entity(ns, entity_id),
+                    schema.sk_config(schema.DEFAULT_RESOURCE),
+                )
+            )
+        levels.append(("resource", schema.pk_resource(ns, resource), schema.sk_config()))
+
+        client = await self._get_client()
+
+        # DynamoDB may answer a BatchGetItem partially, reporting the rest in
+        # UnprocessedKeys — documented behaviour under throttling, not an
+        # error. A withheld item is indistinguishable in the walk below from a
+        # level that sets no value, so accepting a partial response would let
+        # an entity marked `disabled: true` fall through and be ADMITTED.
+        # Retry the remainder, and refuse to answer rather than guess if it
+        # never completes: returning (False, None) cannot be told apart by the
+        # caller from "nothing is disabled".
+        keys = [{"PK": {"S": pk}, "SK": {"S": sk}} for _, pk, sk in levels]
+        by_key: dict[tuple[str, str], dict[str, Any]] = {}
+        attempts = 0
+        while keys:
+            response = await client.batch_get_item(
+                RequestItems={self.table_name: {"Keys": keys, "ConsistentRead": False}}
+            )
+            for i in response.get("Responses", {}).get(self.table_name, []):
+                by_key[(i.get("PK", {}).get("S", ""), i.get("SK", {}).get("S", ""))] = i
+
+            unprocessed = response.get("UnprocessedKeys", {}).get(self.table_name) or {}
+            keys = unprocessed.get("Keys", [])
+            if not keys:
+                break
+
+            attempts += 1
+            if attempts > _RESOLVE_DISABLED_MAX_RETRIES:
+                raise RateLimiterUnavailable(
+                    f"Could not resolve disabled state for {entity_id!r}/{resource!r}: "
+                    f"DynamoDB left {len(keys)} key(s) unprocessed after "
+                    f"{_RESOLVE_DISABLED_MAX_RETRIES} retries",
+                    stack_name=self.stack_name,
+                    entity_id=entity_id,
+                    resource=resource,
+                )
+            await asyncio.sleep(_RESOLVE_DISABLED_RETRY_BASE_DELAY * 2 ** (attempts - 1))
+
+        for level, pk, sk in levels:
+            item = by_key.get((pk, sk))
+            if item is None:
+                continue
+            value = schema.decode_disabled(item)
+            if value is not None:
+                return value, level
+
+        return False, None
+
+    async def _stamp_bucket_disabled(self, pk: str, disabled: bool) -> None:
+        """Set or remove the `disabled` attribute on one bucket item (ADR-125).
+
+        The attribute is present only when the bucket is effectively disabled,
+        which keeps the speculative guard as a cheap attribute_not_exists check.
+
+        Args:
+            pk: Full bucket partition key (already namespace- and shard-qualified)
+            disabled: True to stamp the bucket, False to clear the stamp
+        """
+        client = await self._get_client()
+        kwargs: dict[str, Any] = {
+            "TableName": self.table_name,
+            "Key": {"PK": {"S": pk}, "SK": {"S": schema.sk_state()}},
+            "ExpressionAttributeNames": {"#disabled": schema.BUCKET_FIELD_DISABLED},
+            # Never resurrect a bucket that TTL or a delete removed.
+            "ConditionExpression": "attribute_exists(PK)",
+        }
+        if disabled:
+            kwargs["UpdateExpression"] = "SET #disabled = :true"
+            kwargs["ExpressionAttributeValues"] = {":true": {"BOOL": True}}
+        else:
+            kwargs["UpdateExpression"] = "REMOVE #disabled"
+
+        try:
+            await client.update_item(**kwargs)
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                raise
+            # Bucket vanished between discovery and stamp — nothing to disable.
+
+    async def _discover_resource_bucket_pks(self, resource: str) -> list[tuple[str, str]]:
+        """Find every bucket PK for a resource, across entities and shards.
+
+        Uses GSI2 (GSI2PK={ns}/RESOURCE#{name}, GSI2SK begins_with BUCKET#),
+        the same access pattern used for resource capacity aggregation.
+
+        Returns:
+            List of (bucket_pk, entity_id) tuples.
+        """
+        client = await self._get_client()
+        results: list[tuple[str, str]] = []
+        start_key: dict[str, Any] | None = None
+
+        while True:
+            params: dict[str, Any] = {
+                "TableName": self.table_name,
+                "IndexName": schema.GSI2_NAME,
+                "KeyConditionExpression": "GSI2PK = :pk AND begins_with(GSI2SK, :sk)",
+                "ExpressionAttributeValues": {
+                    ":pk": {"S": schema.gsi2_pk_resource(self._namespace_id, resource)},
+                    ":sk": {"S": "BUCKET#"},
+                },
+            }
+            if start_key:
+                params["ExclusiveStartKey"] = start_key
+            response = await client.query(**params)
+            for item in response.get("Items", []):
+                pk = item.get("PK", {}).get("S", "")
+                if not pk:
+                    continue
+                _ns, entity_id, _res, _shard = schema.parse_bucket_pk(pk)
+                results.append((pk, entity_id))
+            start_key = response.get("LastEvaluatedKey")
+            if not start_key:
+                break
+
+        return results
+
+    async def _discover_entity_bucket_pks(self, entity_id: str, resource: str | None) -> list[str]:
+        """Find every bucket PK for an entity, optionally scoped to one resource.
+
+        Uses GSI3 (GSI3PK={ns}/ENTITY#{id}, GSI3SK begins_with BUCKET#{resource}#),
+        the KEYS_ONLY discovery index added for GHSA-76rv.
+
+        Returns:
+            List of bucket PKs.
+        """
+        client = await self._get_client()
+        pks: list[str] = []
+        start_key: dict[str, Any] | None = None
+        sk_prefix = f"BUCKET#{resource}#" if resource else "BUCKET#"
+
+        while True:
+            params: dict[str, Any] = {
+                "TableName": self.table_name,
+                "IndexName": schema.GSI3_NAME,
+                "KeyConditionExpression": "GSI3PK = :pk AND begins_with(GSI3SK, :sk)",
+                "ExpressionAttributeValues": {
+                    ":pk": {"S": schema.gsi3_pk_entity(self._namespace_id, entity_id)},
+                    ":sk": {"S": sk_prefix},
+                },
+            }
+            if start_key:
+                params["ExclusiveStartKey"] = start_key
+            response = await client.query(**params)
+            for item in response.get("Items", []):
+                pk = item.get("PK", {}).get("S", "")
+                if pk:
+                    pks.append(pk)
+            start_key = response.get("LastEvaluatedKey")
+            if not start_key:
+                break
+
+        return pks
+
+    async def _fanout_resource(self, resource: str, disabled: bool) -> int:
+        """Stamp every bucket for a resource, honoring per-entity overrides.
+
+        An entity whose own config resolves to a different value than the
+        resource-level one is skipped — that is what makes an entity-level
+        `disabled: false` a carve-out from a disabled resource (ADR-125).
+
+        Runs the discovery query twice: the second pass catches buckets created
+        by an acquire that was already in flight during the first pass.
+
+        Returns:
+            Number of bucket items stamped.
+        """
+        stamped: set[str] = set()
+        effective_by_entity: dict[str, bool] = {}
+
+        for _pass in range(2):
+            for pk, entity_id in await self._discover_resource_bucket_pks(resource):
+                if pk in stamped:
+                    continue
+                if entity_id not in effective_by_entity:
+                    effective, _level = await self.resolve_disabled(entity_id, resource)
+                    effective_by_entity[entity_id] = effective
+                if effective_by_entity[entity_id] != disabled:
+                    # This entity overrides the resource-level value; leave it alone.
+                    continue
+                try:
+                    await self._stamp_bucket_disabled(pk, disabled)
+                except Exception as e:
+                    # The config write already landed, so the change is half
+                    # applied and nothing self-heals it (ADR-125). Report how
+                    # far this got so the operator knows to re-run.
+                    raise FanoutIncomplete(len(stamped), e, resource=resource) from e
+                stamped.add(pk)
+
+        return len(stamped)
+
+    async def _fanout_entity(self, entity_id: str, resource: str | None, disabled: bool) -> int:
+        """Stamp every bucket for an entity (optionally scoped to one resource).
+
+        When unscoped (`resource is None`), this is applying the entity's
+        `_default_` directive across every resource the entity has a bucket
+        for. A resource-specific override for this same entity (its own
+        `set_limits(..., resource=<res>, disabled=...)`, or the resource's
+        own `disabled` config) can outrank that `_default_` in
+        `resolve_disabled`'s walk, exactly as an entity's own override
+        outranks a resource-level fan-out in `_fanout_resource`. Each
+        discovered bucket's own resource is therefore **re-resolved** and
+        stamped with its OWN resolved value, and the `disabled` argument is
+        ignored. Skipping the buckets whose resolution disagrees with the
+        directive would be wrong for a *clear*: once the entity's
+        `_default_` value is gone, a resource whose own config says the
+        opposite becomes the deciding level, and its buckets must be
+        restamped to that new value rather than left holding a stale one
+        (ADR-125). When scoped to one resource, the caller's directive is
+        unambiguous for every discovered bucket, so all buckets are stamped
+        with `disabled` directly.
+
+        Returns:
+            Number of bucket items written.
+        """
+        stamped: set[str] = set()
+        effective_by_resource: dict[str, bool] = {}
+
+        for _pass in range(2):
+            for pk in await self._discover_entity_bucket_pks(entity_id, resource):
+                if pk in stamped:
+                    continue
+                target = disabled
+                if resource is None:
+                    _ns, _eid, bucket_resource, _shard = schema.parse_bucket_pk(pk)
+                    if bucket_resource not in effective_by_resource:
+                        effective, _level = await self.resolve_disabled(entity_id, bucket_resource)
+                        effective_by_resource[bucket_resource] = effective
+                    target = effective_by_resource[bucket_resource]
+                try:
+                    await self._stamp_bucket_disabled(pk, target)
+                except Exception as e:
+                    # Half-applied: config written, only some buckets stamped.
+                    # Nothing reconciles this on its own (ADR-125), so surface
+                    # the count rather than leaving the operator guessing.
+                    raise FanoutIncomplete(
+                        len(stamped), e, resource=resource, entity_id=entity_id
+                    ) from e
+                stamped.add(pk)
+        return len(stamped)
+
+    async def disable_resource(self, resource: str, principal: str | None = None) -> int:
+        """Disable a resource for all entities without an explicit override (ADR-125).
+
+        Writes config first, then eagerly stamps every existing bucket so the
+        change takes effect on the speculative fast path immediately.
+
+        Args:
+            resource: Resource to disable
+            principal: Caller identity for audit logging
+
+        Returns:
+            Number of bucket items stamped.
+        """
+        return await self._set_resource_disabled(resource, True, principal)
+
+    async def enable_resource(self, resource: str, principal: str | None = None) -> int:
+        """Explicitly enable a resource (stores `disabled: false`).
+
+        Returns:
+            Number of bucket items unstamped.
+        """
+        return await self._set_resource_disabled(resource, False, principal)
+
+    async def clear_resource_disabled(self, resource: str, principal: str | None = None) -> int:
+        """Remove the resource's explicit disabled value, reverting to inherit.
+
+        Returns:
+            Number of bucket items unstamped.
+        """
+        return await self._set_resource_disabled(resource, None, principal)
+
+    async def _set_resource_disabled(
+        self, resource: str, value: bool | None, principal: str | None
+    ) -> int:
+        """Write the resource-level `disabled` config, then fan out to buckets.
+
+        The config write is an UPSERT (no `ConditionExpression`) when setting an
+        explicit value, mirroring `set_resource_defaults`'s attributes exactly
+        (`resource`, `GSI4PK`, `GSI4SK`) via `if_not_exists` so a resource with no
+        prior config item — the common case when running purely on system
+        defaults — can still be disabled. Clearing back to "inherit" only makes
+        sense against an item that already exists, so that branch keeps the
+        `attribute_exists(PK)` guard and treats a missing item as a no-op rather
+        than fabricating a stub with a bare REMOVE (ADR-125).
+        """
+        validate_resource(resource)
+        client = await self._get_client()
+
+        # 1. Write config first, so any acquire starting from now resolves the
+        #    new value on the slow path.
+        key = {
+            "PK": {"S": schema.pk_resource(self._namespace_id, resource)},
+            "SK": {"S": schema.sk_config()},
+        }
+        if value is None:
+            try:
+                await client.update_item(
+                    TableName=self.table_name,
+                    Key=key,
+                    UpdateExpression="REMOVE #disabled",
+                    ExpressionAttributeNames={"#disabled": schema.CONFIG_FIELD_DISABLED},
+                    ConditionExpression="attribute_exists(PK)",
+                )
+            except ClientError as e:
+                if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                    raise
+                # No config item to clear — already effectively "inherit".
+        else:
+            # Upsert: create a minimal config item if none exists yet, mirroring
+            # set_resource_defaults's attributes so the item is well-formed even
+            # with no limits of its own (falls through to system defaults).
+            await client.update_item(
+                TableName=self.table_name,
+                Key=key,
+                UpdateExpression=(
+                    "SET #disabled = :v,"
+                    " #resource = if_not_exists(#resource, :res),"
+                    " GSI4PK = if_not_exists(GSI4PK, :gsi4pk),"
+                    " GSI4SK = if_not_exists(GSI4SK, :gsi4sk)"
+                ),
+                ExpressionAttributeNames={
+                    "#disabled": schema.CONFIG_FIELD_DISABLED,
+                    "#resource": "resource",
+                },
+                ExpressionAttributeValues={
+                    ":v": {"BOOL": value},
+                    ":res": {"S": resource},
+                    ":gsi4pk": {"S": self._namespace_id},
+                    ":gsi4sk": {"S": schema.pk_resource(self._namespace_id, resource)},
+                },
+            )
+
+            # Writing a resource config item means registering it, exactly as
+            # set_resource_defaults does — #RESOURCES is what
+            # list_resources_with_defaults() reads, so without this a resource
+            # disabled while running on system defaults is invisible to the
+            # only listing an operator has. `resources` is a String Set, so
+            # re-adding an existing member is a no-op and this needs no
+            # create-vs-update guard.
+            await client.update_item(
+                TableName=self.table_name,
+                Key={
+                    "PK": {"S": schema.pk_system(self._namespace_id)},
+                    "SK": {"S": schema.sk_resources()},
+                },
+                UpdateExpression=(
+                    "SET GSI4PK = if_not_exists(GSI4PK, :reg_gsi4pk),"
+                    " GSI4SK = if_not_exists(GSI4SK, :reg_gsi4sk)"
+                    " ADD resources :reg_resource"
+                ),
+                ExpressionAttributeValues={
+                    ":reg_resource": {"SS": [resource]},
+                    ":reg_gsi4pk": {"S": self._namespace_id},
+                    ":reg_gsi4sk": {"S": schema.pk_system(self._namespace_id)},
+                },
+            )
+
+        await self.invalidate_config_cache()
+
+        # 2. Fan out to existing buckets. For a clear, the effective value is
+        #    whatever the resource now inherits, which with no system-level
+        #    disable is always False.
+        count = await self._fanout_resource(resource, disabled=bool(value))
+
+        await self._log_audit_event(
+            action=AuditAction.LIMITS_SET,
+            entity_id=f"$RESOURCE:{resource}",
+            principal=principal,
+            resource=resource,
+            details={"disabled": value, "buckets_stamped": count},
+        )
+        return count
+
+    async def disable_entity(
+        self,
+        entity_id: str,
+        resource: str | None = None,
+        principal: str | None = None,
+    ) -> int:
+        """Disable an entity, for one resource or across all of them (ADR-125).
+
+        Args:
+            entity_id: Entity to disable
+            resource: Resource to scope to. None targets the entity's
+                `_default_` config, disabling it for every resource.
+            principal: Caller identity for audit logging
+
+        Returns:
+            Number of bucket items written. When scoped to one resource,
+            every written bucket is stamped `disabled=True`. When unscoped,
+            `_fanout_entity` re-resolves and (re)writes each of the entity's
+            buckets to its OWN resolved value (which may disagree with this
+            call for a resource with its own override) — see
+            `_fanout_entity` for why.
+        """
+        return await self._set_entity_disabled(entity_id, resource, True, principal)
+
+    async def enable_entity(
+        self,
+        entity_id: str,
+        resource: str | None = None,
+        principal: str | None = None,
+    ) -> int:
+        """Explicitly enable an entity, overriding a disabled resource.
+
+        Returns:
+            Number of bucket items written. When scoped to one resource,
+            every written bucket is unstamped (`disabled=False` removes the
+            attribute). When unscoped, `_fanout_entity` re-resolves and
+            (re)writes each of the entity's buckets to its OWN resolved
+            value, which may disagree with this call — see `_fanout_entity`.
+        """
+        return await self._set_entity_disabled(entity_id, resource, False, principal)
+
+    async def clear_entity_disabled(
+        self,
+        entity_id: str,
+        resource: str | None = None,
+        principal: str | None = None,
+    ) -> int:
+        """Remove the entity's explicit disabled value, reverting to inherit.
+
+        Returns:
+            Number of bucket items restamped to match the inherited value.
+        """
+        return await self._set_entity_disabled(entity_id, resource, None, principal)
+
+    async def _set_entity_disabled(
+        self,
+        entity_id: str,
+        resource: str | None,
+        value: bool | None,
+        principal: str | None,
+    ) -> int:
+        target_resource = resource if resource is not None else schema.DEFAULT_RESOURCE
+        client = await self._get_client()
+
+        key = {
+            "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
+            "SK": {"S": schema.sk_config(target_resource)},
+        }
+        if value is None:
+            try:
+                await client.update_item(
+                    TableName=self.table_name,
+                    Key=key,
+                    UpdateExpression="REMOVE #disabled",
+                    ExpressionAttributeNames={"#disabled": schema.CONFIG_FIELD_DISABLED},
+                    ConditionExpression="attribute_exists(PK)",
+                )
+            except ClientError as e:
+                if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                    raise
+                # No config item to clear — already effectively "inherit".
+        else:
+            # The entity may have no config item yet — create a minimal one so
+            # the override is durable even with no entity-level limits.
+            #
+            # A created item has to be registered exactly the way set_limits
+            # registers the equivalent one: GSI3 attributes so the sparse
+            # index can see it, and +1 on #ENTITY_CONFIG_RESOURCES so the ref
+            # count matches the number of live entity config items. Skipping
+            # the increment leaves the count low, and a later delete_limits on
+            # *any* entity drives it to zero and unregisters the resource
+            # while other entities still hold configs for it.
+            #
+            # Updating an item that already exists must not increment again,
+            # so the create is attempted under attribute_not_exists(PK) inside
+            # a transaction and falls back to a plain update — the same
+            # create-vs-update split set_limits uses.
+            update_expression = (
+                "SET #disabled = :v,"
+                " entity_id = if_not_exists(entity_id, :eid),"
+                " #resource = if_not_exists(#resource, :res),"
+                " GSI3PK = if_not_exists(GSI3PK, :gsi3pk),"
+                " GSI3SK = if_not_exists(GSI3SK, :gsi3sk),"
+                " GSI4PK = if_not_exists(GSI4PK, :ns),"
+                " GSI4SK = if_not_exists(GSI4SK, :gsi4sk)"
+            )
+            names = {
+                "#disabled": schema.CONFIG_FIELD_DISABLED,
+                "#resource": "resource",
+            }
+            values = {
+                ":v": {"BOOL": value},
+                ":eid": {"S": entity_id},
+                ":res": {"S": target_resource},
+                ":gsi3pk": {"S": schema.gsi3_pk_entity_config(self._namespace_id, target_resource)},
+                ":gsi3sk": {"S": schema.gsi3_sk_entity(entity_id)},
+                ":ns": {"S": self._namespace_id},
+                ":gsi4sk": {"S": schema.pk_entity(self._namespace_id, entity_id)},
+            }
+            try:
+                await client.transact_write_items(
+                    TransactItems=[
+                        {
+                            "Update": {
+                                "TableName": self.table_name,
+                                "Key": key,
+                                "UpdateExpression": update_expression,
+                                "ConditionExpression": "attribute_not_exists(PK)",
+                                "ExpressionAttributeNames": names,
+                                "ExpressionAttributeValues": values,
+                            }
+                        },
+                        {
+                            "Update": {
+                                "TableName": self.table_name,
+                                "Key": {
+                                    "PK": {"S": schema.pk_system(self._namespace_id)},
+                                    "SK": {"S": schema.sk_entity_config_resources()},
+                                },
+                                "UpdateExpression": (
+                                    "SET GSI4PK = if_not_exists(GSI4PK, :reg_gsi4pk),"
+                                    " GSI4SK = if_not_exists(GSI4SK, :reg_gsi4sk)"
+                                    " ADD #reg_resource :one"
+                                ),
+                                "ExpressionAttributeNames": {"#reg_resource": target_resource},
+                                "ExpressionAttributeValues": {
+                                    ":one": {"N": "1"},
+                                    ":reg_gsi4pk": {"S": self._namespace_id},
+                                    ":reg_gsi4sk": {"S": schema.pk_system(self._namespace_id)},
+                                },
+                            }
+                        },
+                    ]
+                )
+            except ClientError as e:
+                if e.response["Error"]["Code"] != "TransactionCanceledException":
+                    raise
+                reasons = e.response.get("CancellationReasons", [])
+                if not (reasons and reasons[0].get("Code") == "ConditionalCheckFailed"):
+                    raise
+                # Config item already exists — update it without double-counting.
+                await client.update_item(
+                    TableName=self.table_name,
+                    Key=key,
+                    UpdateExpression=update_expression,
+                    ExpressionAttributeNames=names,
+                    ExpressionAttributeValues=values,
+                )
+
+        self._config_cache.evict_entity(entity_id, target_resource)
+
+        # For an explicit value the effective state is that value. For a clear,
+        # recompute what the entity now inherits.
+        if value is None:
+            effective, _level = await self.resolve_disabled(entity_id, target_resource)
+        else:
+            effective = value
+
+        count = await self._fanout_entity(entity_id, resource, disabled=effective)
+
+        await self._log_audit_event(
+            action=AuditAction.LIMITS_SET,
+            entity_id=entity_id,
+            principal=principal,
+            resource=target_resource,
+            details={"disabled": value, "buckets_stamped": count},
+        )
+        return count
 
     async def invalidate_config_cache(self) -> None:
         """Invalidate all cached config entries (ADR-122)."""

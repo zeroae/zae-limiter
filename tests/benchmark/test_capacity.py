@@ -18,6 +18,12 @@ pytestmark = pytest.mark.benchmark
 # NOTE: Issue #133 optimized acquire() to use BatchGetItem instead of multiple GetItem calls.
 # The three-tier limit resolution queries remain, but bucket reads are now batched.
 # Config caching (#130) will further reduce the Query operations.
+#
+# NOTE: ADR-125 added a disabled gate to the slow path. Every slow-path acquire()
+# pays one extra BatchGetItem with 3 keys (entity config, entity _default_ config,
+# resource config) per entity it touches. The walk is deliberately uncached, so it
+# is not folded into the config batch, and it is skipped entirely on the
+# speculative fast path, where the guard is an attribute_not_exists on the bucket.
 
 
 class TestCapacityConsumption:
@@ -33,6 +39,7 @@ class TestCapacityConsumption:
         Expected calls (with META folded into BatchGetItem - issue #116):
         - 1 GetItem (version check)
         - 4 Query (three-tier limit resolution: entity, resource, system + parent check)
+        - 1 BatchGetItem with 3 keys = disabled walk (ADR-125)
         - 1 BatchGetItem with 2 keys = entity META + 1 bucket
         - 1 PutItem (single-item optimization, halves WCU cost vs TransactWriteItems)
 
@@ -50,10 +57,16 @@ class TestCapacityConsumption:
                 pass
 
         # Verify BatchGetItem optimization (issue #133 + #116)
-        # Entity META + bucket reads folded into single BatchGetItem
-        assert len(capacity_counter.batch_get_item) == 1, "Should have 1 BatchGetItem call"
-        assert capacity_counter.batch_get_item[0] == 2, (
-            "BatchGetItem should fetch 1 bucket + 1 META"
+        # Entity META + bucket reads folded into single BatchGetItem, preceded by
+        # the slow-path disabled walk (ADR-125)
+        assert len(capacity_counter.batch_get_item) == 2, (
+            "Should have 2 BatchGetItem calls (disabled walk, META + bucket)"
+        )
+        assert capacity_counter.batch_get_item[0] == 3, (
+            "First BatchGetItem should walk entity, entity _default_ and resource config"
+        )
+        assert capacity_counter.batch_get_item[1] == 2, (
+            "Second BatchGetItem should fetch 1 bucket + 1 META"
         )
         # Single-item optimization (issue #313): 1 item → PutItem instead of TransactWriteItems
         assert capacity_counter.put_item == 1, "Should use PutItem for single-item write"
@@ -68,6 +81,7 @@ class TestCapacityConsumption:
         Expected calls (with composite bucket items - ADR-114):
         - 1 GetItem (version check)
         - 4 Query (three-tier limit resolution + parent check)
+        - 1 BatchGetItem with 3 keys = disabled walk (ADR-125)
         - 1 BatchGetItem with 2 keys = entity META + 1 composite bucket
         - 1 TransactWriteItems with 1 item (composite bucket with N limits)
 
@@ -87,10 +101,16 @@ class TestCapacityConsumption:
                 pass
 
         # Verify composite bucket optimization (ADR-114)
-        # Entity META + 1 composite bucket (all limits in single item)
-        assert len(capacity_counter.batch_get_item) == 1, "Should have 1 BatchGetItem call"
-        assert capacity_counter.batch_get_item[0] == 2, (
-            "BatchGetItem should fetch 1 composite bucket + 1 META"
+        # Entity META + 1 composite bucket (all limits in single item), preceded by
+        # the slow-path disabled walk (ADR-125). Neither call grows with num_limits.
+        assert len(capacity_counter.batch_get_item) == 2, (
+            "Should have 2 BatchGetItem calls (disabled walk, META + composite bucket)"
+        )
+        assert capacity_counter.batch_get_item[0] == 3, (
+            "First BatchGetItem should walk entity, entity _default_ and resource config"
+        )
+        assert capacity_counter.batch_get_item[1] == 2, (
+            "Second BatchGetItem should fetch 1 composite bucket + 1 META"
         )
         # Single-item optimization (issue #313): 1 item → PutItem instead of TransactWriteItems
         assert capacity_counter.put_item == 1, "Should use PutItem for single composite bucket"
@@ -99,17 +119,20 @@ class TestCapacityConsumption:
         )
 
     def test_acquire_with_cascade_capacity(self, sync_limiter, capacity_counter):
-        """Verify: acquire() with cascade uses 2 BatchGetItem calls.
+        """Verify: acquire() with cascade uses 4 BatchGetItem calls.
 
         Expected calls (with META folded into BatchGetItem - issue #116):
         - GetItem for version check
         - Query for limit resolution
+        - 1 BatchGetItem with 3 keys (child disabled walk, ADR-125)
         - 1 BatchGetItem with 2 keys (child META + child bucket)
+        - 1 BatchGetItem with 3 keys (parent disabled walk, ADR-125)
         - 1 BatchGetItem with 1 key (parent bucket)
         - 1 TransactWriteItems with 2 items (child + parent buckets) = 2 WCUs
 
-        The cascade path uses 2 BatchGetItem calls because the parent is
-        only discovered after reading the child's META record.
+        The cascade path reads the child before the parent because the parent is
+        only discovered after reading the child's META record. Each entity is
+        gated on its own disabled state, so the walk runs once per entity.
         """
         # Setup hierarchy
         sync_limiter.create_entity("cap-cascade-parent", name="Parent")
@@ -131,16 +154,23 @@ class TestCapacityConsumption:
             ):
                 pass
 
-        # Verify two-phase BatchGetItem (issue #116)
-        # Phase 1: child META + child bucket; Phase 2: parent bucket
-        assert len(capacity_counter.batch_get_item) == 2, (
-            "Should have 2 BatchGetItem calls (child META+bucket, parent bucket)"
+        # Verify two-phase BatchGetItem (issue #116), each phase gated by a
+        # disabled walk for that entity (ADR-125)
+        assert len(capacity_counter.batch_get_item) == 4, (
+            "Should have 4 BatchGetItem calls "
+            "(child disabled walk, child META+bucket, parent disabled walk, parent bucket)"
         )
-        assert capacity_counter.batch_get_item[0] == 2, (
-            "First BatchGetItem should fetch child META + child bucket"
+        assert capacity_counter.batch_get_item[0] == 3, (
+            "First BatchGetItem should walk the child's disabled config"
         )
-        assert capacity_counter.batch_get_item[1] == 1, (
-            "Second BatchGetItem should fetch parent bucket"
+        assert capacity_counter.batch_get_item[1] == 2, (
+            "Second BatchGetItem should fetch child META + child bucket"
+        )
+        assert capacity_counter.batch_get_item[2] == 3, (
+            "Third BatchGetItem should walk the parent's disabled config"
+        )
+        assert capacity_counter.batch_get_item[3] == 1, (
+            "Fourth BatchGetItem should fetch parent bucket"
         )
         assert len(capacity_counter.transact_write_items) == 1, "Should have 1 transaction"
         assert capacity_counter.transact_write_items[0] == 2, (
@@ -152,6 +182,7 @@ class TestCapacityConsumption:
 
         Expected calls (with META folded into BatchGetItem - issue #116, composite limits ADR-114):
         - GetItem for version lookup
+        - 1 BatchGetItem with 3 keys = disabled walk (ADR-125)
         - 1 BatchGetItem with 2 keys = entity META + 1 bucket
         - 1 PutItem (single-item optimization, halves WCU cost)
 
@@ -176,10 +207,17 @@ class TestCapacityConsumption:
             ):
                 pass
 
-        # Verify BatchGetItem optimization (issue #133 + #116)
-        assert len(capacity_counter.batch_get_item) == 1, "Should have 1 BatchGetItem call"
-        assert capacity_counter.batch_get_item[0] == 2, (
-            "BatchGetItem should fetch 1 bucket + 1 META"
+        # Verify BatchGetItem optimization (issue #133 + #116). The disabled walk
+        # runs even when limits are passed explicitly: config resolution is
+        # short-circuited, but the disabled gate is not (ADR-125).
+        assert len(capacity_counter.batch_get_item) == 2, (
+            "Should have 2 BatchGetItem calls (disabled walk, META + bucket)"
+        )
+        assert capacity_counter.batch_get_item[0] == 3, (
+            "First BatchGetItem should walk entity, entity _default_ and resource config"
+        )
+        assert capacity_counter.batch_get_item[1] == 2, (
+            "Second BatchGetItem should fetch 1 bucket + 1 META"
         )
         # Single-item optimization (issue #313): 1 item → PutItem instead of TransactWriteItems
         assert capacity_counter.put_item == 1, "Should use PutItem for single-item write"
@@ -199,6 +237,14 @@ class TestCapacityConsumption:
         - 1 PutItem (single-item optimization)
 
         The config BatchGetItem replaces up to 4 sequential GetItem calls.
+
+        The disable walk (ADR-125) does NOT add a fourth call here: its levels
+        are a subset of the config levels, so when the config fetch actually
+        read them — as on this cold path — the walk is answered from that same
+        response. It reverts to its own BatchGetItem whenever any level came
+        from the config cache instead, because a cached value must never
+        answer the gate; see
+        tests/unit/test_disable.py::TestDisabledWalkReusesTheConfigFetch.
         """
         # Setup entity with stored limits
         limits = [Limit.per_minute("rpm", 1_000_000)]
@@ -216,9 +262,10 @@ class TestCapacityConsumption:
             ):
                 pass
 
-        # Verify 2 BatchGetItem calls: 1 for configs + 1 for buckets
+        # Verify 2 BatchGetItem calls: configs (serving the disable walk too), buckets
         assert len(capacity_counter.batch_get_item) == 2, (
-            "Should have 2 BatchGetItem calls (configs + buckets)"
+            "Should have 2 BatchGetItem calls (configs + buckets); the disable walk "
+            "reuses the config fetch rather than repeating it (ADR-125)"
         )
         # Config batch fetches 3 keys: entity config, resource config, system config
         # (entity_default also fetched = 4 keys total)

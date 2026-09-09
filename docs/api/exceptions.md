@@ -22,9 +22,11 @@ ZAELimiterError (base)
 ├── VersionError
 │   ├── VersionMismatchError
 │   └── IncompatibleSchemaError
-└── ValidationError
-    ├── InvalidIdentifierError
-    └── InvalidNameError
+├── ValidationError
+│   ├── InvalidIdentifierError
+│   └── InvalidNameError
+├── ResourceDisabled
+└── FanoutIncomplete
 ```
 
 ## Base Exception
@@ -133,6 +135,20 @@ ZAELimiterError (base)
       heading_level: 3
 
 ::: zae_limiter.exceptions.InvalidNameError
+    options:
+      show_root_heading: true
+      show_source: false
+      heading_level: 3
+
+## Configuration State Exceptions
+
+::: zae_limiter.exceptions.ResourceDisabled
+    options:
+      show_root_heading: true
+      show_source: false
+      heading_level: 3
+
+::: zae_limiter.exceptions.FanoutIncomplete
     options:
       show_root_heading: true
       show_source: false

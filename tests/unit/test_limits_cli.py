@@ -305,6 +305,109 @@ class TestLimitsCfnTemplate:
             assert rpm["RefillPeriod"] == 60
 
 
+class TestLimitsCfnTemplateDisabled:
+    """Tests for the `disabled` manifest key -> CFN `Disabled` property tri-state emission.
+
+    The generator (`limits cfn-template`) and the provisioner's consumer
+    (`_cfn_properties_to_manifest`) must agree on the wire format, or a YAML
+    manifest with `disabled: true` would silently produce a template that never
+    disables anything.
+    """
+
+    def _run_cfn_template(self, yaml_content: dict) -> dict:
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            yaml.dump(yaml_content, f)
+            f.flush()
+
+            runner = CliRunner()
+            result = runner.invoke(
+                cli,
+                ["limits", "cfn-template", "--name", "test-app", "-f", f.name],
+            )
+            assert result.exit_code == 0
+            parsed: dict = yaml.safe_load(result.output)
+            return parsed["Resources"]["TenantLimits"]["Properties"]
+
+    def test_resource_disabled_true_emitted(self):
+        props = self._run_cfn_template(
+            {
+                "namespace": "test-ns",
+                "resources": {"gpt-4": {"disabled": True, "limits": {"rpm": {"capacity": 1000}}}},
+            }
+        )
+        assert props["Resources"]["gpt-4"]["Disabled"] is True
+
+    def test_resource_disabled_omitted_when_absent(self):
+        """No `disabled` key in the manifest means "inherit" — must stay absent from the CFN
+        template."""
+        props = self._run_cfn_template(
+            {
+                "namespace": "test-ns",
+                "resources": {"gpt-4": {"limits": {"rpm": {"capacity": 1000}}}},
+            }
+        )
+        assert "Disabled" not in props["Resources"]["gpt-4"]
+
+    def test_entity_resource_disabled_false_emitted(self):
+        """False is the carve-out value — it must round-trip, not be coerced or dropped."""
+        props = self._run_cfn_template(
+            {
+                "namespace": "test-ns",
+                "entities": {
+                    "vip-1": {
+                        "resources": {
+                            "gpt-4": {"disabled": False, "limits": {"rpm": {"capacity": 1000}}}
+                        }
+                    }
+                },
+            }
+        )
+        assert props["Entities"]["vip-1"]["Resources"]["gpt-4"]["Disabled"] is False
+
+    def test_entity_resource_disabled_omitted_when_absent(self):
+        props = self._run_cfn_template(
+            {
+                "namespace": "test-ns",
+                "entities": {
+                    "vip-1": {"resources": {"gpt-4": {"limits": {"rpm": {"capacity": 1000}}}}}
+                },
+            }
+        )
+        assert "Disabled" not in props["Entities"]["vip-1"]["Resources"]["gpt-4"]
+
+    def test_round_trip_resource_and_entity_disabled_survive_cfn_conversion(self):
+        """Manifest -> CFN template -> `_cfn_properties_to_manifest` reproduces the tri-state.
+
+        Exercises the generator (limits_cli.py) and the provisioner's consumer
+        (zae_limiter_provisioner.handler) together to prove the wire format they
+        share actually agrees in both directions.
+        """
+        from zae_limiter_provisioner.handler import _cfn_properties_to_manifest
+
+        props = self._run_cfn_template(
+            {
+                "namespace": "test-ns",
+                "resources": {
+                    "gpt-4": {"disabled": True, "limits": {"rpm": {"capacity": 1000}}},
+                    "claude-3": {"limits": {"rpm": {"capacity": 500}}},
+                },
+                "entities": {
+                    "vip-1": {
+                        "resources": {
+                            "gpt-4": {"disabled": False, "limits": {"rpm": {"capacity": 2000}}}
+                        }
+                    }
+                },
+            }
+        )
+
+        round_tripped = _cfn_properties_to_manifest(props)
+
+        assert round_tripped["resources"]["gpt-4"]["disabled"] is True
+        assert "disabled" not in round_tripped["resources"]["claude-3"]
+        assert round_tripped["entities"]["vip-1"]["resources"]["gpt-4"]["disabled"] is False
+
+
 class TestLoadYaml:
     """Tests for _load_yaml helper."""
 

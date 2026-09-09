@@ -186,3 +186,4 @@ nav:
           - ADR-122 Resolve Limits on Repository: adr/122-resolve-limits-on-repository.md
       - Pre-1.0 Hardening (v0.10.0+):
           - ADR-123 Local Secondary Indexes: adr/123-local-secondary-indexes.md
+          - ADR-125 Resource and Entity Disable: adr/125-resource-disable.md

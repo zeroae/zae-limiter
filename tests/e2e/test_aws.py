@@ -1661,3 +1661,95 @@ class TestE2EAWSProvisionerCFNStack:
 
         claude3_limits2 = await repo.get_resource_defaults("claude-3")
         assert claude3_limits2 == [], "claude-3 limits should be deleted after stack deletion"
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_provisioner_lambda_can_stamp_a_live_bucket(self, cfn_provisioner_stack):
+        """The provisioner Lambda must be able to fan out over existing buckets.
+
+        This is the only test in the suite that exercises the disable
+        fan-out under the provisioner's real IAM role. It matters because
+        `fanout.stamp_bucket` is the sole `update_item` call in
+        `src/zae_limiter_provisioner/`, and `ProvisionerRole` originally
+        granted only GetItem/PutItem/DeleteItem/Query -- so the call was an
+        AccessDeniedException in production while every existing test passed.
+
+        Nothing else catches it:
+
+        - `TestE2EAWSProvisioner` and `tests/integration/test_provisioner.py`
+          call `_handle_cli` in-process with the *test's* credentials, so
+          `ProvisionerRole` is never assumed no matter how real the table is.
+        - LocalStack cannot help either: `ENFORCE_IAM` is Pro-gated, and on
+          community edition a role missing an action still performs it
+          (verified against 4.14 -- the flag is accepted and ignored).
+        - `tests/unit/test_cfn_iam_parity.py::TestProvisionerRoleParity`
+          guards the grant statically, but only against the template text.
+
+        So the role is only genuinely enforced here, invoking the deployed
+        Lambda on real AWS. The fan-out also needs a bucket to find: with an
+        empty table `stamp_bucket` is never reached and the invocation
+        succeeds regardless of the policy, which is exactly how the gap
+        survived. Hence the `acquire()` before the invoke.
+
+        Asserts, in order: the invocation carried no FunctionError (an
+        AccessDenied surfaces as an unhandled error, not a bad status code),
+        the live bucket actually got stamped, and `#PROVISIONER` was written
+        -- the last one because `_handle_cli` writes state *after* the
+        fan-out, so a throwing fan-out leaves managed state behind the
+        config items that were already applied.
+        """
+        import json
+
+        import boto3 as boto3_sync
+
+        repo = cfn_provisioner_stack["repo"]
+        main_stack = cfn_provisioner_stack["stack_name"]
+
+        # A bucket must exist before the apply, or the fan-out finds nothing
+        # to stamp and never reaches update_item.
+        limiter = RateLimiter(repository=repo)
+        await repo.set_resource_defaults("gpt-4o", [Limit.per_minute("rpm", 1000)])
+        async with limiter.acquire("fanout-user", "gpt-4o", {"rpm": 1}):
+            pass
+
+        buckets = await repo.get_buckets("fanout-user", resource="gpt-4o")
+        assert buckets, "bucket must exist before the apply for the fan-out to have work"
+
+        payload = {
+            "action": "apply",
+            "table_name": main_stack,
+            "namespace_id": repo._namespace_id,
+            "manifest": {
+                "namespace": "default",
+                "resources": {
+                    "gpt-4o": {"disabled": True, "limits": {"rpm": {"capacity": 1000}}},
+                },
+            },
+        }
+
+        lambda_client = boto3_sync.client("lambda", region_name="us-east-1")
+        response = lambda_client.invoke(
+            FunctionName=f"{main_stack}-limits-provisioner",
+            InvocationType="RequestResponse",
+            Payload=json.dumps(payload).encode(),
+        )
+        body = json.loads(response["Payload"].read())
+
+        assert "FunctionError" not in response, (
+            f"provisioner Lambda raised while fanning out over a live bucket: {body}. "
+            f"An AccessDeniedException here means ProvisionerRole is missing a "
+            f"DynamoDB action that src/zae_limiter_provisioner/ calls."
+        )
+        assert body["status"] == "applied", body
+        assert body["errors"] == [], body
+
+        # The fan-out reached the live bucket under the Lambda's own role.
+        await repo.invalidate_config_cache()
+        assert await repo.get_resource_disabled("gpt-4o") is True
+
+        # And the handler got past the fan-out to persist its state.
+        state = await repo.get_provisioner_state()
+        assert state is not None, (
+            "#PROVISIONER missing -- the handler aborted during fan-out, leaving "
+            "managed state out of step with the config items it had already written"
+        )
+        assert "gpt-4o" in state.get("managed_resources", [])
