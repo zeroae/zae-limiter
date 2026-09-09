@@ -1305,3 +1305,101 @@ class TestDisabledWalkReusesTheConfigFetch:
             f"expected exactly 1 read for the gate on a warm config cache, saw "
             f"{seen[0]} — 0 would mean the gate is answered from cache"
         )
+
+
+@pytest.mark.asyncio
+class TestSetEntityDisabledCreateVsUpdate:
+    """The registry increment must happen on create only.
+
+    `_set_entity_disabled` attempts the config write inside a transaction
+    guarded by `attribute_not_exists(PK)` so that only a create bumps
+    `#ENTITY_CONFIG_RESOURCES`. When the item already exists the transaction
+    is cancelled and the write falls back to a plain UpdateItem, leaving the
+    ref count alone.
+    """
+
+    async def test_second_disable_updates_without_incrementing_again(self, disable_repo):
+        """Disabling twice must leave exactly one registry reference."""
+        await disable_repo.disable_entity("user-b", "gpt-4")
+        await disable_repo.enable_entity("user-b", "gpt-4")
+        await disable_repo.disable_entity("user-b", "gpt-4")
+
+        assert await disable_repo.get_entity_disabled("user-b", "gpt-4") is True
+
+        # One config item ever existed, so one delete must fully deregister it.
+        await disable_repo.delete_limits("user-b", "gpt-4")
+        assert "gpt-4" not in await disable_repo.list_resources_with_entity_configs()
+
+    async def test_non_transaction_error_propagates(self, disable_repo, monkeypatch):
+        """A ClientError that is not a cancelled transaction is re-raised."""
+        client = await disable_repo._get_client()
+
+        async def failing_transact(**kwargs):
+            raise ClientError(
+                {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": "x"}},
+                "TransactWriteItems",
+            )
+
+        monkeypatch.setattr(client, "transact_write_items", failing_transact)
+
+        with pytest.raises(ClientError) as exc:
+            await disable_repo.disable_entity("user-b", "gpt-4")
+        assert exc.value.response["Error"]["Code"] == "ProvisionedThroughputExceededException"
+
+    async def test_cancellation_other_than_condition_failure_propagates(
+        self, disable_repo, monkeypatch
+    ):
+        """A cancelled transaction that was not a condition failure is re-raised.
+
+        Only ConditionalCheckFailed means "the item already exists"; anything
+        else (a validation error, a capacity failure on the registry update)
+        must not be mistaken for it and silently downgraded to a plain write.
+        """
+        client = await disable_repo._get_client()
+
+        async def cancelled_transact(**kwargs):
+            raise ClientError(
+                {
+                    "Error": {"Code": "TransactionCanceledException", "Message": "x"},
+                    "CancellationReasons": [{"Code": "ValidationError"}],
+                },
+                "TransactWriteItems",
+            )
+
+        monkeypatch.setattr(client, "transact_write_items", cancelled_transact)
+
+        with pytest.raises(ClientError) as exc:
+            await disable_repo.disable_entity("user-b", "gpt-4")
+        assert exc.value.response["Error"]["Code"] == "TransactionCanceledException"
+
+
+@pytest.mark.asyncio
+class TestDeleteDefaultResourceConfigFansOutUnscoped:
+    """Deleting an entity's `_default_` config is an entity-wide change."""
+
+    async def test_delete_default_config_with_disabled_restamps_every_resource(
+        self, disable_repo, disable_limiter
+    ):
+        """A `_default_` directive spans resources, so its removal must too.
+
+        `_fanout_entity` is called unscoped here, which re-resolves each
+        bucket's own resource rather than applying one value blindly.
+        """
+        await disable_repo.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 1000)])
+        await disable_repo.set_resource_defaults("claude-3", [Limit.per_minute("rpm", 1000)])
+        async with disable_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+            pass
+        async with disable_limiter.acquire("user-1", "claude-3", {"rpm": 1}):
+            pass
+
+        # Entity-wide disable via the _default_ level, then remove it.
+        await disable_repo.disable_entity("user-1")
+        assert await disable_repo.get_entity_disabled("user-1", schema.DEFAULT_RESOURCE) is True
+
+        await disable_repo.delete_limits("user-1", schema.DEFAULT_RESOURCE)
+
+        # Both resources are usable again — the unscoped fan-out cleared them.
+        async with disable_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+            pass
+        async with disable_limiter.acquire("user-1", "claude-3", {"rpm": 1}):
+            pass
