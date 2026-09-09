@@ -1,6 +1,7 @@
 """DynamoDB repository for rate limiter data."""
 
 import asyncio
+import functools
 import logging
 import random
 import time
@@ -1694,6 +1695,7 @@ class Repository:
     async def batch_get_configs(
         self,
         keys: list[tuple[str, str]],
+        disabled_out: dict[tuple[str, str], bool | None] | None = None,
     ) -> dict[tuple[str, str], tuple[list[Limit], OnUnavailableAction | None]]:
         """
         Batch get config items in a single DynamoDB call.
@@ -1703,6 +1705,16 @@ class Repository:
 
         Args:
             keys: List of (PK, SK) tuples identifying config items
+            disabled_out: Optional dict to receive the tri-state `disabled`
+                value of every key actually requested here, so a caller that
+                also needs the disable walk can reuse this read instead of
+                issuing an identical second BatchGetItem (ADR-125). Keys that
+                resolve to no item are recorded as None ("no explicit value"),
+                which is exactly what the walk needs — a requested-but-absent
+                level is still a *fresh* answer. Only keys present in this dict
+                may be reused; anything served from the config cache must not
+                be, since caching the gate would let a first acquire with no
+                bucket yet be admitted to a disabled resource permanently.
 
         Returns:
             Dict mapping (PK, SK) to (limits, on_unavailable) tuples.
@@ -1744,6 +1756,13 @@ class Repository:
                 }
             )
 
+            # Every key in this chunk was genuinely read, so each one gets a
+            # fresh `disabled` answer — absent item included (None = no
+            # explicit value at that level).
+            if disabled_out is not None:
+                for pk, sk in chunk:
+                    disabled_out[(pk, sk)] = None
+
             # Process responses: deserialize each item
             items = response.get("Responses", {}).get(self.table_name, [])
             for item in items:
@@ -1757,6 +1776,8 @@ class Repository:
                         cast(OnUnavailableAction, ou_str) if ou_str else None
                     )
                     result[(pk, sk)] = (limits, on_unavailable)
+                    if disabled_out is not None:
+                        disabled_out[(pk, sk)] = schema.decode_disabled(item)
 
         return result
 
@@ -4373,6 +4394,7 @@ class Repository:
         self,
         entity_id: str,
         resource: str,
+        disabled_out: dict[tuple[str, str], bool | None] | None = None,
     ) -> tuple[list[Limit] | None, OnUnavailableAction | None, ConfigSource | None]:
         """Resolve effective limits using the four-level config hierarchy.
 
@@ -4382,6 +4404,14 @@ class Repository:
         Args:
             entity_id: Entity to resolve limits for
             resource: Resource being accessed
+            disabled_out: Optional dict to receive the tri-state `disabled`
+                value of each config level this call actually read from
+                DynamoDB. The disable walk's levels are a subset of these, so
+                a caller needing both can reuse this read rather than issuing
+                an identical second BatchGetItem — see
+                `resolve_disabled_from_fetched`. Levels served from the config
+                cache are deliberately absent from the dict: they are not
+                fresh, and the gate must never be answered from cache.
 
         Returns:
             Tuple of (limits, on_unavailable, config_source)
@@ -4389,10 +4419,13 @@ class Repository:
         # Try batched resolution (1 BatchGetItem instead of up to 4 GetItem calls)
         if self.capabilities.supports_batch_operations:
             try:
+                fetch_fn = self.batch_get_configs
+                if disabled_out is not None:
+                    fetch_fn = functools.partial(self.batch_get_configs, disabled_out=disabled_out)
                 return await self._config_cache.resolve_limits(
                     entity_id,
                     resource,
-                    self.batch_get_configs,
+                    fetch_fn,
                 )
             except Exception:
                 logger.debug("Batched config resolution failed, falling back to sequential")
@@ -4475,6 +4508,55 @@ class Repository:
                 return self._on_unavailable_cache
             logger.warning("DynamoDB unavailable, defaulting on_unavailable=block")
             return "block"
+
+    def resolve_disabled_from_fetched(
+        self,
+        entity_id: str,
+        resource: str,
+        fetched: dict[tuple[str, str], bool | None],
+    ) -> tuple[bool, str | None] | None:
+        """Answer the disable walk from a config fetch, or decline (ADR-125).
+
+        `resolve_limits(disabled_out=...)` records the tri-state `disabled` of
+        every level it actually read. The disable walk's levels are a subset of
+        those, so when all of them were read in that same call, the walk can be
+        evaluated here for free instead of issuing an identical second
+        BatchGetItem.
+
+        Returns None — meaning "the caller must call `resolve_disabled`" — if
+        even one level is missing from `fetched`. A missing level is one the
+        config cache served, and a cached value must never answer this gate:
+        a first `acquire()` for an entity with no bucket yet would then be
+        admitted on a stale `false`, and would go on to create an unstamped
+        bucket that the already-finished fan-out will never stamp. That is
+        permanent admission to a disabled resource, which is why
+        `resolve_disabled` is uncached in the first place.
+
+        Note the distinction this relies on: a level present in `fetched` with
+        value None was genuinely read and has no explicit value (so the walk
+        moves on); a level absent from `fetched` was not read at all.
+        """
+        ns = self._namespace_id
+        levels: list[tuple[str, tuple[str, str]]] = [
+            ("entity", (schema.pk_entity(ns, entity_id), schema.sk_config(resource))),
+        ]
+        if resource != schema.DEFAULT_RESOURCE:
+            levels.append(
+                (
+                    "entity_default",
+                    (schema.pk_entity(ns, entity_id), schema.sk_config(schema.DEFAULT_RESOURCE)),
+                )
+            )
+        levels.append(("resource", (schema.pk_resource(ns, resource), schema.sk_config())))
+
+        if any(key not in fetched for _level, key in levels):
+            return None
+
+        for level, key in levels:
+            value = fetched[key]
+            if value is not None:
+                return value, level
+        return False, None
 
     async def resolve_disabled(
         self,

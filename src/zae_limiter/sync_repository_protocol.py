@@ -843,7 +843,10 @@ class SyncRepositoryProtocol(Protocol):
         ...
 
     def resolve_limits(
-        self, entity_id: str, resource: str
+        self,
+        entity_id: str,
+        resource: str,
+        disabled_out: "dict[tuple[str, str], bool | None] | None" = None,
     ) -> "tuple[list[Limit] | None, OnUnavailableAction | None, ConfigSource | None]":
         """
         Resolve effective limits using the four-level config hierarchy.
@@ -861,6 +864,12 @@ class SyncRepositoryProtocol(Protocol):
         Args:
             entity_id: Entity to resolve limits for
             resource: Resource being accessed
+            disabled_out: Optional dict receiving the tri-state ``disabled``
+                of each config level this call actually read, so a caller
+                needing the disable walk too can reuse the read rather than
+                issuing a second, identical one (ADR-125). Levels served from
+                a backend cache must be omitted — see
+                ``resolve_disabled_from_fetched``.
 
         Returns:
             Tuple of (limits, on_unavailable, config_source) where:
@@ -873,6 +882,20 @@ class SyncRepositoryProtocol(Protocol):
 
     def resolve_disabled(self, entity_id: str, resource: str) -> "tuple[bool, str | None]":
         """Resolve the effective disabled state for an entity+resource (ADR-125)."""
+        ...
+
+    def resolve_disabled_from_fetched(
+        self, entity_id: str, resource: str, fetched: "dict[tuple[str, str], bool | None]"
+    ) -> "tuple[bool, str | None] | None":
+        """Answer the disable walk from a config fetch, or decline (ADR-125).
+
+        Returns None when any level of the walk is absent from ``fetched``,
+        meaning the caller must fall back to ``resolve_disabled``. A backend
+        must never answer this gate from cached config: with no bucket yet,
+        the fast-path guard cannot fire, so a stale value would admit an
+        entity to a disabled resource and leave behind an unstamped bucket
+        that the completed fan-out will never revisit.
+        """
         ...
 
     def disable_resource(self, resource: str, principal: str | None = None) -> int:

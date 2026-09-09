@@ -1230,13 +1230,25 @@ class RateLimiter:
 
         # Phase 1: Resolve child limits, then fetch child META + child buckets
         # in a single BatchGetItem call (no separate get_entity round trip).
+        # The disable walk's levels are a subset of the config levels, so let
+        # the config fetch hand back what it actually read (ADR-125).
+        fetched_disabled: dict[tuple[str, str], bool | None] = {}
         child_limits, child_config_source = await self._resolve_limits(
-            entity_id, resource, limits_override
+            entity_id, resource, limits_override, fetched_disabled
         )
 
         # Slow path gate (ADR-125). Covers first acquire — no bucket exists yet,
         # so the fast-path guard cannot fire — and every fallback path.
-        disabled, level = await self._repository.resolve_disabled(entity_id, resource)
+        #
+        # Reuse the config fetch only when it genuinely read every level of the
+        # walk; otherwise those levels came from the config cache and must not
+        # answer this gate. See Repository.resolve_disabled_from_fetched.
+        resolved = self._repository.resolve_disabled_from_fetched(
+            entity_id, resource, fetched_disabled
+        )
+        if resolved is None:
+            resolved = await self._repository.resolve_disabled(entity_id, resource)
+        disabled, level = resolved
         if disabled:
             raise ResourceDisabled(
                 entity_id=entity_id, resource=resource, level=level or "resource"
@@ -1424,6 +1436,7 @@ class RateLimiter:
         entity_id: str,
         resource: str,
         limits_override: list[Limit] | None,
+        disabled_out: dict[tuple[str, str], bool | None] | None = None,
     ) -> tuple[list[Limit], ConfigSource | Literal["override"]]:
         """
         Resolve limits using four-tier hierarchy.
@@ -1456,6 +1469,7 @@ class RateLimiter:
         limits, _, config_source = await self._repository.resolve_limits(
             entity_id,
             resource,
+            disabled_out,
         )
 
         if limits is not None and config_source is not None:

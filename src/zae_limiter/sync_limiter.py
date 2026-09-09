@@ -1016,10 +1016,16 @@ class SyncRateLimiter:
         validate_identifier(entity_id, "entity_id")
         validate_resource(resource)
         now_ms = int(time.time() * 1000)
+        fetched_disabled: dict[tuple[str, str], bool | None] = {}
         child_limits, child_config_source = self._resolve_limits(
-            entity_id, resource, limits_override
+            entity_id, resource, limits_override, fetched_disabled
         )
-        disabled, level = self._repository.resolve_disabled(entity_id, resource)
+        resolved = self._repository.resolve_disabled_from_fetched(
+            entity_id, resource, fetched_disabled
+        )
+        if resolved is None:
+            resolved = self._repository.resolve_disabled(entity_id, resource)
+        disabled, level = resolved
         if disabled:
             raise ResourceDisabled(
                 entity_id=entity_id, resource=resource, level=level or "resource"
@@ -1156,7 +1162,11 @@ class SyncRateLimiter:
         return result
 
     def _resolve_limits(
-        self, entity_id: str, resource: str, limits_override: list[Limit] | None
+        self,
+        entity_id: str,
+        resource: str,
+        limits_override: list[Limit] | None,
+        disabled_out: dict[tuple[str, str], bool | None] | None = None,
     ) -> tuple[list[Limit], ConfigSource | Literal["override"]]:
         """
         Resolve limits using four-tier hierarchy.
@@ -1183,7 +1193,9 @@ class SyncRateLimiter:
         """
         if limits_override is not None:
             return (limits_override, "override")
-        limits, _, config_source = self._repository.resolve_limits(entity_id, resource)
+        limits, _, config_source = self._repository.resolve_limits(
+            entity_id, resource, disabled_out
+        )
         if limits is not None and config_source is not None:
             return (limits, config_source)
         raise ValidationError(

@@ -233,11 +233,18 @@ class TestCapacityConsumption:
         Expected calls:
         - 1 GetItem (version check)
         - 1 BatchGetItem for config resolution (entity, entity_default, resource, system)
-        - 1 BatchGetItem with 3 keys = disabled walk (ADR-125)
         - 1 BatchGetItem with 2 keys = entity META + 1 bucket
         - 1 PutItem (single-item optimization)
 
         The config BatchGetItem replaces up to 4 sequential GetItem calls.
+
+        The disable walk (ADR-125) does NOT add a fourth call here: its levels
+        are a subset of the config levels, so when the config fetch actually
+        read them — as on this cold path — the walk is answered from that same
+        response. It reverts to its own BatchGetItem whenever any level came
+        from the config cache instead, because a cached value must never
+        answer the gate; see
+        tests/unit/test_disable.py::TestDisabledWalkReusesTheConfigFetch.
         """
         # Setup entity with stored limits
         limits = [Limit.per_minute("rpm", 1_000_000)]
@@ -255,23 +262,19 @@ class TestCapacityConsumption:
             ):
                 pass
 
-        # Verify 3 BatchGetItem calls: configs, disabled walk (ADR-125), buckets
-        assert len(capacity_counter.batch_get_item) == 3, (
-            "Should have 3 BatchGetItem calls (configs + disabled walk + buckets)"
+        # Verify 2 BatchGetItem calls: configs (serving the disable walk too), buckets
+        assert len(capacity_counter.batch_get_item) == 2, (
+            "Should have 2 BatchGetItem calls (configs + buckets); the disable walk "
+            "reuses the config fetch rather than repeating it (ADR-125)"
         )
         # Config batch fetches 3 keys: entity config, resource config, system config
         # (entity_default also fetched = 4 keys total)
         assert capacity_counter.batch_get_item[0] >= 3, (
             "First BatchGetItem should fetch config keys"
         )
-        # Disabled walk is separate from the config batch: it is uncached, and it
-        # decides on levels that set `disabled` without defining limits (ADR-125)
-        assert capacity_counter.batch_get_item[1] == 3, (
-            "Second BatchGetItem should walk entity, entity _default_ and resource config"
-        )
         # Bucket batch fetches META + bucket
-        assert capacity_counter.batch_get_item[2] == 2, (
-            "Third BatchGetItem should fetch 1 bucket + 1 META"
+        assert capacity_counter.batch_get_item[1] == 2, (
+            "Second BatchGetItem should fetch 1 bucket + 1 META"
         )
         # No sequential GetItem for config resolution
         assert capacity_counter.get_item == 1, "Should have only 1 GetItem (version check)"

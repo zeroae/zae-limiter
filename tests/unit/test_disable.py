@@ -1217,3 +1217,91 @@ class TestDeleteSkipsFanoutWhenNothingWasDisabled:
         await disable_repo.delete_limits("user-1", "gpt-4")
 
         assert counts["query"] > 0, "deleting a disabled entity config must restamp its buckets"
+
+
+@pytest.mark.asyncio
+class TestDisabledWalkReusesTheConfigFetch:
+    """The disabled walk must not re-fetch what the config batch just read.
+
+    `resolve_limits` and `resolve_disabled` walk overlapping levels: the
+    disabled walk's three keys (entity(resource), entity(`_default_`),
+    resource) are a subset of the config walk's four. On a config-cache
+    MISS both run, and the two BatchGetItems request an identical key set
+    back to back.
+
+    The gate must stay uncached, though, and that is not a style
+    preference. On a config-cache HIT there is no fetch to reuse, so the
+    gate has to issue its own read. If it instead trusted the cached
+    values, a first `acquire()` for an entity with no bucket yet would be
+    admitted on a stale `false` -- the fast-path
+    `attribute_not_exists(#disabled)` guard cannot fire when no bucket
+    exists -- and it would then CREATE an unstamped bucket that the
+    already-completed fan-out will never stamp. That is permanent
+    admission to a disabled resource, not a TTL-bounded window.
+
+    So the rule is: reuse only values fetched in this same call, never
+    cached ones. These tests pin both halves.
+    """
+
+    @staticmethod
+    def _count_config_batches(repo, client, monkeypatch) -> list[int]:
+        """Count BatchGetItems whose key set is exactly the config levels."""
+        ns = repo._namespace_id
+        config_keys = {
+            (schema.pk_entity(ns, "u1"), schema.sk_config("gpt-4")),
+            (schema.pk_entity(ns, "u1"), schema.sk_config(schema.DEFAULT_RESOURCE)),
+            (schema.pk_resource(ns, "gpt-4"), schema.sk_config()),
+        }
+        seen = [0]
+        original = client.batch_get_item
+
+        async def counting(**kwargs):
+            for table in kwargs.get("RequestItems", {}).values():
+                keys = {(k["PK"]["S"], k["SK"]["S"]) for k in table.get("Keys", [])}
+                if keys & config_keys:
+                    seen[0] += 1
+            return await original(**kwargs)
+
+        monkeypatch.setattr(client, "batch_get_item", counting)
+        return seen
+
+    async def test_cold_acquire_does_not_fetch_the_config_levels_twice(
+        self, disable_repo, disable_limiter, monkeypatch
+    ):
+        """A cold slow-path acquire reads the config levels once, not twice."""
+        await disable_repo.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 1000)])
+
+        client = await disable_repo._get_client()
+        seen = self._count_config_batches(disable_repo, client, monkeypatch)
+
+        async with disable_limiter.acquire("u1", "gpt-4", {"rpm": 1}):
+            pass
+
+        assert seen[0] == 1, (
+            f"config levels were fetched in {seen[0]} separate BatchGetItems; the "
+            f"disabled walk re-requests the exact keys resolve_limits just read"
+        )
+
+    async def test_warm_config_cache_still_reads_the_gate(
+        self, disable_repo, disable_limiter, monkeypatch
+    ):
+        """On a cache hit there is nothing to reuse, so the gate must read.
+
+        This is the safety half: if this count ever drops to 0, the gate is
+        being answered from cached config and a disabled resource can admit
+        a brand-new entity permanently.
+        """
+        await disable_repo.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 1000)])
+        # Warm every config slot without creating a bucket.
+        await disable_repo.resolve_limits("u1", "gpt-4")
+
+        client = await disable_repo._get_client()
+        seen = self._count_config_batches(disable_repo, client, monkeypatch)
+
+        async with disable_limiter.acquire("u1", "gpt-4", {"rpm": 1}):
+            pass
+
+        assert seen[0] == 1, (
+            f"expected exactly 1 read for the gate on a warm config cache, saw "
+            f"{seen[0]} — 0 would mean the gate is answered from cache"
+        )
