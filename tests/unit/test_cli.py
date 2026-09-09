@@ -1282,12 +1282,15 @@ class TestCLI:
     ) -> None:
         """The ProvisionerFunctionName output means the function was created."""
         self._status_mocks(
-            mock_stack_manager, mock_repository, ["TableName", "ProvisionerFunctionName"]
+            mock_stack_manager,
+            mock_repository,
+            ["TableName", "AggregatorFunctionName", "ProvisionerFunctionName"],
         )
 
         result = runner.invoke(cli, ["status", "--name", "test-stack"])
 
         assert result.exit_code == 0
+        assert "Aggregator:    Enabled" in result.output
         assert "Provisioner:   Enabled" in result.output
 
     @patch("zae_limiter.repository.Repository")
@@ -1296,12 +1299,33 @@ class TestCLI:
         self, mock_stack_manager: Mock, mock_repository: Mock, runner: CliRunner
     ) -> None:
         """Outputs read, but no provisioner output: the function was not created."""
+        self._status_mocks(
+            mock_stack_manager, mock_repository, ["TableName", "AggregatorFunctionName"]
+        )
+
+        result = runner.invoke(cli, ["status", "--name", "test-stack"])
+
+        assert result.exit_code == 0
+        assert "Aggregator:    Enabled" in result.output
+        assert "Provisioner:   Disabled" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    @patch("zae_limiter.cli.StackManager")
+    def test_status_aggregator_disabled_despite_table_stream(
+        self, mock_stack_manager: Mock, mock_repository: Mock, runner: CliRunner
+    ) -> None:
+        """A --no-aggregator stack reads Disabled even though the table stream is on.
+
+        The table's StreamSpecification is unconditional in the template, so it is
+        enabled whether or not the aggregator was deployed. Reading it as the
+        aggregator's state reported Enabled for every stack.
+        """
         self._status_mocks(mock_stack_manager, mock_repository, ["TableName"])
 
         result = runner.invoke(cli, ["status", "--name", "test-stack"])
 
         assert result.exit_code == 0
-        assert "Provisioner:   Disabled" in result.output
+        assert "Aggregator:    Disabled" in result.output
 
     @patch("zae_limiter.repository.Repository")
     @patch("zae_limiter.cli.StackManager")
@@ -1314,6 +1338,7 @@ class TestCLI:
         result = runner.invoke(cli, ["status", "--name", "test-stack"])
 
         assert result.exit_code == 0
+        assert "Aggregator:    Unknown" in result.output
         assert "Provisioner:   Unknown" in result.output
 
     @patch("zae_limiter.repository.Repository")

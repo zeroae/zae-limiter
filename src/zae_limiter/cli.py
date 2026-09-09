@@ -936,8 +936,8 @@ def status(name: str, region: str | None, endpoint_url: str | None) -> None:
         latency_ms: float | None = None
         cfn_status: str | None = None
         table_status: str | None = None
-        aggregator_enabled = False
         # None means the stack outputs could not be read, so we cannot tell
+        aggregator_enabled: bool | None = None
         provisioner_enabled: bool | None = None
         schema_version: str | None = None
         lambda_version: str | None = None
@@ -963,9 +963,10 @@ def status(name: str, region: str | None, endpoint_url: str | None) -> None:
                                 output_keys.add(key)
                                 if key in ("AppRoleArn", "AdminRoleArn", "ReadOnlyRoleArn"):
                                     role_arns[key] = value
-                            # The ProvisionerFunctionName output is conditioned on
-                            # DeployProvisionerLambda, so its presence is exactly
-                            # whether CloudFormation created the function.
+                            # Both function-name outputs are conditioned on their
+                            # Deploy*Lambda condition, so an output's presence is
+                            # exactly whether CloudFormation created that function.
+                            aggregator_enabled = "AggregatorFunctionName" in output_keys
                             provisioner_enabled = "ProvisionerFunctionName" in output_keys
                     except Exception:
                         pass  # Stack outputs unavailable
@@ -991,10 +992,6 @@ def status(name: str, region: str | None, endpoint_url: str | None) -> None:
                 table_status = table.get("TableStatus")
                 table_item_count = table.get("ItemCount")
                 table_size_bytes = table.get("TableSizeInBytes")
-
-                # Check if aggregator is enabled by looking for stream specification
-                stream_spec = table.get("StreamSpecification", {})
-                aggregator_enabled = stream_spec.get("StreamEnabled", False)
 
             except Exception:
                 pass  # DynamoDB unavailable
@@ -1030,13 +1027,14 @@ def status(name: str, region: str | None, endpoint_url: str | None) -> None:
             click.echo("Infrastructure")
             click.echo(f"  Stack:         {cfn_status or 'Not found'}")
             click.echo(f"  Table:         {table_status or 'Not found'}")
-            aggregator_str = "Enabled" if aggregator_enabled else "Disabled"
-            click.echo(f"  Aggregator:    {aggregator_str}")
-            if provisioner_enabled is None:
-                provisioner_str = "Unknown"
-            else:
-                provisioner_str = "Enabled" if provisioner_enabled else "Disabled"
-            click.echo(f"  Provisioner:   {provisioner_str}")
+
+            def _lambda_state(created: bool | None) -> str:
+                if created is None:
+                    return "Unknown"
+                return "Enabled" if created else "Disabled"
+
+            click.echo(f"  Aggregator:    {_lambda_state(aggregator_enabled)}")
+            click.echo(f"  Provisioner:   {_lambda_state(provisioner_enabled)}")
             click.echo()
 
             # Versions section
