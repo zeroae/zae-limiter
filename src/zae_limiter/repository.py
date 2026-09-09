@@ -654,12 +654,14 @@ class Repository:
         async with StackManager(self.stack_name, self.region, self.endpoint_url) as manager:
             await manager.create_stack(stack_options=self._stack_options)
 
-            # Deploy Lambda code if aggregator is enabled
-            if self._stack_options.enable_aggregator:
+            # Deploy Lambda code only for functions CloudFormation actually created.
+            # Both gates mirror the template conditions: with create_iam=False the
+            # functions have no execution role and are never created, so pushing
+            # code to them would fail with ResourceNotFoundException.
+            if self._stack_options.deploys_aggregator_lambda:
                 await manager.deploy_lambda_code()
 
-            # Deploy provisioner Lambda code if the provisioner is enabled
-            if self._stack_options.enable_provisioner:
+            if self._stack_options.deploys_provisioner_lambda:
                 await manager.deploy_provisioner_code()
 
         # Write retention config to system config item

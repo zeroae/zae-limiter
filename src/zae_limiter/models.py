@@ -896,6 +896,26 @@ class StackOptions:
             )
         return policy_name
 
+    @property
+    def deploys_aggregator_lambda(self) -> bool:
+        """Whether CloudFormation will create the aggregator Lambda function.
+
+        Mirrors the template's ``DeployAggregatorLambda`` condition: the
+        aggregator needs a role, so it is only created when IAM resources are
+        enabled or an external role ARN was supplied.
+        """
+        return self.enable_aggregator and (self.create_iam or self.aggregator_role_arn is not None)
+
+    @property
+    def deploys_provisioner_lambda(self) -> bool:
+        """Whether CloudFormation will create the limits provisioner Lambda function.
+
+        Mirrors the template's ``DeployProvisionerLambda`` condition. The
+        provisioner has no external-role escape hatch, so it requires
+        ``create_iam``.
+        """
+        return self.enable_provisioner and self.create_iam
+
     def to_parameters(self, stack_name: str | None = None) -> dict[str, str]:
         """
         Convert to stack parameters dict for StackManager.

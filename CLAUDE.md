@@ -243,7 +243,8 @@ Not supported on `system`. Round-trips through the generated CloudFormation
 
 **Provisioner Lambda:**
 - Function name: `{stack}-limits-provisioner`
-- Deployed by default; disable with `--no-provisioner` (CLI) or `.enable_provisioner(False)` (builder). `--no-iam` also disables it (it needs an IAM role)
+- Deployed by default; disable with `--no-provisioner` (CLI) or `.enable_provisioner(False)` (builder). `--no-iam` also disables it (it needs an IAM role, and unlike the aggregator it has no external-role escape hatch)
+- When it is not deployed, `zae-limiter limits plan|apply|diff` exits 1 with an explanation, and a `limits cfn-template` stack fails to resolve the `{stack}-ProvisionerArn` export
 - Handles CLI invocations (action + manifest payload) and CloudFormation custom resource events (`Custom::ZaeLimiterLimits`)
 - Tracks managed items in `PK={ns}/SYSTEM#, SK=#PROVISIONER` with `managed_system`, `managed_resources`, `managed_entities` fields
 - Computes diff between manifest and previous state, then applies create/update/delete via PutItem/DeleteItem
