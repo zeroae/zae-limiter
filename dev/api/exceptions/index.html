@@ -1551,6 +1551,45 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#configuration-state-exceptions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration State Exceptions
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Configuration State Exceptions">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.exceptions.ResourceDisabled" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;ResourceDisabled
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.exceptions.FanoutIncomplete" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;FanoutIncomplete
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#exception-handling-examples" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3494,6 +3533,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/125-resource-disable/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-125 Resource and Entity Disable
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -3853,6 +3920,45 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#configuration-state-exceptions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration State Exceptions
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Configuration State Exceptions">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.exceptions.ResourceDisabled" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;ResourceDisabled
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.exceptions.FanoutIncomplete" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;FanoutIncomplete
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#exception-handling-examples" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3971,9 +4077,11 @@
 </span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>├── VersionError
 </span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>│   ├── VersionMismatchError
 </span><span id="__span-0-17"><a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>│   └── IncompatibleSchemaError
-</span><span id="__span-0-18"><a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>└── ValidationError
-</span><span id="__span-0-19"><a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>    ├── InvalidIdentifierError
-</span><span id="__span-0-20"><a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>    └── InvalidNameError
+</span><span id="__span-0-18"><a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>├── ValidationError
+</span><span id="__span-0-19"><a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>│   ├── InvalidIdentifierError
+</span><span id="__span-0-20"><a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>│   └── InvalidNameError
+</span><span id="__span-0-21"><a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>├── ResourceDisabled
+</span><span id="__span-0-22"><a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>└── FanoutIncomplete
 </span></code></pre></div>
 <h2 id="base-exception">Base Exception<a class="headerlink" href="#base-exception" title="Permanent link">&para;</a></h2>
 
@@ -4990,6 +5098,220 @@ models, such as invalid entity IDs, limit names, or resource names.</p>
 - Contain only alphanumeric characters, underscores, hyphens, and dots
 - Not exceed 64 characters
 - Not contain the '#' character</p>
+
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+
+
+
+  </div>
+
+    </div>
+
+</div><h2 id="configuration-state-exceptions">Configuration State Exceptions<a class="headerlink" href="#configuration-state-exceptions" title="Permanent link">&para;</a></h2>
+
+
+<div class="doc doc-object doc-class">
+
+
+
+<h3 id="zae_limiter.exceptions.ResourceDisabled" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-class"></code>            <span class="doc doc-object-name doc-class-name">ResourceDisabled</span>
+
+
+<a href="#zae_limiter.exceptions.ResourceDisabled" class="headerlink" title="Permanent link">&para;</a></h3>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">ResourceDisabled</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">level</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents first">
+            <p class="doc doc-class-bases">
+              Bases: <code><a class="autorefs autorefs-internal" title="            ZAELimiterError (zae_limiter.exceptions.ZAELimiterError)" href="#zae_limiter.exceptions.ZAELimiterError">ZAELimiterError</a></code></p>
+
+
+
+        <p>Raised when a resource is disabled for the requesting entity.</p>
+<p>This is a configuration state, not a throttling signal: it does not
+inherit from RateLimitError and carries no retry hint, because retrying
+will not help. Map it to 403, not 429.</p>
+<p>The resolved value comes from the first level that sets <code>disabled</code>
+explicitly, walking entity -&gt; entity default -&gt; resource (ADR-125).</p>
+
+
+<p><span class="doc-section-title">Attributes:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.exceptions.ResourceDisabled.entity_id">entity_id</span></code></td>
+            <td>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Entity that attempted the acquire</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.exceptions.ResourceDisabled.resource">resource</span></code></td>
+            <td>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Resource that is disabled</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.exceptions.ResourceDisabled.level">level</span></code></td>
+            <td>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Config level that decided it ("entity", "entity_default",
+"resource", or "bucket" when the decision came from the
+denormalized bucket attribute on the fast path)</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-class">
+
+
+
+<h3 id="zae_limiter.exceptions.FanoutIncomplete" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-class"></code>            <span class="doc doc-object-name doc-class-name">FanoutIncomplete</span>
+
+
+<a href="#zae_limiter.exceptions.FanoutIncomplete" class="headerlink" title="Permanent link">&para;</a></h3>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">FanoutIncomplete</span><span class="p">(</span><span class="n">stamped</span><span class="p">,</span> <span class="n">cause</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">resource</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">entity_id</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents first">
+            <p class="doc doc-class-bases">
+              Bases: <code><a class="autorefs autorefs-internal" title="            ZAELimiterError (zae_limiter.exceptions.ZAELimiterError)" href="#zae_limiter.exceptions.ZAELimiterError">ZAELimiterError</a></code></p>
+
+
+
+        <p>Raised when a disable/enable fan-out fails partway through (ADR-125).</p>
+<p>The config write lands before the fan-out begins, so a failure here
+leaves the table half-applied: the config item carries the new value,
+some bucket items are stamped to match and the rest still hold the old
+one. Unstamped buckets keep passing the speculative fast path, which
+tests <code>attribute_not_exists(#disabled)</code> on the bucket and never
+re-reads config.</p>
+<p>Nothing reconciles this on its own. Buckets backed by entity-level
+custom limits carry no TTL, so a stale stamp persists until the same
+command is run again — which is safe to do, since both the config write
+and each stamp are idempotent.</p>
+
+
+<p><span class="doc-section-title">Attributes:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.exceptions.FanoutIncomplete.stamped">stamped</span></code></td>
+            <td>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Bucket items successfully written before the failure</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.exceptions.FanoutIncomplete.resource">resource</span></code></td>
+            <td>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Resource being disabled or enabled, if scoped to one</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.exceptions.FanoutIncomplete.entity_id">entity_id</span></code></td>
+            <td>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Entity being disabled or enabled, if scoped to one</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.exceptions.FanoutIncomplete.cause">cause</span></code></td>
+            <td>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The underlying exception that stopped the fan-out</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
 
 
 

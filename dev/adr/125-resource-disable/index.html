@@ -12,13 +12,11 @@
         <meta name="author" content="ZeroAE">
       
       
-        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/dev/adr/100-centralized-config/">
+        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/dev/adr/125-resource-disable/">
       
       
-        <link rel="prev" href="../013-module-documentation-parity/">
+        <link rel="prev" href="../123-local-secondary-indexes/">
       
-      
-        <link rel="next" href="../101-flat-schema-config/">
       
       
         
@@ -29,7 +27,7 @@
     
     
       
-        <title>ADR-100 Overview - zae-limiter</title>
+        <title>ADR-125 Resource and Entity Disable - zae-limiter</title>
       
     
     
@@ -84,7 +82,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#adr-100-centralized-configuration-access-patterns" class="md-skip">
+        <a href="#adr-125-resource-and-entity-disable" class="md-skip">
           Skip to content
         </a>
       
@@ -123,7 +121,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              ADR-100 Overview
+              ADR-125 Resource and Entity Disable
             
           </span>
         </div>
@@ -1928,20 +1926,18 @@
                 
   
   
-    
   
   
-  
     
     
     
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_3" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_3" >
         
           
           <label class="md-nav__link" for="__nav_6_3" id="__nav_6_3_label" tabindex="0">
@@ -1962,7 +1958,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_3_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_3_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_6_3">
             <span class="md-nav__icon md-icon"></span>
             
@@ -1977,37 +1973,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    ADR-100 Overview
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../100-centralized-config/" class="md-nav__link">
         
   
   
@@ -2023,81 +1992,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#context" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Context
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#decision" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Decision
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#consequences" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Consequences
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#access-patterns-added" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Access Patterns Added
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#implementation" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Implementation
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -3089,18 +2983,20 @@
                 
   
   
+    
   
   
+  
     
     
     
     
     
-    <li class="md-nav__item md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_10" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_10" checked>
         
           
           <label class="md-nav__link" for="__nav_6_10" id="__nav_6_10_label" tabindex="0">
@@ -3121,7 +3017,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_10_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_10_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_6_10">
             <span class="md-nav__icon md-icon"></span>
             
@@ -3164,10 +3060,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../125-resource-disable/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-125 Resource and Entity Disable
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -3183,6 +3106,131 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#context" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Context
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#decision" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Decision
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scope
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#consequences" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Consequences
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#alternatives-considered" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Alternatives Considered
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Alternatives Considered">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#limit-with-capacity-0" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Limit with capacity: 0
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#config-only-flag-with-no-denormalization" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Config-only flag with no denormalization
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#stream-driven-fan-out-via-the-aggregator" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stream-driven fan-out via the aggregator
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#reserved-synthetic-always-failing-limit-wcu-style" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reserved synthetic always-failing limit (wcu-style)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -3252,6 +3300,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scope
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#consequences" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3263,24 +3322,63 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#access-patterns-added" class="md-nav__link">
+  <a href="#alternatives-considered" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Access Patterns Added
+        Alternatives Considered
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Alternatives Considered">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#limit-with-capacity-0" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Limit with capacity: 0
       
     </span>
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#implementation" class="md-nav__link">
+        
+          <li class="md-nav__item">
+  <a href="#config-only-flag-with-no-denormalization" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Implementation
+        Config-only flag with no denormalization
       
     </span>
   </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#stream-driven-fan-out-via-the-aggregator" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stream-driven fan-out via the aggregator
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#reserved-synthetic-always-failing-limit-wcu-style" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reserved synthetic always-failing limit (wcu-style)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -3303,7 +3401,7 @@
 
 
   
-    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/adr/100-centralized-config.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/adr/125-resource-disable.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -3311,108 +3409,87 @@
   
 
 
-<h1 id="adr-100-centralized-configuration-access-patterns">ADR-100: Centralized Configuration Access Patterns<a class="headerlink" href="#adr-100-centralized-configuration-access-patterns" title="Permanent link">&para;</a></h1>
-<p><strong>Status:</strong> Proposed
-<strong>Date:</strong> 2026-01-18
-<strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/129">#129</a>
-<strong>Milestone:</strong> v0.5.0</p>
-<blockquote>
-<p><strong>Note (post-v0.5.0):</strong> This is the original index for the centralized-config design. Two sub-decisions have since been superseded — the hierarchy expanded from three to four levels (<a href="../118-four-level-config-hierarchy/">ADR-118</a> supersedes <a href="../102-config-hierarchy/">ADR-102</a>) and limit resolution/caching moved to the Repository protocol (<a href="../122-resolve-limits-on-repository/">ADR-122</a> supersedes <a href="../103-config-caching/">ADR-103</a>). The original per-limit <code>#LIMIT#</code> config keys were replaced by composite <code>#CONFIG</code> items (<a href="../114-composite-bucket-items/">ADR-114</a>, <a href="../115-add-based-writes-lazy-refill/">ADR-115</a>). See the updated access patterns below.</p>
-</blockquote>
+<h1 id="adr-125-resource-and-entity-disable">ADR-125: Resource and Entity Disable<a class="headerlink" href="#adr-125-resource-and-entity-disable" title="Permanent link">&para;</a></h1>
+<p><strong>Status:</strong> Accepted
+<strong>Date:</strong> 2026-08-30
+<strong>Issue:</strong> TBD — link the tracking issue once filed</p>
 <h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
-<p>zae-limiter is a distributed rate limiting library where multiple clients must behave consistently. Currently:</p>
-<ol>
-<li><strong>Limits passed explicitly</strong> - Each <code>acquire()</code> call requires limits</li>
-<li><strong>No global defaults</strong> - Cannot set system-wide or resource-level default limits</li>
-<li><strong>No caching</strong> - <code>use_stored_limits=True</code> queries DynamoDB on every call</li>
-<li><strong>Scattered config</strong> - Behavior settings are constructor-only, risking inconsistent fail-open/fail-closed behavior</li>
-</ol>
+<p>Operators need to turn a resource off, at the resource level and per entity, without
+deleting its limit configuration. Two designs were considered: a <code>disabled</code> flag stored
+beside <code>limits</code>, and reusing a limit with <code>capacity: 0</code>.</p>
+<p><code>capacity: 0</code> does not work. <code>acquire()</code> defaults to <code>speculative_writes=True</code>, whose
+admission test is a conditional <code>UpdateItem</code> on the bucket item with
+<code>b_{limit}_tk &gt;= :consumed</code> — tokens, not capacity, and no config read at all.
+<code>_sync_bucket_params</code> (ADR-120) propagates changed <code>cp</code>/<code>ra</code>/<code>rp</code> to an existing bucket
+but never resets <code>tk</code>, and it only fires for entity-level <code>set_limits</code>/<code>delete_limits</code>
+— <code>set_resource_defaults</code> and <code>set_system_defaults</code> have no fan-out. A bucket holding a
+balance therefore keeps admitting traffic against a "disabled" resource. <code>capacity: 0</code>
+would also require loosening <code>Limit.__post_init__</code>'s positive-only invariants, destroys
+the configured capacity it overwrites, and surfaces a permanently-off resource as a
+retryable 429 with a finite <code>retry_after_seconds</code> that never comes good.</p>
 <h2 id="decision">Decision<a class="headerlink" href="#decision" title="Permanent link">&para;</a></h2>
-<p>Implement centralized configuration with these architectural choices:</p>
-<table>
-<thead>
-<tr>
-<th>Decision</th>
-<th>ADR</th>
-<th>Summary</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Schema format</td>
-<td><a href="../101-flat-schema-config/">ADR-101</a></td>
-<td>Flat schema (no nested <code>data.M</code>) for atomic counters</td>
-</tr>
-<tr>
-<td>Config hierarchy</td>
-<td><a href="../102-config-hierarchy/">ADR-102</a> <em>(superseded by <a href="../118-four-level-config-hierarchy/">ADR-118</a>)</em></td>
-<td>Three levels: System &gt; Resource &gt; Entity — later expanded to four</td>
-</tr>
-<tr>
-<td>Caching strategy</td>
-<td><a href="../103-config-caching/">ADR-103</a> <em>(superseded by <a href="../122-resolve-limits-on-repository/">ADR-122</a>)</em></td>
-<td>60s TTL with negative caching; resolution later moved to the Repository protocol</td>
-</tr>
-<tr>
-<td>API behavior</td>
-<td><a href="../104-stored-limits-default/">ADR-104</a></td>
-<td>Stored limits as default</td>
-</tr>
-<tr>
-<td>Read consistency</td>
-<td><a href="../105-eventual-consistency/">ADR-105</a></td>
-<td>Eventually consistent reads</td>
-</tr>
-</tbody>
-</table>
+<ol>
+<li>
+<p>Store <code>disabled</code> as a <strong>tri-state</strong> attribute on existing config items: absent means
+   inherit, <code>true</code>/<code>false</code> are explicit. Config items already carry non-limit siblings
+   (<code>on_unavailable</code>, <code>resource</code>, <code>entity_id</code>), and <code>_deserialize_composite_limits</code>
+   discovers limits by scanning for <code>l_*_cp</code>, so a sibling attribute is invisible to it.</p>
+</li>
+<li>
+<p>Resolve <code>disabled</code> by an <strong>independent walk</strong> over entity(resource) →
+   entity(<code>_default_</code>) → resource. First explicit value wins, regardless of whether that
+   level defines limits. This is what makes an entity-level <code>disabled: false</code> re-admit a
+   specific entity to a disabled resource.</p>
+</li>
+<li>
+<p><strong>Denormalize</strong> the resolved value onto bucket items and enforce it by adding
+   <code>attribute_not_exists(#disabled)</code> to the speculative <code>ConditionExpression</code>. Bucket
+   items already denormalize <code>cascade</code>, <code>parent_id</code> and <code>shard_count</code> for exactly this
+   reason, and the same expression already carries a non-token guard for TTL.</p>
+</li>
+<li>
+<p>Enforce <strong>eagerly</strong>: the disable call writes config and then fans out to every
+   affected bucket before returning, via GSI2 (<code>GSI2PK={ns}/RESOURCE#{name}</code>,
+   <code>GSI2SK begins_with BUCKET#</code>) for resource scope and GSI3
+   (<code>GSI3PK={ns}/ENTITY#{id}</code>) for entity scope.</p>
+</li>
+<li>
+<p>Raise a distinct <code>ResourceDisabled</code> exception rather than <code>RateLimitExceeded</code>.
+   Disabled is closer to a 403 than a 429 and nothing should tell a client to retry.</p>
+</li>
+</ol>
+<h2 id="scope">Scope<a class="headerlink" href="#scope" title="Permanent link">&para;</a></h2>
+<p>System-level <code>disabled</code> is <strong>not</strong> implemented. A system-level kill switch would have to
+fan out across every bucket in the namespace (GSI4) and its blast radius warrants its own
+decision. Resolution stops at the resource level.</p>
 <h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>
 <p><strong>Positive:</strong>
-- Consistent behavior across distributed clients
-- Negligible cost with caching (~0.00025 RCU/request at scale)
-- Enables per-resource and per-entity customization
-- Clean upgrade path to v0.6.0 full schema migration</p>
+- Takes effect on the default fast path, which is the only path that matters in steady state.
+- Limits survive the disable; re-enabling is one attribute.
+- Token-bucket invariants in <code>models.py</code> and <code>bucket.py</code> are untouched.
+- Callers can distinguish "intentionally off" from "temporarily saturated".</p>
 <p><strong>Negative:</strong>
-- Max 60s staleness for config changes
-- Additional complexity in resolution logic
-- Breaking change for explicit-limits-only users</p>
-<h2 id="access-patterns-added">Access Patterns Added<a class="headerlink" href="#access-patterns-added" title="Permanent link">&para;</a></h2>
-<blockquote>
-<p>The original per-limit sort keys (<code>SK begins_with #LIMIT#</code>) were replaced by composite config items (<a href="../114-composite-bucket-items/">ADR-114</a>, <a href="../118-four-level-config-hierarchy/">ADR-118</a>): a single <code>#CONFIG</code> item per level, namespace-prefixed with <code>{ns}/</code>. Both are shown below.</p>
-</blockquote>
-<table>
-<thead>
-<tr>
-<th>Pattern</th>
-<th>Query (v0.5.0, original)</th>
-<th>Current</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Get system config</td>
-<td><code>PK=SYSTEM#, SK begins_with #LIMIT#</code></td>
-<td><code>PK={ns}/SYSTEM#, SK=#CONFIG</code></td>
-</tr>
-<tr>
-<td>Get resource config</td>
-<td><code>PK=RESOURCE#{resource}, SK begins_with #LIMIT#</code></td>
-<td><code>PK={ns}/RESOURCE#{resource}, SK=#CONFIG</code></td>
-</tr>
-<tr>
-<td>Get entity config</td>
-<td><code>PK=ENTITY#{id}, SK begins_with #LIMIT#</code></td>
-<td><code>PK={ns}/ENTITY#{id}, SK=#CONFIG#{resource}</code></td>
-</tr>
-</tbody>
-</table>
-<h2 id="implementation">Implementation<a class="headerlink" href="#implementation" title="Permanent link">&para;</a></h2>
-<p>See linked issues for implementation details:</p>
-<ul>
-<li><a href="https://github.com/zeroae/zae-limiter/issues/130">#130</a> - Store system/resource config</li>
-<li><a href="https://github.com/zeroae/zae-limiter/issues/131">#131</a> - System-level default limits</li>
-<li><a href="https://github.com/zeroae/zae-limiter/issues/135">#135</a> - Client-side config cache</li>
-<li><a href="https://github.com/zeroae/zae-limiter/issues/180">#180</a> - v0.6.0 full schema flattening</li>
-</ul>
+- Disable is O(buckets for the resource) writes, not O(1). Bounded by entity count x shards.
+- A narrow race exists between the config write and the fan-out query: an <code>acquire()</code>
+  already in flight can create a bucket the fan-out's GSI query does not see. Mitigated by
+  a second fan-out pass; the residual window is one in-flight acquire.
+- <code>set_resource_defaults</code> / <code>set_limits</code> become read-before-write to preserve <code>disabled</code>,
+  costing 1 extra RCU on an infrequent admin path.
+- The provisioner's Lambda-side fan-out does not evaluate per-entity overrides; the
+  handler orders resource changes before entity changes so a carve-out re-stamps last.</p>
+<h2 id="alternatives-considered">Alternatives Considered<a class="headerlink" href="#alternatives-considered" title="Permanent link">&para;</a></h2>
+<h3 id="limit-with-capacity-0">Limit with <code>capacity: 0</code><a class="headerlink" href="#limit-with-capacity-0" title="Permanent link">&para;</a></h3>
+<p>Rejected — see Context. Does not reach the fast path, and overloads a real bucket parameter.</p>
+<h3 id="config-only-flag-with-no-denormalization">Config-only flag with no denormalization<a class="headerlink" href="#config-only-flag-with-no-denormalization" title="Permanent link">&para;</a></h3>
+<p>Rejected because the fast path never reads config; the flag would only take effect on the
+slow path, which steady-state traffic does not use.</p>
+<h3 id="stream-driven-fan-out-via-the-aggregator">Stream-driven fan-out via the aggregator<a class="headerlink" href="#stream-driven-fan-out-via-the-aggregator" title="Permanent link">&para;</a></h3>
+<p>Rejected for the initial implementation because it makes disable asynchronous with no
+completion signal. A kill switch should not return before it has taken effect. Worth
+revisiting as a repair mechanism for the in-flight-acquire race.</p>
+<h3 id="reserved-synthetic-always-failing-limit-wcu-style">Reserved synthetic always-failing limit (<code>wcu</code>-style)<a class="headerlink" href="#reserved-synthetic-always-failing-limit-wcu-style" title="Permanent link">&para;</a></h3>
+<p>Rejected because it still rides on <code>tk</code> and inherits the same stale-balance problem
+unless tokens are explicitly zeroed.</p>
 
 
 
@@ -3449,7 +3526,7 @@
       <nav class="md-footer__inner md-grid" aria-label="Footer" >
         
           
-          <a href="../013-module-documentation-parity/" class="md-footer__link md-footer__link--prev" aria-label="Previous: ADR-013 Module Documentation Parity">
+          <a href="../123-local-secondary-indexes/" class="md-footer__link md-footer__link--prev" aria-label="Previous: ADR-123 Local Secondary Indexes">
             <div class="md-footer__button md-icon">
               
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
@@ -3459,27 +3536,11 @@
                 Previous
               </span>
               <div class="md-ellipsis">
-                ADR-013 Module Documentation Parity
+                ADR-123 Local Secondary Indexes
               </div>
             </div>
           </a>
         
-        
-          
-          <a href="../101-flat-schema-config/" class="md-footer__link md-footer__link--next" aria-label="Next: ADR-101 Flat Schema">
-            <div class="md-footer__title">
-              <span class="md-footer__direction">
-                Next
-              </span>
-              <div class="md-ellipsis">
-                ADR-101 Flat Schema
-              </div>
-            </div>
-            <div class="md-footer__button md-icon">
-              
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
-            </div>
-          </a>
         
       </nav>
     

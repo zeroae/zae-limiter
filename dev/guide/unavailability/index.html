@@ -3258,6 +3258,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/125-resource-disable/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-125 Resource and Entity Disable
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -3515,6 +3543,7 @@
 <ul>
 <li><code>RateLimitExceeded</code> — Rate limit violated (business logic)</li>
 <li><code>ValidationError</code> — Invalid configuration (user error)</li>
+<li><code>ResourceDisabled</code> — Resource or entity explicitly disabled (ADR-125; not a retryable condition, so it is never suppressed by <code>ALLOW</code> mode)</li>
 </ul>
 <p>Infrastructure errors that trigger on_unavailable:</p>
 <ul>

@@ -3291,6 +3291,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/125-resource-disable/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-125 Resource and Entity Disable
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -3916,6 +3944,15 @@
 </span><span id="__span-12-8"><a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a><span class="c1"># Write back</span>
 </span><span id="__span-12-9"><a id="__codelineno-12-9" name="__codelineno-12-9" href="#__codelineno-12-9"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_system_defaults</span><span class="p">(</span><span class="nb">list</span><span class="p">(</span><span class="n">current_dict</span><span class="o">.</span><span class="n">values</span><span class="p">()))</span>
 </span></code></pre></div>
+<div class="admonition note">
+<p class="admonition-title">Disabling is a separate, narrower walk</p>
+<p>The <code>disabled</code> flag (ADR-125) does <strong>not</strong> follow this four-level hierarchy. It resolves
+independently over only three levels — entity (resource-specific) → entity (<code>_default_</code>)
+→ resource — and stops there: there is no system-level disable. The first level with an
+explicit <code>disabled</code> value wins, regardless of which level supplies the limits, which is
+what lets an entity-level <code>disabled: false</code> re-admit one entity to a resource that is
+disabled for everyone else. See <a href="../basic-usage/#turning-a-resource-off">Turning a Resource Off</a>.</p>
+</div>
 <h2 id="next-steps">Next Steps<a class="headerlink" href="#next-steps" title="Permanent link">&para;</a></h2>
 <ul>
 <li><a href="../basic-usage/">Basic Usage</a> - Rate limiting patterns</li>

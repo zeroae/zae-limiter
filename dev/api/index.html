@@ -3210,6 +3210,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../adr/125-resource-disable/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-125 Resource and Entity Disable
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -3431,6 +3459,10 @@
 <td><a href="exceptions/#zae_limiter.exceptions.RateLimitExceeded"><code>RateLimitExceeded</code></a></td>
 <td>Exception when limit is exceeded</td>
 </tr>
+<tr>
+<td><a href="exceptions/#zae_limiter.exceptions.ResourceDisabled"><code>ResourceDisabled</code></a></td>
+<td>Exception when a resource or entity is disabled (ADR-125)</td>
+</tr>
 </tbody>
 </table>
 <h2 id="quick-reference">Quick Reference<a class="headerlink" href="#quick-reference" title="Permanent link">&para;</a></h2>
@@ -3608,7 +3640,10 @@
 </span><span id="__span-5-72"><a id="__codelineno-5-72" name="__codelineno-5-72" href="#__codelineno-5-72"></a>    <span class="n">ValidationError</span><span class="p">,</span>
 </span><span id="__span-5-73"><a id="__codelineno-5-73" name="__codelineno-5-73" href="#__codelineno-5-73"></a>    <span class="n">InvalidIdentifierError</span><span class="p">,</span>
 </span><span id="__span-5-74"><a id="__codelineno-5-74" name="__codelineno-5-74" href="#__codelineno-5-74"></a>    <span class="n">InvalidNameError</span><span class="p">,</span>
-</span><span id="__span-5-75"><a id="__codelineno-5-75" name="__codelineno-5-75" href="#__codelineno-5-75"></a><span class="p">)</span>
+</span><span id="__span-5-75"><a id="__codelineno-5-75" name="__codelineno-5-75" href="#__codelineno-5-75"></a>
+</span><span id="__span-5-76"><a id="__codelineno-5-76" name="__codelineno-5-76" href="#__codelineno-5-76"></a>    <span class="c1"># Exceptions - Configuration State</span>
+</span><span id="__span-5-77"><a id="__codelineno-5-77" name="__codelineno-5-77" href="#__codelineno-5-77"></a>    <span class="n">ResourceDisabled</span><span class="p">,</span>
+</span><span id="__span-5-78"><a id="__codelineno-5-78" name="__codelineno-5-78" href="#__codelineno-5-78"></a><span class="p">)</span>
 </span></code></pre></div>
 <h2 id="detailed-documentation">Detailed Documentation<a class="headerlink" href="#detailed-documentation" title="Permanent link">&para;</a></h2>
 <ul>
