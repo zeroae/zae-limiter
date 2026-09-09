@@ -625,6 +625,14 @@ class SyncRateLimiter:
                 self._compensate_speculative(result.parent_id, resource, consume)
             if result.failure_reason == SpeculativeFailureReason.DISABLED:
                 raise ResourceDisabled(entity_id=entity_id, resource=resource, level="bucket")
+            if (
+                result.parent_result is not None
+                and result.parent_result.failure_reason == SpeculativeFailureReason.DISABLED
+            ):
+                assert result.parent_id is not None
+                raise ResourceDisabled(
+                    entity_id=result.parent_id, resource=resource, level="bucket"
+                )
             if result.failure_reason in (
                 SpeculativeFailureReason.WCU_EXHAUSTED,
                 SpeculativeFailureReason.BOTH_EXHAUSTED,

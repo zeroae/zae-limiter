@@ -74,6 +74,9 @@ class SpeculativeResult:
     failure_reason: SpeculativeFailureReason | None = None
 
 
+PRESERVE_DISABLED: Any = object()
+
+
 @runtime_checkable
 class SyncRepositoryProtocol(Protocol):
     """
@@ -301,7 +304,9 @@ class SyncRepositoryProtocol(Protocol):
         """
         ...
 
-    def get_bucket(self, entity_id: str, resource: str, limit_name: str) -> "BucketState | None":
+    def get_bucket(
+        self, entity_id: str, resource: str, limit_name: str, shard_id: int = 0
+    ) -> "BucketState | None":
         """
         Get a token bucket by entity/resource/limit.
 
@@ -425,6 +430,8 @@ class SyncRepositoryProtocol(Protocol):
         ttl_seconds: int | None = 86400,
         cascade: bool = False,
         parent_id: str | None = None,
+        shard_id: int = 0,
+        shard_count: int = 1,
     ) -> dict[str, Any]:
         """Build a PutItem for creating a new composite bucket.
 
@@ -448,6 +455,7 @@ class SyncRepositoryProtocol(Protocol):
         now_ms: int,
         expected_rf: int,
         ttl_seconds: int | None = None,
+        shard_id: int = 0,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -463,7 +471,7 @@ class SyncRepositoryProtocol(Protocol):
         ...
 
     def build_composite_retry(
-        self, entity_id: str, resource: str, consumed: dict[str, int]
+        self, entity_id: str, resource: str, consumed: dict[str, int], shard_id: int = 0
     ) -> dict[str, Any]:
         """Build an UpdateItem for the retry write path (ADR-115 path 3).
 
@@ -475,7 +483,7 @@ class SyncRepositoryProtocol(Protocol):
         ...
 
     def build_composite_adjust(
-        self, entity_id: str, resource: str, deltas: dict[str, int]
+        self, entity_id: str, resource: str, deltas: dict[str, int], shard_id: int = 0
     ) -> dict[str, Any]:
         """Build an UpdateItem for the adjust write path (ADR-115 path 4).
 
@@ -592,6 +600,8 @@ class SyncRepositoryProtocol(Protocol):
         limits: "list[Limit]",
         resource: str = "_default_",
         principal: str | None = None,
+        *,
+        disabled: "bool | None" = PRESERVE_DISABLED,
     ) -> None:
         """
         Store limit configs for an entity.
@@ -660,7 +670,12 @@ class SyncRepositoryProtocol(Protocol):
         ...
 
     def set_resource_defaults(
-        self, resource: str, limits: "list[Limit]", principal: str | None = None
+        self,
+        resource: str,
+        limits: "list[Limit]",
+        principal: str | None = None,
+        *,
+        disabled: "bool | None" = PRESERVE_DISABLED,
     ) -> None:
         """
         Store default limits for a resource.
@@ -882,6 +897,22 @@ class SyncRepositoryProtocol(Protocol):
 
     def resolve_disabled(self, entity_id: str, resource: str) -> "tuple[bool, str | None]":
         """Resolve the effective disabled state for an entity+resource (ADR-125)."""
+        ...
+
+    def get_entity_disabled(self, entity_id: str, resource: str) -> "bool | None":
+        """Read the tri-state disabled flag from an entity config item (ADR-125).
+
+        Returns True/False when set explicitly, None when unset (inherit).
+        In the contract because ``cli.py`` reads it directly.
+        """
+        ...
+
+    def get_resource_disabled(self, resource: str) -> "bool | None":
+        """Read the tri-state disabled flag from a resource config item (ADR-125).
+
+        Returns True/False when set explicitly, None when unset (inherit).
+        In the contract because ``cli.py`` reads it directly.
+        """
         ...
 
     def resolve_disabled_from_fetched(

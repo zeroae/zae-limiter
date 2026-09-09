@@ -21,6 +21,7 @@ from . import schema
 from .config_cache import CacheStats as CacheStats
 from .exceptions import (
     EntityExistsError,
+    FanoutIncomplete,
     NamespaceStateError,
     RateLimiterUnavailable,
     ValidationError,
@@ -42,12 +43,12 @@ from .models import (
 )
 from .naming import normalize_stack_name
 from .sync_config_cache import ConfigSource, SyncConfigCache
+from .sync_repository_protocol import PRESERVE_DISABLED as _PRESERVE_DISABLED
 from .sync_repository_protocol import SpeculativeFailureReason, SpeculativeResult
 
 if TYPE_CHECKING:
     from .sync_repository_builder import SyncRepositoryBuilder
 logger = logging.getLogger(__name__)
-_PRESERVE_DISABLED: Any = object()
 _RESOLVE_DISABLED_MAX_RETRIES = 3
 _RESOLVE_DISABLED_RETRY_BASE_DELAY = 0.05
 
@@ -3880,7 +3881,10 @@ class SyncRepository:
                     effective_by_entity[entity_id] = effective
                 if effective_by_entity[entity_id] != disabled:
                     continue
-                self._stamp_bucket_disabled(pk, disabled)
+                try:
+                    self._stamp_bucket_disabled(pk, disabled)
+                except Exception as e:
+                    raise FanoutIncomplete(len(stamped), e, resource=resource) from e
                 stamped.add(pk)
         return len(stamped)
 
@@ -3921,7 +3925,12 @@ class SyncRepository:
                         effective, _level = self.resolve_disabled(entity_id, bucket_resource)
                         effective_by_resource[bucket_resource] = effective
                     target = effective_by_resource[bucket_resource]
-                self._stamp_bucket_disabled(pk, target)
+                try:
+                    self._stamp_bucket_disabled(pk, target)
+                except Exception as e:
+                    raise FanoutIncomplete(
+                        len(stamped), e, resource=resource, entity_id=entity_id
+                    ) from e
                 stamped.add(pk)
         return len(stamped)
 

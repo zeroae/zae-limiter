@@ -741,6 +741,22 @@ class RateLimiter:
             if result.failure_reason == SpeculativeFailureReason.DISABLED:
                 raise ResourceDisabled(entity_id=entity_id, resource=resource, level="bucket")
 
+            # The parallel cascade path issues both writes at once, so both can
+            # fail — and a disabled parent has to outrank whatever the child
+            # failed on. Falling through with the child's reason reports
+            # RateLimitExceeded, whose retry_after_seconds invites a retry that
+            # will hit the same disabled parent every time. Nothing was consumed
+            # from the child here (its conditional write failed too), so unlike
+            # the parent-succeeded branch above there is nothing to compensate.
+            if (
+                result.parent_result is not None
+                and result.parent_result.failure_reason == SpeculativeFailureReason.DISABLED
+            ):
+                assert result.parent_id is not None  # set by repository cache path
+                raise ResourceDisabled(
+                    entity_id=result.parent_id, resource=resource, level="bucket"
+                )
+
             # Shard doubling: if wcu exhausted, double shard_count and update cache
             if result.failure_reason in (
                 SpeculativeFailureReason.WCU_EXHAUSTED,

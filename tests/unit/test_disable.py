@@ -5,6 +5,7 @@ from botocore.exceptions import ClientError
 
 from zae_limiter import RateLimiter, schema
 from zae_limiter.exceptions import (
+    FanoutIncomplete,
     RateLimitError,
     RateLimiterUnavailable,
     ResourceDisabled,
@@ -1403,3 +1404,104 @@ class TestDeleteDefaultResourceConfigFansOutUnscoped:
             pass
         async with disable_limiter.acquire("user-1", "claude-3", {"rpm": 1}):
             pass
+
+
+@pytest.mark.asyncio
+class TestDisabledWinsWhenChildIsAlsoExhausted:
+    """A disabled parent must outrank the child's own rate-limit failure.
+
+    On the parallel cascade path both writes are issued at once, so both can
+    fail. The handler inspects only the child's `failure_reason`, so when the
+    child is APP_LIMIT_EXHAUSTED and the parent is DISABLED, the disabled
+    parent is never noticed and the caller gets RateLimitExceeded.
+
+    That is the wrong answer in a way that matters: RateLimitExceeded carries
+    `retry_after_seconds`, so a well-behaved client sleeps and retries — and
+    every retry hits the same disabled parent. Disabled is closer to a 403
+    than a 429 and nothing should tell a client to come back (ADR-125).
+
+    The existing cascade coverage only reaches this handler when the child
+    SUCCEEDS and the parent is disabled, which takes the compensation branch
+    well before the failure_reason check.
+    """
+
+    async def test_parent_disabled_beats_child_exhaustion(self, disable_limiter, disable_repo):
+        await disable_repo.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 1000)])
+        await disable_repo.create_entity("parent-x")
+        await disable_repo.create_entity("child-x", parent_id="parent-x", cascade=True)
+        # Child gets a tiny limit of its own so it exhausts while the parent,
+        # on the resource default, still has plenty of tokens.
+        await disable_repo.set_limits("child-x", [Limit.per_minute("rpm", 1)], "gpt-4")
+
+        # Populates the entity cache, so the next acquire takes the parallel
+        # child+parent path — and spends the child's only token.
+        async with disable_limiter.acquire("child-x", "gpt-4", {"rpm": 1}):
+            pass
+
+        assert await disable_repo.disable_entity("parent-x", resource="gpt-4") == 1
+
+        # Child is out of tokens AND the parent is disabled. The disabled
+        # parent has to win: telling the caller to retry is a lie.
+        with pytest.raises(ResourceDisabled) as exc_info:
+            async with disable_limiter.acquire("child-x", "gpt-4", {"rpm": 1}):
+                pass
+
+        assert exc_info.value.entity_id == "parent-x"
+        assert exc_info.value.resource == "gpt-4"
+
+
+@pytest.mark.asyncio
+class TestPartialFanoutIsReported:
+    """A fan-out that dies partway must say how far it got.
+
+    The config write lands before the fan-out starts, so a failure midway
+    leaves the table half-applied: config says disabled, some buckets are
+    stamped, the rest are not. Those unstamped buckets keep passing the
+    speculative fast path, which checks `attribute_not_exists(#disabled)`
+    on the bucket and never re-reads config.
+
+    Nothing self-heals. Buckets backed by entity-level custom limits carry
+    no TTL (ADR-125), so they hold a stale stamp until an operator runs the
+    command again. Today the CLI prints the raw exception and exits, with
+    no hint that a partial write happened or that re-running reconciles it.
+    """
+
+    async def test_partial_fanout_reports_how_many_were_stamped(
+        self, disable_repo, disable_limiter, monkeypatch
+    ):
+        await disable_repo.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 1000)])
+        for eid in ("u1", "u2", "u3"):
+            async with disable_limiter.acquire(eid, "gpt-4", {"rpm": 1}):
+                pass
+
+        original = disable_repo._stamp_bucket_disabled
+        calls = {"n": 0}
+
+        async def failing_after_first(pk: str, disabled: bool) -> None:
+            calls["n"] += 1
+            if calls["n"] > 1:
+                raise ClientError(
+                    {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": "x"}},
+                    "UpdateItem",
+                )
+            await original(pk, disabled)
+
+        monkeypatch.setattr(disable_repo, "_stamp_bucket_disabled", failing_after_first)
+
+        with pytest.raises(FanoutIncomplete) as exc_info:
+            await disable_repo.disable_resource("gpt-4")
+
+        err = exc_info.value
+        assert err.stamped == 1, "must report the number of buckets already stamped"
+        assert err.resource == "gpt-4"
+        assert isinstance(err.cause, ClientError)
+        # The operator needs to know re-running is the fix.
+        assert "re-run" in str(err).lower()
+
+    async def test_successful_fanout_does_not_raise(self, disable_repo, disable_limiter):
+        """The wrapper must not disturb the normal path."""
+        await disable_repo.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 1000)])
+        async with disable_limiter.acquire("u1", "gpt-4", {"rpm": 1}):
+            pass
+
+        assert await disable_repo.disable_resource("gpt-4") == 1

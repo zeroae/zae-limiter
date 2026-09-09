@@ -409,6 +409,56 @@ class InvalidNameError(ValidationError):
 # ---------------------------------------------------------------------------
 
 
+class FanoutIncomplete(ZAELimiterError):  # noqa: N818
+    """
+    Raised when a disable/enable fan-out fails partway through (ADR-125).
+
+    The config write lands before the fan-out begins, so a failure here
+    leaves the table half-applied: the config item carries the new value,
+    some bucket items are stamped to match and the rest still hold the old
+    one. Unstamped buckets keep passing the speculative fast path, which
+    tests ``attribute_not_exists(#disabled)`` on the bucket and never
+    re-reads config.
+
+    Nothing reconciles this on its own. Buckets backed by entity-level
+    custom limits carry no TTL, so a stale stamp persists until the same
+    command is run again — which is safe to do, since both the config write
+    and each stamp are idempotent.
+
+    Attributes:
+        stamped: Bucket items successfully written before the failure
+        resource: Resource being disabled or enabled, if scoped to one
+        entity_id: Entity being disabled or enabled, if scoped to one
+        cause: The underlying exception that stopped the fan-out
+    """
+
+    def __init__(
+        self,
+        stamped: int,
+        cause: Exception,
+        *,
+        resource: str | None = None,
+        entity_id: str | None = None,
+    ) -> None:
+        self.stamped = stamped
+        self.resource = resource
+        self.entity_id = entity_id
+        self.cause = cause
+
+        target = (
+            f"entity '{entity_id}'"
+            if entity_id is not None and resource is None
+            else f"entity '{entity_id}' resource '{resource}'"
+            if entity_id is not None
+            else f"resource '{resource}'"
+        )
+        super().__init__(
+            f"Fan-out for {target} stopped after stamping {stamped} bucket(s): {cause}. "
+            f"Config was written, so the change is partially applied — re-run the same "
+            f"command to reconcile the remaining buckets."
+        )
+
+
 class ResourceDisabled(ZAELimiterError):  # noqa: N818
     """
     Raised when a resource is disabled for the requesting entity.

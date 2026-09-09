@@ -16,6 +16,7 @@ from . import schema
 from .config_cache import CacheStats, ConfigCache, ConfigSource
 from .exceptions import (
     EntityExistsError,
+    FanoutIncomplete,
     NamespaceStateError,
     RateLimiterUnavailable,
     ValidationError,
@@ -35,6 +36,9 @@ from .models import (
     validate_resource,
 )
 from .naming import normalize_stack_name
+from .repository_protocol import (
+    PRESERVE_DISABLED as _PRESERVE_DISABLED,
+)
 from .repository_protocol import SpeculativeFailureReason, SpeculativeResult
 
 if TYPE_CHECKING:
@@ -44,7 +48,8 @@ logger = logging.getLogger(__name__)
 
 #: Sentinel meaning "keep whatever `disabled` value is already stored" (ADR-125).
 #: Distinct from None, which explicitly means "inherit from the level above".
-_PRESERVE_DISABLED: Any = object()
+# _PRESERVE_DISABLED is imported from repository_protocol so the contract and
+# this implementation compare against the same object (ADR-108/ADR-125).
 
 # resolve_disabled() decides admission, so a partial BatchGetItem must be
 # retried rather than treated as "nothing set" (ADR-125). Three retries with
@@ -4775,7 +4780,13 @@ class Repository:
                 if effective_by_entity[entity_id] != disabled:
                     # This entity overrides the resource-level value; leave it alone.
                     continue
-                await self._stamp_bucket_disabled(pk, disabled)
+                try:
+                    await self._stamp_bucket_disabled(pk, disabled)
+                except Exception as e:
+                    # The config write already landed, so the change is half
+                    # applied and nothing self-heals it (ADR-125). Report how
+                    # far this got so the operator knows to re-run.
+                    raise FanoutIncomplete(len(stamped), e, resource=resource) from e
                 stamped.add(pk)
 
         return len(stamped)
@@ -4818,7 +4829,15 @@ class Repository:
                         effective, _level = await self.resolve_disabled(entity_id, bucket_resource)
                         effective_by_resource[bucket_resource] = effective
                     target = effective_by_resource[bucket_resource]
-                await self._stamp_bucket_disabled(pk, target)
+                try:
+                    await self._stamp_bucket_disabled(pk, target)
+                except Exception as e:
+                    # Half-applied: config written, only some buckets stamped.
+                    # Nothing reconciles this on its own (ADR-125), so surface
+                    # the count rather than leaving the operator guessing.
+                    raise FanoutIncomplete(
+                        len(stamped), e, resource=resource, entity_id=entity_id
+                    ) from e
                 stamped.add(pk)
         return len(stamped)
 

@@ -44,6 +44,7 @@ from .exceptions import (
     EntityError,
     EntityExistsError,
     EntityNotFoundError,
+    FanoutIncomplete,
     IncompatibleSchemaError,
     InfrastructureError,
     InfrastructureNotFoundError,
@@ -168,5 +169,6 @@ __all__ = [
     "InvalidIdentifierError",
     "InvalidNameError",
     # Exceptions - Configuration State
+    "FanoutIncomplete",
     "ResourceDisabled",
 ]

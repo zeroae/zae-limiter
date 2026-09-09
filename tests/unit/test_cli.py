@@ -5893,6 +5893,35 @@ class TestDisableCommands:
         result = runner.invoke(cli, ["resource", "clear-disabled", "--help"])
         assert result.exit_code == 0
 
+    @patch("zae_limiter.repository.Repository")
+    def test_resource_disable_partial_fanout_tells_operator_to_rerun(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """A half-applied disable must say so, with the count and the fix.
+
+        The config write lands before the fan-out, so a failure midway leaves
+        the resource disabled in config with only some buckets stamped — the
+        rest still pass the speculative fast path. Nothing self-heals it, so
+        the operator has to know it happened and that re-running reconciles
+        (ADR-125).
+        """
+        from zae_limiter.exceptions import FanoutIncomplete
+
+        mock_repo = Mock()
+        mock_repo.disable_resource = AsyncMock(
+            side_effect=FanoutIncomplete(7, RuntimeError("throttled"), resource="gpt-4")
+        )
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+
+        result = runner.invoke(cli, ["resource", "disable", "gpt-4"])
+
+        assert result.exit_code == 1
+        assert "7 bucket" in result.output, "operator needs the partial count"
+        assert "re-run" in result.output.lower(), "operator needs to know the remedy"
+        assert "partially applied" in result.output.lower()
+
     def test_resource_disable_requires_resource_name(self, runner: CliRunner) -> None:
         result = runner.invoke(cli, ["resource", "disable"])
         assert result.exit_code != 0
