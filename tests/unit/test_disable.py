@@ -1498,6 +1498,43 @@ class TestPartialFanoutIsReported:
         # The operator needs to know re-running is the fix.
         assert "re-run" in str(err).lower()
 
+    async def test_partial_entity_fanout_reports_entity_and_count(
+        self, disable_repo, disable_limiter, monkeypatch
+    ):
+        """The entity-scoped fan-out reports the same way, naming the entity.
+
+        An unscoped `disable_entity` spans every resource the entity has a
+        bucket for, so a failure midway leaves some of its resources disabled
+        and others not — the same half-applied state, just scoped differently.
+        """
+        await disable_repo.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 1000)])
+        await disable_repo.set_resource_defaults("claude-3", [Limit.per_minute("rpm", 1000)])
+        for res in ("gpt-4", "claude-3"):
+            async with disable_limiter.acquire("u9", res, {"rpm": 1}):
+                pass
+
+        original = disable_repo._stamp_bucket_disabled
+        calls = {"n": 0}
+
+        async def failing_after_first(pk: str, disabled: bool) -> None:
+            calls["n"] += 1
+            if calls["n"] > 1:
+                raise ClientError(
+                    {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": "x"}},
+                    "UpdateItem",
+                )
+            await original(pk, disabled)
+
+        monkeypatch.setattr(disable_repo, "_stamp_bucket_disabled", failing_after_first)
+
+        with pytest.raises(FanoutIncomplete) as exc_info:
+            await disable_repo.disable_entity("u9")
+
+        err = exc_info.value
+        assert err.stamped == 1
+        assert err.entity_id == "u9"
+        assert "re-run" in str(err).lower()
+
     async def test_successful_fanout_does_not_raise(self, disable_repo, disable_limiter):
         """The wrapper must not disturb the normal path."""
         await disable_repo.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 1000)])
