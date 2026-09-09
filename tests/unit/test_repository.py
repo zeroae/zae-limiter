@@ -2632,6 +2632,12 @@ class TestEntityConfigRegistry:
             "CancellationReasons": [{"Code": "ValidationError"}],  # Not ConditionalCheckFailed
         }
         mock_client = AsyncMock()
+        # delete_limits now probes the config item for `disabled` before the
+        # transaction, to skip a fan-out that cannot change any resolution. A
+        # bare AsyncMock returns a coroutine from .get(), so give this call a
+        # real response; the empty dict means "no disabled value", which is
+        # what this test's config item actually has.
+        mock_client.get_item = AsyncMock(return_value={})
         mock_client.transact_write_items = AsyncMock(
             side_effect=ClientError(error_response, "TransactWriteItems")
         )
@@ -2655,6 +2661,12 @@ class TestEntityConfigRegistry:
         # Mock the client to raise a different error type
         error_response = {"Error": {"Code": "InternalServerError"}}
         mock_client = AsyncMock()
+        # delete_limits now probes the config item for `disabled` before the
+        # transaction, to skip a fan-out that cannot change any resolution. A
+        # bare AsyncMock returns a coroutine from .get(), so give this call a
+        # real response; the empty dict means "no disabled value", which is
+        # what this test's config item actually has.
+        mock_client.get_item = AsyncMock(return_value={})
         mock_client.transact_write_items = AsyncMock(
             side_effect=ClientError(error_response, "TransactWriteItems")
         )

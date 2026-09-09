@@ -1072,3 +1072,148 @@ class TestResolveDisabledPartialBatchResponse:
 
         with pytest.raises(RateLimiterUnavailable):
             await disable_repo.resolve_disabled("user-b", "gpt-4")
+
+
+@pytest.mark.asyncio
+class TestDeleteSkipsFanoutWhenNothingWasDisabled:
+    """Deleting a config that never carried `disabled` must not fan out.
+
+    `delete_resource_defaults` and `delete_limits` call their fan-out
+    unconditionally. When the deleted item had no `disabled` attribute,
+    removing it cannot change what `resolve_disabled` answers, so every
+    discovery pass, every per-entity resolve and every bucket restamp is
+    pure waste -- and it is not small: `_fanout_resource` runs two full GSI2
+    discovery passes (GSI2 projects ALL, so it reads whole bucket items),
+    one resolve per distinct entity and one UpdateItem per bucket, all
+    awaited serially.
+
+    The deciding evidence is free: the DeleteItem these methods already
+    issue can return the deleted image via `ReturnValues=ALL_OLD` at no
+    extra capacity charge, so no additional read is needed to know whether
+    the fan-out is required.
+
+    These tests assert on call counts, not just behaviour -- the point of
+    the change is cost, so cost is what is measured. `query` is the signal:
+    both fan-outs discover buckets with a GSI query, so zero queries proves
+    no fan-out ran at all.
+    """
+
+    @staticmethod
+    def _count_calls(client, monkeypatch) -> dict[str, int]:
+        counts = {
+            "query": 0,
+            "batch_get_item": 0,
+            "get_item": 0,
+            "update_item": 0,
+            "delete_item": 0,
+        }
+        originals = {name: getattr(client, name) for name in counts}
+
+        def make(name):
+            async def counting(**kwargs):
+                counts[name] += 1
+                return await originals[name](**kwargs)
+
+            return counting
+
+        for name in counts:
+            monkeypatch.setattr(client, name, make(name))
+        return counts
+
+    async def test_delete_resource_defaults_without_disabled_does_not_fan_out(
+        self, disable_repo, disable_limiter, monkeypatch
+    ):
+        """No `disabled` on the deleted item -> no discovery, no resolves."""
+        await disable_repo.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 1000)])
+        async with disable_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+            pass
+
+        client = await disable_repo._get_client()
+        counts = self._count_calls(client, monkeypatch)
+
+        await disable_repo.delete_resource_defaults("gpt-4")
+
+        assert counts["query"] == 0, (
+            f"fan-out discovery ran {counts['query']} GSI2 query(s) for a resource that "
+            f"never had a disabled value -- two full passes over every bucket, wasted"
+        )
+        assert counts["batch_get_item"] == 0, (
+            f"{counts['batch_get_item']} resolve_disabled read(s) issued for a delete "
+            f"that cannot change any bucket's resolution"
+        )
+        # The decision came from the DeleteItem's ALL_OLD image, so it must have
+        # cost nothing extra: no probing read was added to buy the skip.
+        assert counts["get_item"] == 0, (
+            f"{counts['get_item']} GetItem(s) issued — ReturnValues=ALL_OLD on the "
+            f"DeleteItem already carries the deleted image at no capacity charge"
+        )
+        assert counts["delete_item"] == 1
+
+    async def test_delete_resource_defaults_with_disabled_still_fans_out(
+        self, disable_repo, disable_limiter, monkeypatch
+    ):
+        """A `disabled` value on the deleted item must still fan out.
+
+        Removing the level that decided `disabled` changes the resolution,
+        so the stamps have to follow. This is the guard that stops the
+        optimisation turning into a correctness bug.
+        """
+        await disable_repo.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 1000)])
+        async with disable_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+            pass
+        await disable_repo.disable_resource("gpt-4")
+
+        client = await disable_repo._get_client()
+        counts = self._count_calls(client, monkeypatch)
+
+        await disable_repo.delete_resource_defaults("gpt-4")
+
+        assert counts["query"] > 0, "deleting a disabled resource must restamp its buckets"
+
+        # And the bucket is actually re-enabled.
+        buckets = await disable_repo.get_buckets("user-1", resource="gpt-4")
+        assert buckets
+        assert await disable_repo.get_resource_disabled("gpt-4") is None
+
+    async def test_delete_limits_without_disabled_does_not_fan_out(
+        self, disable_repo, disable_limiter, monkeypatch
+    ):
+        """Same rule at entity level, where the fan-out is a GSI3 query."""
+        await disable_repo.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 1000)])
+        await disable_repo.set_limits("user-1", [Limit.per_minute("rpm", 50)], "gpt-4")
+        async with disable_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+            pass
+
+        client = await disable_repo._get_client()
+        counts = self._count_calls(client, monkeypatch)
+
+        await disable_repo.delete_limits("user-1", "gpt-4")
+
+        assert counts["query"] == 0, (
+            f"entity fan-out discovery ran {counts['query']} query(s) for a config that "
+            f"never had a disabled value"
+        )
+        # TransactWriteItems returns no old image, so this path pays exactly one
+        # projected GetItem for the decision — pinned so it cannot creep upward.
+        assert counts["get_item"] == 1, (
+            f"expected exactly 1 probing GetItem, saw {counts['get_item']}"
+        )
+        assert counts["batch_get_item"] == 0, (
+            "no resolve_disabled should run when the deleted config had no disabled value"
+        )
+
+    async def test_delete_limits_with_disabled_still_fans_out(
+        self, disable_repo, disable_limiter, monkeypatch
+    ):
+        """An entity carve-out being deleted must restamp its buckets."""
+        await disable_repo.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 1000)])
+        async with disable_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+            pass
+        await disable_repo.disable_entity("user-1", "gpt-4")
+
+        client = await disable_repo._get_client()
+        counts = self._count_calls(client, monkeypatch)
+
+        await disable_repo.delete_limits("user-1", "gpt-4")
+
+        assert counts["query"] > 0, "deleting a disabled entity config must restamp its buckets"

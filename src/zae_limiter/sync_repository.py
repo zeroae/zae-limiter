@@ -2374,6 +2374,16 @@ class SyncRepository:
             principal: Caller identity for audit logging
         """
         client = self._get_client()
+        existing = client.get_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
+                "SK": {"S": schema.sk_config(resource)},
+            },
+            ProjectionExpression="#disabled",
+            ExpressionAttributeNames={"#disabled": schema.CONFIG_FIELD_DISABLED},
+        )
+        had_disabled = schema.CONFIG_FIELD_DISABLED in (existing.get("Item") or {})
         try:
             client.transact_write_items(
                 TransactItems=[
@@ -2412,11 +2422,12 @@ class SyncRepository:
                 raise
         self._cleanup_entity_config_registry(resource)
         self._config_cache.evict_entity(entity_id, resource)
-        if resource == schema.DEFAULT_RESOURCE:
-            self._fanout_entity(entity_id, None, disabled=False)
-        else:
-            effective, _level = self.resolve_disabled(entity_id, resource)
-            self._fanout_entity(entity_id, resource, disabled=effective)
+        if had_disabled:
+            if resource == schema.DEFAULT_RESOURCE:
+                self._fanout_entity(entity_id, None, disabled=False)
+            else:
+                effective, _level = self.resolve_disabled(entity_id, resource)
+                self._fanout_entity(entity_id, resource, disabled=effective)
         self._log_audit_event(
             action=AuditAction.LIMITS_DELETED,
             entity_id=entity_id,
@@ -2619,13 +2630,15 @@ class SyncRepository:
         """
         validate_resource(resource)
         client = self._get_client()
-        client.delete_item(
+        deleted = client.delete_item(
             TableName=self.table_name,
             Key={
                 "PK": {"S": schema.pk_resource(self._namespace_id, resource)},
                 "SK": {"S": schema.sk_config()},
             },
+            ReturnValues="ALL_OLD",
         )
+        had_disabled = schema.CONFIG_FIELD_DISABLED in (deleted.get("Attributes") or {})
         client.update_item(
             TableName=self.table_name,
             Key={
@@ -2635,7 +2648,8 @@ class SyncRepository:
             UpdateExpression="DELETE resources :resource",
             ExpressionAttributeValues={":resource": {"SS": [resource]}},
         )
-        self._fanout_resource(resource, disabled=False)
+        if had_disabled:
+            self._fanout_resource(resource, disabled=False)
         self._log_audit_event(
             action=AuditAction.LIMITS_DELETED,
             entity_id=f"$RESOURCE:{resource}",

@@ -1915,6 +1915,7 @@ class TestEntityConfigRegistry:
             "CancellationReasons": [{"Code": "ValidationError"}],
         }
         mock_client = MagicMock()
+        mock_client.get_item = MagicMock(return_value={})
         mock_client.transact_write_items = MagicMock(
             side_effect=ClientError(error_response, "TransactWriteItems")
         )
@@ -1934,6 +1935,7 @@ class TestEntityConfigRegistry:
         repo.set_limits("user-1", limits, resource="gpt-4")
         error_response = {"Error": {"Code": "InternalServerError"}}
         mock_client = MagicMock()
+        mock_client.get_item = MagicMock(return_value={})
         mock_client.transact_write_items = MagicMock(
             side_effect=ClientError(error_response, "TransactWriteItems")
         )

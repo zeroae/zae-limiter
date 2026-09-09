@@ -2902,6 +2902,29 @@ class Repository:
         """
         client = await self._get_client()
 
+        # Does this config actually decide `disabled`? If not, deleting it
+        # cannot change resolve_disabled()'s answer and the fan-out below is
+        # pure waste (two GSI3 discovery passes, a resolve per entity and an
+        # UpdateItem per bucket, all serial).
+        #
+        # delete_resource_defaults gets this for free from its DeleteItem's
+        # ALL_OLD image, but this path deletes inside a TransactWriteItems,
+        # and transactions return no old image on success — the per-item
+        # Delete shape only offers ReturnValuesOnConditionCheckFailure. So it
+        # costs one projected GetItem (~0.5 RCU) to avoid a fan-out
+        # proportional to the entity's bucket count. `disabled` is a DynamoDB
+        # reserved word, hence the alias.
+        existing = await client.get_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
+                "SK": {"S": schema.sk_config(resource)},
+            },
+            ProjectionExpression="#disabled",
+            ExpressionAttributeNames={"#disabled": schema.CONFIG_FIELD_DISABLED},
+        )
+        had_disabled = schema.CONFIG_FIELD_DISABLED in (existing.get("Item") or {})
+
         # Use transaction to atomically delete config + decrement registry (issue #288)
         # This prevents double-decrement if delete_limits is called twice
         try:
@@ -2954,11 +2977,16 @@ class Repository:
         # so the denormalized bucket flag never contradicts the resolution
         # (ADR-125). Deleting the `_default_` config is an entity-wide change, so
         # it fans out unscoped and each bucket's own resource is re-resolved.
-        if resource == schema.DEFAULT_RESOURCE:
-            await self._fanout_entity(entity_id, None, disabled=False)
-        else:
-            effective, _level = await self.resolve_disabled(entity_id, resource)
-            await self._fanout_entity(entity_id, resource, disabled=effective)
+        # Only restamp when the deleted config was actually carrying a
+        # `disabled` value; otherwise the resolution is unchanged and every
+        # bucket already holds the right stamp. An explicit `disabled: false`
+        # counts as present — dropping a carve-out re-disables the entity.
+        if had_disabled:
+            if resource == schema.DEFAULT_RESOURCE:
+                await self._fanout_entity(entity_id, None, disabled=False)
+            else:
+                effective, _level = await self.resolve_disabled(entity_id, resource)
+                await self._fanout_entity(entity_id, resource, disabled=effective)
 
         # Log audit event
         await self._log_audit_event(
@@ -3221,14 +3249,18 @@ class Repository:
         validate_resource(resource)
         client = await self._get_client()
 
-        # Single DeleteItem removes the composite config
-        await client.delete_item(
+        # Single DeleteItem removes the composite config. ALL_OLD returns the
+        # deleted image at no extra capacity charge, which is what decides
+        # whether the fan-out below is needed at all.
+        deleted = await client.delete_item(
             TableName=self.table_name,
             Key={
                 "PK": {"S": schema.pk_resource(self._namespace_id, resource)},
                 "SK": {"S": schema.sk_config()},
             },
+            ReturnValues="ALL_OLD",
         )
+        had_disabled = schema.CONFIG_FIELD_DISABLED in (deleted.get("Attributes") or {})
 
         # Remove resource from the registry using atomic DELETE operation
         await client.update_item(
@@ -3248,7 +3280,16 @@ class Repository:
         # in the walk, the resource now resolves to "not disabled"; entities with
         # their own override are skipped by _fanout_resource and keep their stamp
         # (ADR-125).
-        await self._fanout_resource(resource, disabled=False)
+        #
+        # If the deleted item carried no `disabled` attribute at all, it was
+        # never the deciding level, so the resolution is unchanged and every
+        # bucket's stamp is already correct. Skipping is not an optimisation
+        # guess: `had_disabled` comes from the image of the item actually
+        # deleted, so there is no window in which it could be stale. An
+        # explicit `disabled: false` counts as present — removing a resource
+        # level re-enable does change the resolution.
+        if had_disabled:
+            await self._fanout_resource(resource, disabled=False)
 
         # Log audit event
         await self._log_audit_event(
