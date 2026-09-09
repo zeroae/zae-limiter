@@ -904,6 +904,7 @@ def status(name: str, region: str | None, endpoint_url: str | None) -> None:
           Stack:         CREATE_COMPLETE
           Table:         ACTIVE
           Aggregator:    Enabled
+          Provisioner:   Enabled
 
         Versions
           Client:        0.6.0
@@ -936,6 +937,8 @@ def status(name: str, region: str | None, endpoint_url: str | None) -> None:
         cfn_status: str | None = None
         table_status: str | None = None
         aggregator_enabled = False
+        # None means the stack outputs could not be read, so we cannot tell
+        provisioner_enabled: bool | None = None
         schema_version: str | None = None
         lambda_version: str | None = None
         table_item_count: int | None = None
@@ -953,11 +956,17 @@ def status(name: str, region: str | None, endpoint_url: str | None) -> None:
                         response = await client.describe_stacks(StackName=stack_name)
                         if response.get("Stacks"):
                             outputs = response["Stacks"][0].get("Outputs", [])
+                            output_keys = set()
                             for output in outputs:
                                 key = output.get("OutputKey", "")
                                 value = output.get("OutputValue", "")
+                                output_keys.add(key)
                                 if key in ("AppRoleArn", "AdminRoleArn", "ReadOnlyRoleArn"):
                                     role_arns[key] = value
+                            # The ProvisionerFunctionName output is conditioned on
+                            # DeployProvisionerLambda, so its presence is exactly
+                            # whether CloudFormation created the function.
+                            provisioner_enabled = "ProvisionerFunctionName" in output_keys
                     except Exception:
                         pass  # Stack outputs unavailable
         except Exception:
@@ -1023,6 +1032,11 @@ def status(name: str, region: str | None, endpoint_url: str | None) -> None:
             click.echo(f"  Table:         {table_status or 'Not found'}")
             aggregator_str = "Enabled" if aggregator_enabled else "Disabled"
             click.echo(f"  Aggregator:    {aggregator_str}")
+            if provisioner_enabled is None:
+                provisioner_str = "Unknown"
+            else:
+                provisioner_str = "Enabled" if provisioner_enabled else "Disabled"
+            click.echo(f"  Provisioner:   {provisioner_str}")
             click.echo()
 
             # Versions section
