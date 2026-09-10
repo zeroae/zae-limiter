@@ -1639,9 +1639,6 @@ class Repository:
             RateLimiterUnavailable: Keys remained unprocessed after
                 ``_BATCH_GET_MAX_RETRIES`` retries.
         """
-        if not keys:
-            return []
-
         client = await self._get_client()
         items: list[dict[str, Any]] = []
         pending = keys

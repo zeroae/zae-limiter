@@ -1365,8 +1365,6 @@ class SyncRepository:
             RateLimiterUnavailable: Keys remained unprocessed after
                 ``_BATCH_GET_MAX_RETRIES`` retries.
         """
-        if not keys:
-            return []
         client = self._get_client()
         items: list[dict[str, Any]] = []
         pending = keys
