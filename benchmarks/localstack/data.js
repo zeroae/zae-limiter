@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789004444668,
+  "lastUpdate": 1789006350725,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -14695,6 +14695,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.0023345705234720437",
             "extra": "mean: 1.0793718859999957 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0ee35905af188565bb2813a1c72ac3aa2f50d265",
+          "message": "✨ feat(infra): add enable_provisioner option to skip the provisioner Lambda (#443)\n\n## Summary\n\n`StackOptions` gains `enable_provisioner` (default `True`), mirroring\n`enable_aggregator`. The CloudFormation template already had an\n`EnableProvisioner` parameter with conditions guarding the provisioner\nLambda, its role, and its log group — but nothing on the client side\never set it, so the provisioner was always deployed.\n\n- `StackOptions.enable_provisioner` + `to_parameters()` mapping to\n`EnableProvisioner`\n- `StackManager` / `SyncStackManager` parameter name mapping\n- `RepositoryBuilder.enable_provisioner()` (and sync counterpart)\n- CLI: `--enable-provisioner/--no-provisioner` on `deploy`, plus a\n`Provisioner: enabled|disabled` line in the deploy summary\n\nSync counterparts regenerated via `hatch run generate-sync`.\n\n## Bug fix: don't push Lambda code to functions CloudFormation never\ncreated\n\nCloudFormation only creates the aggregator and provisioner functions\nwhen a role exists for them, but both deploy paths pushed code based on\nthe `enable_*` flags alone. Under `--no-iam` / `.create_iam(False)` the\nfunctions are absent and the code push failed with\n`ResourceNotFoundException`, exiting 1 on an otherwise successful\ndeploy.\n\n- CLI: `--no-iam` now auto-disables the provisioner the same way it\nauto-disables the aggregator\n- `StackOptions` gains `deploys_aggregator_lambda` /\n`deploys_provisioner_lambda`, mirroring the template's\n`DeployAggregatorLambda` / `DeployProvisionerLambda` conditions\n(aggregator's external-role escape hatch included), and\n`Repository._ensure_infrastructure_internal()` gates the code deploys on\nthose — closing the same hole on the `Repository.builder()` path\n\n| Config | Aggregator Lambda | Provisioner Lambda |\n|--------|-------------------|--------------------|\n| default | deployed | deployed |\n| `--no-provisioner` | deployed | not created |\n| `--no-aggregator` | not created | deployed |\n| `--no-iam` | not created | not created |\n| `--no-iam` + `--aggregator-role-arn` | deployed | not created |\n\n## Visibility and error handling\n\nNow that the provisioner is a real deployment choice, the CLI reports\nand explains its absence:\n\n- `zae-limiter status` gains a `Provisioner: Enabled|Disabled|Unknown`\nline in the Infrastructure section, next to the existing `Aggregator:`\nline. The template's `ProvisionerFunctionName` output is conditioned on\n`DeployProvisionerLambda`, so its presence in the stack outputs is\nexactly whether CloudFormation created the function — and `status`\nalready calls `describe_stacks` for the role ARNs, so this costs no\nextra API call. When the stack outputs cannot be read at all it reports\n`Unknown` rather than `Disabled`, so an externally managed stack\n(Terraform/CDK) that omits the output is not misreported.\n- **Bug fix (found during the real-AWS verification below):** the\nexisting `Aggregator:` line inferred state from the DynamoDB table's\n`StreamSpecification`, which the template enables unconditionally — so\n*every* stack reported `Aggregator: Enabled`, including one deployed\nwith `--no-aggregator`. `AggregatorFunctionName` is conditioned on\n`DeployAggregatorLambda` exactly like `ProvisionerFunctionName`, so both\nstates now come from the same `describe_stacks` call and share one\nEnabled/Disabled/Unknown renderer. The stream-spec inference is gone.\n- `zae-limiter limits plan|apply|diff` now exits 1 with an explanation\nwhen the provisioner Lambda is missing, instead of surfacing a raw\nbotocore `ResourceNotFoundException` traceback.\n\n## Test plan\n\n- [x] `tests/unit/test_models.py` — `to_parameters()` emits\n`EnableProvisioner=false`; `deploys_*_lambda` properties for default /\n`--no-iam` / external-role / disabled configs\n- [x] `tests/unit/test_repository_builder.py` —\n`_ensure_infrastructure_internal()` skips the disabled provisioner,\nskips both Lambdas without IAM, and still deploys the aggregator with an\nexternal role\n- [x] `tests/unit/test_cli.py::test_deploy_with_no_provisioner_flag` —\n`--no-provisioner` skips provisioner code deployment\n- [x]\n`tests/unit/test_limits_cli.py::test_invoke_provisioner_missing_function_exits_cleanly`\n— clean exit 1, no traceback\n- [x] `tests/unit/test_cli.py` — `status` reports `Enabled` / `Disabled`\n/ `Unknown` for both the aggregator and the provisioner (the `status`\ndocstring sample output, which feeds `docs/cli.md` via mkdocs-click, was\nupdated to match)\n- [x]\n`tests/unit/test_cli.py::test_status_aggregator_disabled_despite_table_stream`\n— pins the regression: outputs present with no `AggregatorFunctionName`\n→ `Disabled`\n- [x] `uv run pytest tests/unit/ -q` → 2954 passed\n- [x] `ruff check`, `ruff format`, `mypy src/zae_limiter` → clean\n- [x] Sync generation → no drift\n- [x] `diff-cover` vs `origin/main` → 100% patch coverage, 38 lines, 0\nmissing\n- [x] Manual: `zae-limiter deploy --name x --no-iam` completes with exit\n0 (previously exited 1)\n- [x] Manual: `zae-limiter deploy --name x --no-provisioner` creates no\n`{stack}-limits-provisioner` function\n\nBoth manual items were verified against real AWS (account 733153035800,\nus-east-1) with real CloudFormation stacks, all since deleted:\n\n| Deploy | Result |\n|--------|--------|\n| default | exit 0; `{stack}-limits-provisioner` exists; `status`\nprinted `Provisioner: Enabled` |\n| `--no-provisioner` | exit 0; provisioner absent; `status` printed\n`Provisioner: Disabled`; `limits plan` printed the new clean error\n(`Error: Lambda function '...-limits-provisioner' not found. The limits\nprovisioner is not deployed for this stack...`) rather than a botocore\ntraceback |\n| `--no-iam` | exit 0; provisioner absent — the regression this PR\nfixes, confirmed working |\n\n**Caveat on the `--no-iam` case:** it reaches exit 0 only when\n`--permission-boundary` and `--role-name-format` are also supplied. With\neither omitted the stack rolls back before the CLI ever reaches the\nprovisioner step, due to a **pre-existing bug on `main` that this PR\nneither touches nor causes**: `PermissionBoundaryArn` and\n`RoleNameFormat` in `src/zae_limiter/infra/cfn_template.yaml` are\nexported unconditionally while both parameters default to `''`, and\nCloudFormation rejects empty export values (`Cannot export output\nPermissionBoundaryArn. Exported values must not be empty or\nwhitespace-only.`). Introduced in 80a1a34 and now tracked in #445. The\n`--no-iam` fix in this PR is verified working.\n\n🤖 Generated with [Claude Code](https://claude.ai/code)\n\nhttps://claude.ai/code/session_014nPStTtHkW7zqj3X3wGpVg",
+          "timestamp": "2026-09-09T22:08:26-04:00",
+          "tree_id": "0f757901c1ce93b0158b97bc7b86ef6eaa5ddede",
+          "url": "https://github.com/zeroae/zae-limiter/commit/0ee35905af188565bb2813a1c72ac3aa2f50d265"
+        },
+        "date": 1789006349401,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 23.606565736075993,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006802164627163824",
+            "extra": "mean: 42.36109611114595 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 18.05627359337263,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008627608875906473",
+            "extra": "mean: 55.38241292306513 msec\nrounds: 13"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 36.85217818543013,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0037844999341996944",
+            "extra": "mean: 27.135438099975318 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 40.802879899868614,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004141909661853059",
+            "extra": "mean: 24.50807400002224 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 22.966149854009817,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00729899050643524",
+            "extra": "mean: 43.54234411761461 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 192.19728345283121,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0007290607614859865",
+            "extra": "mean: 5.2029871704478 msec\nrounds: 88"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 25.359677317786126,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00603030435655963",
+            "extra": "mean: 39.43267839999862 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 19.654072712606425,
+            "unit": "iter/sec",
+            "range": "stddev: 0.04783594852363984",
+            "extra": "mean: 50.88003970589692 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 26.028071445023038,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006198913137607826",
+            "extra": "mean: 38.42005744114457 msec\nrounds: 34"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 22.804990822997897,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006924940009337482",
+            "extra": "mean: 43.85005053330436 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 25.6009775838846,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006378692282186336",
+            "extra": "mean: 39.061008382331615 msec\nrounds: 34"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 26.28724745619783,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004620541278591419",
+            "extra": "mean: 38.04125942308299 msec\nrounds: 26"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 30.308684874977516,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004748094404135778",
+            "extra": "mean: 32.993843319991356 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9059411443100664,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006935560403229204",
+            "extra": "mean: 524.6751732000575 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9222117281849365,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0015994397186879354",
+            "extra": "mean: 520.2340540000023 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9341165816924323,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004903229120036377",
+            "extra": "mean: 1.070530188200064 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.907688758201943,
+            "unit": "iter/sec",
+            "range": "stddev: 0.01079876386240119",
+            "extra": "mean: 1.10169922340001 sec\nrounds: 5"
           }
         ]
       }
