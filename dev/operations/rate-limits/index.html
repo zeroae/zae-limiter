@@ -21,7 +21,7 @@
       
       
       <link rel="icon" href="../../assets/zae-limiter.ico">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.1">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
     
     
       
@@ -29,7 +29,7 @@
       
     
     
-      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
       
         
         <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
@@ -3403,17 +3403,17 @@
 <p><strong>Check entity and bucket state:</strong></p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># Query entity metadata</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>get-item<span class="w"> </span>--table-name<span class="w"> </span>&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">  </span>--key<span class="w"> </span><span class="s1">&#39;{&quot;PK&quot;: {&quot;S&quot;: &quot;ENTITY#&lt;entity_id&gt;&quot;}, &quot;SK&quot;: {&quot;S&quot;: &quot;#META&quot;}}&#39;</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">  </span>--key<span class="w"> </span><span class="s1">'{"PK": {"S": "ENTITY#&lt;entity_id&gt;"}, "SK": {"S": "#META"}}'</span>
 </span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>
 </span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="c1"># Query bucket state for a specific resource (shard 0)</span>
 </span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="c1"># v0.9.0+ bucket key format: PK={ns}/BUCKET#{entity}#{resource}#{shard}, SK=#STATE</span>
 </span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>get-item<span class="w"> </span>--table-name<span class="w"> </span>&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="w">  </span>--key<span class="w"> </span><span class="s1">&#39;{&quot;PK&quot;: {&quot;S&quot;: &quot;{ns}/BUCKET#&lt;entity_id&gt;#&lt;resource&gt;#0&quot;}, &quot;SK&quot;: {&quot;S&quot;: &quot;#STATE&quot;}}&#39;</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="w">  </span>--key<span class="w"> </span><span class="s1">'{"PK": {"S": "{ns}/BUCKET#&lt;entity_id&gt;#&lt;resource&gt;#0"}, "SK": {"S": "#STATE"}}'</span>
 </span></code></pre></div>
 <p><strong>Verify stored limits:</strong></p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>query<span class="w"> </span>--table-name<span class="w"> </span>&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span>--key-condition-expression<span class="w"> </span><span class="s2">&quot;PK = :pk AND begins_with(SK, :sk)&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span>--expression-attribute-values<span class="w"> </span><span class="s1">&#39;{&quot;:pk&quot;: {&quot;S&quot;: &quot;ENTITY#&lt;entity_id&gt;&quot;}, &quot;:sk&quot;: {&quot;S&quot;: &quot;#LIMIT#&quot;}}&#39;</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span>--key-condition-expression<span class="w"> </span><span class="s2">"PK = :pk AND begins_with(SK, :sk)"</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span>--expression-attribute-values<span class="w"> </span><span class="s1">'{":pk": {"S": "ENTITY#&lt;entity_id&gt;"}, ":sk": {"S": "#LIMIT#"}}'</span>
 </span></code></pre></div>
 <h3 id="unexpected-ratelimitexceeded">Unexpected RateLimitExceeded<a class="headerlink" href="#unexpected-ratelimitexceeded" title="Permanent link">&para;</a></h3>
 <p><strong>Possible causes:</strong></p>
@@ -3451,8 +3451,8 @@
 <p><strong>Check bucket state:</strong></p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># v0.9.0+ bucket key format</span>
 </span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>get-item<span class="w"> </span>--table-name<span class="w"> </span>&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span>--key<span class="w"> </span><span class="s1">&#39;{&quot;PK&quot;: {&quot;S&quot;: &quot;{ns}/BUCKET#&lt;entity_id&gt;#&lt;resource&gt;#0&quot;}, &quot;SK&quot;: {&quot;S&quot;: &quot;#STATE&quot;}}&#39;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span>--projection-expression<span class="w"> </span><span class="s2">&quot;b_&lt;limit_name&gt;_tk, rf, b_&lt;limit_name&gt;_cp, shard_count&quot;</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span>--key<span class="w"> </span><span class="s1">'{"PK": {"S": "{ns}/BUCKET#&lt;entity_id&gt;#&lt;resource&gt;#0"}, "SK": {"S": "#STATE"}}'</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span>--projection-expression<span class="w"> </span><span class="s2">"b_&lt;limit_name&gt;_tk, rf, b_&lt;limit_name&gt;_cp, shard_count"</span>
 </span></code></pre></div>
 <p><strong>Interpret the response:</strong></p>
 <ul>
@@ -3490,7 +3490,7 @@
 </table>
 <p><strong>Verify entity exists:</strong></p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>get-item<span class="w"> </span>--table-name<span class="w"> </span>&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span>--key<span class="w"> </span><span class="s1">&#39;{&quot;PK&quot;: {&quot;S&quot;: &quot;ENTITY#&lt;entity_id&gt;&quot;}, &quot;SK&quot;: {&quot;S&quot;: &quot;#META&quot;}}&#39;</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span>--key<span class="w"> </span><span class="s1">'{"PK": {"S": "ENTITY#&lt;entity_id&gt;"}, "SK": {"S": "#META"}}'</span>
 </span></code></pre></div>
 <h3 id="resource-or-entity-disabled">Resource or Entity Disabled<a class="headerlink" href="#resource-or-entity-disabled" title="Permanent link">&para;</a></h3>
 <p><code>acquire()</code> raises <code>ResourceDisabled</code> instead of <code>RateLimitExceeded</code> when the resource or
@@ -3498,8 +3498,8 @@ entity has been explicitly turned off (ADR-125). Unlike a throttling error, retr
 never succeed until the disable is cleared — treat it as a 403, not a 429.</p>
 <p><strong>Check the resolved state:</strong></p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="n">repo</span> <span class="o">=</span> <span class="k">await</span> <span class="n">Repository</span><span class="o">.</span><span class="n">open</span><span class="p">()</span>
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="n">disabled</span><span class="p">,</span> <span class="n">level</span> <span class="o">=</span> <span class="k">await</span> <span class="n">repo</span><span class="o">.</span><span class="n">resolve_disabled</span><span class="p">(</span><span class="s2">&quot;&lt;entity_id&gt;&quot;</span><span class="p">,</span> <span class="s2">&quot;&lt;resource&gt;&quot;</span><span class="p">)</span>
-</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;disabled=</span><span class="si">{</span><span class="n">disabled</span><span class="si">}</span><span class="s2"> (decided at </span><span class="si">{</span><span class="n">level</span><span class="si">}</span><span class="s2"> level)&quot;</span><span class="p">)</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="n">disabled</span><span class="p">,</span> <span class="n">level</span> <span class="o">=</span> <span class="k">await</span> <span class="n">repo</span><span class="o">.</span><span class="n">resolve_disabled</span><span class="p">(</span><span class="s2">"&lt;entity_id&gt;"</span><span class="p">,</span> <span class="s2">"&lt;resource&gt;"</span><span class="p">)</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"disabled=</span><span class="si">{</span><span class="n">disabled</span><span class="si">}</span><span class="s2"> (decided at </span><span class="si">{</span><span class="n">level</span><span class="si">}</span><span class="s2"> level)"</span><span class="p">)</span>
 </span></code></pre></div>
 <p><code>level</code> is <code>"entity"</code>, <code>"entity_default"</code>, <code>"resource"</code>, or <code>None</code> when nothing along the walk
 sets <code>disabled</code> explicitly (so it resolves to enabled).</p>
@@ -3523,23 +3523,23 @@ and <a href="../../adr/125-resource-disable/">ADR-125</a>.</p>
 <p>If cascade to parent is not enforced:</p>
 <p><strong>Step 1: Verify parent entity exists:</strong></p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>get-item<span class="w"> </span>--table-name<span class="w"> </span>&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span>--key<span class="w"> </span><span class="s1">&#39;{&quot;PK&quot;: {&quot;S&quot;: &quot;ENTITY#&lt;parent_id&gt;&quot;}, &quot;SK&quot;: {&quot;S&quot;: &quot;#META&quot;}}&#39;</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span>--key<span class="w"> </span><span class="s1">'{"PK": {"S": "ENTITY#&lt;parent_id&gt;"}, "SK": {"S": "#META"}}'</span>
 </span></code></pre></div>
 <p><strong>Step 2: Verify child has <code>parent_id</code> set:</strong></p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>get-item<span class="w"> </span>--table-name<span class="w"> </span>&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span>--key<span class="w"> </span><span class="s1">&#39;{&quot;PK&quot;: {&quot;S&quot;: &quot;ENTITY#&lt;child_id&gt;&quot;}, &quot;SK&quot;: {&quot;S&quot;: &quot;#META&quot;}}&#39;</span>
-</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="c1"># Check the &quot;parent_id&quot; attribute in response</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span>--key<span class="w"> </span><span class="s1">'{"PK": {"S": "ENTITY#&lt;child_id&gt;"}, "SK": {"S": "#META"}}'</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="c1"># Check the "parent_id" attribute in response</span>
 </span></code></pre></div>
 <p><strong>Step 3: Ensure entity was created with <code>cascade=True</code>:</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># Check the entity&#39;s cascade setting in its metadata</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># Check the entity's cascade setting in its metadata</span>
 </span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>get-item<span class="w"> </span>--table-name<span class="w"> </span>&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">  </span>--key<span class="w"> </span><span class="s1">&#39;{&quot;PK&quot;: {&quot;S&quot;: &quot;ENTITY#&lt;child_id&gt;&quot;}, &quot;SK&quot;: {&quot;S&quot;: &quot;#META&quot;}}&#39;</span>
-</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="c1"># Check the &quot;cascade&quot; attribute in response — should be true</span>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">  </span>--key<span class="w"> </span><span class="s1">'{"PK": {"S": "ENTITY#&lt;child_id&gt;"}, "SK": {"S": "#META"}}'</span>
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="c1"># Check the "cascade" attribute in response — should be true</span>
 </span></code></pre></div>
 <p>If cascade is not enabled, recreate the entity with cascade:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">create_entity</span><span class="p">(</span>
-</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;child-id&quot;</span><span class="p">,</span>
-</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>    <span class="n">parent_id</span><span class="o">=</span><span class="s2">&quot;parent-id&quot;</span><span class="p">,</span>
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">"child-id"</span><span class="p">,</span>
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>    <span class="n">parent_id</span><span class="o">=</span><span class="s2">"parent-id"</span><span class="p">,</span>
 </span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>    <span class="n">cascade</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>  <span class="c1"># Entity property — applies to all acquire() calls</span>
 </span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="p">)</span>
 </span></code></pre></div>
@@ -3554,14 +3554,14 @@ and <a href="../../adr/125-resource-disable/">ADR-125</a>.</p>
 </span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">100</span><span class="p">):</span>
 </span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a>    <span class="k">try</span><span class="p">:</span>
 </span><span id="__span-10-9"><a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a>        <span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span>
-</span><span id="__span-10-10"><a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a>            <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;test-entity&quot;</span><span class="p">,</span>
-</span><span id="__span-10-11"><a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a>            <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;test&quot;</span><span class="p">,</span>
-</span><span id="__span-10-12"><a id="__codelineno-10-12" name="__codelineno-10-12" href="#__codelineno-10-12"></a>            <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;rpm&quot;</span><span class="p">,</span> <span class="mi">100</span><span class="p">)],</span>
-</span><span id="__span-10-13"><a id="__codelineno-10-13" name="__codelineno-10-13" href="#__codelineno-10-13"></a>            <span class="n">consume</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;rpm&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span>
+</span><span id="__span-10-10"><a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a>            <span class="n">entity_id</span><span class="o">=</span><span class="s2">"test-entity"</span><span class="p">,</span>
+</span><span id="__span-10-11"><a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a>            <span class="n">resource</span><span class="o">=</span><span class="s2">"test"</span><span class="p">,</span>
+</span><span id="__span-10-12"><a id="__codelineno-10-12" name="__codelineno-10-12" href="#__codelineno-10-12"></a>            <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">"rpm"</span><span class="p">,</span> <span class="mi">100</span><span class="p">)],</span>
+</span><span id="__span-10-13"><a id="__codelineno-10-13" name="__codelineno-10-13" href="#__codelineno-10-13"></a>            <span class="n">consume</span><span class="o">=</span><span class="p">{</span><span class="s2">"rpm"</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span>
 </span><span id="__span-10-14"><a id="__codelineno-10-14" name="__codelineno-10-14" href="#__codelineno-10-14"></a>        <span class="p">):</span>
 </span><span id="__span-10-15"><a id="__codelineno-10-15" name="__codelineno-10-15" href="#__codelineno-10-15"></a>            <span class="k">pass</span>
 </span><span id="__span-10-16"><a id="__codelineno-10-16" name="__codelineno-10-16" href="#__codelineno-10-16"></a>    <span class="k">except</span> <span class="n">RateLimitExceeded</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
-</span><span id="__span-10-17"><a id="__codelineno-10-17" name="__codelineno-10-17" href="#__codelineno-10-17"></a>        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Rate limited after </span><span class="si">{</span><span class="n">i</span><span class="si">}</span><span class="s2"> requests, retry_after=</span><span class="si">{</span><span class="n">e</span><span class="o">.</span><span class="n">retry_after_seconds</span><span class="si">}</span><span class="s2">s&quot;</span><span class="p">)</span>
+</span><span id="__span-10-17"><a id="__codelineno-10-17" name="__codelineno-10-17" href="#__codelineno-10-17"></a>        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Rate limited after </span><span class="si">{</span><span class="n">i</span><span class="si">}</span><span class="s2"> requests, retry_after=</span><span class="si">{</span><span class="n">e</span><span class="o">.</span><span class="n">retry_after_seconds</span><span class="si">}</span><span class="s2">s"</span><span class="p">)</span>
 </span><span id="__span-10-18"><a id="__codelineno-10-18" name="__codelineno-10-18" href="#__codelineno-10-18"></a>        <span class="k">break</span>
 </span></code></pre></div>
 <h2 id="procedures">Procedures<a class="headerlink" href="#procedures" title="Permanent link">&para;</a></h2>
@@ -3575,15 +3575,15 @@ and <a href="../../adr/125-resource-disable/">ADR-125</a>.</p>
 </span><span id="__span-11-5"><a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a>
 </span><span id="__span-11-6"><a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a><span class="c1"># Update limits for an entity</span>
 </span><span id="__span-11-7"><a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span>
-</span><span id="__span-11-8"><a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">&quot;api-key-123&quot;</span><span class="p">,</span>
-</span><span id="__span-11-9"><a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a>    <span class="n">resource</span><span class="o">=</span><span class="s2">&quot;gpt-4&quot;</span><span class="p">,</span>  <span class="c1"># Resource these limits apply to</span>
+</span><span id="__span-11-8"><a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">"api-key-123"</span><span class="p">,</span>
+</span><span id="__span-11-9"><a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a>    <span class="n">resource</span><span class="o">=</span><span class="s2">"gpt-4"</span><span class="p">,</span>  <span class="c1"># Resource these limits apply to</span>
 </span><span id="__span-11-10"><a id="__codelineno-11-10" name="__codelineno-11-10" href="#__codelineno-11-10"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span>
-</span><span id="__span-11-11"><a id="__codelineno-11-11" name="__codelineno-11-11" href="#__codelineno-11-11"></a>        <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;rpm&quot;</span><span class="p">,</span> <span class="mi">1000</span><span class="p">),</span>      <span class="c1"># Requests per minute</span>
-</span><span id="__span-11-12"><a id="__codelineno-11-12" name="__codelineno-11-12" href="#__codelineno-11-12"></a>        <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">&quot;tpm&quot;</span><span class="p">,</span> <span class="mi">100_000</span><span class="p">),</span>   <span class="c1"># Tokens per minute</span>
+</span><span id="__span-11-11"><a id="__codelineno-11-11" name="__codelineno-11-11" href="#__codelineno-11-11"></a>        <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">"rpm"</span><span class="p">,</span> <span class="mi">1000</span><span class="p">),</span>      <span class="c1"># Requests per minute</span>
+</span><span id="__span-11-12"><a id="__codelineno-11-12" name="__codelineno-11-12" href="#__codelineno-11-12"></a>        <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">"tpm"</span><span class="p">,</span> <span class="mi">100_000</span><span class="p">),</span>   <span class="c1"># Tokens per minute</span>
 </span><span id="__span-11-13"><a id="__codelineno-11-13" name="__codelineno-11-13" href="#__codelineno-11-13"></a>    <span class="p">],</span>
 </span><span id="__span-11-14"><a id="__codelineno-11-14" name="__codelineno-11-14" href="#__codelineno-11-14"></a><span class="p">)</span>
 </span><span id="__span-11-15"><a id="__codelineno-11-15" name="__codelineno-11-15" href="#__codelineno-11-15"></a>
-</span><span id="__span-11-16"><a id="__codelineno-11-16" name="__codelineno-11-16" href="#__codelineno-11-16"></a><span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Limits updated successfully&quot;</span><span class="p">)</span>
+</span><span id="__span-11-16"><a id="__codelineno-11-16" name="__codelineno-11-16" href="#__codelineno-11-16"></a><span class="nb">print</span><span class="p">(</span><span class="s2">"Limits updated successfully"</span><span class="p">)</span>
 </span></code></pre></div>
 <h4 id="direct-dynamodb-update">Direct DynamoDB Update<a class="headerlink" href="#direct-dynamodb-update" title="Permanent link">&para;</a></h4>
 <div class="admonition warning">
@@ -3592,27 +3592,27 @@ and <a href="../../adr/125-resource-disable/">ADR-125</a>.</p>
 </div>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="c1"># Update a stored limit</span>
 </span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>put-item<span class="w"> </span>--table-name<span class="w"> </span>&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-12-3"><a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="w">  </span>--item<span class="w"> </span><span class="s1">&#39;{</span>
-</span><span id="__span-12-4"><a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="s1">    &quot;PK&quot;: {&quot;S&quot;: &quot;ENTITY#&lt;entity_id&gt;&quot;},</span>
-</span><span id="__span-12-5"><a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a><span class="s1">    &quot;SK&quot;: {&quot;S&quot;: &quot;#LIMIT#&lt;resource&gt;#&lt;limit_name&gt;&quot;},</span>
-</span><span id="__span-12-6"><a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a><span class="s1">    &quot;capacity&quot;: {&quot;N&quot;: &quot;1000000&quot;},</span>
-</span><span id="__span-12-7"><a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a><span class="s1">    &quot;refill_amount&quot;: {&quot;N&quot;: &quot;1000000&quot;},</span>
-</span><span id="__span-12-8"><a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a><span class="s1">    &quot;refill_period&quot;: {&quot;N&quot;: &quot;60&quot;}</span>
-</span><span id="__span-12-9"><a id="__codelineno-12-9" name="__codelineno-12-9" href="#__codelineno-12-9"></a><span class="s1">  }&#39;</span>
+</span><span id="__span-12-3"><a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="w">  </span>--item<span class="w"> </span><span class="s1">'{</span>
+</span><span id="__span-12-4"><a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="s1">    "PK": {"S": "ENTITY#&lt;entity_id&gt;"},</span>
+</span><span id="__span-12-5"><a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a><span class="s1">    "SK": {"S": "#LIMIT#&lt;resource&gt;#&lt;limit_name&gt;"},</span>
+</span><span id="__span-12-6"><a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a><span class="s1">    "capacity": {"N": "1000000"},</span>
+</span><span id="__span-12-7"><a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a><span class="s1">    "refill_amount": {"N": "1000000"},</span>
+</span><span id="__span-12-8"><a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a><span class="s1">    "refill_period": {"N": "60"}</span>
+</span><span id="__span-12-9"><a id="__codelineno-12-9" name="__codelineno-12-9" href="#__codelineno-12-9"></a><span class="s1">  }'</span>
 </span></code></pre></div>
 <h3 id="reset-bucket-state">Reset Bucket State<a class="headerlink" href="#reset-bucket-state" title="Permanent link">&para;</a></h3>
 <p>Reset a bucket to restore full capacity (will be recreated on next acquire):</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="c1"># v0.9.0+ bucket key format: PK={ns}/BUCKET#{entity}#{resource}#{shard}, SK=#STATE</span>
 </span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>delete-item<span class="w"> </span>--table-name<span class="w"> </span>&lt;name&gt;<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-13-3"><a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="w">  </span>--key<span class="w"> </span><span class="s1">&#39;{&quot;PK&quot;: {&quot;S&quot;: &quot;{ns}/BUCKET#&lt;entity_id&gt;#&lt;resource&gt;#0&quot;}, &quot;SK&quot;: {&quot;S&quot;: &quot;#STATE&quot;}}&#39;</span>
+</span><span id="__span-13-3"><a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="w">  </span>--key<span class="w"> </span><span class="s1">'{"PK": {"S": "{ns}/BUCKET#&lt;entity_id&gt;#&lt;resource&gt;#0"}, "SK": {"S": "#STATE"}}'</span>
 </span></code></pre></div>
 <h3 id="debug-bucket-state">Debug Bucket State<a class="headerlink" href="#debug-bucket-state" title="Permanent link">&para;</a></h3>
 <p>Query all buckets for an entity using GSI3:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="c1"># Discover all bucket PKs via GSI3 (KEYS_ONLY)</span>
 </span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>query<span class="w"> </span>--table-name<span class="w"> </span>&lt;name&gt;<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-14-3"><a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="w">  </span>--index-name<span class="w"> </span>GSI3<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-14-4"><a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a><span class="w">  </span>--key-condition-expression<span class="w"> </span><span class="s2">&quot;GSI3PK = :gsi3pk&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-14-5"><a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a><span class="w">  </span>--expression-attribute-values<span class="w"> </span><span class="s1">&#39;{&quot;:gsi3pk&quot;: {&quot;S&quot;: &quot;{ns}/ENTITY#&lt;entity_id&gt;&quot;}}&#39;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-14-4"><a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a><span class="w">  </span>--key-condition-expression<span class="w"> </span><span class="s2">"GSI3PK = :gsi3pk"</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-14-5"><a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a><span class="w">  </span>--expression-attribute-values<span class="w"> </span><span class="s1">'{":gsi3pk": {"S": "{ns}/ENTITY#&lt;entity_id&gt;"}}'</span><span class="w"> </span><span class="se">\</span>
 </span><span id="__span-14-6"><a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a><span class="w">  </span>--output<span class="w"> </span>json
 </span></code></pre></div>
 <p>Then fetch individual bucket items using the PKs returned above.</p>
@@ -3659,13 +3659,13 @@ use the <code>b_{limit_name}_{field}</code> naming convention:</p>
 <p>After adjusting limits, verify:</p>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a># Check available capacity
 </span><span id="__span-15-2"><a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>available = await limiter.available(
-</span><span id="__span-15-3"><a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a>    entity_id=&quot;&lt;entity_id&gt;&quot;,
-</span><span id="__span-15-4"><a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a>    resource=&quot;&lt;resource&gt;&quot;,
-</span><span id="__span-15-5"><a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a>    limits=[Limit.per_minute(&quot;&lt;limit_name&gt;&quot;, &lt;capacity&gt;)],
+</span><span id="__span-15-3"><a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a>    entity_id="&lt;entity_id&gt;",
+</span><span id="__span-15-4"><a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a>    resource="&lt;resource&gt;",
+</span><span id="__span-15-5"><a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a>    limits=[Limit.per_minute("&lt;limit_name&gt;", &lt;capacity&gt;)],
 </span><span id="__span-15-6"><a id="__codelineno-15-6" name="__codelineno-15-6" href="#__codelineno-15-6"></a>)
 </span><span id="__span-15-7"><a id="__codelineno-15-7" name="__codelineno-15-7" href="#__codelineno-15-7"></a>
-</span><span id="__span-15-8"><a id="__codelineno-15-8" name="__codelineno-15-8" href="#__codelineno-15-8"></a>print(f&quot;Available: {available}&quot;)
-</span><span id="__span-15-9"><a id="__codelineno-15-9" name="__codelineno-15-9" href="#__codelineno-15-9"></a># Output: {&#39;&lt;limit_name&gt;&#39;: &lt;available_tokens&gt;}
+</span><span id="__span-15-8"><a id="__codelineno-15-8" name="__codelineno-15-8" href="#__codelineno-15-8"></a>print(f"Available: {available}")
+</span><span id="__span-15-9"><a id="__codelineno-15-9" name="__codelineno-15-9" href="#__codelineno-15-9"></a># Output: {'&lt;limit_name&gt;': &lt;available_tokens&gt;}
 </span></code></pre></div>
 <h2 id="dynamodb-key-patterns">DynamoDB Key Patterns<a class="headerlink" href="#dynamodb-key-patterns" title="Permanent link">&para;</a></h2>
 <table>
@@ -3798,7 +3798,7 @@ use the <code>b_{limit_name}_{field}</code> naming convention:</p>
       <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.top", "navigation.footer", "content.code.copy", "content.code.annotate", "content.action.edit", "search.suggest", "search.highlight"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
     
     
-      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
       
         <script src="https://unpkg.com/mermaid@10/dist/mermaid.min.js"></script>
       

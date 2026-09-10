@@ -25,7 +25,7 @@
       
       
       <link rel="icon" href="../../assets/zae-limiter.ico">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.1">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
     
     
       
@@ -33,7 +33,7 @@
       
     
     
-      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
       
         
         <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
@@ -6730,7 +6730,7 @@
 </span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span><span class="n">repository</span><span class="o">=</span><span class="n">repo</span><span class="p">)</span>
 </span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>
 </span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="c1"># Infrastructure managed elsewhere (your own CloudFormation/Terraform/CDK):</span>
-</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="n">repo</span> <span class="o">=</span> <span class="k">await</span> <span class="n">Repository</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span><span class="s2">&quot;my-app&quot;</span><span class="p">)</span>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="n">repo</span> <span class="o">=</span> <span class="k">await</span> <span class="n">Repository</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span><span class="s2">"my-app"</span><span class="p">)</span>
 </span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span><span class="n">repository</span><span class="o">=</span><span class="n">repo</span><span class="p">)</span>
 </span></code></pre></div>
 <p>See <a href="../../adr/108-repository-protocol/">ADR-108</a> for the design rationale.</p>
@@ -6799,7 +6799,7 @@ rather than repairing anything it finds missing:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">zae_limiter</span><span class="w"> </span><span class="kn">import</span> <span class="n">RateLimiter</span><span class="p">,</span> <span class="n">Repository</span>
 </span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
 </span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="c1"># Stack, table, and namespaces are all deployed by your own template</span>
-</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="n">repo</span> <span class="o">=</span> <span class="k">await</span> <span class="n">Repository</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span><span class="s2">&quot;my-app&quot;</span><span class="p">)</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="n">repo</span> <span class="o">=</span> <span class="k">await</span> <span class="n">Repository</span><span class="o">.</span><span class="n">connect</span><span class="p">(</span><span class="s2">"my-app"</span><span class="p">)</span>
 </span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span><span class="n">repository</span><span class="o">=</span><span class="n">repo</span><span class="p">)</span>
 </span></code></pre></div>
 <p>Register namespaces ahead of time with <code>zae-limiter namespace register</code>, or
@@ -6938,10 +6938,10 @@ Controls caching of resolved limit configs in resolve_limits().</p>
     </table>
         <p>Example::</p>
 <div class="language-text highlight"><pre><span></span><code># Most users (auto-provisions if needed)
-repo = await Repository.open(&quot;my-app&quot;)
+repo = await Repository.open("my-app")
 
 # Custom infrastructure options
-repo = await Repository.builder().namespace(&quot;my-app&quot;).build()
+repo = await Repository.builder().namespace("my-app").build()
 </code></pre></div>
 
 
@@ -7285,15 +7285,15 @@ or <code>"zae-limiter"</code>.</p>
     </table>
         <p>Example::</p>
 <div class="language-text highlight"><pre><span></span><code># Most users
-repo = await Repository.open(&quot;my-app&quot;)
+repo = await Repository.open("my-app")
 
 # Multi-tenant
-repo_alpha = await Repository.open(&quot;tenant-alpha&quot;)
+repo_alpha = await Repository.open("tenant-alpha")
 
 # Explicit stack
-repo = await Repository.open(&quot;my-app&quot;, stack=&quot;custom-stack&quot;)
+repo = await Repository.open("my-app", stack="custom-stack")
 
-# Simplest (stack=&quot;zae-limiter&quot;, namespace=&quot;default&quot;)
+# Simplest (stack="zae-limiter", namespace="default")
 repo = await Repository.open()
 </code></pre></div>
 
@@ -7517,7 +7517,7 @@ the client version. Redeploy your stack to resolve.</p>
     </table>
         <p>Example::</p>
 <div class="language-text highlight"><pre><span></span><code># Infrastructure deployed by your own CloudFormation
-repo = await Repository.connect(&quot;my-app&quot;)
+repo = await Repository.connect("my-app")
 limiter = RateLimiter(repository=repo)
 </code></pre></div>
 
@@ -11700,7 +11700,7 @@ Does not verify the table is initialized or has valid data.</p>
   </span>
 
 <a href="#zae_limiter.repository.Repository.set_version_record" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">set_version_record</span><span class="p">(</span><span class="n">schema_version</span><span class="p">,</span> <span class="n">lambda_version</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">client_min_version</span><span class="o">=</span><span class="s1">&#39;0.0.0&#39;</span><span class="p">,</span> <span class="n">updated_by</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">set_version_record</span><span class="p">(</span><span class="n">schema_version</span><span class="p">,</span> <span class="n">lambda_version</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">client_min_version</span><span class="o">=</span><span class="s1">'0.0.0'</span><span class="p">,</span> <span class="n">updated_by</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -16068,7 +16068,7 @@ stale limit attributes. No-op if bucket doesn't exist.</p>
   </span>
 
 <a href="#zae_limiter.repository_protocol.RepositoryProtocol.set_limits" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">set_limits</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">limits</span><span class="p">,</span> <span class="n">resource</span><span class="o">=</span><span class="s1">&#39;_default_&#39;</span><span class="p">,</span> <span class="n">principal</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">disabled</span><span class="o">=</span><span class="n"><span title="zae_limiter.repository_protocol.PRESERVE_DISABLED">PRESERVE_DISABLED</span></span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">set_limits</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">limits</span><span class="p">,</span> <span class="n">resource</span><span class="o">=</span><span class="s1">'_default_'</span><span class="p">,</span> <span class="n">principal</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">disabled</span><span class="o">=</span><span class="n"><span title="zae_limiter.repository_protocol.PRESERVE_DISABLED">PRESERVE_DISABLED</span></span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -16176,7 +16176,7 @@ stale limit attributes. No-op if bucket doesn't exist.</p>
   </span>
 
 <a href="#zae_limiter.repository_protocol.RepositoryProtocol.get_limits" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">get_limits</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="o">=</span><span class="s1">&#39;_default_&#39;</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">get_limits</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="o">=</span><span class="s1">'_default_'</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -16275,7 +16275,7 @@ stale limit attributes. No-op if bucket doesn't exist.</p>
   </span>
 
 <a href="#zae_limiter.repository_protocol.RepositoryProtocol.delete_limits" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">delete_limits</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="o">=</span><span class="s1">&#39;_default_&#39;</span><span class="p">,</span> <span class="n">principal</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">delete_limits</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="o">=</span><span class="s1">'_default_'</span><span class="p">,</span> <span class="n">principal</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -17073,7 +17073,7 @@ unless overridden at the entity level.</p>
   </span>
 
 <a href="#zae_limiter.repository_protocol.RepositoryProtocol.set_version_record" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">set_version_record</span><span class="p">(</span><span class="n">schema_version</span><span class="p">,</span> <span class="n">lambda_version</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">client_min_version</span><span class="o">=</span><span class="s1">&#39;0.0.0&#39;</span><span class="p">,</span> <span class="n">updated_by</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">set_version_record</span><span class="p">(</span><span class="n">schema_version</span><span class="p">,</span> <span class="n">lambda_version</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">client_min_version</span><span class="o">=</span><span class="s1">'0.0.0'</span><span class="p">,</span> <span class="n">updated_by</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -18308,7 +18308,7 @@ caching (e.g., Redis with native TTL) should no-op.</p>
       <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.top", "navigation.footer", "content.code.copy", "content.code.annotate", "content.action.edit", "search.suggest", "search.highlight"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
     
     
-      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
       
         <script src="https://unpkg.com/mermaid@10/dist/mermaid.min.js"></script>
       

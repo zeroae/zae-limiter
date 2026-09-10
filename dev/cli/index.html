@@ -25,7 +25,7 @@
       
       
       <link rel="icon" href="../assets/zae-limiter.ico">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.1">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
     
     
       
@@ -33,7 +33,7 @@
       
     
     
-      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
       
         
         <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
@@ -5081,13 +5081,13 @@
 <td><code>--version</code></td>
 <td>boolean</td>
 <td>Show the version and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 <tr>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -5134,7 +5134,7 @@ like limits_set, entity_created, and entity_deleted.</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -5220,7 +5220,7 @@ Results are ordered by timestamp (newest first).</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -5262,7 +5262,7 @@ integration with CDK/Terraform, or customization.</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -5322,7 +5322,7 @@ infrastructure. Read-only operation - does not change anything.</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -5387,13 +5387,13 @@ This action cannot be undone.</p>
 <td><code>--yes</code>, <code>-y</code></td>
 <td>boolean</td>
 <td>Skip confirmation prompt</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 <tr>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -5421,7 +5421,7 @@ again updates existing resources.</p>
 </span><span id="__span-12-15"><a id="__codelineno-12-15" name="__codelineno-12-15" href="#__codelineno-12-15"></a><span class="c1"># Enterprise with permission boundary</span>
 </span><span id="__span-12-16"><a id="__codelineno-12-16" name="__codelineno-12-16" href="#__codelineno-12-16"></a>zae-limiter<span class="w"> </span>deploy<span class="w"> </span>--name<span class="w"> </span>prod<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-12-17"><a id="__codelineno-12-17" name="__codelineno-12-17" href="#__codelineno-12-17"></a><span class="w">    </span>--permission-boundary<span class="w"> </span>arn:aws:iam::aws:policy/PowerUserAccess<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-12-18"><a id="__codelineno-12-18" name="__codelineno-12-18" href="#__codelineno-12-18"></a><span class="w">    </span>--role-name-format<span class="w"> </span><span class="s2">&quot;pb-{}-PowerUser&quot;</span>
+</span><span id="__span-12-18"><a id="__codelineno-12-18" name="__codelineno-12-18" href="#__codelineno-12-18"></a><span class="w">    </span>--role-name-format<span class="w"> </span><span class="s2">"pb-{}-PowerUser"</span>
 </span></code></pre></div></p>
 <p><strong>Usage:</strong></p>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>zae-limiter deploy [OPTIONS]
@@ -5597,7 +5597,7 @@ again updates existing resources.</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -5623,7 +5623,7 @@ Entity limits have highest priority, overriding resource and system defaults.</p
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -5698,7 +5698,7 @@ entity's <code>_default_</code> config).</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -5710,7 +5710,7 @@ entity's <code>_default_</code> config).</p>
 </span><span id="__span-17-2"><a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span>create<span class="w"> </span>user-123
 </span><span id="__span-17-3"><a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a>
 </span><span id="__span-17-4"><a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a><span class="c1"># Create with display name</span>
-</span><span id="__span-17-5"><a id="__codelineno-17-5" name="__codelineno-17-5" href="#__codelineno-17-5"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span>create<span class="w"> </span>api-key-abc<span class="w"> </span>--display-name<span class="w"> </span><span class="s2">&quot;Production API&quot;</span>
+</span><span id="__span-17-5"><a id="__codelineno-17-5" name="__codelineno-17-5" href="#__codelineno-17-5"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span>create<span class="w"> </span>api-key-abc<span class="w"> </span>--display-name<span class="w"> </span><span class="s2">"Production API"</span>
 </span><span id="__span-17-6"><a id="__codelineno-17-6" name="__codelineno-17-6" href="#__codelineno-17-6"></a>
 </span><span id="__span-17-7"><a id="__codelineno-17-7" name="__codelineno-17-7" href="#__codelineno-17-7"></a><span class="c1"># Create with parent and cascade</span>
 </span><span id="__span-17-8"><a id="__codelineno-17-8" name="__codelineno-17-8" href="#__codelineno-17-8"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span>create<span class="w"> </span>user-123<span class="w"> </span>--parent<span class="w"> </span>org-456<span class="w"> </span>--cascade
@@ -5775,7 +5775,7 @@ entity's <code>_default_</code> config).</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -5831,7 +5831,7 @@ entity's <code>_default_</code> config).</p>
 <td><code>--yes</code>, <code>-y</code></td>
 <td>boolean</td>
 <td>Skip confirmation prompt</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 <tr>
 <td><code>--namespace</code>, <code>-N</code></td>
@@ -5843,7 +5843,7 @@ entity's <code>_default_</code> config).</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -5905,7 +5905,7 @@ the change takes effect on the next request.</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -5967,7 +5967,7 @@ disabled at the resource level, while everyone else stays blocked. Omit
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -5979,7 +5979,7 @@ disabled at the resource level, while everyone else stays blocked. Omit
 </span><span id="__span-25-2"><a id="__codelineno-25-2" name="__codelineno-25-2" href="#__codelineno-25-2"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span>get-limits<span class="w"> </span>api-key-123<span class="w"> </span>-r<span class="w"> </span>claude-3
 </span></code></pre></div></p>
 <p><strong>Sample Output:</strong>
-    <div class="language-text highlight"><pre><span></span><code><span id="__span-26-1"><a id="__codelineno-26-1" name="__codelineno-26-1" href="#__codelineno-26-1"></a>Limits for entity &#39;user-premium&#39; on resource &#39;gpt-4&#39;:
+    <div class="language-text highlight"><pre><span></span><code><span id="__span-26-1"><a id="__codelineno-26-1" name="__codelineno-26-1" href="#__codelineno-26-1"></a>Limits for entity 'user-premium' on resource 'gpt-4':
 </span><span id="__span-26-2"><a id="__codelineno-26-2" name="__codelineno-26-2" href="#__codelineno-26-2"></a>  rpm: 1000/min
 </span><span id="__span-26-3"><a id="__codelineno-26-3" name="__codelineno-26-3" href="#__codelineno-26-3"></a>  tpm: 100000/min
 </span></code></pre></div></p>
@@ -6031,7 +6031,7 @@ disabled at the resource level, while everyone else stays blocked. Omit
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -6099,7 +6099,7 @@ disabled at the resource level, while everyone else stays blocked. Omit
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -6158,7 +6158,7 @@ Uses the entity config resources registry for fast O(1) lookup.</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -6227,7 +6227,7 @@ Entity limits override resource and system defaults.</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -6244,7 +6244,7 @@ Entity limits override resource and system defaults.</p>
 </span><span id="__span-36-3"><a id="__codelineno-36-3" name="__codelineno-36-3" href="#__codelineno-36-3"></a>  Parent:     org-456
 </span><span id="__span-36-4"><a id="__codelineno-36-4" name="__codelineno-36-4" href="#__codelineno-36-4"></a>  Cascade:    True
 </span><span id="__span-36-5"><a id="__codelineno-36-5" name="__codelineno-36-5" href="#__codelineno-36-5"></a>  Created:    2026-01-15T10:30:00Z
-</span><span id="__span-36-6"><a id="__codelineno-36-6" name="__codelineno-36-6" href="#__codelineno-36-6"></a>  Metadata:   {&#39;tier&#39;: &#39;premium&#39;}
+</span><span id="__span-36-6"><a id="__codelineno-36-6" name="__codelineno-36-6" href="#__codelineno-36-6"></a>  Metadata:   {'tier': 'premium'}
 </span></code></pre></div></p>
 <p><strong>Usage:</strong></p>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-37-1"><a id="__codelineno-37-1" name="__codelineno-37-1" href="#__codelineno-37-1"></a>zae-limiter entity show [OPTIONS] ENTITY_ID
@@ -6288,7 +6288,7 @@ Entity limits override resource and system defaults.</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -6341,19 +6341,19 @@ deployment or inspection. Useful for custom deployment pipelines.</p>
 <td><code>--info</code></td>
 <td>boolean</td>
 <td>Show package information without building</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 <tr>
 <td><code>--force</code>, <code>-f</code></td>
 <td>boolean</td>
 <td>Overwrite existing file without prompting</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 <tr>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -6379,7 +6379,7 @@ that supports both CLI and CloudFormation paths.</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -6440,7 +6440,7 @@ that supports both CLI and CloudFormation paths.</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -6476,7 +6476,7 @@ that supports both CLI and CloudFormation paths.</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -6530,7 +6530,7 @@ that supports both CLI and CloudFormation paths.</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -6584,7 +6584,7 @@ that supports both CLI and CloudFormation paths.</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -6634,7 +6634,7 @@ creation date for each instance.</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -6658,7 +6658,7 @@ creation date for each instance.</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -6704,13 +6704,13 @@ creation date for each instance.</p>
 <td><code>--yes</code></td>
 <td>boolean</td>
 <td>Skip confirmation</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 <tr>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -6818,7 +6818,7 @@ creation date for each instance.</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -6848,7 +6848,7 @@ creation date for each instance.</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -6890,7 +6890,7 @@ creation date for each instance.</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -6977,7 +6977,7 @@ Use --workers N to run distributed (Fargate master + Lambda workers).</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -7053,7 +7053,7 @@ concurrency levels. Lambda-only.</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -7095,13 +7095,13 @@ concurrency levels. Lambda-only.</p>
 <td><code>--destroy</code></td>
 <td>boolean</td>
 <td>Stop Fargate on disconnect even if already running</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 <tr>
 <td><code>--force</code></td>
 <td>boolean</td>
 <td>Stop existing task and restart with new config</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 <tr>
 <td><code>-f</code>, <code>--locustfile</code></td>
@@ -7155,14 +7155,14 @@ concurrency levels. Lambda-only.</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
 <h4 id="zae-limiter-local">zae-limiter local<a class="headerlink" href="#zae-limiter-local" title="Permanent link">&para;</a></h4>
 <p>Local development with LocalStack.</p>
 <p>Requires the [local] extra:</p>
-<div class="language-text highlight"><pre><span></span><code>pip install &#39;zae-limiter[local]&#39;
+<div class="language-text highlight"><pre><span></span><code>pip install 'zae-limiter[local]'
 </code></pre></div>
 <p><strong>Usage:</strong></p>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-57-1"><a id="__codelineno-57-1" name="__codelineno-57-1" href="#__codelineno-57-1"></a>zae-limiter local [OPTIONS] COMMAND [ARGS]...
@@ -7182,7 +7182,7 @@ concurrency levels. Lambda-only.</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -7223,7 +7223,7 @@ concurrency levels. Lambda-only.</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -7232,7 +7232,7 @@ concurrency levels. Lambda-only.</p>
 <p>Prints the environment variables needed to connect to LocalStack.
 Does not require Docker or a running container.</p>
 <p><strong>Examples:</strong></p>
-<div class="language-text highlight"><pre><span></span><code>eval &quot;$(zae-limiter local env)&quot;                 # bash/zsh
+<div class="language-text highlight"><pre><span></span><code>eval "$(zae-limiter local env)"                 # bash/zsh
 zae-limiter local env --format direnv &gt; .envrc  # direnv
 zae-limiter local env --format powershell       # PowerShell
 </code></pre></div>
@@ -7266,7 +7266,7 @@ zae-limiter local env --format powershell       # PowerShell
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -7306,7 +7306,7 @@ zae-limiter local logs --tail 50
 <td><code>--follow</code>, <code>-f</code></td>
 <td>boolean</td>
 <td>Follow log output</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 <tr>
 <td><code>--tail</code></td>
@@ -7318,7 +7318,7 @@ zae-limiter local logs --tail 50
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -7335,7 +7335,7 @@ Image:      localstack/localstack:4.14
 Services:   dynamodb,dynamodbstreams,lambda,cloudformation,...
 
 To configure your shell:
-  eval &quot;$(zae-limiter local env)&quot;                 # bash/zsh
+  eval "$(zae-limiter local env)"                 # bash/zsh
   zae-limiter local env --format direnv &gt; .envrc  # direnv
   zae-limiter local env --format powershell       # PowerShell
 </code></pre></div>
@@ -7363,7 +7363,7 @@ To configure your shell:
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -7421,7 +7421,7 @@ zae-limiter local up --port 4567
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -7447,7 +7447,7 @@ Each namespace has its own entities, buckets, and configurations.</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -7504,13 +7504,13 @@ Data items are NOT deleted — they remain orphaned and can be recovered.</p>
 <td><code>--yes</code>, <code>-y</code></td>
 <td>boolean</td>
 <td>Skip confirmation prompt</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 <tr>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -7555,7 +7555,7 @@ Data items are NOT deleted — they remain orphaned and can be recovered.</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -7600,7 +7600,7 @@ Data items are NOT deleted — they remain orphaned and can be recovered.</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -7652,13 +7652,13 @@ and audit logs in the namespace. This cannot be undone.</p>
 <td><code>--yes</code>, <code>-y</code></td>
 <td>boolean</td>
 <td>Skip confirmation prompt</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 <tr>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -7705,7 +7705,7 @@ Use 'namespace orphans' to find deleted namespace IDs.</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -7753,7 +7753,7 @@ Multiple names can be provided for bulk registration.</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -7799,7 +7799,7 @@ Multiple names can be provided for bulk registration.</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -7825,7 +7825,7 @@ Resource defaults override system defaults but are overridden by entity limits.<
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -7889,7 +7889,7 @@ disable/enable value, so the resource resolves whatever it would inherit
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -7939,7 +7939,7 @@ disable/enable value, so the resource resolves whatever it would inherit
 <td><code>--yes</code>, <code>-y</code></td>
 <td>boolean</td>
 <td>Skip confirmation prompt</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 <tr>
 <td><code>--namespace</code>, <code>-N</code></td>
@@ -7951,7 +7951,7 @@ disable/enable value, so the resource resolves whatever it would inherit
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -8005,7 +8005,7 @@ next request. Entities with an explicit enable override keep their access.</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -8060,7 +8060,7 @@ to inheriting instead. There is no system-level disable.</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -8072,7 +8072,7 @@ to inheriting instead. There is no system-level disable.</p>
 </span><span id="__span-87-2"><a id="__codelineno-87-2" name="__codelineno-87-2" href="#__codelineno-87-2"></a>zae-limiter<span class="w"> </span>resource<span class="w"> </span>get-defaults<span class="w"> </span>claude-3<span class="w"> </span>--name<span class="w"> </span>prod
 </span></code></pre></div></p>
 <p><strong>Sample Output:</strong>
-    <div class="language-text highlight"><pre><span></span><code><span id="__span-88-1"><a id="__codelineno-88-1" name="__codelineno-88-1" href="#__codelineno-88-1"></a>Defaults for resource &#39;gpt-4&#39;:
+    <div class="language-text highlight"><pre><span></span><code><span id="__span-88-1"><a id="__codelineno-88-1" name="__codelineno-88-1" href="#__codelineno-88-1"></a>Defaults for resource 'gpt-4':
 </span><span id="__span-88-2"><a id="__codelineno-88-2" name="__codelineno-88-2" href="#__codelineno-88-2"></a>  rpm: 500/min
 </span><span id="__span-88-3"><a id="__codelineno-88-3" name="__codelineno-88-3" href="#__codelineno-88-3"></a>  tpm: 50000/min
 </span></code></pre></div></p>
@@ -8118,7 +8118,7 @@ to inheriting instead. There is no system-level disable.</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -8176,7 +8176,7 @@ to inheriting instead. There is no system-level disable.</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -8239,7 +8239,7 @@ Resource defaults override system defaults for this specific resource.</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -8312,7 +8312,7 @@ and IAM role ARNs. Read-only operation - does not modify any resources.</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -8338,7 +8338,7 @@ System defaults are the lowest priority in the hierarchy.</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -8393,7 +8393,7 @@ System defaults are the lowest priority in the hierarchy.</p>
 <td><code>--yes</code>, <code>-y</code></td>
 <td>boolean</td>
 <td>Skip confirmation prompt</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 <tr>
 <td><code>--namespace</code>, <code>-N</code></td>
@@ -8405,7 +8405,7 @@ System defaults are the lowest priority in the hierarchy.</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -8464,7 +8464,7 @@ System defaults are the lowest priority in the hierarchy.</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -8532,7 +8532,7 @@ System defaults are the lowest priority in the hierarchy.</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -8583,19 +8583,19 @@ Use --force to update even when versions already match.</p>
 <td><code>--lambda-only</code></td>
 <td>boolean</td>
 <td>Only update Lambda code</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 <tr>
 <td><code>--force</code></td>
 <td>boolean</td>
 <td>Force update even if version matches</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 <tr>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -8621,7 +8621,7 @@ Snapshots track token consumption per entity/resource in hourly and daily window
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -8730,7 +8730,7 @@ Snapshots track token consumption per entity/resource in hourly and daily window
 <td><code>--plot</code>, <code>-p</code></td>
 <td>boolean</td>
 <td>Display as ASCII charts instead of table (requires: pip install 'zae-limiter[plot]')</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 <tr>
 <td><code>--namespace</code>, <code>-N</code></td>
@@ -8742,7 +8742,7 @@ Snapshots track token consumption per entity/resource in hourly and daily window
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -8843,7 +8843,7 @@ Useful for billing, reporting, and capacity planning.</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -8904,7 +8904,7 @@ versions. Checks compatibility between client and infrastructure.</p>
 <td><code>--help</code></td>
 <td>boolean</td>
 <td>Show this message and exit.</td>
-<td><code>False</code></td>
+<td><code>Sentinel.UNSET</code></td>
 </tr>
 </tbody>
 </table>
@@ -9140,7 +9140,7 @@ entity; map it to HTTP 403, not 429, since retrying will not help.</p>
 </span><span id="__span-128-7"><a id="__codelineno-128-7" name="__codelineno-128-7" href="#__codelineno-128-7"></a><span class="c1"># Re-admit an entity to a resource that is disabled for everyone else</span>
 </span><span id="__span-128-8"><a id="__codelineno-128-8" name="__codelineno-128-8" href="#__codelineno-128-8"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span><span class="nb">enable</span><span class="w"> </span>user-123<span class="w"> </span>--resource<span class="w"> </span>gpt-4
 </span><span id="__span-128-9"><a id="__codelineno-128-9" name="__codelineno-128-9" href="#__codelineno-128-9"></a>
-</span><span id="__span-128-10"><a id="__codelineno-128-10" name="__codelineno-128-10" href="#__codelineno-128-10"></a><span class="c1"># Revert an entity to inheriting the resource&#39;s disabled state</span>
+</span><span id="__span-128-10"><a id="__codelineno-128-10" name="__codelineno-128-10" href="#__codelineno-128-10"></a><span class="c1"># Revert an entity to inheriting the resource's disabled state</span>
 </span><span id="__span-128-11"><a id="__codelineno-128-11" name="__codelineno-128-11" href="#__codelineno-128-11"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span>clear-disabled<span class="w"> </span>user-123<span class="w"> </span>--resource<span class="w"> </span>gpt-4
 </span></code></pre></div>
 <p>An entity-level <code>disabled: false</code> override always wins, even when the resource is disabled
@@ -9153,11 +9153,11 @@ resource showing no <code>Status:</code> line can still be effectively disabled 
 some other level in the walk sets it; use <code>resolve_disabled()</code> (see
 <a href="../operations/rate-limits/#resource-or-entity-disabled">Resource or Entity Disabled</a>) to get the
 actual resolved outcome for a specific entity+resource pair.</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-129-1"><a id="__codelineno-129-1" name="__codelineno-129-1" href="#__codelineno-129-1"></a>Defaults for resource &#39;gpt-4&#39;:
+<div class="language-text highlight"><pre><span></span><code><span id="__span-129-1"><a id="__codelineno-129-1" name="__codelineno-129-1" href="#__codelineno-129-1"></a>Defaults for resource 'gpt-4':
 </span><span id="__span-129-2"><a id="__codelineno-129-2" name="__codelineno-129-2" href="#__codelineno-129-2"></a>  rpm: 500/min
 </span><span id="__span-129-3"><a id="__codelineno-129-3" name="__codelineno-129-3" href="#__codelineno-129-3"></a>Status: DISABLED
 </span></code></pre></div>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-130-1"><a id="__codelineno-130-1" name="__codelineno-130-1" href="#__codelineno-130-1"></a>Limits for entity &#39;user-123&#39; on resource &#39;gpt-4&#39;:
+<div class="language-text highlight"><pre><span></span><code><span id="__span-130-1"><a id="__codelineno-130-1" name="__codelineno-130-1" href="#__codelineno-130-1"></a>Limits for entity 'user-123' on resource 'gpt-4':
 </span><span id="__span-130-2"><a id="__codelineno-130-2" name="__codelineno-130-2" href="#__codelineno-130-2"></a>  rpm: 1000/min
 </span><span id="__span-130-3"><a id="__codelineno-130-3" name="__codelineno-130-3" href="#__codelineno-130-3"></a>Status: enabled (explicit override)
 </span></code></pre></div>
@@ -9312,7 +9312,7 @@ inherits from elsewhere in the resolution walk).</p>
       <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.top", "navigation.footer", "content.code.copy", "content.code.annotate", "content.action.edit", "search.suggest", "search.highlight"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
     
     
-      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
       
         <script src="https://unpkg.com/mermaid@10/dist/mermaid.min.js"></script>
       
