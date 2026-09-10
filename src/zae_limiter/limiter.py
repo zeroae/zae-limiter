@@ -783,9 +783,16 @@ class RateLimiter:
         # Child succeeded — build entries from ALL_NEW
         entries: list[LeaseEntry] = []
         for state in result.buckets:
-            amount = consume.get(state.limit_name, 0)
-            if amount == 0:
+            # Key on membership, not on the amount. An estimate of 0 is
+            # legitimate — "this limit is in play, I'll reconcile the cost
+            # afterwards" — and it still needs a LeaseEntry, or every later
+            # adjust()/consume()/release() against it is a silent no-op. A
+            # limit the caller never named stays out, which also keeps the
+            # reserved `wcu` infrastructure limit (carried in result.buckets
+            # but never in consume) from leaking into the lease.
+            if state.limit_name not in consume:
                 continue
+            amount = consume[state.limit_name]
             limit = Limit.from_bucket_state(state)
             entries.append(
                 LeaseEntry(
@@ -803,9 +810,9 @@ class RateLimiter:
         if result.parent_result is not None:
             if result.parent_result.success:
                 for state in result.parent_result.buckets:
-                    amount = consume.get(state.limit_name, 0)
-                    if amount == 0:
+                    if state.limit_name not in consume:
                         continue
+                    amount = consume[state.limit_name]
                     limit = Limit.from_bucket_state(state)
                     entries.append(
                         LeaseEntry(
@@ -831,9 +838,9 @@ class RateLimiter:
 
             if parent_result.success:
                 for state in parent_result.buckets:
-                    amount = consume.get(state.limit_name, 0)
-                    if amount == 0:
+                    if state.limit_name not in consume:
                         continue
+                    amount = consume[state.limit_name]
                     limit = Limit.from_bucket_state(state)
                     entries.append(
                         LeaseEntry(
@@ -968,9 +975,16 @@ class RateLimiter:
         # Refill would help — build child entries for parent-only slow path
         entries: list[LeaseEntry] = []
         for state in result.buckets:
-            amount = consume.get(state.limit_name, 0)
-            if amount == 0:
+            # Key on membership, not on the amount. An estimate of 0 is
+            # legitimate — "this limit is in play, I'll reconcile the cost
+            # afterwards" — and it still needs a LeaseEntry, or every later
+            # adjust()/consume()/release() against it is a silent no-op. A
+            # limit the caller never named stays out, which also keeps the
+            # reserved `wcu` infrastructure limit (carried in result.buckets
+            # but never in consume) from leaking into the lease.
+            if state.limit_name not in consume:
                 continue
+            amount = consume[state.limit_name]
             limit = Limit.from_bucket_state(state)
             entries.append(
                 LeaseEntry(
@@ -1107,9 +1121,16 @@ class RateLimiter:
         """
         entries: list[LeaseEntry] = []
         for state in result.buckets:
-            amount = consume.get(state.limit_name, 0)
-            if amount == 0:
+            # Key on membership, not on the amount. An estimate of 0 is
+            # legitimate — "this limit is in play, I'll reconcile the cost
+            # afterwards" — and it still needs a LeaseEntry, or every later
+            # adjust()/consume()/release() against it is a silent no-op. A
+            # limit the caller never named stays out, which also keeps the
+            # reserved `wcu` infrastructure limit (carried in result.buckets
+            # but never in consume) from leaking into the lease.
+            if state.limit_name not in consume:
                 continue
+            amount = consume[state.limit_name]
             limit = Limit.from_bucket_state(state)
             entries.append(
                 LeaseEntry(

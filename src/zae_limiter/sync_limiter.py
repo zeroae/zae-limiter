@@ -652,9 +652,9 @@ class SyncRateLimiter:
             return None
         entries: list[LeaseEntry] = []
         for state in result.buckets:
-            amount = consume.get(state.limit_name, 0)
-            if amount == 0:
+            if state.limit_name not in consume:
                 continue
+            amount = consume[state.limit_name]
             limit = Limit.from_bucket_state(state)
             entries.append(
                 LeaseEntry(
@@ -670,9 +670,9 @@ class SyncRateLimiter:
         if result.parent_result is not None:
             if result.parent_result.success:
                 for state in result.parent_result.buckets:
-                    amount = consume.get(state.limit_name, 0)
-                    if amount == 0:
+                    if state.limit_name not in consume:
                         continue
+                    amount = consume[state.limit_name]
                     limit = Limit.from_bucket_state(state)
                     entries.append(
                         LeaseEntry(
@@ -694,9 +694,9 @@ class SyncRateLimiter:
             )
             if parent_result.success:
                 for state in parent_result.buckets:
-                    amount = consume.get(state.limit_name, 0)
-                    if amount == 0:
+                    if state.limit_name not in consume:
                         continue
+                    amount = consume[state.limit_name]
                     limit = Limit.from_bucket_state(state)
                     entries.append(
                         LeaseEntry(
@@ -807,9 +807,9 @@ class SyncRateLimiter:
             raise RateLimitExceeded(child_statuses + parent_statuses)
         entries: list[LeaseEntry] = []
         for state in result.buckets:
-            amount = consume.get(state.limit_name, 0)
-            if amount == 0:
+            if state.limit_name not in consume:
                 continue
+            amount = consume[state.limit_name]
             limit = Limit.from_bucket_state(state)
             entries.append(
                 LeaseEntry(
@@ -921,9 +921,9 @@ class SyncRateLimiter:
         """
         entries: list[LeaseEntry] = []
         for state in result.buckets:
-            amount = consume.get(state.limit_name, 0)
-            if amount == 0:
+            if state.limit_name not in consume:
                 continue
+            amount = consume[state.limit_name]
             limit = Limit.from_bucket_state(state)
             entries.append(
                 LeaseEntry(
