@@ -1753,3 +1753,112 @@ class TestE2EAWSProvisionerCFNStack:
             "managed state out of step with the config items it had already written"
         )
         assert "gpt-4o" in state.get("managed_resources", [])
+
+
+class TestE2EAWSEmptyExportRegression:
+    """Regression coverage for issue #445: empty CloudFormation exports.
+
+    CloudFormation refuses to create an export whose value is empty or
+    whitespace-only and rolls the whole stack back. Two Outputs used to carry
+    unconditional ``Export:`` blocks over parameters that default to ``''``,
+    so *every* deploy that omitted ``--permission-boundary`` (and/or
+    ``--role-name-format``) ended in ``ROLLBACK_COMPLETE``.
+
+    LocalStack does not enforce the empty-export rule, so only a real-AWS test
+    can catch a regression here. Every other class in this file passes all
+    three IAM flags -- which is precisely why the bug went unnoticed.
+    """
+
+    @staticmethod
+    def _describe(stack_name: str) -> dict:
+        import boto3
+
+        cfn = boto3.client("cloudformation", region_name="us-east-1")
+        return cfn.describe_stacks(StackName=stack_name)["Stacks"][0]
+
+    @pytest_asyncio.fixture(scope="class", loop_scope="class")
+    async def stack_without_iam_config(self, unique_name_class):
+        """A stack deployed with no permission boundary and no role name format.
+
+        Mirrors ``zae-limiter deploy --name x --region us-east-1
+        --no-aggregator --no-iam``, which used to roll back with
+        ``Cannot export output PermissionBoundaryArn``.
+        """
+        repo = await (
+            Repository.builder()
+            .stack(unique_name_class)
+            .region("us-east-1")
+            .create_iam(False)
+            .enable_aggregator(False)
+            .enable_provisioner(False)
+            .enable_alarms(False)
+            .build()
+        )
+
+        yield repo
+
+        await repo.delete_stack()
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_deploy_without_iam_config_reaches_create_complete(
+        self, stack_without_iam_config, unique_name_class
+    ):
+        """The default, undecorated deploy must actually finish."""
+        stack = self._describe(unique_name_class)
+
+        assert stack["StackStatus"] == "CREATE_COMPLETE", (
+            f"stack ended in {stack['StackStatus']}; a ROLLBACK_COMPLETE here means "
+            "an Output exports an empty value again (issue #445) -- check "
+            "`aws cloudformation describe-stack-events` for 'must not be empty'"
+        )
+
+        outputs = {o["OutputKey"] for o in stack.get("Outputs", [])}
+        assert "PermissionBoundaryArn" not in outputs
+        assert "RoleNameFormat" not in outputs
+
+
+class TestE2EAWSBoundaryWithoutRoleNameFormat:
+    """Issue #445, second failure mode: boundary set but no role name format.
+
+    Supplying only ``--permission-boundary`` used to roll back with
+    ``Cannot export output RoleNameFormat``. Managed policies still carry the
+    ``PowerUserPB-`` prefix so ``iam:CreatePolicy`` is permitted under the
+    ``AWSPowerUserAccess`` SSO permission set (see
+    ``.claude/rules/aws-testing.md``); IAM *roles* are left uncreated, which is
+    what lets ``role_name_format`` stay unset.
+    """
+
+    @pytest_asyncio.fixture(scope="class", loop_scope="class")
+    async def stack_with_boundary_only(self, unique_name_class):
+        repo = await (
+            Repository.builder()
+            .stack(unique_name_class)
+            .region("us-east-1")
+            .permission_boundary("arn:aws:iam::aws:policy/PowerUserAccess")
+            .policy_name_format("PowerUserPB-{}")
+            .create_iam_roles(False)
+            .enable_aggregator(False)
+            .enable_provisioner(False)
+            .enable_alarms(False)
+            .build()
+        )
+
+        yield repo
+
+        await repo.delete_stack()
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_boundary_without_role_name_format_reaches_create_complete(
+        self, stack_with_boundary_only, unique_name_class
+    ):
+        stack = TestE2EAWSEmptyExportRegression._describe(unique_name_class)
+
+        assert stack["StackStatus"] == "CREATE_COMPLETE", (
+            f"stack ended in {stack['StackStatus']}; a ROLLBACK_COMPLETE here means "
+            "RoleNameFormat is exporting an empty value again (issue #445)"
+        )
+
+        outputs = {o["OutputKey"]: o["OutputValue"] for o in stack.get("Outputs", [])}
+        # The boundary is set, so its export is emitted; the format is not.
+        assert outputs["PermissionBoundaryArn"] == "arn:aws:iam::aws:policy/PowerUserAccess"
+        assert "RoleNameFormat" not in outputs

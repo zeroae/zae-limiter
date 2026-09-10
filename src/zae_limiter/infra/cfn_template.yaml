@@ -147,7 +147,7 @@ Parameters:
     Description: >
       (Optional) Format template for IAM role names. Use {} as placeholder.
       Example: 'PowerUserPB-{}' produces 'PowerUserPB-mystack-aggr'.
-      Exported for use by dependent stacks (e.g., stress test).
+      Exported (only when set) for use by dependent stacks (e.g., stress test).
 
   AcquireOnlyPolicyName:
     Type: String
@@ -269,6 +269,7 @@ Conditions:
   # Optional resource name checks
   HasSNSTopic: !Not [!Equals [!Ref AlarmSNSTopicArn, '']]
   HasPermissionBoundary: !Not [!Equals [!Ref PermissionBoundary, '']]
+  HasRoleNameFormat: !Not [!Equals [!Ref RoleNameFormat, '']]
   HasCustomAggregatorRoleName: !Not [!Equals [!Ref AggregatorRoleName, '']]
   HasCustomAppRoleName: !Not [!Equals [!Ref AppRoleName, '']]
   HasCustomAdminRoleName: !Not [!Equals [!Ref AdminRoleName, '']]
@@ -1415,20 +1416,22 @@ Outputs:
   # IAM Configuration Outputs (for stress test stack to import)
   # -------------------------------------------------------------------------
 
+  # Only emitted when a boundary is set: CloudFormation rejects empty exports
+  # and would roll the whole stack back (issue #445).
   PermissionBoundaryArn:
-    Description: Permission boundary ARN used for IAM roles (empty if none)
+    Condition: HasPermissionBoundary
+    Description: Permission boundary ARN used for IAM roles
     Value: !If
-      - HasPermissionBoundary
-      - !If
-        - PermissionBoundaryIsArn
-        - !Ref PermissionBoundary
-        - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/${PermissionBoundary}'
-      - ''
+      - PermissionBoundaryIsArn
+      - !Ref PermissionBoundary
+      - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/${PermissionBoundary}'
     Export:
       Name: !Sub ${AWS::StackName}-PermissionBoundaryArn
 
+  # Only emitted when a format is set, for the same reason (issue #445).
   RoleNameFormat:
-    Description: Role name format template (empty if using defaults)
+    Condition: HasRoleNameFormat
+    Description: Role name format template
     Value: !Ref RoleNameFormat
     Export:
       Name: !Sub ${AWS::StackName}-RoleNameFormat

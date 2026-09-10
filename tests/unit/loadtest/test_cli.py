@@ -496,6 +496,63 @@ class TestDeployCommand:
             assert "permission boundary" in result.output.lower()
             assert "role name format" in result.output.lower()
 
+    def test_defaults_when_iam_config_outputs_absent(self, runner, tmp_path):
+        """Deploy works against a limiter stack with no permission boundary.
+
+        Since issue #445 the limiter stack omits the ``PermissionBoundaryArn``
+        and ``RoleNameFormat`` outputs entirely when unset, rather than
+        exporting empty strings (which CloudFormation rejects). The load-test
+        stack must fall back to its own defaults -- and ``RoleNameFormat`` in
+        particular must be ``{}``, since the load-test template splits on
+        ``{}`` and would fail on an empty value.
+        """
+        with (
+            patch("boto3.client") as mock_client,
+            patch("zae_limiter.loadtest.builder.build_and_push_locust_image") as mock_build,
+            patch(
+                "zae_limiter.loadtest.lambda_builder.build_load_lambda_package"
+            ) as mock_lambda_pkg,
+            patch("zae_limiter.loadtest.builder.get_zae_limiter_source") as mock_source,
+        ):
+            mock_cfn, mock_lambda_client, client_factory = self._deploy_base_mocks()
+            mock_client.side_effect = client_factory
+
+            outputs = mock_cfn.describe_stacks.return_value["Stacks"][0]["Outputs"]
+            assert not any(
+                o["OutputKey"] in ("PermissionBoundaryArn", "RoleNameFormat") for o in outputs
+            )
+
+            mock_source.return_value = "0.8.0"
+            mock_build.return_value = "123.dkr.ecr.us-east-1.amazonaws.com/test:latest"
+            zip_path = tmp_path / "lambda.zip"
+            zip_path.write_bytes(b"fake zip")
+            mock_lambda_pkg.return_value = zip_path
+
+            result = runner.invoke(
+                loadtest,
+                [
+                    "deploy",
+                    "--name",
+                    "my-app",
+                    "--vpc-id",
+                    "vpc-123",
+                    "--subnet-ids",
+                    "subnet-a,subnet-b",
+                    "-C",
+                    str(tmp_path),
+                ],
+            )
+            assert result.exit_code == 0, result.output
+            assert "permission boundary" not in result.output.lower()
+            assert "role name format" not in result.output.lower()
+
+            params = {
+                p["ParameterKey"]: p["ParameterValue"]
+                for p in mock_cfn.create_stack.call_args.kwargs["Parameters"]
+            }
+            assert params["PermissionBoundary"] == ""
+            assert params["RoleNameFormat"] == "{}"
+
     def test_updates_existing_stack(self, runner, tmp_path):
         """Deploy updates stack when it already exists."""
         with (

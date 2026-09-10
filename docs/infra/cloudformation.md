@@ -558,11 +558,19 @@ The template exports:
 | `AdminRoleName` | IAM roles enabled | IAM role name for admin access |
 | `ReadOnlyRoleArn` | IAM roles enabled | IAM role ARN for read-only access |
 | `ReadOnlyRoleName` | IAM roles enabled | IAM role name for read-only access |
-| `PermissionBoundaryArn` | Always | Permission boundary ARN (empty if none) |
-| `RoleNameFormat` | Always | Role name format template (empty if default) |
+| `PermissionBoundaryArn` | Permission boundary set | Permission boundary ARN used for IAM roles |
+| `RoleNameFormat` | Role name format set | Role name format template |
 | `CodeBucketName` | Audit archival | S3 bucket for deployment artifacts |
 | `ProvisionerFunctionArn` | Provisioner deployed | Limits provisioner Lambda function ARN |
 | `ProvisionerFunctionName` | Provisioner deployed | Limits provisioner Lambda function name |
+
+!!! note "Conditional outputs are omitted, not empty"
+    `PermissionBoundaryArn` and `RoleNameFormat` are only emitted when the
+    corresponding option is set. CloudFormation rejects an export whose value is
+    empty or whitespace-only and rolls the entire stack back, so these outputs
+    carry a condition rather than exporting `''`. Consumers should treat a
+    missing output as "not configured" — for example
+    `outputs.get("RoleNameFormat", "{}")`.
 
 !!! tip "Discovering namespace IDs"
     Namespace IDs are opaque strings stored in DynamoDB, not CloudFormation outputs.
