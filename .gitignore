@@ -71,6 +71,7 @@ venv.bak/
 
 # Worktrees
 *.worktrees/
+.claude/worktrees/
 
 # mypy
 .mypy_cache/

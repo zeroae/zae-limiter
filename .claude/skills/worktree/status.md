@@ -5,6 +5,12 @@ Show all worktrees with their PR and CI/CD status.
 ## Triggers
 
 - `/worktree status`
+- `/worktree` (no arguments)
+
+The script iterates `git worktree list`, so it covers worktrees created by this skill
+(`repo.worktrees/`) **and** those created by Claude Code's built-in support
+(`.claude/worktrees/`, branches prefixed `worktree-`). A worktree with no PR reports
+`safe_to_remove: false` with reason `"PR open or no PR"` — render it as `No`, not `Yes`.
 
 ## Process
 
