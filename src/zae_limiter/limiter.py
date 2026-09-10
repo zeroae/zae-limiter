@@ -783,9 +783,16 @@ class RateLimiter:
         # Child succeeded — build entries from ALL_NEW
         entries: list[LeaseEntry] = []
         for state in result.buckets:
-            amount = consume.get(state.limit_name, 0)
-            if amount == 0:
+            # Key on membership, not on the amount. An estimate of 0 is
+            # legitimate — "this limit is in play, I'll reconcile the cost
+            # afterwards" — and it still needs a LeaseEntry, or every later
+            # adjust()/consume()/release() against it is a silent no-op. A
+            # limit the caller never named stays out, which also keeps the
+            # reserved `wcu` infrastructure limit (carried in result.buckets
+            # but never in consume) from leaking into the lease.
+            if state.limit_name not in consume:
                 continue
+            amount = consume[state.limit_name]
             limit = Limit.from_bucket_state(state)
             entries.append(
                 LeaseEntry(
@@ -794,6 +801,7 @@ class RateLimiter:
                     limit=limit,
                     state=state,
                     consumed=amount,
+                    _shard_id=result.shard_id,
                     _cascade=result.cascade,
                     _parent_id=result.parent_id,
                 )
@@ -803,9 +811,9 @@ class RateLimiter:
         if result.parent_result is not None:
             if result.parent_result.success:
                 for state in result.parent_result.buckets:
-                    amount = consume.get(state.limit_name, 0)
-                    if amount == 0:
+                    if state.limit_name not in consume:
                         continue
+                    amount = consume[state.limit_name]
                     limit = Limit.from_bucket_state(state)
                     entries.append(
                         LeaseEntry(
@@ -814,6 +822,7 @@ class RateLimiter:
                             limit=limit,
                             state=state,
                             consumed=amount,
+                            _shard_id=result.parent_result.shard_id,
                         )
                     )
             else:
@@ -831,9 +840,9 @@ class RateLimiter:
 
             if parent_result.success:
                 for state in parent_result.buckets:
-                    amount = consume.get(state.limit_name, 0)
-                    if amount == 0:
+                    if state.limit_name not in consume:
                         continue
+                    amount = consume[state.limit_name]
                     limit = Limit.from_bucket_state(state)
                     entries.append(
                         LeaseEntry(
@@ -842,6 +851,7 @@ class RateLimiter:
                             limit=limit,
                             state=state,
                             consumed=amount,
+                            _shard_id=parent_result.shard_id,
                         )
                     )
             else:
@@ -968,9 +978,16 @@ class RateLimiter:
         # Refill would help — build child entries for parent-only slow path
         entries: list[LeaseEntry] = []
         for state in result.buckets:
-            amount = consume.get(state.limit_name, 0)
-            if amount == 0:
+            # Key on membership, not on the amount. An estimate of 0 is
+            # legitimate — "this limit is in play, I'll reconcile the cost
+            # afterwards" — and it still needs a LeaseEntry, or every later
+            # adjust()/consume()/release() against it is a silent no-op. A
+            # limit the caller never named stays out, which also keeps the
+            # reserved `wcu` infrastructure limit (carried in result.buckets
+            # but never in consume) from leaking into the lease.
+            if state.limit_name not in consume:
                 continue
+            amount = consume[state.limit_name]
             limit = Limit.from_bucket_state(state)
             entries.append(
                 LeaseEntry(
@@ -979,6 +996,7 @@ class RateLimiter:
                     limit=limit,
                     state=state,
                     consumed=amount,
+                    _shard_id=result.shard_id,
                     _cascade=result.cascade,
                     _parent_id=result.parent_id,
                 )
@@ -1107,9 +1125,16 @@ class RateLimiter:
         """
         entries: list[LeaseEntry] = []
         for state in result.buckets:
-            amount = consume.get(state.limit_name, 0)
-            if amount == 0:
+            # Key on membership, not on the amount. An estimate of 0 is
+            # legitimate — "this limit is in play, I'll reconcile the cost
+            # afterwards" — and it still needs a LeaseEntry, or every later
+            # adjust()/consume()/release() against it is a silent no-op. A
+            # limit the caller never named stays out, which also keeps the
+            # reserved `wcu` infrastructure limit (carried in result.buckets
+            # but never in consume) from leaking into the lease.
+            if state.limit_name not in consume:
                 continue
+            amount = consume[state.limit_name]
             limit = Limit.from_bucket_state(state)
             entries.append(
                 LeaseEntry(
@@ -1118,15 +1143,28 @@ class RateLimiter:
                     limit=limit,
                     state=state,
                     consumed=amount,
+                    _shard_id=result.shard_id,
                     _cascade=result.cascade,
                     _parent_id=result.parent_id,
                 )
             )
-        return Lease(
+        # Mirror the sibling speculative path exactly: the UpdateItem has
+        # already persisted the initial consumption, so mark it committed —
+        # but via _initial_committed, not _committed. Both Lease.adjust() and
+        # Lease._rollback() short-circuit on _committed, which would make
+        # adjustments raise LeaseExpiredError and silently skip compensation
+        # for tokens this path has already consumed. Seeding
+        # _initial_consumed is part of the same contract: without it
+        # _commit_adjustments() would re-write the initial consumption as a
+        # delta and double-count it.
+        lease = Lease(
             entries=entries,
             repository=self._repository,
-            _committed=True,
         )
+        lease._initial_committed = True
+        for entry in entries:
+            entry._initial_consumed = entry.consumed
+        return lease
 
     async def _try_parent_only_acquire(
         self,

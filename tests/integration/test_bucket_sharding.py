@@ -345,3 +345,95 @@ class TestShardCountPropagationIntegration:
         assert shard_1 is not None
         assert len(shard_1) > 0, "Shard 1 should have been created by propagation"
         assert shard_1["shard_count"] == Decimal("2")
+
+
+@pytest.mark.asyncio
+class TestShardedAdjustmentRouting:
+    """Adjustments and rollbacks must land on the shard that was consumed.
+
+    Covered by unit tests against moto too, but repeated here against real
+    DynamoDB deliberately: the whole speculative path turns on
+    ``ReturnValuesOnConditionCheckFailure="ALL_OLD"``, which is exactly the
+    kind of API surface an emulator approximates. If moto's version of it
+    diverged, the unit tests could pass while the shard-retry path was never
+    reached at all and the routing was never exercised.
+
+    See GHSA-76rv-2r9v-c5m6 and issue #453.
+    """
+
+    LIMIT_CAPACITY = 10
+
+    @classmethod
+    async def _two_shards_first_exhausted(cls, limiter, monkeypatch, entity_id):
+        """Two shards, rpm drained on shard 0, selection pinned to shard 0."""
+        import random as _random
+
+        from zae_limiter import repository as _repo_mod
+        from zae_limiter.models import BucketState, Limit
+
+        repo = limiter._repository
+        ns = repo._namespace_id
+        # refill 1/hour keeps refill out of the assertions
+        limit = Limit.custom("rpm", cls.LIMIT_CAPACITY, refill_amount=1, refill_period_seconds=3600)
+
+        await limiter.create_entity(entity_id)
+        await limiter.set_system_defaults([limit])
+
+        now_ms = int(time.time() * 1000)
+        for shard_id in (0, 1):
+            states = [BucketState.from_limit(entity_id, "gpt-4", limit, now_ms)]
+            await repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        entity_id, "gpt-4", states, now_ms, shard_id=shard_id, shard_count=2
+                    )
+                ]
+            )
+        repo._entity_cache[(ns, entity_id)] = (False, None, {"gpt-4": 2})
+
+        await repo._speculative_consume_single(
+            entity_id, "gpt-4", {"rpm": cls.LIMIT_CAPACITY}, shard_id=0
+        )
+
+        # Pin selection to the drained shard; the retry then has exactly one
+        # untried shard, making the whole path deterministic.
+        monkeypatch.setattr(_repo_mod.random, "randrange", lambda _n: 0)
+        monkeypatch.setattr(_random, "choice", lambda seq: seq[0])
+        limiter._speculative_writes = True
+        return repo
+
+    @staticmethod
+    async def _rpm(repo, entity_id, shard_id):
+        buckets = await repo.get_buckets(entity_id, resource="gpt-4", shard_id=shard_id)
+        return next(b for b in buckets if b.limit_name == "rpm").tokens_milli
+
+    async def test_adjust_lands_on_the_retried_shard(
+        self, localstack_limiter, monkeypatch, unique_name
+    ):
+        entity_id = f"shard-adj-{unique_name}"
+        repo = await self._two_shards_first_exhausted(localstack_limiter, monkeypatch, entity_id)
+
+        async with localstack_limiter.acquire(entity_id, "gpt-4", {"rpm": 10}) as lease:
+            await lease.adjust(rpm=5)
+
+        assert await self._rpm(repo, entity_id, 1) == -5_000, (
+            "shard 1 served the request; the adjustment belongs on shard 1"
+        )
+        assert await self._rpm(repo, entity_id, 0) == 0, (
+            "shard 0 was already drained and served nothing — it must not be debited"
+        )
+
+    async def test_rollback_compensates_the_retried_shard(
+        self, localstack_limiter, monkeypatch, unique_name
+    ):
+        entity_id = f"shard-rb-{unique_name}"
+        repo = await self._two_shards_first_exhausted(localstack_limiter, monkeypatch, entity_id)
+
+        with pytest.raises(RuntimeError):
+            async with localstack_limiter.acquire(entity_id, "gpt-4", {"rpm": 10}):
+                raise RuntimeError("caller blew up")
+
+        assert await self._rpm(repo, entity_id, 1) == 10_000, "shard 1 must be made whole"
+        assert await self._rpm(repo, entity_id, 0) == 0, (
+            "compensating shard 0 would mint capacity it never lost"
+        )

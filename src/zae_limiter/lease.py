@@ -38,6 +38,12 @@ class LeaseEntry:
     _has_custom_config: bool = False  # True if entity has custom limits (no TTL)
     # Write-on-enter tracking (Issue #309)
     _initial_consumed: int = 0  # consumption written to DynamoDB on enter
+    # Shard the initial consumption was written to (GHSA-76rv). Adjustments
+    # and rollbacks must target that same bucket item: the speculative path
+    # picks a shard at random, so assuming shard 0 debits a bucket that never
+    # held the consumption and, on rollback, credits it tokens it never lost.
+    # The slow path always writes shard 0, matching this default.
+    _shard_id: int = 0
     # Denormalized entity fields for speculative writes (Issue #315)
     _cascade: bool = False
     _parent_id: str | None = None
@@ -348,14 +354,15 @@ class Lease:
 
         repo = self.repository
 
-        # Group entries by (entity_id, resource)
-        groups: dict[tuple[str, str], list[LeaseEntry]] = {}
+        # Group entries by (entity_id, resource, shard) — one adjust item per
+        # bucket item, and the shard is part of a bucket's identity.
+        groups: dict[tuple[str, str, int], list[LeaseEntry]] = {}
         for entry in self.entries:
-            key = (entry.entity_id, entry.resource)
+            key = (entry.entity_id, entry.resource, entry._shard_id)
             groups.setdefault(key, []).append(entry)
 
         items: list[dict[str, Any]] = []
-        for (entity_id, resource), group_entries in groups.items():
+        for (entity_id, resource, shard_id), group_entries in groups.items():
             deltas: dict[str, int] = {}
             for entry in group_entries:
                 delta = entry.consumed - entry._initial_consumed
@@ -367,6 +374,7 @@ class Lease:
                     entity_id=entity_id,
                     resource=resource,
                     deltas=deltas,
+                    shard_id=shard_id,
                 )
                 if item:
                     items.append(item)
@@ -395,14 +403,15 @@ class Lease:
 
         repo = self.repository
 
-        # Group entries by (entity_id, resource)
-        groups: dict[tuple[str, str], list[LeaseEntry]] = {}
+        # Group entries by (entity_id, resource, shard) — one adjust item per
+        # bucket item, and the shard is part of a bucket's identity.
+        groups: dict[tuple[str, str, int], list[LeaseEntry]] = {}
         for entry in self.entries:
-            key = (entry.entity_id, entry.resource)
+            key = (entry.entity_id, entry.resource, entry._shard_id)
             groups.setdefault(key, []).append(entry)
 
         items: list[dict[str, Any]] = []
-        for (entity_id, resource), group_entries in groups.items():
+        for (entity_id, resource, shard_id), group_entries in groups.items():
             deltas: dict[str, int] = {}
             for entry in group_entries:
                 # Negate only what was written on enter
@@ -414,6 +423,7 @@ class Lease:
                     entity_id=entity_id,
                     resource=resource,
                     deltas=deltas,
+                    shard_id=shard_id,
                 )
                 if item:
                     items.append(item)

@@ -746,6 +746,7 @@ class TestWriteOnEnter:
             entity_id="e1",
             resource="gpt-4",
             deltas={"rpm": 5000},  # (15-10) * 1000
+            shard_id=0,
         )
         mock_repo.write_each.assert_called_once()
 
@@ -788,6 +789,7 @@ class TestWriteOnEnter:
             entity_id="e1",
             resource="gpt-4",
             deltas={"rpm": -10000},
+            shard_id=0,
         )
 
     async def test_rollback_skips_when_committed(self):
@@ -835,6 +837,7 @@ class TestWriteOnEnter:
             entity_id="e1",
             resource="gpt-4",
             deltas={"rpm": -10000},  # -10 * 1000
+            shard_id=0,
         )
         mock_repo.write_each.assert_called_once()
 

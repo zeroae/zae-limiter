@@ -652,9 +652,9 @@ class SyncRateLimiter:
             return None
         entries: list[LeaseEntry] = []
         for state in result.buckets:
-            amount = consume.get(state.limit_name, 0)
-            if amount == 0:
+            if state.limit_name not in consume:
                 continue
+            amount = consume[state.limit_name]
             limit = Limit.from_bucket_state(state)
             entries.append(
                 LeaseEntry(
@@ -663,6 +663,7 @@ class SyncRateLimiter:
                     limit=limit,
                     state=state,
                     consumed=amount,
+                    _shard_id=result.shard_id,
                     _cascade=result.cascade,
                     _parent_id=result.parent_id,
                 )
@@ -670,9 +671,9 @@ class SyncRateLimiter:
         if result.parent_result is not None:
             if result.parent_result.success:
                 for state in result.parent_result.buckets:
-                    amount = consume.get(state.limit_name, 0)
-                    if amount == 0:
+                    if state.limit_name not in consume:
                         continue
+                    amount = consume[state.limit_name]
                     limit = Limit.from_bucket_state(state)
                     entries.append(
                         LeaseEntry(
@@ -681,6 +682,7 @@ class SyncRateLimiter:
                             limit=limit,
                             state=state,
                             consumed=amount,
+                            _shard_id=result.parent_result.shard_id,
                         )
                     )
             else:
@@ -694,9 +696,9 @@ class SyncRateLimiter:
             )
             if parent_result.success:
                 for state in parent_result.buckets:
-                    amount = consume.get(state.limit_name, 0)
-                    if amount == 0:
+                    if state.limit_name not in consume:
                         continue
+                    amount = consume[state.limit_name]
                     limit = Limit.from_bucket_state(state)
                     entries.append(
                         LeaseEntry(
@@ -705,6 +707,7 @@ class SyncRateLimiter:
                             limit=limit,
                             state=state,
                             consumed=amount,
+                            _shard_id=parent_result.shard_id,
                         )
                     )
             else:
@@ -807,9 +810,9 @@ class SyncRateLimiter:
             raise RateLimitExceeded(child_statuses + parent_statuses)
         entries: list[LeaseEntry] = []
         for state in result.buckets:
-            amount = consume.get(state.limit_name, 0)
-            if amount == 0:
+            if state.limit_name not in consume:
                 continue
+            amount = consume[state.limit_name]
             limit = Limit.from_bucket_state(state)
             entries.append(
                 LeaseEntry(
@@ -818,6 +821,7 @@ class SyncRateLimiter:
                     limit=limit,
                     state=state,
                     consumed=amount,
+                    _shard_id=result.shard_id,
                     _cascade=result.cascade,
                     _parent_id=result.parent_id,
                 )
@@ -921,9 +925,9 @@ class SyncRateLimiter:
         """
         entries: list[LeaseEntry] = []
         for state in result.buckets:
-            amount = consume.get(state.limit_name, 0)
-            if amount == 0:
+            if state.limit_name not in consume:
                 continue
+            amount = consume[state.limit_name]
             limit = Limit.from_bucket_state(state)
             entries.append(
                 LeaseEntry(
@@ -932,11 +936,16 @@ class SyncRateLimiter:
                     limit=limit,
                     state=state,
                     consumed=amount,
+                    _shard_id=result.shard_id,
                     _cascade=result.cascade,
                     _parent_id=result.parent_id,
                 )
             )
-        return SyncLease(entries=entries, repository=self._repository, _committed=True)
+        lease = SyncLease(entries=entries, repository=self._repository)
+        lease._initial_committed = True
+        for entry in entries:
+            entry._initial_consumed = entry.consumed
+        return lease
 
     def _try_parent_only_acquire(
         self,
