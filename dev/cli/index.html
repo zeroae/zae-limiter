@@ -5480,6 +5480,12 @@ again updates existing resources.</p>
 <td><code>True</code></td>
 </tr>
 <tr>
+<td><code>--enable-provisioner</code> / <code>--no-provisioner</code></td>
+<td>boolean</td>
+<td>Deploy Lambda provisioner for declarative limits</td>
+<td><code>True</code></td>
+</tr>
+<tr>
 <td><code>--pitr-recovery-days</code></td>
 <td>integer</td>
 <td>Point-in-Time Recovery period in days (1-35, default: AWS default of 35)</td>
@@ -8264,17 +8270,18 @@ and IAM role ARNs. Read-only operation - does not modify any resources.</p>
 </span><span id="__span-96-10"><a id="__codelineno-96-10" name="__codelineno-96-10" href="#__codelineno-96-10"></a>  Stack:         CREATE_COMPLETE
 </span><span id="__span-96-11"><a id="__codelineno-96-11" name="__codelineno-96-11" href="#__codelineno-96-11"></a>  Table:         ACTIVE
 </span><span id="__span-96-12"><a id="__codelineno-96-12" name="__codelineno-96-12" href="#__codelineno-96-12"></a>  Aggregator:    Enabled
-</span><span id="__span-96-13"><a id="__codelineno-96-13" name="__codelineno-96-13" href="#__codelineno-96-13"></a>
-</span><span id="__span-96-14"><a id="__codelineno-96-14" name="__codelineno-96-14" href="#__codelineno-96-14"></a>Versions
-</span><span id="__span-96-15"><a id="__codelineno-96-15" name="__codelineno-96-15" href="#__codelineno-96-15"></a>  Client:        0.6.0
-</span><span id="__span-96-16"><a id="__codelineno-96-16" name="__codelineno-96-16" href="#__codelineno-96-16"></a>  Schema:        0.6.0
-</span><span id="__span-96-17"><a id="__codelineno-96-17" name="__codelineno-96-17" href="#__codelineno-96-17"></a>  Lambda:        0.6.0
-</span><span id="__span-96-18"><a id="__codelineno-96-18" name="__codelineno-96-18" href="#__codelineno-96-18"></a>
-</span><span id="__span-96-19"><a id="__codelineno-96-19" name="__codelineno-96-19" href="#__codelineno-96-19"></a>Table Metrics
-</span><span id="__span-96-20"><a id="__codelineno-96-20" name="__codelineno-96-20" href="#__codelineno-96-20"></a>  Items:         1,234
-</span><span id="__span-96-21"><a id="__codelineno-96-21" name="__codelineno-96-21" href="#__codelineno-96-21"></a>  Size:          256 KB
-</span><span id="__span-96-22"><a id="__codelineno-96-22" name="__codelineno-96-22" href="#__codelineno-96-22"></a>
-</span><span id="__span-96-23"><a id="__codelineno-96-23" name="__codelineno-96-23" href="#__codelineno-96-23"></a>✓ Infrastructure is ready
+</span><span id="__span-96-13"><a id="__codelineno-96-13" name="__codelineno-96-13" href="#__codelineno-96-13"></a>  Provisioner:   Enabled
+</span><span id="__span-96-14"><a id="__codelineno-96-14" name="__codelineno-96-14" href="#__codelineno-96-14"></a>
+</span><span id="__span-96-15"><a id="__codelineno-96-15" name="__codelineno-96-15" href="#__codelineno-96-15"></a>Versions
+</span><span id="__span-96-16"><a id="__codelineno-96-16" name="__codelineno-96-16" href="#__codelineno-96-16"></a>  Client:        0.6.0
+</span><span id="__span-96-17"><a id="__codelineno-96-17" name="__codelineno-96-17" href="#__codelineno-96-17"></a>  Schema:        0.6.0
+</span><span id="__span-96-18"><a id="__codelineno-96-18" name="__codelineno-96-18" href="#__codelineno-96-18"></a>  Lambda:        0.6.0
+</span><span id="__span-96-19"><a id="__codelineno-96-19" name="__codelineno-96-19" href="#__codelineno-96-19"></a>
+</span><span id="__span-96-20"><a id="__codelineno-96-20" name="__codelineno-96-20" href="#__codelineno-96-20"></a>Table Metrics
+</span><span id="__span-96-21"><a id="__codelineno-96-21" name="__codelineno-96-21" href="#__codelineno-96-21"></a>  Items:         1,234
+</span><span id="__span-96-22"><a id="__codelineno-96-22" name="__codelineno-96-22" href="#__codelineno-96-22"></a>  Size:          256 KB
+</span><span id="__span-96-23"><a id="__codelineno-96-23" name="__codelineno-96-23" href="#__codelineno-96-23"></a>
+</span><span id="__span-96-24"><a id="__codelineno-96-24" name="__codelineno-96-24" href="#__codelineno-96-24"></a>✓ Infrastructure is ready
 </span></code></pre></div></p>
 <p><strong>Usage:</strong></p>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-97-1"><a id="__codelineno-97-1" name="__codelineno-97-1" href="#__codelineno-97-1"></a>zae-limiter status [OPTIONS]
@@ -9112,7 +9119,7 @@ versions. Checks compatibility between client and infrastructure.</p>
 </table>
 <div class="admonition note">
 <p class="admonition-title">Provisioner Lambda</p>
-<p>The <code>plan</code>, <code>apply</code>, and <code>diff</code> subcommands invoke the <code>{name}-limits-provisioner</code> Lambda function. This function must be deployed as part of the main stack before using these commands.</p>
+<p>The <code>plan</code>, <code>apply</code>, and <code>diff</code> subcommands invoke the <code>{name}-limits-provisioner</code> Lambda function. This function must be deployed as part of the main stack before using these commands. It is deployed by default; <code>zae-limiter deploy --no-provisioner</code> (or <code>--no-iam</code>, which leaves no role for it) skips it.</p>
 </div>
 <h2 id="disabling-resources-and-entities">Disabling Resources and Entities<a class="headerlink" href="#disabling-resources-and-entities" title="Permanent link">&para;</a></h2>
 <p>The <code>resource</code> and <code>entity</code> command groups include <code>disable</code>, <code>enable</code>, and <code>clear-disabled</code>

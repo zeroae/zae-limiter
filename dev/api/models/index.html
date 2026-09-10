@@ -1749,6 +1749,28 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.models.StackOptions.deploys_aggregator_lambda" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;deploys_aggregator_lambda
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.StackOptions.deploys_provisioner_lambda" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;deploys_provisioner_lambda
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.models.StackOptions.__post_init__" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -4561,6 +4583,28 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.models.StackOptions.deploys_aggregator_lambda" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;deploys_aggregator_lambda
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.StackOptions.deploys_provisioner_lambda" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;deploys_provisioner_lambda
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.models.StackOptions.__post_init__" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6660,7 +6704,7 @@ for limiter in limiters:
   </span>
 
 <a href="#zae_limiter.models.StackOptions" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">StackOptions</span><span class="p">(</span><span class="n">snapshot_windows</span><span class="o">=</span><span class="s1">'hourly,daily'</span><span class="p">,</span> <span class="n">usage_retention_days</span><span class="o">=</span><span class="mi">90</span><span class="p">,</span> <span class="n">audit_retention_days</span><span class="o">=</span><span class="mi">90</span><span class="p">,</span> <span class="n">enable_aggregator</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">pitr_recovery_days</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">log_retention_days</span><span class="o">=</span><span class="mi">30</span><span class="p">,</span> <span class="n">lambda_timeout</span><span class="o">=</span><span class="mi">60</span><span class="p">,</span> <span class="n">lambda_memory</span><span class="o">=</span><span class="mi">256</span><span class="p">,</span> <span class="n">enable_alarms</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">alarm_sns_topic</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">lambda_duration_threshold_pct</span><span class="o">=</span><span class="mi">80</span><span class="p">,</span> <span class="n">permission_boundary</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">role_name_format</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">policy_name_format</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">enable_audit_archival</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">audit_archive_glacier_days</span><span class="o">=</span><span class="mi">90</span><span class="p">,</span> <span class="n">enable_tracing</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">create_iam_roles</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">create_iam</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">aggregator_role_arn</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">enable_deletion_protection</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">tags</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">StackOptions</span><span class="p">(</span><span class="n">snapshot_windows</span><span class="o">=</span><span class="s1">'hourly,daily'</span><span class="p">,</span> <span class="n">usage_retention_days</span><span class="o">=</span><span class="mi">90</span><span class="p">,</span> <span class="n">audit_retention_days</span><span class="o">=</span><span class="mi">90</span><span class="p">,</span> <span class="n">enable_aggregator</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">enable_provisioner</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">pitr_recovery_days</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">log_retention_days</span><span class="o">=</span><span class="mi">30</span><span class="p">,</span> <span class="n">lambda_timeout</span><span class="o">=</span><span class="mi">60</span><span class="p">,</span> <span class="n">lambda_memory</span><span class="o">=</span><span class="mi">256</span><span class="p">,</span> <span class="n">enable_alarms</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">alarm_sns_topic</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">lambda_duration_threshold_pct</span><span class="o">=</span><span class="mi">80</span><span class="p">,</span> <span class="n">permission_boundary</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">role_name_format</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">policy_name_format</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">enable_audit_archival</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">audit_archive_glacier_days</span><span class="o">=</span><span class="mi">90</span><span class="p">,</span> <span class="n">enable_tracing</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">create_iam_roles</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">create_iam</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">aggregator_role_arn</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">enable_deletion_protection</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">tags</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
@@ -6723,6 +6767,17 @@ When None is passed (default), no stack creation is attempted.</p>
             <td>
               <div class="doc-md-description">
                 <p>Deploy Lambda aggregator for usage snapshots</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.models.StackOptions.enable_provisioner">enable_provisioner</span></code></td>
+            <td>
+                  <code><span title="bool">bool</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Deploy Lambda provisioner for declarative limits</p>
               </div>
             </td>
           </tr>
@@ -6950,6 +7005,60 @@ key 1-128 chars, value 0-256 chars). The <code>aws:</code> prefix is reserved.</
 
 
 
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h4 id="zae_limiter.models.StackOptions.deploys_aggregator_lambda" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-attribute"></code>            <span class="doc doc-object-name doc-attribute-name">deploys_aggregator_lambda</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#zae_limiter.models.StackOptions.deploys_aggregator_lambda" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">deploys_aggregator_lambda</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Whether CloudFormation will create the aggregator Lambda function.</p>
+<p>Mirrors the template's <code>DeployAggregatorLambda</code> condition: the
+aggregator needs a role, so it is only created when IAM resources are
+enabled or an external role ARN was supplied.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h4 id="zae_limiter.models.StackOptions.deploys_provisioner_lambda" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-attribute"></code>            <span class="doc doc-object-name doc-attribute-name">deploys_provisioner_lambda</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#zae_limiter.models.StackOptions.deploys_provisioner_lambda" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">deploys_provisioner_lambda</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Whether CloudFormation will create the limits provisioner Lambda function.</p>
+<p>Mirrors the template's <code>DeployProvisionerLambda</code> condition. The
+provisioner has no external-role escape hatch, so it requires
+<code>create_iam</code>.</p>
+
+    </div>
+
+</div>
 
 
 
