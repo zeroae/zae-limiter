@@ -654,8 +654,9 @@ Bucket items use per-(entity, resource, shard) partition keys: `PK={ns}/BUCKET#{
 
 **Write sharding mechanism:**
 - A reserved `wcu` (write capacity unit) infrastructure limit is auto-injected on every bucket (capacity=1000, 1 per write = 1000 milli consumed)
-- When `wcu` is exhausted on a shard, the client doubles `shard_count` and retries on a new shard
-- Shard selection: `shard_id = hash(entity_id, resource) % shard_count`
+- When `wcu` is exhausted on a shard, the client doubles `shard_count` and retries on a new shard, chosen at random from the shards it has not yet tried (`random.choice(untried)`, up to `_MAX_SHARD_RETRIES = 2` retries in `limiter.py`)
+- Shard selection: `random.randrange(shard_count)` when `shard_count > 1`, else shard 0 — **random, not a hash of the entity id**. Every call re-picks, so one hot entity's writes spread across all of its shards; which shard holds which portion of its tokens is not predictable from the entity id
+- Tests that need a bucket on a specific shard must pass an explicit `shard_id` to `speculative_consume()` (the parameter exists to skip random selection). Assuming a given `acquire()` lands on a particular shard is flaky by construction
 - Effective per-shard limits: `capacity_milli // shard_count`, `refill_amount_milli // shard_count`
 - `wcu` is filtered from user-facing output (`get_buckets`, `RateLimitExceeded`, usage snapshots)
 
@@ -870,7 +871,7 @@ All PK and GSI PK values are prefixed with `{ns}/` where `{ns}` is the opaque na
 - `Repository._entity_cache` stores `{entity_id: (cascade, parent_id, shard_counts)}` where `shard_counts` is `dict[str, int]` (resource → shard_count)
 - Populated from speculative result (ALL_NEW on success) or slow path (entity META record)
 - `shard_counts` updated when shard doubling occurs (wcu exhaustion triggers `shard_count *= 2`)
-- Shard selection: `hash(entity_id, resource) % shard_count` from cache
+- Shard selection: `random.randrange(shard_count)` using the cached `shard_count`, re-picked on every call (not derived from the entity id)
 - On cache hit with `cascade=True`, `speculative_consume()` issues child + parent speculative writes concurrently via `asyncio.gather` (async) or `self._run_in_executor` (sync, strategy controlled by `parallel_mode`)
 - Reduces cascade latency from 2 sequential round trips to 1 parallel round trip (same WCU cost)
 - First acquire for an entity always uses sequential path (populates cache); subsequent acquires use parallel path
