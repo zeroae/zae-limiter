@@ -1206,6 +1206,34 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#rolling-upgrades" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rolling Upgrades
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Rolling Upgrades">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#resource-and-entity-disable-is-enforced-client-side" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Resource and entity disable is enforced client-side
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#next-steps" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -4228,6 +4256,34 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#rolling-upgrades" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rolling Upgrades
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Rolling Upgrades">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#resource-and-entity-disable-is-enforced-client-side" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Resource and entity disable is enforced client-side
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#next-steps" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -5084,6 +5140,20 @@ use CLI deployment or CloudFormation template export. See the
 </tbody>
 </table>
 <p>Both approaches write to the same DynamoDB config records and can coexist. However, mixing imperative and declarative management for the same items may cause the provisioner to overwrite manual changes on the next apply.</p>
+<h2 id="rolling-upgrades">Rolling Upgrades<a class="headerlink" href="#rolling-upgrades" title="Permanent link">&para;</a></h2>
+<h3 id="resource-and-entity-disable-is-enforced-client-side">Resource and entity disable is enforced client-side<a class="headerlink" href="#resource-and-entity-disable-is-enforced-client-side" title="Permanent link">&para;</a></h3>
+<p>Disabling a resource or entity (<a href="../../adr/125-resource-disable/">ADR-125</a>) works by
+stamping a <code>disabled</code> attribute onto each bucket item. Enforcement lives in the
+client's conditional write — <code>attribute_not_exists(disabled)</code> in the speculative
+<code>UpdateItem</code> — not in DynamoDB itself, and not in the aggregator Lambda.</p>
+<p>During a rolling upgrade this means a client still running a version older than
+v0.12.0 does not carry that condition, and will keep admitting requests for a
+resource or entity that a newer client has disabled. Nothing is lost: the stamp is
+already written, and takes effect for each process as it upgrades. But the disable
+is not fleet-wide until every client is upgraded.</p>
+<p>Treat a disable as effective only once the rollout completes. If you are relying on
+it as an access-control boundary rather than an operational switch, finish upgrading
+all clients first.</p>
 <h2 id="next-steps">Next Steps<a class="headerlink" href="#next-steps" title="Permanent link">&para;</a></h2>
 <ul>
 <li><a href="../production/">Production</a> - Production checklist, security, cost estimation</li>
