@@ -49,8 +49,8 @@ from .sync_repository_protocol import SpeculativeFailureReason, SpeculativeResul
 if TYPE_CHECKING:
     from .sync_repository_builder import SyncRepositoryBuilder
 logger = logging.getLogger(__name__)
-_RESOLVE_DISABLED_MAX_RETRIES = 3
-_RESOLVE_DISABLED_RETRY_BASE_DELAY = 0.05
+_BATCH_GET_MAX_RETRIES = 3
+_BATCH_GET_RETRY_BASE_DELAY = 0.05
 
 
 class SyncRepository:
@@ -1324,6 +1324,73 @@ class SyncRepository:
                 return b
         return None
 
+    def _batch_get_all(
+        self,
+        keys: list[dict[str, Any]],
+        *,
+        consistent_read: bool = False,
+        context: str,
+        entity_id: str | None = None,
+        resource: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """BatchGetItem that retries UnprocessedKeys and never returns a partial read.
+
+        DynamoDB may answer a BatchGetItem partially and report the remainder
+        in ``UnprocessedKeys`` -- documented behaviour under throttling or
+        when the response would exceed 16 MB, not an error, and boto3 does not
+        retry it for you. A withheld item is indistinguishable from an absent
+        one, so accepting a partial response is silently wrong at every call
+        site: the config precedence walk falls through to a more permissive
+        level, the ADR-125 disable walk admits a disabled entity, and the
+        ``acquire()`` slow path treats a live bucket as new.
+
+        Raises rather than returning a short list when the retry budget runs
+        out. For ``acquire()`` paths that routes the decision into the
+        existing ``on_unavailable`` handling, which is what it is for.
+
+        Chunking stays with the caller: this handles the unprocessed remainder
+        *within* one request, so ``keys`` must already be <= 100 items.
+
+        Args:
+            keys: DynamoDB key dicts for a single request (at most 100).
+            consistent_read: Passed through to the request.
+            context: Short description of the read, used in the error message.
+            entity_id: Attached to the raised exception when applicable.
+            resource: Attached to the raised exception when applicable.
+
+        Returns:
+            Every item that exists among ``keys``, in no particular order.
+
+        Raises:
+            RateLimiterUnavailable: Keys remained unprocessed after
+                ``_BATCH_GET_MAX_RETRIES`` retries.
+        """
+        if not keys:
+            return []
+        client = self._get_client()
+        items: list[dict[str, Any]] = []
+        pending = keys
+        attempts = 0
+        while pending:
+            response = client.batch_get_item(
+                RequestItems={self.table_name: {"Keys": pending, "ConsistentRead": consistent_read}}
+            )
+            items.extend(response.get("Responses", {}).get(self.table_name, []))
+            unprocessed = response.get("UnprocessedKeys", {}).get(self.table_name) or {}
+            pending = unprocessed.get("Keys", [])
+            if not pending:
+                break
+            attempts += 1
+            if attempts > _BATCH_GET_MAX_RETRIES:
+                raise RateLimiterUnavailable(
+                    f"Could not read {context}: DynamoDB left {len(pending)} key(s) unprocessed after {_BATCH_GET_MAX_RETRIES} retries",
+                    stack_name=self.stack_name,
+                    entity_id=entity_id,
+                    resource=resource,
+                )
+            time.sleep(_BATCH_GET_RETRY_BASE_DELAY * 2 ** (attempts - 1))
+        return items
+
     def get_buckets(
         self, entity_id: str, resource: str | None = None, shard_id: int = 0
     ) -> list[BucketState]:
@@ -1382,8 +1449,10 @@ class SyncRepository:
         buckets: list[BucketState] = []
         for i in range(0, len(request_keys), 100):
             chunk = request_keys[i : i + 100]
-            batch_response = client.batch_get_item(RequestItems={self.table_name: {"Keys": chunk}})
-            for full_item in batch_response.get("Responses", {}).get(self.table_name, []):
+            full_items = self._batch_get_all(
+                chunk, context=f"buckets for entity {entity_id!r}", entity_id=entity_id
+            )
+            for full_item in full_items:
                 buckets.extend(self._deserialize_composite_bucket(full_item))
         return [b for b in buckets if b.limit_name != schema.WCU_LIMIT_NAME]
 
@@ -1410,7 +1479,6 @@ class SyncRepository:
         """
         if not keys:
             return {}
-        client = self._get_client()
         result: dict[tuple[str, str, str], BucketState] = {}
         unique_keys = list(set(keys))
         for i in range(0, len(unique_keys), 100):
@@ -1422,8 +1490,7 @@ class SyncRepository:
                 }
                 for entity_id, resource in chunk
             ]
-            response = client.batch_get_item(RequestItems={self.table_name: {"Keys": request_keys}})
-            items = response.get("Responses", {}).get(self.table_name, [])
+            items = self._batch_get_all(request_keys, context="rate limit buckets")
             for item in items:
                 buckets = self._deserialize_composite_bucket(item)
                 for bucket in buckets:
@@ -1453,7 +1520,6 @@ class SyncRepository:
             DynamoDB BatchGetItem supports up to 100 items per request.
             The META key counts toward that limit.
         """
-        client = self._get_client()
         meta_key = {
             "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
             "SK": {"S": schema.sk_meta()},
@@ -1471,8 +1537,9 @@ class SyncRepository:
         buckets: dict[tuple[str, str, str], BucketState] = {}
         for i in range(0, len(request_keys), 100):
             chunk = request_keys[i : i + 100]
-            response = client.batch_get_item(RequestItems={self.table_name: {"Keys": chunk}})
-            items = response.get("Responses", {}).get(self.table_name, [])
+            items = self._batch_get_all(
+                chunk, context=f"entity {entity_id!r} and its buckets", entity_id=entity_id
+            )
             for item in items:
                 sk = item.get("SK", {}).get("S", "")
                 if sk == schema.sk_meta():
@@ -1525,19 +1592,15 @@ class SyncRepository:
         """
         if not keys:
             return {}
-        client = self._get_client()
         result: dict[tuple[str, str], tuple[list[Limit], OnUnavailableAction | None]] = {}
         unique_keys = list(set(keys))
         for i in range(0, len(unique_keys), 100):
             chunk = unique_keys[i : i + 100]
             request_keys = [{"PK": {"S": pk}, "SK": {"S": sk}} for pk, sk in chunk]
-            response = client.batch_get_item(
-                RequestItems={self.table_name: {"Keys": request_keys, "ConsistentRead": False}}
-            )
+            items = self._batch_get_all(request_keys, context="limit configuration")
             if disabled_out is not None:
                 for pk, sk in chunk:
                     disabled_out[pk, sk] = None
-            items = response.get("Responses", {}).get(self.table_name, [])
             for item in items:
                 pk = item.get("PK", {}).get("S", "")
                 sk = item.get("SK", {}).get("S", "")
@@ -3828,29 +3891,13 @@ class SyncRepository:
                 )
             )
         levels.append(("resource", schema.pk_resource(ns, resource), schema.sk_config()))
-        client = self._get_client()
-        keys = [{"PK": {"S": pk}, "SK": {"S": sk}} for _, pk, sk in levels]
-        by_key: dict[tuple[str, str], dict[str, Any]] = {}
-        attempts = 0
-        while keys:
-            response = client.batch_get_item(
-                RequestItems={self.table_name: {"Keys": keys, "ConsistentRead": False}}
-            )
-            for i in response.get("Responses", {}).get(self.table_name, []):
-                by_key[i.get("PK", {}).get("S", ""), i.get("SK", {}).get("S", "")] = i
-            unprocessed = response.get("UnprocessedKeys", {}).get(self.table_name) or {}
-            keys = unprocessed.get("Keys", [])
-            if not keys:
-                break
-            attempts += 1
-            if attempts > _RESOLVE_DISABLED_MAX_RETRIES:
-                raise RateLimiterUnavailable(
-                    f"Could not resolve disabled state for {entity_id!r}/{resource!r}: DynamoDB left {len(keys)} key(s) unprocessed after {_RESOLVE_DISABLED_MAX_RETRIES} retries",
-                    stack_name=self.stack_name,
-                    entity_id=entity_id,
-                    resource=resource,
-                )
-            time.sleep(_RESOLVE_DISABLED_RETRY_BASE_DELAY * 2 ** (attempts - 1))
+        items = self._batch_get_all(
+            [{"PK": {"S": pk}, "SK": {"S": sk}} for _, pk, sk in levels],
+            context=f"disabled state for {entity_id!r}/{resource!r}",
+            entity_id=entity_id,
+            resource=resource,
+        )
+        by_key = {(i.get("PK", {}).get("S", ""), i.get("SK", {}).get("S", "")): i for i in items}
         for level, pk, sk in levels:
             item = by_key.get((pk, sk))
             if item is None:
