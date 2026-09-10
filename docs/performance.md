@@ -197,7 +197,7 @@ DynamoDB enforces these limits:
 async with limiter.acquire(
     "entity-id",
     "llm-api",
-    {"rpm": 1},  # Initial consumption (1 request)
+    {"rpm": 1, "tpm": 0},  # 1 request; token cost is not known yet
     limits=[rpm_limit, tpm_limit],
 ) as lease:
     # 1 BatchGetItem + 1 UpdateItem (1 WCU, single composite bucket)
@@ -211,6 +211,12 @@ async with limiter.acquire("entity-id", "llm-api", {"rpm": 1}, limits=[rpm_limit
         # 2 reads + 2 writes (doubles cost!)
         pass
 ```
+
+Name every limit you intend to adjust, even at `0`. `consume` declares which
+limits the lease covers: a limit left out of it has no lease entry, so
+`adjust()` against it is silently ignored. An estimate of `0` is the way to say
+"this limit is in play, the cost is not known yet" — it costs nothing extra,
+since the write is the same single composite item either way.
 
 #### Cascade Optimization
 
