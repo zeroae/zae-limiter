@@ -522,17 +522,22 @@ def deploy(
                     repo = Repository(
                         manager.table_name, region, endpoint_url, _skip_deprecation_warning=True
                     )
-                    await repo.set_version_record(
-                        schema_version=get_schema_version(),
-                        lambda_version=__version__,
-                        client_min_version="0.0.0",
-                        updated_by=f"cli:{__version__}",
-                    )
-                    click.echo(f"✓ Version record initialized (schema {get_schema_version()})")
+                    try:
+                        await repo.set_version_record(
+                            schema_version=get_schema_version(),
+                            lambda_version=__version__,
+                            client_min_version="0.0.0",
+                            updated_by=f"cli:{__version__}",
+                        )
+                        click.echo(f"✓ Version record initialized (schema {get_schema_version()})")
 
-                    # Step 5: Register "default" namespace
-                    await repo.register_namespace("default")
-                    click.echo("✓ Default namespace registered")
+                        # Step 5: Register "default" namespace
+                        await repo.register_namespace("default")
+                        click.echo("✓ Default namespace registered")
+                    finally:
+                        # The enclosing handler calls sys.exit(1), so without this
+                        # the client session leaks on any failure in steps 4-5.
+                        await repo.close()
 
                 if not wait:
                     click.echo()

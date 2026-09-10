@@ -125,6 +125,7 @@ class TestCLI:
         mock_repo_instance = Mock()
         mock_repo_instance.set_version_record = AsyncMock()
         mock_repo_instance.register_namespace = AsyncMock(return_value="test-ns-id")
+        mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
 
         result = runner.invoke(cli, ["deploy"])
@@ -149,6 +150,105 @@ class TestCLI:
         version_call_args = mock_repo_instance.set_version_record.call_args
         assert version_call_args[1]["schema_version"] == "0.10.0"
         assert version_call_args[1]["client_min_version"] == "0.0.0"
+
+    @staticmethod
+    def _deploy_stack_manager_mock() -> Mock:
+        """StackManager mock whose create/deploy steps all succeed."""
+        mock_instance = Mock()
+        mock_instance.stack_name = "rate-limits"
+        mock_instance.table_name = "rate-limits"
+        mock_instance.create_stack = AsyncMock(
+            return_value={
+                "status": "CREATE_COMPLETE",
+                "stack_id": "test-stack-id",
+                "stack_name": "rate-limits",
+            }
+        )
+        mock_instance.deploy_lambda_code = AsyncMock(
+            return_value={
+                "status": "deployed",
+                "function_arn": "arn:aws:lambda:us-east-1:123456789:function:test",
+                "code_sha256": "abc123def456",
+                "size_bytes": 30000,
+            }
+        )
+        mock_instance.deploy_provisioner_code = AsyncMock(
+            return_value={
+                "status": "deployed",
+                "function_arn": "arn:aws:lambda:us-east-1:123456789:function:prov-test",
+                "size_bytes": 20000,
+            }
+        )
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=None)
+        return mock_instance
+
+    @patch("zae_limiter.repository.Repository")
+    @patch("zae_limiter.cli.StackManager")
+    def test_deploy_closes_repository(
+        self, mock_stack_manager: Mock, mock_repository: Mock, runner: CliRunner
+    ) -> None:
+        """Deploy closes the Repository it opens for steps 4-5 (issue #448).
+
+        Leaving it open makes aiobotocore print 'Unclosed client session' and
+        'Unclosed connector' to stderr on exit.
+        """
+        mock_stack_manager.return_value = self._deploy_stack_manager_mock()
+
+        mock_repo_instance = Mock()
+        mock_repo_instance.set_version_record = AsyncMock()
+        mock_repo_instance.register_namespace = AsyncMock(return_value="test-ns-id")
+        mock_repo_instance.close = AsyncMock(return_value=None)
+        mock_repository.return_value = mock_repo_instance
+
+        result = runner.invoke(cli, ["deploy"])
+
+        assert result.exit_code == 0, result.output
+        mock_repo_instance.close.assert_awaited_once()
+
+    @patch("zae_limiter.repository.Repository")
+    @patch("zae_limiter.cli.StackManager")
+    def test_deploy_closes_repository_when_version_record_fails(
+        self, mock_stack_manager: Mock, mock_repository: Mock, runner: CliRunner
+    ) -> None:
+        """The close must survive a failure in step 4 (issue #448).
+
+        The enclosing handler calls sys.exit(1), so a close placed after the
+        step-4/5 calls rather than in a `finally` would be skipped entirely.
+        """
+        mock_stack_manager.return_value = self._deploy_stack_manager_mock()
+
+        mock_repo_instance = Mock()
+        mock_repo_instance.set_version_record = AsyncMock(side_effect=RuntimeError("boom"))
+        mock_repo_instance.register_namespace = AsyncMock(return_value="test-ns-id")
+        mock_repo_instance.close = AsyncMock(return_value=None)
+        mock_repository.return_value = mock_repo_instance
+
+        result = runner.invoke(cli, ["deploy"])
+
+        assert result.exit_code == 1
+        assert "boom" in result.output
+        mock_repo_instance.close.assert_awaited_once()
+
+    @patch("zae_limiter.repository.Repository")
+    @patch("zae_limiter.cli.StackManager")
+    def test_deploy_closes_repository_when_namespace_registration_fails(
+        self, mock_stack_manager: Mock, mock_repository: Mock, runner: CliRunner
+    ) -> None:
+        """The close must also survive a failure in step 5 (issue #448)."""
+        mock_stack_manager.return_value = self._deploy_stack_manager_mock()
+
+        mock_repo_instance = Mock()
+        mock_repo_instance.set_version_record = AsyncMock()
+        mock_repo_instance.register_namespace = AsyncMock(side_effect=RuntimeError("nope"))
+        mock_repo_instance.close = AsyncMock(return_value=None)
+        mock_repository.return_value = mock_repo_instance
+
+        result = runner.invoke(cli, ["deploy"])
+
+        assert result.exit_code == 1
+        assert "nope" in result.output
+        mock_repo_instance.close.assert_awaited_once()
 
     @patch("zae_limiter.repository.Repository")
     @patch("zae_limiter.cli.StackManager")
@@ -184,6 +284,7 @@ class TestCLI:
         mock_repo_instance = Mock()
         mock_repo_instance.set_version_record = AsyncMock()
         mock_repo_instance.register_namespace = AsyncMock(return_value="test-ns-id")
+        mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
 
         result = runner.invoke(cli, ["deploy"])
@@ -250,6 +351,7 @@ class TestCLI:
         mock_repo_instance = Mock()
         mock_repo_instance.set_version_record = AsyncMock()
         mock_repo_instance.register_namespace = AsyncMock(return_value="test-ns-id")
+        mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
 
         result = runner.invoke(
@@ -301,6 +403,7 @@ class TestCLI:
         mock_repo_instance = Mock()
         mock_repo_instance.set_version_record = AsyncMock()
         mock_repo_instance.register_namespace = AsyncMock(return_value="test-ns-id")
+        mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
 
         result = runner.invoke(
@@ -350,6 +453,7 @@ class TestCLI:
         mock_repo_instance = Mock()
         mock_repo_instance.set_version_record = AsyncMock()
         mock_repo_instance.register_namespace = AsyncMock(return_value="test-ns-id")
+        mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
 
         result = runner.invoke(
@@ -407,6 +511,7 @@ class TestCLI:
         mock_repo_instance = Mock()
         mock_repo_instance.set_version_record = AsyncMock()
         mock_repo_instance.register_namespace = AsyncMock(return_value="test-ns-id")
+        mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
 
         result = runner.invoke(
@@ -461,6 +566,7 @@ class TestCLI:
         mock_repo_instance = Mock()
         mock_repo_instance.set_version_record = AsyncMock()
         mock_repo_instance.register_namespace = AsyncMock(return_value="test-ns-id")
+        mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
 
         result = runner.invoke(
@@ -511,6 +617,7 @@ class TestCLI:
         mock_repo_instance = Mock()
         mock_repo_instance.set_version_record = AsyncMock()
         mock_repo_instance.register_namespace = AsyncMock(return_value="test-ns-id")
+        mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
 
         sns_topic = "arn:aws:sns:us-east-1:123456789012:my-topic"
@@ -563,6 +670,7 @@ class TestCLI:
         mock_repo_instance = Mock()
         mock_repo_instance.set_version_record = AsyncMock()
         mock_repo_instance.register_namespace = AsyncMock(return_value="test-ns-id")
+        mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
 
         # Lambda timeout 60s with 50% threshold
@@ -617,6 +725,7 @@ class TestCLI:
         mock_repo_instance = Mock()
         mock_repo_instance.set_version_record = AsyncMock()
         mock_repo_instance.register_namespace = AsyncMock(return_value="test-ns-id")
+        mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
 
         # Lambda timeout 120s with 80% threshold
@@ -749,6 +858,7 @@ class TestCLI:
         mock_repo_instance = Mock()
         mock_repo_instance.set_version_record = AsyncMock()
         mock_repo_instance.register_namespace = AsyncMock(return_value="test-ns-id")
+        mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
 
         result = runner.invoke(
@@ -807,6 +917,7 @@ class TestCLI:
         mock_repo_instance = Mock()
         mock_repo_instance.set_version_record = AsyncMock()
         mock_repo_instance.register_namespace = AsyncMock(return_value="test-ns-id")
+        mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
 
         result = runner.invoke(
@@ -864,6 +975,7 @@ class TestCLI:
         mock_repo_instance = Mock()
         mock_repo_instance.set_version_record = AsyncMock()
         mock_repo_instance.register_namespace = AsyncMock(return_value="test-ns-id")
+        mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
 
         result = runner.invoke(
@@ -910,6 +1022,7 @@ class TestCLI:
         mock_repo_instance = Mock()
         mock_repo_instance.set_version_record = AsyncMock()
         mock_repo_instance.register_namespace = AsyncMock(return_value="test-ns-id")
+        mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
 
         result = runner.invoke(
@@ -949,6 +1062,7 @@ class TestCLI:
         mock_repo_instance = Mock()
         mock_repo_instance.set_version_record = AsyncMock()
         mock_repo_instance.register_namespace = AsyncMock(return_value="test-ns-id")
+        mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
 
         result = runner.invoke(
@@ -999,6 +1113,7 @@ class TestCLI:
         mock_repo_instance = Mock()
         mock_repo_instance.set_version_record = AsyncMock()
         mock_repo_instance.register_namespace = AsyncMock(return_value="test-ns-id")
+        mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
 
         role_arn = "arn:aws:iam::123456789012:role/MyLambdaRole"
@@ -1049,6 +1164,7 @@ class TestCLI:
         mock_repo_instance = Mock()
         mock_repo_instance.set_version_record = AsyncMock()
         mock_repo_instance.register_namespace = AsyncMock(return_value="test-ns-id")
+        mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
 
         role_arn = "arn:aws:iam::123456789012:role/MyLambdaRole"
