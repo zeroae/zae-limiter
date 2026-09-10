@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788956422806,
+  "lastUpdate": 1789004444668,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -14552,6 +14552,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.0024912666012859895",
             "extra": "mean: 1.0845263221999972 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "880d2669666c90cebad95b31e90302ff0e0a5f79",
+          "message": "⬆️ deps: refresh uv.lock to clear 51 Dependabot alerts (#446)\n\n## Summary\n\nLockfile-only refresh via `uv lock --upgrade`. No `pyproject.toml`\nconstraint changes — every alert traced to a stale transitive pin, not a\ndependency this project declares.\n\nClears all **51 open Dependabot alerts** (12 high, 26 moderate, 13 low):\n\n| Package | Change | Alerts |\n|---------|--------|-------:|\n| aiohttp | 3.13.3 → 3.14.3 | 24 |\n| cryptography | 46.0.5 → 50.0.1 | 6 |\n| pip | 26.0 → 26.2.1 | 4 |\n| pymdown-extensions | 10.20 → 11.0.2 | 3 |\n| urllib3 | 2.6.3 → 2.7.0 | 2 |\n| python-engineio | 4.13.1 → 4.14.0 | 2 |\n| black, msgpack, python-socketio, pytest, requests, idna, setuptools,\nPygments, mkdocs-material, aws-cdk-lib | — | 1 each |\n\nNone is a direct dependency. aiohttp — the largest cluster by far at 47%\nof the total — is not in `pyproject.toml` at all and arrives through\n`aioboto3`.\n\n## Scoping note for reviewers\n\nA library's lockfile does not constrain its consumers. Anyone installing\n`zae-limiter` from PyPI resolves against `pyproject.toml`, so the\nexposure here was **CI, local development environments and the Lambda\ndeployment package** — not downstream users.\n\nGitHub labels all 51 alerts \"runtime\" only because `uv.lock` resolves\nevery extra into a single file with no dev/prod split. `black`,\n`pytest`, `mkdocs-material` and `aws-cdk-lib` are plainly not runtime\ndependencies.\n\n## Risk\n\nNot trivial despite touching one file. The refresh carries:\n\n- `wrapt` 1.17.3 → **2.4.0** (major)\n- `virtualenv` 20 → **21** (major)\n- `zope-interface` 8.2 → 8.6\n- `wheel` 0.46 → 0.48\n- drops `types-paramiko` and `zipp` entirely\n\nThose are exactly the packages that would break gevent monkey-patching\nor moto, so **the gevent suite is the meaningful signal here** rather\nthan the unit count.\n\n## Test plan\n\nVerified on the upgraded environment:\n\n- [x] `unit` — 2940 passed\n- [x] `integration` — 108 passed (LocalStack)\n- [x] `gevent` — 26 passed (`-n 0`, per `.claude/rules/testing.md`)\n- [x] `mypy` — clean\n- [x] `ruff` — clean\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_011jr3EwdyfGkrJvihzHqbDK",
+          "timestamp": "2026-09-09T21:35:32-04:00",
+          "tree_id": "bed18c4652bab46c5284c5fa1fb59800eff4af6f",
+          "url": "https://github.com/zeroae/zae-limiter/commit/880d2669666c90cebad95b31e90302ff0e0a5f79"
+        },
+        "date": 1789004443523,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 24.013287820051886,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00935250041802951",
+            "extra": "mean: 41.643610300000944 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 16.811520141249854,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008267306926085224",
+            "extra": "mean: 59.48302066666381 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 41.272608203421065,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0028319065982873796",
+            "extra": "mean: 24.229144789475903 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 35.50442816908996,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005174321752967538",
+            "extra": "mean: 28.16550079999871 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 24.533936814204303,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005096181318688747",
+            "extra": "mean: 40.7598669375 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 183.92814883650368,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0012419591292817563",
+            "extra": "mean: 5.436905695652458 msec\nrounds: 115"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 25.46985251753543,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0049434499056452",
+            "extra": "mean: 39.26210406249986 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 26.77482978805664,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006215741920356273",
+            "extra": "mean: 37.34851007142786 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 26.22468506871886,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0067463669367013365",
+            "extra": "mean: 38.132011781251585 msec\nrounds: 32"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 24.192422098155674,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00690174497228226",
+            "extra": "mean: 41.33525762499968 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 24.540408169406366,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008339202448685752",
+            "extra": "mean: 40.749118478260016 msec\nrounds: 23"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 23.831819185653316,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0068951328519518355",
+            "extra": "mean: 41.96070774999825 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 22.840735908146897,
+            "unit": "iter/sec",
+            "range": "stddev: 0.05724220204316406",
+            "extra": "mean: 43.78142648386899 msec\nrounds: 31"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.933225161034024,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0014527773715192474",
+            "extra": "mean: 517.2703212000044 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.931329599191764,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0017511221180075034",
+            "extra": "mean: 517.7780117999987 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9450100030584568,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0030982230951993803",
+            "extra": "mean: 1.0581898570000021 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.926464745812366,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0023345705234720437",
+            "extra": "mean: 1.0793718859999957 sec\nrounds: 5"
           }
         ]
       }
