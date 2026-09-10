@@ -4846,13 +4846,13 @@
 </tr>
 <tr>
 <td><code>PermissionBoundaryArn</code></td>
-<td>Always</td>
-<td>Permission boundary ARN (empty if none)</td>
+<td>Permission boundary set</td>
+<td>Permission boundary ARN used for IAM roles</td>
 </tr>
 <tr>
 <td><code>RoleNameFormat</code></td>
-<td>Always</td>
-<td>Role name format template (empty if default)</td>
+<td>Role name format set</td>
+<td>Role name format template</td>
 </tr>
 <tr>
 <td><code>CodeBucketName</code></td>
@@ -4871,6 +4871,15 @@
 </tr>
 </tbody>
 </table>
+<div class="admonition note">
+<p class="admonition-title">Conditional outputs are omitted, not empty</p>
+<p><code>PermissionBoundaryArn</code> and <code>RoleNameFormat</code> are only emitted when the
+corresponding option is set. CloudFormation rejects an export whose value is
+empty or whitespace-only and rolls the entire stack back, so these outputs
+carry a condition rather than exporting <code>''</code>. Consumers should treat a
+missing output as "not configured" — for example
+<code>outputs.get("RoleNameFormat", "{}")</code>.</p>
+</div>
 <div class="admonition tip">
 <p class="admonition-title">Discovering namespace IDs</p>
 <p>Namespace IDs are opaque strings stored in DynamoDB, not CloudFormation outputs.
