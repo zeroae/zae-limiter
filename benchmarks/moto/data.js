@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789004219382,
+  "lastUpdate": 1789006417758,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -27341,6 +27341,240 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.0001025122278459036",
             "extra": "mean: 6.871180445205689 msec\nrounds: 146"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0ee35905af188565bb2813a1c72ac3aa2f50d265",
+          "message": "✨ feat(infra): add enable_provisioner option to skip the provisioner Lambda (#443)\n\n## Summary\n\n`StackOptions` gains `enable_provisioner` (default `True`), mirroring\n`enable_aggregator`. The CloudFormation template already had an\n`EnableProvisioner` parameter with conditions guarding the provisioner\nLambda, its role, and its log group — but nothing on the client side\never set it, so the provisioner was always deployed.\n\n- `StackOptions.enable_provisioner` + `to_parameters()` mapping to\n`EnableProvisioner`\n- `StackManager` / `SyncStackManager` parameter name mapping\n- `RepositoryBuilder.enable_provisioner()` (and sync counterpart)\n- CLI: `--enable-provisioner/--no-provisioner` on `deploy`, plus a\n`Provisioner: enabled|disabled` line in the deploy summary\n\nSync counterparts regenerated via `hatch run generate-sync`.\n\n## Bug fix: don't push Lambda code to functions CloudFormation never\ncreated\n\nCloudFormation only creates the aggregator and provisioner functions\nwhen a role exists for them, but both deploy paths pushed code based on\nthe `enable_*` flags alone. Under `--no-iam` / `.create_iam(False)` the\nfunctions are absent and the code push failed with\n`ResourceNotFoundException`, exiting 1 on an otherwise successful\ndeploy.\n\n- CLI: `--no-iam` now auto-disables the provisioner the same way it\nauto-disables the aggregator\n- `StackOptions` gains `deploys_aggregator_lambda` /\n`deploys_provisioner_lambda`, mirroring the template's\n`DeployAggregatorLambda` / `DeployProvisionerLambda` conditions\n(aggregator's external-role escape hatch included), and\n`Repository._ensure_infrastructure_internal()` gates the code deploys on\nthose — closing the same hole on the `Repository.builder()` path\n\n| Config | Aggregator Lambda | Provisioner Lambda |\n|--------|-------------------|--------------------|\n| default | deployed | deployed |\n| `--no-provisioner` | deployed | not created |\n| `--no-aggregator` | not created | deployed |\n| `--no-iam` | not created | not created |\n| `--no-iam` + `--aggregator-role-arn` | deployed | not created |\n\n## Visibility and error handling\n\nNow that the provisioner is a real deployment choice, the CLI reports\nand explains its absence:\n\n- `zae-limiter status` gains a `Provisioner: Enabled|Disabled|Unknown`\nline in the Infrastructure section, next to the existing `Aggregator:`\nline. The template's `ProvisionerFunctionName` output is conditioned on\n`DeployProvisionerLambda`, so its presence in the stack outputs is\nexactly whether CloudFormation created the function — and `status`\nalready calls `describe_stacks` for the role ARNs, so this costs no\nextra API call. When the stack outputs cannot be read at all it reports\n`Unknown` rather than `Disabled`, so an externally managed stack\n(Terraform/CDK) that omits the output is not misreported.\n- **Bug fix (found during the real-AWS verification below):** the\nexisting `Aggregator:` line inferred state from the DynamoDB table's\n`StreamSpecification`, which the template enables unconditionally — so\n*every* stack reported `Aggregator: Enabled`, including one deployed\nwith `--no-aggregator`. `AggregatorFunctionName` is conditioned on\n`DeployAggregatorLambda` exactly like `ProvisionerFunctionName`, so both\nstates now come from the same `describe_stacks` call and share one\nEnabled/Disabled/Unknown renderer. The stream-spec inference is gone.\n- `zae-limiter limits plan|apply|diff` now exits 1 with an explanation\nwhen the provisioner Lambda is missing, instead of surfacing a raw\nbotocore `ResourceNotFoundException` traceback.\n\n## Test plan\n\n- [x] `tests/unit/test_models.py` — `to_parameters()` emits\n`EnableProvisioner=false`; `deploys_*_lambda` properties for default /\n`--no-iam` / external-role / disabled configs\n- [x] `tests/unit/test_repository_builder.py` —\n`_ensure_infrastructure_internal()` skips the disabled provisioner,\nskips both Lambdas without IAM, and still deploys the aggregator with an\nexternal role\n- [x] `tests/unit/test_cli.py::test_deploy_with_no_provisioner_flag` —\n`--no-provisioner` skips provisioner code deployment\n- [x]\n`tests/unit/test_limits_cli.py::test_invoke_provisioner_missing_function_exits_cleanly`\n— clean exit 1, no traceback\n- [x] `tests/unit/test_cli.py` — `status` reports `Enabled` / `Disabled`\n/ `Unknown` for both the aggregator and the provisioner (the `status`\ndocstring sample output, which feeds `docs/cli.md` via mkdocs-click, was\nupdated to match)\n- [x]\n`tests/unit/test_cli.py::test_status_aggregator_disabled_despite_table_stream`\n— pins the regression: outputs present with no `AggregatorFunctionName`\n→ `Disabled`\n- [x] `uv run pytest tests/unit/ -q` → 2954 passed\n- [x] `ruff check`, `ruff format`, `mypy src/zae_limiter` → clean\n- [x] Sync generation → no drift\n- [x] `diff-cover` vs `origin/main` → 100% patch coverage, 38 lines, 0\nmissing\n- [x] Manual: `zae-limiter deploy --name x --no-iam` completes with exit\n0 (previously exited 1)\n- [x] Manual: `zae-limiter deploy --name x --no-provisioner` creates no\n`{stack}-limits-provisioner` function\n\nBoth manual items were verified against real AWS (account 733153035800,\nus-east-1) with real CloudFormation stacks, all since deleted:\n\n| Deploy | Result |\n|--------|--------|\n| default | exit 0; `{stack}-limits-provisioner` exists; `status`\nprinted `Provisioner: Enabled` |\n| `--no-provisioner` | exit 0; provisioner absent; `status` printed\n`Provisioner: Disabled`; `limits plan` printed the new clean error\n(`Error: Lambda function '...-limits-provisioner' not found. The limits\nprovisioner is not deployed for this stack...`) rather than a botocore\ntraceback |\n| `--no-iam` | exit 0; provisioner absent — the regression this PR\nfixes, confirmed working |\n\n**Caveat on the `--no-iam` case:** it reaches exit 0 only when\n`--permission-boundary` and `--role-name-format` are also supplied. With\neither omitted the stack rolls back before the CLI ever reaches the\nprovisioner step, due to a **pre-existing bug on `main` that this PR\nneither touches nor causes**: `PermissionBoundaryArn` and\n`RoleNameFormat` in `src/zae_limiter/infra/cfn_template.yaml` are\nexported unconditionally while both parameters default to `''`, and\nCloudFormation rejects empty export values (`Cannot export output\nPermissionBoundaryArn. Exported values must not be empty or\nwhitespace-only.`). Introduced in 80a1a34 and now tracked in #445. The\n`--no-iam` fix in this PR is verified working.\n\n🤖 Generated with [Claude Code](https://claude.ai/code)\n\nhttps://claude.ai/code/session_014nPStTtHkW7zqj3X3wGpVg",
+          "timestamp": "2026-09-09T22:08:26-04:00",
+          "tree_id": "0f757901c1ce93b0158b97bc7b86ef6eaa5ddede",
+          "url": "https://github.com/zeroae/zae-limiter/commit/0ee35905af188565bb2813a1c72ac3aa2f50d265"
+        },
+        "date": 1789006416547,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_single_limit_latency",
+            "value": 243.7552915395431,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00010016222303345616",
+            "extra": "mean: 4.102475042424978 msec\nrounds: 165"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_two_limits_latency",
+            "value": 206.18739139329114,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00009446570708049872",
+            "extra": "mean: 4.84995708633102 msec\nrounds: 139"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_cascade_latency",
+            "value": 118.10762297302642,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0002221831197230022",
+            "extra": "mean: 8.466854000002874 msec\nrounds: 6"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_available_check_latency",
+            "value": 480.33939087724804,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00005313202780921435",
+            "extra": "mean: 2.0818613234565073 msec\nrounds: 405"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_stored_limits_latency",
+            "value": 243.9386601198798,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00010806967164593624",
+            "extra": "mean: 4.099391213793524 msec\nrounds: 145"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_baseline_no_cascade",
+            "value": 243.76679309055453,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00010029079241070346",
+            "extra": "mean: 4.102281476987391 msec\nrounds: 239"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_with_cascade",
+            "value": 120.36653746392258,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0001524597173405701",
+            "extra": "mean: 8.307956854700832 msec\nrounds: 117"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_one_limit",
+            "value": 217.62459288470203,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006191063951416379",
+            "extra": "mean: 4.5950689062508765 msec\nrounds: 160"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_two_limits",
+            "value": 207.91582355769248,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00010546195476857584",
+            "extra": "mean: 4.809638741721455 msec\nrounds: 151"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_five_limits",
+            "value": 138.78795331922245,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00013002624712871408",
+            "extra": "mean: 7.2052363053436395 msec\nrounds: 131"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_single_limit",
+            "value": 223.59227735206207,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004651609821197509",
+            "extra": "mean: 4.472426381817421 msec\nrounds: 165"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_multiple_limits",
+            "value": 205.93348749440818,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00010018582512186373",
+            "extra": "mean: 4.855936798657642 msec\nrounds: 149"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_available_check",
+            "value": 481.99639190737236,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00005065046173438823",
+            "extra": "mean: 2.0747043272310943 msec\nrounds: 437"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_transactional_acquire",
+            "value": 242.04036735419115,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00009960923200105884",
+            "extra": "mean: 4.1315422337656775 msec\nrounds: 154"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_without_cascade",
+            "value": 243.76074234770343,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00010836755316824427",
+            "extra": "mean: 4.102383305731762 msec\nrounds: 157"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_with_cascade",
+            "value": 117.01716779933729,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00044677211446363525",
+            "extra": "mean: 8.545754599998645 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_cascade_with_stored_limits",
+            "value": 121.72978283925984,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0001855075848127597",
+            "extra": "mean: 8.214916486957566 msec\nrounds: 115"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_with_cached_config",
+            "value": 243.27405489388636,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00009780061220986357",
+            "extra": "mean: 4.110590422131903 msec\nrounds: 244"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_cold_config",
+            "value": 135.13898357404784,
+            "unit": "iter/sec",
+            "range": "stddev: 0.01509385386462697",
+            "extra": "mean: 7.3997892654865325 msec\nrounds: 113"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_cascade_with_cached_config",
+            "value": 120.31610798100064,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00016202136311456564",
+            "extra": "mean: 8.311439064816758 msec\nrounds: 108"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_sequential_acquisitions",
+            "value": 24.070405390168975,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00025207709192350377",
+            "extra": "mean: 41.54479261111356 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_same_entity_sequential",
+            "value": 24.152193452999157,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0016839997977110962",
+            "extra": "mean: 41.404106916666926 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_cache_disabled",
+            "value": 105.49635235579778,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00026861892676700226",
+            "extra": "mean: 9.479000720587878 msec\nrounds: 68"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_cache_enabled",
+            "value": 118.95277150515027,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00017929163864468915",
+            "extra": "mean: 8.406697778846652 msec\nrounds: 104"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_config_resolution_sequential",
+            "value": 90.325325491542,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000756933769871189",
+            "extra": "mean: 11.071092127906468 msec\nrounds: 86"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_config_resolution_batched",
+            "value": 141.7949711745244,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00031079755398761926",
+            "extra": "mean: 7.052436286821329 msec\nrounds: 129"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_speculative_cache_cold",
+            "value": 121.47753046177668,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0001319323933164709",
+            "extra": "mean: 8.231975050848218 msec\nrounds: 118"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_speculative_cache_warm",
+            "value": 121.0464910205214,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0001246708385555652",
+            "extra": "mean: 8.261288630254194 msec\nrounds: 119"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_stored_limits_cache_disabled",
+            "value": 148.11790479197018,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00010006603632854221",
+            "extra": "mean: 6.751378244274303 msec\nrounds: 131"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_stored_limits_cache_enabled",
+            "value": 168.4592621994952,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00017565878843132766",
+            "extra": "mean: 5.936153269006757 msec\nrounds: 171"
           }
         ]
       }
