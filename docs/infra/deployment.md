@@ -699,6 +699,25 @@ The provisioner uses the same DynamoDB config records (system `#CONFIG`, resourc
 
 Both approaches write to the same DynamoDB config records and can coexist. However, mixing imperative and declarative management for the same items may cause the provisioner to overwrite manual changes on the next apply.
 
+## Rolling Upgrades
+
+### Resource and entity disable is enforced client-side
+
+Disabling a resource or entity ([ADR-125](../adr/125-resource-disable.md)) works by
+stamping a `disabled` attribute onto each bucket item. Enforcement lives in the
+client's conditional write — `attribute_not_exists(disabled)` in the speculative
+`UpdateItem` — not in DynamoDB itself, and not in the aggregator Lambda.
+
+During a rolling upgrade this means a client still running a version older than
+v0.12.0 does not carry that condition, and will keep admitting requests for a
+resource or entity that a newer client has disabled. Nothing is lost: the stamp is
+already written, and takes effect for each process as it upgrades. But the disable
+is not fleet-wide until every client is upgraded.
+
+Treat a disable as effective only once the rollout completes. If you are relying on
+it as an access-control boundary rather than an operational switch, finish upgrading
+all clients first.
+
 ## Next Steps
 
 - [Production](production.md) - Production checklist, security, cost estimation
