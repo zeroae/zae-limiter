@@ -106,6 +106,11 @@ class SyncRepositoryBuilder:
         self._infra_options["enable_aggregator"] = value
         return self
 
+    def enable_provisioner(self, value: bool = True) -> "SyncRepositoryBuilder":
+        """Enable/disable the declarative limits provisioner Lambda."""
+        self._infra_options["enable_provisioner"] = value
+        return self
+
     def pitr_recovery_days(self, value: int | None) -> "SyncRepositoryBuilder":
         """Set Point-in-Time Recovery period (1-35, None for AWS default)."""
         self._infra_options["pitr_recovery_days"] = value

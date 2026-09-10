@@ -124,7 +124,7 @@ zae-limiter deploy --name my-app \
 # Other deploy flags: --lambda-timeout, --lambda-memory, --log-retention-days,
 # --alarm-sns-topic, --no-alarms, --no-audit-archival, --enable-tracing,
 # --create-iam-roles, --role-name-format, --policy-name-format,
-# --iam/--no-iam, --aggregator-role-arn
+# --iam/--no-iam, --aggregator-role-arn, --enable-provisioner/--no-provisioner
 
 # Stack management
 zae-limiter status --name my-app --region us-east-1
@@ -164,7 +164,7 @@ repo = await (
 )
 ```
 
-Other builder methods: `.stack()`, `.region()`, `.endpoint_url()`, `.namespace()`, `.lambda_memory()`, `.usage_retention_days()`, `.audit_retention_days()`, `.enable_alarms()`, `.alarm_sns_topic()`, `.enable_audit_archival()`, `.audit_archive_glacier_days()`, `.enable_tracing()`, `.create_iam_roles()`, `.create_iam()`, `.aggregator_role_arn()`, `.enable_deletion_protection()`, `.tags()`.
+Other builder methods: `.stack()`, `.region()`, `.endpoint_url()`, `.namespace()`, `.lambda_memory()`, `.enable_provisioner()`, `.usage_retention_days()`, `.audit_retention_days()`, `.enable_alarms()`, `.alarm_sns_topic()`, `.enable_audit_archival()`, `.audit_archive_glacier_days()`, `.enable_tracing()`, `.create_iam_roles()`, `.create_iam()`, `.aggregator_role_arn()`, `.enable_deletion_protection()`, `.tags()`.
 
 **IAM Resource Defaults (ADR-117):**
 - **Managed policies** are **created by default** — both table-level (`acq`, `full`, `read`) and namespace-scoped (`ns-acq`, `ns-full`, `ns-read`)
@@ -243,6 +243,8 @@ Not supported on `system`. Round-trips through the generated CloudFormation
 
 **Provisioner Lambda:**
 - Function name: `{stack}-limits-provisioner`
+- Deployed by default; disable with `--no-provisioner` (CLI) or `.enable_provisioner(False)` (builder). `--no-iam` also disables it (it needs an IAM role, and unlike the aggregator it has no external-role escape hatch)
+- When it is not deployed, `zae-limiter limits plan|apply|diff` exits 1 with an explanation, and a `limits cfn-template` stack fails to resolve the `{stack}-ProvisionerArn` export
 - Handles CLI invocations (action + manifest payload) and CloudFormation custom resource events (`Custom::ZaeLimiterLimits`)
 - Tracks managed items in `PK={ns}/SYSTEM#, SK=#PROVISIONER` with `managed_system`, `managed_resources`, `managed_entities` fields
 - Computes diff between manifest and previous state, then applies create/update/delete via PutItem/DeleteItem

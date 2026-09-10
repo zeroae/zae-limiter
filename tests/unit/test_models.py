@@ -158,6 +158,7 @@ class TestStackOptions:
         assert opts.snapshot_windows == "hourly,daily"
         assert opts.usage_retention_days == 90
         assert opts.enable_aggregator is True
+        assert opts.enable_provisioner is True
         assert opts.pitr_recovery_days is None
         assert opts.log_retention_days == 30
         assert opts.lambda_timeout == 60
@@ -266,7 +267,46 @@ class TestStackOptions:
         assert params["lambda_duration_threshold"] == "48000"
         assert params["lambda_timeout"] == "60"
         assert params["enable_aggregator"] == "true"
+        assert params["enable_provisioner"] == "true"
         assert params["enable_alarms"] == "true"
+
+    def test_to_parameters_provisioner_disabled(self):
+        """Test enable_provisioner=False maps to the CFN parameter."""
+        opts = StackOptions(enable_provisioner=False)
+        params = opts.to_parameters()
+
+        assert params["enable_provisioner"] == "false"
+
+    def test_deploys_lambda_properties_default(self):
+        """Both Lambdas are created under the default (create_iam=True) options."""
+        opts = StackOptions()
+
+        assert opts.deploys_aggregator_lambda is True
+        assert opts.deploys_provisioner_lambda is True
+
+    def test_deploys_lambda_properties_without_iam(self):
+        """create_iam=False leaves neither Lambda a role, so neither is created."""
+        opts = StackOptions(create_iam=False)
+
+        assert opts.deploys_aggregator_lambda is False
+        assert opts.deploys_provisioner_lambda is False
+
+    def test_deploys_aggregator_lambda_with_external_role(self):
+        """An external role revives the aggregator under --no-iam, not the provisioner."""
+        opts = StackOptions(
+            create_iam=False,
+            aggregator_role_arn="arn:aws:iam::123456789012:role/external",
+        )
+
+        assert opts.deploys_aggregator_lambda is True
+        assert opts.deploys_provisioner_lambda is False
+
+    def test_deploys_lambda_properties_when_disabled(self):
+        """Explicitly disabling a component wins over IAM being available."""
+        opts = StackOptions(enable_aggregator=False, enable_provisioner=False)
+
+        assert opts.deploys_aggregator_lambda is False
+        assert opts.deploys_provisioner_lambda is False
 
     def test_to_parameters_with_optional_fields(self):
         """Test to_parameters with optional fields set."""

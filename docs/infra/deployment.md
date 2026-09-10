@@ -37,6 +37,7 @@ zae-limiter deploy \
 | `--region` | AWS region | boto3 default |
 | `--endpoint-url` | Custom endpoint (LocalStack) | None |
 | `--enable-aggregator/--no-aggregator` | Deploy Lambda aggregator | `true` |
+| `--enable-provisioner/--no-provisioner` | Deploy Lambda limits provisioner | `true` |
 | `--log-retention-days` | CloudWatch log retention | `30` |
 | `--usage-retention-days` | Usage snapshot retention | `90` |
 | `--audit-retention-days` | Audit record retention in DynamoDB | `90` |

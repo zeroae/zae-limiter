@@ -307,11 +307,21 @@ def _invoke_provisioner(
         "manifest": manifest_data,
     }
 
-    response = lambda_client.invoke(
-        FunctionName=function_name,
-        InvocationType="RequestResponse",
-        Payload=json.dumps(payload),
-    )
+    try:
+        response = lambda_client.invoke(
+            FunctionName=function_name,
+            InvocationType="RequestResponse",
+            Payload=json.dumps(payload),
+        )
+    except lambda_client.exceptions.ResourceNotFoundException:
+        click.echo(
+            f"Error: Lambda function '{function_name}' not found.\n"
+            "The limits provisioner is not deployed for this stack. It is skipped by "
+            "'zae-limiter deploy --no-provisioner' and by '--no-iam' (which leaves no "
+            "role for it). Redeploy the stack with the provisioner enabled.",
+            err=True,
+        )
+        sys.exit(1)
 
     response_payload: dict[str, Any] = json.loads(response["Payload"].read())
 

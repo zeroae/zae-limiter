@@ -578,9 +578,10 @@ class SyncRepository:
 
         with SyncStackManager(self.stack_name, self.region, self.endpoint_url) as manager:
             manager.create_stack(stack_options=self._stack_options)
-            if self._stack_options.enable_aggregator:
+            if self._stack_options.deploys_aggregator_lambda:
                 manager.deploy_lambda_code()
-            manager.deploy_provisioner_code()
+            if self._stack_options.deploys_provisioner_lambda:
+                manager.deploy_provisioner_code()
         self._write_audit_retention_config()
 
     def create_stack(self, stack_options: StackOptions | None = None) -> None:

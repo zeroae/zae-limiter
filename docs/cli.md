@@ -171,7 +171,7 @@ The generated template uses `Custom::ZaeLimiterLimits` backed by the provisioner
 | `--namespace` | `-N` | Namespace (default: `"default"`) |
 
 !!! note "Provisioner Lambda"
-    The `plan`, `apply`, and `diff` subcommands invoke the `{name}-limits-provisioner` Lambda function. This function must be deployed as part of the main stack before using these commands.
+    The `plan`, `apply`, and `diff` subcommands invoke the `{name}-limits-provisioner` Lambda function. This function must be deployed as part of the main stack before using these commands. It is deployed by default; `zae-limiter deploy --no-provisioner` (or `--no-iam`, which leaves no role for it) skips it.
 
 ## Disabling Resources and Entities
 

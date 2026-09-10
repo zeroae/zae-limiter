@@ -131,6 +131,11 @@ Examples:
     help="Deploy Lambda aggregator for usage snapshots",
 )
 @click.option(
+    "--enable-provisioner/--no-provisioner",
+    default=True,
+    help="Deploy Lambda provisioner for declarative limits",
+)
+@click.option(
     "--pitr-recovery-days",
     type=int,
     help="Point-in-Time Recovery period in days (1-35, default: AWS default of 35)",
@@ -280,6 +285,7 @@ def deploy(
     usage_retention_days: int,
     audit_retention_days: int,
     enable_aggregator: bool,
+    enable_provisioner: bool,
     pitr_recovery_days: int | None,
     log_retention_days: str,
     lambda_timeout: int,
@@ -347,6 +353,12 @@ def deploy(
         )
         effective_enable_aggregator = False
 
+    # Auto-disable provisioner with --no-iam (provisioner Lambda needs an IAM role)
+    effective_enable_provisioner = enable_provisioner
+    if not create_iam and enable_provisioner:
+        click.echo("Note: --no-iam disables the limits provisioner (no IAM role).")
+        effective_enable_provisioner = False
+
     try:
         manager = StackManager(name, region, endpoint_url)
     except ValidationError as e:
@@ -375,6 +387,7 @@ def deploy(
                 usage_retention_days=usage_retention_days,
                 audit_retention_days=audit_retention_days,
                 enable_aggregator=effective_enable_aggregator,
+                enable_provisioner=effective_enable_provisioner,
                 pitr_recovery_days=pitr_recovery_days,
                 log_retention_days=int(log_retention_days),
                 lambda_timeout=lambda_timeout,
@@ -404,6 +417,8 @@ def deploy(
             click.echo(
                 f"  Aggregator: {'enabled' if stack_options.enable_aggregator else 'disabled'}"
             )
+            provisioner_status = "enabled" if stack_options.enable_provisioner else "disabled"
+            click.echo(f"  Provisioner: {provisioner_status}")
             if stack_options.enable_aggregator:
                 click.echo(f"  Lambda timeout: {stack_options.lambda_timeout}s")
                 click.echo(f"  Lambda memory: {stack_options.lambda_memory}MB")
@@ -474,8 +489,8 @@ def deploy(
                         )
                         sys.exit(1)
 
-                # Step 3: Deploy provisioner Lambda code (always created)
-                if wait:
+                # Step 3: Deploy provisioner Lambda code if the provisioner is enabled
+                if stack_options.enable_provisioner and wait:
                     click.echo()
                     click.echo("Deploying provisioner Lambda function code...")
 
@@ -889,6 +904,7 @@ def status(name: str, region: str | None, endpoint_url: str | None) -> None:
           Stack:         CREATE_COMPLETE
           Table:         ACTIVE
           Aggregator:    Enabled
+          Provisioner:   Enabled
 
         Versions
           Client:        0.6.0
@@ -920,7 +936,9 @@ def status(name: str, region: str | None, endpoint_url: str | None) -> None:
         latency_ms: float | None = None
         cfn_status: str | None = None
         table_status: str | None = None
-        aggregator_enabled = False
+        # None means the stack outputs could not be read, so we cannot tell
+        aggregator_enabled: bool | None = None
+        provisioner_enabled: bool | None = None
         schema_version: str | None = None
         lambda_version: str | None = None
         table_item_count: int | None = None
@@ -938,11 +956,18 @@ def status(name: str, region: str | None, endpoint_url: str | None) -> None:
                         response = await client.describe_stacks(StackName=stack_name)
                         if response.get("Stacks"):
                             outputs = response["Stacks"][0].get("Outputs", [])
+                            output_keys = set()
                             for output in outputs:
                                 key = output.get("OutputKey", "")
                                 value = output.get("OutputValue", "")
+                                output_keys.add(key)
                                 if key in ("AppRoleArn", "AdminRoleArn", "ReadOnlyRoleArn"):
                                     role_arns[key] = value
+                            # Both function-name outputs are conditioned on their
+                            # Deploy*Lambda condition, so an output's presence is
+                            # exactly whether CloudFormation created that function.
+                            aggregator_enabled = "AggregatorFunctionName" in output_keys
+                            provisioner_enabled = "ProvisionerFunctionName" in output_keys
                     except Exception:
                         pass  # Stack outputs unavailable
         except Exception:
@@ -967,10 +992,6 @@ def status(name: str, region: str | None, endpoint_url: str | None) -> None:
                 table_status = table.get("TableStatus")
                 table_item_count = table.get("ItemCount")
                 table_size_bytes = table.get("TableSizeInBytes")
-
-                # Check if aggregator is enabled by looking for stream specification
-                stream_spec = table.get("StreamSpecification", {})
-                aggregator_enabled = stream_spec.get("StreamEnabled", False)
 
             except Exception:
                 pass  # DynamoDB unavailable
@@ -1006,8 +1027,14 @@ def status(name: str, region: str | None, endpoint_url: str | None) -> None:
             click.echo("Infrastructure")
             click.echo(f"  Stack:         {cfn_status or 'Not found'}")
             click.echo(f"  Table:         {table_status or 'Not found'}")
-            aggregator_str = "Enabled" if aggregator_enabled else "Disabled"
-            click.echo(f"  Aggregator:    {aggregator_str}")
+
+            def _lambda_state(created: bool | None) -> str:
+                if created is None:
+                    return "Unknown"
+                return "Enabled" if created else "Disabled"
+
+            click.echo(f"  Aggregator:    {_lambda_state(aggregator_enabled)}")
+            click.echo(f"  Provisioner:   {_lambda_state(provisioner_enabled)}")
             click.echo()
 
             # Versions section

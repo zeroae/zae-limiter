@@ -131,6 +131,7 @@ class StackManager:
             "lambda_memory_size": "LambdaMemorySize",
             "lambda_timeout": "LambdaTimeout",
             "enable_aggregator": "EnableAggregator",
+            "enable_provisioner": "EnableProvisioner",
             "schema_version": "SchemaVersion",
             "pitr_recovery_days": "PITRRecoveryPeriodDays",
             "log_retention_days": "LogRetentionDays",

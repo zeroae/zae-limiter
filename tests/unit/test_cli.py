@@ -922,6 +922,45 @@ class TestCLI:
         call_args = mock_instance.create_stack.call_args
         stack_options = call_args[1]["stack_options"]
         assert stack_options.create_iam is False
+        # --no-iam also disables the provisioner (it needs an IAM role)
+        assert stack_options.enable_provisioner is False
+        mock_instance.deploy_provisioner_code.assert_not_called()
+
+    @patch("zae_limiter.repository.Repository")
+    @patch("zae_limiter.cli.StackManager")
+    def test_deploy_with_no_provisioner_flag(
+        self, mock_stack_manager: Mock, mock_repository: Mock, runner: CliRunner
+    ) -> None:
+        """Test deploy command with --no-provisioner flag skips provisioner code."""
+        mock_instance = Mock()
+        mock_instance.stack_name = "test-stack"
+        mock_instance.table_name = "test-stack"
+        mock_instance.create_stack = AsyncMock(
+            return_value={
+                "status": "CREATE_COMPLETE",
+                "stack_id": "test-stack-id",
+            }
+        )
+        mock_instance.deploy_provisioner_code = AsyncMock()
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=None)
+        mock_stack_manager.return_value = mock_instance
+
+        mock_repo_instance = Mock()
+        mock_repo_instance.set_version_record = AsyncMock()
+        mock_repo_instance.register_namespace = AsyncMock(return_value="test-ns-id")
+        mock_repository.return_value = mock_repo_instance
+
+        result = runner.invoke(
+            cli,
+            ["deploy", "--name", "test-stack", "--no-provisioner", "--no-aggregator"],
+        )
+
+        assert result.exit_code == 0
+        stack_options = mock_instance.create_stack.call_args[1]["stack_options"]
+        assert stack_options.enable_provisioner is False
+        mock_instance.deploy_provisioner_code.assert_not_called()
+        assert "Provisioner: disabled" in result.output
 
     @patch("zae_limiter.repository.Repository")
     @patch("zae_limiter.cli.StackManager")
@@ -1184,6 +1223,123 @@ class TestCLI:
         assert "CREATE_COMPLETE" in result.output
         assert "✓ Infrastructure is ready" in result.output
         assert "Available:     ✓ Yes" in result.output
+
+    @staticmethod
+    def _status_mocks(
+        mock_stack_manager: Mock, mock_repository: Mock, output_keys: list[str] | None
+    ) -> None:
+        """Wire up status mocks; output_keys=None makes describe_stacks fail."""
+        mock_manager_instance = Mock()
+        mock_manager_instance.get_stack_status = AsyncMock(return_value="CREATE_COMPLETE")
+        mock_manager_instance.__aenter__ = AsyncMock(return_value=mock_manager_instance)
+        mock_manager_instance.__aexit__ = AsyncMock(return_value=None)
+        if output_keys is None:
+            mock_manager_instance._get_client = AsyncMock(side_effect=Exception("no client"))
+        else:
+            mock_manager_instance._get_client = AsyncMock(
+                return_value=Mock(
+                    describe_stacks=AsyncMock(
+                        return_value={
+                            "Stacks": [
+                                {
+                                    "Outputs": [
+                                        {"OutputKey": k, "OutputValue": k} for k in output_keys
+                                    ]
+                                }
+                            ]
+                        }
+                    )
+                )
+            )
+        mock_stack_manager.return_value = mock_manager_instance
+
+        mock_repo_instance = Mock()
+        mock_repo_instance._get_client = AsyncMock(
+            return_value=Mock(
+                describe_table=AsyncMock(
+                    return_value={
+                        "Table": {
+                            "TableStatus": "ACTIVE",
+                            "ItemCount": 100,
+                            "TableSizeInBytes": 1024,
+                            "StreamSpecification": {"StreamEnabled": True},
+                        }
+                    }
+                )
+            )
+        )
+        mock_repo_instance.get_version_record = AsyncMock(
+            return_value={"schema_version": "1.0.0", "lambda_version": "0.1.0"}
+        )
+        mock_repo_instance.close = AsyncMock(return_value=None)
+        mock_repository.return_value = mock_repo_instance
+        mock_repository.open = AsyncMock(return_value=mock_repo_instance)
+
+    @patch("zae_limiter.repository.Repository")
+    @patch("zae_limiter.cli.StackManager")
+    def test_status_provisioner_enabled(
+        self, mock_stack_manager: Mock, mock_repository: Mock, runner: CliRunner
+    ) -> None:
+        """The ProvisionerFunctionName output means the function was created."""
+        self._status_mocks(
+            mock_stack_manager,
+            mock_repository,
+            ["TableName", "AggregatorFunctionName", "ProvisionerFunctionName"],
+        )
+
+        result = runner.invoke(cli, ["status", "--name", "test-stack"])
+
+        assert result.exit_code == 0
+        assert "Aggregator:    Enabled" in result.output
+        assert "Provisioner:   Enabled" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    @patch("zae_limiter.cli.StackManager")
+    def test_status_provisioner_disabled(
+        self, mock_stack_manager: Mock, mock_repository: Mock, runner: CliRunner
+    ) -> None:
+        """Outputs read, but no provisioner output: the function was not created."""
+        self._status_mocks(
+            mock_stack_manager, mock_repository, ["TableName", "AggregatorFunctionName"]
+        )
+
+        result = runner.invoke(cli, ["status", "--name", "test-stack"])
+
+        assert result.exit_code == 0
+        assert "Aggregator:    Enabled" in result.output
+        assert "Provisioner:   Disabled" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    @patch("zae_limiter.cli.StackManager")
+    def test_status_aggregator_disabled_despite_table_stream(
+        self, mock_stack_manager: Mock, mock_repository: Mock, runner: CliRunner
+    ) -> None:
+        """A --no-aggregator stack reads Disabled even though the table stream is on.
+
+        The table's StreamSpecification is unconditional in the template, so it is
+        enabled whether or not the aggregator was deployed. Reading it as the
+        aggregator's state reported Enabled for every stack.
+        """
+        self._status_mocks(mock_stack_manager, mock_repository, ["TableName"])
+
+        result = runner.invoke(cli, ["status", "--name", "test-stack"])
+
+        assert result.exit_code == 0
+        assert "Aggregator:    Disabled" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    @patch("zae_limiter.cli.StackManager")
+    def test_status_provisioner_unknown_when_outputs_unreadable(
+        self, mock_stack_manager: Mock, mock_repository: Mock, runner: CliRunner
+    ) -> None:
+        """Unreadable stack outputs report Unknown rather than claiming Disabled."""
+        self._status_mocks(mock_stack_manager, mock_repository, None)
+
+        result = runner.invoke(cli, ["status", "--name", "test-stack"])
+
+        assert result.exit_code == 0
+        assert "Aggregator:    Unknown" in result.output
+        assert "Provisioner:   Unknown" in result.output
 
     @patch("zae_limiter.repository.Repository")
     @patch("zae_limiter.cli.StackManager")

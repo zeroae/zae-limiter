@@ -107,6 +107,7 @@ class TestBuilderInfraOptions:
             .usage_retention_days(30)
             .audit_retention_days(365)
             .enable_aggregator(False)
+            .enable_provisioner(False)
             .pitr_recovery_days(7)
             .log_retention_days(14)
             .lambda_timeout(120)
@@ -131,6 +132,7 @@ class TestBuilderInfraOptions:
         assert opts["usage_retention_days"] == 30
         assert opts["audit_retention_days"] == 365
         assert opts["enable_aggregator"] is False
+        assert opts["enable_provisioner"] is False
         assert opts["pitr_recovery_days"] == 7
         assert opts["log_retention_days"] == 14
         assert opts["lambda_timeout"] == 120
@@ -682,6 +684,99 @@ class TestVersionManagementCodePaths:
                 mock_manager.deploy_provisioner_code.assert_called_once()
                 # Aggregator is disabled, so its Lambda code must not be deployed
                 mock_manager.deploy_lambda_code.assert_not_called()
+        finally:
+            await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_ensure_infrastructure_internal_skips_disabled_provisioner(self, mock_dynamodb):
+        """_ensure_infrastructure_internal skips provisioner code when disabled."""
+        repo = Repository(
+            name="test-provisioner-disabled",
+            region="us-east-1",
+            stack_options=StackOptions(enable_provisioner=False),
+            _skip_deprecation_warning=True,
+        )
+        try:
+            mock_manager = AsyncMock()
+            mock_manager.__aenter__ = AsyncMock(return_value=mock_manager)
+            mock_manager.__aexit__ = AsyncMock(return_value=False)
+
+            with (
+                patch(
+                    "zae_limiter.infra.stack_manager.StackManager",
+                    return_value=mock_manager,
+                ),
+                patch.object(repo, "_write_audit_retention_config", new_callable=AsyncMock),
+            ):
+                await repo._ensure_infrastructure_internal()
+
+                mock_manager.create_stack.assert_called_once()
+                mock_manager.deploy_lambda_code.assert_called_once()
+                mock_manager.deploy_provisioner_code.assert_not_called()
+        finally:
+            await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_ensure_infrastructure_internal_skips_both_lambdas_without_iam(
+        self, mock_dynamodb
+    ):
+        """create_iam=False creates neither Lambda, so neither gets code pushed."""
+        repo = Repository(
+            name="test-no-iam-lambdas",
+            region="us-east-1",
+            stack_options=StackOptions(create_iam=False),
+            _skip_deprecation_warning=True,
+        )
+        try:
+            mock_manager = AsyncMock()
+            mock_manager.__aenter__ = AsyncMock(return_value=mock_manager)
+            mock_manager.__aexit__ = AsyncMock(return_value=False)
+
+            with (
+                patch(
+                    "zae_limiter.infra.stack_manager.StackManager",
+                    return_value=mock_manager,
+                ),
+                patch.object(repo, "_write_audit_retention_config", new_callable=AsyncMock),
+            ):
+                await repo._ensure_infrastructure_internal()
+
+                mock_manager.create_stack.assert_called_once()
+                mock_manager.deploy_lambda_code.assert_not_called()
+                mock_manager.deploy_provisioner_code.assert_not_called()
+        finally:
+            await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_ensure_infrastructure_internal_deploys_aggregator_with_external_role(
+        self, mock_dynamodb
+    ):
+        """An external aggregator role revives the aggregator under create_iam=False."""
+        repo = Repository(
+            name="test-external-role-lambdas",
+            region="us-east-1",
+            stack_options=StackOptions(
+                create_iam=False,
+                aggregator_role_arn="arn:aws:iam::123456789012:role/external",
+            ),
+            _skip_deprecation_warning=True,
+        )
+        try:
+            mock_manager = AsyncMock()
+            mock_manager.__aenter__ = AsyncMock(return_value=mock_manager)
+            mock_manager.__aexit__ = AsyncMock(return_value=False)
+
+            with (
+                patch(
+                    "zae_limiter.infra.stack_manager.StackManager",
+                    return_value=mock_manager,
+                ),
+                patch.object(repo, "_write_audit_retention_config", new_callable=AsyncMock),
+            ):
+                await repo._ensure_infrastructure_internal()
+
+                mock_manager.deploy_lambda_code.assert_called_once()
+                mock_manager.deploy_provisioner_code.assert_not_called()
         finally:
             await repo.close()
 

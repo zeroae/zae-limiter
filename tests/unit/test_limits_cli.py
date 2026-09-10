@@ -572,6 +572,35 @@ class TestInvokeProvisioner:
                 payload = json.loads(call_args[1]["Payload"])
                 assert payload["namespace_id"] == "new-ns-id"
 
+    def test_invoke_provisioner_missing_function_exits_cleanly(self):
+        """A stack deployed without the provisioner gets an explanation, not a traceback."""
+        yaml_content = {"namespace": "test-ns"}
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            yaml.dump(yaml_content, f)
+            f.flush()
+
+            class FakeResourceNotFoundError(Exception):
+                """Stand-in for the botocore-generated client exception."""
+
+            runner = CliRunner()
+            with (
+                patch("asyncio.run", side_effect=Exception("no repo")),
+                patch("zae_limiter.limits_cli.boto3.client") as mock_boto3_client,
+            ):
+                mock_lambda = MagicMock()
+                mock_lambda.exceptions.ResourceNotFoundException = FakeResourceNotFoundError
+                mock_lambda.invoke.side_effect = FakeResourceNotFoundError("no such function")
+                mock_boto3_client.return_value = mock_lambda
+
+                result = runner.invoke(
+                    cli,
+                    ["limits", "plan", "--name", "test-app", "-f", f.name],
+                )
+                assert result.exit_code == 1
+                assert result.exception is None or isinstance(result.exception, SystemExit)
+                assert "test-app-limits-provisioner" in result.output
+                assert "--no-provisioner" in result.output
+
     def test_invoke_provisioner_lambda_error_exits(self):
         """_invoke_provisioner exits on Lambda error response."""
         yaml_content = {"namespace": "test-ns"}
