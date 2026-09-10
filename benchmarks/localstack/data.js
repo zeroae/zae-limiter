@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789023761882,
+  "lastUpdate": 1789032681082,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -15267,6 +15267,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.19906562006280173",
             "extra": "mean: 1.2492662840000093 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "de924acbfffd946e6eba1bb0770c5c696773ea8d",
+          "message": "🐛 fix(limiter): three silent-failure defects on the speculative acquire path (#454)\n\n## Summary\n\nThree defects on the speculative `acquire()` path. The first is the one\n#453 reports; the other two were found reviewing this PR and are fixed\nin `8087e3df`.\n\n1. **Limits estimated at `0` got no lease entry**, so every later\n`adjust()` / `consume()` / `release()` against them was a silent no-op.\n2. **The shard-retry lease was born committed**, so adjustments raised\n`LeaseExpiredError` and exceptions skipped compensation entirely.\n3. **Adjustments and rollbacks always wrote to shard 0**, regardless of\nwhich shard actually served the request — rollback in particular minted\ncapacity.\n\nSync mirrors (`sync_limiter.py`, `sync_lease.py`) regenerated from the\nasync sources.\n\n## 1. Lease entries for limits estimated at 0 (`8f555949`, #453)\n\n- The speculative fast path in `limiter.py` built `LeaseEntry` objects\nby walking the returned buckets and skipping any limit whose estimate\nwas `0`. A limit passed as `{\"tpm\": 0}` therefore got no entry, and\nevery later `lease.adjust()` / `consume()` / `release()` against it was\na silent no-op — no exception, no warning, no log line.\n- The slow path iterates the *resolved limits* and appends\nunconditionally, which is what hid the bug: the first `acquire()` for an\nentity finds no bucket, falls back to the slow path, and populates the\nentity cache. Only the second and later acquires take the speculative\npath and drop the adjustment.\n- Fix: key the filter on **membership in `consume`** rather than on the\namount, at all five fast-path sites. A limit the caller named with an\nestimate of `0` is in play and gets an entry; a limit the caller never\nnamed stays out — which also keeps the reserved `wcu` infrastructure\nlimit (carried in `result.buckets` but never in `consume`) from leaking\ninto the lease, the exclusion the `amount == 0` check had been providing\nincidentally.\n\nThis hits the library's headline use case — \"consumption is unknown\nupfront, adjust after the operation completes\" — whenever the estimate\nis `0`. Under-counting was silent and unbounded: the limit never accrued\nconsumption, so it never throttled.\n\n## 2 & 3. The speculative shard-retry path (`8087e3df`)\n\nTwo further defects, found in review of this PR. Both predate it, and\nneither is testable without the other, since that path serves a request\nfrom a shard other than 0 by definition.\n\n**The retry lease was unusable.** `_build_lease_from_speculative()`\nreturned a lease born `_committed=True`, while its sibling sets\n`_initial_committed` and seeds each entry's `_initial_consumed`.\n`Lease.adjust()` and `Lease._rollback()` both short-circuit on\n`_committed`, so adjustments raised `LeaseExpiredError` instead of\nreconciling, and an exception in the caller's body skipped compensation\nentirely — leaving tokens the speculative UpdateItem had already\nconsumed unreturned. Seeding `_initial_consumed` is part of the same\ncontract: without it `_commit_adjustments()` re-writes the initial\nconsumption as a delta and double-counts.\n\n**Adjustments and rollbacks ignored the shard.**\n`build_composite_adjust()` takes `shard_id` defaulting to 0, and neither\n`_commit_adjustments()` nor `_rollback()` passed one — `LeaseEntry`\ncarried no shard at all. On any entity with `shard_count > 1`, every\nadjustment and rollback wrote to shard 0 regardless of which shard held\nthe consumption. Adjustments debited a bucket that never served the\nrequest; rollback was worse, crediting shard 0 tokens it never lost\nwhile leaving the real shard short, which mints capacity. `LeaseEntry`\nnow carries `_shard_id`, populated from the `SpeculativeResult` at each\nspeculative site, and the adjust/rollback grouping keys on it. The slow\npath always writes shard 0, the field's default.\n\n## Test plan\n\nNew `tests/unit/test_zero_estimate_lease.py`: six test methods, each\nparametrized over `speculative=[True, False]`, so twelve test cases.\n\n- [x] `test_second_acquire_persists_the_adjustment` — the bug's exact\nshape: a *second* acquire (warm entity cache → speculative path) with\nestimate `0`, then `adjust()`, moves the bucket\n- [x] `test_zero_estimate_limit_appears_in_lease_consumed`\n- [x] `test_mixed_estimates_both_track` — `consume={\"rpm\": 1, \"tpm\":\n0}`; previously `rpm` kept metering while `tpm` silently froze\n- [x] `test_release_on_a_zero_estimate_limit_is_persisted`\n- [x] `test_wcu_absent_from_lease_consumed` — guards the incidental\nexclusion the old predicate provided\n- [x] `test_adjusting_wcu_from_the_lease_is_a_no_op`\n- [x] Tests fail without the fix (verified by reverting)\n\nAdded for the shard-retry fixes:\n\n- [x]\n`tests/unit/test_zero_estimate_lease.py::TestShardRetryLeaseIsUsable` —\n2 tests: adjust after a shard retry is persisted, and the lease rolls\nback on an exception. Both fail without the fix.\n- [x]\n`tests/integration/test_bucket_sharding.py::TestShardedAdjustmentRouting`\n— 2 tests against real DynamoDB on LocalStack, asserting the retried\nshard is debited/compensated and shard 0 is untouched. Included\ndeliberately because the path turns on\n`ReturnValuesOnConditionCheckFailure=\"ALL_OLD\"`, the kind of API surface\nan emulator approximates — moto alone could pass while the retry never\nengaged. Both verified to fail without the fix.\n- [x] Three existing mock expectations in `tests/unit/test_limiter.py`\ngained `shard_id=0`; same value as the old default, now passed\nexplicitly.\n\nFull run:\n\n- [x] 2991 unit tests pass, 26 gevent\n- [x] mypy and ruff clean\n- [x] Patch coverage 100%\n- [x] Generated sync code up to date (`hatch run generate-sync` clean)\n\nCloses #453\n\nCloses #456\n\nNote: #453 covers only the zero-estimate defect. The two shard-path\nfixes are tracked by #456.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01FLKMjzkKVc67Xm9JC74WiE",
+          "timestamp": "2026-09-10T05:26:10-04:00",
+          "tree_id": "208e30285833b1835c5fbbb2a3606047721c8e87",
+          "url": "https://github.com/zeroae/zae-limiter/commit/de924acbfffd946e6eba1bb0770c5c696773ea8d"
+        },
+        "date": 1789032680008,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 25.039233724932846,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00830875908010333",
+            "extra": "mean: 39.937324399997465 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 17.31070115722755,
+            "unit": "iter/sec",
+            "range": "stddev: 0.01536479152945498",
+            "extra": "mean: 57.767735166664856 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 38.42018833083958,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004974244036993624",
+            "extra": "mean: 26.027982772726496 msec\nrounds: 22"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 38.53299085339684,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006051888031277013",
+            "extra": "mean: 25.9517877499988 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 21.0124753464023,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00952835573774306",
+            "extra": "mean: 47.590775647059466 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 208.02934499537292,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0007451052872225927",
+            "extra": "mean: 4.807014125926525 msec\nrounds: 135"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 24.580216460673505,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008104793275455033",
+            "extra": "mean: 40.68312423529405 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 18.66972880090535,
+            "unit": "iter/sec",
+            "range": "stddev: 0.05710569555887661",
+            "extra": "mean: 53.56264200000093 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 27.737053491050776,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004679661657204812",
+            "extra": "mean: 36.05285616666691 msec\nrounds: 30"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 26.37596440204975,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007512883121408549",
+            "extra": "mean: 37.91330564285594 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 28.298379409631575,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005568558265655601",
+            "extra": "mean: 35.33771264864878 msec\nrounds: 37"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 27.77316401601124,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00289245989734828",
+            "extra": "mean: 36.00598042857125 msec\nrounds: 28"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 30.638803325503766,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003718158375090645",
+            "extra": "mean: 32.638350439999044 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9334482458448015,
+            "unit": "iter/sec",
+            "range": "stddev: 0.002979545144749386",
+            "extra": "mean: 517.2106376000045 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9401506464969662,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0006220536085059964",
+            "extra": "mean: 515.4238934000034 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9477993838561325,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005989015576219973",
+            "extra": "mean: 1.0550755961999982 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9287022544865284,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0018332447596960406",
+            "extra": "mean: 1.0767713712000102 sec\nrounds: 5"
           }
         ]
       }
