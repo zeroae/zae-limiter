@@ -1,0 +1,53 @@
+/* ZeroAE Brand Colors */
+:root {
+  /* Primary: Deep Purple #2b0548 */
+  --md-primary-fg-color: #2b0548;
+  --md-primary-fg-color--light: #4a1a6b;
+  --md-primary-fg-color--dark: #1a0330;
+
+  /* Accent: Complementary Green #224805 */
+  --md-accent-fg-color: #224805;
+  --md-accent-fg-color--transparent: rgba(34, 72, 5, 0.1);
+
+  /* Typeset link color */
+  --md-typeset-a-color: #2b0548;
+}
+
+/* Dark mode adjustments */
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #2b0548;
+  --md-primary-fg-color--light: #4a1a6b;
+  --md-primary-fg-color--dark: #1a0330;
+
+  --md-accent-fg-color: #3d7a0a;
+  --md-accent-fg-color--transparent: rgba(61, 122, 10, 0.1);
+
+  /* Lighter link color for dark mode readability */
+  --md-typeset-a-color: #9d6cc4;
+}
+
+/* Header styling */
+.md-header {
+  background-color: var(--md-primary-fg-color);
+}
+
+/* Navigation tabs */
+.md-tabs {
+  background-color: var(--md-primary-fg-color);
+}
+
+/* Hide auto-generated title on homepage (when logo is present) */
+.md-content__inner:has(img[alt="zae-limiter"]) > h1:first-child {
+  display: none;
+}
+
+/* Light/dark mode logo switching */
+[data-md-color-scheme="default"] .dark-only {
+  display: none;
+}
+
+[data-md-color-scheme="slate"] .light-only {
+  display: none;
+}
+
+
