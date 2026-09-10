@@ -589,7 +589,7 @@ class TestWriteOnEnter:
         lease._commit_adjustments()
         assert lease._committed is True
         mock_repo.build_composite_adjust.assert_called_once_with(
-            entity_id="e1", resource="gpt-4", deltas={"rpm": 5000}
+            entity_id="e1", resource="gpt-4", deltas={"rpm": 5000}, shard_id=0
         )
         mock_repo.write_each.assert_called_once()
 
@@ -620,7 +620,7 @@ class TestWriteOnEnter:
         lease._rollback()
         assert lease._rolled_back is True
         mock_repo.build_composite_adjust.assert_called_with(
-            entity_id="e1", resource="gpt-4", deltas={"rpm": -10000}
+            entity_id="e1", resource="gpt-4", deltas={"rpm": -10000}, shard_id=0
         )
 
     def test_rollback_skips_when_committed(self):
@@ -657,7 +657,7 @@ class TestWriteOnEnter:
         lease._rollback()
         assert lease._rolled_back is True
         mock_repo.build_composite_adjust.assert_called_once_with(
-            entity_id="e1", resource="gpt-4", deltas={"rpm": -10000}
+            entity_id="e1", resource="gpt-4", deltas={"rpm": -10000}, shard_id=0
         )
         mock_repo.write_each.assert_called_once()
 

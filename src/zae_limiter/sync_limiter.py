@@ -663,6 +663,7 @@ class SyncRateLimiter:
                     limit=limit,
                     state=state,
                     consumed=amount,
+                    _shard_id=result.shard_id,
                     _cascade=result.cascade,
                     _parent_id=result.parent_id,
                 )
@@ -681,6 +682,7 @@ class SyncRateLimiter:
                             limit=limit,
                             state=state,
                             consumed=amount,
+                            _shard_id=result.parent_result.shard_id,
                         )
                     )
             else:
@@ -705,6 +707,7 @@ class SyncRateLimiter:
                             limit=limit,
                             state=state,
                             consumed=amount,
+                            _shard_id=parent_result.shard_id,
                         )
                     )
             else:
@@ -818,6 +821,7 @@ class SyncRateLimiter:
                     limit=limit,
                     state=state,
                     consumed=amount,
+                    _shard_id=result.shard_id,
                     _cascade=result.cascade,
                     _parent_id=result.parent_id,
                 )
@@ -932,11 +936,16 @@ class SyncRateLimiter:
                     limit=limit,
                     state=state,
                     consumed=amount,
+                    _shard_id=result.shard_id,
                     _cascade=result.cascade,
                     _parent_id=result.parent_id,
                 )
             )
-        return SyncLease(entries=entries, repository=self._repository, _committed=True)
+        lease = SyncLease(entries=entries, repository=self._repository)
+        lease._initial_committed = True
+        for entry in entries:
+            entry._initial_consumed = entry.consumed
+        return lease
 
     def _try_parent_only_acquire(
         self,

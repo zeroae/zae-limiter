@@ -801,6 +801,7 @@ class RateLimiter:
                     limit=limit,
                     state=state,
                     consumed=amount,
+                    _shard_id=result.shard_id,
                     _cascade=result.cascade,
                     _parent_id=result.parent_id,
                 )
@@ -821,6 +822,7 @@ class RateLimiter:
                             limit=limit,
                             state=state,
                             consumed=amount,
+                            _shard_id=result.parent_result.shard_id,
                         )
                     )
             else:
@@ -849,6 +851,7 @@ class RateLimiter:
                             limit=limit,
                             state=state,
                             consumed=amount,
+                            _shard_id=parent_result.shard_id,
                         )
                     )
             else:
@@ -993,6 +996,7 @@ class RateLimiter:
                     limit=limit,
                     state=state,
                     consumed=amount,
+                    _shard_id=result.shard_id,
                     _cascade=result.cascade,
                     _parent_id=result.parent_id,
                 )
@@ -1139,15 +1143,28 @@ class RateLimiter:
                     limit=limit,
                     state=state,
                     consumed=amount,
+                    _shard_id=result.shard_id,
                     _cascade=result.cascade,
                     _parent_id=result.parent_id,
                 )
             )
-        return Lease(
+        # Mirror the sibling speculative path exactly: the UpdateItem has
+        # already persisted the initial consumption, so mark it committed —
+        # but via _initial_committed, not _committed. Both Lease.adjust() and
+        # Lease._rollback() short-circuit on _committed, which would make
+        # adjustments raise LeaseExpiredError and silently skip compensation
+        # for tokens this path has already consumed. Seeding
+        # _initial_consumed is part of the same contract: without it
+        # _commit_adjustments() would re-write the initial consumption as a
+        # delta and double-count it.
+        lease = Lease(
             entries=entries,
             repository=self._repository,
-            _committed=True,
         )
+        lease._initial_committed = True
+        for entry in entries:
+            entry._initial_consumed = entry.consumed
+        return lease
 
     async def _try_parent_only_acquire(
         self,

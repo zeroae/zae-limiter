@@ -137,3 +137,84 @@ class TestWcuStaysInternal:
             async with limiter.acquire("e1", "api", {"rpm": 1}) as lease:
                 await lease.adjust(**{schema.WCU_LIMIT_NAME: 500})
                 assert lease.consumed.get(schema.WCU_LIMIT_NAME) is None
+
+
+@pytest.mark.asyncio
+class TestShardRetryLeaseIsUsable:
+    """A lease from the shard-retry path must behave like any other lease.
+
+    `_build_lease_from_speculative()` returns the lease used when the
+    selected shard is exhausted and another shard serves the request. Unlike
+    its sibling — which sets `_initial_committed` and seeds each entry's
+    `_initial_consumed` — it was born `_committed=True`, and both
+    `Lease.adjust()` and `Lease._rollback()` short-circuit on that flag. So
+    adjustments raised `LeaseExpiredError` instead of reconciling, and an
+    exception in the caller's body skipped compensation entirely, leaving
+    tokens the speculative UpdateItem had already consumed unreturned.
+
+    Setting `_initial_committed` alone is not enough: `_initial_consumed`
+    must be seeded too, or `_commit_adjustments()` re-writes the initial
+    consumption as a delta and double-counts it.
+    """
+
+    @staticmethod
+    async def _two_shards_first_exhausted(limiter, monkeypatch):
+        """Two shards, rpm exhausted on shard 0, selection pinned to shard 0."""
+        import random as _random
+        import time
+
+        from zae_limiter import repository as _repo_mod
+        from zae_limiter.models import BucketState
+
+        repo = limiter._repository
+        ns = repo._namespace_id
+        limit = Limit.custom("rpm", 10, **SLOW)
+
+        await limiter.create_entity("user-1")
+        await limiter.set_system_defaults([limit])
+
+        now_ms = int(time.time() * 1000)
+        for shard_id in (0, 1):
+            states = [BucketState.from_limit("user-1", "gpt-4", limit, now_ms)]
+            await repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        "user-1", "gpt-4", states, now_ms, shard_id=shard_id, shard_count=2
+                    )
+                ]
+            )
+        repo._entity_cache[(ns, "user-1")] = (False, None, {"gpt-4": 2})
+
+        # Drain shard 0 so the first speculative write is APP_LIMIT_EXHAUSTED.
+        await repo._speculative_consume_single("user-1", "gpt-4", {"rpm": 10}, shard_id=0)
+
+        # Pin selection to the exhausted shard; the retry then has exactly
+        # one untried shard to choose, so the whole path is deterministic.
+        monkeypatch.setattr(_repo_mod.random, "randrange", lambda _n: 0)
+        monkeypatch.setattr(_random, "choice", lambda seq: seq[0])
+        limiter._speculative_writes = True
+        return repo
+
+    async def test_adjust_after_shard_retry_is_persisted(self, limiter, monkeypatch):
+        repo = await self._two_shards_first_exhausted(limiter, monkeypatch)
+
+        async with limiter.acquire("user-1", "gpt-4", {"rpm": 10}) as lease:
+            await lease.adjust(rpm=5)
+
+        buckets = await repo.get_buckets("user-1", resource="gpt-4", shard_id=1)
+        rpm = next(b for b in buckets if b.limit_name == "rpm")
+        assert rpm.tokens_milli == 10_000 - 10_000 - 5_000
+
+    async def test_shard_retry_lease_rolls_back_on_exception(self, limiter, monkeypatch):
+        repo = await self._two_shards_first_exhausted(limiter, monkeypatch)
+
+        with pytest.raises(RuntimeError):
+            async with limiter.acquire("user-1", "gpt-4", {"rpm": 10}):
+                raise RuntimeError("caller blew up")
+
+        buckets = await repo.get_buckets("user-1", resource="gpt-4", shard_id=1)
+        rpm = next(b for b in buckets if b.limit_name == "rpm")
+        assert rpm.tokens_milli == 10_000, (
+            "the speculative UpdateItem consumed these tokens; rollback skipped "
+            "compensation because the lease was born _committed=True"
+        )

@@ -37,6 +37,7 @@ class LeaseEntry:
     _is_new: bool = False
     _has_custom_config: bool = False
     _initial_consumed: int = 0
+    _shard_id: int = 0
     _cascade: bool = False
     _parent_id: str | None = None
 
@@ -297,12 +298,12 @@ class SyncLease:
             self._committed = True
             return
         repo = self.repository
-        groups: dict[tuple[str, str], list[LeaseEntry]] = {}
+        groups: dict[tuple[str, str, int], list[LeaseEntry]] = {}
         for entry in self.entries:
-            key = (entry.entity_id, entry.resource)
+            key = (entry.entity_id, entry.resource, entry._shard_id)
             groups.setdefault(key, []).append(entry)
         items: list[dict[str, Any]] = []
-        for (entity_id, resource), group_entries in groups.items():
+        for (entity_id, resource, shard_id), group_entries in groups.items():
             deltas: dict[str, int] = {}
             for entry in group_entries:
                 delta = entry.consumed - entry._initial_consumed
@@ -310,7 +311,7 @@ class SyncLease:
                     deltas[entry.limit.name] = delta * 1000
             if deltas:
                 item = repo.build_composite_adjust(
-                    entity_id=entity_id, resource=resource, deltas=deltas
+                    entity_id=entity_id, resource=resource, deltas=deltas, shard_id=shard_id
                 )
                 if item:
                     items.append(item)
@@ -332,19 +333,19 @@ class SyncLease:
         if not self._initial_committed:
             return
         repo = self.repository
-        groups: dict[tuple[str, str], list[LeaseEntry]] = {}
+        groups: dict[tuple[str, str, int], list[LeaseEntry]] = {}
         for entry in self.entries:
-            key = (entry.entity_id, entry.resource)
+            key = (entry.entity_id, entry.resource, entry._shard_id)
             groups.setdefault(key, []).append(entry)
         items: list[dict[str, Any]] = []
-        for (entity_id, resource), group_entries in groups.items():
+        for (entity_id, resource, shard_id), group_entries in groups.items():
             deltas: dict[str, int] = {}
             for entry in group_entries:
                 if entry._initial_consumed != 0:
                     deltas[entry.limit.name] = -entry._initial_consumed * 1000
             if deltas:
                 item = repo.build_composite_adjust(
-                    entity_id=entity_id, resource=resource, deltas=deltas
+                    entity_id=entity_id, resource=resource, deltas=deltas, shard_id=shard_id
                 )
                 if item:
                     items.append(item)
