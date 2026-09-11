@@ -413,6 +413,124 @@ class TestUnknownLimitInConsume:
 
         assert (await _tokens(repo, "e1", "api"))["rpm"] == 1_000_000 - 2 * 1_000
 
+    async def _parent_rpm_only_child_rpm_tpm(self, repo):
+        """Parent tracks rpm only; the cascading child tracks rpm + tpm."""
+        await repo.set_system_defaults(
+            [Limit.custom("rpm", 1000, **SLOW), Limit.custom("tpm", 1000, **SLOW)]
+        )
+        await repo.create_entity("parent", parent_id=None, name="parent")
+        await repo.create_entity("child", parent_id="parent", name="child", cascade=True)
+        await repo.set_limits("parent", [Limit.custom("rpm", 1000, **SLOW)], resource="api")
+
+    async def test_parent_with_subset_of_child_limits_does_not_warn(self, repo, speculative):
+        """The declaration is about the entity being acquired on. A cascade
+        parent tracking a subset of the child's limits is a legitimate
+        configuration: keys with no parent limit are silently not applied to
+        the parent, and nothing warns."""
+        await self._parent_rpm_only_child_rpm_tpm(repo)
+
+        limiter = RateLimiter(repository=repo, speculative_writes=speculative)
+        async with limiter:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", FutureWarning)
+                # Cold cache -> slow path; the retry -> fast path, which falls
+                # back to the slow path because the parent bucket has no tpm.
+                for _ in range(2):
+                    async with limiter.acquire("child", "api", {"rpm": 1, "tpm": 100}) as lease:
+                        assert lease.consumed == {"rpm": 2, "tpm": 100}
+
+        assert (await _tokens(repo, "child", "api"))["tpm"] == 1_000_000 - 2 * 100_000
+        parent_tokens = await _tokens(repo, "parent", "api")
+        assert "tpm" not in parent_tokens
+        assert parent_tokens["rpm"] == 1_000_000 - 2 * 1_000
+
+    async def test_parent_only_path_does_not_warn_on_parent_subset(
+        self, repo, speculative, monkeypatch
+    ):
+        """Same configuration, forced through the parent-only slow path: the
+        child's speculative write succeeds and the parent's fails with buckets
+        that cover every consumed name (a stale tpm bucket) and refill would
+        help. The parent's resolved limits are rpm only; no warning."""
+        import time
+
+        from zae_limiter.models import BucketState
+        from zae_limiter.repository_protocol import SpeculativeResult
+
+        await self._parent_rpm_only_child_rpm_tpm(repo)
+
+        limiter = RateLimiter(repository=repo, speculative_writes=speculative)
+        async with limiter:
+            # Prime both buckets on the slow path.
+            async with limiter.acquire("child", "api", {"rpm": 1, "tpm": 100}):
+                pass
+            limiter._speculative_writes = True
+
+            now_ms = int(time.time() * 1000)
+
+            def bucket(entity_id, name, tokens_milli, last_refill_ms):
+                return BucketState(
+                    entity_id=entity_id,
+                    resource="api",
+                    limit_name=name,
+                    tokens_milli=tokens_milli,
+                    last_refill_ms=last_refill_ms,
+                    capacity_milli=1_000_000,
+                    refill_amount_milli=1_000_000,
+                    refill_period_ms=60_000,
+                )
+
+            original = repo.speculative_consume
+            calls = 0
+
+            async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, **kw):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    return SpeculativeResult(
+                        success=True,
+                        buckets=[
+                            bucket("child", "rpm", 900_000, now_ms),
+                            bucket("child", "tpm", 800_000, now_ms),
+                        ],
+                        cascade=True,
+                        parent_id="parent",
+                    )
+                if calls == 2:
+                    # Parent exhausted on rpm, refill would help; carries a
+                    # stale tpm bucket so every consumed name is covered.
+                    return SpeculativeResult(
+                        success=False,
+                        old_buckets=[
+                            bucket("parent", "rpm", 0, now_ms - 30_000),
+                            bucket("parent", "tpm", 0, now_ms - 30_000),
+                        ],
+                    )
+                return await original(entity_id, resource, consume, ttl_seconds, **kw)
+
+            monkeypatch.setattr(repo, "speculative_consume", mock_speculative)
+
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", FutureWarning)
+                async with limiter.acquire("child", "api", {"rpm": 1, "tpm": 100}) as lease:
+                    parent_entries = [e for e in lease.entries if e.entity_id == "parent"]
+                    assert {e.limit.name for e in parent_entries} == {"rpm"}
+            assert calls == 2, "the parent-only slow path must have been taken"
+
+    async def test_typo_key_with_parent_subset_still_warns_once(self, repo, speculative):
+        await self._parent_rpm_only_child_rpm_tpm(repo)
+
+        limiter = RateLimiter(repository=repo, speculative_writes=speculative)
+        async with limiter:
+            for _ in range(2):
+                with pytest.warns(FutureWarning) as record:
+                    async with limiter.acquire("child", "api", {"rpm": 1, "tpmm": 5}):
+                        pass
+                acquire_warnings = [w for w in record if "acquire()" in str(w.message)]
+                assert len(acquire_warnings) == 1
+                assert "'tpmm'" in str(acquire_warnings[0].message)
+                assert "entity 'child'" in str(acquire_warnings[0].message)
+                assert acquire_warnings[0].filename == __file__
+
 
 @pytest.mark.parametrize("speculative", [True, False])
 class TestDegradedLeaseIsExempt:

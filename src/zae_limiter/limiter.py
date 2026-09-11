@@ -1194,9 +1194,15 @@ class RateLimiter:
         speculative write fail and fall back), so the slow-path check covers
         both paths.
 
+        Compared against the limits of the entity being acquired on only —
+        never a cascade parent's. A parent tracking a subset of the child's
+        limits is a legitimate configuration and must not warn.
+
         Args:
             stacklevel: Frames from this helper to the ``acquire()`` caller;
                 the ``with``/``async with`` context-manager machinery adds one.
+                The single call site is ``_do_acquire`` (helper -> _do_acquire
+                -> acquire -> __aenter__ -> caller), so it is always 5.
         """
         configured = sorted(limit.name for limit in limits)
         unknown = sorted(set(consume) - set(configured))
@@ -1229,8 +1235,9 @@ class RateLimiter:
 
         # Resolve parent limits
         parent_limits, parent_config_source = await self._resolve_limits(parent_id, resource, None)
-        # helper -> here -> _try_speculative_acquire -> acquire -> __aenter__ -> caller
-        self._warn_unknown_limits(consume, parent_limits, parent_id, resource, stacklevel=6)
+        # No unknown-key check here: the declaration in `consume` is about the
+        # child. A parent tracking a subset of the child's limits is a valid
+        # configuration; keys with no parent limit are simply not applied.
 
         # Fetch parent buckets
         parent_buckets = await self._fetch_buckets([parent_id], resource)

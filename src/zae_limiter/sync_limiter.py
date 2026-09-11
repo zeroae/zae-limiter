@@ -970,9 +970,15 @@ class SyncRateLimiter:
         speculative write fail and fall back), so the slow-path check covers
         both paths.
 
+        Compared against the limits of the entity being acquired on only —
+        never a cascade parent's. A parent tracking a subset of the child's
+        limits is a legitimate configuration and must not warn.
+
         Args:
             stacklevel: Frames from this helper to the ``acquire()`` caller;
                 the ``with``/``async with`` context-manager machinery adds one.
+                The single call site is ``_do_acquire`` (helper -> _do_acquire
+                -> acquire -> __aenter__ -> caller), so it is always 5.
         """
         configured = sorted(limit.name for limit in limits)
         unknown = sorted(set(consume) - set(configured))
@@ -1001,7 +1007,6 @@ class SyncRateLimiter:
         """
         now_ms = int(time.time() * 1000)
         parent_limits, parent_config_source = self._resolve_limits(parent_id, resource, None)
-        self._warn_unknown_limits(consume, parent_limits, parent_id, resource, stacklevel=6)
         parent_buckets = self._fetch_buckets([parent_id], resource)
         parent_entries: list[LeaseEntry] = []
         statuses: list[LimitStatus] = []
