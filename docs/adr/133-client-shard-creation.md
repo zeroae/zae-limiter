@@ -64,8 +64,7 @@ conditional write and never over-admits. The transaction still carries one item 
 | (b') …after a wcu-driven doubling | 5 | 2.5 | 3 | (b) plus the `shard_count` bump, once per doubling |
 | (c) Previous broken fallback | 4 | 2.5 | 2 | Same per-call cost as (b), paid on **every** acquire that drew a missing shard, every write landing on shard 0 |
 
-`Repository.transact_write()` downgrades a one-item transaction to `PutItem`/`UpdateItem`,
-so the create is 1 WCU, not 2; a cold config cache adds one more BatchGet (~1.5 RCU).
+One-item transactions are downgraded to `PutItem` (1 WCU); a cold config cache adds ~1.5 RCU.
 
 ## Consequences
 
@@ -84,9 +83,8 @@ so the create is 1 WCU, not 2; a cold config cache adds one more BatchGet (~1.5 
 
 ## Related (tracked separately)
 
-- `_sync_bucket_params()` updates shard 0 only, so limit-parameter changes may reconcile
-  only shard 0.
-- The parallel cascade fast path always writes the parent on shard 0.
+- `_sync_bucket_params()` reconciles shard 0 only; the parallel cascade fast path always
+  writes the parent on shard 0.
 
 ## Alternatives Considered
 
@@ -95,8 +93,7 @@ Rejected because: a security mitigation cannot depend on an optional component b
 deployed and its stream being caught up.
 
 ### Create the new shard with full (undivided) tokens
-Rejected because: it multiplies the entity's admitted capacity by `shard_count` and
-diverges from the aggregator's Path 2, which the client must stay compatible with.
+Rejected because: it multiplies admitted capacity by `shard_count` and diverges from Path 2.
 
 ### Re-draw a random shard on the slow path
 Rejected because: a second draw can land on shard 0 again, and a `BUCKET_MISSING` on shard N
