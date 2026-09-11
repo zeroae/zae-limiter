@@ -22,7 +22,6 @@ on:
       - 'pyproject.toml'
       - 'uv.lock'
       - '.github/workflows/ci-tests.yml'
-      - '.pre-commit-config.yaml'
   workflow_dispatch:
     inputs:
       run-benchmark-localstack:
