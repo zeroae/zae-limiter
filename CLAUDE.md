@@ -29,7 +29,7 @@ uv run zae-limiter deploy --name limiter --region us-east-1
 uv run pytest
 
 # Type check
-uv run mypy src/zae_limiter
+uv run mypy
 
 # Lint (or let pre-commit run automatically on commit)
 uv run ruff check --fix .

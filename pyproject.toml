@@ -142,6 +142,10 @@ python_version = "3.11"
 strict = true
 warn_return_any = true
 warn_unused_ignores = true
+# Bare `mypy` checks every package under src/ (the Lambda packages have no
+# py.typed marker, so `packages = [...]` would not find them). Explicit CLI
+# paths, as passed by the pre-commit hook, still override this.
+files = ["src"]
 exclude = ["tests/"]
 
 [[tool.mypy.overrides]]

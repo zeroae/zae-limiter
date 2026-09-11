@@ -61,7 +61,7 @@ ruff format .
 ruff check --fix .
 
 # Type checking
-mypy src/zae_limiter
+mypy
 ```
 
 ## Commit Messages
