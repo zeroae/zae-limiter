@@ -264,6 +264,20 @@ class TestLeaseEdgeCases:
         with pytest.raises(LeaseExpiredError):
             lease.adjust(tpm=50)
 
+    def test_release_after_commit_raises(self, sync_limiter):
+        """release() on a committed lease raises LeaseExpiredError.
+
+        release() no longer delegates to adjust() (#455), so it carries its
+        own expiry guard and needs its own test.
+        """
+        limits = [Limit.per_minute("tpm", 10000)]
+        with sync_limiter.acquire(
+            entity_id="key-edge-2b", resource="gpt-4", limits=limits, consume={"tpm": 100}
+        ) as lease:
+            pass
+        with pytest.raises(LeaseExpiredError):
+            lease.release(tpm=50)
+
     def test_consume_zero_amount_is_noop(self, sync_limiter):
         """consume() with zero amount skips processing."""
         limits = [Limit.per_minute("rpm", 100), Limit.per_minute("tpm", 10000)]
