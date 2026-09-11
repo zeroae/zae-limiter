@@ -2810,19 +2810,20 @@ class Repository:
                 )
         except ClientError as e:
             if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-                # Another client already doubled: adopt the winner's count.
-                # Without an image (shard 0 gone) keep what we knew.
+                # Another client already doubled: adopt the winner's count —
+                # but never a lower one. Shard 0 can lag its siblings (a TTL
+                # re-create starts it at 1); adopting that would pin the
+                # client to shard 0. Without an image keep what we knew.
                 winner = cast(dict[str, Any] | None, e.response.get("Item")) or {}
-                effective_count = int(winner.get("shard_count", {}).get("N", str(current_count)))
+                winner_count = int(winner.get("shard_count", {}).get("N", str(current_count)))
+                effective_count = max(current_count, winner_count)
             else:
                 raise
 
-        # Update entity cache with new shard_count
+        # Update entity cache with new shard_count (monotonic)
         cache_key = (self._namespace_id, entity_id)
-        entry = self._entity_cache.get(cache_key, (False, None, {}))
-        shards = {**entry[2], resource: effective_count}
-        self._entity_cache[cache_key] = (entry[0], entry[1], shards)
-        return effective_count
+        meta = None if cache_key in self._entity_cache else (False, None)
+        return self._learn_shard_count(entity_id, resource, effective_count, meta=meta)
 
     # -------------------------------------------------------------------------
     # Limit config operations

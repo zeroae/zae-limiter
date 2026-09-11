@@ -2341,14 +2341,13 @@ class SyncRepository:
         except ClientError as e:
             if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
                 winner = cast(dict[str, Any] | None, e.response.get("Item")) or {}
-                effective_count = int(winner.get("shard_count", {}).get("N", str(current_count)))
+                winner_count = int(winner.get("shard_count", {}).get("N", str(current_count)))
+                effective_count = max(current_count, winner_count)
             else:
                 raise
         cache_key = (self._namespace_id, entity_id)
-        entry = self._entity_cache.get(cache_key, (False, None, {}))
-        shards = {**entry[2], resource: effective_count}
-        self._entity_cache[cache_key] = (entry[0], entry[1], shards)
-        return effective_count
+        meta = None if cache_key in self._entity_cache else (False, None)
+        return self._learn_shard_count(entity_id, resource, effective_count, meta=meta)
 
     def set_limits(
         self,

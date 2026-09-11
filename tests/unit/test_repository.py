@@ -3892,6 +3892,24 @@ class TestBumpShardCount:
         assert repo._entity_cache[(ns, "e1")][2]["gpt-4"] == 2
 
     @pytest.mark.asyncio
+    async def test_bump_shard_count_never_lowers_a_warm_cache(self, repo):
+        """Shard 0 can lag its siblings (TTL-recreated at shard_count=1). A
+        losing bump must not adopt that lower count: the cache keeps the
+        higher count it already learned so draws still cover every shard."""
+        ns = repo._namespace_id
+        repo._entity_cache[(ns, "e1")] = (False, None, {"gpt-4": 4})
+        now_ms = int(time.time() * 1000)
+        states = [BucketState.from_limit("e1", "gpt-4", Limit.per_minute("rpm", 100), now_ms)]
+        await repo.transact_write(
+            [repo.build_composite_create("e1", "gpt-4", states, now_ms, shard_id=0, shard_count=1)]
+        )
+
+        # Our view is 4; shard 0 says 1 -> condition fails, image says 1
+        assert await repo.bump_shard_count("e1", "gpt-4", current_count=4) == 4
+        assert repo._entity_cache[(ns, "e1")][2]["gpt-4"] == 4
+        assert repo.select_shard("e1", "gpt-4")[1] == 4
+
+    @pytest.mark.asyncio
     async def test_bump_shard_count_reraises_other_errors(self, repo):
         """bump_shard_count re-raises non-ConditionalCheckFailedException errors."""
         with patch.object(repo, "_get_client") as mock_get_client:
