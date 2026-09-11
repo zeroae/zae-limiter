@@ -5288,6 +5288,52 @@ class TestClientShardCreation:
         shard1 = self._raw_item(repo, 1)
         assert self._n(shard1, "rpm", schema.BUCKET_FIELD_TK) == cp_milli // 2 - 1000
 
+    def test_bump_lost_race_still_moves_off_the_hot_shard(self, sync_limiter):
+        """If another client doubled first, bump_shard_count reports the old
+        count; the slow path still draws among the shards it knows rather
+        than re-writing the exhausted one."""
+        from zae_limiter import schema
+
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        repo = self._seed_shard0(sync_limiter, shard_count=2, limit=limit)
+        for _ in range(schema.WCU_LIMIT_CAPACITY):
+            repo._speculative_consume_single("user-1", "gpt-4", {"rpm": 1}, shard_id=0)
+        repo.bump_shard_count = MagicMock(return_value=2)
+        with patch("zae_limiter.sync_limiter.random.randrange", side_effect=[0, 1]):
+            with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+                assert {e._shard_id for e in lease.entries} == {1}
+        repo.bump_shard_count.assert_called_once_with("user-1", "gpt-4", 2)
+        assert self._raw_item(repo, 1) is not None
+
+    def test_cascade_slow_path_reads_parent_shard_without_batch_support(
+        self, sync_limiter, monkeypatch
+    ):
+        """The sequential get_buckets fallback carries the parent's shard too."""
+        from zae_limiter.models import BackendCapabilities
+
+        sync_limiter.create_entity("parent-1")
+        sync_limiter.create_entity("child-1", parent_id="parent-1", cascade=True)
+        sync_limiter.set_system_defaults(
+            [Limit.custom("rpm", 100, refill_amount=1, refill_period_seconds=3600)]
+        )
+        monkeypatch.setattr(
+            sync_limiter._repository,
+            "_capabilities",
+            BackendCapabilities(
+                supports_audit_logging=True,
+                supports_usage_snapshots=True,
+                supports_infrastructure_management=True,
+                supports_change_streams=True,
+                supports_batch_operations=False,
+            ),
+        )
+        for _ in range(2):
+            with sync_limiter.acquire("child-1", "gpt-4", {"rpm": 1}) as lease:
+                by_entity = {e.entity_id: e._shard_id for e in lease.entries}
+                assert by_entity == {"child-1": 0, "parent-1": 0}
+        parent = sync_limiter._repository.get_buckets("parent-1", "gpt-4", shard_id=0)
+        assert next(b for b in parent if b.limit_name == "rpm").tokens_milli == 98000
+
 
 class TestWcuHiddenFromUser:
     """Tests that wcu infrastructure limit is hidden from user-facing output."""
