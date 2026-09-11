@@ -3182,6 +3182,62 @@ class TestBucketLimitSync:
         assert item is not None
         assert item["b_rpm_cp"] == 100000, "Bucket capacity should be synced to 100 RPM"
 
+    def test_bucket_tokens_clamped_when_capacity_shrinks(self, sync_limiter):
+        """Decreasing capacity immediately clamps a bucket's tokens too.
+
+        Syncing `cp` alone isn't enough: a bucket sitting near its old
+        (higher) capacity would otherwise keep admitting requests above the
+        new limit until enough natural refill happened to re-apply the cap.
+        `set_limits()` must clamp `tk` down to the new capacity in the same
+        write so the reduced limit is enforced right away.
+        """
+        from zae_limiter.schema import pk_bucket, sk_state
+
+        sync_limiter.set_limits("user-shrink", [Limit.per_minute("rpm", 1000)], resource="api")
+        with sync_limiter.acquire(entity_id="user-shrink", resource="api", consume={"rpm": 1}):
+            pass
+        item = sync_limiter._repository._get_item(
+            pk_bucket(sync_limiter._repository.namespace_id, "user-shrink", "api", 0), sk_state()
+        )
+        assert item is not None
+        assert item["b_rpm_tk"] == 999000, "999 RPM should still be held before the shrink"
+        sync_limiter.set_limits("user-shrink", [Limit.per_minute("rpm", 10)], resource="api")
+        item = sync_limiter._repository._get_item(
+            pk_bucket(sync_limiter._repository.namespace_id, "user-shrink", "api", 0), sk_state()
+        )
+        assert item is not None
+        assert item["b_rpm_cp"] == 10000, "Capacity should be synced to 10 RPM"
+        assert item["b_rpm_tk"] == 10000, "Tokens should be clamped down to the new capacity"
+        with pytest.raises(RateLimitExceeded):
+            with sync_limiter.acquire(
+                entity_id="user-shrink", resource="api", consume={"rpm": 500}
+            ):
+                pass
+
+    def test_bucket_tokens_untouched_when_capacity_grows(self, sync_limiter):
+        """Increasing capacity does not grant free tokens immediately.
+
+        Only `cp`/`ra`/`rp` are synced; `tk` is left alone so the entity
+        still has to refill up to the new ceiling normally.
+        """
+        from zae_limiter.schema import pk_bucket, sk_state
+
+        sync_limiter.set_limits("user-grow", [Limit.per_minute("rpm", 100)], resource="api")
+        with sync_limiter.acquire(entity_id="user-grow", resource="api", consume={"rpm": 90}):
+            pass
+        item = sync_limiter._repository._get_item(
+            pk_bucket(sync_limiter._repository.namespace_id, "user-grow", "api", 0), sk_state()
+        )
+        assert item is not None
+        assert item["b_rpm_tk"] == 10000, "10 RPM should remain before the expansion"
+        sync_limiter.set_limits("user-grow", [Limit.per_minute("rpm", 200)], resource="api")
+        item = sync_limiter._repository._get_item(
+            pk_bucket(sync_limiter._repository.namespace_id, "user-grow", "api", 0), sk_state()
+        )
+        assert item is not None
+        assert item["b_rpm_cp"] == 200000, "Capacity should be synced to 200 RPM"
+        assert item["b_rpm_tk"] == 10000, "Tokens are not bumped up; they still refill normally"
+
     def test_bucket_updated_with_multiple_limits(self, sync_limiter):
         """All bucket params synced when entity has multiple limits.
 

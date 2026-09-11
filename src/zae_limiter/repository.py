@@ -2873,6 +2873,17 @@ class Repository:
         Uses conditional update with attribute_exists(PK) to skip if
         bucket doesn't exist yet.
 
+        When a limit's capacity shrinks below the bucket's current token
+        count, the token count is clamped down to the new capacity in the
+        same write. Without this, a bucket holding tokens accumulated under
+        the old (higher) capacity would keep admitting requests above the
+        new limit until it happened to drain below the new ceiling on its
+        own — since neither the speculative fast path (a pure ADD with no
+        refill/cap math) nor lazy refill (which only re-applies the cap
+        once a nonzero refill is computed) touch `tk` otherwise. Capacity
+        increases never bump `tk` up — tokens still have to refill in
+        normally, which is the intended "expand via refill" behavior.
+
         Args:
             entity_id: ID of the entity
             resource: Resource name
@@ -2890,6 +2901,32 @@ class Repository:
 
         client = await self._get_client()
 
+        # Read current token counts so a capacity decrease can clamp `tk`
+        # down in the same write. Only the shard-0 bucket item is synced
+        # (matching the rest of this method), so multi-shard buckets only
+        # get their overflow-shard tokens clamped indirectly, as those
+        # shards drain and get recreated.
+        current_tk_milli: dict[str, int] = {}
+        tk_attrs = {
+            limit.name: schema.bucket_attr(limit.name, schema.BUCKET_FIELD_TK) for limit in limits
+        }
+        get_response = await client.get_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+            ProjectionExpression=", ".join(f"#tk_get_{i}" for i in range(len(limits))),
+            ExpressionAttributeNames={
+                f"#tk_get_{i}": tk_attrs[limit.name] for i, limit in enumerate(limits)
+            },
+        )
+        existing_item = get_response.get("Item")
+        if existing_item is not None:
+            for name, attr in tk_attrs.items():
+                if attr in existing_item:
+                    current_tk_milli[name] = int(existing_item[attr]["N"])
+
         # Build SET expression for static bucket params
         # Use numeric index for expression names since limit names can contain hyphens
         set_parts: list[str] = []
@@ -2899,11 +2936,13 @@ class Repository:
 
         for i, limit in enumerate(limits):
             name = limit.name
+            cp_milli = limit.capacity * 1000
+
             # Capacity (millitokens)
             cp_attr = schema.bucket_attr(name, schema.BUCKET_FIELD_CP)
             set_parts.append(f"#cp{i} = :cp{i}")
             expr_names[f"#cp{i}"] = cp_attr
-            expr_values[f":cp{i}"] = {"N": str(limit.capacity * 1000)}
+            expr_values[f":cp{i}"] = {"N": str(cp_milli)}
 
             # Refill amount (millitokens)
             ra_attr = schema.bucket_attr(name, schema.BUCKET_FIELD_RA)
@@ -2916,6 +2955,14 @@ class Repository:
             set_parts.append(f"#rp{i} = :rp{i}")
             expr_names[f"#rp{i}"] = rp_attr
             expr_values[f":rp{i}"] = {"N": str(limit.refill_period_seconds * 1000)}
+
+            # Clamp tokens down to the new capacity if the bucket currently
+            # holds more than the new ceiling allows (see docstring above).
+            if current_tk_milli.get(name, 0) > cp_milli:
+                tk_attr = schema.bucket_attr(name, schema.BUCKET_FIELD_TK)
+                set_parts.append(f"#tk{i} = :tk{i}")
+                expr_names[f"#tk{i}"] = tk_attr
+                expr_values[f":tk{i}"] = {"N": str(cp_milli)}
 
         # Handle TTL update (issue #327)
         if bucket_ttl_refill_multiplier is not None:
