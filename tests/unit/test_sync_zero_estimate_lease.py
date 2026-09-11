@@ -502,6 +502,24 @@ class TestUnknownLimitInConsume:
                 assert "child" not in str(acquire_warnings[0].message)
                 assert acquire_warnings[0].filename == __file__
 
+    def test_acquire_time_unknown_key_is_not_reported_again_on_adjust(self, repo, speculative):
+        """acquire() already reported the key with the right advice. A later
+        adjust() on it must not warn a second time with the wrong advice
+        ("name the limit in consume" — the caller did)."""
+        repo.set_system_defaults([Limit.custom("rpm", 1000, **SLOW)])
+        repo.create_entity("e1", parent_id=None, name="e1")
+        limiter = SyncRateLimiter(repository=repo, speculative_writes=speculative)
+        with limiter:
+            for _ in range(2):
+                with pytest.warns(FutureWarning) as record:
+                    with limiter.acquire("e1", "api", {"rpm": 1, "tpmm": 5}) as lease:
+                        lease.adjust(tpmm=3)
+                        lease.consume(tpmm=1)
+                        lease.release(tpmm=1)
+                future = [w for w in record if issubclass(w.category, FutureWarning)]
+                assert len(future) == 1, [str(w.message) for w in future]
+                assert "acquire()" in str(future[0].message)
+
     def test_message_is_identical_across_entities(self, repo, speculative, caplog):
         """The text must not vary per entity, or every entity adds a
         __warningregistry__ entry and defeats the default once-per-location

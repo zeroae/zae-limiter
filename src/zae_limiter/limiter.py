@@ -1188,8 +1188,11 @@ class RateLimiter:
         *,
         config_source: str,
         stacklevel: int,
-    ) -> None:
+    ) -> frozenset[str]:
         """Report keys in ``consume`` that name no configured limit (Issue #455).
+
+        Returns the unknown keys so the lease can skip them in its own
+        declared-scope check: they were reported here with the right advice.
 
         Such a key is dropped at admission (nothing gates it), after which
         every ``lease.adjust()`` on it would warn "not declared in consume" —
@@ -1215,7 +1218,7 @@ class RateLimiter:
         configured = sorted(limit.name for limit in limits)
         unknown = sorted(set(consume) - set(configured))
         if not unknown:
-            return
+            return frozenset()
         if config_source == "override":
             where = "not in the `limits` override passed to acquire()"
             listing = "override limits"
@@ -1240,6 +1243,7 @@ class RateLimiter:
             listing,
             configured,
         )
+        return frozenset(unknown)
 
     async def _try_parent_only_acquire(
         self,
@@ -1438,7 +1442,7 @@ class RateLimiter:
         # — a key known to either side of the cascade is not unknown.
         known_limits = [limit for eid in entity_ids for limit in entity_limits[eid]]
         # helper -> here -> acquire -> __aenter__ -> caller
-        self._warn_unknown_limits(
+        unknown_keys = self._warn_unknown_limits(
             consume,
             known_limits,
             entity_id,
@@ -1541,6 +1545,7 @@ class RateLimiter:
         return Lease(
             repository=self._repository,
             entries=entries,
+            _unknown_keys=unknown_keys,
         )
 
     async def _fetch_entity_and_buckets(

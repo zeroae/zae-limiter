@@ -84,6 +84,12 @@ class Lease:
     explicitly where that lease is built, never inferred from an empty
     ``entries``: a real lease with nothing declared is not degraded.
     """
+    # Keys in acquire(consume=...) that named no configured limit. acquire()
+    # already reported them with the right advice, so adjust()/consume()/
+    # release() must not report them again with the wrong one ("name the
+    # limit in consume" — the caller did). Set where the slow path builds the
+    # lease (Issue #455).
+    _unknown_keys: frozenset[str] = frozenset()
 
     @property
     def consumed(self) -> dict[str, int]:
@@ -123,7 +129,8 @@ class Lease:
         if self.degraded:
             return
         declared = sorted({entry.limit.name for entry in self._declared_entries})
-        undeclared = sorted(set(amounts) - set(declared))
+        # Keys acquire() already reported as unknown are skipped silently.
+        undeclared = sorted(set(amounts) - set(declared) - self._unknown_keys)
         if not undeclared:
             return
         warnings.warn(

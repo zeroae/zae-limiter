@@ -60,6 +60,7 @@ class SyncLease:
     _initial_committed: bool = False
     degraded: bool = False
     "Whether this is the no-op lease yielded under ``on_unavailable=ALLOW``.\n\n    ``True`` only when the backend was unreachable and the limiter degraded\n    to allowing the request (Issue #455). Such a lease has no entries, and\n    ``adjust()``, ``consume()`` and ``release()`` are silent no-ops on it —\n    the declared-scope check that normally reports keys outside ``consume``\n    is skipped, so an outage never turns into a warning storm. Set\n    explicitly where that lease is built, never inferred from an empty\n    ``entries``: a real lease with nothing declared is not degraded.\n    "
+    _unknown_keys: frozenset[str] = frozenset()
 
     @property
     def consumed(self) -> dict[str, int]:
@@ -99,7 +100,7 @@ class SyncLease:
         if self.degraded:
             return
         declared = sorted({entry.limit.name for entry in self._declared_entries})
-        undeclared = sorted(set(amounts) - set(declared))
+        undeclared = sorted(set(amounts) - set(declared) - self._unknown_keys)
         if not undeclared:
             return
         warnings.warn(
