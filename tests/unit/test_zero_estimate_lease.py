@@ -41,7 +41,6 @@ async def _tokens(repo, entity_id, resource):
     return {b.limit_name: b.tokens_milli for b in buckets}
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("speculative", [True, False])
 class TestZeroEstimateIsStillAdjustable:
     async def test_second_acquire_persists_the_adjustment(self, repo, speculative):
@@ -104,7 +103,6 @@ class TestZeroEstimateIsStillAdjustable:
         assert (await _tokens(repo, "e1", "api"))["rpm"] == 1_000_000 - 100_000 - 30_000
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("speculative", [True, False])
 class TestWcuStaysInternal:
     """The `amount == 0` filter was also, incidentally, hiding `wcu`.
@@ -149,7 +147,6 @@ class TestWcuStaysInternal:
         )
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("speculative", [True, False])
 class TestUndeclaredLimitIsReported:
     """`consume` is the declared scope of a lease (#455).
@@ -278,7 +275,6 @@ class TestUndeclaredLimitIsReported:
         assert tokens == {"rpm": 1_000_000 - 1_000, "tpm": 1_000_000}
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("speculative", [True, False])
 class TestDegradedLeaseIsExempt:
     """Under `on_unavailable=ALLOW`, an outage yields a degraded lease with no
@@ -330,7 +326,6 @@ class TestDegradedLeaseIsExempt:
                     assert lease.degraded is False
 
 
-@pytest.mark.asyncio
 class TestShardRetryLeaseIsUsable:
     """A lease from the shard-retry path must behave like any other lease.
 

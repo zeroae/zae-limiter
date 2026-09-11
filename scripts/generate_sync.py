@@ -48,6 +48,7 @@ TEST_TRANSFORMS = [
     ("test_stack_manager.py", "test_sync_stack_manager.py"),
     ("test_discovery.py", "test_sync_discovery.py"),
     ("test_config_cache.py", "test_sync_config_cache.py"),
+    ("test_zero_estimate_lease.py", "test_sync_zero_estimate_lease.py"),
 ]
 
 # Class renames

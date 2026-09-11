@@ -84,6 +84,7 @@ python scripts/generate_sync.py
 - `tests/unit/test_sync_stack_manager.py` ← `tests/unit/test_stack_manager.py`
 - `tests/unit/test_sync_discovery.py` ← `tests/unit/test_discovery.py`
 - `tests/unit/test_sync_config_cache.py` ← `tests/unit/test_config_cache.py`
+- `tests/unit/test_sync_zero_estimate_lease.py` ← `tests/unit/test_zero_estimate_lease.py`
 
 Pre-commit hook verifies generated code is up-to-date. CI also verifies before running tests.
 
