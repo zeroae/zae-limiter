@@ -809,6 +809,14 @@ class RateLimiter:
                 result.shard_count > 1
                 and result.failure_reason == SpeculativeFailureReason.APP_LIMIT_EXHAUSTED
             ):
+                if result.cascade:
+                    # A speculative retry is a child-only write: accepting its
+                    # lease would admit the child past the parent's limit (the
+                    # parent's parallel debit was compensated above, or never
+                    # attempted). Hand an untried shard to the slow path, which
+                    # commits child + parent atomically in one transaction.
+                    untried = [s for s in range(result.shard_count) if s != result.shard_id]
+                    return None, random.choice(untried), result.shard_count
                 retry_result, missing_shard = await self._retry_on_other_shard(
                     entity_id, resource, consume, ttl_seconds=None, result=result
                 )
@@ -1126,10 +1134,11 @@ class RateLimiter:
 
         Returns:
             ``(lease, missing_shard)``. ``lease`` is set if a retry on another
-            shard succeeded. Otherwise ``missing_shard`` is the last shard a
-            retry found not to exist yet (``BUCKET_MISSING``), so the slow
-            path can create it instead of fast-rejecting (issue #439); None
-            if every retried shard existed or no untried shards remain.
+            shard succeeded. Otherwise ``missing_shard`` is the first shard a
+            retry found not to exist yet (``BUCKET_MISSING``, probing stops
+            there), so the slow path can create it instead of fast-rejecting
+            (issue #439); None if every retried shard existed or no untried
+            shards remain. Never called for cascading entities.
         """
         tried_shards = {result.shard_id}
         shard_count = result.shard_count
@@ -1151,7 +1160,10 @@ class RateLimiter:
                     None,
                 )
             if retry.failure_reason == SpeculativeFailureReason.BUCKET_MISSING:
+                # Probing further shards costs 1 RT + 1 WCU each; a missing
+                # shard is one the slow path will create with a fresh share.
                 missing_shard = new_shard
+                break
         return None, missing_shard
 
     def _build_lease_from_speculative(

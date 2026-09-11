@@ -2627,6 +2627,11 @@ class Repository:
                 if old_item:
                     old_buckets = self._deserialize_composite_bucket(old_item)
                     old_shard_count = int(old_item.get("shard_count", {}).get("N", "1"))
+                    # Denormalized on the item, so a failure knows whether this
+                    # entity cascades even with a cold cache — a cascading child
+                    # must never be admitted by a child-only shard retry.
+                    old_cascade = old_item.get("cascade", {}).get("BOOL", False)
+                    old_parent_id = old_item.get("parent_id", {}).get("S")
                     # Keep a warm cache's shard_count current from the failure
                     # image so later draws cover every shard (issue #439). A
                     # cold cache is left alone: cascade/parent_id are unknown.
@@ -2645,6 +2650,8 @@ class Repository:
                         return SpeculativeResult(
                             success=False,
                             old_buckets=old_buckets,
+                            cascade=old_cascade,
+                            parent_id=old_parent_id,
                             shard_id=shard_id,
                             shard_count=old_shard_count,
                             failure_reason=SpeculativeFailureReason.DISABLED,
@@ -2670,6 +2677,8 @@ class Repository:
                     return SpeculativeResult(
                         success=False,
                         old_buckets=old_buckets,
+                        cascade=old_cascade,
+                        parent_id=old_parent_id,
                         shard_id=shard_id,
                         shard_count=old_shard_count,
                         failure_reason=reason,

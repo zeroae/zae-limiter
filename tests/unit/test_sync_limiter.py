@@ -5364,6 +5364,76 @@ class TestClientShardCreation:
             "shard 0 served nothing; a credit here mints capacity"
         )
 
+    def _seed_cascade_child(self, sync_limiter, limit, *, parent_tokens_milli: int):
+        """Parent bucket at the given balance; child with 2 shards, shard 0 drained."""
+        repo = sync_limiter._repository
+        now_ms = int(time.time() * 1000)
+        sync_limiter.create_entity("parent-1")
+        sync_limiter.create_entity("user-1", parent_id="parent-1", cascade=True)
+        sync_limiter.set_system_defaults([limit])
+        parent_state = BucketState.from_limit("parent-1", "gpt-4", limit, now_ms)
+        parent_state.tokens_milli = parent_tokens_milli
+        repo.transact_write(
+            [repo.build_composite_create("parent-1", "gpt-4", [parent_state], now_ms)]
+        )
+        for shard_id in range(2):
+            state = BucketState.from_limit("user-1", "gpt-4", limit, now_ms, shard_count=2)
+            if shard_id == 0:
+                state.tokens_milli = 0
+            repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        "user-1",
+                        "gpt-4",
+                        [state],
+                        now_ms,
+                        cascade=True,
+                        parent_id="parent-1",
+                        shard_id=shard_id,
+                        shard_count=2,
+                    )
+                ]
+            )
+        sync_limiter._speculative_writes = True
+        return repo
+
+    def test_cascade_shard_retry_cannot_bypass_an_exhausted_parent(self, sync_limiter):
+        """Cold cache: child shard 0 drained, parent exhausted. The shard retry
+        used to succeed on child shard 1 and hand back a child-only lease,
+        admitting unbounded child traffic past the parent's limit."""
+        from zae_limiter import schema
+        from zae_limiter.exceptions import RateLimitExceeded
+
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        repo = self._seed_cascade_child(sync_limiter, limit, parent_tokens_milli=0)
+        repo._entity_cache.pop((repo._namespace_id, "user-1"), None)
+        with pytest.raises(RateLimitExceeded):
+            with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+                pass
+        share = self.CAPACITY * 1000 // 2
+        assert self._n(self._raw_item(repo, 1), "rpm", schema.BUCKET_FIELD_TK) == share, (
+            "nothing may be consumed from the child when the parent rejects"
+        )
+
+    def test_cascade_shard_retry_charges_the_parent(self, sync_limiter):
+        """Warm cache: the parallel parent debit was compensated after the
+        child failed on shard 0; the shard retry must not then admit the child
+        alone. The slow path commits child shard 1 and the parent together."""
+        from zae_limiter import schema
+
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        cp_milli = self.CAPACITY * 1000
+        repo = self._seed_cascade_child(sync_limiter, limit, parent_tokens_milli=cp_milli)
+        repo._entity_cache[repo._namespace_id, "user-1"] = (True, "parent-1", {"gpt-4": 2})
+        with patch("zae_limiter.sync_repository.random.randrange", return_value=0):
+            with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+                assert {e.entity_id for e in lease.entries} == {"user-1", "parent-1"}
+        parent = repo.get_buckets("parent-1", resource="gpt-4", shard_id=0)
+        assert next(b for b in parent if b.limit_name == "rpm").tokens_milli == cp_milli - 1000
+        assert (
+            self._n(self._raw_item(repo, 1), "rpm", schema.BUCKET_FIELD_TK) == cp_milli // 2 - 1000
+        )
+
     def test_create_race_lost_to_aggregator_consumes_once(self, sync_limiter):
         """If the aggregator's Path 2 wins the create, the client retries as a
         consumption-only conditional write on that shard: one debit, no

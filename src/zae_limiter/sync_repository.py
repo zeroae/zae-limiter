@@ -2171,6 +2171,8 @@ class SyncRepository:
                 if old_item:
                     old_buckets = self._deserialize_composite_bucket(old_item)
                     old_shard_count = int(old_item.get("shard_count", {}).get("N", "1"))
+                    old_cascade = old_item.get("cascade", {}).get("BOOL", False)
+                    old_parent_id = old_item.get("parent_id", {}).get("S")
                     cache_key = (self._namespace_id, entity_id)
                     cached = self._entity_cache.get(cache_key)
                     if cached is not None and cached[2].get(resource) != old_shard_count:
@@ -2183,6 +2185,8 @@ class SyncRepository:
                         return SpeculativeResult(
                             success=False,
                             old_buckets=old_buckets,
+                            cascade=old_cascade,
+                            parent_id=old_parent_id,
                             shard_id=shard_id,
                             shard_count=old_shard_count,
                             failure_reason=SpeculativeFailureReason.DISABLED,
@@ -2205,6 +2209,8 @@ class SyncRepository:
                     return SpeculativeResult(
                         success=False,
                         old_buckets=old_buckets,
+                        cascade=old_cascade,
+                        parent_id=old_parent_id,
                         shard_id=shard_id,
                         shard_count=old_shard_count,
                         failure_reason=reason,

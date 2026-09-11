@@ -665,6 +665,9 @@ class SyncRateLimiter:
                 result.shard_count > 1
                 and result.failure_reason == SpeculativeFailureReason.APP_LIMIT_EXHAUSTED
             ):
+                if result.cascade:
+                    untried = [s for s in range(result.shard_count) if s != result.shard_id]
+                    return (None, random.choice(untried), result.shard_count)
                 retry_result, missing_shard = self._retry_on_other_shard(
                     entity_id, resource, consume, ttl_seconds=None, result=result
                 )
@@ -903,10 +906,11 @@ class SyncRateLimiter:
 
         Returns:
             ``(lease, missing_shard)``. ``lease`` is set if a retry on another
-            shard succeeded. Otherwise ``missing_shard`` is the last shard a
-            retry found not to exist yet (``BUCKET_MISSING``), so the slow
-            path can create it instead of fast-rejecting (issue #439); None
-            if every retried shard existed or no untried shards remain.
+            shard succeeded. Otherwise ``missing_shard`` is the first shard a
+            retry found not to exist yet (``BUCKET_MISSING``, probing stops
+            there), so the slow path can create it instead of fast-rejecting
+            (issue #439); None if every retried shard existed or no untried
+            shards remain. Never called for cascading entities.
         """
         tried_shards = {result.shard_id}
         shard_count = result.shard_count
@@ -927,6 +931,7 @@ class SyncRateLimiter:
                 )
             if retry.failure_reason == SpeculativeFailureReason.BUCKET_MISSING:
                 missing_shard = new_shard
+                break
         return (None, missing_shard)
 
     def _build_lease_from_speculative(
