@@ -158,6 +158,19 @@ ignore_missing_imports = true
 module = ["locust.*", "locustfile"]
 ignore_missing_imports = true
 
+# Editor-only (VS Code / Pylance). The gate is `mypy --strict` above, run by
+# pre-commit and CI; this block keeps editor diagnostics from disagreeing with it.
+[tool.pyright]
+# Resolve imports against the uv-managed virtualenv (fixes "ulid could not be resolved").
+venvPath = "."
+venv = ".venv"
+# Match the strictness of the actual gate (mypy --strict) without adding Pyright-only rules.
+typeCheckingMode = "standard"
+# botocore stubs mark response["Error"] as NotRequired, but `e.response["Error"]["Code"]`
+# is the universal boto idiom and mypy accepts it. Silence rather than litter 11 sites
+# with `# pyright: ignore`.
+reportTypedDictNotRequiredAccess = "none"
+
 [tool.coverage.run]
 omit = [
     # Generated sync files - coverage measured on async source only
