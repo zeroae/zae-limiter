@@ -272,7 +272,7 @@ Or programmatically — this lives on `Repository`, not `RateLimiter`:
 
 ```python
 repo = await Repository.open()
-deleted = await repo.reset_bucket("<entity_id>", resource="<resource>")
+deleted = await repo.reset_bucket("api-key-123", resource="gpt-4")
 ```
 
 Both delete **every shard** backing that entity/resource pair, which is why the count can
