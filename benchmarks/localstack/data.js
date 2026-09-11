@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789035800613,
+  "lastUpdate": 1789126793223,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -15553,6 +15553,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.0033060971063989253",
             "extra": "mean: 1.0723621447999903 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ec330b2164674b01e4e35974f137337f38eeb2f5",
+          "message": "🔥 chore: sunset worktree skill modes covered by built-in support (#460)\n\n## Summary\n\nClaude Code's built-in worktree support (`claude -w`, `EnterWorktree` /\n`ExitWorktree`, `Agent(isolation: \"worktree\")`) now covers worktree\ncreation, entry, and removal. This PR drops the four `/worktree` skill\nmodes that reimplemented it and keeps the two the built-in lacks.\n\n- **Removed** `add`, `list`, `remove`, `prune` modes. `SKILL.md` lists\nthe built-in equivalent for each, so a call to a retired mode gets\nredirected instead of improvised.\n- **Replaced** `add.md` with `issue.md`: resolve a branch name from a\nGitHub issue, assign it, enter via `EnterWorktree`, then put the\nworktree on the right branch. The built-in flattens `feat/42-foo` to\nbranch `worktree-feat+42-foo`, so a new branch gets a `git branch -m`.\n- **Resume an existing branch** for the issue instead of starting a\nsecond one next to it (see below).\n- **Kept** `status` mode and `.claude/scripts/worktree-status.sh`,\nbecause the built-in has no PR/CI status table across worktrees.\n`status.md` now says the table covers built-in and legacy worktrees\nalike.\n- **Legacy `<repo>.worktrees/` checkouts** from the retired `add` mode\nstay where they are until their PRs merge, then get retired with `git\nworktree remove` and `git branch -d`.\n- **Gitignored** `.claude/worktrees/`, where the built-in puts\nworktrees.\n\nThe skill goes from 421 lines in 6 files to 315 lines in 3.\n\n## Issue mode\n\n| Found for `*/<n>-*` | Case | Action |\n|---------------------|------|--------|\n| Checked out in a worktree | **Open** | `EnterWorktree(path=…)` into it\n|\n| Local branch | **Resume** | `EnterWorktree(name=…)`, then `git switch\n<branch>` |\n| On origin only | **Resume from origin** | `EnterWorktree(name=…)`,\nthen `git fetch` + `git switch --track` |\n| Nothing | **New** | `EnterWorktree(name=…)`, then `git branch -m\n<type>/<n>-<slug>` |\n\nThe lookup matches on the issue number and ignores the slug, because the\nslug is derived loosely and can come out different on a second run. If\nseveral branches match, the skill asks which one to use. If the branch\nis checked out in the main working tree, it stops.\n\nThe resume cases fix a regression the first commit introduced. The\nretired `add` mode checked `git ls-remote` for an existing branch; the\nfirst version of `issue.md` did not, and always renamed a fresh branch\nonto the name. That rename fails outright when the branch exists\nlocally. When the branch exists only on origin, the rename succeeds but\ncreates an unrelated branch, and `/pr`'s push is then rejected as\nnon-fast-forward.\n\n### Why `git branch -m` and not a hook\n\n`WorktreeCreate`/`WorktreeRemove` hooks were prototyped to fix branch\nnaming globally and rejected. A hook-relocated worktree defeats the\nbuilt-in's pre-removal check, so `ExitWorktree(remove)` demands\n`discard_changes` on *every* removal, including a pristine worktree. A\nper-worktree `git branch -m` or `git switch` leaves that check in place.\n\n### The branch name is convention, not a build requirement\n\nNothing machine-reads the head branch name. CI `branches:` filters match\nthe PR base, and git-cliff parses commit messages and tags. Merge\ncommits here carry the PR title, not `Merge pull request #N from\nowner/branch`.\n\n## Test plan\n\n- [x] No `src/` or `tests/` changes, developer tooling only\n(`.claude/skills/worktree/`, `.gitignore`)\n- [ ] `/worktree status` still renders the PR/CI table across worktrees,\nincluding legacy `<repo>.worktrees/` entries\n- [ ] `/worktree <n>` on an issue with no branch creates the worktree,\nassigns the issue, and leaves the branch named `<type>/<n>-<slug>`\n- [ ] `/worktree <n>` on an issue whose branch exists locally switches\nto it instead of renaming\n- [ ] `/worktree <n>` on an issue whose branch exists only on origin\nfetches it and tracks `origin/<branch>`\n- [ ] `/worktree <n>` on an issue whose branch is already checked out in\na worktree enters that worktree by path\n- [ ] Calling a retired mode (`/worktree add`, `list`, `remove`,\n`prune`) redirects to the built-in equivalent in `SKILL.md`\n- [ ] CI green\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01QdVj8nPhUwTz2aNJzMFqt5",
+          "timestamp": "2026-09-11T07:34:45-04:00",
+          "tree_id": "0902acced836f9618b7225dc3c71b5df6d93b34c",
+          "url": "https://github.com/zeroae/zae-limiter/commit/ec330b2164674b01e4e35974f137337f38eeb2f5"
+        },
+        "date": 1789126792201,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 23.000028732146756,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007327344133323676",
+            "extra": "mean: 43.47820655555602 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 16.01228077886559,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010976833672826092",
+            "extra": "mean: 62.45206500000222 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 37.85787224790393,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003439299935823727",
+            "extra": "mean: 26.414585411766424 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 34.52899614249397,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004467534048627265",
+            "extra": "mean: 28.961166315788862 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 21.799460237887782,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005824397224745968",
+            "extra": "mean: 45.872695428576954 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 156.3473802847635,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0013555889239141863",
+            "extra": "mean: 6.396013787878306 msec\nrounds: 99"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 22.98699273984175,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006063436867216882",
+            "extra": "mean: 43.502863176476744 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 25.861902200835996,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005719665789781421",
+            "extra": "mean: 38.6669160000023 msec\nrounds: 13"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 24.948365379013904,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005990410034342494",
+            "extra": "mean: 40.0827863793105 msec\nrounds: 29"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 20.48346544090397,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009592016842249074",
+            "extra": "mean: 48.819864142864894 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 21.360443666666804,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00899023093982112",
+            "extra": "mean: 46.81550700000256 msec\nrounds: 22"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 23.280245217340465,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005568019628382242",
+            "extra": "mean: 42.954874000001624 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 21.624411724007228,
+            "unit": "iter/sec",
+            "range": "stddev: 0.06173910020086692",
+            "extra": "mean: 46.244032566666725 msec\nrounds: 30"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.921799238506153,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003557791402575954",
+            "extra": "mean: 520.34571559999 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9330510411781365,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0025336989820051374",
+            "extra": "mean: 517.3169144000099 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9451692689116599,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004426805980849467",
+            "extra": "mean: 1.0580115465999824 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9191247182367178,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007754925235574073",
+            "extra": "mean: 1.0879916295999918 sec\nrounds: 5"
           }
         ]
       }
