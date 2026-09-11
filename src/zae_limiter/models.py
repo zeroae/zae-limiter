@@ -422,6 +422,49 @@ class LimitStatus:
         return max(0, self.requested - self.available)
 
 
+@dataclass(frozen=True)
+class Availability:
+    """
+    Combined result of a non-consuming capacity check (issue #472).
+
+    Answers both "how much is left?" and "how long until I can proceed?" from a
+    single config resolution and a single bucket read. Returned by
+    :meth:`RateLimiter.check_availability`.
+
+    Note: This is an internal model created by the limiter from validated
+    inputs. No validation is performed here to avoid performance overhead.
+    """
+
+    entity_id: str
+    resource: str
+    limits: list[Limit]
+    # limit_name -> currently available tokens (may be negative if in debt)
+    available: dict[str, int]
+    # limit_name -> amount the caller asked about (empty when none was given)
+    needed: dict[str, int]
+    # Seconds until every needed amount is available (0.0 if already available)
+    retry_after_seconds: float
+
+    @property
+    def allowed(self) -> bool:
+        """True if every needed amount is currently available."""
+        return not self.exceeded
+
+    @property
+    def exceeded(self) -> list[str]:
+        """Names of the limits that are short of the needed amount."""
+        return [
+            name
+            for name, amount in self.needed.items()
+            if amount > 0 and self.available.get(name, 0) < amount
+        ]
+
+    @property
+    def deficit(self) -> dict[str, int]:
+        """How many tokens short each exceeded limit is (exceeded limits only)."""
+        return {name: self.needed[name] - self.available.get(name, 0) for name in self.exceeded}
+
+
 @dataclass
 class BucketState:
     """

@@ -73,6 +73,7 @@ from .limiter import OnUnavailable, RateLimiter
 from .models import (
     AuditAction,
     AuditEvent,
+    Availability,
     BackendCapabilities,
     BucketState,
     Entity,
@@ -121,6 +122,7 @@ __all__ = [
     "SyncConfigCache",
     "SyncStackManager",
     # Models
+    "Availability",
     "Limit",
     "LimiterInfo",
     "LimitName",

@@ -38,7 +38,7 @@ from zae_limiter.exceptions import RateLimitExceeded
 if TYPE_CHECKING:
     from collections.abc import Generator
 
-    from zae_limiter import Entity, Limit
+    from zae_limiter import Availability, Entity, Limit
     from zae_limiter.limiter import OnUnavailable
 
 
@@ -576,6 +576,39 @@ class RateLimiterSession:
             return result
         except Exception as exc:
             self._fire("TIME_UNTIL_AVAILABLE", stat_name, start, exception=exc)
+            raise
+
+    def check_availability(
+        self,
+        entity_id: str,
+        resource: str,
+        needed: dict[str, int] | None = None,
+        *,
+        name: str | None = None,
+    ) -> Availability:
+        """Check availability and wait time in one call, firing a Locust event with timing.
+
+        Args:
+            entity_id: Entity to check.
+            resource: Resource name.
+            needed: Dict of limit_name -> required capacity (optional).
+            name: Locust stats name (defaults to resource).
+
+        Returns:
+            Availability with per-limit capacity and seconds until available.
+        """
+        stat_name = name or resource
+        start = time.perf_counter()
+        try:
+            result = self._limiter.check_availability(
+                entity_id=entity_id,
+                resource=resource,
+                needed=needed,
+            )
+            self._fire("CHECK_AVAILABILITY", stat_name, start)
+            return result
+        except Exception as exc:
+            self._fire("CHECK_AVAILABILITY", stat_name, start, exception=exc)
             raise
 
     def is_available(
