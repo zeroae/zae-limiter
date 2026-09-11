@@ -347,6 +347,7 @@ class TestShardCountPropagationIntegration:
         assert shard_1["shard_count"] == Decimal("2")
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 class TestShardedAdjustmentRouting:
     """Adjustments and rollbacks must land on the shard that was consumed.
@@ -439,6 +440,7 @@ class TestShardedAdjustmentRouting:
         )
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 class TestClientShardCreation:
     """Write sharding must engage with the aggregator DISABLED (issue #439).
