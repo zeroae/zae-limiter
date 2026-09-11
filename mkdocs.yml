@@ -187,3 +187,4 @@ nav:
       - Pre-1.0 Hardening (v0.10.0+):
           - ADR-123 Local Secondary Indexes: adr/123-local-secondary-indexes.md
           - ADR-125 Resource and Entity Disable: adr/125-resource-disable.md
+          - ADR-133 Client-Side Shard Creation: adr/133-client-shard-creation.md
