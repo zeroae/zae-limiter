@@ -1186,6 +1186,7 @@ class RateLimiter:
         entity_id: str,
         resource: str,
         *,
+        config_source: str,
         stacklevel: int,
     ) -> None:
         """Report keys in ``consume`` that name no configured limit (Issue #455).
@@ -1215,12 +1216,29 @@ class RateLimiter:
         unknown = sorted(set(consume) - set(configured))
         if not unknown:
             return
+        if config_source == "override":
+            where = "not in the `limits` override passed to acquire()"
+            listing = "override limits"
+        else:
+            where = "not configured for this resource"
+            listing = "configured limits"
+        # The text deliberately carries no entity id or resource name: the
+        # warnings registry is keyed on (text, category, lineno), so per-entity
+        # text would add a registry entry per entity and defeat the default
+        # once-per-location filter — a warning storm. They go to the log.
         warnings.warn(
-            f"acquire() names limit(s) {unknown} that are not configured for resource "
-            f"{resource!r} on entity {entity_id!r}; configured limits: {configured}. "
+            f"acquire() names limit(s) {unknown} that are {where}; {listing}: {configured}. "
             "Unknown keys are ignored. This becomes a ValidationError in v1.0.0.",
             FutureWarning,
             stacklevel=stacklevel,
+        )
+        logger.warning(
+            "acquire(): unknown limit key(s) %s for entity %r resource %r (%s: %s)",
+            unknown,
+            entity_id,
+            resource,
+            listing,
+            configured,
         )
 
     async def _try_parent_only_acquire(
@@ -1420,7 +1438,14 @@ class RateLimiter:
         # — a key known to either side of the cascade is not unknown.
         known_limits = [limit for eid in entity_ids for limit in entity_limits[eid]]
         # helper -> here -> acquire -> __aenter__ -> caller
-        self._warn_unknown_limits(consume, known_limits, entity_id, resource, stacklevel=5)
+        self._warn_unknown_limits(
+            consume,
+            known_limits,
+            entity_id,
+            resource,
+            config_source=child_config_source,
+            stacklevel=5,
+        )
 
         # Process buckets and build lease entries
         entries: list[LeaseEntry] = []

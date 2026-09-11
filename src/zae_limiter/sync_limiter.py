@@ -957,6 +957,7 @@ class SyncRateLimiter:
         entity_id: str,
         resource: str,
         *,
+        config_source: str,
         stacklevel: int,
     ) -> None:
         """Report keys in ``consume`` that name no configured limit (Issue #455).
@@ -986,10 +987,24 @@ class SyncRateLimiter:
         unknown = sorted(set(consume) - set(configured))
         if not unknown:
             return
+        if config_source == "override":
+            where = "not in the `limits` override passed to acquire()"
+            listing = "override limits"
+        else:
+            where = "not configured for this resource"
+            listing = "configured limits"
         warnings.warn(
-            f"acquire() names limit(s) {unknown} that are not configured for resource {resource!r} on entity {entity_id!r}; configured limits: {configured}. Unknown keys are ignored. This becomes a ValidationError in v1.0.0.",
+            f"acquire() names limit(s) {unknown} that are {where}; {listing}: {configured}. Unknown keys are ignored. This becomes a ValidationError in v1.0.0.",
             FutureWarning,
             stacklevel=stacklevel,
+        )
+        logger.warning(
+            "acquire(): unknown limit key(s) %s for entity %r resource %r (%s: %s)",
+            unknown,
+            entity_id,
+            resource,
+            listing,
+            configured,
         )
 
     def _try_parent_only_acquire(
@@ -1120,7 +1135,14 @@ class SyncRateLimiter:
             parent_buckets = self._fetch_buckets([parent_id], resource)
             existing_buckets.update(parent_buckets)
         known_limits = [limit for eid in entity_ids for limit in entity_limits[eid]]
-        self._warn_unknown_limits(consume, known_limits, entity_id, resource, stacklevel=5)
+        self._warn_unknown_limits(
+            consume,
+            known_limits,
+            entity_id,
+            resource,
+            config_source=child_config_source,
+            stacklevel=5,
+        )
         entries: list[LeaseEntry] = []
         statuses: list[LimitStatus] = []
         for eid in entity_ids:

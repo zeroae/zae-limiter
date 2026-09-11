@@ -406,8 +406,12 @@ class TestUnknownLimitInConsume:
                 assert len(acquire_warnings) == 1
                 message = str(acquire_warnings[0].message)
                 assert "'tpm'" in message and "not configured" in message
-                assert "'api'" in message and "'rpm'" in message
+                assert "'rpm'" in message
                 assert "ValidationError" in message and "v1.0.0" in message
+                # Entity and resource are logged, never embedded in the text:
+                # a per-entity message makes __warningregistry__ grow per
+                # entity and defeats the default "once per location" filter.
+                assert "e1" not in message and "api" not in message
                 # stacklevel must point at the acquire() caller, not the library
                 assert acquire_warnings[0].filename == __file__
 
@@ -571,8 +575,61 @@ class TestUnknownLimitInConsume:
                 acquire_warnings = [w for w in record if "acquire()" in str(w.message)]
                 assert len(acquire_warnings) == 1
                 assert "'tpmm'" in str(acquire_warnings[0].message)
-                assert "entity 'child'" in str(acquire_warnings[0].message)
+                assert "child" not in str(acquire_warnings[0].message)
                 assert acquire_warnings[0].filename == __file__
+
+    async def test_message_is_identical_across_entities(self, repo, speculative, caplog):
+        """The text must not vary per entity, or every entity adds a
+        __warningregistry__ entry and defeats the default once-per-location
+        filter (a warning storm). Entity and resource go to the log."""
+        import logging
+
+        await repo.set_system_defaults([Limit.custom("rpm", 1000, **SLOW)])
+        for eid in ("e1", "e2"):
+            await repo.create_entity(eid, parent_id=None, name=eid)
+
+        limiter = RateLimiter(repository=repo, speculative_writes=speculative)
+        messages = []
+        async with limiter:
+            with caplog.at_level(logging.WARNING, logger="zae_limiter.limiter"):
+                for eid in ("e1", "e2"):
+                    with pytest.warns(FutureWarning) as record:
+                        async with limiter.acquire(eid, "api", {"rpm": 1, "tpmm": 5}):
+                            pass
+                    messages.append(
+                        next(str(w.message) for w in record if "acquire()" in str(w.message))
+                    )
+
+        assert messages[0] == messages[1]
+        logged = [r.getMessage() for r in caplog.records if "tpmm" in r.getMessage()]
+        assert any("e1" in m and "api" in m for m in logged)
+        assert any("e2" in m and "api" in m for m in logged)
+
+    async def test_override_wording_when_limits_passed(self, repo, speculative):
+        """`limits=[...]` replaces stored config for this call, so "not
+        configured for this resource" would be false when the key exists in
+        stored config. Say what was actually checked: the override."""
+        await repo.set_system_defaults(
+            [Limit.custom("rpm", 1000, **SLOW), Limit.custom("tpm", 1000, **SLOW)]
+        )
+        await repo.create_entity("e1", parent_id=None, name="e1")
+
+        limiter = RateLimiter(repository=repo, speculative_writes=speculative)
+        async with limiter:
+            for _ in range(2):
+                with pytest.warns(FutureWarning) as record:
+                    async with limiter.acquire(
+                        "e1",
+                        "api",
+                        {"rpm": 1, "tpm": 5},
+                        limits=[Limit.custom("rpm", 1000, **SLOW)],
+                    ):
+                        pass
+                message = next(str(w.message) for w in record if "acquire()" in str(w.message))
+                assert "'tpm'" in message
+                assert "`limits` override passed to acquire()" in message
+                assert "not configured" not in message
+                assert "override limits: ['rpm']" in message
 
 
 @pytest.mark.parametrize("speculative", [True, False])

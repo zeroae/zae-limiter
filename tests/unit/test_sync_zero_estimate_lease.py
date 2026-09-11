@@ -353,8 +353,9 @@ class TestUnknownLimitInConsume:
                 assert len(acquire_warnings) == 1
                 message = str(acquire_warnings[0].message)
                 assert "'tpm'" in message and "not configured" in message
-                assert "'api'" in message and "'rpm'" in message
+                assert "'rpm'" in message
                 assert "ValidationError" in message and "v1.0.0" in message
+                assert "e1" not in message and "api" not in message
                 assert acquire_warnings[0].filename == __file__
         assert _tokens(repo, "e1", "api")["rpm"] == 1000000 - 2 * 1000
 
@@ -498,8 +499,58 @@ class TestUnknownLimitInConsume:
                 acquire_warnings = [w for w in record if "acquire()" in str(w.message)]
                 assert len(acquire_warnings) == 1
                 assert "'tpmm'" in str(acquire_warnings[0].message)
-                assert "entity 'child'" in str(acquire_warnings[0].message)
+                assert "child" not in str(acquire_warnings[0].message)
                 assert acquire_warnings[0].filename == __file__
+
+    def test_message_is_identical_across_entities(self, repo, speculative, caplog):
+        """The text must not vary per entity, or every entity adds a
+        __warningregistry__ entry and defeats the default once-per-location
+        filter (a warning storm). Entity and resource go to the log."""
+        import logging
+
+        repo.set_system_defaults([Limit.custom("rpm", 1000, **SLOW)])
+        for eid in ("e1", "e2"):
+            repo.create_entity(eid, parent_id=None, name=eid)
+        limiter = SyncRateLimiter(repository=repo, speculative_writes=speculative)
+        messages = []
+        with limiter:
+            with caplog.at_level(logging.WARNING, logger="zae_limiter.sync_limiter"):
+                for eid in ("e1", "e2"):
+                    with pytest.warns(FutureWarning) as record:
+                        with limiter.acquire(eid, "api", {"rpm": 1, "tpmm": 5}):
+                            pass
+                    messages.append(
+                        next(str(w.message) for w in record if "acquire()" in str(w.message))
+                    )
+        assert messages[0] == messages[1]
+        logged = [r.getMessage() for r in caplog.records if "tpmm" in r.getMessage()]
+        assert any("e1" in m and "api" in m for m in logged)
+        assert any("e2" in m and "api" in m for m in logged)
+
+    def test_override_wording_when_limits_passed(self, repo, speculative):
+        """`limits=[...]` replaces stored config for this call, so "not
+        configured for this resource" would be false when the key exists in
+        stored config. Say what was actually checked: the override."""
+        repo.set_system_defaults(
+            [Limit.custom("rpm", 1000, **SLOW), Limit.custom("tpm", 1000, **SLOW)]
+        )
+        repo.create_entity("e1", parent_id=None, name="e1")
+        limiter = SyncRateLimiter(repository=repo, speculative_writes=speculative)
+        with limiter:
+            for _ in range(2):
+                with pytest.warns(FutureWarning) as record:
+                    with limiter.acquire(
+                        "e1",
+                        "api",
+                        {"rpm": 1, "tpm": 5},
+                        limits=[Limit.custom("rpm", 1000, **SLOW)],
+                    ):
+                        pass
+                message = next(str(w.message) for w in record if "acquire()" in str(w.message))
+                assert "'tpm'" in message
+                assert "`limits` override passed to acquire()" in message
+                assert "not configured" not in message
+                assert "override limits: ['rpm']" in message
 
 
 @pytest.mark.parametrize("speculative", [True, False])
