@@ -159,6 +159,9 @@ module = ["locust.*", "locustfile"]
 ignore_missing_imports = true
 
 [tool.coverage.run]
+# Every package under src/ that a bare `--cov` measures. Keep in sync with the
+# top-level packages in src/ so a new package is never silently unmeasured.
+source_pkgs = ["zae_limiter", "zae_limiter_provisioner", "zae_limiter_aggregator"]
 omit = [
     # Generated sync files - coverage measured on async source only
     "*/sync_*.py",

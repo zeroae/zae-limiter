@@ -52,7 +52,8 @@ jobs:
         run: uv run pytest tests/doctest/test_docs_lint.py -v -p no:xdist -o "addopts="
 
       - name: Test documentation examples (moto)
-        run: uv run pytest tests/doctest/test_docs_run.py -v -p no:xdist -o "addopts=" --cov=zae_limiter --cov=zae_limiter_provisioner --cov=zae_limiter_aggregator --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
+        # Doctests only exercise zae_limiter; the Lambda packages in source_pkgs show as "never imported" here.
+        run: uv run pytest tests/doctest/test_docs_run.py -v -p no:xdist -o "addopts=" --cov --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
 
       - name: Upload coverage
         uses: codecov/codecov-action@v7

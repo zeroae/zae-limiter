@@ -396,7 +396,7 @@ jobs:
 ## Test Coverage
 
 ```bash
-pytest --cov=zae_limiter --cov-report=html
+pytest --cov --cov-report=html
 open htmlcov/index.html
 ```
 

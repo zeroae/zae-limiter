@@ -70,9 +70,9 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev --extra plot --extra bench
       - name: Run unit tests
-        run: uv run pytest tests/unit/ --cov=zae_limiter --cov=zae_limiter_provisioner --cov=zae_limiter_aggregator --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
+        run: uv run pytest tests/unit/ --cov --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
       - name: Run gevent unit tests (xdist disabled)
-        run: uv run pytest tests/unit/ -m "gevent" -n 0 --cov=zae_limiter --cov=zae_limiter_provisioner --cov=zae_limiter_aggregator --cov-report=xml --cov-append --junitxml=junit-gevent.xml -o junit_family=legacy
+        run: uv run pytest tests/unit/ -m "gevent" -n 0 --cov --cov-report=xml --cov-append --junitxml=junit-gevent.xml -o junit_family=legacy
       - name: Upload coverage
         uses: codecov/codecov-action@v7
         if: matrix.python-version == '3.12'
@@ -129,7 +129,7 @@ jobs:
           AWS_DEFAULT_REGION: us-east-1
           AWS_ENDPOINT_URL: http://localhost:4566
       - name: Run integration tests
-        run: uv run pytest -m integration -v --cov=zae_limiter --cov=zae_limiter_provisioner --cov=zae_limiter_aggregator --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
+        run: uv run pytest -m integration -v --cov --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
         env:
           AWS_ACCESS_KEY_ID: test
           AWS_SECRET_ACCESS_KEY: test
@@ -185,7 +185,7 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev --extra plot
       - name: Run E2E tests (LocalStack)
-        run: uv run pytest -m e2e tests/e2e/test_localstack.py -v --cov=zae_limiter --cov=zae_limiter_provisioner --cov=zae_limiter_aggregator --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
+        run: uv run pytest -m e2e tests/e2e/test_localstack.py -v --cov --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
         env:
           AWS_ACCESS_KEY_ID: test
           AWS_SECRET_ACCESS_KEY: test
