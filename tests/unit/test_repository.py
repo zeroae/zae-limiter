@@ -399,6 +399,37 @@ class TestRepositoryBucketOperations:
         assert buckets0 == {}
 
     @pytest.mark.asyncio
+    async def test_speculative_images_never_lower_a_warm_shard_count(self, repo):
+        """A shard N>0 item can carry a stale, lower shard_count (propagation
+        lag). Neither a failure image nor a success image may shrink the
+        cached count learned from shard 0; the cache is monotonic (max)."""
+        ns = repo._namespace_id
+        limit = Limit.custom("rpm", 10, refill_amount=1, refill_period_seconds=3600)
+        now_ms = int(time.time() * 1000)
+        for shard_id, tokens in ((0, 0), (1, 10_000)):
+            state = BucketState.from_limit("mono-1", "gpt-4", limit, now_ms, 2)
+            state.tokens_milli = tokens
+            await repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        "mono-1", "gpt-4", [state], now_ms, shard_id=shard_id, shard_count=2
+                    )
+                ]
+            )
+        repo._entity_cache[(ns, "mono-1")] = (False, None, {"gpt-4": 4})
+
+        # Failure image (shard 0 drained) says shard_count=2
+        failed = await repo._speculative_consume_single("mono-1", "gpt-4", {"rpm": 1}, shard_id=0)
+        assert failed.success is False and failed.shard_count == 2
+        assert repo._entity_cache[(ns, "mono-1")][2]["gpt-4"] == 4
+
+        # Success image (shard 1) also says 2 — via the cached, non-cascade path
+        with patch("zae_limiter.repository.random.randrange", return_value=1):
+            ok = await repo.speculative_consume("mono-1", "gpt-4", {"rpm": 1})
+        assert ok.success is True and ok.shard_count == 2
+        assert repo._entity_cache[(ns, "mono-1")][2]["gpt-4"] == 4
+
+    @pytest.mark.asyncio
     async def test_select_shard_uses_the_cached_shard_count(self, repo):
         """select_shard is the single place a shard is picked (issue #439)."""
         ns = repo._namespace_id

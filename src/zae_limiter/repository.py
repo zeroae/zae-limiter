@@ -2475,11 +2475,11 @@ class Repository:
                     ),
                 )
                 if child_result.success:
-                    shards_cached = {**shards_cached, resource: child_result.shard_count}
-                    self._entity_cache[cache_key] = (
-                        child_result.cascade,
-                        child_result.parent_id,
-                        shards_cached,
+                    self._learn_shard_count(
+                        entity_id,
+                        resource,
+                        child_result.shard_count,
+                        meta=(child_result.cascade, child_result.parent_id),
                     )
                 else:
                     # On failure, _speculative_consume_single doesn't return
@@ -2495,9 +2495,9 @@ class Repository:
             entity_id, resource, consume, ttl_seconds, shard_id=effective_shard_id
         )
         if result.success:
-            existing_shards = self._entity_cache.get(cache_key, (False, None, {}))[2]
-            existing_shards = {**existing_shards, resource: result.shard_count}
-            self._entity_cache[cache_key] = (result.cascade, result.parent_id, existing_shards)
+            self._learn_shard_count(
+                entity_id, resource, result.shard_count, meta=(result.cascade, result.parent_id)
+            )
         return result
 
     async def _speculative_consume_single(
@@ -2632,17 +2632,13 @@ class Repository:
                     # must never be admitted by a child-only shard retry.
                     old_cascade = old_item.get("cascade", {}).get("BOOL", False)
                     old_parent_id = old_item.get("parent_id", {}).get("S")
-                    # Keep a warm cache's shard_count current from the failure
-                    # image so later draws cover every shard (issue #439). A
-                    # cold cache is left alone: cascade/parent_id are unknown.
-                    cache_key = (self._namespace_id, entity_id)
-                    cached = self._entity_cache.get(cache_key)
-                    if cached is not None and cached[2].get(resource) != old_shard_count:
-                        self._entity_cache[cache_key] = (
-                            cached[0],
-                            cached[1],
-                            {**cached[2], resource: old_shard_count},
-                        )
+                    # Keep the cached shard_count current from the failure
+                    # image so later draws cover every shard (issue #439); the
+                    # image also carries cascade/parent_id, so a cold cache
+                    # can be populated correctly rather than skipped.
+                    self._learn_shard_count(
+                        entity_id, resource, old_shard_count, meta=(old_cascade, old_parent_id)
+                    )
 
                     # Disabled wins over every other classification: retrying on
                     # another shard or doubling shards cannot help (ADR-125).
@@ -2690,6 +2686,41 @@ class Repository:
                         failure_reason=SpeculativeFailureReason.BUCKET_MISSING,
                     )
             raise
+
+    def _learn_shard_count(
+        self,
+        entity_id: str,
+        resource: str,
+        observed: int,
+        *,
+        meta: tuple[bool, str | None] | None = None,
+    ) -> int:
+        """Record an observed shard_count in the entity cache, monotonically.
+
+        The cache never shrinks: a shard N>0 item can carry a stale, lower
+        ``shard_count`` (propagation lag), and shard 0 itself can lag its
+        siblings after a TTL re-create. Adopting a lower value would narrow
+        the draw range and stamp the next client-created shard with the
+        lowered count (issue #439). ``meta`` supplies ``(cascade, parent_id)``
+        for a new entry; without it an unknown entity is left uncached.
+
+        Returns:
+            The count now cached (``observed`` when nothing was cached).
+        """
+        cache_key = (self._namespace_id, entity_id)
+        entry = self._entity_cache.get(cache_key)
+        if entry is None:
+            if meta is None:
+                return observed
+            cascade, parent_id = meta
+            shards: dict[str, int] = {}
+        else:
+            cascade, parent_id = meta if meta is not None else (entry[0], entry[1])
+            shards = dict(entry[2])
+        count = max(observed, shards.get(resource, 1))
+        shards[resource] = count
+        self._entity_cache[cache_key] = (cascade, parent_id, shards)
+        return count
 
     def select_shard(
         self,
