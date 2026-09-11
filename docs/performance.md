@@ -258,15 +258,17 @@ infrastructure limit tracks per-partition write pressure.
    the client retries on up to 2 other randomly chosen shards, creating any it finds
    missing
 
-**Shard-aware capacity:** Both the aggregator's refill and the client's shard creation
-divide effective capacity and refill amount by `shard_count`, so each shard receives its
-proportional share of tokens. Shard 0 keeps its existing balance when `shard_count`
+**Shard-aware capacity:** The aggregator's refill, the client's slow-path refill and the
+client's shard creation all divide capacity and refill amount by `shard_count`, so each
+shard holds its proportional share and the entity admits at most its configured capacity
+per refill window in steady state. Shard 0 keeps its existing balance when `shard_count`
 doubles, so admitted capacity can transiently reach 1.5x for one refill window after the
-first doubling.
+first doubling; it is never refilled above its new share.
 
 **Works without the aggregator:** Deployments using `--no-aggregator` get the same
 write-sharding behaviour; the only difference is that each new shard costs one slow-path
-acquire (1 RCU + 3 WCU) to create, once, instead of being pre-created from the stream.
+acquire (about 2.5 RCU + 2 WCU) to create, once, instead of being pre-created from the
+stream.
 
 **No application code changes required.** Pre-shard buckets are transparent to users.
 The `wcu` limit is filtered from all user-facing output (bucket states, exceptions,

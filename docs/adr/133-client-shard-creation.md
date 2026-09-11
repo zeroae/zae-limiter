@@ -9,19 +9,17 @@
 GHSA-76rv-2r9v-c5m6 mitigates DynamoDB hot partitions with pre-shard buckets: every
 bucket carries a reserved `wcu` limit, and when a speculative write exhausts it the client
 doubles `shard_count` on shard 0 and retries on another shard. That retry could never
-succeed in a fresh deployment. The speculative `UpdateItem` requires `attribute_exists(PK)`,
-the slow path's `batch_get_buckets` / `batch_get_entity_and_buckets` hardcoded shard 0, and
-`_commit_initial()` created buckets on shard 0 only. The sole writer of a shard N>0 item was
-the aggregator's stream-driven `propagate_shard_count()` (Path 2), whose own comment —
-"Client already created this shard" — shows the original design expected the client to be
-able to create shards. With `--no-aggregator`, or a lagging stream, the client bumped
-`shard_count`, selected shard 1, got `BUCKET_MISSING`, and the slow path re-read and
-re-wrote shard 0: every write stayed on the hot partition, and with `shard_count=2` about
-half of all acquires paid a full slow-path fallback for nothing.
+succeed in a fresh deployment: the speculative `UpdateItem` requires `attribute_exists(PK)`,
+the slow path's `batch_get_*` reads hardcoded shard 0, and `_commit_initial()` created
+buckets on shard 0 only. The sole writer of a shard N>0 item was the aggregator's
+`propagate_shard_count()` (Path 2), whose own comment — "Client already created this
+shard" — shows the original design expected the client to create shards. With
+`--no-aggregator`, or a lagging stream, every `BUCKET_MISSING` re-read and re-wrote
+shard 0: writes stayed on the hot partition and about half of all acquires paid a full
+slow-path fallback for nothing.
 
-Two options were on the table. **Option A**: the client creates shard N>0 items itself on
-the slow path. **Option B**: make the aggregator a hard requirement of write sharding and
-document that `--no-aggregator` deployments are unsharded.
+**Option A**: the client creates shard N>0 items itself on the slow path. **Option B**: make
+the aggregator a hard requirement and document `--no-aggregator` deployments as unsharded.
 
 ## Decision
 
@@ -41,28 +39,33 @@ The `security` label and the advisory make this a mitigation that must work in *
 deployment. `--no-aggregator` is a supported mode (it is what the test suite's shared
 minimal stack runs), so Option B would leave a documented security control inert there.
 
-**Transient capacity.** Neither the client's `bump_shard_count()` nor the aggregator's Path 2
-touches shard 0's own balance when `shard_count` doubles; the aggregator only stops refilling
-it above its new effective ceiling. Creating shard 1 at `capacity/2` while shard 0 still holds
-up to `capacity` therefore admits up to **1.5x** capacity for one refill window after the
-first doubling, decaying as shard 0 drains. This ADR matches that existing behaviour rather
-than introducing a reconciliation scheme; the client slow path still refills existing shards
-toward the undivided `cp` (pre-existing, unchanged here).
+**Capacity bound.** Every refiller — the aggregator's `try_refill_bucket()` and the client
+slow path, which carries `shard_count` on `BucketState` and refills toward
+`capacity_milli // shard_count` — caps each shard at its effective share, so an entity with
+N shards admits at most `capacity` per refill window in steady state, never `N x capacity`.
+Neither `bump_shard_count()` nor Path 2 touches shard 0's balance when `shard_count`
+doubles, so shard 0 may still hold up to `capacity` while shard 1 starts at `capacity/2`:
+a one-time transient of up to **1.5x** after the first doubling, decaying as shard 0 drains
+and never replenished above its new share. This ADR matches that behaviour rather than
+introducing a reconciliation scheme.
 
 **Race with the aggregator.** Client and aggregator both create under
 `attribute_not_exists(PK)`, so exactly one succeeds. The client losing costs one extra
 conditional write and never over-admits. The transaction still carries one item per
-(entity, resource, shard), so the 100-item limit is unaffected.
+(entity, resource, shard), so the 100-item limit is unaffected; a transaction cancelled by a
+*sibling* item's condition re-issues an innocent new-shard Put from its per-index reason.
 
-**Cost (non-cascade, one user limit; RT = round trips):**
+**Cost (non-cascade, one user limit, warm config cache; RT = round trips):**
 
 | Path | RT | RCU | WCU | Notes |
 |------|----|-----|-----|-------|
 | (a) Speculative hit on an existing shard | 1 | 0 | 1 | Unchanged steady state |
-| (b) First acquire on a not-yet-created shard | 3–4 | ~1 (+disable walk) | 3 | 1 failed conditional + 2 transactional create; **once per shard** |
-| (c) Previous broken fallback | 3–4 | ~1 (+disable walk) | 3 | Same per-call cost, paid on **every** acquire that drew a missing shard, all landing on shard 0 |
+| (b) First acquire on a not-yet-created shard | 4 | 2.5 | 2 | Failed conditional (1 WCU), disable walk (3-key BatchGet, 1.5 RCU), META + bucket BatchGet (1 RCU), single-item `PutItem` (1 WCU); **once per shard** |
+| (b') …after a wcu-driven doubling | 5 | 2.5 | 3 | (b) plus the `shard_count` bump, once per doubling |
+| (c) Previous broken fallback | 4 | 2.5 | 2 | Same per-call cost as (b), paid on **every** acquire that drew a missing shard, every write landing on shard 0 |
 
-A wcu-driven doubling additionally pays 1 WCU for the `shard_count` bump, once.
+`Repository.transact_write()` downgrades a one-item transaction to `PutItem`/`UpdateItem`,
+so the create is 1 WCU, not 2; a cold config cache adds one more BatchGet (~1.5 RCU).
 
 ## Consequences
 
@@ -72,12 +75,18 @@ A wcu-driven doubling additionally pays 1 WCU for the `shard_count` bump, once.
 - A shard-retry that finds a missing shard creates it instead of fast-rejecting the caller.
 
 **Negative:**
-- The slow path now carries a shard through read, `LeaseEntry` and write; `batch_get_*`
-  keys grow to `(entity_id, resource, shard_id)`.
-- `_sync_bucket_params()` still targets shard 0 only, so limit-parameter changes may
-  reconcile only shard 0 (out of scope, tracked separately).
+- The slow path now carries a shard and its count through read, `LeaseEntry` and write;
+  `batch_get_*` keys grow to `(entity_id, resource, shard_id)`.
+- A cascading child never takes the child-only shard retry (it would bypass the parent);
+  it pays the slow path instead — a rare-path extra round trip for correctness.
 - Non-speculative clients (`speculative_writes=False`) never consume `wcu` and so never
   trigger doubling; they stay on shard 0.
+
+## Related (tracked separately)
+
+- `_sync_bucket_params()` updates shard 0 only, so limit-parameter changes may reconcile
+  only shard 0.
+- The parallel cascade fast path always writes the parent on shard 0.
 
 ## Alternatives Considered
 
