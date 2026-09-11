@@ -2455,7 +2455,7 @@ class Repository:
         cache_key = (self._namespace_id, entity_id)
         cache_entry = self._entity_cache.get(cache_key)
 
-        effective_shard_id, _shard_count = await self.select_shard(entity_id, resource)
+        effective_shard_id, _shard_count = self.select_shard(entity_id, resource)
 
         if cache_entry is not None:
             cascade_cached, parent_id_cached, shards_cached = cache_entry
@@ -2627,6 +2627,17 @@ class Repository:
                 if old_item:
                     old_buckets = self._deserialize_composite_bucket(old_item)
                     old_shard_count = int(old_item.get("shard_count", {}).get("N", "1"))
+                    # Keep a warm cache's shard_count current from the failure
+                    # image so later draws cover every shard (issue #439). A
+                    # cold cache is left alone: cascade/parent_id are unknown.
+                    cache_key = (self._namespace_id, entity_id)
+                    cached = self._entity_cache.get(cache_key)
+                    if cached is not None and cached[2].get(resource) != old_shard_count:
+                        self._entity_cache[cache_key] = (
+                            cached[0],
+                            cached[1],
+                            {**cached[2], resource: old_shard_count},
+                        )
 
                     # Disabled wins over every other classification: retrying on
                     # another shard or doubling shards cannot help (ADR-125).
@@ -2671,11 +2682,12 @@ class Repository:
                     )
             raise
 
-    async def select_shard(
+    def select_shard(
         self,
         entity_id: str,
         resource: str,
         shard_id: int | None = None,
+        shard_count: int | None = None,
     ) -> tuple[int, int]:
         """Pick the bucket shard an acquire should target (GHSA-76rv, issue #439).
 
@@ -2693,14 +2705,18 @@ class Repository:
             entity_id: Entity owning the bucket.
             resource: Resource name.
             shard_id: Explicit shard to honour verbatim, or None to draw one.
+            shard_count: Count observed by the caller (e.g. on a speculative
+                failure image, which never updates the cache); None reads
+                the entity cache.
 
         Returns:
-            ``(shard_id, shard_count)`` with shard_count from the entity
-            cache (1 when unknown).
+            ``(shard_id, shard_count)`` with shard_count from the argument or
+            the entity cache (1 when unknown).
         """
-        cache_key = (self._namespace_id, entity_id)
-        cache_entry = self._entity_cache.get(cache_key)
-        shard_count = cache_entry[2].get(resource, 1) if cache_entry is not None else 1
+        if shard_count is None:
+            cache_key = (self._namespace_id, entity_id)
+            cache_entry = self._entity_cache.get(cache_key)
+            shard_count = cache_entry[2].get(resource, 1) if cache_entry is not None else 1
         if shard_id is None:
             shard_id = random.randrange(shard_count) if shard_count > 1 else 0
         return shard_id, shard_count

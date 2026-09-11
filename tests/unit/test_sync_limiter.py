@@ -5306,6 +5306,24 @@ class TestClientShardCreation:
         assert shard1 is not None
         assert self._n(shard1, "rpm", schema.BUCKET_FIELD_TK) == 10000 // 2 - 1000
 
+    def test_cold_cache_retry_sizes_the_new_shard_from_the_failure_image(self, sync_limiter):
+        """A failed speculative write never updates the entity cache, so with a
+        cold cache the retry knows shard_count=2 (ALL_OLD) but the slow path
+        used to size the new shard from the cache: full tokens, shard_count=1.
+        The count observed on the failure image must reach the create."""
+        from zae_limiter import schema
+
+        limit = Limit.custom("rpm", 10, refill_amount=1, refill_period_seconds=3600)
+        repo = self._seed_shard0(sync_limiter, shard_count=2, limit=limit)
+        del repo._entity_cache[repo._namespace_id, "user-1"]
+        repo._speculative_consume_single("user-1", "gpt-4", {"rpm": 10}, shard_id=0)
+        with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+            assert {e._shard_id for e in lease.entries} == {1}
+        shard1 = self._raw_item(repo, 1)
+        assert shard1 is not None
+        assert shard1["shard_count"]["N"] == "2"
+        assert self._n(shard1, "rpm", schema.BUCKET_FIELD_TK) == 10000 // 2 - 1000
+
     def test_create_race_lost_to_aggregator_consumes_once(self, sync_limiter):
         """If the aggregator's Path 2 wins the create, the client retries as a
         consumption-only conditional write on that shard: one debit, no

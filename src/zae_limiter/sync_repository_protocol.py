@@ -391,7 +391,11 @@ class SyncRepositoryProtocol(Protocol):
         ...
 
     def select_shard(
-        self, entity_id: str, resource: str, shard_id: int | None = None
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int | None = None,
+        shard_count: int | None = None,
     ) -> tuple[int, int]:
         """
         Pick the bucket shard an acquire should target (GHSA-76rv, issue #439).
@@ -400,11 +404,13 @@ class SyncRepositoryProtocol(Protocol):
             entity_id: Entity owning the bucket
             resource: Resource name
             shard_id: Explicit shard to honour verbatim, or None to draw one
-                at random from the cached shard_count
+                at random from the shard_count
+            shard_count: Count the caller observed (a speculative failure
+                image), or None to read the entity cache
 
         Returns:
-            Tuple of (shard_id, shard_count) where shard_count is the cached
-            value for this (entity, resource), defaulting to 1.
+            Tuple of (shard_id, shard_count) where shard_count is the given
+            or cached value for this (entity, resource), defaulting to 1.
         """
         ...
 

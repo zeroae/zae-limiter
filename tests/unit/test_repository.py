@@ -405,14 +405,14 @@ class TestRepositoryBucketOperations:
         repo._entity_cache[(ns, "sel-1")] = (False, None, {"gpt-4": 4})
 
         with patch("zae_limiter.repository.random.randrange", return_value=2) as randrange:
-            assert await repo.select_shard("sel-1", "gpt-4") == (2, 4)
+            assert repo.select_shard("sel-1", "gpt-4") == (2, 4)
             randrange.assert_called_once_with(4)
 
         # An explicit shard is honoured verbatim, with the cached count alongside
-        assert await repo.select_shard("sel-1", "gpt-4", shard_id=3) == (3, 4)
+        assert repo.select_shard("sel-1", "gpt-4", shard_id=3) == (3, 4)
         # Unknown entity/resource: single shard, no random draw
-        assert await repo.select_shard("sel-1", "other") == (0, 1)
-        assert await repo.select_shard("nobody", "gpt-4") == (0, 1)
+        assert repo.select_shard("sel-1", "other") == (0, 1)
+        assert repo.select_shard("nobody", "gpt-4") == (0, 1)
 
     @pytest.mark.asyncio
     async def test_batch_get_entity_and_buckets_finds_bucket_without_meta(self, repo):
