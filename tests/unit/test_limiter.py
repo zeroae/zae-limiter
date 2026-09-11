@@ -7197,6 +7197,30 @@ class TestClientShardCreation:
         shard1 = await self._raw_item(repo, 1)
         assert shard1 is not None and shard1["shard_count"]["N"] == "2"
 
+    async def test_bump_without_increase_stays_on_the_selected_shard(self, limiter):
+        """If the bump cannot report a larger count (shard 0 vanished between
+        the failed write and the bump), there is no new range to draw from;
+        the slow path keeps the shard it already selected."""
+        from zae_limiter import schema
+
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        repo = await self._seed_shard0(limiter, shard_count=1, limit=limit)
+        for _ in range(schema.WCU_LIMIT_CAPACITY):
+            await repo._speculative_consume_single("user-1", "gpt-4", {"rpm": 1}, shard_id=0)
+        repo.bump_shard_count = AsyncMock(return_value=1)
+
+        slow_path_shards: list[int | None] = []
+        original_do_acquire = limiter._do_acquire
+
+        async def spy(*args, **kwargs):
+            slow_path_shards.append(kwargs.get("shard_id"))
+            return await original_do_acquire(*args, **kwargs)
+
+        limiter._do_acquire = spy
+        async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+            assert {e._shard_id for e in lease.entries} == {0}
+        assert slow_path_shards == [0]
+
     async def test_cascade_slow_path_reads_parent_shard_without_batch_support(
         self, limiter, monkeypatch
     ):
