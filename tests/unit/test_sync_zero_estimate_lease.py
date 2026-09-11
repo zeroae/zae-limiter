@@ -10,7 +10,7 @@ import warnings
 
 import pytest
 
-from zae_limiter import OnUnavailable, SyncRateLimiter, SyncRepository, schema
+from zae_limiter import OnUnavailable, RateLimitExceeded, SyncRateLimiter, SyncRepository, schema
 from zae_limiter.models import Limit
 
 SLOW = dict(refill_amount=1, refill_period_seconds=3600)
@@ -235,6 +235,128 @@ class TestUndeclaredLimitIsReported:
                 pass
         tokens = _tokens(repo, "e1", "api")
         assert tokens == {"rpm": 1000000 - 1000, "tpm": 1000000}
+
+
+@pytest.mark.parametrize("speculative", [True, False])
+class TestDeclaredLimitsGateAdmission:
+    """Only declared limits gate admission and appear in RateLimitExceeded.
+
+    The fast path's conditional UpdateItem covers only the limits in
+    `consume`, so an undeclared limit in debt never rejects there. The slow
+    path used to run `try_consume(state, 0, now)` for every resolved limit,
+    and a bucket in debt fails that check even for a request of 0 — so an
+    rpm-only acquire was REJECTED on the slow path but ADMITTED on the fast
+    path. Both paths must agree: undeclared limits are refilled (they are
+    still written) but never checked and never reported.
+    """
+
+    def _rpm_and_tpm(self, repo, rpm_capacity=1000):
+        repo.set_system_defaults(
+            [Limit.custom("rpm", rpm_capacity, **SLOW), Limit.custom("tpm", 1000, **SLOW)]
+        )
+        repo.create_entity("e1", parent_id=None, name="e1")
+
+    def test_undeclared_limit_in_debt_does_not_reject(self, repo, speculative):
+        self._rpm_and_tpm(repo)
+        limiter = SyncRateLimiter(repository=repo, speculative_writes=speculative)
+        with limiter:
+            with limiter.acquire("e1", "api", {"rpm": 1, "tpm": 0}) as lease:
+                lease.adjust(tpm=2000)
+            for _ in range(2):
+                with limiter.acquire("e1", "api", {"rpm": 1}):
+                    pass
+        tokens = _tokens(repo, "e1", "api")
+        assert tokens["tpm"] == -1000000, "tpm is in debt and must stay untouched"
+        assert tokens["rpm"] == 1000000 - 3 * 1000
+
+    def test_acquire_rejection_lists_only_declared_limits(self, repo, speculative):
+        self._rpm_and_tpm(repo, rpm_capacity=1)
+        limiter = SyncRateLimiter(repository=repo, speculative_writes=speculative)
+        with limiter:
+            with limiter.acquire("e1", "api", {"rpm": 0}):
+                pass
+            with pytest.raises(RateLimitExceeded) as exc_info:
+                with limiter.acquire("e1", "api", {"rpm": 5}):
+                    pass
+        exc = exc_info.value
+        assert {s.limit_name for s in exc.statuses} == {"rpm"}
+        assert {s.limit_name for s in exc.violations} == {"rpm"}
+        assert exc.passed == []
+
+    def test_cascade_rejection_lists_only_declared_limits(self, repo, speculative):
+        """The cascade fast-reject sites build child statuses from every
+        bucket in the speculative result, which carries the reserved `wcu`
+        limit and any undeclared limit. Neither may leak."""
+        repo.set_system_defaults(
+            [Limit.custom("rpm", 2, **SLOW), Limit.custom("tpm", 1000, **SLOW)]
+        )
+        repo.create_entity("parent", parent_id=None, name="parent")
+        repo.create_entity("child", parent_id="parent", name="child", cascade=True)
+        repo.set_limits(
+            "child",
+            [Limit.custom("rpm", 100, **SLOW), Limit.custom("tpm", 1000, **SLOW)],
+            resource="api",
+        )
+        limiter = SyncRateLimiter(repository=repo, speculative_writes=speculative)
+        with limiter:
+            for _ in range(2):
+                with limiter.acquire("child", "api", {"rpm": 1}):
+                    pass
+            with pytest.raises(RateLimitExceeded) as exc_info:
+                with limiter.acquire("child", "api", {"rpm": 1}):
+                    pass
+        exc = exc_info.value
+        assert {s.limit_name for s in exc.statuses} == {"rpm"}
+        assert {(s.entity_id, s.limit_name) for s in exc.violations} == {("parent", "rpm")}
+
+    def test_empty_consume_declares_nothing(self, repo, speculative):
+        """On main the slow path built declared entries for every resolved
+        limit, so `consume={}` then `adjust(tpm=...)` worked on the first
+        call only. An empty `consume` declares nothing on either path."""
+        self._rpm_and_tpm(repo)
+        limiter = SyncRateLimiter(repository=repo, speculative_writes=speculative)
+        with limiter:
+            for _ in range(2):
+                with limiter.acquire("e1", "api", {}) as lease:
+                    assert lease.consumed == {}
+                    with pytest.warns(FutureWarning) as record:
+                        lease.adjust(tpm=1200)
+                    assert "'tpm'" in str(record[0].message)
+                    assert "declared limits on this lease: []" in str(record[0].message)
+        tokens = _tokens(repo, "e1", "api")
+        assert tokens == {"rpm": 1000000, "tpm": 1000000}, "nothing was consumed"
+
+
+@pytest.mark.parametrize("speculative", [True, False])
+class TestUnknownLimitInConsume:
+    """A key in `consume` that names no configured limit is silently dropped
+    at admission (`consume.get(limit.name, 0)`), after which every
+    `adjust()` on it warns "not declared in consume" — pointing at the wrong
+    fix, since the caller did declare it. Close it where the declaration is
+    made: `acquire()` warns that the key is not configured for the resource.
+
+    The fast path cannot see this (an unknown key makes `speculative_consume`
+    fail and fall back), so the slow-path check covers both paths.
+    """
+
+    def test_unknown_key_warns_at_acquire_and_gets_no_entry(self, repo, speculative):
+        repo.set_system_defaults([Limit.custom("rpm", 1000, **SLOW)])
+        repo.create_entity("e1", parent_id=None, name="e1")
+        limiter = SyncRateLimiter(repository=repo, speculative_writes=speculative)
+        with limiter:
+            for _ in range(2):
+                with pytest.warns(FutureWarning) as record:
+                    with limiter.acquire("e1", "api", {"rpm": 1, "tpm": 500}) as lease:
+                        assert {e.limit.name for e in lease.entries} == {"rpm"}
+                        assert lease.consumed == {"rpm": 1}
+                acquire_warnings = [w for w in record if "acquire()" in str(w.message)]
+                assert len(acquire_warnings) == 1
+                message = str(acquire_warnings[0].message)
+                assert "'tpm'" in message and "not configured" in message
+                assert "'api'" in message and "'rpm'" in message
+                assert "ValidationError" in message and "v1.0.0" in message
+                assert acquire_warnings[0].filename == __file__
+        assert _tokens(repo, "e1", "api")["rpm"] == 1000000 - 2 * 1000
 
 
 @pytest.mark.parametrize("speculative", [True, False])

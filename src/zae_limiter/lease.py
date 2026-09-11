@@ -73,11 +73,17 @@ class Lease:
     _committed: bool = False
     _rolled_back: bool = False
     _initial_committed: bool = False  # True after _commit_initial() succeeds (Issue #309)
-    # True for the no-op lease yielded under on_unavailable=ALLOW when the
-    # backend is unreachable (Issue #455). Set explicitly where that lease is
-    # built — never inferred from `entries == []` — so declared-scope
-    # validation can exempt it without mistaking a real, empty lease for it.
     degraded: bool = False
+    """Whether this is the no-op lease yielded under ``on_unavailable=ALLOW``.
+
+    ``True`` only when the backend was unreachable and the limiter degraded
+    to allowing the request (Issue #455). Such a lease has no entries, and
+    ``adjust()``, ``consume()`` and ``release()`` are silent no-ops on it —
+    the declared-scope check that normally reports keys outside ``consume``
+    is skipped, so an outage never turns into a warning storm. Set
+    explicitly where that lease is built, never inferred from an empty
+    ``entries``: a real lease with nothing declared is not degraded.
+    """
 
     @property
     def consumed(self) -> dict[str, int]:
@@ -255,7 +261,9 @@ class Lease:
         """
         Return unused capacity to bucket.
 
-        Convenience wrapper for adjust() with negated values.
+        Equivalent to ``adjust()`` with every amount negated: the returned
+        tokens are credited unconditionally, so the bucket can end up above
+        its capacity until the next refill re-caps it.
 
         Only limits declared in ``acquire(consume=...)`` can be released;
         other keys are reported (Issue #455) and ignored.
@@ -570,9 +578,15 @@ def _is_transaction_conflict(exc: Exception) -> bool:
 
 
 def _build_retry_failure_statuses(entries: list[LeaseEntry]) -> list[LimitStatus]:
-    """Build LimitStatus list for a retry failure (rate limit exceeded)."""
+    """Build LimitStatus list for a retry failure (rate limit exceeded).
+
+    Only declared entries are reported (Issue #455): undeclared entries are
+    write-only carriers that never gate admission.
+    """
     statuses: list[LimitStatus] = []
     for entry in entries:
+        if not entry._declared:
+            continue
         deficit_milli = max(0, entry.consumed * 1000 - entry.state.tokens_milli)
         retry_after = calculate_retry_after(
             deficit_milli=deficit_milli,

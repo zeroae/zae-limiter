@@ -117,6 +117,11 @@ async with limiter.acquire(
         await lease.adjust(tpm=response.usage.total_tokens)
     ```
 
+    An empty `consume` declares no limits, so nothing on that lease is adjustable —
+    use `{"name": 0}` to declare a limit whose cost is unknown. A key in `consume`
+    that names no limit configured for the resource is ignored at admission and
+    reported by `acquire()` with a `FutureWarning`.
+
     Passing a key that names no declared limit (including a typo such as
     `adjust(tpmm=...)`) is ignored and emits a `FutureWarning` that lists the
     offending keys and the lease's declared limits. It becomes a `ValidationError`

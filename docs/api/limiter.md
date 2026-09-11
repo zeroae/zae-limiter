@@ -27,3 +27,37 @@ The main rate limiter classes for async and sync usage.
       show_root_heading: true
       show_source: false
       heading_level: 3
+
+## Lease (Async)
+
+The object yielded by `RateLimiter.acquire()`. Only limits declared in
+`acquire(consume=...)` are adjustable through it; see
+[Adjusting Consumption](../guide/basic-usage.md#adjusting-consumption).
+
+::: zae_limiter.lease.Lease
+    options:
+      show_root_heading: true
+      show_source: false
+      members_order: source
+      heading_level: 3
+      members:
+        - degraded
+        - consumed
+        - adjust
+        - consume
+        - release
+
+## SyncLease
+
+::: zae_limiter.sync_lease.SyncLease
+    options:
+      show_root_heading: true
+      show_source: false
+      members_order: source
+      heading_level: 3
+      members:
+        - degraded
+        - consumed
+        - adjust
+        - consume
+        - release

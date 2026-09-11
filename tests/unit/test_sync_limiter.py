@@ -416,9 +416,20 @@ class TestLeaseRetryPath:
         state = MagicMock()
         state.tokens_milli = 50000
         entry = LeaseEntry(entity_id="e1", resource="gpt-4", limit=limit, state=state, consumed=60)
-        statuses = _build_retry_failure_statuses([entry])
+        undeclared_state = MagicMock()
+        undeclared_state.tokens_milli = 0
+        undeclared = LeaseEntry(
+            entity_id="e1",
+            resource="gpt-4",
+            limit=Limit.per_minute("tpm", 1000),
+            state=undeclared_state,
+            consumed=0,
+            _declared=False,
+        )
+        statuses = _build_retry_failure_statuses([entry, undeclared])
         assert len(statuses) == 1
         assert statuses[0].entity_id == "e1"
+        assert statuses[0].limit_name == "rpm"
         assert statuses[0].available == 50
         assert statuses[0].requested == 60
         assert statuses[0].exceeded is True
