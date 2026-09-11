@@ -80,8 +80,16 @@ class SyncLease:
         A limit absent from ``consume`` was never checked at admission, so
         adjusting it afterwards would drive a bucket negative that never had
         the chance to reject; a typo (``tpmm`` for ``tpm``) would otherwise
-        be silent forever. Emits ``DeprecationWarning`` now; becomes
+        be silent forever. Emits ``FutureWarning`` now; becomes
         ``ValidationError`` in v1.0.0.
+
+        ``FutureWarning`` rather than ``DeprecationWarning``: Python's default
+        filters hide ``DeprecationWarning`` unless it is attributed to
+        ``__main__``, and ``stacklevel`` attributes this one to application
+        code, so it would never surface in a real deployment — the typo
+        would stay silent, the exact failure Issue #455 exists to fix.
+        ``FutureWarning`` is the category documented for warnings aimed at
+        end users of an application and is shown by default.
 
         The degraded lease yielded under ``on_unavailable=ALLOW`` is exempt:
         it has no entries by design, and warning on every call during an
@@ -95,7 +103,7 @@ class SyncLease:
             return
         warnings.warn(
             f"lease.{method}() names limit(s) {undeclared} that were not declared in acquire(consume=...); declared limits on this lease: {declared}. Undeclared keys are ignored. Name the limit in `consume` (an estimate of 0 is valid) to make it adjustable. This becomes a ValidationError in v1.0.0.",
-            DeprecationWarning,
+            FutureWarning,
             stacklevel=3,
         )
 

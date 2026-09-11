@@ -118,7 +118,7 @@ async with limiter.acquire(
     ```
 
     Passing a key that names no declared limit (including a typo such as
-    `adjust(tpmm=...)`) is ignored and emits a `DeprecationWarning` that lists the
+    `adjust(tpmm=...)`) is ignored and emits a `FutureWarning` that lists the
     offending keys and the lease's declared limits. It becomes a `ValidationError`
     in v1.0.0. The no-op lease yielded under
     [`on_unavailable=ALLOW`](unavailability.md#no-op-lease-behavior) is exempt.

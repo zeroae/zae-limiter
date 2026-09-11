@@ -75,7 +75,7 @@ except RateLimitExceeded as e:
 ```
 
 `lease.adjust()`, `lease.consume()`, and `lease.release()` accept only limits named in
-`consume` (an estimate of `0` counts). Other keys are ignored with a `DeprecationWarning`
+`consume` (an estimate of `0` counts). Other keys are ignored with a `FutureWarning`
 and become a `ValidationError` in v1.0.0. See
 [Adjusting Consumption](../guide/basic-usage.md#adjusting-consumption).
 

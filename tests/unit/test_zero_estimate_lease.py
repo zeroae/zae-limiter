@@ -139,7 +139,7 @@ class TestWcuStaysInternal:
             async with limiter.acquire("e1", "api", {"rpm": 1}):
                 pass
             async with limiter.acquire("e1", "api", {"rpm": 1}) as lease:
-                with pytest.warns(DeprecationWarning, match=schema.WCU_LIMIT_NAME):
+                with pytest.warns(FutureWarning, match=schema.WCU_LIMIT_NAME):
                     await lease.adjust(**{schema.WCU_LIMIT_NAME: 500})
                 assert lease.consumed.get(schema.WCU_LIMIT_NAME) is None
 
@@ -159,7 +159,7 @@ class TestUndeclaredLimitIsReported:
     negative that never had the chance to reject. Both paths must therefore
     treat such a key the same way: report it and leave the bucket alone.
 
-    Staged rollout: `DeprecationWarning` now, `ValidationError` at v1.0.0.
+    Staged rollout: `FutureWarning` now, `ValidationError` at v1.0.0.
     """
 
     async def _rpm_and_tpm(self, repo):
@@ -178,7 +178,7 @@ class TestUndeclaredLimitIsReported:
         async with limiter:
             for _ in range(2):
                 async with limiter.acquire("e1", "api", {"rpm": 1}) as lease:
-                    with pytest.warns(DeprecationWarning, match=r"'tpm'"):
+                    with pytest.warns(FutureWarning, match=r"'tpm'"):
                         await lease.adjust(tpm=100)
 
         tokens = await _tokens(repo, "e1", "api")
@@ -194,7 +194,7 @@ class TestUndeclaredLimitIsReported:
         async with limiter:
             for _ in range(2):
                 async with limiter.acquire("e1", "api", {"rpm": 1, "tpm": 500}) as lease:
-                    with pytest.warns(DeprecationWarning) as record:
+                    with pytest.warns(FutureWarning) as record:
                         await lease.adjust(tpmm=100)
 
         assert len(record) == 1
@@ -214,7 +214,7 @@ class TestUndeclaredLimitIsReported:
         async with limiter:
             for _ in range(2):
                 async with limiter.acquire("e1", "api", {"rpm": 1}) as lease:
-                    with pytest.warns(DeprecationWarning, match=r"consume\(\).*'tpm'"):
+                    with pytest.warns(FutureWarning, match=r"consume\(\).*'tpm'"):
                         await lease.consume(tpm=100)
                     assert "tpm" not in lease.consumed
 
@@ -227,7 +227,7 @@ class TestUndeclaredLimitIsReported:
         async with limiter:
             for _ in range(2):
                 async with limiter.acquire("e1", "api", {"rpm": 1}) as lease:
-                    with pytest.warns(DeprecationWarning, match=r"release\(\).*'tpm'"):
+                    with pytest.warns(FutureWarning, match=r"release\(\).*'tpm'"):
                         await lease.release(tpm=100)
 
         assert (await _tokens(repo, "e1", "api"))["tpm"] == 1_000_000
@@ -241,7 +241,7 @@ class TestUndeclaredLimitIsReported:
             for _ in range(2):
                 async with limiter.acquire("e1", "api", {"rpm": 1, "tpm": 0}) as lease:
                     with warnings.catch_warnings():
-                        warnings.simplefilter("error", DeprecationWarning)
+                        warnings.simplefilter("error", FutureWarning)
                         await lease.adjust(tpm=100)
                         await lease.consume(tpm=1)
                         await lease.release(tpm=1)
@@ -313,7 +313,7 @@ class TestDegradedLeaseIsExempt:
                 assert lease.degraded is True
                 assert lease.entries == []
                 with warnings.catch_warnings():
-                    warnings.simplefilter("error", DeprecationWarning)
+                    warnings.simplefilter("error", FutureWarning)
                     await lease.adjust(rpm=100, tpm=100)
                     await lease.consume(rpm=1)
                     await lease.release(rpm=1)
