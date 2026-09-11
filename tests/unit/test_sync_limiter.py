@@ -4521,9 +4521,9 @@ class TestCascadeEntityCache:
         compensated_entity_ids: list[str] = []
         original_compensate = sync_limiter._compensate_speculative
 
-        def tracking_compensate(entity_id, resource, consume):
+        def tracking_compensate(entity_id, resource, consume, shard_id):
             compensated_entity_ids.append(entity_id)
-            return original_compensate(entity_id, resource, consume)
+            return original_compensate(entity_id, resource, consume, shard_id)
 
         def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
             if entity_id == "child-1":
@@ -5323,6 +5323,46 @@ class TestClientShardCreation:
         assert shard1 is not None
         assert shard1["shard_count"]["N"] == "2"
         assert self._n(shard1, "rpm", schema.BUCKET_FIELD_TK) == 10000 // 2 - 1000
+
+    def test_child_compensation_credits_the_shard_that_was_debited(self, sync_limiter):
+        """Child succeeds speculatively on shard 3, parent is BUCKET_MISSING:
+        the compensating credit must land on shard 3, not on shard 0. Crediting
+        shard 0 leaves shard 3 double-debited and mints tokens on shard 0."""
+        from zae_limiter import schema
+
+        repo = sync_limiter._repository
+        ns = repo._namespace_id
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        sync_limiter.create_entity("parent-1")
+        sync_limiter.create_entity("user-1", parent_id="parent-1", cascade=True)
+        sync_limiter.set_system_defaults([limit])
+        now_ms = int(time.time() * 1000)
+        for shard_id in range(4):
+            state = BucketState.from_limit("user-1", "gpt-4", limit, now_ms, shard_count=4)
+            repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        "user-1",
+                        "gpt-4",
+                        [state],
+                        now_ms,
+                        cascade=True,
+                        parent_id="parent-1",
+                        shard_id=shard_id,
+                        shard_count=4,
+                    )
+                ]
+            )
+        repo._entity_cache[ns, "user-1"] = (True, "parent-1", {"gpt-4": 4})
+        sync_limiter._speculative_writes = True
+        share = self.CAPACITY * 1000 // 4
+        with patch("zae_limiter.sync_repository.random.randrange", return_value=3):
+            with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+                assert {e._shard_id for e in lease.entries if e.entity_id == "user-1"} == {3}
+        assert self._n(self._raw_item(repo, 3), "rpm", schema.BUCKET_FIELD_TK) == share - 1000
+        assert self._n(self._raw_item(repo, 0), "rpm", schema.BUCKET_FIELD_TK) == share, (
+            "shard 0 served nothing; a credit here mints capacity"
+        )
 
     def test_create_race_lost_to_aggregator_consumes_once(self, sync_limiter):
         """If the aggregator's Path 2 wins the create, the client retries as a
