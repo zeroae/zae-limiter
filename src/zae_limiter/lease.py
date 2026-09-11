@@ -90,20 +90,27 @@ class Lease:
     # limit in consume" — the caller did). Set where the slow path builds the
     # lease (Issue #455).
     _unknown_keys: frozenset[str] = frozenset()
+    # Names of the declared limits, computed once at construction so the hot
+    # path (adjust/consume/release on every request) allocates nothing to
+    # answer "is this key declared?". Entries are never appended after the
+    # lease is built.
+    _declared_names: frozenset[str] = field(init=False, default=frozenset())
+
+    def __post_init__(self) -> None:
+        self._declared_names = frozenset(
+            entry.limit.name for entry in self.entries if entry._declared
+        )
 
     @property
     def consumed(self) -> dict[str, int]:
         """Total consumed amounts by limit name (declared limits only)."""
         result: dict[str, int] = {}
-        for entry in self._declared_entries:
+        for entry in self.entries:
+            if not entry._declared:
+                continue
             name = entry.limit.name
             result[name] = result.get(name, 0) + entry.consumed
         return result
-
-    @property
-    def _declared_entries(self) -> list[LeaseEntry]:
-        """Entries for limits named in acquire(consume=...) (Issue #455)."""
-        return [entry for entry in self.entries if entry._declared]
 
     def _check_declared(self, amounts: dict[str, int], method: str) -> None:
         """Report keys that name no declared limit on this lease (Issue #455).
@@ -126,13 +133,14 @@ class Lease:
         it has no entries by design, and warning on every call during an
         outage would turn graceful degradation into noise.
         """
-        if self.degraded:
+        # Fast exit, no allocation: every key is declared (the common case).
+        if self.degraded or amounts.keys() <= self._declared_names:
             return
-        declared = sorted({entry.limit.name for entry in self._declared_entries})
         # Keys acquire() already reported as unknown are skipped silently.
-        undeclared = sorted(set(amounts) - set(declared) - self._unknown_keys)
+        undeclared = sorted(amounts.keys() - self._declared_names - self._unknown_keys)
         if not undeclared:
             return
+        declared = sorted(self._declared_names)
         warnings.warn(
             f"lease.{method}() names limit(s) {undeclared} that were not declared in "
             f"acquire(consume=...); declared limits on this lease: {declared}. "
@@ -169,10 +177,11 @@ class Lease:
         now_ms = int(time.time() * 1000)
         statuses: list[LimitStatus] = []
         updates: list[tuple[LeaseEntry, int, int]] = []  # (entry, new_tokens, new_refill)
-        entries = self._declared_entries
 
-        # Check all limits first
-        for entry in entries:
+        # Check all declared limits first
+        for entry in self.entries:
+            if not entry._declared:
+                continue
             amount = amounts.get(entry.limit.name, 0)
             if amount <= 0:
                 continue
@@ -195,9 +204,8 @@ class Lease:
                 updates.append((entry, result.new_tokens_milli, result.new_last_refill_ms))
 
         # Also include statuses for limits not being consumed (for full visibility)
-        consumed_names = set(amounts.keys())
-        for entry in entries:
-            if entry.limit.name not in consumed_names:
+        for entry in self.entries:
+            if entry._declared and entry.limit.name not in amounts:
                 available = calculate_available(entry.state, now_ms)
                 statuses.append(
                     LimitStatus(
@@ -250,7 +258,9 @@ class Lease:
         """Apply adjust() deltas to declared entries (shared with release())."""
         now_ms = int(time.time() * 1000)
 
-        for entry in self._declared_entries:
+        for entry in self.entries:
+            if not entry._declared:
+                continue
             amount = amounts.get(entry.limit.name, 0)
             if amount == 0:
                 continue

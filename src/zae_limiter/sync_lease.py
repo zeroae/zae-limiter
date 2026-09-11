@@ -61,20 +61,23 @@ class SyncLease:
     degraded: bool = False
     "Whether this is the no-op lease yielded under ``on_unavailable=ALLOW``.\n\n    ``True`` only when the backend was unreachable and the limiter degraded\n    to allowing the request (Issue #455). Such a lease has no entries, and\n    ``adjust()``, ``consume()`` and ``release()`` are silent no-ops on it —\n    the declared-scope check that normally reports keys outside ``consume``\n    is skipped, so an outage never turns into a warning storm. Set\n    explicitly where that lease is built, never inferred from an empty\n    ``entries``: a real lease with nothing declared is not degraded.\n    "
     _unknown_keys: frozenset[str] = frozenset()
+    _declared_names: frozenset[str] = field(init=False, default=frozenset())
+
+    def __post_init__(self) -> None:
+        self._declared_names = frozenset(
+            entry.limit.name for entry in self.entries if entry._declared
+        )
 
     @property
     def consumed(self) -> dict[str, int]:
         """Total consumed amounts by limit name (declared limits only)."""
         result: dict[str, int] = {}
-        for entry in self._declared_entries:
+        for entry in self.entries:
+            if not entry._declared:
+                continue
             name = entry.limit.name
             result[name] = result.get(name, 0) + entry.consumed
         return result
-
-    @property
-    def _declared_entries(self) -> list[LeaseEntry]:
-        """Entries for limits named in acquire(consume=...) (Issue #455)."""
-        return [entry for entry in self.entries if entry._declared]
 
     def _check_declared(self, amounts: dict[str, int], method: str) -> None:
         """Report keys that name no declared limit on this lease (Issue #455).
@@ -97,12 +100,12 @@ class SyncLease:
         it has no entries by design, and warning on every call during an
         outage would turn graceful degradation into noise.
         """
-        if self.degraded:
+        if self.degraded or amounts.keys() <= self._declared_names:
             return
-        declared = sorted({entry.limit.name for entry in self._declared_entries})
-        undeclared = sorted(set(amounts) - set(declared) - self._unknown_keys)
+        undeclared = sorted(amounts.keys() - self._declared_names - self._unknown_keys)
         if not undeclared:
             return
+        declared = sorted(self._declared_names)
         warnings.warn(
             f"lease.{method}() names limit(s) {undeclared} that were not declared in acquire(consume=...); declared limits on this lease: {declared}. Undeclared keys are ignored. Name the limit in `consume` (an estimate of 0 is valid) to make it adjustable. This becomes a ValidationError in v1.0.0.",
             FutureWarning,
@@ -132,8 +135,9 @@ class SyncLease:
         now_ms = int(time.time() * 1000)
         statuses: list[LimitStatus] = []
         updates: list[tuple[LeaseEntry, int, int]] = []
-        entries = self._declared_entries
-        for entry in entries:
+        for entry in self.entries:
+            if not entry._declared:
+                continue
             amount = amounts.get(entry.limit.name, 0)
             if amount <= 0:
                 continue
@@ -151,9 +155,8 @@ class SyncLease:
             statuses.append(status)
             if result.success:
                 updates.append((entry, result.new_tokens_milli, result.new_last_refill_ms))
-        consumed_names = set(amounts.keys())
-        for entry in entries:
-            if entry.limit.name not in consumed_names:
+        for entry in self.entries:
+            if entry._declared and entry.limit.name not in amounts:
                 available = calculate_available(entry.state, now_ms)
                 statuses.append(
                     LimitStatus(
@@ -199,7 +202,9 @@ class SyncLease:
     def _apply_adjust(self, amounts: dict[str, int]) -> None:
         """Apply adjust() deltas to declared entries (shared with release())."""
         now_ms = int(time.time() * 1000)
-        for entry in self._declared_entries:
+        for entry in self.entries:
+            if not entry._declared:
+                continue
             amount = amounts.get(entry.limit.name, 0)
             if amount == 0:
                 continue
