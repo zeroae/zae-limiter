@@ -2276,8 +2276,11 @@ class SyncRepository:
             current_count: Current shard_count to double.
 
         Returns:
-            The new shard_count (doubled), or the current value if another
-            client already doubled (ConditionalCheckFailedException).
+            The new shard_count (doubled), or — if another client already
+            doubled (ConditionalCheckFailedException) — the winner's count
+            read from the failed write's ALL_OLD image, so the loser draws
+            from the new shard range instead of caching its stale count and
+            landing back on the exhausted shard (issue #439).
         """
         new_count = current_count * 2
         client = self._get_client()
@@ -2294,6 +2297,7 @@ class SyncRepository:
                     ":old": {"N": str(current_count)},
                     ":new": {"N": str(new_count)},
                 },
+                ReturnValuesOnConditionCheckFailure="ALL_OLD",
             )
             effective_count = new_count
             if new_count > schema.WCU_SHARD_WARN_THRESHOLD:
@@ -2306,7 +2310,8 @@ class SyncRepository:
                 )
         except ClientError as e:
             if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-                effective_count = current_count
+                winner = cast(dict[str, Any] | None, e.response.get("Item")) or {}
+                effective_count = int(winner.get("shard_count", {}).get("N", str(current_count)))
             else:
                 raise
         cache_key = (self._namespace_id, entity_id)

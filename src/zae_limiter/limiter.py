@@ -796,12 +796,13 @@ class RateLimiter:
                 )
                 # Send the slow path to a shard that is not the hot one: one of
                 # the shards the doubling just added, which it will create
-                # (issue #439). If another client already doubled, the cache
-                # is stale at the old count; draw among what it knows.
+                # (issue #439). bump_shard_count returns the winner's count
+                # when another client doubled first, so this range is new
+                # either way; only a vanished shard 0 leaves nothing to add.
                 if new_count > result.shard_count:
                     new_shard = random.randrange(result.shard_count, new_count)
                 else:
-                    new_shard = random.randrange(new_count) if new_count > 1 else 0
+                    new_shard = result.shard_id
                 return None, new_shard, new_count
 
             # Shard retry: if multi-shard and app limit exhausted, try another shard

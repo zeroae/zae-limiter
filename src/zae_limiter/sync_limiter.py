@@ -659,7 +659,7 @@ class SyncRateLimiter:
                 if new_count > result.shard_count:
                     new_shard = random.randrange(result.shard_count, new_count)
                 else:
-                    new_shard = random.randrange(new_count) if new_count > 1 else 0
+                    new_shard = result.shard_id
                 return (None, new_shard, new_count)
             if (
                 result.shard_count > 1

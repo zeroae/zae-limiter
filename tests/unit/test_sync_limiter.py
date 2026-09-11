@@ -5554,21 +5554,47 @@ class TestClientShardCreation:
         assert self._n(shard1, "rpm", schema.BUCKET_FIELD_TK) == cp_milli // 2 - 1000
 
     def test_bump_lost_race_still_moves_off_the_hot_shard(self, sync_limiter):
-        """If another client doubled first, bump_shard_count reports the old
-        count; the slow path still draws among the shards it knows rather
-        than re-writing the exhausted one."""
+        """If another client doubled first, our conditional bump loses. The
+        loser must learn the winner's shard_count from the failed write's
+        ALL_OLD image and draw from the newly added range, not cache its own
+        stale count and land back on the exhausted shard 0."""
         from zae_limiter import schema
 
         limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
-        repo = self._seed_shard0(sync_limiter, shard_count=2, limit=limit)
+        repo = self._seed_shard0(sync_limiter, shard_count=1, limit=limit)
+        ns = repo._namespace_id
         for _ in range(schema.WCU_LIMIT_CAPACITY):
             repo._speculative_consume_single("user-1", "gpt-4", {"rpm": 1}, shard_id=0)
-        repo.bump_shard_count = MagicMock(return_value=2)
-        with patch("zae_limiter.sync_limiter.random.randrange", side_effect=[0, 1]):
-            with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
-                assert {e._shard_id for e in lease.entries} == {1}
-        repo.bump_shard_count.assert_called_once_with("user-1", "gpt-4", 2)
-        assert self._raw_item(repo, 1) is not None
+        client = repo._get_client()
+        original_bump = repo.bump_shard_count
+
+        def winner_doubles_first(entity_id, resource, current_count):
+            client.update_item(
+                TableName=repo.table_name,
+                Key={
+                    "PK": {"S": schema.pk_bucket(ns, "user-1", "gpt-4", 0)},
+                    "SK": {"S": schema.sk_state()},
+                },
+                UpdateExpression="SET shard_count = :two",
+                ExpressionAttributeValues={":two": {"N": "2"}},
+            )
+            return original_bump(entity_id, resource, current_count)
+
+        repo.bump_shard_count = winner_doubles_first
+        slow_path_shards: list[int | None] = []
+        original_do_acquire = sync_limiter._do_acquire
+
+        def spy(*args, **kwargs):
+            slow_path_shards.append(kwargs.get("shard_id"))
+            return original_do_acquire(*args, **kwargs)
+
+        sync_limiter._do_acquire = spy
+        with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+            assert {e._shard_id for e in lease.entries} == {1}
+        assert slow_path_shards == [1], "the loser must draw from range(old=1, new=2)"
+        assert repo._entity_cache[ns, "user-1"][2]["gpt-4"] == 2
+        shard1 = self._raw_item(repo, 1)
+        assert shard1 is not None and shard1["shard_count"]["N"] == "2"
 
     def test_cascade_slow_path_reads_parent_shard_without_batch_support(
         self, sync_limiter, monkeypatch

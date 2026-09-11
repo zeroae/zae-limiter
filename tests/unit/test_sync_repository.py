@@ -2830,7 +2830,11 @@ class TestBumpShardCount:
         assert repo._entity_cache[cache_key][2]["gpt-4"] == 2
 
     def test_bump_shard_count_returns_current_on_race(self, repo):
-        """bump_shard_count returns current_count when another client already doubled."""
+        """When another client already doubled, the loser learns the winner's
+        shard_count from the failed conditional write's ALL_OLD image, caches
+        it, and returns it — not its own stale current_count (issue #439)."""
+        ns = repo._namespace_id
+        repo._entity_cache[ns, "e1"] = (False, None, {"gpt-4": 1})
         now_ms = int(time.time() * 1000)
         limits = [Limit.per_minute("rpm", 100000)]
         states = [BucketState.from_limit("e1", "gpt-4", lim, now_ms) for lim in limits]
@@ -2839,7 +2843,8 @@ class TestBumpShardCount:
         )
         repo.transact_write([put_item])
         result = repo.bump_shard_count("e1", "gpt-4", current_count=1)
-        assert result == 1
+        assert result == 2
+        assert repo._entity_cache[ns, "e1"][2]["gpt-4"] == 2
 
     def test_bump_shard_count_reraises_other_errors(self, repo):
         """bump_shard_count re-raises non-ConditionalCheckFailedException errors."""
