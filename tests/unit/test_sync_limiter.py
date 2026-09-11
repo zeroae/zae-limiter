@@ -633,13 +633,17 @@ class TestWriteOnEnter:
         entry = self._make_entry(is_new=True)
         entry._shard_id = 1
         mock_repo = self._make_mock_repo()
-        exc_cls = type("TransactionCanceledException", (Exception,), {})
-        exc = exc_cls()
-        exc.response = {
-            "Error": {"Code": "TransactionCanceledException"},
-            "CancellationReasons": [{"Code": "ConditionalCheckFailed"}],
-        }
-        mock_repo.transact_write.side_effect = [exc, None]
+        exc_cls = type(
+            "TransactionCanceledException",
+            (Exception,),
+            {
+                "response": {
+                    "Error": {"Code": "TransactionCanceledException"},
+                    "CancellationReasons": [{"Code": "ConditionalCheckFailed"}],
+                }
+            },
+        )
+        mock_repo.transact_write.side_effect = [exc_cls(), None]
         lease = SyncLease(repository=mock_repo, entries=[entry])
         lease._commit_initial()
         assert mock_repo.build_composite_retry.call_args.kwargs["shard_id"] == 1
