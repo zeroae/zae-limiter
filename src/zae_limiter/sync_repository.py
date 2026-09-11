@@ -1454,6 +1454,50 @@ class SyncRepository:
                 buckets.extend(self._deserialize_composite_bucket(full_item))
         return [b for b in buckets if b.limit_name != schema.WCU_LIMIT_NAME]
 
+    def reset_bucket(self, entity_id: str, resource: str, principal: str | None = None) -> int:
+        """Reset an entity's bucket usage for one resource to a blank slate.
+
+        Deletes the bucket item(s) backing ``(entity_id, resource)`` —
+        every shard under write-sharding (GHSA-76rv) — so the next
+        ``acquire()`` recreates the bucket on the slow path at full
+        capacity under whatever limits are configured now, with
+        ``shard_count`` collapsed back to 1.
+
+        A missing bucket (never acquired, or already reset) is a no-op.
+        Does not touch entity/resource config — only the token state — and
+        does not affect a cascading child's parent bucket, which has its
+        own independent bucket item.
+
+        Args:
+            entity_id: Entity whose bucket usage should be reset.
+            resource: Resource to reset. Required — this resets one
+                resource at a time, not every resource for the entity.
+            principal: Caller identity for audit logging.
+
+        Returns:
+            Number of bucket items deleted (0 if there was nothing to reset).
+        """
+        validate_resource(resource)
+        client = self._get_client()
+        pks = self._discover_entity_bucket_pks(entity_id, resource)
+        if not pks:
+            return 0
+        delete_requests = [
+            {"DeleteRequest": {"Key": {"PK": {"S": pk}, "SK": {"S": schema.sk_state()}}}}
+            for pk in pks
+        ]
+        for i in range(0, len(delete_requests), 25):
+            chunk = delete_requests[i : i + 25]
+            client.batch_write_item(RequestItems={self.table_name: chunk})
+        self._log_audit_event(
+            action=AuditAction.BUCKET_RESET,
+            entity_id=entity_id,
+            principal=principal,
+            resource=resource,
+            details={"buckets_deleted": len(pks)},
+        )
+        return len(pks)
+
     def batch_get_buckets(
         self, keys: list[tuple[str, str]]
     ) -> dict[tuple[str, str, str], BucketState]:

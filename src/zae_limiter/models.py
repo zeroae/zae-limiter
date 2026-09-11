@@ -1065,6 +1065,7 @@ class AuditAction:
     ENTITY_DELETED = "entity_deleted"
     LIMITS_SET = "limits_set"
     LIMITS_DELETED = "limits_deleted"
+    BUCKET_RESET = "bucket_reset"
 
 
 @dataclass
