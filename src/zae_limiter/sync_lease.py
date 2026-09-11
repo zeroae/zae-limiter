@@ -318,6 +318,7 @@ class SyncLease:
             self._initial_committed = True
             return
         condition_failed = False
+        condition_exc: Exception | None = None
         for attempt in range(_CONFLICT_MAX_RETRIES + 1):
             try:
                 repo.transact_write(items)
@@ -325,6 +326,7 @@ class SyncLease:
             except Exception as exc:
                 if _is_condition_check_failure(exc):
                     condition_failed = True
+                    condition_exc = exc
                     break
                 if _is_transaction_conflict(exc):
                     if attempt < _CONFLICT_MAX_RETRIES:
@@ -341,8 +343,19 @@ class SyncLease:
                 raise
         if condition_failed:
             logger.debug("Normal write failed (optimistic lock), retrying consumption-only")
+            reason_codes = (
+                _get_cancellation_reason_codes(condition_exc) if condition_exc is not None else None
+            )
             retry_items: list[dict[str, Any]] = []
-            for (entity_id, resource, shard_id), group_entries in groups.items():
+            for idx, ((entity_id, resource, shard_id), group_entries) in enumerate(groups.items()):
+                failed_here = (
+                    reason_codes is None
+                    or idx >= len(reason_codes)
+                    or reason_codes[idx] == "ConditionalCheckFailed"
+                )
+                if group_entries[0]._is_new and (not failed_here):
+                    retry_items.append(items[idx])
+                    continue
                 consumed = {}
                 for entry in group_entries:
                     if entry.consumed > 0:

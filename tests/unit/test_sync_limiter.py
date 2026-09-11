@@ -591,6 +591,40 @@ class TestWriteOnEnter:
         lease._commit_initial()
         assert mock_repo.build_composite_normal.call_args.kwargs["shard_id"] == 2
 
+    def test_commit_initial_reissues_the_put_when_a_sibling_failed(self):
+        """A cancelled transaction rolls back every item. If the new-shard Put
+        was innocent (reason ``None``) and only the parent's rf lock failed,
+        the retry must re-issue the Put and debit the parent consumption-only;
+        a consumption-only retry against the still-missing shard would fail
+        its ``tk >= consumed`` condition and surface as RateLimitExceeded."""
+        from zae_limiter.sync_lease import SyncLease
+
+        child = self._make_entry(is_new=True, entity_id="e1")
+        child._shard_id = 1
+        parent = self._make_entry(entity_id="p1")
+        mock_repo = self._make_mock_repo()
+        mock_repo.build_composite_create = MagicMock(return_value={"Put": {"who": "e1"}})
+        mock_repo.build_composite_normal = MagicMock(return_value={"Update": {"who": "p1-rf"}})
+        mock_repo.build_composite_retry = MagicMock(return_value={"Update": {"who": "p1"}})
+        exc_cls = type(
+            "TransactionCanceledException",
+            (Exception,),
+            {
+                "response": {
+                    "Error": {"Code": "TransactionCanceledException"},
+                    "CancellationReasons": [{"Code": "None"}, {"Code": "ConditionalCheckFailed"}],
+                }
+            },
+        )
+        mock_repo.transact_write.side_effect = [exc_cls(), None]
+        lease = SyncLease(repository=mock_repo, entries=[child, parent])
+        lease._commit_initial()
+        assert lease._initial_committed is True
+        retry_items = mock_repo.transact_write.call_args_list[1].args[0]
+        assert retry_items == [{"Put": {"who": "e1"}}, {"Update": {"who": "p1"}}]
+        mock_repo.build_composite_retry.assert_called_once()
+        assert mock_repo.build_composite_retry.call_args.kwargs["entity_id"] == "p1"
+
     def test_commit_initial_create_race_retries_on_the_same_shard(self):
         """Losing the create race to the aggregator retries consumption-only
         on that same shard, never on shard 0 (issue #439)."""
@@ -5433,6 +5467,55 @@ class TestClientShardCreation:
         assert (
             self._n(self._raw_item(repo, 1), "rpm", schema.BUCKET_FIELD_TK) == cp_milli // 2 - 1000
         )
+
+    def test_new_child_shard_survives_a_parent_rf_conflict(self, sync_limiter):
+        """Cascade slow path creating child shard 1 while the parent's rf lock
+        is lost to a concurrent refill: the acquire must succeed and shard 1
+        must exist afterwards (the Put is re-issued, not retried as a debit)."""
+        from zae_limiter import schema
+
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        cp_milli = self.CAPACITY * 1000
+        repo = self._seed_cascade_child(sync_limiter, limit, parent_tokens_milli=cp_milli)
+        ns = repo._namespace_id
+        client = repo._get_client()
+        client.delete_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(ns, "user-1", "gpt-4", 1)},
+                "SK": {"S": schema.sk_state()},
+            },
+        )
+        repo._entity_cache[ns, "user-1"] = (True, "parent-1", {"gpt-4": 2})
+        original_transact = repo.transact_write
+        bumped = False
+
+        def parent_refilled_first(items):
+            nonlocal bumped
+            if not bumped and len(items) == 2:
+                bumped = True
+                client.update_item(
+                    TableName=repo.table_name,
+                    Key={
+                        "PK": {"S": schema.pk_bucket(ns, "parent-1", "gpt-4", 0)},
+                        "SK": {"S": schema.sk_state()},
+                    },
+                    UpdateExpression="SET #rf = :rf",
+                    ExpressionAttributeNames={"#rf": schema.BUCKET_FIELD_RF},
+                    ExpressionAttributeValues={":rf": {"N": str(int(time.time() * 1000) + 5)}},
+                )
+            return original_transact(items)
+
+        repo.transact_write = parent_refilled_first
+        with patch("zae_limiter.sync_repository.random.randrange", return_value=1):
+            with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+                assert {e.entity_id for e in lease.entries} == {"user-1", "parent-1"}
+        assert bumped
+        shard1 = self._raw_item(repo, 1)
+        assert shard1 is not None, "the innocent Put must be re-issued after the rollback"
+        assert self._n(shard1, "rpm", schema.BUCKET_FIELD_TK) == cp_milli // 2 - 1000
+        parent = repo.get_buckets("parent-1", resource="gpt-4", shard_id=0)
+        assert next(b for b in parent if b.limit_name == "rpm").tokens_milli == cp_milli - 1000
 
     def test_create_race_lost_to_aggregator_consumes_once(self, sync_limiter):
         """If the aggregator's Path 2 wins the create, the client retries as a

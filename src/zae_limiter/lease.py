@@ -396,6 +396,7 @@ class Lease:
 
         # Retry loop for TransactionConflict (Issue #332)
         condition_failed = False
+        condition_exc: Exception | None = None
         for attempt in range(_CONFLICT_MAX_RETRIES + 1):
             try:
                 await repo.transact_write(items)
@@ -406,6 +407,7 @@ class Lease:
                 # requiring the consumption-only retry path.
                 if _is_condition_check_failure(exc):
                     condition_failed = True
+                    condition_exc = exc
                     break
                 if _is_transaction_conflict(exc):
                     if attempt < _CONFLICT_MAX_RETRIES:
@@ -424,12 +426,28 @@ class Lease:
         if condition_failed:
             # Retry path: ADD consumption only, CONDITION tk>=consumed per limit
             logger.debug("Normal write failed (optimistic lock), retrying consumption-only")
+            # A cancelled transaction rolls back every item, including a
+            # new-shard Put whose own condition passed. Per-index reasons tell
+            # the innocent Put apart from the one that lost its
+            # attribute_not_exists race: re-issue the former as-is (the item
+            # is still missing, so a consumption-only retry would fail its
+            # tk >= consumed check and surface as a spurious rejection); debit
+            # the latter consumption-only on that same shard (issue #439). A
+            # single-item write has no reasons list: that group is the loser.
+            reason_codes = (
+                _get_cancellation_reason_codes(condition_exc) if condition_exc is not None else None
+            )
             retry_items: list[dict[str, Any]] = []
-            for (entity_id, resource, shard_id), group_entries in groups.items():
-                # A group whose _is_new create lost its attribute_not_exists
-                # race (the aggregator's shard propagation created this shard
-                # first, issue #439) is retried the same way: the item now
-                # exists, so debit it consumption-only on this same shard.
+            for idx, ((entity_id, resource, shard_id), group_entries) in enumerate(groups.items()):
+                failed_here = (
+                    reason_codes is None
+                    or idx >= len(reason_codes)
+                    or reason_codes[idx] == "ConditionalCheckFailed"
+                )
+                if group_entries[0]._is_new and not failed_here:
+                    retry_items.append(items[idx])
+                    continue
+
                 consumed = {}
                 for entry in group_entries:
                     if entry.consumed > 0:
