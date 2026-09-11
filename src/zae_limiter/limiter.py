@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import random
 import time
 import warnings
 from collections.abc import AsyncIterator
@@ -658,10 +659,13 @@ class RateLimiter:
         # Acquire the lease (this may fail due to rate limit or infrastructure)
         try:
             lease: Lease | None = None
+            # Shard the fast path selected; the slow path must read and
+            # create that same shard rather than draw again (issue #439).
+            slow_path_shard: int | None = None
 
             # Try speculative fast path first (issue #315)
             if self._speculative_writes:
-                lease = await self._try_speculative_acquire(
+                lease, slow_path_shard = await self._try_speculative_acquire(
                     entity_id=entity_id,
                     resource=resource,
                     consume=consume,
@@ -674,6 +678,7 @@ class RateLimiter:
                     resource=resource,
                     limits_override=limits,
                     consume=consume,
+                    shard_id=slow_path_shard,
                 )
         except (RateLimitExceeded, ValidationError, ResourceDisabled, Warning):
             # `Warning`: under warnings-as-errors (-W error, or a
@@ -714,16 +719,20 @@ class RateLimiter:
         entity_id: str,
         resource: str,
         consume: dict[str, int],
-    ) -> Lease | None:
+    ) -> tuple[Lease | None, int]:
         """Try the speculative fast path for acquire (issue #315).
 
         Repository checks its own entity cache (issue #318) and issues
         parallel child+parent UpdateItems when cache hit + cascade.
 
         Returns:
-            Lease if speculative write succeeded (already committed).
-            None if slow path is needed (refill would help, bucket missing,
-            or config changed).
+            ``(lease, shard_id)``. ``lease`` is the pre-committed Lease when
+            the speculative write succeeded, or None when the slow path is
+            needed (refill would help, bucket missing, or config changed).
+            ``shard_id`` is the child shard the slow path must then target:
+            the shard that reported ``BUCKET_MISSING``, or a brand-new shard
+            after wcu-driven doubling (issue #439). It is meaningless when
+            ``lease`` is not None.
 
         Raises:
             RateLimitExceeded: If the bucket is truly exhausted (refill
@@ -769,23 +778,37 @@ class RateLimiter:
                 SpeculativeFailureReason.WCU_EXHAUSTED,
                 SpeculativeFailureReason.BOTH_EXHAUSTED,
             ):
-                await self._repository.bump_shard_count(entity_id, resource, result.shard_count)
-                # Fall through to slow path (new shard bucket will be created)
-                return None
+                new_count = await self._repository.bump_shard_count(
+                    entity_id, resource, result.shard_count
+                )
+                # Send the slow path to a shard that is not the hot one: one of
+                # the shards the doubling just added, which it will create
+                # (issue #439). If another client already doubled, the cache
+                # is stale at the old count; draw among what it knows.
+                if new_count > result.shard_count:
+                    new_shard = random.randrange(result.shard_count, new_count)
+                else:
+                    new_shard = random.randrange(new_count) if new_count > 1 else 0
+                return None, new_shard
 
             # Shard retry: if multi-shard and app limit exhausted, try another shard
             if (
                 result.shard_count > 1
                 and result.failure_reason == SpeculativeFailureReason.APP_LIMIT_EXHAUSTED
             ):
-                retry_result = await self._retry_on_other_shard(
+                retry_result, missing_shard = await self._retry_on_other_shard(
                     entity_id, resource, consume, ttl_seconds=None, result=result
                 )
                 if retry_result is not None:
-                    return retry_result
+                    return retry_result, result.shard_id
+                if missing_shard is not None:
+                    # A shard the entity is entitled to does not exist yet —
+                    # the slow path creates it rather than fast-rejecting on
+                    # the drained shard's balance (issue #439).
+                    return None, missing_shard
 
             self._check_speculative_failure(result, consume, now_ms)
-            return None
+            return None, result.shard_id
 
         # Child succeeded — build entries from ALL_NEW
         entries: list[LeaseEntry] = []
@@ -833,9 +856,10 @@ class RateLimiter:
                         )
                     )
             else:
-                return await self._handle_nested_parent_failure(
+                nested = await self._handle_nested_parent_failure(
                     entity_id, resource, consume, result, now_ms
                 )
+                return nested, result.shard_id
         elif result.cascade and result.parent_id:
             # Cache miss cascade — sequential parent speculative
             parent_id = result.parent_id
@@ -872,12 +896,12 @@ class RateLimiter:
 
                 if parent_result.old_buckets is None:
                     await self._compensate_child(entity_id, resource, consume)
-                    return None
+                    return None, result.shard_id
 
                 parent_names = {b.limit_name for b in parent_result.old_buckets}
                 if not all(name in parent_names for name in consume):
                     await self._compensate_child(entity_id, resource, consume)
-                    return None
+                    return None, result.shard_id
 
                 would_help, parent_statuses = would_refill_satisfy(
                     parent_result.old_buckets, consume, now_ms
@@ -896,10 +920,10 @@ class RateLimiter:
                     raise
 
                 if parent_lease is not None:
-                    return parent_lease
+                    return parent_lease, result.shard_id
 
                 await self._compensate_child(entity_id, resource, consume)
-                return None
+                return None, result.shard_id
 
         # Build pre-committed lease
         lease = Lease(
@@ -909,7 +933,7 @@ class RateLimiter:
         lease._initial_committed = True
         for entry in entries:
             entry._initial_consumed = entry.consumed
-        return lease
+        return lease, result.shard_id
 
     async def _handle_nested_parent_failure(
         self,
@@ -1058,7 +1082,7 @@ class RateLimiter:
         consume: dict[str, int],
         ttl_seconds: int | None,
         result: "SpeculativeResult",
-    ) -> "Lease | None":
+    ) -> "tuple[Lease | None, int | None]":
         """Retry speculative consume on untried shards (GHSA-76rv shard retry).
 
         When application limits are exhausted on one shard, other shards may
@@ -1073,13 +1097,15 @@ class RateLimiter:
             result: The failed SpeculativeResult from the initial shard
 
         Returns:
-            Lease if a retry on another shard succeeded, None if all retries
-            failed or no untried shards remain.
+            ``(lease, missing_shard)``. ``lease`` is set if a retry on another
+            shard succeeded. Otherwise ``missing_shard`` is the last shard a
+            retry found not to exist yet (``BUCKET_MISSING``), so the slow
+            path can create it instead of fast-rejecting (issue #439); None
+            if every retried shard existed or no untried shards remain.
         """
-        import random
-
         tried_shards = {result.shard_id}
         shard_count = result.shard_count
+        missing_shard: int | None = None
 
         for _ in range(self._MAX_SHARD_RETRIES):
             untried = [s for s in range(shard_count) if s not in tried_shards]
@@ -1092,8 +1118,13 @@ class RateLimiter:
                 entity_id, resource, consume, ttl_seconds, shard_id=new_shard
             )
             if retry.success:
-                return self._build_lease_from_speculative(entity_id, resource, consume, retry)
-        return None
+                return (
+                    self._build_lease_from_speculative(entity_id, resource, consume, retry),
+                    None,
+                )
+            if retry.failure_reason == SpeculativeFailureReason.BUCKET_MISSING:
+                missing_shard = new_shard
+        return None, missing_shard
 
     def _build_lease_from_speculative(
         self,
@@ -1290,8 +1321,10 @@ class RateLimiter:
         # child. A parent tracking a subset of the child's limits is a valid
         # configuration; keys with no parent limit are simply not applied.
 
-        # Fetch parent buckets
-        parent_buckets = await self._fetch_buckets([parent_id], resource)
+        # Fetch parent buckets on a shard drawn from the parent's own cached
+        # shard_count (GHSA-76rv): the parent shards independently of the child.
+        parent_shard, parent_shard_count = await self._repository.select_shard(parent_id, resource)
+        parent_buckets = await self._fetch_buckets([parent_id], resource, parent_shard)
 
         # Process parent buckets: refill + try_consume
         parent_entries: list[LeaseEntry] = []
@@ -1328,6 +1361,8 @@ class RateLimiter:
                     _original_rf_ms=original_rf,
                     _has_custom_config=has_custom_config,
                     _declared=status is not None,
+                    _shard_id=parent_shard,
+                    _shard_count=parent_shard_count,
                 )
             )
 
@@ -1367,13 +1402,28 @@ class RateLimiter:
         resource: str,
         limits_override: list[Limit] | None,
         consume: dict[str, int],
+        shard_id: int | None = None,
     ) -> Lease:
-        """Internal acquire implementation."""
+        """Internal acquire implementation (the slow path).
+
+        Args:
+            shard_id: Child shard the speculative fast path selected, so this
+                path reads and — if missing — creates that same shard
+                (issue #439). None draws one from the cached shard_count.
+        """
         # Validate inputs at API boundary
         validate_identifier(entity_id, "entity_id")
         validate_resource(resource)
 
         now_ms = int(time.time() * 1000)
+
+        # The shard is part of a bucket's identity (GHSA-76rv). Resolve it
+        # once here and carry it through the read, the LeaseEntry and the
+        # write, so the slow path never silently collapses back onto shard 0.
+        child_shard, child_shard_count = await self._repository.select_shard(
+            entity_id, resource, shard_id
+        )
+        entity_shards: dict[str, tuple[int, int]] = {entity_id: (child_shard, child_shard_count)}
 
         # Phase 1: Resolve child limits, then fetch child META + child buckets
         # in a single BatchGetItem call (no separate get_entity round trip).
@@ -1401,7 +1451,9 @@ class RateLimiter:
                 entity_id=entity_id, resource=resource, level=level or "resource"
             )
 
-        entity, child_buckets = await self._fetch_entity_and_buckets(entity_id, resource)
+        entity, child_buckets = await self._fetch_entity_and_buckets(
+            entity_id, resource, child_shard
+        )
 
         # Determine cascade
         entity_ids = [entity_id]
@@ -1431,7 +1483,11 @@ class RateLimiter:
             )
             entity_limits[parent_id] = parent_limits
             entity_config_sources[parent_id] = parent_config_source
-            parent_buckets = await self._fetch_buckets([parent_id], resource)
+            # The parent shards independently of the child (GHSA-76rv)
+            entity_shards[parent_id] = await self._repository.select_shard(parent_id, resource)
+            parent_buckets = await self._fetch_buckets(
+                [parent_id], resource, entity_shards[parent_id][0]
+            )
             existing_buckets.update(parent_buckets)
 
         # Unknown-key check (Issue #455) against every limit this acquire can
@@ -1454,6 +1510,7 @@ class RateLimiter:
         statuses: list[LimitStatus] = []
 
         for eid in entity_ids:
+            eid_shard, eid_shard_count = entity_shards[eid]
             # Track whether any bucket existed for this entity+resource
             any_existing = any(
                 (eid, resource, limit.name) in existing_buckets for limit in entity_limits[eid]
@@ -1466,6 +1523,13 @@ class RateLimiter:
                 if existing is None:
                     is_new = True
                     state = BucketState.from_limit(eid, resource, limit, now_ms)
+                    # A new shard of a sharded bucket starts at its effective
+                    # per-shard share — capacity_milli // shard_count, exactly
+                    # like the aggregator's propagate_shard_count Path 2 —
+                    # so creating shards never multiplies the entity's total
+                    # capacity (issue #439). Stored cp/ra stay undivided.
+                    if eid_shard_count > 1:
+                        state.tokens_milli = state.capacity_milli // eid_shard_count
                 else:
                     is_new = False
                     state = existing
@@ -1498,6 +1562,8 @@ class RateLimiter:
                         _original_rf_ms=original_rf,
                         _is_new=is_new and not any_existing,
                         _has_custom_config=has_custom_config,
+                        _shard_id=eid_shard,
+                        _shard_count=eid_shard_count,
                         _cascade=entity.cascade if entity and eid == entity_id else False,
                         _parent_id=entity.parent_id if entity and eid == entity_id else None,
                         _declared=status is not None,
@@ -1519,17 +1585,19 @@ class RateLimiter:
         self,
         entity_id: str,
         resource: str,
+        shard_id: int,
     ) -> tuple[Entity | None, dict[tuple[str, str, str], BucketState]]:
         """
         Fetch entity metadata and its composite bucket in a single call.
 
-        With composite items (ADR-114), one item per (entity_id, resource)
-        contains all limits. Uses batch_get_entity_and_buckets if the backend
-        supports batch operations, otherwise falls back to separate calls.
+        With composite items (ADR-114), one item per (entity_id, resource,
+        shard) contains all limits. Uses batch_get_entity_and_buckets if the
+        backend supports batch operations, otherwise falls back to separate
+        calls. The shard is the one the acquire selected (issue #439).
         """
         if self._repository.capabilities.supports_batch_operations:
-            # Composite key: one item per (entity_id, resource)
-            bucket_keys = [(entity_id, resource)]
+            # Composite key: one item per (entity_id, resource, shard)
+            bucket_keys = [(entity_id, resource, shard_id)]
             result: tuple[
                 Entity | None, dict[tuple[str, str, str], BucketState]
             ] = await self._repository.batch_get_entity_and_buckets(entity_id, bucket_keys)
@@ -1537,7 +1605,7 @@ class RateLimiter:
 
         # Fallback: sequential calls
         entity = await self._repository.get_entity(entity_id)
-        buckets = await self._repository.get_buckets(entity_id, resource)
+        buckets = await self._repository.get_buckets(entity_id, resource, shard_id)
         bucket_dict: dict[tuple[str, str, str], BucketState] = {
             (b.entity_id, b.resource, b.limit_name): b for b in buckets
         }
@@ -1547,17 +1615,19 @@ class RateLimiter:
         self,
         entity_ids: list[str],
         resource: str,
+        shard_id: int,
     ) -> dict[tuple[str, str, str], BucketState]:
         """
-        Fetch composite buckets for entity/resource pairs.
+        Fetch composite buckets for entity/resource pairs on one shard.
 
-        With composite items (ADR-114), each (entity_id, resource) is one
-        DynamoDB item containing all limits. Uses batch_get_buckets if the
+        With composite items (ADR-114), each (entity_id, resource, shard) is
+        one DynamoDB item containing all limits. Uses batch_get_buckets if the
         backend supports it, otherwise falls back to sequential calls.
 
         Args:
             entity_ids: List of entity IDs to fetch buckets for
             resource: Resource name
+            shard_id: Shard to read for every entity (issue #439)
 
         Returns:
             Dict mapping (entity_id, resource, limit_name) to BucketState.
@@ -1565,8 +1635,10 @@ class RateLimiter:
         """
         # Use batch operation if backend supports it (issue #133)
         if self._repository.capabilities.supports_batch_operations:
-            # Composite key: one item per (entity_id, resource)
-            bucket_keys: list[tuple[str, str]] = [(eid, resource) for eid in entity_ids]
+            # Composite key: one item per (entity_id, resource, shard)
+            bucket_keys: list[tuple[str, str, int]] = [
+                (eid, resource, shard_id) for eid in entity_ids
+            ]
             batch_result: dict[
                 tuple[str, str, str], BucketState
             ] = await self._repository.batch_get_buckets(bucket_keys)
@@ -1575,7 +1647,7 @@ class RateLimiter:
         # Fallback: sequential get_buckets calls
         result: dict[tuple[str, str, str], BucketState] = {}
         for eid in entity_ids:
-            buckets = await self._repository.get_buckets(eid, resource)
+            buckets = await self._repository.get_buckets(eid, resource, shard_id)
             for bucket in buckets:
                 key = (bucket.entity_id, bucket.resource, bucket.limit_name)
                 result[key] = bucket

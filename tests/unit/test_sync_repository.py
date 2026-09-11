@@ -276,11 +276,65 @@ class TestRepositoryBucketOperations:
         every bucket. That made the slow path treat existing buckets as new.
         """
         entity, buckets = repo_with_buckets.batch_get_entity_and_buckets(
-            "entity-1", [("entity-1", "gpt-4")]
+            "entity-1", [("entity-1", "gpt-4", 0)]
         )
         assert entity is not None
         assert ("entity-1", "gpt-4", "rpm") in buckets
         assert ("entity-1", "gpt-4", "tpm") in buckets
+
+    def test_batch_get_buckets_reads_the_requested_shard(self, repo):
+        """The slow-path read targets the shard the key names, not shard 0.
+
+        Issue #439: with the shard hardcoded to 0, a speculative BUCKET_MISSING
+        on shard 1 fell back to a read of shard 0, so the client could never
+        create (or later find) a shard N>0 item.
+        """
+        limit = Limit.per_minute("rpm", 100)
+        now_ms = int(time.time() * 1000)
+        states = [BucketState.from_limit("sharded-1", "gpt-4", limit, now_ms)]
+        repo.transact_write(
+            [
+                repo.build_composite_create(
+                    "sharded-1", "gpt-4", states, now_ms, shard_id=1, shard_count=2
+                )
+            ]
+        )
+        assert ("sharded-1", "gpt-4", "rpm") in repo.batch_get_buckets([("sharded-1", "gpt-4", 1)])
+        assert repo.batch_get_buckets([("sharded-1", "gpt-4", 0)]) == {}
+
+    def test_batch_get_entity_and_buckets_reads_the_requested_shard(self, repo):
+        """Same as above for the META + bucket read (issue #439)."""
+        repo.create_entity("sharded-2")
+        limit = Limit.per_minute("rpm", 100)
+        now_ms = int(time.time() * 1000)
+        states = [BucketState.from_limit("sharded-2", "gpt-4", limit, now_ms)]
+        repo.transact_write(
+            [
+                repo.build_composite_create(
+                    "sharded-2", "gpt-4", states, now_ms, shard_id=1, shard_count=2
+                )
+            ]
+        )
+        entity, buckets = repo.batch_get_entity_and_buckets(
+            "sharded-2", [("sharded-2", "gpt-4", 1)]
+        )
+        assert entity is not None
+        assert ("sharded-2", "gpt-4", "rpm") in buckets
+        _entity, buckets0 = repo.batch_get_entity_and_buckets(
+            "sharded-2", [("sharded-2", "gpt-4", 0)]
+        )
+        assert buckets0 == {}
+
+    def test_select_shard_uses_the_cached_shard_count(self, repo):
+        """select_shard is the single place a shard is picked (issue #439)."""
+        ns = repo._namespace_id
+        repo._entity_cache[ns, "sel-1"] = (False, None, {"gpt-4": 4})
+        with patch("zae_limiter.sync_repository.random.randrange", return_value=2) as randrange:
+            assert repo.select_shard("sel-1", "gpt-4") == (2, 4)
+            randrange.assert_called_once_with(4)
+        assert repo.select_shard("sel-1", "gpt-4", shard_id=3) == (3, 4)
+        assert repo.select_shard("sel-1", "other") == (0, 1)
+        assert repo.select_shard("nobody", "gpt-4") == (0, 1)
 
     def test_batch_get_entity_and_buckets_finds_bucket_without_meta(self, repo):
         """Buckets must be returned even when the entity has no #META record.
@@ -294,7 +348,7 @@ class TestRepositoryBucketOperations:
         now_ms = int(time.time() * 1000)
         states = [BucketState.from_limit("bare-1", "gpt-4", limit, now_ms) for limit in limits]
         repo.transact_write([repo.build_composite_create("bare-1", "gpt-4", states, now_ms)])
-        entity, buckets = repo.batch_get_entity_and_buckets("bare-1", [("bare-1", "gpt-4")])
+        entity, buckets = repo.batch_get_entity_and_buckets("bare-1", [("bare-1", "gpt-4", 0)])
         assert entity is None
         assert ("bare-1", "gpt-4", "rpm") in buckets
 

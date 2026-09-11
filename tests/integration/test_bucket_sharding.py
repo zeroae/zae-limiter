@@ -437,3 +437,105 @@ class TestShardedAdjustmentRouting:
         assert await self._rpm(repo, entity_id, 0) == 0, (
             "compensating shard 0 would mint capacity it never lost"
         )
+
+
+@pytest.mark.asyncio
+class TestClientShardCreation:
+    """Write sharding must engage with the aggregator DISABLED (issue #439).
+
+    ``localstack_limiter`` runs on the shared minimal stack, which is deployed
+    with ``enable_aggregator=False``, so nothing but the client can create a
+    shard N>0 item here. Before the fix the client bumped ``shard_count``,
+    selected shard 1, got ``BUCKET_MISSING``, and the slow path re-read and
+    re-wrote shard 0 — every write stayed on the hot partition.
+
+    See GHSA-76rv-2r9v-c5m6.
+    """
+
+    CAPACITY = 100_000
+
+    @staticmethod
+    async def _raw_item(repo, entity_id: str, shard_id: int) -> dict | None:
+        client = await repo._get_client()
+        resp = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "gpt-4", shard_id)},
+                "SK": {"S": sk_state()},
+            },
+        )
+        return resp.get("Item")
+
+    async def test_wcu_exhaustion_creates_shard_one_without_aggregator(
+        self, localstack_limiter, monkeypatch, unique_name
+    ):
+        from zae_limiter import repository as _repo_mod
+        from zae_limiter.models import Limit
+
+        limiter = localstack_limiter
+        repo = limiter._repository
+        ns = repo._namespace_id
+        entity_id = f"shard-create-{unique_name}"
+        cp_milli = self.CAPACITY * 1000
+        # 1 token/hour keeps refill out of the token assertions below
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+
+        await limiter.create_entity(entity_id)
+        await limiter.set_system_defaults([limit])
+
+        # First acquire creates shard 0 (slow path); the second is a
+        # speculative hit whose ALL_NEW teaches the cache shard_count=1.
+        for _ in range(2):
+            async with limiter.acquire(entity_id, "gpt-4", {"rpm": 1}):
+                pass
+        assert repo._entity_cache[(ns, entity_id)][2]["gpt-4"] == 1
+
+        # Exhaust wcu on shard 0 directly (equivalent to 1000 speculative writes)
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(ns, entity_id, "gpt-4", 0)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="SET #wcu = :zero",
+            ExpressionAttributeNames={"#wcu": bucket_attr(WCU_LIMIT_NAME, BUCKET_FIELD_TK)},
+            ExpressionAttributeValues={":zero": {"N": "0"}},
+        )
+        shard0_before = int(
+            (await self._raw_item(repo, entity_id, 0))[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"]
+        )
+
+        slow_path_shards: list[int | None] = []
+        original_do_acquire = limiter._do_acquire
+
+        async def spy(*args, **kwargs):
+            slow_path_shards.append(kwargs.get("shard_id"))
+            return await original_do_acquire(*args, **kwargs)
+
+        monkeypatch.setattr(limiter, "_do_acquire", spy)
+
+        # wcu exhausted -> shard_count 1 -> 2 -> slow path targets the new shard 1
+        async with limiter.acquire(entity_id, "gpt-4", {"rpm": 1}) as lease:
+            assert {e._shard_id for e in lease.entries} == {1}
+        assert slow_path_shards == [1]
+
+        shard1 = await self._raw_item(repo, entity_id, 1)
+        assert shard1 is not None, "shard 1 must exist without any aggregator"
+        assert shard1["shard_count"]["N"] == "2"
+        assert int(shard1[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"]) == cp_milli // 2 - 1000
+        assert int(shard1[bucket_attr("rpm", BUCKET_FIELD_CP)]["N"]) == cp_milli
+        assert int(shard1[bucket_attr(WCU_LIMIT_NAME, BUCKET_FIELD_TK)]["N"]) == 1_000_000
+        shard0_after = int(
+            (await self._raw_item(repo, entity_id, 0))[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"]
+        )
+        assert shard0_after == shard0_before, "the hot shard must not absorb the write"
+
+        # Subsequent acquires on shard 1 are fast-path hits: no BUCKET_MISSING fallback
+        slow_path_shards.clear()
+        monkeypatch.setattr(_repo_mod.random, "randrange", lambda _n: 1)
+        async with limiter.acquire(entity_id, "gpt-4", {"rpm": 1}) as lease:
+            assert {e._shard_id for e in lease.entries} == {1}
+        assert slow_path_shards == []
+        shard1 = await self._raw_item(repo, entity_id, 1)
+        assert int(shard1[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"]) == cp_milli // 2 - 2000

@@ -119,7 +119,7 @@ class TestBatchGetBucketsPartialResponse:
         withheld_pk = schema.pk_bucket(repo._namespace_id, "entity-1", "gpt-4", 0)
         await _withhold(repo, monkeypatch, withheld_pk)
 
-        result = await repo.batch_get_buckets([("entity-1", "gpt-4")])
+        result = await repo.batch_get_buckets([("entity-1", "gpt-4", 0)])
 
         assert ("entity-1", "gpt-4", "rpm") in result, (
             "a live bucket reported as missing sends acquire() down the create path"
@@ -131,7 +131,7 @@ class TestBatchGetBucketsPartialResponse:
         await _withhold(repo, monkeypatch, withheld_pk, forever=True)
 
         with pytest.raises(RateLimiterUnavailable):
-            await repo.batch_get_buckets([("entity-1", "gpt-4")])
+            await repo.batch_get_buckets([("entity-1", "gpt-4", 0)])
 
 
 @pytest.mark.asyncio
@@ -144,7 +144,7 @@ class TestBatchGetEntityAndBucketsPartialResponse:
         await _withhold(repo, monkeypatch, entity_pk)
 
         entity, _buckets = await repo.batch_get_entity_and_buckets(
-            "entity-1", [("entity-1", "gpt-4")]
+            "entity-1", [("entity-1", "gpt-4", 0)]
         )
 
         assert entity is not None, (

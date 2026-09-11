@@ -39,6 +39,7 @@ class LeaseEntry:
     _has_custom_config: bool = False
     _initial_consumed: int = 0
     _shard_id: int = 0
+    _shard_count: int = 1
     _cascade: bool = False
     _parent_id: str | None = None
     _declared: bool = True
@@ -239,9 +240,18 @@ class SyncLease:
         """Write initial consumption to DynamoDB on context enter (Issue #309).
 
         Persists bucket state using ADD-based writes (ADR-115). Groups entries
-        by (entity_id, resource) to build one composite update per group. Uses
-        Normal write path first (ADD with refill, CONDITION rf=expected). On
-        ConditionalCheckFailedException, falls back to Retry path.
+        by (entity_id, resource, shard) to build one composite update per
+        bucket item. Uses Normal write path first (ADD with refill, CONDITION
+        rf=expected). On ConditionalCheckFailedException, falls back to Retry
+        path.
+
+        A new bucket is created on the shard the acquire selected, with the
+        cached shard_count stamped on it (issue #439). The create is guarded
+        by ``attribute_not_exists(PK)``, so if the aggregator's shard
+        propagation wins the race the transaction fails its condition check
+        and the Retry path debits the now-existing item under ``tk >=
+        consumed`` — the same gate the speculative write uses, so the race
+        can never over-admit.
 
         After successful write, records _initial_consumed on each entry so
         that _commit_adjustments() can compute deltas.
@@ -250,12 +260,12 @@ class SyncLease:
             return
         now_ms = int(time.time() * 1000)
         repo = self.repository
-        groups: dict[tuple[str, str], list[LeaseEntry]] = {}
+        groups: dict[tuple[str, str, int], list[LeaseEntry]] = {}
         for entry in self.entries:
-            key = (entry.entity_id, entry.resource)
+            key = (entry.entity_id, entry.resource, entry._shard_id)
             groups.setdefault(key, []).append(entry)
         items: list[dict[str, Any]] = []
-        for (entity_id, resource), group_entries in groups.items():
+        for (entity_id, resource, shard_id), group_entries in groups.items():
             is_new = group_entries[0]._is_new
             has_custom_config = group_entries[0]._has_custom_config
             limits = [e.limit for e in group_entries]
@@ -277,6 +287,8 @@ class SyncLease:
                         ttl_seconds=ttl_seconds if ttl_seconds != 0 else None,
                         cascade=first_entry._cascade,
                         parent_id=first_entry._parent_id,
+                        shard_id=shard_id,
+                        shard_count=first_entry._shard_count,
                     )
                 )
             else:
@@ -299,6 +311,7 @@ class SyncLease:
                         now_ms=now_ms,
                         expected_rf=expected_rf,
                         ttl_seconds=ttl_seconds,
+                        shard_id=shard_id,
                     )
                 )
         if not items:
@@ -329,9 +342,7 @@ class SyncLease:
         if condition_failed:
             logger.debug("Normal write failed (optimistic lock), retrying consumption-only")
             retry_items: list[dict[str, Any]] = []
-            for (entity_id, resource), group_entries in groups.items():
-                if group_entries[0]._is_new:
-                    pass
+            for (entity_id, resource, shard_id), group_entries in groups.items():
                 consumed = {}
                 for entry in group_entries:
                     if entry.consumed > 0:
@@ -339,7 +350,10 @@ class SyncLease:
                 if consumed:
                     retry_items.append(
                         repo.build_composite_retry(
-                            entity_id=entity_id, resource=resource, consumed=consumed
+                            entity_id=entity_id,
+                            resource=resource,
+                            consumed=consumed,
+                            shard_id=shard_id,
                         )
                     )
             if retry_items:

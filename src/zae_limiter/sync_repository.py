@@ -1455,7 +1455,7 @@ class SyncRepository:
         return [b for b in buckets if b.limit_name != schema.WCU_LIMIT_NAME]
 
     def batch_get_buckets(
-        self, keys: list[tuple[str, str]]
+        self, keys: list[tuple[str, str, int]]
     ) -> dict[tuple[str, str, str], BucketState]:
         """
         Batch get composite buckets in a single DynamoDB call.
@@ -1465,7 +1465,9 @@ class SyncRepository:
         keyed by (entity_id, resource, limit_name) for backward compatibility.
 
         Args:
-            keys: List of (entity_id, resource) tuples. Uses shard_id=0.
+            keys: List of (entity_id, resource, shard_id) tuples. The shard
+                is the one the acquire selected (issue #439); it is never
+                assumed to be 0.
 
         Returns:
             Dict mapping (entity_id, resource, limit_name) to BucketState.
@@ -1483,10 +1485,12 @@ class SyncRepository:
             chunk = unique_keys[i : i + 100]
             request_keys = [
                 {
-                    "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, 0)},
+                    "PK": {
+                        "S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)
+                    },
                     "SK": {"S": schema.sk_state()},
                 }
-                for entity_id, resource in chunk
+                for entity_id, resource, shard_id in chunk
             ]
             items = self._batch_get_all(request_keys, context="rate limit buckets")
             for item in items:
@@ -1497,18 +1501,19 @@ class SyncRepository:
         return result
 
     def batch_get_entity_and_buckets(
-        self, entity_id: str, bucket_keys: list[tuple[str, str]]
+        self, entity_id: str, bucket_keys: list[tuple[str, str, int]]
     ) -> tuple[Entity | None, dict[tuple[str, str, str], BucketState]]:
         """
         Fetch entity metadata and composite buckets in a single BatchGetItem.
 
-        With composite items, each (entity_id, resource) pair is a single
+        With composite items, each (entity_id, resource, shard) is a single
         DynamoDB item. Includes the entity's #META record alongside bucket
         records to avoid a separate get_entity() round trip.
 
         Args:
             entity_id: Entity whose META record to include
-            bucket_keys: List of (entity_id, resource) for composite buckets
+            bucket_keys: List of (entity_id, resource, shard_id) for composite
+                buckets — the shard the acquire selected (issue #439)
 
         Returns:
             Tuple of (entity_or_none, bucket_dict) where bucket_dict maps
@@ -1524,10 +1529,10 @@ class SyncRepository:
         }
         request_keys = [meta_key]
         unique_bucket_keys = list(set(bucket_keys))
-        for eid, resource in unique_bucket_keys:
+        for eid, resource, shard_id in unique_bucket_keys:
             request_keys.append(
                 {
-                    "PK": {"S": schema.pk_bucket(self._namespace_id, eid, resource, 0)},
+                    "PK": {"S": schema.pk_bucket(self._namespace_id, eid, resource, shard_id)},
                     "SK": {"S": schema.sk_state()},
                 }
             )
@@ -2025,10 +2030,7 @@ class SyncRepository:
             )
         cache_key = (self._namespace_id, entity_id)
         cache_entry = self._entity_cache.get(cache_key)
-        shard_count = 1
-        if cache_entry is not None:
-            shard_count = cache_entry[2].get(resource, 1)
-        effective_shard_id = random.randrange(shard_count) if shard_count > 1 else 0
+        effective_shard_id, _shard_count = self.select_shard(entity_id, resource)
         if cache_entry is not None:
             cascade_cached, parent_id_cached, shards_cached = cache_entry
             if cascade_cached and parent_id_cached:
@@ -2206,6 +2208,37 @@ class SyncRepository:
                         failure_reason=SpeculativeFailureReason.BUCKET_MISSING,
                     )
             raise
+
+    def select_shard(
+        self, entity_id: str, resource: str, shard_id: int | None = None
+    ) -> tuple[int, int]:
+        """Pick the bucket shard an acquire should target (GHSA-76rv, issue #439).
+
+        This is the only place a shard is drawn. The speculative fast path
+        draws here, and the slow path reuses whatever shard the fast path
+        already selected (passing it back as ``shard_id``) so a
+        ``BUCKET_MISSING`` on shard N reads and creates shard N — never a
+        second random draw that lands on shard 0 again.
+
+        Selection is ``random.randrange(shard_count)`` from the cached
+        shard_count, not a hash of the entity id: every call re-picks, which
+        is what spreads one hot entity's writes across all of its shards.
+
+        Args:
+            entity_id: Entity owning the bucket.
+            resource: Resource name.
+            shard_id: Explicit shard to honour verbatim, or None to draw one.
+
+        Returns:
+            ``(shard_id, shard_count)`` with shard_count from the entity
+            cache (1 when unknown).
+        """
+        cache_key = (self._namespace_id, entity_id)
+        cache_entry = self._entity_cache.get(cache_key)
+        shard_count = cache_entry[2].get(resource, 1) if cache_entry is not None else 1
+        if shard_id is None:
+            shard_id = random.randrange(shard_count) if shard_count > 1 else 0
+        return (shard_id, shard_count)
 
     def bump_shard_count(self, entity_id: str, resource: str, current_count: int) -> int:
         """Double shard_count on shard 0 via conditional write.
