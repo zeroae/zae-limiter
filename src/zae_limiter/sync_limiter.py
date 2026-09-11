@@ -763,7 +763,12 @@ class SyncRateLimiter:
                     raise RateLimitExceeded(child_statuses + parent_statuses)
                 try:
                     parent_lease = self._try_parent_only_acquire(
-                        parent_id, resource, consume, entries
+                        parent_id,
+                        resource,
+                        consume,
+                        entries,
+                        parent_result.shard_id,
+                        parent_result.shard_count,
                     )
                 except Exception:
                     self._compensate_child(entity_id, resource, consume)
@@ -840,7 +845,14 @@ class SyncRateLimiter:
                 )
             )
         try:
-            parent_lease = self._try_parent_only_acquire(parent_id, resource, consume, entries)
+            parent_lease = self._try_parent_only_acquire(
+                parent_id,
+                resource,
+                consume,
+                entries,
+                parent_result.shard_id,
+                parent_result.shard_count,
+            )
         except Exception:
             self._compensate_child(entity_id, resource, consume)
             raise
@@ -1079,6 +1091,8 @@ class SyncRateLimiter:
         resource: str,
         consume: dict[str, int],
         child_entries: list[LeaseEntry],
+        parent_shard: int,
+        parent_shard_count: int,
     ) -> SyncLease | None:
         """Attempt parent-only slow path after child speculative succeeded.
 
@@ -1086,11 +1100,16 @@ class SyncRateLimiter:
         and writes parent via single-item UpdateItem. Returns a SyncLease combining
         child's speculative entries with parent's slow-path entries.
 
+        Args:
+            parent_shard: The parent shard the speculative write hit — the
+                one whose ALL_OLD image the "refill would help" decision was
+                made on. Reused verbatim rather than drawn again (GHSA-76rv).
+            parent_shard_count: shard_count observed on that image.
+
         Returns None if parent acquire fails (caller should compensate child).
         """
         now_ms = int(time.time() * 1000)
         parent_limits, parent_config_source = self._resolve_limits(parent_id, resource, None)
-        parent_shard, parent_shard_count = self._repository.select_shard(parent_id, resource)
         parent_buckets = self._fetch_buckets([parent_id], resource, parent_shard)
         parent_entries: list[LeaseEntry] = []
         statuses: list[LimitStatus] = []

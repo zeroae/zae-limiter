@@ -942,7 +942,12 @@ class RateLimiter:
 
                 try:
                     parent_lease = await self._try_parent_only_acquire(
-                        parent_id, resource, consume, entries
+                        parent_id,
+                        resource,
+                        consume,
+                        entries,
+                        parent_result.shard_id,
+                        parent_result.shard_count,
                     )
                 except Exception:
                     await self._compensate_child(entity_id, resource, consume, result.shard_id)
@@ -1044,7 +1049,12 @@ class RateLimiter:
 
         try:
             parent_lease = await self._try_parent_only_acquire(
-                parent_id, resource, consume, entries
+                parent_id,
+                resource,
+                consume,
+                entries,
+                parent_result.shard_id,
+                parent_result.shard_count,
             )
         except Exception:
             await self._compensate_child(entity_id, resource, consume, result.shard_id)
@@ -1345,12 +1355,20 @@ class RateLimiter:
         resource: str,
         consume: dict[str, int],
         child_entries: list[LeaseEntry],
+        parent_shard: int,
+        parent_shard_count: int,
     ) -> Lease | None:
         """Attempt parent-only slow path after child speculative succeeded.
 
         Reads parent buckets, resolves limits, does refill + try_consume,
         and writes parent via single-item UpdateItem. Returns a Lease combining
         child's speculative entries with parent's slow-path entries.
+
+        Args:
+            parent_shard: The parent shard the speculative write hit — the
+                one whose ALL_OLD image the "refill would help" decision was
+                made on. Reused verbatim rather than drawn again (GHSA-76rv).
+            parent_shard_count: shard_count observed on that image.
 
         Returns None if parent acquire fails (caller should compensate child).
         """
@@ -1362,9 +1380,6 @@ class RateLimiter:
         # child. A parent tracking a subset of the child's limits is a valid
         # configuration; keys with no parent limit are simply not applied.
 
-        # Fetch parent buckets on a shard drawn from the parent's own cached
-        # shard_count (GHSA-76rv): the parent shards independently of the child.
-        parent_shard, parent_shard_count = self._repository.select_shard(parent_id, resource)
         parent_buckets = await self._fetch_buckets([parent_id], resource, parent_shard)
 
         # Process parent buckets: refill + try_consume

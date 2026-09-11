@@ -7111,6 +7111,77 @@ class TestClientShardCreation:
         parent = await repo.get_buckets("parent-1", resource="gpt-4", shard_id=0)
         assert next(b for b in parent if b.limit_name == "rpm").tokens_milli == cp_milli - 1000
 
+    async def test_parent_only_slow_path_reuses_the_parent_shard_it_judged(self, limiter):
+        """The "refill would help" decision was made on the ALL_OLD image of
+        the parent shard the speculative write hit; the parent-only slow path
+        must read and debit that same shard rather than draw a new one."""
+        from zae_limiter import schema
+
+        repo = limiter._repository
+        ns = repo._namespace_id
+        # 1 token/s; both parent shards drained 100 s ago -> refill would help
+        limit = Limit.custom("rpm", 100_000, refill_amount=3600, refill_period_seconds=3600)
+        now_ms = int(time.time() * 1000)
+        await limiter.create_entity("parent-1")
+        await limiter.create_entity("user-1", parent_id="parent-1", cascade=True)
+        await limiter.set_system_defaults([limit])
+        for shard_id in range(2):
+            state = BucketState.from_limit("parent-1", "gpt-4", limit, now_ms - 100_000, 2)
+            state.tokens_milli = 0
+            await repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        "parent-1",
+                        "gpt-4",
+                        [state],
+                        now_ms - 100_000,
+                        shard_id=shard_id,
+                        shard_count=2,
+                    )
+                ]
+            )
+        child = BucketState.from_limit("user-1", "gpt-4", limit, now_ms)
+        await repo.transact_write(
+            [
+                repo.build_composite_create(
+                    "user-1", "gpt-4", [child], now_ms, cascade=True, parent_id="parent-1"
+                )
+            ]
+        )
+        # Cold child cache -> sequential parent speculative; parent draws from 2
+        repo._entity_cache.pop((ns, "user-1"), None)
+        repo._entity_cache[(ns, "parent-1")] = (False, None, {"gpt-4": 2})
+        limiter._speculative_writes = True
+
+        parent_reads: list[int] = []
+        original_fetch = limiter._fetch_buckets
+
+        async def spy(entity_ids, resource, shard_id):
+            if "parent-1" in entity_ids:
+                parent_reads.append(shard_id)
+            return await original_fetch(entity_ids, resource, shard_id)
+
+        limiter._fetch_buckets = spy
+        # First draw (parent speculative) -> shard 1; a second draw would give 0
+        with patch("zae_limiter.repository.random.randrange", side_effect=[1, 0, 0]):
+            async with limiter.acquire("user-1", "gpt-4", {"rpm": 10}) as lease:
+                parent_entry = next(e for e in lease.entries if e.entity_id == "parent-1")
+                assert parent_entry._shard_id == 1
+
+        assert parent_reads == [1]
+        shard0 = await repo.get_buckets("parent-1", resource="gpt-4", shard_id=0)
+        assert next(b for b in shard0 if b.limit_name == "rpm").tokens_milli == 0, (
+            "parent shard 0 was never judged and must not be written"
+        )
+        item1 = await (await repo._get_client()).get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(ns, "parent-1", "gpt-4", 1)},
+                "SK": {"S": schema.sk_state()},
+            },
+        )
+        assert int(item1["Item"][schema.bucket_attr("rpm", schema.BUCKET_FIELD_TK)]["N"]) > 0
+
     async def test_create_race_lost_to_aggregator_consumes_once(self, limiter):
         """If the aggregator's Path 2 wins the create, the client retries as a
         consumption-only conditional write on that shard: one debit, no
