@@ -2372,6 +2372,17 @@ class SyncRepository:
         Uses conditional update with attribute_exists(PK) to skip if
         bucket doesn't exist yet.
 
+        When a limit's capacity shrinks below the bucket's current token
+        count, the token count is clamped down to the new capacity in the
+        same write. Without this, a bucket holding tokens accumulated under
+        the old (higher) capacity would keep admitting requests above the
+        new limit until it happened to drain below the new ceiling on its
+        own — since neither the speculative fast path (a pure ADD with no
+        refill/cap math) nor lazy refill (which only re-applies the cap
+        once a nonzero refill is computed) touch `tk` otherwise. Capacity
+        increases never bump `tk` up — tokens still have to refill in
+        normally, which is the intended "expand via refill" behavior.
+
         Args:
             entity_id: ID of the entity
             resource: Resource name
@@ -2387,16 +2398,37 @@ class SyncRepository:
         if not limits:
             return
         client = self._get_client()
+        current_tk_milli: dict[str, int] = {}
+        tk_attrs = {
+            limit.name: schema.bucket_attr(limit.name, schema.BUCKET_FIELD_TK) for limit in limits
+        }
+        get_response = client.get_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+            ProjectionExpression=", ".join(f"#tk_get_{i}" for i in range(len(limits))),
+            ExpressionAttributeNames={
+                f"#tk_get_{i}": tk_attrs[limit.name] for i, limit in enumerate(limits)
+            },
+        )
+        existing_item = get_response.get("Item")
+        if existing_item is not None:
+            for name, attr in tk_attrs.items():
+                if attr in existing_item:
+                    current_tk_milli[name] = int(existing_item[attr]["N"])
         set_parts: list[str] = []
         remove_parts: list[str] = []
         expr_names: dict[str, str] = {}
         expr_values: dict[str, dict[str, str]] = {}
         for i, limit in enumerate(limits):
             name = limit.name
+            cp_milli = limit.capacity * 1000
             cp_attr = schema.bucket_attr(name, schema.BUCKET_FIELD_CP)
             set_parts.append(f"#cp{i} = :cp{i}")
             expr_names[f"#cp{i}"] = cp_attr
-            expr_values[f":cp{i}"] = {"N": str(limit.capacity * 1000)}
+            expr_values[f":cp{i}"] = {"N": str(cp_milli)}
             ra_attr = schema.bucket_attr(name, schema.BUCKET_FIELD_RA)
             set_parts.append(f"#ra{i} = :ra{i}")
             expr_names[f"#ra{i}"] = ra_attr
@@ -2405,6 +2437,11 @@ class SyncRepository:
             set_parts.append(f"#rp{i} = :rp{i}")
             expr_names[f"#rp{i}"] = rp_attr
             expr_values[f":rp{i}"] = {"N": str(limit.refill_period_seconds * 1000)}
+            if current_tk_milli.get(name, 0) > cp_milli:
+                tk_attr = schema.bucket_attr(name, schema.BUCKET_FIELD_TK)
+                set_parts.append(f"#tk{i} = :tk{i}")
+                expr_names[f"#tk{i}"] = tk_attr
+                expr_values[f":tk{i}"] = {"N": str(cp_milli)}
         if bucket_ttl_refill_multiplier is not None:
             expr_names["#ttl"] = "ttl"
             if bucket_ttl_refill_multiplier > 0:
