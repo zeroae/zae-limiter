@@ -142,7 +142,8 @@ locally. If the name exists only on origin, the rename succeeds but creates an u
 branch with the same name, and `/pr`'s push is rejected as non-fast-forward.
 
 After a switch, the throwaway `worktree-…` branch stays behind with no commits of its
-own. Leave it; if it outlives the worktree, delete it with `git branch -d`.
+own. Leave it: `ExitWorktree(action="remove")` deletes it along with the worktree. After
+`action="keep"`, delete it with `git branch -d`.
 
 The rename is convention, not a build requirement. No workflow, hook, or lint reads the
 head branch name (CI's `branches:` filters match the PR's *base*). Rename anyway: the
@@ -161,5 +162,20 @@ To finish up later:
   uncommitted or unmerged work. Because the branch was renamed or switched in Step 5, the
   built-in no longer recognises it and **leaves the branch behind** — intended, since the
   PR lives on it. Delete it yourself with `git branch -d <branch>` once merged
+- After a **Resume**, `remove` refuses whenever the resumed branch has commits not on
+  `main`, which is nearly always. It reports them as commits "on `worktree-<name>`" that
+  will be "discarded permanently". That is misleading: the commits are on the resumed
+  branch, and `remove` only deletes the throwaway branch. Before passing
+  `discard_changes: true`, run this inside the worktree:
+
+  ```bash
+  git status -sb
+  ```
+
+  Override **only** if there are no uncommitted or untracked files and the first line
+  names an upstream (`## <branch>...origin/<branch>`) with no `[ahead N]`. A branch with
+  no upstream has never been pushed. Otherwise push first, or use `action="keep"`.
+  `discard_changes` really does delete uncommitted files, so a reflexive override loses
+  work
 - A worktree opened by `path` in the **Open** case is never removed by `ExitWorktree`;
   use `action="keep"`
