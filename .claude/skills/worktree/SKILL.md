@@ -49,6 +49,13 @@ nothing reads it.
 `.claude/worktrees/` is gitignored, so `pre-commit run --all-files` (which lists via
 `git ls-files`) and ruff skip it, and `testpaths = ["tests"]` keeps pytest out.
 
+**Legacy worktrees** made by the retired `add` mode live in the sibling directory
+`<repo>.worktrees/`. Leave them there until their PRs merge, then retire each with
+`git worktree remove <path>` and `git branch -d <branch>`. `/worktree status` still lists
+them, and issue mode's **Open** case enters one by path. Don't `git worktree move` them
+into `.claude/worktrees/`: `ExitWorktree` only removes worktrees it created itself, so the
+move gains nothing.
+
 ## Sunset modes
 
 These were removed. Point the user at the replacement rather than reimplementing it:
