@@ -246,17 +246,27 @@ infrastructure limit tracks per-partition write pressure.
 1. Every bucket starts with `shard_count=1` (shard 0)
 2. An internal `wcu` limit (capacity: 1000 millitokens) is auto-injected on every bucket
 3. When `wcu` is exhausted on a speculative write, the client doubles `shard_count` via a
-   conditional write on shard 0 (source of truth)
-4. The Lambda aggregator proactively doubles shards at >=80% wcu capacity before clients
-   experience throttling
-5. Shard count changes on shard 0 are propagated to all other shards by the aggregator
-6. Clients pick a random shard from the entity cache: `random.randrange(shard_count)`
-7. If application limits are exhausted on one shard but the entity has multiple shards,
-   the client retries on up to 2 other randomly chosen shards
+   conditional write on shard 0 (source of truth) and moves to one of the new shards
+4. The client creates the new shard's bucket item itself on its next slow-path acquire,
+   with `capacity / shard_count` tokens — the aggregator is **not** required for
+   sharding to engage (ADR-133)
+5. The Lambda aggregator, when deployed, proactively doubles shards at >=80% wcu capacity
+   and pre-creates the new shard items so clients skip that one-time slow path
+6. Shard count changes on shard 0 are propagated to all other shards by the aggregator
+7. Clients pick a random shard from the entity cache: `random.randrange(shard_count)`
+8. If application limits are exhausted on one shard but the entity has multiple shards,
+   the client retries on up to 2 other randomly chosen shards, creating any it finds
+   missing
 
-**Shard-aware capacity:** The aggregator divides effective capacity and refill amount
-by `shard_count` when computing refills, so each shard receives its proportional share
-of tokens.
+**Shard-aware capacity:** Both the aggregator's refill and the client's shard creation
+divide effective capacity and refill amount by `shard_count`, so each shard receives its
+proportional share of tokens. Shard 0 keeps its existing balance when `shard_count`
+doubles, so admitted capacity can transiently reach 1.5x for one refill window after the
+first doubling.
+
+**Works without the aggregator:** Deployments using `--no-aggregator` get the same
+write-sharding behaviour; the only difference is that each new shard costs one slow-path
+acquire (1 RCU + 3 WCU) to create, once, instead of being pre-created from the stream.
 
 **No application code changes required.** Pre-shard buckets are transparent to users.
 The `wcu` limit is filtered from all user-facing output (bucket states, exceptions,
