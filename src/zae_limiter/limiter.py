@@ -1522,14 +1522,14 @@ class RateLimiter:
                 existing = existing_buckets.get(bucket_key)
                 if existing is None:
                     is_new = True
-                    state = BucketState.from_limit(eid, resource, limit, now_ms)
                     # A new shard of a sharded bucket starts at its effective
                     # per-shard share — capacity_milli // shard_count, exactly
                     # like the aggregator's propagate_shard_count Path 2 —
                     # so creating shards never multiplies the entity's total
                     # capacity (issue #439). Stored cp/ra stay undivided.
-                    if eid_shard_count > 1:
-                        state.tokens_milli = state.capacity_milli // eid_shard_count
+                    state = BucketState.from_limit(
+                        eid, resource, limit, now_ms, shard_count=eid_shard_count
+                    )
                 else:
                     is_new = False
                     state = existing

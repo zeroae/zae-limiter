@@ -1197,9 +1197,9 @@ class SyncRateLimiter:
                 existing = existing_buckets.get(bucket_key)
                 if existing is None:
                     is_new = True
-                    state = BucketState.from_limit(eid, resource, limit, now_ms)
-                    if eid_shard_count > 1:
-                        state.tokens_milli = state.capacity_milli // eid_shard_count
+                    state = BucketState.from_limit(
+                        eid, resource, limit, now_ms, shard_count=eid_shard_count
+                    )
                 else:
                     is_new = False
                     state = existing

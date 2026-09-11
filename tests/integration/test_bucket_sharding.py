@@ -539,3 +539,48 @@ class TestClientShardCreation:
         assert slow_path_shards == []
         shard1 = await self._raw_item(repo, entity_id, 1)
         assert int(shard1[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"]) == cp_milli // 2 - 2000
+
+    async def test_idle_sharded_entity_refills_to_capacity_not_shard_count_x_capacity(
+        self, localstack_limiter, monkeypatch, unique_name
+    ):
+        """Two drained shards, one idle refill window: the slow path must admit
+        at most the configured capacity in total, not capacity per shard."""
+        from zae_limiter import repository as _repo_mod
+        from zae_limiter.exceptions import RateLimitExceeded
+        from zae_limiter.models import BucketState, Limit
+
+        limiter = localstack_limiter
+        repo = limiter._repository
+        ns = repo._namespace_id
+        entity_id = f"shard-refill-{unique_name}"
+        limit = Limit.custom("rpm", 1000, refill_amount=1000, refill_period_seconds=60)
+
+        await limiter.create_entity(entity_id)
+        await limiter.set_system_defaults([limit])
+        past_ms = int(time.time() * 1000) - 120_000  # two windows ago
+        for shard_id in (0, 1):
+            state = BucketState.from_limit(entity_id, "gpt-4", limit, past_ms)
+            state.tokens_milli = 0
+            await repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        entity_id, "gpt-4", [state], past_ms, shard_id=shard_id, shard_count=2
+                    )
+                ]
+            )
+        repo._entity_cache[(ns, entity_id)] = (False, None, {"gpt-4": 2})
+        limiter._speculative_writes = False
+
+        monkeypatch.setattr(_repo_mod.random, "randrange", lambda _n: 0)
+        with pytest.raises(RateLimitExceeded):
+            async with limiter.acquire(entity_id, "gpt-4", {"rpm": 501}):
+                pass
+        async with limiter.acquire(entity_id, "gpt-4", {"rpm": 500}):
+            pass
+        monkeypatch.setattr(_repo_mod.random, "randrange", lambda _n: 1)
+        async with limiter.acquire(entity_id, "gpt-4", {"rpm": 500}):
+            pass
+
+        for shard_id in (0, 1):
+            item = await self._raw_item(repo, entity_id, shard_id)
+            assert int(item[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"]) == 0

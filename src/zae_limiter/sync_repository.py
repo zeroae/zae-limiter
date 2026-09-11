@@ -3666,6 +3666,7 @@ class SyncRepository:
         entity_id = item.get("entity_id", {}).get("S", "")
         resource = item.get("resource", {}).get("S", "")
         rf = int(item.get(schema.BUCKET_FIELD_RF, {}).get("N", "0"))
+        shard_count = int(item.get("shard_count", {}).get("N", "1"))
         limit_names: list[str] = []
         suffix = f"_{schema.BUCKET_FIELD_TK}"
         for attr_name in item:
@@ -3693,6 +3694,7 @@ class SyncRepository:
                     refill_amount_milli=_get(schema.BUCKET_FIELD_RA),
                     refill_period_ms=_get(schema.BUCKET_FIELD_RP),
                     total_consumed_milli=total_consumed,
+                    shard_count=1 if name == schema.WCU_LIMIT_NAME else shard_count,
                 )
             )
         return buckets

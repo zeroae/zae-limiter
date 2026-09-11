@@ -4488,6 +4488,9 @@ class Repository:
         entity_id = item.get("entity_id", {}).get("S", "")
         resource = item.get("resource", {}).get("S", "")
         rf = int(item.get(schema.BUCKET_FIELD_RF, {}).get("N", "0"))
+        # Carried so refill math uses this shard's effective share (ADR-133).
+        # The reserved wcu limit is per-partition and stays undivided.
+        shard_count = int(item.get("shard_count", {}).get("N", "1"))
 
         # Discover limit names by scanning for b_{name}_tk attributes
         limit_names: list[str] = []
@@ -4519,6 +4522,7 @@ class Repository:
                     refill_amount_milli=_get(schema.BUCKET_FIELD_RA),
                     refill_period_ms=_get(schema.BUCKET_FIELD_RP),
                     total_consumed_milli=total_consumed,
+                    shard_count=1 if name == schema.WCU_LIMIT_NAME else shard_count,
                 )
             )
 

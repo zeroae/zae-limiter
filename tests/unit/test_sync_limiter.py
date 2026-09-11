@@ -5172,6 +5172,60 @@ class TestClientShardCreation:
 
         return int(item[schema.bucket_attr(limit_name, field)]["N"])
 
+    @staticmethod
+    def _seed_shards(sync_limiter, shard_count: int, limit, *, tokens_milli: int, rf_ms: int):
+        """Create every shard 0..shard_count-1 at the same balance and rf."""
+        repo = sync_limiter._repository
+        ns = repo._namespace_id
+        sync_limiter.create_entity("user-1")
+        sync_limiter.set_system_defaults([limit])
+        for shard_id in range(shard_count):
+            state = BucketState.from_limit("user-1", "gpt-4", limit, rf_ms)
+            state.tokens_milli = tokens_milli
+            repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        "user-1",
+                        "gpt-4",
+                        [state],
+                        rf_ms,
+                        shard_id=shard_id,
+                        shard_count=shard_count,
+                    )
+                ]
+            )
+        repo._entity_cache[ns, "user-1"] = (False, None, {"gpt-4": shard_count})
+        return repo
+
+    def test_slow_path_refills_a_shard_to_its_effective_share(self, sync_limiter):
+        """The slow path must refill shard N toward capacity // shard_count.
+
+        The bucket item stores undivided cp/ra (ADR-133 keeps that), so a
+        refill that reads them verbatim tops every shard up to the full
+        capacity after one idle window and the entity admits
+        shard_count x capacity in steady state. Per-shard refill is what the
+        aggregator's try_refill_bucket does; the client must match it.
+        """
+        from zae_limiter import schema
+        from zae_limiter.exceptions import RateLimitExceeded
+
+        limit = Limit.custom("rpm", 1000, refill_amount=1000, refill_period_seconds=60)
+        now_ms = int(time.time() * 1000)
+        repo = self._seed_shards(sync_limiter, 2, limit, tokens_milli=0, rf_ms=now_ms - 120000)
+        sync_limiter._speculative_writes = False
+        with patch("zae_limiter.sync_repository.random.randrange", return_value=0):
+            with pytest.raises(RateLimitExceeded):
+                with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 501}):
+                    pass
+            with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 500}):
+                pass
+        with patch("zae_limiter.sync_repository.random.randrange", return_value=1):
+            with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 500}):
+                pass
+        for shard_id in (0, 1):
+            item = self._raw_item(repo, shard_id)
+            assert self._n(item, "rpm", schema.BUCKET_FIELD_TK) == 0
+
     def test_slow_path_creates_the_selected_shard(self, sync_limiter):
         """BUCKET_MISSING on shard 1 creates shard 1; shard 0 is not touched."""
         from zae_limiter import schema

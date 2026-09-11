@@ -446,6 +446,12 @@ class BucketState:
     # (not in nested data.M) to enable atomic ADD operations. See issue #179.
     # None means counter not yet initialized (old bucket).
     total_consumed_milli: int | None = None
+    # Number of shards this bucket is split across (GHSA-76rv, ADR-133). The
+    # stored cp/ra stay undivided; refill math must use the effective
+    # per-shard share below or every shard refills to the full capacity and
+    # the entity admits shard_count x capacity. The reserved `wcu` limit is
+    # per-partition and is never divided (its shard_count stays 1).
+    shard_count: int = 1
 
     @property
     def tokens(self) -> int:
@@ -457,6 +463,16 @@ class BucketState:
         """Capacity / ceiling (not millitokens)."""
         return self.capacity_milli // 1000
 
+    @property
+    def effective_capacity_milli(self) -> int:
+        """This shard's share of the capacity: ``capacity_milli // shard_count``."""
+        return self.capacity_milli // self.shard_count
+
+    @property
+    def effective_refill_amount_milli(self) -> int:
+        """This shard's share of the refill: ``refill_amount_milli // shard_count``."""
+        return self.refill_amount_milli // self.shard_count
+
     @classmethod
     def from_limit(
         cls,
@@ -464,6 +480,7 @@ class BucketState:
         resource: str,
         limit: Limit,
         now_ms: int,
+        shard_count: int = 1,
     ) -> "BucketState":
         """
         Create a new bucket at full capacity from a Limit.
@@ -477,17 +494,21 @@ class BucketState:
             resource: Resource name (pre-validated by caller)
             limit: Limit configuration (validated via __post_init__)
             now_ms: Current time in milliseconds
+            shard_count: Shards the bucket is split across; a new shard
+                starts at its effective share, ``capacity // shard_count``
         """
+        capacity_milli = limit.capacity * 1000
         return cls(
             entity_id=entity_id,
             resource=resource,
             limit_name=limit.name,
-            tokens_milli=limit.capacity * 1000,  # start at full capacity
+            tokens_milli=capacity_milli // shard_count,  # start at full (per-shard) capacity
             last_refill_ms=now_ms,
-            capacity_milli=limit.capacity * 1000,
+            capacity_milli=capacity_milli,
             refill_amount_milli=limit.refill_amount * 1000,
             refill_period_ms=limit.refill_period_seconds * 1000,
             total_consumed_milli=0,  # initialize counter for new buckets
+            shard_count=shard_count,
         )
 
 
