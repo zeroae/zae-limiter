@@ -432,6 +432,30 @@ class TestUnknownLimitInConsume:
                     ):
                         pytest.fail("acquire() must not yield a lease")
 
+    async def test_child_with_subset_of_parent_limits_does_not_warn(self, repo, speculative):
+        """Entity config replaces rather than merges: a child pinned to
+        `[rpm]` cascading to a parent on `[rpm, tpm]` still has `tpm` gated
+        and consumed on the parent. "Org-level tpm budget on the parent,
+        per-user rpm on the child" is a legitimate configuration, so a key
+        known to either side of the cascade must not warn."""
+        await repo.set_system_defaults(
+            [Limit.custom("rpm", 1000, **SLOW), Limit.custom("tpm", 1000, **SLOW)]
+        )
+        await repo.create_entity("parent", parent_id=None, name="parent")
+        await repo.create_entity("child", parent_id="parent", name="child", cascade=True)
+        await repo.set_limits("child", [Limit.custom("rpm", 1000, **SLOW)], resource="api")
+
+        limiter = RateLimiter(repository=repo, speculative_writes=speculative)
+        async with limiter:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", FutureWarning)
+                for _ in range(2):
+                    async with limiter.acquire("child", "api", {"rpm": 1, "tpm": 100}) as lease:
+                        assert lease.consumed == {"rpm": 2, "tpm": 100}
+
+        assert "tpm" not in await _tokens(repo, "child", "api")
+        assert (await _tokens(repo, "parent", "api"))["tpm"] == 1_000_000 - 2 * 100_000
+
     async def _parent_rpm_only_child_rpm_tpm(self, repo):
         """Parent tracks rpm only; the cascading child tracks rpm + tpm."""
         await repo.set_system_defaults(

@@ -970,9 +970,11 @@ class SyncRateLimiter:
         speculative write fail and fall back), so the slow-path check covers
         both paths.
 
-        Compared against the limits of the entity being acquired on only —
-        never a cascade parent's. A parent tracking a subset of the child's
-        limits is a legitimate configuration and must not warn.
+        Compared against every limit the acquire can gate: the acquiring
+        entity's own limits plus, when cascading, the parent's. Either side
+        may track a subset of the other (per-user rpm on the child, org-level
+        tpm on the parent, or a parent on rpm only); a key known to either
+        side is not unknown and must not warn.
 
         Args:
             stacklevel: Frames from this helper to the ``acquire()`` caller;
@@ -1087,7 +1089,6 @@ class SyncRateLimiter:
         child_limits, child_config_source = self._resolve_limits(
             entity_id, resource, limits_override, fetched_disabled
         )
-        self._warn_unknown_limits(consume, child_limits, entity_id, resource, stacklevel=5)
         resolved = self._repository.resolve_disabled_from_fetched(
             entity_id, resource, fetched_disabled
         )
@@ -1118,6 +1119,8 @@ class SyncRateLimiter:
             entity_config_sources[parent_id] = parent_config_source
             parent_buckets = self._fetch_buckets([parent_id], resource)
             existing_buckets.update(parent_buckets)
+        known_limits = [limit for eid in entity_ids for limit in entity_limits[eid]]
+        self._warn_unknown_limits(consume, known_limits, entity_id, resource, stacklevel=5)
         entries: list[LeaseEntry] = []
         statuses: list[LimitStatus] = []
         for eid in entity_ids:
