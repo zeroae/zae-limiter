@@ -1,7 +1,7 @@
 ---
 name: worktree
 description: Use when user says "/worktree", asks for worktree PR/CI status across branches, or asks to start work on a GitHub issue in an isolated worktree.
-allowed-tools: Bash(git worktree list:*), Bash(git branch:*), Bash(gh:*), Bash(.claude/scripts/worktree-status.sh), EnterWorktree, Glob, Read
+allowed-tools: Bash(git worktree list:*), Bash(git branch:*), Bash(git ls-remote:*), Bash(git fetch:*), Bash(git switch:*), Bash(gh:*), Bash(.claude/scripts/worktree-status.sh), EnterWorktree, Glob, Read
 user-invocable: true
 argument-hint: <status|#issue>
 ---
@@ -16,7 +16,7 @@ has been sunset in favour of the built-in — see [Sunset modes](#sunset-modes).
 | Mode | Triggers | Description |
 |------|----------|-------------|
 | **Status** | `/worktree status`, `/worktree` (no args) | PR/CI status table across all worktrees |
-| **Issue** | `/worktree #<issue>`, `/worktree <issue-number>` | Name a branch from a GitHub issue, assign it, and move the session into a worktree |
+| **Issue** | `/worktree #<issue>`, `/worktree <issue-number>` | Name a branch from a GitHub issue (or resume its existing one), assign it, and move the session into a worktree |
 
 ## Mode Detection
 
@@ -42,8 +42,9 @@ trains the override into a reflex and destroys the guard.
 The one thing the built-in gets wrong for this project is the **branch** name. It flattens
 slashes and prefixes: worktree name `feat/42-foo` yields branch `worktree-feat+42-foo`.
 (The name *validator* accepts slashes; only the derivation flattens them.) The fix is one
-command inside the worktree, `git branch -m feat/42-foo` — see `issue.md` Step 4. The
-directory keeps its flattened name; nothing reads it.
+command inside the worktree, `git branch -m feat/42-foo` — or `git switch` when the issue
+already has a branch — see `issue.md` Step 5. The directory keeps its flattened name;
+nothing reads it.
 
 `.claude/worktrees/` is gitignored, so `pre-commit run --all-files` (which lists via
 `git ls-files`) and ruff skip it, and `testpaths = ["tests"]` keeps pytest out.
@@ -56,7 +57,7 @@ These were removed. Point the user at the replacement rather than reimplementing
 |----------|-------------|
 | `/worktree add <branch>` | `claude -w <name>` (new session), or ask Claude to "start a worktree" mid-session (`EnterWorktree`). Add `--tmux` for a dedicated pane. Rename the branch afterwards if it will become a PR. |
 | `/worktree list` | `git worktree list` |
-| `/worktree remove <branch>` | "exit the worktree and remove it" (`ExitWorktree`). It refuses to discard uncommitted or unmerged work unless told to. A branch renamed per `issue.md` Step 4 is left behind by design; delete it with `git branch -d`. |
+| `/worktree remove <branch>` | "exit the worktree and remove it" (`ExitWorktree`). It refuses to discard uncommitted or unmerged work unless told to. A branch renamed or switched to per `issue.md` Step 5 is left behind by design; delete it with `git branch -d`. |
 | `/worktree prune` | `git worktree prune --verbose` |
 
 ## Important Notes
