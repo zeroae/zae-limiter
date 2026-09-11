@@ -16,9 +16,11 @@ This matters because "estimate nothing up front, reconcile afterwards" is
 the workflow the library exists for.
 """
 
+import warnings
+
 import pytest
 
-from zae_limiter import RateLimiter, Repository, schema
+from zae_limiter import OnUnavailable, RateLimiter, Repository, schema
 from zae_limiter.models import Limit
 
 # Refill of 1 token/hour keeps refill negligible over a test, so the stored
@@ -126,7 +128,9 @@ class TestWcuStaysInternal:
                 assert schema.WCU_LIMIT_NAME not in lease.consumed
                 assert all(e.limit.name != schema.WCU_LIMIT_NAME for e in lease.entries)
 
-    async def test_adjusting_wcu_from_the_lease_is_a_no_op(self, repo, speculative):
+    async def test_adjusting_wcu_from_the_lease_is_reported_and_ignored(self, repo, speculative):
+        """`wcu` is never in `consume`, so adjusting it is an undeclared-key
+        adjustment like any other (#455): warned about and not applied."""
         await repo.set_system_defaults([Limit.custom("rpm", 1000, **SLOW)])
         await repo.create_entity("e1", parent_id=None, name="e1")
 
@@ -135,8 +139,195 @@ class TestWcuStaysInternal:
             async with limiter.acquire("e1", "api", {"rpm": 1}):
                 pass
             async with limiter.acquire("e1", "api", {"rpm": 1}) as lease:
-                await lease.adjust(**{schema.WCU_LIMIT_NAME: 500})
+                with pytest.warns(DeprecationWarning, match=schema.WCU_LIMIT_NAME):
+                    await lease.adjust(**{schema.WCU_LIMIT_NAME: 500})
                 assert lease.consumed.get(schema.WCU_LIMIT_NAME) is None
+
+        buckets = await repo.get_buckets("e1", resource="api")
+        assert all(b.limit_name != schema.WCU_LIMIT_NAME for b in buckets), (
+            "get_buckets filters wcu; the adjust above must not have leaked it"
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("speculative", [True, False])
+class TestUndeclaredLimitIsReported:
+    """`consume` is the declared scope of a lease (#455).
+
+    A limit the caller did not name in `acquire(consume=...)` was never
+    checked at admission, so adjusting it afterwards would drive a bucket
+    negative that never had the chance to reject. Both paths must therefore
+    treat such a key the same way: report it and leave the bucket alone.
+
+    Staged rollout: `DeprecationWarning` now, `ValidationError` at v1.0.0.
+    """
+
+    async def _rpm_and_tpm(self, repo):
+        await repo.set_system_defaults(
+            [Limit.custom("rpm", 1000, **SLOW), Limit.custom("tpm", 1000, **SLOW)]
+        )
+        await repo.create_entity("e1", parent_id=None, name="e1")
+
+    async def test_adjust_on_undeclared_limit_warns_and_is_not_applied(self, repo, speculative):
+        """The reported divergence: the first acquire (slow path) used to
+        apply `adjust(tpm=...)` for a `tpm` never in `consume`; later acquires
+        (fast path) dropped it silently. Now both warn and neither applies."""
+        await self._rpm_and_tpm(repo)
+
+        limiter = RateLimiter(repository=repo, speculative_writes=speculative)
+        async with limiter:
+            for _ in range(2):
+                async with limiter.acquire("e1", "api", {"rpm": 1}) as lease:
+                    with pytest.warns(DeprecationWarning, match=r"'tpm'"):
+                        await lease.adjust(tpm=100)
+
+        tokens = await _tokens(repo, "e1", "api")
+        assert tokens["rpm"] == 1_000_000 - 2 * 1_000
+        assert tokens["tpm"] == 1_000_000, "tpm was never declared; it must be untouched"
+
+    async def test_typo_key_warns_and_names_the_declared_limits(self, repo, speculative):
+        """`adjust(tpmm=...)` where `tpm` is the real limit: the warning must
+        name the offending key, the declared limits, and the v1.0.0 error."""
+        await self._rpm_and_tpm(repo)
+
+        limiter = RateLimiter(repository=repo, speculative_writes=speculative)
+        async with limiter:
+            for _ in range(2):
+                async with limiter.acquire("e1", "api", {"rpm": 1, "tpm": 500}) as lease:
+                    with pytest.warns(DeprecationWarning) as record:
+                        await lease.adjust(tpmm=100)
+
+        assert len(record) == 1
+        message = str(record[0].message)
+        assert "'tpmm'" in message
+        assert "'rpm'" in message and "'tpm'" in message
+        assert "ValidationError" in message and "v1.0.0" in message
+        # stacklevel must point at the caller, not at lease.py
+        assert record[0].filename == __file__
+
+        assert (await _tokens(repo, "e1", "api"))["tpm"] == 1_000_000 - 2 * 500_000
+
+    async def test_consume_on_undeclared_limit_warns_and_is_not_applied(self, repo, speculative):
+        await self._rpm_and_tpm(repo)
+
+        limiter = RateLimiter(repository=repo, speculative_writes=speculative)
+        async with limiter:
+            for _ in range(2):
+                async with limiter.acquire("e1", "api", {"rpm": 1}) as lease:
+                    with pytest.warns(DeprecationWarning, match=r"consume\(\).*'tpm'"):
+                        await lease.consume(tpm=100)
+                    assert "tpm" not in lease.consumed
+
+        assert (await _tokens(repo, "e1", "api"))["tpm"] == 1_000_000
+
+    async def test_release_on_undeclared_limit_warns_and_is_not_applied(self, repo, speculative):
+        await self._rpm_and_tpm(repo)
+
+        limiter = RateLimiter(repository=repo, speculative_writes=speculative)
+        async with limiter:
+            for _ in range(2):
+                async with limiter.acquire("e1", "api", {"rpm": 1}) as lease:
+                    with pytest.warns(DeprecationWarning, match=r"release\(\).*'tpm'"):
+                        await lease.release(tpm=100)
+
+        assert (await _tokens(repo, "e1", "api"))["tpm"] == 1_000_000
+
+    async def test_declared_zero_estimate_never_warns(self, repo, speculative):
+        """`{"tpm": 0}` is a real declaration (#453); it must stay warning-free."""
+        await self._rpm_and_tpm(repo)
+
+        limiter = RateLimiter(repository=repo, speculative_writes=speculative)
+        async with limiter:
+            for _ in range(2):
+                async with limiter.acquire("e1", "api", {"rpm": 1, "tpm": 0}) as lease:
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("error", DeprecationWarning)
+                        await lease.adjust(tpm=100)
+                        await lease.consume(tpm=1)
+                        await lease.release(tpm=1)
+
+        assert (await _tokens(repo, "e1", "api"))["tpm"] == 1_000_000 - 2 * 100_000
+
+    async def test_lease_consumed_reports_only_declared_limits(self, repo, speculative):
+        """The slow path used to report `{"rpm": 1, "tpm": 0}`; the fast path
+        `{"rpm": 1}`. The declared scope is the same on both."""
+        await self._rpm_and_tpm(repo)
+
+        limiter = RateLimiter(repository=repo, speculative_writes=speculative)
+        async with limiter:
+            for _ in range(2):
+                async with limiter.acquire("e1", "api", {"rpm": 1}) as lease:
+                    assert lease.consumed == {"rpm": 1}
+
+    async def test_slow_path_still_persists_every_configured_limit(self, repo, speculative):
+        """Guard for the design constraint behind #455: the slow path's write
+        must still carry every resolved limit, not just the declared ones.
+        `build_composite_create` writes only the states it is handed, and
+        `build_composite_normal` advances the shared `rf` while crediting
+        refill only to the limits it is handed — so narrowing the *write* to
+        `consume` would create buckets without `tpm` and lose `tpm` refill on
+        every `rpm`-only acquire. Only the lease's *adjustable scope* narrows."""
+        await self._rpm_and_tpm(repo)
+
+        limiter = RateLimiter(repository=repo, speculative_writes=speculative)
+        async with limiter:
+            async with limiter.acquire("e1", "api", {"rpm": 1}):
+                pass
+
+        tokens = await _tokens(repo, "e1", "api")
+        assert tokens == {"rpm": 1_000_000 - 1_000, "tpm": 1_000_000}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("speculative", [True, False])
+class TestDegradedLeaseIsExempt:
+    """Under `on_unavailable=ALLOW`, an outage yields a degraded lease with no
+    entries. Declared-scope validation must not turn that degradation into a
+    warning storm (or, at v1.0.0, a failure): the lease is marked `degraded`
+    explicitly rather than inferred from `entries == []`."""
+
+    @staticmethod
+    def _simulate_outage(repo, monkeypatch):
+        from botocore.exceptions import ClientError
+
+        async def down(*args, **kwargs):
+            raise ClientError(
+                {"Error": {"Code": "ServiceUnavailable", "Message": "DynamoDB down"}},
+                "UpdateItem",
+            )
+
+        monkeypatch.setattr(repo, "speculative_consume", down)
+        monkeypatch.setattr(repo, "batch_get_entity_and_buckets", down)
+
+    async def test_adjust_consume_release_never_warn_on_degraded_lease(
+        self, repo, speculative, monkeypatch
+    ):
+        await repo.set_system_defaults([Limit.custom("rpm", 1000, **SLOW)])
+        self._simulate_outage(repo, monkeypatch)
+
+        limiter = RateLimiter(repository=repo, speculative_writes=speculative)
+        async with limiter:
+            async with limiter.acquire(
+                "e1", "api", {"rpm": 1}, on_unavailable=OnUnavailable.ALLOW
+            ) as lease:
+                assert lease.degraded is True
+                assert lease.entries == []
+                with warnings.catch_warnings():
+                    warnings.simplefilter("error", DeprecationWarning)
+                    await lease.adjust(rpm=100, tpm=100)
+                    await lease.consume(rpm=1)
+                    await lease.release(rpm=1)
+                assert lease.consumed == {}
+
+    async def test_real_lease_is_not_degraded(self, repo, speculative):
+        await repo.set_system_defaults([Limit.custom("rpm", 1000, **SLOW)])
+        await repo.create_entity("e1", parent_id=None, name="e1")
+
+        limiter = RateLimiter(repository=repo, speculative_writes=speculative)
+        async with limiter:
+            for _ in range(2):
+                async with limiter.acquire("e1", "api", {"rpm": 1}) as lease:
+                    assert lease.degraded is False
 
 
 @pytest.mark.asyncio

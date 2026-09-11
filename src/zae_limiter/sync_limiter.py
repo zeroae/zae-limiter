@@ -580,7 +580,7 @@ class SyncRateLimiter:
             raise
         except Exception as e:
             if mode == OnUnavailable.ALLOW:
-                yield SyncLease(repository=self._repository)
+                yield SyncLease(repository=self._repository, degraded=True)
                 return
             else:
                 raise RateLimiterUnavailable(
@@ -1003,6 +1003,7 @@ class SyncRateLimiter:
                     _original_tokens_milli=original_tk,
                     _original_rf_ms=original_rf,
                     _has_custom_config=has_custom_config,
+                    _declared=limit.name in consume,
                 )
             )
         violations = [s for s in statuses if s.exceeded]
@@ -1116,6 +1117,7 @@ class SyncRateLimiter:
                         _has_custom_config=has_custom_config,
                         _cascade=entity.cascade if entity and eid == entity_id else False,
                         _parent_id=entity.parent_id if entity and eid == entity_id else None,
+                        _declared=limit.name in consume,
                     )
                 )
         violations = [s for s in statuses if s.exceeded]

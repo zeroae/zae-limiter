@@ -8,6 +8,7 @@ Changes should be made to the source file, then regenerated.
 
 import logging
 import time
+import warnings
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -40,6 +41,7 @@ class LeaseEntry:
     _shard_id: int = 0
     _cascade: bool = False
     _parent_id: str | None = None
+    _declared: bool = True
 
 
 @dataclass
@@ -56,15 +58,46 @@ class SyncLease:
     _committed: bool = False
     _rolled_back: bool = False
     _initial_committed: bool = False
+    degraded: bool = False
 
     @property
     def consumed(self) -> dict[str, int]:
-        """Total consumed amounts by limit name."""
+        """Total consumed amounts by limit name (declared limits only)."""
         result: dict[str, int] = {}
-        for entry in self.entries:
+        for entry in self._declared_entries:
             name = entry.limit.name
             result[name] = result.get(name, 0) + entry.consumed
         return result
+
+    @property
+    def _declared_entries(self) -> list[LeaseEntry]:
+        """Entries for limits named in acquire(consume=...) (Issue #455)."""
+        return [entry for entry in self.entries if entry._declared]
+
+    def _check_declared(self, amounts: dict[str, int], method: str) -> None:
+        """Report keys that name no declared limit on this lease (Issue #455).
+
+        A limit absent from ``consume`` was never checked at admission, so
+        adjusting it afterwards would drive a bucket negative that never had
+        the chance to reject; a typo (``tpmm`` for ``tpm``) would otherwise
+        be silent forever. Emits ``DeprecationWarning`` now; becomes
+        ``ValidationError`` in v1.0.0.
+
+        The degraded lease yielded under ``on_unavailable=ALLOW`` is exempt:
+        it has no entries by design, and warning on every call during an
+        outage would turn graceful degradation into noise.
+        """
+        if self.degraded:
+            return
+        declared = sorted({entry.limit.name for entry in self._declared_entries})
+        undeclared = sorted(set(amounts) - set(declared))
+        if not undeclared:
+            return
+        warnings.warn(
+            f"lease.{method}() names limit(s) {undeclared} that were not declared in acquire(consume=...); declared limits on this lease: {declared}. Undeclared keys are ignored. Name the limit in `consume` (an estimate of 0 is valid) to make it adjustable. This becomes a ValidationError in v1.0.0.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
 
     @property
     def _has_adjustments(self) -> bool:
@@ -77,15 +110,20 @@ class SyncLease:
 
         Raises RateLimitExceeded if any bucket has insufficient capacity.
 
+        Only limits declared in ``acquire(consume=...)`` can be consumed;
+        other keys are reported (Issue #455) and ignored.
+
         Args:
             **amounts: Mapping of limit_name -> amount to consume
         """
         if self._committed or self._rolled_back:
             raise LeaseExpiredError()
+        self._check_declared(amounts, "consume")
         now_ms = int(time.time() * 1000)
         statuses: list[LimitStatus] = []
         updates: list[tuple[LeaseEntry, int, int]] = []
-        for entry in self.entries:
+        entries = self._declared_entries
+        for entry in entries:
             amount = amounts.get(entry.limit.name, 0)
             if amount <= 0:
                 continue
@@ -104,7 +142,7 @@ class SyncLease:
             if result.success:
                 updates.append((entry, result.new_tokens_milli, result.new_last_refill_ms))
         consumed_names = set(amounts.keys())
-        for entry in self.entries:
+        for entry in entries:
             if entry.limit.name not in consumed_names:
                 available = calculate_available(entry.state, now_ms)
                 statuses.append(
@@ -137,13 +175,21 @@ class SyncLease:
         Never raises - allows bucket to go negative.
         Use for post-hoc reconciliation (e.g., LLM token counts).
 
+        Only limits declared in ``acquire(consume=...)`` can be adjusted;
+        other keys are reported (Issue #455) and ignored.
+
         Args:
             **amounts: Mapping of limit_name -> delta (positive = consume more)
         """
         if self._committed or self._rolled_back:
             raise LeaseExpiredError()
+        self._check_declared(amounts, "adjust")
+        self._apply_adjust(amounts)
+
+    def _apply_adjust(self, amounts: dict[str, int]) -> None:
+        """Apply adjust() deltas to declared entries (shared with release())."""
         now_ms = int(time.time() * 1000)
-        for entry in self.entries:
+        for entry in self._declared_entries:
             amount = amounts.get(entry.limit.name, 0)
             if amount == 0:
                 continue
@@ -160,11 +206,17 @@ class SyncLease:
 
         Convenience wrapper for adjust() with negated values.
 
+        Only limits declared in ``acquire(consume=...)`` can be released;
+        other keys are reported (Issue #455) and ignored.
+
         Args:
             **amounts: Mapping of limit_name -> amount to return
         """
+        if self._committed or self._rolled_back:
+            raise LeaseExpiredError()
+        self._check_declared(amounts, "release")
         negated = {k: -v for k, v in amounts.items()}
-        self.adjust(**negated)
+        self._apply_adjust(negated)
 
     def _commit_initial(self) -> None:
         """Write initial consumption to DynamoDB on context enter (Issue #309).

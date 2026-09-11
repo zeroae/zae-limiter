@@ -678,8 +678,9 @@ class RateLimiter:
             raise
         except Exception as e:
             if mode == OnUnavailable.ALLOW:
-                # Return a no-op lease
-                yield Lease(repository=self._repository)
+                # Return a no-op lease. `degraded` exempts it from declared-
+                # scope validation (Issue #455): it has no entries by design.
+                yield Lease(repository=self._repository, degraded=True)
                 return
             else:
                 raise RateLimiterUnavailable(
@@ -1225,6 +1226,9 @@ class RateLimiter:
                 if existing.total_consumed_milli is not None and amount > 0:
                     existing.total_consumed_milli += amount * 1000
 
+            # Every resolved limit gets an entry so _commit_initial() persists
+            # refill for all of them; only the declared ones are adjustable
+            # through the lease (Issue #455).
             parent_entries.append(
                 LeaseEntry(
                     entity_id=parent_id,
@@ -1235,6 +1239,7 @@ class RateLimiter:
                     _original_tokens_milli=original_tk,
                     _original_rf_ms=original_rf,
                     _has_custom_config=has_custom_config,
+                    _declared=limit.name in consume,
                 )
             )
 
@@ -1393,6 +1398,12 @@ class RateLimiter:
                 # Determine if entity has custom config for TTL (Issue #271)
                 has_custom_config = entity_config_sources.get(eid) == "entity"
 
+                # Every resolved limit gets an entry: _commit_initial() needs
+                # them all to create the composite bucket and to credit refill
+                # when it advances the shared `rf`. Only limits the caller
+                # named in `consume` are declared, i.e. visible and adjustable
+                # through the lease — the same rule the fast path applies
+                # when it filters result.buckets (Issue #455).
                 entries.append(
                     LeaseEntry(
                         entity_id=eid,
@@ -1406,6 +1417,7 @@ class RateLimiter:
                         _has_custom_config=has_custom_config,
                         _cascade=entity.cascade if entity and eid == entity_id else False,
                         _parent_id=entity.parent_id if entity and eid == entity_id else None,
+                        _declared=limit.name in consume,
                     )
                 )
 
