@@ -117,6 +117,12 @@ async with limiter.acquire(
         await lease.adjust(tpm=response.usage.total_tokens)
     ```
 
+    Declaring a limit means it gates admission, even at an estimate of `0`: the
+    bucket must not be in debt. If a previous `adjust(tpm=...)` overdrew `tpm`,
+    `acquire(consume={"rpm": 1, "tpm": 0})` raises `RateLimitExceeded` with a
+    `retry_after` until refill clears the debt, while `{"rpm": 1}` alone is
+    admitted. That is the point — an overdrawn `tpm` should wait for refill.
+
     An empty `consume` declares no limits, so nothing on that lease is adjustable —
     use `{"name": 0}` to declare a limit whose cost is unknown. A key in `consume`
     that names no limit configured for the resource is ignored at admission and

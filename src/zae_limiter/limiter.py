@@ -1479,7 +1479,10 @@ class RateLimiter:
                 declared = limit.name in consume
                 consumed = 0
                 if declared:
-                    # Try to consume
+                    # Declared limits gate admission even at amount 0:
+                    # try_consume fails when the bucket is in debt, so a
+                    # declared zero-estimate limit waits for refill to clear
+                    # an earlier overdraw. That is what declaring it means.
                     amount = consume[limit.name]
                     result = try_consume(state, amount, now_ms)
 
@@ -1505,10 +1508,10 @@ class RateLimiter:
                             state.total_consumed_milli += amount * 1000
                 else:
                     # Undeclared limit (Issue #455): refill only. It was not
-                    # named in `consume`, so it never gates admission (a
-                    # bucket in debt must not reject a request of 0 — the
-                    # fast path's condition covers declared limits only) and
-                    # never appears in RateLimitExceeded.
+                    # named in `consume`, so it never gates admission — not
+                    # even when in debt, matching the fast path, whose
+                    # condition covers declared limits only — and never
+                    # appears in RateLimitExceeded.
                     state.tokens_milli, state.last_refill_ms = force_consume(state, 0, now_ms)
 
                 # Determine if entity has custom config for TTL (Issue #271)
