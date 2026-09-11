@@ -83,8 +83,8 @@ One-item transactions are downgraded to `PutItem` (1 WCU); a cold config cache a
 
 ## Related (tracked separately)
 
-- `_sync_bucket_params()` reconciles shard 0 only; the parallel cascade fast path always
-  writes the parent on shard 0.
+- `_sync_bucket_params()` reconciles shard 0 only ([#468](https://github.com/zeroae/zae-limiter/issues/468));
+  the parallel cascade fast path always writes the parent on shard 0 ([#474](https://github.com/zeroae/zae-limiter/issues/474)).
 
 ## Alternatives Considered
 
