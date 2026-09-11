@@ -1,0 +1,18 @@
+# Codecov configuration.
+#
+# ci-tests.yml runs only when src/**, tests/**, scripts/**, pyproject.toml, or
+# uv.lock change, so a docs-only PR uploads just the `doctest` flag. Without
+# carryforward, Codecov compares that single ~30% report against a base built
+# from all four flags (~93%) and reports a spurious coverage drop on
+# codecov/project (issue #452). Carryforward reuses the most recent upload of
+# each missing flag from the base commit instead.
+flag_management:
+  individual_flags:
+    - name: unit
+      carryforward: true
+    - name: integration
+      carryforward: true
+    - name: e2e
+      carryforward: true
+    - name: doctest
+      carryforward: true
