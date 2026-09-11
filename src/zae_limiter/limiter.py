@@ -14,9 +14,9 @@ if TYPE_CHECKING:
     from .repository_protocol import RepositoryProtocol, SpeculativeResult
 
 from .bucket import (
-    build_limit_status,
     calculate_available,
     calculate_time_until_available,
+    declared_statuses,
     force_consume,
     try_consume,
     would_refill_satisfy,
@@ -884,20 +884,7 @@ class RateLimiter:
                 )
                 if not would_help:
                     await self._compensate_child(entity_id, resource, consume)
-                    child_statuses = [
-                        build_limit_status(
-                            entity_id=s.entity_id,
-                            resource=s.resource,
-                            limit=Limit.from_bucket_state(s),
-                            state=s,
-                            requested=consume[s.limit_name],
-                            now_ms=now_ms,
-                        )
-                        # Declared limits only: result.buckets also carries the
-                        # reserved `wcu` limit and any undeclared limit (#455).
-                        for s in result.buckets
-                        if s.limit_name in consume
-                    ]
+                    child_statuses = declared_statuses(result.buckets, consume, now_ms)
                     raise RateLimitExceeded(child_statuses + parent_statuses)
 
                 try:
@@ -972,20 +959,7 @@ class RateLimiter:
         )
         if not would_help:
             await self._compensate_child(entity_id, resource, consume)
-            child_statuses = [
-                build_limit_status(
-                    entity_id=s.entity_id,
-                    resource=s.resource,
-                    limit=Limit.from_bucket_state(s),
-                    state=s,
-                    requested=consume[s.limit_name],
-                    now_ms=now_ms,
-                )
-                # Declared limits only: result.buckets also carries the
-                # reserved `wcu` limit and any undeclared limit (#455).
-                for s in result.buckets
-                if s.limit_name in consume
-            ]
+            child_statuses = declared_statuses(result.buckets, consume, now_ms)
             raise RateLimitExceeded(child_statuses + parent_statuses)
 
         # Refill would help — build child entries for parent-only slow path
@@ -1245,6 +1219,54 @@ class RateLimiter:
         )
         return frozenset(unknown)
 
+    @staticmethod
+    def _admit_limit(
+        entity_id: str,
+        resource: str,
+        limit: Limit,
+        state: BucketState,
+        consume: dict[str, int],
+        now_ms: int,
+    ) -> tuple[LimitStatus | None, int]:
+        """Slow-path admission for one resolved limit (Issue #455).
+
+        Declared (named in ``consume``): ``try_consume`` gates admission even
+        at amount 0 — it fails when the bucket is in debt, so a declared
+        zero-estimate limit waits for refill to clear an earlier overdraw.
+        That is what declaring it means. On success the state is updated in
+        place. Returns ``(status, consumed)``.
+
+        Undeclared: refill only, so the composite write stays complete. It
+        never gates admission — not even when in debt, matching the fast
+        path, whose condition covers declared limits only — and never appears
+        in ``RateLimitExceeded``. Returns ``(None, 0)``.
+        """
+        if limit.name not in consume:
+            state.tokens_milli, state.last_refill_ms = force_consume(state, 0, now_ms)
+            return None, 0
+
+        amount = consume[limit.name]
+        result = try_consume(state, amount, now_ms)
+        status = LimitStatus(
+            entity_id=entity_id,
+            resource=resource,
+            limit_name=limit.name,
+            limit=limit,
+            available=result.available,
+            requested=amount,
+            exceeded=not result.success,
+            retry_after_seconds=result.retry_after_seconds,
+        )
+        if not result.success:
+            return status, 0
+
+        state.tokens_milli = result.new_tokens_milli
+        state.last_refill_ms = result.new_last_refill_ms
+        # Update consumption counter if initialized (issue #179)
+        if state.total_consumed_milli is not None and amount > 0:
+            state.total_consumed_milli += amount * 1000
+        return status, amount
+
     async def _try_parent_only_acquire(
         self,
         parent_id: str,
@@ -1286,34 +1308,11 @@ class RateLimiter:
             original_tk = existing.tokens_milli
             original_rf = existing.last_refill_ms
 
-            declared = limit.name in consume
-            consumed = 0
-            if declared:
-                amount = consume[limit.name]
-                result = try_consume(existing, amount, now_ms)
-
-                status = LimitStatus(
-                    entity_id=parent_id,
-                    resource=resource,
-                    limit_name=limit.name,
-                    limit=limit,
-                    available=result.available,
-                    requested=amount,
-                    exceeded=not result.success,
-                    retry_after_seconds=result.retry_after_seconds,
-                )
+            status, consumed = self._admit_limit(
+                parent_id, resource, limit, existing, consume, now_ms
+            )
+            if status is not None:
                 statuses.append(status)
-
-                if result.success:
-                    consumed = amount
-                    existing.tokens_milli = result.new_tokens_milli
-                    existing.last_refill_ms = result.new_last_refill_ms
-                    if existing.total_consumed_milli is not None and amount > 0:
-                        existing.total_consumed_milli += amount * 1000
-            else:
-                # Undeclared limit (Issue #455): refill only, so the write
-                # stays complete, but never gate admission and never report.
-                existing.tokens_milli, existing.last_refill_ms = force_consume(existing, 0, now_ms)
 
             # Every resolved limit gets an entry so _commit_initial() persists
             # refill for all of them; only the declared ones are adjustable
@@ -1328,7 +1327,7 @@ class RateLimiter:
                     _original_tokens_milli=original_tk,
                     _original_rf_ms=original_rf,
                     _has_custom_config=has_custom_config,
-                    _declared=declared,
+                    _declared=status is not None,
                 )
             )
 
@@ -1476,43 +1475,9 @@ class RateLimiter:
                 original_tk = state.tokens_milli
                 original_rf = state.last_refill_ms
 
-                declared = limit.name in consume
-                consumed = 0
-                if declared:
-                    # Declared limits gate admission even at amount 0:
-                    # try_consume fails when the bucket is in debt, so a
-                    # declared zero-estimate limit waits for refill to clear
-                    # an earlier overdraw. That is what declaring it means.
-                    amount = consume[limit.name]
-                    result = try_consume(state, amount, now_ms)
-
-                    status = LimitStatus(
-                        entity_id=eid,
-                        resource=resource,
-                        limit_name=limit.name,
-                        limit=limit,
-                        available=result.available,
-                        requested=amount,
-                        exceeded=not result.success,
-                        retry_after_seconds=result.retry_after_seconds,
-                    )
+                status, consumed = self._admit_limit(eid, resource, limit, state, consume, now_ms)
+                if status is not None:
                     statuses.append(status)
-
-                    if result.success:
-                        consumed = amount
-                        # Update local state
-                        state.tokens_milli = result.new_tokens_milli
-                        state.last_refill_ms = result.new_last_refill_ms
-                        # Update consumption counter if initialized (issue #179)
-                        if state.total_consumed_milli is not None and amount > 0:
-                            state.total_consumed_milli += amount * 1000
-                else:
-                    # Undeclared limit (Issue #455): refill only. It was not
-                    # named in `consume`, so it never gates admission — not
-                    # even when in debt, matching the fast path, whose
-                    # condition covers declared limits only — and never
-                    # appears in RateLimitExceeded.
-                    state.tokens_milli, state.last_refill_ms = force_consume(state, 0, now_ms)
 
                 # Determine if entity has custom config for TTL (Issue #271)
                 has_custom_config = entity_config_sources.get(eid) == "entity"
@@ -1536,7 +1501,7 @@ class RateLimiter:
                         _has_custom_config=has_custom_config,
                         _cascade=entity.cascade if entity and eid == entity_id else False,
                         _parent_id=entity.parent_id if entity and eid == entity_id else None,
-                        _declared=declared,
+                        _declared=status is not None,
                     )
                 )
 
