@@ -430,6 +430,16 @@ class TestRepositoryBucketOperations:
         assert repo._entity_cache[(ns, "mono-1")][2]["gpt-4"] == 4
 
     @pytest.mark.asyncio
+    async def test_learn_shard_count_leaves_an_unknown_entity_uncached(self, repo):
+        """Without cascade/parent_id to store, an unknown entity stays out of
+        the cache; the observed count is still handed back to the caller."""
+        ns = repo._namespace_id
+        assert repo._learn_shard_count("nobody", "gpt-4", 3) == 3
+        assert (ns, "nobody") not in repo._entity_cache
+        assert repo._learn_shard_count("nobody", "gpt-4", 3, meta=(False, None)) == 3
+        assert repo._entity_cache[(ns, "nobody")] == (False, None, {"gpt-4": 3})
+
+    @pytest.mark.asyncio
     async def test_select_shard_uses_the_cached_shard_count(self, repo):
         """select_shard is the single place a shard is picked (issue #439)."""
         ns = repo._namespace_id
