@@ -28,6 +28,7 @@ from .bucket import (
 from .exceptions import RateLimiterUnavailable, RateLimitExceeded, ResourceDisabled, ValidationError
 from .models import (
     AuditEvent,
+    Availability,
     BucketState,
     Entity,
     EntityCapacity,
@@ -1238,6 +1239,78 @@ class SyncRateLimiter:
         on_unavailable_action = self._repository.resolve_on_unavailable()
         return OnUnavailable(on_unavailable_action)
 
+    def check_availability(
+        self,
+        entity_id: str,
+        resource: str,
+        needed: dict[str, int] | None = None,
+        limits: list[Limit] | None = None,
+    ) -> Availability:
+        """
+        Check available capacity and wait time in a single read (issue #472).
+
+        Answers both "how much is left?" and "how long until I can proceed?"
+        from one config resolution and one bucket read, instead of the two
+        independent round trips that calling :meth:`available` and
+        :meth:`time_until_available` back to back would cost.
+
+        Limits are resolved using four-tier hierarchy: Entity > Entity Default >
+        Resource > System. If no stored limits found, falls back to the `limits`
+        parameter.
+
+        Consumes nothing and writes nothing. Reads shard 0 only, matching
+        :meth:`available` and :meth:`time_until_available`.
+
+        Args:
+            entity_id: Entity to check
+            resource: Resource to check
+            needed: Required amounts by limit name. Omit to ask only about
+                current availability (`retry_after_seconds` is then 0.0).
+            limits: Override limits (optional, falls back to stored config)
+
+        Returns:
+            Availability with per-limit available tokens, the requested amounts,
+            and seconds until every requested amount is available.
+
+        Raises:
+            ValidationError: If no limits found at any level and no override provided
+
+        Example:
+            ```python
+            check = limiter.check_availability(
+                entity_id="key-abc",
+                resource="gpt-4",
+                needed={"rpm": 1, "tpm": 500},
+            )
+            if not check.allowed:
+                asyncio.sleep(check.retry_after_seconds)
+            ```
+        """
+        self._ensure_initialized()
+        now_ms = int(time.time() * 1000)
+        needed = needed or {}
+        resolved_limits, _ = self._resolve_limits(entity_id, resource, limits)
+        buckets = self._fetch_buckets([entity_id], resource)
+        available: dict[str, int] = {}
+        max_wait = 0.0
+        for limit in resolved_limits:
+            state = buckets.get((entity_id, resource, limit.name))
+            if state is None:
+                available[limit.name] = limit.capacity
+                continue
+            available[limit.name] = calculate_available(state, now_ms)
+            amount = needed.get(limit.name, 0)
+            if amount > 0:
+                max_wait = max(max_wait, calculate_time_until_available(state, amount, now_ms))
+        return Availability(
+            entity_id=entity_id,
+            resource=resource,
+            limits=resolved_limits,
+            available=available,
+            needed=dict(needed),
+            retry_after_seconds=max_wait,
+        )
+
     def available(
         self,
         entity_id: str,
@@ -1254,6 +1327,9 @@ class SyncRateLimiter:
         Returns minimum available across entity (and parent if cascade).
         Can return negative values if bucket is in debt.
 
+        See :meth:`check_availability` to get this and the wait time from a
+        single read.
+
         Args:
             entity_id: Entity to check
             resource: Resource to check
@@ -1267,23 +1343,14 @@ class SyncRateLimiter:
         Raises:
             ValidationError: If no limits found at any level and no override provided
         """
-        self._ensure_initialized()
-        now_ms = int(time.time() * 1000)
         if use_stored_limits:
             warnings.warn(
                 "use_stored_limits is deprecated and will be removed in v1.0. Limits are now always resolved from stored config (Entity > Resource > System). Pass limits parameter as override if needed.",
                 DeprecationWarning,
                 stacklevel=2,
             )
-        resolved_limits, _ = self._resolve_limits(entity_id, resource, limits)
-        result: dict[str, int] = {}
-        for limit in resolved_limits:
-            state = self._repository.get_bucket(entity_id, resource, limit.name)
-            if state is None:
-                result[limit.name] = limit.capacity
-            else:
-                result[limit.name] = calculate_available(state, now_ms)
-        return result
+        check = self.check_availability(entity_id, resource, None, limits)
+        return check.available
 
     def time_until_available(
         self,
@@ -1299,6 +1366,9 @@ class SyncRateLimiter:
         Limits are resolved using four-tier hierarchy: Entity > Entity Default > Resource > System.
         If no stored limits found, falls back to the `limits` parameter.
 
+        See :meth:`check_availability` to get this and the available capacity
+        from a single read.
+
         Args:
             entity_id: Entity to check
             resource: Resource to check
@@ -1313,26 +1383,14 @@ class SyncRateLimiter:
         Raises:
             ValidationError: If no limits found at any level and no override provided
         """
-        self._ensure_initialized()
-        now_ms = int(time.time() * 1000)
         if use_stored_limits:
             warnings.warn(
                 "use_stored_limits is deprecated and will be removed in v1.0. Limits are now always resolved from stored config (Entity > Resource > System). Pass limits parameter as override if needed.",
                 DeprecationWarning,
                 stacklevel=2,
             )
-        resolved_limits, _ = self._resolve_limits(entity_id, resource, limits)
-        max_wait = 0.0
-        for limit in resolved_limits:
-            amount = needed.get(limit.name, 0)
-            if amount <= 0:
-                continue
-            state = self._repository.get_bucket(entity_id, resource, limit.name)
-            if state is None:
-                continue
-            wait = calculate_time_until_available(state, amount, now_ms)
-            max_wait = max(max_wait, wait)
-        return max_wait
+        check = self.check_availability(entity_id, resource, needed, limits)
+        return check.retry_after_seconds
 
     def set_limits(
         self,

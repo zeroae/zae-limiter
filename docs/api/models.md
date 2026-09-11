@@ -29,6 +29,15 @@ Data models for rate limit configuration and status.
       members_order: source
       heading_level: 3
 
+## Availability
+
+::: zae_limiter.models.Availability
+    options:
+      show_root_heading: true
+      show_source: false
+      members_order: source
+      heading_level: 3
+
 ## BucketState
 
 ::: zae_limiter.models.BucketState

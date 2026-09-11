@@ -323,7 +323,7 @@ Cascade classes create child entities under a shared parent and set `cascade=Tru
 ```
 src/zae_limiter/
 ├── __init__.py        # Public API exports
-├── models.py          # Limit, Entity, LimitStatus, BucketState, StackOptions, AuditEvent, AuditAction, UsageSnapshot, UsageSummary, LimiterInfo, BackendCapabilities, Status, LimitName, ResourceCapacity, EntityCapacity
+├── models.py          # Limit, Entity, LimitStatus, Availability, BucketState, StackOptions, AuditEvent, AuditAction, UsageSnapshot, UsageSummary, LimiterInfo, BackendCapabilities, Status, LimitName, ResourceCapacity, EntityCapacity
 ├── exceptions.py      # RateLimitExceeded, LeaseExpiredError, RateLimiterUnavailable, StackOperationError, StackAlreadyExistsError, InfrastructureNotFoundError, NamespaceNotFoundError, NamespaceStateError, EntityNotFoundError, EntityExistsError, VersionError, ValidationError, ResourceDisabled
 ├── naming.py          # Resource name validation (ZAEL- prefix retained for legacy discovery)
 ├── bucket.py          # Token bucket math (integer arithmetic)
@@ -709,6 +709,27 @@ Bucket items use per-(entity, resource, shard) partition keys: `PK={ns}/BUCKET#{
 - `ConditionalCheckFailedException` is silently skipped (another writer updated `rf` first)
 - New types: `ParsedBucketRecord`, `ParsedBucketLimit` (shared stream record parsing), `BucketRefillState`, `LimitRefillInfo` (per-bucket aggregated state for refill decisions)
 - `ProcessResult` includes `refills_written` field; handler response body includes the count
+
+### Combined Capacity Check (Issue #472)
+
+`RateLimiter.check_availability(entity_id, resource, needed=None, limits=None) -> Availability`
+answers both "how much is left?" and "how long until I can proceed?" from **one** config
+resolution and **one** bucket read. `available()` and `time_until_available()` are now thin
+wrappers over it, so the three can never disagree; both keep their existing signatures and
+return types (including the deprecated `use_stored_limits` parameter).
+
+`Availability` is a frozen dataclass carrying `entity_id`, `resource`, `limits`, `available`
+(limit name → tokens, may be negative), `needed`, and `retry_after_seconds`, plus derived
+`allowed`, `exceeded`, and `deficit` properties.
+
+Non-consuming and write-free. Like the two methods it subsumes, it reads **shard 0 only** —
+GHSA-76rv write sharding is not modelled by this path — and treats a missing bucket as full
+capacity with no wait.
+
+Cost: previously each of the two methods issued one `GetItem` **per limit** (against the same
+composite item, ADR-114), so asking both questions about a 2-limit resource cost 4 `GetItem`s
+plus 2 config resolutions. Now it is 1 `BatchGetItem` plus 1 config resolution regardless of
+limit count.
 
 ### Exception Design
 - `RateLimitExceeded` includes **ALL** limit statuses

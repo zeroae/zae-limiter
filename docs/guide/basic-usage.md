@@ -124,6 +124,30 @@ if wait_seconds > 0:
     print(f"Need to wait {wait_seconds}s for capacity")
 ```
 
+### Check Both in One Call
+
+Calling `available()` and `time_until_available()` back to back costs two round
+trips to read the same bucket. `check_availability()` answers both from a single
+read:
+
+```python
+check = await limiter.check_availability(
+    entity_id="key-123",
+    resource="gpt-4",
+    needed={"tpm": 5_000},
+)
+
+if check.allowed:
+    print(f"Ready — {check.available['tpm']} tokens available")
+else:
+    print(f"Short {check.deficit} — retry in {check.retry_after_seconds}s")
+```
+
+The returned [`Availability`](../api/models.md#availability) carries `available`
+(same as `available()`), `retry_after_seconds` (same as
+`time_until_available()`), plus `allowed`, `exceeded`, and `deficit`. The
+`needed` argument is optional — omit it to ask only about current availability.
+
 ## Automatic Limit Resolution
 
 zae-limiter automatically resolves limits from stored configurations using a four-level hierarchy. See [Configuration Hierarchy](config-hierarchy.md) for full details.

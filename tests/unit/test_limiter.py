@@ -1838,6 +1838,217 @@ class TestRateLimiterCapacity:
         assert 29 < wait < 31
 
 
+class TestRateLimiterCheckAvailability:
+    """Tests for check_availability() (issue #472)."""
+
+    async def test_returns_full_capacity_for_fresh_entity(self, limiter):
+        """A never-seen entity reports full capacity and no wait."""
+        limits = [Limit.per_minute("rpm", 100), Limit.per_minute("tpm", 10_000)]
+
+        check = await limiter.check_availability(
+            entity_id="key-1",
+            resource="gpt-4",
+            needed={"rpm": 1, "tpm": 500},
+            limits=limits,
+        )
+
+        assert check.entity_id == "key-1"
+        assert check.resource == "gpt-4"
+        assert check.available == {"rpm": 100, "tpm": 10_000}
+        assert check.needed == {"rpm": 1, "tpm": 500}
+        assert check.retry_after_seconds == 0.0
+        assert check.allowed is True
+        assert check.exceeded == []
+        assert check.deficit == {}
+
+    async def test_needed_is_optional(self, limiter):
+        """Omitting needed answers availability only, with no wait."""
+        limits = [Limit.per_minute("rpm", 100)]
+
+        async with limiter.acquire(
+            entity_id="key-1",
+            resource="gpt-4",
+            limits=limits,
+            consume={"rpm": 100},
+        ):
+            pass
+
+        check = await limiter.check_availability(
+            entity_id="key-1",
+            resource="gpt-4",
+            limits=limits,
+        )
+
+        assert check.available == {"rpm": 0}
+        assert check.needed == {}
+        assert check.retry_after_seconds == 0.0
+        # Nothing was asked for, so nothing is exceeded
+        assert check.allowed is True
+
+    async def test_reports_availability_and_wait_together(self, limiter):
+        """One call answers both questions for an exhausted bucket."""
+        limits = [Limit.per_minute("rpm", 100)]
+
+        async with limiter.acquire(
+            entity_id="key-1",
+            resource="gpt-4",
+            limits=limits,
+            consume={"rpm": 100},
+        ):
+            pass
+
+        check = await limiter.check_availability(
+            entity_id="key-1",
+            resource="gpt-4",
+            needed={"rpm": 50},
+            limits=limits,
+        )
+
+        assert check.available["rpm"] == 0
+        # 50 tokens at 100/min = 30 seconds
+        assert 29 < check.retry_after_seconds < 31
+        assert check.allowed is False
+        assert check.exceeded == ["rpm"]
+        assert check.deficit == {"rpm": 50}
+
+    async def test_wait_is_max_across_limits(self, limiter):
+        """retry_after_seconds is the slowest limit, and zero amounts are skipped."""
+        limits = [
+            Limit.per_minute("rpm", 100),
+            Limit.per_minute("tpm", 10_000),
+        ]
+
+        async with limiter.acquire(
+            entity_id="key-1",
+            resource="gpt-4",
+            limits=limits,
+            consume={"rpm": 100, "tpm": 10_000},
+        ):
+            pass
+
+        check = await limiter.check_availability(
+            entity_id="key-1",
+            resource="gpt-4",
+            needed={"rpm": 50, "tpm": 0},
+            limits=limits,
+        )
+
+        # tpm is requested as 0, so only rpm drives the wait (30s) and the verdict
+        assert 29 < check.retry_after_seconds < 31
+        assert check.exceeded == ["rpm"]
+
+    async def test_reports_debt_as_negative_available(self, limiter):
+        """A bucket pushed into debt by adjust() reports negative availability."""
+        limits = [Limit.per_minute("rpm", 100)]
+
+        async with limiter.acquire(
+            entity_id="key-1",
+            resource="gpt-4",
+            limits=limits,
+            consume={"rpm": 90},
+        ) as lease:
+            await lease.adjust(rpm=30)
+
+        check = await limiter.check_availability(
+            entity_id="key-1",
+            resource="gpt-4",
+            needed={"rpm": 10},
+            limits=limits,
+        )
+
+        assert check.available["rpm"] < 0
+        assert check.allowed is False
+        assert check.deficit["rpm"] > 10
+
+    async def test_uses_four_tier_resolution(self, limiter):
+        """Without a limits override, stored config is resolved."""
+        await limiter.set_system_defaults(limits=[Limit.per_minute("rpm", 50)])
+
+        check = await limiter.check_availability(entity_id="key-1", resource="gpt-4")
+
+        assert check.available == {"rpm": 50}
+        assert [limit.name for limit in check.limits] == ["rpm"]
+
+    async def test_raises_when_no_limits_configured(self, limiter):
+        """No stored config and no override is a ValidationError."""
+        with pytest.raises(ValidationError):
+            await limiter.check_availability(entity_id="key-1", resource="gpt-4")
+
+    async def test_issues_one_bucket_read_for_all_limits(self, limiter):
+        """Both answers come from a single bucket read, whatever the limit count."""
+        limits = [
+            Limit.per_minute("rpm", 100),
+            Limit.per_minute("tpm", 10_000),
+            Limit.per_minute("ipm", 500),
+        ]
+
+        with patch.object(
+            limiter._repository,
+            "batch_get_buckets",
+            wraps=limiter._repository.batch_get_buckets,
+        ) as batch_get:
+            await limiter.check_availability(
+                entity_id="key-1",
+                resource="gpt-4",
+                needed={"rpm": 1, "tpm": 1, "ipm": 1},
+                limits=limits,
+            )
+
+        assert batch_get.call_count == 1
+
+    async def test_available_matches_check_availability(self, limiter):
+        """available() delegates, so the two can never disagree."""
+        limits = [Limit.per_minute("rpm", 100)]
+
+        async with limiter.acquire(
+            entity_id="key-1",
+            resource="gpt-4",
+            limits=limits,
+            consume={"rpm": 30},
+        ):
+            pass
+
+        available = await limiter.available(
+            entity_id="key-1",
+            resource="gpt-4",
+            limits=limits,
+        )
+        check = await limiter.check_availability(
+            entity_id="key-1",
+            resource="gpt-4",
+            limits=limits,
+        )
+
+        assert available == check.available
+
+    async def test_time_until_available_matches_check_availability(self, limiter):
+        """time_until_available() delegates, so the two can never disagree."""
+        limits = [Limit.per_minute("rpm", 100)]
+
+        async with limiter.acquire(
+            entity_id="key-1",
+            resource="gpt-4",
+            limits=limits,
+            consume={"rpm": 100},
+        ):
+            pass
+
+        wait = await limiter.time_until_available(
+            entity_id="key-1",
+            resource="gpt-4",
+            needed={"rpm": 50},
+            limits=limits,
+        )
+        check = await limiter.check_availability(
+            entity_id="key-1",
+            resource="gpt-4",
+            needed={"rpm": 50},
+            limits=limits,
+        )
+
+        assert wait == pytest.approx(check.retry_after_seconds, abs=0.5)
+
+
 class TestRateLimitExceededException:
     """Tests for RateLimitExceeded exception."""
 

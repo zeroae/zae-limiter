@@ -24,7 +24,8 @@ Each zae-limiter operation has specific DynamoDB capacity costs. Use this table 
 | Aggregator bucket refill (per active bucket) | 0 | 1 | Proactive refill via Lambda; 0 WCU if lock lost |
 | `acquire(limits=None)` with config cache miss | +3 | 0 | +3 GetItem operations for config hierarchy |
 | `acquire()` slow-path disabled walk (per entity) | +1.5 | 0 | ADR-125 gate: uncached 3-key BatchGetItem (entity, entity `_default_`, resource config). Cascade pays it per entity; the speculative fast path pays 0 |
-| `available()` | 1 | 0 | Read-only, single composite bucket item |
+| `available()` / `time_until_available()` | 1 | 0 | Read-only, single composite bucket item |
+| `check_availability()` | 1 | 0 | Both answers from the same read, instead of 1 RCU each |
 | `get_limits()` | 1 | 0 | Query operation |
 | `set_limits()` | 1 | N+1 | Query + N PutItems |
 | `delete_entity()` | 1 | batched | Query + BatchWrite in 25-item chunks |
