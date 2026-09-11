@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789035583687,
+  "lastUpdate": 1789126572502,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -28745,6 +28745,240 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.0006793384715597752",
             "extra": "mean: 7.132876685315398 msec\nrounds: 143"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ec330b2164674b01e4e35974f137337f38eeb2f5",
+          "message": "🔥 chore: sunset worktree skill modes covered by built-in support (#460)\n\n## Summary\n\nClaude Code's built-in worktree support (`claude -w`, `EnterWorktree` /\n`ExitWorktree`, `Agent(isolation: \"worktree\")`) now covers worktree\ncreation, entry, and removal. This PR drops the four `/worktree` skill\nmodes that reimplemented it and keeps the two the built-in lacks.\n\n- **Removed** `add`, `list`, `remove`, `prune` modes. `SKILL.md` lists\nthe built-in equivalent for each, so a call to a retired mode gets\nredirected instead of improvised.\n- **Replaced** `add.md` with `issue.md`: resolve a branch name from a\nGitHub issue, assign it, enter via `EnterWorktree`, then put the\nworktree on the right branch. The built-in flattens `feat/42-foo` to\nbranch `worktree-feat+42-foo`, so a new branch gets a `git branch -m`.\n- **Resume an existing branch** for the issue instead of starting a\nsecond one next to it (see below).\n- **Kept** `status` mode and `.claude/scripts/worktree-status.sh`,\nbecause the built-in has no PR/CI status table across worktrees.\n`status.md` now says the table covers built-in and legacy worktrees\nalike.\n- **Legacy `<repo>.worktrees/` checkouts** from the retired `add` mode\nstay where they are until their PRs merge, then get retired with `git\nworktree remove` and `git branch -d`.\n- **Gitignored** `.claude/worktrees/`, where the built-in puts\nworktrees.\n\nThe skill goes from 421 lines in 6 files to 315 lines in 3.\n\n## Issue mode\n\n| Found for `*/<n>-*` | Case | Action |\n|---------------------|------|--------|\n| Checked out in a worktree | **Open** | `EnterWorktree(path=…)` into it\n|\n| Local branch | **Resume** | `EnterWorktree(name=…)`, then `git switch\n<branch>` |\n| On origin only | **Resume from origin** | `EnterWorktree(name=…)`,\nthen `git fetch` + `git switch --track` |\n| Nothing | **New** | `EnterWorktree(name=…)`, then `git branch -m\n<type>/<n>-<slug>` |\n\nThe lookup matches on the issue number and ignores the slug, because the\nslug is derived loosely and can come out different on a second run. If\nseveral branches match, the skill asks which one to use. If the branch\nis checked out in the main working tree, it stops.\n\nThe resume cases fix a regression the first commit introduced. The\nretired `add` mode checked `git ls-remote` for an existing branch; the\nfirst version of `issue.md` did not, and always renamed a fresh branch\nonto the name. That rename fails outright when the branch exists\nlocally. When the branch exists only on origin, the rename succeeds but\ncreates an unrelated branch, and `/pr`'s push is then rejected as\nnon-fast-forward.\n\n### Why `git branch -m` and not a hook\n\n`WorktreeCreate`/`WorktreeRemove` hooks were prototyped to fix branch\nnaming globally and rejected. A hook-relocated worktree defeats the\nbuilt-in's pre-removal check, so `ExitWorktree(remove)` demands\n`discard_changes` on *every* removal, including a pristine worktree. A\nper-worktree `git branch -m` or `git switch` leaves that check in place.\n\n### The branch name is convention, not a build requirement\n\nNothing machine-reads the head branch name. CI `branches:` filters match\nthe PR base, and git-cliff parses commit messages and tags. Merge\ncommits here carry the PR title, not `Merge pull request #N from\nowner/branch`.\n\n## Test plan\n\n- [x] No `src/` or `tests/` changes, developer tooling only\n(`.claude/skills/worktree/`, `.gitignore`)\n- [ ] `/worktree status` still renders the PR/CI table across worktrees,\nincluding legacy `<repo>.worktrees/` entries\n- [ ] `/worktree <n>` on an issue with no branch creates the worktree,\nassigns the issue, and leaves the branch named `<type>/<n>-<slug>`\n- [ ] `/worktree <n>` on an issue whose branch exists locally switches\nto it instead of renaming\n- [ ] `/worktree <n>` on an issue whose branch exists only on origin\nfetches it and tracks `origin/<branch>`\n- [ ] `/worktree <n>` on an issue whose branch is already checked out in\na worktree enters that worktree by path\n- [ ] Calling a retired mode (`/worktree add`, `list`, `remove`,\n`prune`) redirects to the built-in equivalent in `SKILL.md`\n- [ ] CI green\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01QdVj8nPhUwTz2aNJzMFqt5",
+          "timestamp": "2026-09-11T07:34:45-04:00",
+          "tree_id": "0902acced836f9618b7225dc3c71b5df6d93b34c",
+          "url": "https://github.com/zeroae/zae-limiter/commit/ec330b2164674b01e4e35974f137337f38eeb2f5"
+        },
+        "date": 1789126571463,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_single_limit_latency",
+            "value": 175.03664234575376,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0003301080838838185",
+            "extra": "mean: 5.713089479999724 msec\nrounds: 125"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_two_limits_latency",
+            "value": 147.32361922486433,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0003311857545899601",
+            "extra": "mean: 6.787777854368829 msec\nrounds: 103"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_cascade_latency",
+            "value": 90.35874964950769,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00036721425257122054",
+            "extra": "mean: 11.066996874999901 msec\nrounds: 8"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_available_check_latency",
+            "value": 391.5540431558528,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00006883277170449936",
+            "extra": "mean: 2.5539258691857345 msec\nrounds: 344"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_stored_limits_latency",
+            "value": 181.72267223637803,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00024152470259260696",
+            "extra": "mean: 5.502890683333325 msec\nrounds: 120"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_baseline_no_cascade",
+            "value": 177.04940962135652,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0003319946450075767",
+            "extra": "mean: 5.648140833333653 msec\nrounds: 168"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_with_cascade",
+            "value": 92.10599348698184,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0004905840405412202",
+            "extra": "mean: 10.857056768421252 msec\nrounds: 95"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_one_limit",
+            "value": 178.17953011035343,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0002825924352048755",
+            "extra": "mean: 5.612316966941498 msec\nrounds: 121"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_two_limits",
+            "value": 126.34682805100913,
+            "unit": "iter/sec",
+            "range": "stddev: 0.01523883728879597",
+            "extra": "mean: 7.9147218448276115 msec\nrounds: 116"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_five_limits",
+            "value": 103.12308760914082,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00032468026852303106",
+            "extra": "mean: 9.697149524752595 msec\nrounds: 101"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_single_limit",
+            "value": 190.22574614318603,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00022215078869439124",
+            "extra": "mean: 5.2569119599997975 msec\nrounds: 125"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_multiple_limits",
+            "value": 155.43690583341797,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00024797470314733006",
+            "extra": "mean: 6.433478552845757 msec\nrounds: 123"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_available_check",
+            "value": 393.82685096713686,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00014306003267800256",
+            "extra": "mean: 2.539186948640649 msec\nrounds: 331"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_transactional_acquire",
+            "value": 192.00939832246306,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00019579556472903154",
+            "extra": "mean: 5.2080783999988745 msec\nrounds: 130"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_without_cascade",
+            "value": 160.24860768086972,
+            "unit": "iter/sec",
+            "range": "stddev: 0.01216834032690829",
+            "extra": "mean: 6.240303828358184 msec\nrounds: 134"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_with_cascade",
+            "value": 95.5840110431035,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0005509791050994053",
+            "extra": "mean: 10.46200079999835 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_cascade_with_stored_limits",
+            "value": 81.4855549154936,
+            "unit": "iter/sec",
+            "range": "stddev: 0.017972213248815507",
+            "extra": "mean: 12.27211376344031 msec\nrounds: 93"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_with_cached_config",
+            "value": 151.04450087634706,
+            "unit": "iter/sec",
+            "range": "stddev: 0.016552468598061528",
+            "extra": "mean: 6.620565424084206 msec\nrounds: 191"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_cold_config",
+            "value": 130.0640974452712,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0004692850204105045",
+            "extra": "mean: 7.688516813187308 msec\nrounds: 91"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_cascade_with_cached_config",
+            "value": 88.54176762414735,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00028906583766365575",
+            "extra": "mean: 11.29410476923071 msec\nrounds: 78"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_sequential_acquisitions",
+            "value": 12.5463216918108,
+            "unit": "iter/sec",
+            "range": "stddev: 0.07810006528847095",
+            "extra": "mean: 79.70463571428407 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_same_entity_sequential",
+            "value": 17.719682211439302,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0031082815905503092",
+            "extra": "mean: 56.43442066666577 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_cache_disabled",
+            "value": 84.1077288985967,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0005384434756858117",
+            "extra": "mean: 11.889513759260293 msec\nrounds: 54"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_cache_enabled",
+            "value": 88.83024533232748,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0006247289576574995",
+            "extra": "mean: 11.257426974999873 msec\nrounds: 80"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_config_resolution_sequential",
+            "value": 72.80031871397938,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0002263755058279144",
+            "extra": "mean: 13.736203599998476 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_config_resolution_batched",
+            "value": 116.71175416798526,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00034459298437005385",
+            "extra": "mean: 8.568117299999471 msec\nrounds: 100"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_speculative_cache_cold",
+            "value": 96.0570389258651,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00042313892091530553",
+            "extra": "mean: 10.410481222222352 msec\nrounds: 99"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_speculative_cache_warm",
+            "value": 73.7740954320056,
+            "unit": "iter/sec",
+            "range": "stddev: 0.03390264652320022",
+            "extra": "mean: 13.554893409999949 msec\nrounds: 100"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_stored_limits_cache_disabled",
+            "value": 124.51797663285768,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000141242438494289",
+            "extra": "mean: 8.030968917431967 msec\nrounds: 109"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_stored_limits_cache_enabled",
+            "value": 143.4906789444512,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00013490930427273082",
+            "extra": "mean: 6.969093793103627 msec\nrounds: 145"
           }
         ]
       }
