@@ -346,8 +346,22 @@ class SyncLease:
             reason_codes = (
                 _get_cancellation_reason_codes(condition_exc) if condition_exc is not None else None
             )
+
+            def _consumption_only(
+                entity_id: str, resource: str, shard_id: int, group_entries: list[LeaseEntry]
+            ) -> dict[str, Any] | None:
+                consumed = {
+                    e.limit.name: e.consumed * 1000 for e in group_entries if e.consumed > 0
+                }
+                if not consumed:
+                    return None
+                return repo.build_composite_retry(
+                    entity_id=entity_id, resource=resource, consumed=consumed, shard_id=shard_id
+                )
+
             retry_items: list[dict[str, Any]] = []
-            for idx, ((entity_id, resource, shard_id), group_entries) in enumerate(groups.items()):
+            retry_groups: list[tuple[tuple[str, str, int], list[LeaseEntry]]] = []
+            for idx, (key, group_entries) in enumerate(groups.items()):
                 failed_here = (
                     reason_codes is None
                     or idx >= len(reason_codes)
@@ -355,28 +369,43 @@ class SyncLease:
                 )
                 if group_entries[0]._is_new and (not failed_here):
                     retry_items.append(items[idx])
+                    retry_groups.append((key, group_entries))
                     continue
-                consumed = {}
-                for entry in group_entries:
-                    if entry.consumed > 0:
-                        consumed[entry.limit.name] = entry.consumed * 1000
-                if consumed:
-                    retry_items.append(
-                        repo.build_composite_retry(
-                            entity_id=entity_id,
-                            resource=resource,
-                            consumed=consumed,
-                            shard_id=shard_id,
-                        )
-                    )
-            if retry_items:
+                retry_item = _consumption_only(*key, group_entries)
+                if retry_item is not None:
+                    retry_items.append(retry_item)
+                    retry_groups.append((key, group_entries))
+            for retry_attempt in range(2):
+                if not retry_items:
+                    break
                 try:
                     repo.transact_write(retry_items)
+                    break
                 except Exception as retry_exc:
-                    if _is_condition_check_failure(retry_exc):
+                    if not _is_condition_check_failure(retry_exc):
+                        raise
+                    codes = _get_cancellation_reason_codes(retry_exc)
+                    downgraded: list[dict[str, Any]] = []
+                    lost_put = False
+                    for i, item in enumerate(retry_items):
+                        failed_here = (
+                            codes is None or i >= len(codes) or codes[i] == "ConditionalCheckFailed"
+                        )
+                        if isinstance(item, dict) and "Put" in item and failed_here:
+                            key, group_entries = retry_groups[i]
+                            fallback = _consumption_only(*key, group_entries)
+                            if fallback is not None:
+                                downgraded.append(fallback)
+                                lost_put = True
+                            continue
+                        if failed_here:
+                            lost_put = False
+                            break
+                        downgraded.append(item)
+                    if not lost_put or retry_attempt == 1:
                         statuses = _build_retry_failure_statuses(self.entries)
                         raise RateLimitExceeded(statuses) from retry_exc
-                    raise
+                    retry_items = downgraded
         self._initial_committed = True
         for entry in self.entries:
             entry._initial_consumed = entry.consumed

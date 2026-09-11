@@ -5587,6 +5587,65 @@ class TestClientShardCreation:
         )
         assert int(item1["Item"][schema.bucket_attr("rpm", schema.BUCKET_FIELD_TK)]["N"]) > 0
 
+    def test_reissued_put_that_loses_the_create_race_is_downgraded(self, sync_limiter):
+        """First transaction: parent rf conflict rolls back the innocent child
+        Put. The Put is re-issued, but the aggregator creates the shard in
+        between, so the retry transaction cancels on the Put. That must be
+        downgraded to a consumption-only debit, not surfaced as a rejection."""
+        from zae_limiter import schema
+
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        cp_milli = self.CAPACITY * 1000
+        repo = self._seed_cascade_child(sync_limiter, limit, parent_tokens_milli=cp_milli)
+        ns = repo._namespace_id
+        client = repo._get_client()
+        client.delete_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(ns, "user-1", "gpt-4", 1)},
+                "SK": {"S": schema.sk_state()},
+            },
+        )
+        repo._entity_cache[ns, "user-1"] = (True, "parent-1", {"gpt-4": 2})
+        original_transact = repo.transact_write
+        calls = 0
+
+        def hostile_environment(items):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                client.update_item(
+                    TableName=repo.table_name,
+                    Key={
+                        "PK": {"S": schema.pk_bucket(ns, "parent-1", "gpt-4", 0)},
+                        "SK": {"S": schema.sk_state()},
+                    },
+                    UpdateExpression="SET #rf = :rf",
+                    ExpressionAttributeNames={"#rf": schema.BUCKET_FIELD_RF},
+                    ExpressionAttributeValues={":rf": {"N": str(int(time.time() * 1000) + 5)}},
+                )
+            elif calls == 2:
+                now_ms = int(time.time() * 1000)
+                state = BucketState.from_limit("user-1", "gpt-4", limit, now_ms, 2)
+                original_transact(
+                    [
+                        repo.build_composite_create(
+                            "user-1", "gpt-4", [state], now_ms, shard_id=1, shard_count=2
+                        )
+                    ]
+                )
+            return original_transact(items)
+
+        repo.transact_write = hostile_environment
+        with patch("zae_limiter.sync_repository.random.randrange", return_value=1):
+            with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+                assert {e.entity_id for e in lease.entries} == {"user-1", "parent-1"}
+        assert calls == 3
+        shard1 = self._raw_item(repo, 1)
+        assert self._n(shard1, "rpm", schema.BUCKET_FIELD_TK) == cp_milli // 2 - 1000
+        parent = repo.get_buckets("parent-1", resource="gpt-4", shard_id=0)
+        assert next(b for b in parent if b.limit_name == "rpm").tokens_milli == cp_milli - 1000
+
     def test_create_race_lost_to_aggregator_consumes_once(self, sync_limiter):
         """If the aggregator's Path 2 wins the create, the client retries as a
         consumption-only conditional write on that shard: one debit, no
