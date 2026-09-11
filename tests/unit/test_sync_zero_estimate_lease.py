@@ -358,6 +358,22 @@ class TestUnknownLimitInConsume:
                 assert acquire_warnings[0].filename == __file__
         assert _tokens(repo, "e1", "api")["rpm"] == 1000000 - 2 * 1000
 
+    @pytest.mark.parametrize("mode", [OnUnavailable.BLOCK, OnUnavailable.ALLOW])
+    def test_warning_as_error_propagates_instead_of_degrading(self, repo, speculative, mode):
+        """The unknown-key check runs inside acquire()'s outage handler. Under
+        warnings-as-errors the raised FutureWarning must propagate as itself —
+        not be classified as a backend outage and turned into
+        RateLimiterUnavailable (BLOCK) or a silent degraded lease (ALLOW)."""
+        repo.set_system_defaults([Limit.custom("rpm", 1000, **SLOW)])
+        repo.create_entity("e1", parent_id=None, name="e1")
+        limiter = SyncRateLimiter(repository=repo, speculative_writes=speculative)
+        with limiter:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", FutureWarning)
+                with pytest.raises(FutureWarning):
+                    with limiter.acquire("e1", "api", {"rpm": 1, "tpmm": 5}, on_unavailable=mode):
+                        pytest.fail("acquire() must not yield a lease")
+
     def _parent_rpm_only_child_rpm_tpm(self, repo):
         """Parent tracks rpm only; the cascading child tracks rpm + tpm."""
         repo.set_system_defaults(

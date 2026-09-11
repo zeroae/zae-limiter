@@ -577,7 +577,7 @@ class SyncRateLimiter:
                 lease = self._do_acquire(
                     entity_id=entity_id, resource=resource, limits_override=limits, consume=consume
                 )
-        except (RateLimitExceeded, ValidationError, ResourceDisabled):
+        except (RateLimitExceeded, ValidationError, ResourceDisabled, Warning):
             raise
         except Exception as e:
             if mode == OnUnavailable.ALLOW:

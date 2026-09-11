@@ -675,7 +675,12 @@ class RateLimiter:
                     limits_override=limits,
                     consume=consume,
                 )
-        except (RateLimitExceeded, ValidationError, ResourceDisabled):
+        except (RateLimitExceeded, ValidationError, ResourceDisabled, Warning):
+            # `Warning`: under warnings-as-errors (-W error, or a
+            # simplefilter("error")) the FutureWarnings this module emits
+            # (Issue #455) are raised as exceptions. They are the caller's
+            # signal, not a backend outage, and must never be turned into
+            # RateLimiterUnavailable or swallowed by a degraded lease.
             raise
         except Exception as e:
             if mode == OnUnavailable.ALLOW:
