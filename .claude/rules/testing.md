@@ -121,7 +121,7 @@ uv run pytest tests/benchmark/test_operations.py -v   # Mocked (fast)
 uv run pytest tests/benchmark/test_localstack.py -v   # LocalStack (realistic)
 
 # Coverage
-pytest --cov=zae_limiter --cov-report=html
+pytest --cov --cov-report=html
 
 # Stop LocalStack
 zae-limiter local down
