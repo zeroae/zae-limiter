@@ -336,9 +336,13 @@ def would_refill_satisfy(
     """
     statuses: list[LimitStatus] = []
     for state in buckets:
-        amount = consume.get(state.limit_name, 0)
-        if amount == 0:
+        # Declared limits only (Issue #455): membership in `consume`, not the
+        # amount. A declared zero-estimate limit ({"tpm": 0}) gets a passed
+        # status with requested=0, exactly as on the slow path; a limit the
+        # caller never named (including the reserved `wcu`) is skipped.
+        if state.limit_name not in consume:
             continue
+        amount = consume[state.limit_name]
         limit = Limit.from_bucket_state(state)
         status = build_limit_status(
             entity_id=state.entity_id,

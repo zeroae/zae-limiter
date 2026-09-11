@@ -283,6 +283,24 @@ class TestDeclaredLimitsGateAdmission:
         assert {s.limit_name for s in exc.violations} == {"rpm"}
         assert exc.passed == []
 
+    def test_rejection_includes_declared_zero_estimate_limits(self, repo, speculative):
+        """`{"rpm": 5, "tpm": 0}` rejected on rpm: the fast-reject path used
+        to skip tpm because its amount was 0, while the slow path reported it
+        as passed with requested=0. Declared is declared on both paths."""
+        self._rpm_and_tpm(repo, rpm_capacity=1)
+        limiter = SyncRateLimiter(repository=repo, speculative_writes=speculative)
+        with limiter:
+            with limiter.acquire("e1", "api", {"rpm": 0, "tpm": 0}):
+                pass
+            with pytest.raises(RateLimitExceeded) as exc_info:
+                with limiter.acquire("e1", "api", {"rpm": 5, "tpm": 0}):
+                    pass
+        exc = exc_info.value
+        assert {s.limit_name for s in exc.statuses} == {"rpm", "tpm"}
+        assert {s.limit_name for s in exc.violations} == {"rpm"}
+        (tpm,) = exc.passed
+        assert tpm.limit_name == "tpm" and tpm.requested == 0
+
     def test_cascade_rejection_lists_only_declared_limits(self, repo, speculative):
         """The cascade fast-reject sites build child statuses from every
         bucket in the speculative result, which carries the reserved `wcu`
