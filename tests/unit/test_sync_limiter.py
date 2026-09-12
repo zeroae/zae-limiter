@@ -415,6 +415,8 @@ class TestLeaseRetryPath:
         limit = Limit.per_minute("rpm", 100)
         state = MagicMock()
         state.tokens_milli = 50000
+        state.effective_refill_amount_milli = 100000
+        state.refill_period_ms = 60000
         entry = LeaseEntry(entity_id="e1", resource="gpt-4", limit=limit, state=state, consumed=60)
         undeclared_state = MagicMock()
         undeclared_state.tokens_milli = 0
@@ -442,6 +444,8 @@ class TestLeaseRetryPath:
         limit = Limit.per_minute("rpm", 100)
         state = MagicMock()
         state.tokens_milli = 100000
+        state.effective_refill_amount_milli = 100000
+        state.refill_period_ms = 60000
         entry = LeaseEntry(entity_id="e1", resource="gpt-4", limit=limit, state=state, consumed=10)
         statuses = _build_retry_failure_statuses([entry])
         assert statuses[0].retry_after_seconds == 0.0

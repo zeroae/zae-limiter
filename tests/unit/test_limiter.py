@@ -536,6 +536,8 @@ class TestLeaseRetryPath:
         limit = Limit.per_minute("rpm", 100)
         state = MagicMock()
         state.tokens_milli = 50_000
+        state.effective_refill_amount_milli = 100_000
+        state.refill_period_ms = 60_000
         entry = LeaseEntry(
             entity_id="e1",
             resource="gpt-4",
@@ -572,6 +574,8 @@ class TestLeaseRetryPath:
         limit = Limit.per_minute("rpm", 100)
         state = MagicMock()
         state.tokens_milli = 100_000
+        state.effective_refill_amount_milli = 100_000
+        state.refill_period_ms = 60_000
         entry = LeaseEntry(
             entity_id="e1",
             resource="gpt-4",
