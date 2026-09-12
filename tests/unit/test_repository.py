@@ -4013,6 +4013,9 @@ class TestBumpShardCount:
             assert await repo.bump_shard_count("e1", "gpt-4", MAX_SHARD_COUNT) == MAX_SHARD_COUNT
             assert await repo.bump_shard_count("e1", "gpt-4", MAX_SHARD_COUNT) == MAX_SHARD_COUNT
         assert sum("MAX_SHARD_COUNT" in r.getMessage() for r in caplog.records) == 1
+        # Entity ids are routinely API keys: deduplicated per entity, never
+        # logged in clear text (py/clear-text-logging-sensitive-data).
+        assert not any("e1" in r.getMessage() for r in caplog.records)
         assert repo._entity_cache[(ns, "e1")][2]["gpt-4"] == MAX_SHARD_COUNT
         bucket = await repo.get_bucket("e1", "gpt-4", "rpm")
         assert bucket is not None and bucket.shard_count == MAX_SHARD_COUNT

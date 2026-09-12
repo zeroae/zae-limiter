@@ -2791,10 +2791,13 @@ class Repository:
             # (ADR-133). Warn once per (entity, resource); #475 adds a metric.
             if (entity_id, resource) not in self._shard_cap_warned:
                 self._shard_cap_warned.add((entity_id, resource))
+                # Deduplicated per (entity, resource), but the entity id is not
+                # logged: entity ids are routinely API keys and must not be
+                # written to logs in clear text (py/clear-text-logging-sensitive
+                # -data). Per-entity attribution belongs on the metric in #475.
                 logger.warning(
-                    "shard_count for entity_id=%s resource=%s is at MAX_SHARD_COUNT=%d; "
+                    "shard_count for resource=%s is at MAX_SHARD_COUNT=%d; "
                     "refusing to double further",
-                    entity_id,
                     resource,
                     schema.MAX_SHARD_COUNT,
                 )

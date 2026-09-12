@@ -2319,8 +2319,7 @@ class SyncRepository:
             if (entity_id, resource) not in self._shard_cap_warned:
                 self._shard_cap_warned.add((entity_id, resource))
                 logger.warning(
-                    "shard_count for entity_id=%s resource=%s is at MAX_SHARD_COUNT=%d; refusing to double further",
-                    entity_id,
+                    "shard_count for resource=%s is at MAX_SHARD_COUNT=%d; refusing to double further",
                     resource,
                     schema.MAX_SHARD_COUNT,
                 )
