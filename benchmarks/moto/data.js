@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789173171431,
+  "lastUpdate": 1789221954071,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -29915,6 +29915,240 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.00017501193319595802",
             "extra": "mean: 7.03669380281674 msec\nrounds: 142"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f2470e5bf7756a2161fb39151fbcdfe5a21d726f",
+          "message": "🔒 security(limiter): create shard N>0 buckets from the client slow path (#466)\n\n## Summary\n\nResolves #439 with **Option A**: the client slow path now creates shard\n`N>0` bucket items itself, so GHSA-76rv-2r9v-c5m6 write sharding engages\nin every deployment, including `--no-aggregator` and lagging-stream\ncases. Rationale: the `security` label and the advisory make this a\nmitigation that must work everywhere; `--no-aggregator` is a supported\nmode; and the aggregator's own Path 2 comment (\"Client already created\nthis shard\") shows the original design expected the client to be able to\ncreate shards. Option B (make the aggregator a hard requirement) was\nrejected in ADR-133.\n\n### Failure flow — before\n\n1. Speculative `UpdateItem` on shard 0 fails with `WCU_EXHAUSTED`\n(`ALL_OLD` shows `shard_count=1`)\n2. Client bumps `shard_count` to 2 on shard 0, cache updated\n3. Fallback to slow path: `batch_get_entity_and_buckets(...,\npk_bucket(..., 0))` — **hardcoded shard 0**, exists → normal write on\n**shard 0**\n4. Next acquire draws shard 1 → `attribute_exists(PK)` fails →\n`BUCKET_MISSING` → slow path reads shard 0 again → writes shard 0 again\n5. Shard 1 is never created unless the aggregator's\n`propagate_shard_count()` runs; ~half of acquires pay a full fallback\nand every write still lands on the hot partition\n\n### Failure flow — after\n\n1. Same speculative failure and bump; `bump_shard_count()` returns the\nwinner's count (`ReturnValuesOnConditionCheckFailure=ALL_OLD`) if\nanother client doubled first\n2. `_try_speculative_acquire()` returns `(None, new_shard, new_count)`\nwith `new_shard = random.randrange(old_count, new_count)` — one of the\nshards the doubling just added\n3. `_do_acquire(shard_id=new_shard, shard_count=new_count)` →\n`Repository.select_shard()` honours both →\n`batch_get_entity_and_buckets(..., (entity, resource, new_shard))` →\nmissing → `BucketState.from_limit(..., shard_count=new_count)` starts at\n`capacity_milli // shard_count`\n4. `_commit_initial()` → `build_composite_create(shard_id=new_shard,\nshard_count=new_count)` under `attribute_not_exists(PK)`; `wcu`\nundivided, stored `cp`/`ra` undivided (identical to `processor.py` Path\n2)\n5. Every later acquire that draws shard 1 is a 1-RT speculative hit; the\nclient slow path refills every shard toward its effective share, so\nsteady-state admission is the configured capacity\n\n### Review follow-ups, round 1 (9 confirmed findings, all addressed)\n\n| # | Finding | Fix | Pinned by |\n|---|---------|-----|-----------|\n| 1 | Slow-path refill used undivided `cp`/`ra` → `shard_count x\ncapacity` steady state | `BucketState.shard_count` +\n`effective_capacity_milli`/`effective_refill_amount_milli` used by all\n`bucket.py` refill math; `wcu` undivided |\n`test_slow_path_refills_a_shard_to_its_effective_share`, LocalStack\n`test_idle_sharded_entity_refills_to_capacity_not_shard_count_x_capacity`\n|\n| 2 | Cold cache sized a new shard from the cache (full tokens,\n`shard_count=1`) | Failure-image `shard_count` threaded\n`_try_speculative_acquire → _do_acquire → select_shard`; warm cache\nrefreshed from the image |\n`test_cold_cache_retry_sizes_the_new_shard_from_the_failure_image` |\n| 3 | Compensation credited shard 0 while the debit was on shard N |\n`_compensate_speculative`/`_compensate_child` take `shard_id`; all 13\nsites pass `result.shard_id` / `parent_result.shard_id` |\n`test_child_compensation_credits_the_shard_that_was_debited` |\n| 4 | Cascade + successful shard retry returned a child-only lease,\nbypassing the parent | Failure image yields `cascade`/`parent_id`; a\ncascading child hands an untried shard to the slow path (child + parent\nin one transaction) |\n`test_cascade_shard_retry_cannot_bypass_an_exhausted_parent`,\n`test_cascade_shard_retry_charges_the_parent` |\n| 5 | Sibling rf-lock failure rolled back the new-shard Put; retry ran\n`tk >= consumed` on a missing item | Per-index `CancellationReasons`:\nre-issue the Put for `None`, debit consumption-only for\n`ConditionalCheckFailed` |\n`test_commit_initial_reissues_the_put_when_a_sibling_failed`,\n`test_new_child_shard_survives_a_parent_rf_conflict` |\n| 6 | Lost bump race cached the stale count and drew shard 0 again |\n`bump_shard_count` reads the winner's count from `ALL_OLD`, caches and\nreturns it; dead second draw removed |\n`test_bump_shard_count_returns_current_on_race`,\n`test_bump_lost_race_still_moves_off_the_hot_shard` (no `randrange`\npatching) |\n| 7 | `_try_parent_only_acquire` re-drew the parent shard | Reuses\n`parent_result.shard_id`/`shard_count` from both callers |\n`test_parent_only_slow_path_reuses_the_parent_shard_it_judged` |\n| 8 | Cost table wrong in both directions | Recounted from code\n(single-item `PutItem`, disable walk, META/bucket read) in ADR-133,\nCLAUDE.md, performance.md | — |\n| 9 | `# type: ignore` in a new test | Exception double built with\n`response` as a class attribute |\n`test_commit_initial_create_race_retries_on_the_same_shard` |\n\nLow-severity items also taken: `select_shard` is a plain method; the\nnon-cascade shard retry stops probing at the first `BUCKET_MISSING`.\n\n### Review follow-ups, round 2 (findings H–J)\n\n| # | Finding | Fix | Pinned by |\n|---|---------|-----|-----------|\n| H | The slow path never refilled the reserved `wcu` limit, so a shard\nthat had gone hot stayed hot forever and doubling could not stop;\nnothing capped `shard_count` | `RateLimiter._wcu_carrier()` carries\n`wcu` through the lease in a new `Lease._carriers` list — kept out of\n`Lease.entries` so it never reaches `consumed()`, `adjust()` or a\n`RateLimitExceeded` status — and `schema.MAX_SHARD_COUNT = 32` caps\ndoubling, with `bump_shard_count` refusing beyond it and warning once\nper (entity, resource) | `test_slow_path_refills_the_wcu_carrier`,\n`test_bump_refuses_above_max_shard_count`, LocalStack\n`test_real_writes_double_and_stop_at_the_cap` |\n| I | A won bump stamped the new `shard_count` on shard 0 only. Every\nshard refills toward `capacity_milli // shard_count`, so a shard left on\na stale lower count claims a **larger** share and the shares sum to more\nthan the configured limit. The aggregator's Path 1 fixed this from the\nstream; with `--no-aggregator` nothing did |\n`Repository._propagate_shard_count()` mirrors Path 1 — concurrent\nsingle-item conditional `UpdateItem`s (`shard_count < :new`) to shards\n`1..old_count-1` — called from `bump_shard_count` right after a won\nbump. Monotonic and idempotent, so racing the aggregator or another\nclient is a no-op, not a conflict |\n`test_bump_propagates_the_new_count_to_existing_shards`,\n`test_bump_propagation_is_monotonic`,\n`test_propagation_reraises_unexpected_client_errors`, LocalStack\n`test_every_existing_shard_learns_the_final_count` (fails as `{0: 4, 1:\n2, 2: 4}` without the fix) |\n| J | Every `LimitStatus` reported the **undivided** capacity and\nrefill, so `RateLimitExceeded` promised a capacity no single shard can\nserve and, for a request larger than one share, a finite\n`retry_after_seconds` that can never pay off. Separately,\n`calculate_retry_after` raised `ZeroDivisionError` when the per-shard\nrefill floored to 0 | `Limit.per_shard()` divides capacity and refill\n(identity at `shard_count == 1`, so unsharded reporting is untouched),\napplied in `from_bucket_state()` and at the slow path's admission gate\nand lease statuses; sub-token shares clamp to one whole token because\n`Limit` validates `capacity > 0`. Retry estimates read\n`BucketState.retry_refill_amount_milli`, which falls back to the\nundivided rate, and `calculate_retry_after` guards a stored rate of 0 |\n`test_from_bucket_state_reports_the_shards_share`,\n`test_per_shard_divides_capacity_and_refill`,\n`test_admit_limit_reports_the_effective_limit_on_rejection`,\n`test_retry_failure_statuses_report_the_effective_limit`,\n`test_try_consume_rejects_without_dividing_by_zero` |\n\n### CI fixes found while landing H–J\n\n- **`benchmark-moto`** (red since the `available()` change, before H):\n`available()` now sums a sharded entity across its shards — 1 GSI3 Query\n+ 1 BatchGetItem, no per-limit GetItem — but\n`tests/benchmark/test_capacity.py` still asserted `get_item >= 1` /\n`get_item >= num_limits`. Replaced with the pattern the operation\nactually has, which is the stronger claim: read cost is O(1) in the\nlimit count (`batch_get_item == [1]` for N = 1, 2, 3), since all limits\nfor an (entity, resource, shard) share one composite item (ADR-114).\n- **CodeQL** `py/clear-text-logging-sensitive-data` (high, new): the\n`MAX_SHARD_COUNT` warning added with the doubling cap logged `entity_id`\nin clear text. Same fix as cd8a41c3 applied to the unknown-consume-key\nline — log the resource only; `_shard_cap_warned` still deduplicates on\n`(entity_id, resource)` without logging the key, and a test asserts the\nentity id stays out of the records. The identical pre-existing \"High\nshard count after doubling\" line below it also logs `entity_id`; it\npredates this branch and CodeQL does not flag it, so it is left for a\nseparate change.\n\n**Known limitation surfaced by J.** No shard holds more than its share,\nso a single request above `capacity // shard_count` is unadmittable on\n*every* shard while the entity is still under its configured limit.\nStatuses now report the share so the rejection is honest, and\n`MAX_SHARD_COUNT` (32) bounds how small a share can get. Documented in\nADR-133 and `docs/performance.md`; surfacing an occurrence as an event\nor CloudWatch metric is tracked in #475 (v1.2.0).\n\n### Cost (non-cascade, one user limit, warm config cache)\n\n| Path | RT | RCU | WCU | Notes |\n|------|----|-----|-----|-------|\n| (a) Speculative hit on an existing shard | 1 | 0 | 1 | Unchanged\nsteady state |\n| (b) First acquire on a not-yet-created shard (new) | 4 | 2.5 | 2 |\nFailed conditional (1 WCU), disable walk (3-key BatchGet, 1.5 RCU), META\n+ bucket BatchGet (1 RCU), single-item `PutItem` (1 WCU); **once per\nshard** ≈ $1.56/M |\n| (b') …after a wcu-driven doubling | 5 | 2.5 | 3 | (b) plus the\n`shard_count` bump, once per doubling ≈ $2.19/M |\n| (c) Previous broken fallback | 4 | 2.5 | 2 | Same per-call cost as\n(b), paid on **every** acquire that drew a missing shard, all landing on\nshard 0 |\n\n`Repository.transact_write()` downgrades a one-item transaction to\n`PutItem`, so the create is 1 WCU (not 2 transactional); a cold config\ncache adds one more BatchGet (~1.5 RCU).\n\n### Capacity bound\n\nEvery refiller (aggregator `try_refill_bucket()` and the client slow\npath) caps each shard at `capacity // shard_count`, so an N-shard entity\nadmits at most `capacity` per refill window in steady state. Shard 0\nkeeps its balance when `shard_count` doubles (same as the aggregator's\nPath 2), so there is a one-time transient of up to 1.5x after the first\ndoubling that decays as shard 0 drains. No new reconciliation scheme is\nintroduced.\n\n### Out of scope (tracked separately)\n\n`_sync_bucket_params()` reconciles shard 0 only (#468); the parallel\ncascade fast path always writes the parent on shard 0 (#474); the\nper-shard request ceiling has no event or metric (#475).\n\n## Test plan\n\n- [x] `uv run pytest tests/unit/ -q` — 3193 passed; `uv run pytest\ntests/unit/ -m gevent -n 0 -q` — 26 passed\n- [x] `AWS_ENDPOINT_URL=… uv run pytest\ntests/integration/test_bucket_sharding.py -m integration -q` — 11 passed\n(LocalStack)\n- [x] LocalStack, aggregator **disabled** (shared minimal stack):\n`tests/integration/test_bucket_sharding.py::TestClientShardCreation::test_wcu_exhaustion_creates_shard_one_without_aggregator`\n(shard 1 created after `wcu` exhaustion; next acquire on it is a\nfast-path hit with no `_do_acquire` call) and\n`::test_idle_sharded_entity_refills_to_capacity_not_shard_count_x_capacity`\n(two drained shards, one idle window → 501 rejected, 500 + 500 admitted)\n- [x] Unit test\n`TestClientShardCreation::test_slow_path_creates_the_selected_shard`\nasserts client-created shard 1 carries `capacity_milli // 2` tokens,\nundivided `cp`/`ra`, and undivided `wcu`\n- [x] `rg` confirms `build_composite_create` is called from\n`lease._commit_initial()` with `shard_id=shard_id,\nshard_count=first_entry._shard_count`; the only remaining\n`pk_bucket(..., 0)` in `repository.py` are `bump_shard_count` (shard 0\nis the `shard_count` source of truth) and `_sync_bucket_params` (#468)\n- [x] Existing aggregator/sharding tests pass unchanged:\n`tests/unit/test_processor.py`, `TestShardRetry`, and the LocalStack\n`TestBucketShardingIntegration` / `TestProactiveShardingIntegration` /\n`TestShardCountPropagationIntegration` / `TestShardedAdjustmentRouting`\nclasses (16 LocalStack tests + 7 `batch_get` integration tests green)\n- [x] `scripts/generate_sync.py` produces no diff; `uv run mypy\nsrc/zae_limiter src/zae_limiter_aggregator` clean; `pre-commit run\n--all-files` clean; pre-push patch coverage 100% on every push\n- [ ] CI green\n\nCloses #439\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01QdVj8nPhUwTz2aNJzMFqt5",
+          "timestamp": "2026-09-12T10:04:27-04:00",
+          "tree_id": "78aa4180ae89da0e15d82a03eedf0ceaa1b9f909",
+          "url": "https://github.com/zeroae/zae-limiter/commit/f2470e5bf7756a2161fb39151fbcdfe5a21d726f"
+        },
+        "date": 1789221952776,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_single_limit_latency",
+            "value": 199.00340841869163,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00016287848492769165",
+            "extra": "mean: 5.025039560609223 msec\nrounds: 132"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_two_limits_latency",
+            "value": 166.45836493701108,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00012648305343256283",
+            "extra": "mean: 6.007508246151562 msec\nrounds: 130"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_cascade_latency",
+            "value": 95.04895325272491,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0006946070766050703",
+            "extra": "mean: 10.520894399974168 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_available_check_latency",
+            "value": 141.85386140455873,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00011254593286968904",
+            "extra": "mean: 7.049508487809577 msec\nrounds: 123"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_stored_limits_latency",
+            "value": 198.45407984823973,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00014661607313195212",
+            "extra": "mean: 5.038949064512617 msec\nrounds: 124"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_baseline_no_cascade",
+            "value": 198.66025680266276,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00015431265200520312",
+            "extra": "mean: 5.033719456999093 msec\nrounds: 186"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_with_cascade",
+            "value": 96.42195961169664,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00028815939493345266",
+            "extra": "mean: 10.371081484208844 msec\nrounds: 95"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_one_limit",
+            "value": 166.69474165655,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010526628012420103",
+            "extra": "mean: 5.9989894705878175 msec\nrounds: 136"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_two_limits",
+            "value": 166.45275769937226,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00014353234925232946",
+            "extra": "mean: 6.007710619045943 msec\nrounds: 126"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_five_limits",
+            "value": 107.24778622772114,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00023356870256068402",
+            "extra": "mean: 9.324201787034394 msec\nrounds: 108"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_single_limit",
+            "value": 172.38611350105998,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008472347870829662",
+            "extra": "mean: 5.80093129133543 msec\nrounds: 127"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_multiple_limits",
+            "value": 166.1075102034149,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00014370374911738972",
+            "extra": "mean: 6.020197393696421 msec\nrounds: 127"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_available_check",
+            "value": 142.0732101063708,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00012214604662237678",
+            "extra": "mean: 7.038624658732607 msec\nrounds: 126"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_transactional_acquire",
+            "value": 194.15053380024034,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0008326254559616576",
+            "extra": "mean: 5.1506425474415165 msec\nrounds: 137"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_without_cascade",
+            "value": 197.09436438653185,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0004656184128738333",
+            "extra": "mean: 5.0737117883231235 msec\nrounds: 137"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_with_cascade",
+            "value": 95.61905247099762,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0007158467916165203",
+            "extra": "mean: 10.45816680000371 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_cascade_with_stored_limits",
+            "value": 94.09324365112205,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0008402536127479825",
+            "extra": "mean: 10.627755630444515 msec\nrounds: 92"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_with_cached_config",
+            "value": 195.88121067998833,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00025993191561643594",
+            "extra": "mean: 5.105134875001884 msec\nrounds: 184"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_cold_config",
+            "value": 142.16413845824357,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0001138974738634929",
+            "extra": "mean: 7.034122746037813 msec\nrounds: 63"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_cascade_with_cached_config",
+            "value": 96.2772015440907,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00025335431821492285",
+            "extra": "mean: 10.386674975612417 msec\nrounds: 82"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_sequential_acquisitions",
+            "value": 18.84618418657401,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0026606828393616446",
+            "extra": "mean: 53.06113906667633 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_same_entity_sequential",
+            "value": 19.391137969170444,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00035226131147399675",
+            "extra": "mean: 51.56994919998397 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_cache_disabled",
+            "value": 88.13417494518717,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0002786455108619587",
+            "extra": "mean: 11.34633643103739 msec\nrounds: 58"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_cache_enabled",
+            "value": 94.16756895362151,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0014215473972660497",
+            "extra": "mean: 10.619367273806445 msec\nrounds: 84"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_config_resolution_sequential",
+            "value": 78.5151232111892,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00015218897840931511",
+            "extra": "mean: 12.73639980555351 msec\nrounds: 72"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_config_resolution_batched",
+            "value": 121.26910374728247,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00013800210688272608",
+            "extra": "mean: 8.246123448590334 msec\nrounds: 107"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_speculative_cache_cold",
+            "value": 97.98479413379286,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00028285333679876917",
+            "extra": "mean: 10.205665163051268 msec\nrounds: 92"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_speculative_cache_warm",
+            "value": 97.54111979902201,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00022114705524100658",
+            "extra": "mean: 10.252086525769272 msec\nrounds: 97"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_stored_limits_cache_disabled",
+            "value": 124.78998336872803,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0001165433071331675",
+            "extra": "mean: 8.013463685183861 msec\nrounds: 108"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_stored_limits_cache_enabled",
+            "value": 138.90299343905357,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0008767089583205812",
+            "extra": "mean: 7.199268894365258 msec\nrounds: 142"
           }
         ]
       }
