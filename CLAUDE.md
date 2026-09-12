@@ -659,6 +659,9 @@ Bucket items use per-(entity, resource, shard) partition keys: `PK={ns}/BUCKET#{
 - Shard selection: `Repository.select_shard()` — `random.randrange(shard_count)` when `shard_count > 1`, else shard 0 — **random, not a hash of the entity id**. Every call re-picks, so one hot entity's writes spread across all of its shards; which shard holds which portion of its tokens is not predictable from the entity id
 - Tests that need a bucket on a specific shard must pass an explicit `shard_id` to `speculative_consume()` (the parameter exists to skip random selection). Assuming a given `acquire()` lands on a particular shard is flaky by construction
 - Effective per-shard limits: `capacity_milli // shard_count`, `refill_amount_milli // shard_count`. `BucketState.shard_count` is read from the item and `bucket.py` refills through `effective_capacity_milli` / `effective_refill_amount_milli`, so the client slow path caps each shard at its share exactly like the aggregator; `wcu` is never divided
+- **Every shard must agree on `shard_count`**, because each refills toward its own `cp // shard_count`: a shard left on a stale lower count claims a *larger* share and the shares sum to more than the configured limit. A client that wins a bump propagates it (`Repository._propagate_shard_count()`, mirroring the aggregator's Path 1) with concurrent conditional `UpdateItem`s (`shard_count < :new`) to shards `1..old_count-1` — monotonic and idempotent, so racing the aggregator or another client is a no-op. Shards `old_count..new_count-1` are not written: they do not exist yet and are created with the current count by whoever draws them
+- **Statuses report the share, not the config (#475):** `Limit.per_shard(shard_count)` divides `capacity` and `refill_amount` (identity at `shard_count == 1`) and is applied wherever a `LimitStatus` is built — `Limit.from_bucket_state()` on the fast path, `RateLimiter._admit_limit()` and the lease statuses on the slow path — so `RateLimitExceeded` never promises a capacity no shard can serve. Sub-token shares clamp to 1 (`Limit` validates `capacity > 0`). Retry estimates use `BucketState.retry_refill_amount_milli`, which falls back to the **undivided** rate when the share floors to 0 (1 token/min at `shard_count=1024`), and `calculate_retry_after` guards a stored rate of 0 instead of raising `ZeroDivisionError`
+- **Known limitation:** a single request above `capacity // shard_count` is unadmittable on *every* shard while the entity is under its configured limit; `MAX_SHARD_COUNT = 32` bounds how small a share gets. Surfacing an occurrence as an event/metric is #475
 - `wcu` is filtered from user-facing output (`get_buckets`, `RateLimitExceeded`, usage snapshots)
 
 **Client-side shard creation (ADR-133, issue #439) — no aggregator dependency:**
@@ -721,6 +724,7 @@ Bucket items use per-(entity, resource, shard) partition keys: `PK={ns}/BUCKET#{
 
 ### Exception Design
 - `RateLimitExceeded` includes a status for **every limit declared in `consume`** — both the ones that were exceeded and the ones that passed. Limits the caller did not name (and the reserved `wcu`) never appear (Issue #455), on the fast path, the slow path, and the consumption-only retry path alike
+- Each status reports the **effective per-shard** capacity and refill, not the undivided config (`Limit.per_shard()`, #475) — see [Pre-Shard Buckets](#pre-shard-buckets-ghsa-76rv-2r9v-c5m6-v090)
 - Both `violations` (exceeded) and `passed` (ok) are available
 - `retry_after_seconds` calculated from primary bottleneck
 
@@ -910,6 +914,7 @@ All PK and GSI PK values are prefixed with `{ns}/` where `{ns}` is the opaque na
 | Aggregator refill | `ADD tk +refill SET rf = :now` | `rf = :expected_rf` | Yes (optimistic lock) |
 | Aggregator proactive shard | `SET shard_count = :new` | `shard_count = :old` | No |
 | Aggregator shard propagation | `SET shard_count = :new` | `attribute_not_exists(shard_count) OR shard_count < :new` | No |
+| Client shard propagation (#439) | `SET shard_count = :new` | `shard_count < :new` | No |
 | Disable stamp (ADR-125) | `SET disabled = :true` / `REMOVE disabled` | `attribute_exists(PK)` | No |
 
 **Hot partition risk with cascade (issue #116):** See [Hot Partition Risk Mitigation](#hot-partition-risk-mitigation-issue-116) above.
