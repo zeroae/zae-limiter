@@ -24,7 +24,10 @@ from zae_limiter.schema import (
     BUCKET_FIELD_RP,
     BUCKET_FIELD_TC,
     BUCKET_FIELD_TK,
+    WCU_LIMIT_CAPACITY,
     WCU_LIMIT_NAME,
+    WCU_LIMIT_REFILL_AMOUNT,
+    WCU_LIMIT_REFILL_PERIOD_SECONDS,
     bucket_attr,
     get_table_definition,
     pk_bucket,
@@ -880,3 +883,120 @@ class TestLimitChangeFansOutToAllShards:
         # ...and the shard still admits inside its new effective share
         async with limiter.acquire(entity_id, self.RESOURCE, {"rpm": 50}) as lease:
             assert {e._shard_id for e in lease.entries} == {1}
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+class TestCascadeParentSharding:
+    """A hot cascade *parent* must spread off shard 0 too (issue #474).
+
+    ``localstack_limiter`` runs on the shared minimal stack, deployed with
+    ``enable_aggregator=False``, so only the client can double or create a
+    parent shard here. Before the fix the warm-cache parallel cascade path
+    debited the parent on shard 0 unconditionally, so the one partition every
+    child in a cascade hierarchy writes to — the case GHSA-76rv exists to
+    protect — never benefited from write sharding at all.
+    """
+
+    CAPACITY = 100_000
+
+    @staticmethod
+    async def _raw_item(repo, entity_id: str, shard_id: int) -> dict | None:
+        client = await repo._get_client()
+        resp = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "gpt-4", shard_id)},
+                "SK": {"S": sk_state()},
+            },
+        )
+        return resp.get("Item")
+
+    async def _consumed(self, repo, entity_id: str, shard_id: int) -> int:
+        item = await self._raw_item(repo, entity_id, shard_id)
+        return int(item[bucket_attr("rpm", BUCKET_FIELD_TC)]["N"])
+
+    @staticmethod
+    async def _set_wcu(repo, entity_id: str, shard_id: int, *, tk: int, ra: int, rp: int) -> None:
+        """Rewrite one shard's wcu balance and refill rate.
+
+        A drained balance plus an hourly refill reads as a hot partition; the
+        stock 1000/s rate would restore a write on any elapsed millisecond, and
+        the client would then (correctly) take the slow path instead of doubling.
+        """
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "gpt-4", shard_id)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="SET #wcu = :tk, #rf = :rf, #ra = :ra, #rp = :rp",
+            ExpressionAttributeNames={
+                "#wcu": bucket_attr(WCU_LIMIT_NAME, BUCKET_FIELD_TK),
+                "#rf": "rf",
+                "#ra": bucket_attr(WCU_LIMIT_NAME, BUCKET_FIELD_RA),
+                "#rp": bucket_attr(WCU_LIMIT_NAME, BUCKET_FIELD_RP),
+            },
+            ExpressionAttributeValues={
+                ":tk": {"N": str(tk)},
+                ":rf": {"N": str(int(time.time() * 1000))},
+                ":ra": {"N": str(ra)},
+                ":rp": {"N": str(rp)},
+            },
+        )
+
+    async def test_hot_cascade_parent_spreads_across_its_shards(
+        self, localstack_limiter, unique_name
+    ):
+        from zae_limiter.models import Limit
+
+        limiter = localstack_limiter
+        repo = limiter._repository
+        ns = repo._namespace_id
+        parent_id = f"cascade-parent-{unique_name}"
+        child_id = f"cascade-child-{unique_name}"
+        # 1 token/hour keeps refill out of the assertions below
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+
+        await limiter.create_entity(parent_id)
+        await limiter.create_entity(child_id, parent_id=parent_id, cascade=True)
+        await limiter.set_system_defaults([limit])
+
+        # The first acquire creates both shard 0 items (slow path); the second
+        # is the parallel cascade path, which teaches both caches shard_count=1.
+        for _ in range(2):
+            async with limiter.acquire(child_id, "gpt-4", {"rpm": 1}):
+                pass
+        assert repo._entity_cache[(ns, parent_id)][2]["gpt-4"] == 1
+
+        # The parent's shard 0 is now the hot partition; the child's is fine.
+        await self._set_wcu(repo, parent_id, 0, tk=0, ra=1, rp=3_600_000)
+
+        async with limiter.acquire(child_id, "gpt-4", {"rpm": 1}) as lease:
+            parent_entry = next(e for e in lease.entries if e.entity_id == parent_id)
+            assert parent_entry._shard_id == 1, "the parent must move off its hot shard"
+        assert repo._entity_cache[(ns, parent_id)][2]["gpt-4"] == 2
+        shard1 = await self._raw_item(repo, parent_id, 1)
+        assert shard1 is not None, "parent shard 1 must exist without any aggregator"
+        assert shard1["shard_count"]["N"] == "2"
+
+        # Heal shard 0's wcu so both parent shards are writable, then watch the
+        # fast path spread the parent's debits over them.
+        await self._set_wcu(
+            repo,
+            parent_id,
+            0,
+            tk=WCU_LIMIT_CAPACITY * 1000,
+            ra=WCU_LIMIT_REFILL_AMOUNT * 1000,
+            rp=WCU_LIMIT_REFILL_PERIOD_SECONDS * 1000,
+        )
+        before = {shard: await self._consumed(repo, parent_id, shard) for shard in (0, 1)}
+        for _ in range(20):
+            async with limiter.acquire(child_id, "gpt-4", {"rpm": 1}):
+                pass
+        after = {shard: await self._consumed(repo, parent_id, shard) for shard in (0, 1)}
+
+        assert after[0] > before[0] and after[1] > before[1], (
+            f"parent writes must reach both shards: {before} -> {after}"
+        )
