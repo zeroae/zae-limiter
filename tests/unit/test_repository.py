@@ -4036,3 +4036,154 @@ class TestBumpShardCount:
             assert (
                 exc_info.value.response["Error"]["Code"] == "ProvisionedThroughputExceededException"
             )
+
+
+class TestSyncBucketParamsFansOutToAllShards:
+    """`_sync_bucket_params` must reach every shard, not only shard 0 (#468).
+
+    Keying the update on `pk_bucket(..., 0)` left shards 1..N-1 enforcing the
+    limits they were born with forever: nothing compares a bucket's stored
+    `cp`/`ra` against config on either path. Named residual of
+    GHSA-w6c2-33wf-qfwf.
+    """
+
+    OLD = 1000
+    NEW = 100
+
+    @staticmethod
+    async def _seed_shards(repo, entity_id, resource, shard_count):
+        """Create one bucket item per shard on the old (undivided) limits."""
+        now_ms = int(time.time() * 1000)
+        old = Limit.custom("rpm", 1000, refill_amount=1000, refill_period_seconds=60)
+        for shard_id in range(shard_count):
+            states = [BucketState.from_limit(entity_id, resource, old, now_ms)]
+            await repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        entity_id,
+                        resource,
+                        states,
+                        now_ms,
+                        shard_id=shard_id,
+                        shard_count=shard_count,
+                    )
+                ]
+            )
+
+    @staticmethod
+    async def _params(repo, entity_id, resource, shard_id):
+        bucket = await repo.get_bucket(entity_id, resource, "rpm", shard_id=shard_id)
+        assert bucket is not None, f"shard {shard_id} missing"
+        return (bucket.capacity_milli, bucket.refill_amount_milli, bucket.refill_period_ms)
+
+    @pytest.mark.asyncio
+    async def test_set_limits_updates_every_shard(self, repo):
+        """Entity-level set_limits rewrites cp/ra/rp on all 4 shards."""
+        await repo.create_entity("user-1")
+        await self._seed_shards(repo, "user-1", "gpt-4", 4)
+
+        await repo.set_limits(
+            "user-1",
+            [Limit.custom("rpm", self.NEW, refill_amount=self.NEW, refill_period_seconds=30)],
+            resource="gpt-4",
+        )
+
+        for shard_id in range(4):
+            # Stored values stay UNDIVIDED on every shard: the per-shard share
+            # is derived at read time by BucketState.effective_*.
+            assert await self._params(repo, "user-1", "gpt-4", shard_id) == (
+                self.NEW * 1000,
+                self.NEW * 1000,
+                30_000,
+            )
+
+    @pytest.mark.asyncio
+    async def test_reconcile_to_defaults_updates_every_shard(self, repo):
+        """The delete path (reconcile_bucket_to_defaults) fans out too."""
+        await repo.create_entity("user-2")
+        await self._seed_shards(repo, "user-2", "gpt-4", 2)
+
+        await repo.reconcile_bucket_to_defaults(
+            "user-2",
+            "gpt-4",
+            [Limit.custom("rpm", self.NEW, refill_amount=self.NEW, refill_period_seconds=60)],
+        )
+
+        for shard_id in (0, 1):
+            assert await self._params(repo, "user-2", "gpt-4", shard_id) == (
+                self.NEW * 1000,
+                self.NEW * 1000,
+                60_000,
+            )
+
+    @pytest.mark.asyncio
+    async def test_stale_limit_attributes_are_removed_from_every_shard(self, repo):
+        """A limit dropped from the config is removed from all shards (#327)."""
+        now_ms = int(time.time() * 1000)
+        await repo.create_entity("user-3")
+        limits = [
+            Limit.custom("rpm", 1000, refill_amount=1000, refill_period_seconds=60),
+            Limit.custom("tpm", 50_000, refill_amount=50_000, refill_period_seconds=60),
+        ]
+        for shard_id in (0, 1):
+            states = [BucketState.from_limit("user-3", "gpt-4", lim, now_ms) for lim in limits]
+            await repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        "user-3", "gpt-4", states, now_ms, shard_id=shard_id, shard_count=2
+                    )
+                ]
+            )
+
+        await repo.reconcile_bucket_to_defaults(
+            "user-3",
+            "gpt-4",
+            [Limit.custom("rpm", self.NEW, refill_amount=self.NEW, refill_period_seconds=60)],
+            stale_limit_names={"tpm"},
+        )
+
+        for shard_id in (0, 1):
+            assert await repo.get_bucket("user-3", "gpt-4", "tpm", shard_id=shard_id) is None
+            assert await repo.get_bucket("user-3", "gpt-4", "rpm", shard_id=shard_id) is not None
+
+    @pytest.mark.asyncio
+    async def test_a_shard_that_vanished_mid_fanout_is_tolerated(self, repo):
+        """A shard TTL-expired between discovery and the write must not raise."""
+        await repo.create_entity("user-4")
+        await self._seed_shards(repo, "user-4", "gpt-4", 2)
+
+        from zae_limiter import schema
+
+        ghost = schema.pk_bucket(repo._namespace_id, "user-4", "gpt-4", 7)
+        real = await repo._discover_entity_bucket_pks("user-4", "gpt-4")
+        with patch.object(
+            repo, "_discover_entity_bucket_pks", AsyncMock(return_value=[*real, ghost])
+        ):
+            await repo.reconcile_bucket_to_defaults(
+                "user-4",
+                "gpt-4",
+                [Limit.custom("rpm", self.NEW, refill_amount=self.NEW, refill_period_seconds=60)],
+            )
+
+        assert await repo.get_bucket("user-4", "gpt-4", "rpm", shard_id=7) is None
+        for shard_id in (0, 1):
+            assert (await self._params(repo, "user-4", "gpt-4", shard_id))[0] == self.NEW * 1000
+
+    @pytest.mark.asyncio
+    async def test_other_client_errors_propagate(self, repo):
+        """A non-conditional failure is not swallowed by the fan-out."""
+        from zae_limiter import schema
+
+        pk = schema.pk_bucket(repo._namespace_id, "user-5", "gpt-4", 0)
+        with patch.object(repo, "_get_client") as mock_get_client:
+            mock_client = AsyncMock()
+            mock_client.query.return_value = {"Items": [{"PK": {"S": pk}}]}
+            mock_client.update_item.side_effect = ClientError(
+                {"Error": {"Code": "ProvisionedThroughputExceededException"}}, "UpdateItem"
+            )
+            mock_get_client.return_value = mock_client
+
+            with pytest.raises(ClientError):
+                await repo.reconcile_bucket_to_defaults(
+                    "user-5", "gpt-4", [Limit.per_minute("rpm", 10)]
+                )

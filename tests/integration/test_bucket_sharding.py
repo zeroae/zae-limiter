@@ -763,3 +763,120 @@ class TestClientShardCreation:
         for shard_id in (0, 1):
             item = await self._raw_item(repo, entity_id, shard_id)
             assert int(item[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"]) == 0
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+class TestLimitChangeFansOutToAllShards:
+    """A limit change must reach every shard, not only shard 0 (issue #468).
+
+    ``_sync_bucket_params`` used to key on ``pk_bucket(..., 0)``, so shards
+    1..N-1 — created by the aggregator's Path 2 propagation or by the client
+    slow path with ``--no-aggregator`` — kept the limits they were born with
+    forever. Nothing detects the drift: the speculative success branch never
+    compares the stored ``cp``/``ra`` against config, and the slow path refills
+    from the stored values.
+
+    Named residual of GHSA-w6c2-33wf-qfwf.
+    """
+
+    RESOURCE = "gpt-4"
+    OLD_CAPACITY = 1000
+    NEW_CAPACITY = 100
+
+    @staticmethod
+    async def _raw(repo, entity_id: str, shard_id: int) -> dict:
+        client = await repo._get_client()
+        resp = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "gpt-4", shard_id)},
+                "SK": {"S": sk_state()},
+            },
+        )
+        return resp.get("Item") or {}
+
+    async def _seed(self, limiter, entity_id: str):
+        """Two shards on the undivided old limits, drained and stale.
+
+        Entity-level limits mean the buckets carry no TTL, so they persist and
+        have to be reconciled in place. ``rf`` two windows back with ``tk`` at
+        zero forces the next acquire through the slow path, where the refill is
+        capped at the shard's *effective* capacity — which is what makes a stale
+        ``cp`` on shard 1 observable.
+
+        Returns the lowered limit the test then applies.
+        """
+        from zae_limiter.models import BucketState, Limit
+
+        repo = limiter._repository
+        old = Limit.custom(
+            "rpm", self.OLD_CAPACITY, refill_amount=self.OLD_CAPACITY, refill_period_seconds=60
+        )
+        await limiter.create_entity(entity_id)
+        await limiter.set_limits(entity_id, [old], resource=self.RESOURCE)
+
+        past_ms = int(time.time() * 1000) - 120_000
+        for shard_id in (0, 1):
+            state = BucketState.from_limit(entity_id, self.RESOURCE, old, past_ms)
+            state.tokens_milli = 0
+            await repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        entity_id,
+                        self.RESOURCE,
+                        [state],
+                        past_ms,
+                        shard_id=shard_id,
+                        shard_count=2,
+                    )
+                ]
+            )
+        repo._entity_cache[(repo._namespace_id, entity_id)] = (False, None, {self.RESOURCE: 2})
+        return Limit.custom(
+            "rpm", self.NEW_CAPACITY, refill_amount=self.NEW_CAPACITY, refill_period_seconds=60
+        )
+
+    async def test_set_limits_rewrites_every_shard(self, localstack_limiter, unique_name):
+        """The new cp/ra/rp land on shard 1 too, stored undivided."""
+        limiter = localstack_limiter
+        repo = limiter._repository
+        entity_id = f"fanout-store-{unique_name}"
+        new = await self._seed(limiter, entity_id)
+
+        await limiter.set_limits(entity_id, [new], resource=self.RESOURCE)
+
+        for shard_id in (0, 1):
+            item = await self._raw(repo, entity_id, shard_id)
+            # Stored values stay undivided on every shard: the per-shard share
+            # is derived at read time by BucketState.effective_*.
+            assert int(item[bucket_attr("rpm", BUCKET_FIELD_CP)]["N"]) == self.NEW_CAPACITY * 1000
+            assert int(item[bucket_attr("rpm", BUCKET_FIELD_RA)]["N"]) == self.NEW_CAPACITY * 1000
+            assert int(item[bucket_attr("rpm", BUCKET_FIELD_RP)]["N"]) == 60_000
+
+    async def test_shard_one_enforces_the_lowered_limit(
+        self, localstack_limiter, monkeypatch, unique_name
+    ):
+        """An acquire that draws shard 1 is gated by the NEW capacity.
+
+        Before the fix shard 1 still held cp=1000 (effective 500), so a
+        200-token request kept being admitted there indefinitely.
+        """
+        from zae_limiter import repository as _repo_mod
+        from zae_limiter.exceptions import RateLimitExceeded
+
+        limiter = localstack_limiter
+        entity_id = f"fanout-enforce-{unique_name}"
+        new = await self._seed(limiter, entity_id)
+
+        await limiter.set_limits(entity_id, [new], resource=self.RESOURCE)
+
+        # Pin the draw to shard 1: randrange(2) -> 1
+        monkeypatch.setattr(_repo_mod.random, "randrange", lambda *a: 1)
+        # 200 > the new effective capacity (100 // 2 = 50), < the old one (500)
+        with pytest.raises(RateLimitExceeded):
+            async with limiter.acquire(entity_id, self.RESOURCE, {"rpm": 200}):
+                pass
+        # ...and the shard still admits inside its new effective share
+        async with limiter.acquire(entity_id, self.RESOURCE, {"rpm": 50}) as lease:
+            assert {e._shard_id for e in lease.entries} == {1}
