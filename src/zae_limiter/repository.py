@@ -2829,15 +2829,6 @@ class Repository:
             # limit (issue #439). Same conditional write, so whichever of us
             # gets there first wins and the other is a no-op.
             await self._propagate_shard_count(entity_id, resource, current_count, new_count)
-            if new_count > schema.WCU_SHARD_WARN_THRESHOLD:
-                logger.warning(
-                    "High shard count after doubling: entity_id=%s resource=%s "
-                    "shard_count=%d threshold=%d",
-                    entity_id,
-                    resource,
-                    new_count,
-                    schema.WCU_SHARD_WARN_THRESHOLD,
-                )
         except ClientError as e:
             if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
                 # Another client already doubled: adopt the winner's count —
