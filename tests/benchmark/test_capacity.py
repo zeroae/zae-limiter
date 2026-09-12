@@ -282,13 +282,10 @@ class TestCapacityConsumption:
     def test_available_check_capacity(self, sync_limiter, capacity_counter):
         """Verify: available() reads bucket state without writes.
 
-        Expected calls:
-        - GetItem for entity/version lookup
-        - Query for limit resolution
-        - GetItem for bucket state check
-        - 0 write operations
-
-        Note: available() does not use BatchGetItem optimization.
+        A sharded entity's balance is spread across its shards (GHSA-76rv), so
+        available() discovers them through the KEYS_ONLY GSI3 index and fetches
+        the items it finds — 1 Query + 1 BatchGetItem, never a per-shard
+        GetItem — then sums. Still strictly read-only.
         """
         limits = [Limit.per_minute("rpm", 1_000_000)]
 
@@ -312,17 +309,21 @@ class TestCapacityConsumption:
             )
 
         # Verify read-only operation
-        assert capacity_counter.get_item >= 1, "Should have GetItem calls for entity/version/bucket"
+        assert capacity_counter.query == 1, "GSI3 shard discovery should be a single Query"
+        assert len(capacity_counter.batch_get_item) == 1, (
+            "Discovered shards should be fetched in one BatchGetItem"
+        )
         assert capacity_counter.total_wcus == 0, "available() should have no writes"
 
     @pytest.mark.parametrize("num_limits", [1, 2, 3])
     def test_available_check_multiple_limits_capacity(
         self, sync_limiter, capacity_counter, num_limits
     ):
-        """Verify: available() with N limits reads N buckets without writes.
+        """Verify: available() read cost is independent of the limit count.
 
-        Each limit requires a separate GetItem to check bucket state.
-        Note: available() does not currently use BatchGetItem optimization.
+        All limits for an (entity, resource, shard) share one composite item
+        (ADR-114), so shard discovery plus one BatchGetItem covers every limit:
+        1 Query + 1 BatchGetItem of 1 item, whatever N is.
         """
         limits = [Limit.per_minute(f"limit_{i}", 1_000_000) for i in range(num_limits)]
         consume = {f"limit_{i}": 1 for i in range(num_limits)}
@@ -346,9 +347,11 @@ class TestCapacityConsumption:
                 limits=limits,
             )
 
-        # Verify read-only operation
-        # GetItem includes entity/version lookup + N bucket reads
-        assert capacity_counter.get_item >= num_limits, f"Should read at least {num_limits} items"
+        # Verify read-only operation, O(1) in the number of limits
+        assert capacity_counter.query == 1, "GSI3 shard discovery should be a single Query"
+        assert capacity_counter.batch_get_item == [1], (
+            f"{num_limits} limits share one composite item: 1 BatchGetItem of 1 key"
+        )
         assert capacity_counter.total_wcus == 0, "available() should have no writes"
 
     def test_set_limits_capacity(self, sync_limiter, capacity_counter):
