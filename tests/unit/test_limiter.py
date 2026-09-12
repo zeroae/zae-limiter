@@ -785,6 +785,32 @@ class TestWriteOnEnter:
         mock_repo.build_composite_retry.assert_called_once()
         assert mock_repo.build_composite_retry.call_args.kwargs["entity_id"] == "p1"
 
+    async def test_commit_initial_lost_lock_with_nothing_consumed_needs_no_retry(self):
+        """An rf-lock failure on a group that consumed nothing has nothing to
+        debit: no retry transaction is issued and the commit still completes."""
+        from zae_limiter.lease import Lease
+
+        entry = self._make_entry(consumed=0)
+        mock_repo = self._make_mock_repo()
+        exc_cls = type(
+            "TransactionCanceledException",
+            (Exception,),
+            {
+                "response": {
+                    "Error": {"Code": "TransactionCanceledException"},
+                    "CancellationReasons": [{"Code": "ConditionalCheckFailed"}],
+                }
+            },
+        )
+        mock_repo.transact_write.side_effect = [exc_cls()]
+
+        lease = Lease(repository=mock_repo, entries=[entry])
+        await lease._commit_initial()
+
+        assert lease._initial_committed is True
+        assert mock_repo.transact_write.call_count == 1
+        mock_repo.build_composite_retry.assert_not_called()
+
     async def test_commit_initial_create_race_retries_on_the_same_shard(self):
         """Losing the create race to the aggregator retries consumption-only
         on that same shard, never on shard 0 (issue #439)."""
