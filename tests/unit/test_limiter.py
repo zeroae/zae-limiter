@@ -785,6 +785,29 @@ class TestWriteOnEnter:
         mock_repo.build_composite_retry.assert_called_once()
         assert mock_repo.build_composite_retry.call_args.kwargs["entity_id"] == "p1"
 
+    def test_retry_failure_statuses_use_the_effective_refill(self):
+        """A sharded bucket refills at refill_amount // shard_count, so the
+        retry-path retry_after must use that share, not the undivided rate."""
+        from zae_limiter.lease import LeaseEntry, _build_retry_failure_statuses
+
+        limit = Limit.custom("rpm", 1000, refill_amount=1000, refill_period_seconds=60)
+        state = BucketState(
+            entity_id="e1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=0,
+            last_refill_ms=0,
+            capacity_milli=1_000_000,
+            refill_amount_milli=1_000_000,
+            refill_period_ms=60_000,
+            shard_count=2,
+        )
+        entry = LeaseEntry(entity_id="e1", resource="gpt-4", limit=limit, state=state, consumed=500)
+
+        (status,) = _build_retry_failure_statuses([entry])
+        # 500 tokens at 500 tokens/60 s (the shard's share) = 60 s, not 30 s
+        assert status.retry_after_seconds == pytest.approx(60.0, abs=0.01)
+
     async def test_commit_initial_lost_lock_with_nothing_consumed_needs_no_retry(self):
         """An rf-lock failure on a group that consumed nothing has nothing to
         debit: no retry transaction is issued and the commit still completes."""
@@ -7311,6 +7334,15 @@ class TestClientShardCreation:
         reads.assert_not_called()
         parent = await repo.get_buckets("parent-1", resource="gpt-4", shard_id=0)
         assert next(b for b in parent if b.limit_name == "rpm").tokens_milli == cp_milli
+
+    async def test_available_sums_every_shard(self, limiter):
+        """available() must report the entity's total across shards, not the
+        balance of shard 0 alone (which now holds at most capacity // N)."""
+        limit = Limit.custom("rpm", 100, refill_amount=1, refill_period_seconds=3600)
+        now_ms = int(time.time() * 1000)
+        await self._seed_shards(limiter, 2, limit, tokens_milli=50_000, rf_ms=now_ms)
+
+        assert await limiter.available("user-1", "gpt-4") == {"rpm": 100}
 
     async def test_create_race_lost_to_aggregator_consumes_once(self, limiter):
         """If the aggregator's Path 2 wins the create, the client retries as a

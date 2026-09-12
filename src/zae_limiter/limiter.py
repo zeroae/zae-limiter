@@ -1837,13 +1837,22 @@ class RateLimiter:
         # Resolve limits using four-tier hierarchy
         resolved_limits, _ = await self._resolve_limits(entity_id, resource, limits)
 
+        # A sharded entity's balance is spread across its shards (GHSA-76rv);
+        # discover every shard via GSI3 and sum, as get_resource_capacity does.
+        per_limit: dict[str, int] = {}
+        for bucket in await self._repository.get_buckets(entity_id):
+            if bucket.resource != resource:
+                continue
+            per_limit[bucket.limit_name] = per_limit.get(bucket.limit_name, 0) + (
+                calculate_available(bucket, now_ms)
+            )
+
         result: dict[str, int] = {}
         for limit in resolved_limits:
-            state = await self._repository.get_bucket(entity_id, resource, limit.name)
-            if state is None:
-                result[limit.name] = limit.capacity
+            if limit.name in per_limit:
+                result[limit.name] = min(per_limit[limit.name], limit.capacity)
             else:
-                result[limit.name] = calculate_available(state, now_ms)
+                result[limit.name] = limit.capacity
 
         return result
 

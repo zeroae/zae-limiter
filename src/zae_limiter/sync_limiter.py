@@ -1428,13 +1428,19 @@ class SyncRateLimiter:
                 stacklevel=2,
             )
         resolved_limits, _ = self._resolve_limits(entity_id, resource, limits)
+        per_limit: dict[str, int] = {}
+        for bucket in self._repository.get_buckets(entity_id):
+            if bucket.resource != resource:
+                continue
+            per_limit[bucket.limit_name] = per_limit.get(
+                bucket.limit_name, 0
+            ) + calculate_available(bucket, now_ms)
         result: dict[str, int] = {}
         for limit in resolved_limits:
-            state = self._repository.get_bucket(entity_id, resource, limit.name)
-            if state is None:
-                result[limit.name] = limit.capacity
+            if limit.name in per_limit:
+                result[limit.name] = min(per_limit[limit.name], limit.capacity)
             else:
-                result[limit.name] = calculate_available(state, now_ms)
+                result[limit.name] = limit.capacity
         return result
 
     def time_until_available(
