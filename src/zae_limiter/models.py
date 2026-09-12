@@ -363,6 +363,22 @@ class Limit:
             refill_period_seconds=state.refill_period_ms // 1000,
         )
 
+    @classmethod
+    def _carrier(cls, state: "BucketState") -> "Limit":
+        """Limit view of a reserved infrastructure bucket such as ``wcu``.
+
+        The slow path carries the ``wcu`` bucket through a lease so its refill
+        is written back with the other limits (ADR-133); it is never declared,
+        never gated and never reported. The reserved name is rejected by the
+        public constructors on purpose, so this bypasses validation.
+        """
+        obj = object.__new__(cls)
+        object.__setattr__(obj, "name", state.limit_name)
+        object.__setattr__(obj, "capacity", max(1, state.capacity_milli // 1000))
+        object.__setattr__(obj, "refill_amount", max(1, state.refill_amount_milli // 1000))
+        object.__setattr__(obj, "refill_period_seconds", max(1, state.refill_period_ms // 1000))
+        return obj
+
 
 @dataclass
 class Entity:

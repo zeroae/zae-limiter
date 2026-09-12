@@ -2896,6 +2896,32 @@ class TestBumpShardCount:
         assert repo._entity_cache[ns, "e1"][2]["gpt-4"] == 4
         assert repo.select_shard("e1", "gpt-4")[1] == 4
 
+    def test_bump_shard_count_refuses_to_exceed_the_cap(self, repo, caplog):
+        """shard_count is capped at MAX_SHARD_COUNT: the bump is refused (no
+        write), the current count is returned, and it warns once."""
+        import logging
+
+        from zae_limiter.schema import MAX_SHARD_COUNT
+
+        ns = repo._namespace_id
+        repo._entity_cache[ns, "e1"] = (False, None, {"gpt-4": MAX_SHARD_COUNT})
+        now_ms = int(time.time() * 1000)
+        states = [BucketState.from_limit("e1", "gpt-4", Limit.per_minute("rpm", 100), now_ms)]
+        repo.transact_write(
+            [
+                repo.build_composite_create(
+                    "e1", "gpt-4", states, now_ms, shard_id=0, shard_count=MAX_SHARD_COUNT
+                )
+            ]
+        )
+        with caplog.at_level(logging.WARNING, logger="zae_limiter.sync_repository"):
+            assert repo.bump_shard_count("e1", "gpt-4", MAX_SHARD_COUNT) == MAX_SHARD_COUNT
+            assert repo.bump_shard_count("e1", "gpt-4", MAX_SHARD_COUNT) == MAX_SHARD_COUNT
+        assert sum("MAX_SHARD_COUNT" in r.getMessage() for r in caplog.records) == 1
+        assert repo._entity_cache[ns, "e1"][2]["gpt-4"] == MAX_SHARD_COUNT
+        bucket = repo.get_bucket("e1", "gpt-4", "rpm")
+        assert bucket is not None and bucket.shard_count == MAX_SHARD_COUNT
+
     def test_bump_shard_count_reraises_other_errors(self, repo):
         """bump_shard_count re-raises non-ConditionalCheckFailedException errors."""
         with patch.object(repo, "_get_client") as mock_get_client:
@@ -2923,9 +2949,9 @@ class TestBumpShardCount:
         repo.transact_write([put_item])
         with caplog.at_level(logging.WARNING, logger="zae_limiter.sync_repository"):
             result = repo.bump_shard_count("e1", "gpt-4", current_count=32)
-        assert result == 64
+        assert result == 32
         assert any(
-            "shard count" in r.message.lower() and "64" in str(r.message)
+            "MAX_SHARD_COUNT" in r.getMessage()
             for r in caplog.records
             if r.levelno >= logging.WARNING
         )

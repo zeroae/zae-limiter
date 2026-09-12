@@ -5335,7 +5335,11 @@ class TestSpeculativeAcquire:
         try:
             async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}) as lease:
                 parent_entries = [e for e in lease.entries if e.entity_id == "parent-1"]
-                assert {e.limit.name for e in parent_entries} == {"rpm", "tpm"}
+                # The reserved wcu carrier rides along undeclared (ADR-133)
+                assert {e.limit.name for e in parent_entries if e.limit.name != "wcu"} == {
+                    "rpm",
+                    "tpm",
+                }
                 assert {e.limit.name for e in parent_entries if e._declared} == {"rpm"}
                 # consumed sums across entities (child 1 + parent 1); no tpm key
                 assert lease.consumed == {"rpm": 2}
@@ -6717,7 +6721,23 @@ class TestShardRetry:
         # Pre-populate entity cache
         repo._entity_cache[(ns, "user-1")] = (False, None, {"gpt-4": 1})
 
-        # Exhaust wcu tokens on shard 0
+        # Exhaust wcu tokens on shard 0 under sustained pressure: its wcu
+        # refills once an hour, so the drained balance means a hot partition
+        # (a wcu that would refill takes the slow path instead, ADR-133)
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(ns, "user-1", "gpt-4", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="SET #rp = :hour, #ra = :one",
+            ExpressionAttributeNames={
+                "#rp": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_RP),
+                "#ra": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_RA),
+            },
+            ExpressionAttributeValues={":hour": {"N": "3600000"}, ":one": {"N": "1"}},
+        )
         for _ in range(schema.WCU_LIMIT_CAPACITY):
             await repo._speculative_consume_single("user-1", "gpt-4", {"rpm": 1}, shard_id=0)
 
@@ -6916,6 +6936,7 @@ class TestClientShardCreation:
 
         limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
         repo = await self._seed_shard0(limiter, shard_count=1, limit=limit)
+        await self._slow_wcu_refill(repo)
 
         for _ in range(schema.WCU_LIMIT_CAPACITY):
             await repo._speculative_consume_single("user-1", "gpt-4", {"rpm": 1}, shard_id=0)
@@ -7405,6 +7426,97 @@ class TestClientShardCreation:
         )
         assert item1["Item"]["shard_count"]["N"] == "2"
 
+    @staticmethod
+    async def _slow_wcu_refill(repo, shard_id: int = 0) -> None:
+        """Model sustained pressure: this shard's wcu refills once an hour, so
+        a drained wcu is a hot partition rather than a stale balance."""
+        from zae_limiter import schema
+
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, "user-1", "gpt-4", shard_id)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="SET #rp = :hour, #ra = :one",
+            ExpressionAttributeNames={
+                "#rp": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_RP),
+                "#ra": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_RA),
+            },
+            ExpressionAttributeValues={":hour": {"N": "3600000"}, ":one": {"N": "1"}},
+        )
+
+    @staticmethod
+    async def _drain_wcu(repo, shard_id: int, rf_ms: int) -> None:
+        """Zero the wcu balance on a shard and pin the shared rf."""
+        from zae_limiter import schema
+
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, "user-1", "gpt-4", shard_id)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="SET #wcu = :zero, #rf = :rf",
+            ExpressionAttributeNames={
+                "#wcu": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK),
+                "#rf": schema.BUCKET_FIELD_RF,
+            },
+            ExpressionAttributeValues={":zero": {"N": "0"}, ":rf": {"N": str(rf_ms)}},
+        )
+
+    async def test_slow_path_refills_wcu_as_an_undeclared_carrier(self, limiter):
+        """Without the aggregator nobody refilled wcu. The slow path must refill
+        it from its stored ra/rp like any undeclared limit — never gated,
+        never a status, never visible through the lease."""
+        from zae_limiter import schema
+
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        now_ms = int(time.time() * 1000)
+        repo = await self._seed_shards(
+            limiter, 1, limit, tokens_milli=self.CAPACITY * 1000, rf_ms=now_ms
+        )
+        await self._drain_wcu(repo, 0, now_ms - 2_000)  # two wcu refill windows ago
+        limiter._speculative_writes = False
+
+        async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+            assert lease.consumed == {"rpm": 1}
+            assert {e.limit.name for e in lease.entries if e._declared} == {"rpm"}
+
+        item = await self._raw_item(repo, 0)
+        assert (
+            self._n(item, schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK)
+            == schema.WCU_LIMIT_CAPACITY * 1000
+        )
+
+    async def test_exhausted_wcu_that_would_refill_does_not_double(self, limiter):
+        """wcu exhausted an instant ago is not a hot partition: the image's
+        refill would restore it, so take the slow path on the same shard
+        (which refills wcu) instead of doubling toward the cap."""
+        from zae_limiter import schema
+
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        now_ms = int(time.time() * 1000)
+        repo = await self._seed_shards(
+            limiter, 1, limit, tokens_milli=self.CAPACITY * 1000, rf_ms=now_ms
+        )
+        await self._drain_wcu(repo, 0, now_ms - 2_000)
+        ns = repo._namespace_id
+
+        async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+            assert {e._shard_id for e in lease.entries} == {0}
+
+        assert repo._entity_cache[(ns, "user-1")][2]["gpt-4"] == 1, "no doubling"
+        assert await self._raw_item(repo, 1) is None
+        item = await self._raw_item(repo, 0)
+        assert (
+            self._n(item, schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK)
+            == schema.WCU_LIMIT_CAPACITY * 1000
+        )
+        assert self._n(item, "rpm", schema.BUCKET_FIELD_TK) == self.CAPACITY * 1000 - 1000
+
     async def test_create_race_lost_to_aggregator_consumes_once(self, limiter):
         """If the aggregator's Path 2 wins the create, the client retries as a
         consumption-only conditional write on that shard: one debit, no
@@ -7454,6 +7566,7 @@ class TestClientShardCreation:
         limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
         repo = await self._seed_shard0(limiter, shard_count=1, limit=limit)
         ns = repo._namespace_id
+        await self._slow_wcu_refill(repo)
         for _ in range(schema.WCU_LIMIT_CAPACITY):
             await repo._speculative_consume_single("user-1", "gpt-4", {"rpm": 1}, shard_id=0)
 
@@ -7499,6 +7612,7 @@ class TestClientShardCreation:
 
         limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
         repo = await self._seed_shard0(limiter, shard_count=1, limit=limit)
+        await self._slow_wcu_refill(repo)
         for _ in range(schema.WCU_LIMIT_CAPACITY):
             await repo._speculative_consume_single("user-1", "gpt-4", {"rpm": 1}, shard_id=0)
         repo.bump_shard_count = AsyncMock(return_value=1)

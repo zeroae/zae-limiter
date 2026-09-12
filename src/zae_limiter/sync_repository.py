@@ -130,6 +130,7 @@ class SyncRepository:
             ttl_seconds=config_cache_ttl, namespace_id=self._namespace_id
         )
         self._config_cache_ttl = config_cache_ttl
+        self._shard_cap_warned: set[tuple[str, str]] = set()
         self._entity_cache: dict[tuple[str, str], tuple[bool, str | None, dict[str, int]]] = {}
         self._on_unavailable_cache: OnUnavailableAction | None = None
         self._namespace_cache: dict[str, str] = {}
@@ -2312,6 +2313,18 @@ class SyncRepository:
             from the new shard range instead of caching its stale count and
             landing back on the exhausted shard (issue #439).
         """
+        cache_key = (self._namespace_id, entity_id)
+        meta = None if cache_key in self._entity_cache else (False, None)
+        if current_count >= schema.MAX_SHARD_COUNT:
+            if (entity_id, resource) not in self._shard_cap_warned:
+                self._shard_cap_warned.add((entity_id, resource))
+                logger.warning(
+                    "shard_count for entity_id=%s resource=%s is at MAX_SHARD_COUNT=%d; refusing to double further",
+                    entity_id,
+                    resource,
+                    schema.MAX_SHARD_COUNT,
+                )
+            return self._learn_shard_count(entity_id, resource, current_count, meta=meta)
         new_count = current_count * 2
         client = self._get_client()
         try:
@@ -2345,8 +2358,6 @@ class SyncRepository:
                 effective_count = max(current_count, winner_count)
             else:
                 raise
-        cache_key = (self._namespace_id, entity_id)
-        meta = None if cache_key in self._entity_cache else (False, None)
         return self._learn_shard_count(entity_id, resource, effective_count, meta=meta)
 
     def set_limits(

@@ -48,7 +48,7 @@ from .models import (
 )
 from .repository import Repository
 from .repository_protocol import SpeculativeFailureReason
-from .schema import DEFAULT_RESOURCE
+from .schema import DEFAULT_RESOURCE, MAX_SHARD_COUNT, WCU_LIMIT_NAME
 
 _UNSET: Any = object()  # sentinel for detecting explicitly-passed deprecated params
 
@@ -794,6 +794,17 @@ class RateLimiter:
                 SpeculativeFailureReason.WCU_EXHAUSTED,
                 SpeculativeFailureReason.BOTH_EXHAUSTED,
             ):
+                # An exhausted wcu whose refill would already restore it is not
+                # a hot partition — nobody refills wcu on the fast path, and
+                # without the aggregator nobody refills it at all. Take the
+                # slow path on this shard (it refills wcu, ADR-133) rather
+                # than doubling toward MAX_SHARD_COUNT on a stale balance.
+                wcu_state = next(
+                    (b for b in result.old_buckets or [] if b.limit_name == WCU_LIMIT_NAME),
+                    None,
+                )
+                if wcu_state is not None and try_consume(wcu_state, 1, now_ms).success:
+                    return None, result.shard_id, result.shard_count, None
                 new_count = await self._repository.bump_shard_count(
                     entity_id, resource, result.shard_count
                 )
@@ -1134,6 +1145,8 @@ class RateLimiter:
             raise RateLimitExceeded(statuses)
 
     _MAX_SHARD_RETRIES = 2
+    # Hard cap on shard_count (ADR-133); bump_shard_count() refuses beyond it
+    MAX_SHARD_COUNT = MAX_SHARD_COUNT
 
     async def _retry_on_other_shard(
         self,
@@ -1362,6 +1375,43 @@ class RateLimiter:
             state.total_consumed_milli += amount * 1000
         return status, amount
 
+    @staticmethod
+    def _wcu_carrier(
+        entity_id: str,
+        resource: str,
+        buckets: dict[tuple[str, str, str], BucketState],
+        now_ms: int,
+        shard_id: int,
+        shard_count: int,
+        has_custom_config: bool,
+    ) -> LeaseEntry | None:
+        """Carry an existing ``wcu`` bucket through the lease, refill only.
+
+        The fast path never refills ``wcu`` and without the aggregator nothing
+        else does, so an idle shard would stay "exhausted" and drive doubling
+        (ADR-133). Treated exactly like an undeclared limit: refilled from its
+        stored ra/rp, written back under the shared rf lock, never gated,
+        never a LimitStatus, never visible through the lease.
+        """
+        state = buckets.get((entity_id, resource, WCU_LIMIT_NAME))
+        if state is None:
+            return None
+        original_tk, original_rf = state.tokens_milli, state.last_refill_ms
+        state.tokens_milli, state.last_refill_ms = force_consume(state, 0, now_ms)
+        return LeaseEntry(
+            entity_id=entity_id,
+            resource=resource,
+            limit=Limit._carrier(state),
+            state=state,
+            consumed=0,
+            _original_tokens_milli=original_tk,
+            _original_rf_ms=original_rf,
+            _has_custom_config=has_custom_config,
+            _declared=False,
+            _shard_id=shard_id,
+            _shard_count=shard_count,
+        )
+
     async def _try_parent_only_acquire(
         self,
         parent_id: str,
@@ -1434,6 +1484,18 @@ class RateLimiter:
                     _shard_count=parent_shard_count,
                 )
             )
+
+        carrier = self._wcu_carrier(
+            parent_id,
+            resource,
+            parent_buckets,
+            now_ms,
+            parent_shard,
+            parent_shard_count,
+            has_custom_config,
+        )
+        if carrier is not None:
+            parent_entries.append(carrier)
 
         # Check for violations
         violations = [s for s in statuses if s.exceeded]
@@ -1647,6 +1709,18 @@ class RateLimiter:
                         _declared=status is not None,
                     )
                 )
+
+            carrier = self._wcu_carrier(
+                eid,
+                resource,
+                existing_buckets,
+                now_ms,
+                eid_shard,
+                eid_shard_count,
+                entity_config_sources.get(eid) == "entity",
+            )
+            if carrier is not None:
+                entries.append(carrier)
 
         # Check for any violations
         violations = [s for s in statuses if s.exceeded]

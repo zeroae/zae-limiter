@@ -82,6 +82,10 @@ WCU_LIMIT_CAPACITY = 1000  # DynamoDB per-partition WCU/sec limit
 WCU_LIMIT_REFILL_AMOUNT = 1000  # Refills to full capacity each second
 WCU_LIMIT_REFILL_PERIOD_SECONDS = 1
 WCU_SHARD_WARN_THRESHOLD = 32  # Log warning when shard count exceeds this (GHSA-76rv)
+# Hard cap on shard_count (ADR-133). Bounds how small a per-shard share can get
+# (capacity // shard_count) and how far an exhausted shard can drive doubling
+# without the aggregator. Surfaced as a metric in #475.
+MAX_SHARD_COUNT = 32
 
 # Composite limit config attribute prefix and field suffixes (ADR-114 for configs)
 LIMIT_ATTR_PREFIX = "l_"

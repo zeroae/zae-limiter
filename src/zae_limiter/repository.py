@@ -151,6 +151,8 @@ class Repository:
         self._config_cache_ttl = config_cache_ttl
 
         # Entity metadata cache for parallel cascade writes (issue #318)
+        # (entity_id, resource) pairs already warned about MAX_SHARD_COUNT
+        self._shard_cap_warned: set[tuple[str, str]] = set()
         # Value: (cascade, parent_id, {resource: shard_count})
         # cascade/parent_id are immutable; shard_count updated on doubling
         self._entity_cache: dict[tuple[str, str], tuple[bool, str | None, dict[str, int]]] = {}
@@ -2781,6 +2783,23 @@ class Repository:
             from the new shard range instead of caching its stale count and
             landing back on the exhausted shard (issue #439).
         """
+        cache_key = (self._namespace_id, entity_id)
+        meta = None if cache_key in self._entity_cache else (False, None)
+        if current_count >= schema.MAX_SHARD_COUNT:
+            # Refused: the share per shard would fall below what a request
+            # can use, and an exhausted shard must not drive doubling forever
+            # (ADR-133). Warn once per (entity, resource); #475 adds a metric.
+            if (entity_id, resource) not in self._shard_cap_warned:
+                self._shard_cap_warned.add((entity_id, resource))
+                logger.warning(
+                    "shard_count for entity_id=%s resource=%s is at MAX_SHARD_COUNT=%d; "
+                    "refusing to double further",
+                    entity_id,
+                    resource,
+                    schema.MAX_SHARD_COUNT,
+                )
+            return self._learn_shard_count(entity_id, resource, current_count, meta=meta)
+
         new_count = current_count * 2
         client = await self._get_client()
         try:
@@ -2821,8 +2840,6 @@ class Repository:
                 raise
 
         # Update entity cache with new shard_count (monotonic)
-        cache_key = (self._namespace_id, entity_id)
-        meta = None if cache_key in self._entity_cache else (False, None)
         return self._learn_shard_count(entity_id, resource, effective_count, meta=meta)
 
     # -------------------------------------------------------------------------
