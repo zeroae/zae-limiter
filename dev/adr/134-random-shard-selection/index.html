@@ -12,13 +12,11 @@
         <meta name="author" content="ZeroAE">
       
       
-        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/dev/adr/124-policy-rename-clarity/">
+        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/dev/adr/134-random-shard-selection/">
       
       
-        <link rel="prev" href="../117-managed-policies-by-default/">
+        <link rel="prev" href="../133-client-shard-creation/">
       
-      
-        <link rel="next" href="../118-four-level-config-hierarchy/">
       
       
         
@@ -29,7 +27,7 @@
     
     
       
-        <title>ADR-124 Rename IAM Policies - zae-limiter</title>
+        <title>ADR-134 Random Shard Selection - zae-limiter</title>
       
     
     
@@ -84,7 +82,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#adr-124-rename-iam-policies-for-clarity" class="md-skip">
+        <a href="#adr-134-random-shard-selection" class="md-skip">
           Skip to content
         </a>
       
@@ -123,7 +121,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              ADR-124 Rename IAM Policies
+              ADR-134 Random Shard Selection
             
           </span>
         </div>
@@ -2596,20 +2594,18 @@
                 
   
   
-    
   
   
-  
     
     
     
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_7" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_7" >
         
           
           <label class="md-nav__link" for="__nav_6_7" id="__nav_6_7_label" tabindex="0">
@@ -2630,7 +2626,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_7_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_7_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_6_7">
             <span class="md-nav__icon md-icon"></span>
             
@@ -2701,37 +2697,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    ADR-124 Rename IAM Policies
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../124-policy-rename-clarity/" class="md-nav__link">
         
   
   
@@ -2747,109 +2716,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#context" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Context
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#decision" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Decision
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#permission-matrix" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Permission Matrix
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#consequences" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Consequences
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#alternatives-considered" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Alternatives Considered
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Alternatives Considered">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#keep-old-names-with-updated-documentation" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Keep old names with updated documentation
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#add-a-fourth-policy-tier-for-entity-management" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Add a fourth policy tier for entity management
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -3117,18 +2983,20 @@
                 
   
   
+    
   
   
+  
     
     
     
     
     
-    <li class="md-nav__item md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_10" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_10" checked>
         
           
           <label class="md-nav__link" for="__nav_6_10" id="__nav_6_10_label" tabindex="0">
@@ -3149,7 +3017,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_10_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_10_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_6_10">
             <span class="md-nav__icon md-icon"></span>
             
@@ -3248,10 +3116,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../134-random-shard-selection/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-134 Random Shard Selection
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -3267,6 +3162,120 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#context" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Context
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#decision" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Decision
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#consequences" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Consequences
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#alternatives-considered" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Alternatives Considered
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Alternatives Considered">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#hash-of-entity-resource" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hash of (entity, resource)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#hash-including-a-time-bucket" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hash including a time bucket
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#round-robin-per-client" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Round-robin per client
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#related" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Related
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -3336,17 +3345,6 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#permission-matrix" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Permission Matrix
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#consequences" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3370,10 +3368,10 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#keep-old-names-with-updated-documentation" class="md-nav__link">
+  <a href="#hash-of-entity-resource" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Keep old names with updated documentation
+        Hash of (entity, resource)
       
     </span>
   </a>
@@ -3381,10 +3379,21 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#add-a-fourth-policy-tier-for-entity-management" class="md-nav__link">
+  <a href="#hash-including-a-time-bucket" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Add a fourth policy tier for entity management
+        Hash including a time bucket
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#round-robin-per-client" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Round-robin per client
       
     </span>
   </a>
@@ -3393,6 +3402,17 @@
         
       </ul>
     </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#related" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Related
+      
+    </span>
+  </a>
   
 </li>
       
@@ -3415,7 +3435,7 @@
 
 
   
-    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/adr/124-policy-rename-clarity.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/adr/134-random-shard-selection.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -3423,139 +3443,72 @@
   
 
 
-<h1 id="adr-124-rename-iam-policies-for-clarity">ADR-124: Rename IAM Policies for Clarity<a class="headerlink" href="#adr-124-rename-iam-policies-for-clarity" title="Permanent link">&para;</a></h1>
+<h1 id="adr-134-random-shard-selection">ADR-134: Random Shard Selection<a class="headerlink" href="#adr-134-random-shard-selection" title="Permanent link">&para;</a></h1>
 <p><strong>Status:</strong> Accepted
-<strong>Date:</strong> 2026-02-02
-<strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/307">#307</a>
-<strong>Amends:</strong> ADR-117</p>
+<strong>Date:</strong> 2026-09-12
+<strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/439">#439</a></p>
 <h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
-<p>ADR-117 introduced three IAM managed policies: <code>AppPolicy</code>, <code>AdminPolicy</code>, and <code>ReadOnlyPolicy</code>. The naming implied a separation between "application" and "admin" operations, but this distinction was artificial:</p>
-<ul>
-<li><code>AppPolicy</code> was intended for applications running <code>acquire()</code>, but couldn't create entities (<code>PutItem</code> missing)</li>
-<li><code>AdminPolicy</code> was described as "for ops team managing config"</li>
-</ul>
-<p>In practice, applications that create entities on-demand (e.g., for new users) need <code>AdminPolicy</code>, not <code>AppPolicy</code>. The middle ground of "can create entities but can't set limits" doesn't exist as a real use case.</p>
+<p>GHSA-76rv-2r9v-c5m6 mitigates per-entity DynamoDB hot-partition throttling with pre-shard
+buckets: one entity's bucket writes are spread across <code>shard_count</code> partition keys of the form
+<code>{ns}/BUCKET#{entity}#{resource}#{shard}</code>. The threat model is a <strong>single</strong> hot entity —
+canonically a cascade parent whose 1000+ children each write to it on every acquire
+(<a href="https://github.com/zeroae/zae-limiter/issues/116">#116</a>).</p>
+<p>GHSA-w6c2-33wf-qfwf, the advisory closed by #439, describes the fix as selecting the slow-path
+shard by "a shard computed from the entity/resource hash". The implementation does not do that:
+it draws a shard at random on every call. That divergence has so far lived as an implementation
+note rather than a recorded decision, so a future reader following the advisory literally would
+reintroduce the bug it was meant to close.</p>
+<p>A hash cannot serve this threat model. The entity id is already part of the partition key, so
+distinct entities land on distinct partitions with no sharding at all; the only concentration
+sharding has to fix is the one <em>within</em> a single entity. A hash of (entity, resource) is
+constant for that entity's lifetime, so 100% of the hot parent's writes would still target one
+shard and <code>shard_count &gt; 1</code> would buy nothing in exactly the case the mechanism exists for.</p>
 <h2 id="decision">Decision<a class="headerlink" href="#decision" title="Permanent link">&para;</a></h2>
-<p>Rename policies to reflect their actual purpose:</p>
-<table>
-<thead>
-<tr>
-<th>Old Name</th>
-<th>New Name</th>
-<th>Default Suffix</th>
-<th>Purpose</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>AppPolicy</code></td>
-<td><code>AcquireOnlyPolicy</code></td>
-<td><code>-acq</code></td>
-<td>Minimal: <code>acquire()</code> path only</td>
-</tr>
-<tr>
-<td><code>AdminPolicy</code></td>
-<td><code>FullAccessPolicy</code></td>
-<td><code>-full</code></td>
-<td>All operations</td>
-</tr>
-<tr>
-<td><code>ReadOnlyPolicy</code></td>
-<td><code>ReadOnlyPolicy</code></td>
-<td><code>-read</code></td>
-<td>Read-only monitoring</td>
-</tr>
-</tbody>
-</table>
-<p>Additionally:
-- Add <code>BatchGetItem</code> to <code>ReadOnlyPolicy</code> (it's a read operation)
-- Add <code>Scan</code> and <code>DescribeTable</code> to <code>FullAccessPolicy</code> (true full access)</p>
-<h2 id="permission-matrix">Permission Matrix<a class="headerlink" href="#permission-matrix" title="Permanent link">&para;</a></h2>
-<table>
-<thead>
-<tr>
-<th>Action</th>
-<th style="text-align: center;">ReadOnly</th>
-<th style="text-align: center;">AcquireOnly</th>
-<th style="text-align: center;">FullAccess</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>GetItem</code></td>
-<td style="text-align: center;">✅</td>
-<td style="text-align: center;">✅</td>
-<td style="text-align: center;">✅</td>
-</tr>
-<tr>
-<td><code>BatchGetItem</code></td>
-<td style="text-align: center;">✅</td>
-<td style="text-align: center;">✅</td>
-<td style="text-align: center;">✅</td>
-</tr>
-<tr>
-<td><code>Query</code></td>
-<td style="text-align: center;">✅</td>
-<td style="text-align: center;">✅</td>
-<td style="text-align: center;">✅</td>
-</tr>
-<tr>
-<td><code>Scan</code></td>
-<td style="text-align: center;">✅</td>
-<td style="text-align: center;">❌</td>
-<td style="text-align: center;">✅</td>
-</tr>
-<tr>
-<td><code>DescribeTable</code></td>
-<td style="text-align: center;">✅</td>
-<td style="text-align: center;">❌</td>
-<td style="text-align: center;">✅</td>
-</tr>
-<tr>
-<td><code>TransactWriteItems</code></td>
-<td style="text-align: center;">❌</td>
-<td style="text-align: center;">✅</td>
-<td style="text-align: center;">✅</td>
-</tr>
-<tr>
-<td><code>PutItem</code></td>
-<td style="text-align: center;">❌</td>
-<td style="text-align: center;">❌</td>
-<td style="text-align: center;">✅</td>
-</tr>
-<tr>
-<td><code>UpdateItem</code></td>
-<td style="text-align: center;">❌</td>
-<td style="text-align: center;">❌</td>
-<td style="text-align: center;">✅</td>
-</tr>
-<tr>
-<td><code>DeleteItem</code></td>
-<td style="text-align: center;">❌</td>
-<td style="text-align: center;">❌</td>
-<td style="text-align: center;">✅</td>
-</tr>
-<tr>
-<td><code>BatchWriteItem</code></td>
-<td style="text-align: center;">❌</td>
-<td style="text-align: center;">❌</td>
-<td style="text-align: center;">✅</td>
-</tr>
-</tbody>
-</table>
+<p>Shard selection is <strong>random per call</strong> — <code>random.randrange(shard_count)</code> in
+<code>Repository.select_shard()</code>, the single place a shard is drawn — and is never derived from the
+entity id, the resource, or any other stable key. Because selection is therefore not
+reproducible, the slow path must be <strong>told</strong> which shard the fast path chose rather than
+re-deriving it.</p>
 <h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>
-<p><strong>Positive:</strong>
-- Names set correct expectations (no false promise of "app" vs "admin" split)
-- <code>FullAccessPolicy</code> is truly full access (includes monitoring operations)
-- <code>ReadOnlyPolicy</code> includes all read operations</p>
-<p><strong>Negative:</strong>
-- Breaking change for users referencing old policy names/ARNs
-- CloudFormation export names change (<code>-AppPolicyArn</code> → <code>-AcquireOnlyPolicyArn</code>)</p>
+<p><strong>Positive:</strong></p>
+<ul>
+<li>One hot entity's writes distribute across all of its shards, which is the property the
+  mitigation requires. Cost is unchanged: 1 WCU either way, and no extra round trip.</li>
+<li>Satisfies GHSA-w6c2's actual requirement — slow-path reads and writes land on the same shard
+  as the fast-path attempt — while declining its suggested mechanism. #439 threads the chosen
+  shard through <code>_fetch_entity_and_buckets</code>, the <code>batch_get_*</code> keys, and <code>LeaseEntry</code> into
+  <code>_commit_initial()</code>, so a miss on shard N reads and creates shard N.</li>
+</ul>
+<p><strong>Negative:</strong></p>
+<ul>
+<li>Which shard holds which portion of an entity's budget is unpredictable. Per-shard effective
+  limits are therefore <code>capacity_milli // shard_count</code> and <code>refill_amount_milli // shard_count</code>,
+  so the shares sum to the configured limit whichever shard a caller draws.</li>
+<li>A single request larger than one shard's share is unadmittable on every shard — recorded as
+  the known limitation in ADR-133 and tracked for observability in
+  <a href="https://github.com/zeroae/zae-limiter/issues/475">#475</a>.</li>
+<li>A test that needs a specific shard must pass an explicit <code>shard_id</code>; assuming a given
+  <code>acquire()</code> lands on a particular shard is flaky by construction.</li>
+</ul>
 <h2 id="alternatives-considered">Alternatives Considered<a class="headerlink" href="#alternatives-considered" title="Permanent link">&para;</a></h2>
-<h3 id="keep-old-names-with-updated-documentation">Keep old names with updated documentation<a class="headerlink" href="#keep-old-names-with-updated-documentation" title="Permanent link">&para;</a></h3>
-<p>Rejected because: Names like "AppPolicy" actively mislead users about what the policy permits, regardless of documentation.</p>
-<h3 id="add-a-fourth-policy-tier-for-entity-management">Add a fourth policy tier for entity management<a class="headerlink" href="#add-a-fourth-policy-tier-for-entity-management" title="Permanent link">&para;</a></h3>
-<p>Rejected because: The "can create entities but can't set limits" use case doesn't exist in practice.</p>
+<h3 id="hash-of-entity-resource">Hash of (entity, resource)<a class="headerlink" href="#hash-of-entity-resource" title="Permanent link">&para;</a></h3>
+<p>Rejected because: it is constant for an entity's lifetime, so the hot entity's writes stay on
+one shard and sharding buys nothing for the only case it exists to fix.</p>
+<h3 id="hash-including-a-time-bucket">Hash including a time bucket<a class="headerlink" href="#hash-including-a-time-bucket" title="Permanent link">&para;</a></h3>
+<p>Rejected because: it spreads one entity's writes over time but still serializes all of its
+concurrent writes onto a single shard within each window, which is where throttling occurs.</p>
+<h3 id="round-robin-per-client">Round-robin per client<a class="headerlink" href="#round-robin-per-client" title="Permanent link">&para;</a></h3>
+<p>Rejected because: there is no cross-process coordination, so independent clients degenerate to
+random selection while each carries extra state.</p>
+<h2 id="related">Related<a class="headerlink" href="#related" title="Permanent link">&para;</a></h2>
+<ul>
+<li>GHSA-76rv-2r9v-c5m6 (pre-shard buckets); GHSA-w6c2-33wf-qfwf (slow-path shard reuse)</li>
+<li><a href="../133-client-shard-creation/">ADR-133</a> — client-side shard creation, the mechanism that
+  carries the selected shard through the slow path</li>
+<li><a href="https://github.com/zeroae/zae-limiter/issues/116">#116</a> — hot-partition risk with cascade</li>
+<li><a href="https://github.com/zeroae/zae-limiter/issues/475">#475</a> — observability for the per-shard
+  request ceiling</li>
+</ul>
 
 
 
@@ -3592,7 +3545,7 @@
       <nav class="md-footer__inner md-grid" aria-label="Footer" >
         
           
-          <a href="../117-managed-policies-by-default/" class="md-footer__link md-footer__link--prev" aria-label="Previous: ADR-117 Managed Policies by Default">
+          <a href="../133-client-shard-creation/" class="md-footer__link md-footer__link--prev" aria-label="Previous: ADR-133 Client-Side Shard Creation">
             <div class="md-footer__button md-icon">
               
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
@@ -3602,27 +3555,11 @@
                 Previous
               </span>
               <div class="md-ellipsis">
-                ADR-117 Managed Policies by Default
+                ADR-133 Client-Side Shard Creation
               </div>
             </div>
           </a>
         
-        
-          
-          <a href="../118-four-level-config-hierarchy/" class="md-footer__link md-footer__link--next" aria-label="Next: ADR-118 Four-Level Config Hierarchy">
-            <div class="md-footer__title">
-              <span class="md-footer__direction">
-                Next
-              </span>
-              <div class="md-ellipsis">
-                ADR-118 Four-Level Config Hierarchy
-              </div>
-            </div>
-            <div class="md-footer__button md-icon">
-              
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
-            </div>
-          </a>
         
       </nav>
     

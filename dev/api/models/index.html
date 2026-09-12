@@ -1328,6 +1328,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.Limit.per_shard" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;per_shard
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -1479,6 +1490,39 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;capacity
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.BucketState.effective_capacity_milli" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;effective_capacity_milli
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.BucketState.effective_refill_amount_milli" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;effective_refill_amount_milli
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.BucketState.retry_refill_amount_milli" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;retry_refill_amount_milli
       
     </span>
   </a>
@@ -3998,6 +4042,62 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/133-client-shard-creation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-133 Client-Side Shard Creation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/134-random-shard-selection/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-134 Random Shard Selection
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -4162,6 +4262,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.Limit.per_shard" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;per_shard
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -4313,6 +4424,39 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;capacity
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.BucketState.effective_capacity_milli" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;effective_capacity_milli
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.BucketState.effective_refill_amount_milli" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;effective_refill_amount_milli
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.BucketState.retry_refill_amount_milli" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;retry_refill_amount_milli
       
     </span>
   </a>
@@ -5510,7 +5654,36 @@ temporary spikes above the sustained rate.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Reconstruct a Limit from BucketState fields.</p>
+        <p>Reconstruct a Limit from BucketState fields, as that shard sees it.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="zae_limiter.models.Limit.per_shard" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">per_shard</span>
+
+
+<a href="#zae_limiter.models.Limit.per_shard" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">per_shard</span><span class="p">(</span><span class="n">shard_count</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>This limit as a single shard of <code>shard_count</code> sees it.</p>
+<p>A sharded bucket holds and refills only its share — <code>capacity //
+shard_count</code>, <code>refill_amount // shard_count</code> (GHSA-76rv) — so a
+status reported from one shard has to say so. Reporting the undivided
+config would promise a capacity no shard can serve and, for a request
+larger than the share, a <code>retry_after_seconds</code> that never pays off.</p>
+<p>Shares are floored to one whole token because <code>Limit</code> is whole-token
+and must stay constructible; <code>schema.MAX_SHARD_COUNT</code> bounds how
+small a real share can get. Surfacing an unadmittable request as an
+event or metric is tracked in #475.</p>
 
 
     </div>
@@ -5724,7 +5897,7 @@ inputs. No validation is performed here to avoid performance overhead.</p>
   </span>
 
 <a href="#zae_limiter.models.BucketState" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">BucketState</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">limit_name</span><span class="p">,</span> <span class="n">tokens_milli</span><span class="p">,</span> <span class="n">last_refill_ms</span><span class="p">,</span> <span class="n">capacity_milli</span><span class="p">,</span> <span class="n">refill_amount_milli</span><span class="p">,</span> <span class="n">refill_period_ms</span><span class="p">,</span> <span class="n">total_consumed_milli</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">BucketState</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">limit_name</span><span class="p">,</span> <span class="n">tokens_milli</span><span class="p">,</span> <span class="n">last_refill_ms</span><span class="p">,</span> <span class="n">capacity_milli</span><span class="p">,</span> <span class="n">refill_amount_milli</span><span class="p">,</span> <span class="n">refill_period_ms</span><span class="p">,</span> <span class="n">total_consumed_milli</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_count</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
@@ -5803,6 +5976,86 @@ deserialization and avoid performance overhead on frequent operations.</p>
 
 </div>
 
+<div class="doc doc-object doc-attribute">
+
+
+
+<h4 id="zae_limiter.models.BucketState.effective_capacity_milli" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-attribute"></code>            <span class="doc doc-object-name doc-attribute-name">effective_capacity_milli</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#zae_limiter.models.BucketState.effective_capacity_milli" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">effective_capacity_milli</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>This shard's share of the capacity: <code>capacity_milli // shard_count</code>.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h4 id="zae_limiter.models.BucketState.effective_refill_amount_milli" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-attribute"></code>            <span class="doc doc-object-name doc-attribute-name">effective_refill_amount_milli</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#zae_limiter.models.BucketState.effective_refill_amount_milli" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">effective_refill_amount_milli</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>This shard's share of the refill: <code>refill_amount_milli // shard_count</code>.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h4 id="zae_limiter.models.BucketState.retry_refill_amount_milli" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-attribute"></code>            <span class="doc doc-object-name doc-attribute-name">retry_refill_amount_milli</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#zae_limiter.models.BucketState.retry_refill_amount_milli" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">retry_refill_amount_milli</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Refill rate to use for a "seconds until available" estimate.</p>
+<p><code>effective_refill_amount_milli</code> floors to 0 for a slow refill on a
+heavily sharded bucket (1 token/minute at <code>shard_count=1024</code>), and a
+rate of 0 has no finite wait at all. Fall back to the <em>undivided</em> rate
+rather than raise or invent infinity: the estimate is then optimistic
+by up to <code>shard_count</code>, but it is finite and honest about the rate
+the limit itself refills at, and a retry draws a shard at random — so
+it may well land somewhere that admits. <code>schema.MAX_SHARD_COUNT</code>
+bounds how far apart the two can get.</p>
+
+    </div>
+
+</div>
+
 
 
 
@@ -5818,7 +6071,7 @@ deserialization and avoid performance overhead on frequent operations.</p>
   </span>
 
 <a href="#zae_limiter.models.BucketState.from_limit" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">from_limit</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">limit</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">from_limit</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">limit</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="n">shard_count</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -5907,6 +6160,23 @@ methods) before calling this method.</p>
             </td>
             <td>
                 <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>shard_count</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Shards the bucket is split across; a new shard
+starts at its effective share, <code>capacity // shard_count</code></p>
+              </div>
+            </td>
+            <td>
+                  <code>1</code>
             </td>
           </tr>
       </tbody>

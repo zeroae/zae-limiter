@@ -4191,6 +4191,62 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/133-client-shard-creation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-133 Client-Side Shard Creation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/134-random-shard-selection/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-134 Random Shard Selection
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -11426,7 +11482,7 @@ or entity level.</p>
   </span>
 
 <a href="#zae_limiter.lease.Lease" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">Lease</span><span class="p">(</span><span class="n">repository</span><span class="p">,</span> <span class="n">entries</span><span class="o">=</span><span class="n"><span title="list">list</span></span><span class="p">(),</span> <span class="n">_committed</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">_rolled_back</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">_initial_committed</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">degraded</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">_unknown_keys</span><span class="o">=</span><span class="n"><span title="frozenset">frozenset</span></span><span class="p">())</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">Lease</span><span class="p">(</span><span class="n">repository</span><span class="p">,</span> <span class="n">entries</span><span class="o">=</span><span class="n"><span title="list">list</span></span><span class="p">(),</span> <span class="n">_committed</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">_rolled_back</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">_initial_committed</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">degraded</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">_unknown_keys</span><span class="o">=</span><span class="n"><span title="frozenset">frozenset</span></span><span class="p">(),</span> <span class="n">_carriers</span><span class="o">=</span><span class="n"><span title="list">list</span></span><span class="p">())</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
@@ -11713,7 +11769,7 @@ other keys are reported (Issue #455) and ignored.</p>
   </span>
 
 <a href="#zae_limiter.sync_lease.SyncLease" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">SyncLease</span><span class="p">(</span><span class="n">repository</span><span class="p">,</span> <span class="n">entries</span><span class="o">=</span><span class="n"><span title="list">list</span></span><span class="p">(),</span> <span class="n">_committed</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">_rolled_back</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">_initial_committed</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">degraded</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">_unknown_keys</span><span class="o">=</span><span class="n"><span title="frozenset">frozenset</span></span><span class="p">())</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">SyncLease</span><span class="p">(</span><span class="n">repository</span><span class="p">,</span> <span class="n">entries</span><span class="o">=</span><span class="n"><span title="list">list</span></span><span class="p">(),</span> <span class="n">_committed</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">_rolled_back</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">_initial_committed</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">degraded</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">_unknown_keys</span><span class="o">=</span><span class="n"><span title="frozenset">frozenset</span></span><span class="p">(),</span> <span class="n">_carriers</span><span class="o">=</span><span class="n"><span title="list">list</span></span><span class="p">())</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">

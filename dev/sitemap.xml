@@ -189,6 +189,14 @@
          <lastmod>2026-09-12</lastmod>
     </url>
     <url>
+         <loc>https://zeroae.github.io/zae-limiter/dev/adr/133-client-shard-creation/</loc>
+         <lastmod>2026-09-12</lastmod>
+    </url>
+    <url>
+         <loc>https://zeroae.github.io/zae-limiter/dev/adr/134-random-shard-selection/</loc>
+         <lastmod>2026-09-12</lastmod>
+    </url>
+    <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/api/</loc>
          <lastmod>2026-09-12</lastmod>
     </url>

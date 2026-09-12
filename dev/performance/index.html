@@ -3891,6 +3891,62 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../adr/133-client-shard-creation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-133 Client-Side Shard Creation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../adr/134-random-shard-selection/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-134 Random Shard Selection
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -5132,17 +5188,39 @@ infrastructure limit tracks per-partition write pressure.</p>
 <li>Every bucket starts with <code>shard_count=1</code> (shard 0)</li>
 <li>An internal <code>wcu</code> limit (capacity: 1000 millitokens) is auto-injected on every bucket</li>
 <li>When <code>wcu</code> is exhausted on a speculative write, the client doubles <code>shard_count</code> via a
-   conditional write on shard 0 (source of truth)</li>
-<li>The Lambda aggregator proactively doubles shards at &gt;=80% wcu capacity before clients
-   experience throttling</li>
+   conditional write on shard 0 (source of truth) and moves to one of the new shards</li>
+<li>The client creates the new shard's bucket item itself on its next slow-path acquire,
+   with <code>capacity / shard_count</code> tokens — the aggregator is <strong>not</strong> required for
+   sharding to engage (ADR-133)</li>
+<li>The Lambda aggregator, when deployed, proactively doubles shards at &gt;=80% wcu capacity
+   and pre-creates the new shard items so clients skip that one-time slow path</li>
 <li>Shard count changes on shard 0 are propagated to all other shards by the aggregator</li>
 <li>Clients pick a random shard from the entity cache: <code>random.randrange(shard_count)</code></li>
 <li>If application limits are exhausted on one shard but the entity has multiple shards,
-   the client retries on up to 2 other randomly chosen shards</li>
+   the client retries on up to 2 other randomly chosen shards, creating any it finds
+   missing</li>
 </ol>
-<p><strong>Shard-aware capacity:</strong> The aggregator divides effective capacity and refill amount
-by <code>shard_count</code> when computing refills, so each shard receives its proportional share
-of tokens.</p>
+<p><strong>Shard-aware capacity:</strong> The aggregator's refill, the client's slow-path refill and the
+client's shard creation all divide capacity and refill amount by <code>shard_count</code>, so each
+shard holds its proportional share and the entity admits at most its configured capacity
+per refill window in steady state. Shard 0 keeps its existing balance when <code>shard_count</code>
+doubles, so admitted capacity can transiently reach 1.5x for one refill window after the
+first doubling; it is never refilled above its new share.</p>
+<p><strong>Works without the aggregator:</strong> Deployments using <code>--no-aggregator</code> get the same
+write-sharding behaviour; the only difference is that each new shard costs one slow-path
+acquire (about 2.5 RCU + 2 WCU) to create, once, instead of being pre-created from the
+stream.</p>
+<p><strong>Known limitation — a single request cannot exceed <code>capacity // shard_count</code>.</strong> No shard ever
+holds more than its share, so once a bucket has sharded, a request larger than one share is
+rejected on <em>every</em> shard even while the entity is well under its configured limit. For
+example, an entity limited to <code>rpm:1000</code> that has doubled to 4 shards admits at most 250 per
+call. <code>RateLimitExceeded</code> reports the per-shard capacity and refill rather than the undivided
+configuration, so the status is honest about what the shard can hold, and <code>MAX_SHARD_COUNT</code>
+(32) bounds how small a share can get. If your workload issues single requests of comparable
+size to a limit's capacity (large <code>tpm</code> estimates, most commonly), either raise the limit or
+keep the entity unsharded by lowering its write rate. Surfacing this occurrence as an event
+or CloudWatch metric is tracked in
+<a href="https://github.com/zeroae/zae-limiter/issues/475">#475</a>.</p>
 <p><strong>No application code changes required.</strong> Pre-shard buckets are transparent to users.
 The <code>wcu</code> limit is filtered from all user-facing output (bucket states, exceptions,
 usage snapshots).</p>

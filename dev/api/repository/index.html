@@ -1681,6 +1681,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.repository.Repository.select_shard" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;select_shard
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.repository.Repository.bump_shard_count" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2456,6 +2467,17 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;batch_get_entity_and_buckets
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.repository_protocol.RepositoryProtocol.select_shard" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;select_shard
       
     </span>
   </a>
@@ -4890,6 +4912,62 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/133-client-shard-creation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-133 Client-Side Shard Creation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/134-random-shard-selection/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-134 Random Shard Selection
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -5428,6 +5506,17 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;speculative_consume
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.repository.Repository.select_shard" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;select_shard
       
     </span>
   </a>
@@ -6210,6 +6299,17 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;batch_get_entity_and_buckets
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.repository_protocol.RepositoryProtocol.select_shard" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;select_shard
       
     </span>
   </a>
@@ -9107,11 +9207,13 @@ keyed by (entity_id, resource, limit_name) for backward compatibility.</p>
                 <code>keys</code>
             </td>
             <td>
-                  <code><span title="list">list</span>[<span title="tuple">tuple</span>[<span title="str">str</span>, <span title="str">str</span>]]</code>
+                  <code><span title="list">list</span>[<span title="tuple">tuple</span>[<span title="str">str</span>, <span title="str">str</span>, <span title="int">int</span>]]</code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>List of (entity_id, resource) tuples. Uses shard_id=0.</p>
+                <p>List of (entity_id, resource, shard_id) tuples. The shard
+is the one the acquire selected (issue #439); it is never
+assumed to be 0.</p>
               </div>
             </td>
             <td>
@@ -9193,7 +9295,7 @@ For larger batches, this method automatically chunks the requests.</p>
     <div class="doc doc-contents ">
 
         <p>Fetch entity metadata and composite buckets in a single BatchGetItem.</p>
-<p>With composite items, each (entity_id, resource) pair is a single
+<p>With composite items, each (entity_id, resource, shard) is a single
 DynamoDB item. Includes the entity's #META record alongside bucket
 records to avoid a separate get_entity() round trip.</p>
 
@@ -9230,11 +9332,12 @@ records to avoid a separate get_entity() round trip.</p>
                 <code>bucket_keys</code>
             </td>
             <td>
-                  <code><span title="list">list</span>[<span title="tuple">tuple</span>[<span title="str">str</span>, <span title="str">str</span>]]</code>
+                  <code><span title="list">list</span>[<span title="tuple">tuple</span>[<span title="str">str</span>, <span title="str">str</span>, <span title="int">int</span>]]</code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>List of (entity_id, resource) for composite buckets</p>
+                <p>List of (entity_id, resource, shard_id) for composite
+buckets — the shard the acquire selected (issue #439)</p>
               </div>
             </td>
             <td>
@@ -10268,6 +10371,148 @@ cascade logic). None means auto-select from entity cache.</p>
 <div class="doc doc-object doc-function">
 
 
+<h4 id="zae_limiter.repository.Repository.select_shard" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">select_shard</span>
+
+
+<a href="#zae_limiter.repository.Repository.select_shard" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">select_shard</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_count</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Pick the bucket shard an acquire should target (GHSA-76rv, issue #439).</p>
+<p>This is the only place a shard is drawn. The speculative fast path
+draws here, and the slow path reuses whatever shard the fast path
+already selected (passing it back as <code>shard_id</code>) so a
+<code>BUCKET_MISSING</code> on shard N reads and creates shard N — never a
+second random draw that lands on shard 0 again.</p>
+<p>Selection is <code>random.randrange(shard_count)</code> from the cached
+shard_count, not a hash of the entity id: every call re-picks, which
+is what spreads one hot entity's writes across all of its shards.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>entity_id</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Entity owning the bucket.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>resource</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Resource name.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>shard_id</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Explicit shard to honour verbatim, or None to draw one.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>shard_count</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Count observed by the caller (e.g. on a speculative
+failure image, which never updates the cache); None reads
+the entity cache.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(shard_id, shard_count)</code> with shard_count from the argument or</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>the entity cache (1 when unknown).</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
 <h4 id="zae_limiter.repository.Repository.bump_shard_count" class="doc doc-heading">
 <code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">bump_shard_count</span>
 
@@ -10367,7 +10612,7 @@ entity cache with the new shard_count.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The new shard_count (doubled), or the current value if another</p>
+                <p>The new shard_count (doubled), or — if another client already</p>
               </div>
             </td>
           </tr>
@@ -10377,7 +10622,37 @@ entity cache with the new shard_count.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>client already doubled (ConditionalCheckFailedException).</p>
+                <p>doubled (ConditionalCheckFailedException) — the winner's count</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>read from the failed write's ALL_OLD image, so the loser draws</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>from the new shard range instead of caching its stale count and</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>landing back on the exhausted shard (issue #439).</p>
               </div>
             </td>
           </tr>
@@ -14668,11 +14943,13 @@ set to the limit's capacity.</p>
                 <code>keys</code>
             </td>
             <td>
-                  <code><span title="list">list</span>[<span title="tuple">tuple</span>[<span title="str">str</span>, <span title="str">str</span>]]</code>
+                  <code><span title="list">list</span>[<span title="tuple">tuple</span>[<span title="str">str</span>, <span title="str">str</span>, <span title="int">int</span>]]</code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>List of (entity_id, resource) tuples</p>
+                <p>List of (entity_id, resource, shard_id) tuples. The shard
+is part of a bucket item's identity (GHSA-76rv); callers pass
+the shard the acquire selected rather than assuming shard 0.</p>
               </div>
             </td>
             <td>
@@ -14767,11 +15044,12 @@ set to the limit's capacity.</p>
                 <code>bucket_keys</code>
             </td>
             <td>
-                  <code><span title="list">list</span>[<span title="tuple">tuple</span>[<span title="str">str</span>, <span title="str">str</span>]]</code>
+                  <code><span title="list">list</span>[<span title="tuple">tuple</span>[<span title="str">str</span>, <span title="str">str</span>, <span title="int">int</span>]]</code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>List of (entity_id, resource) for composite buckets</p>
+                <p>List of (entity_id, resource, shard_id) for composite
+buckets</p>
               </div>
             </td>
             <td>
@@ -14808,6 +15086,140 @@ set to the limit's capacity.</p>
             <td>
               <div class="doc-md-description">
                 <p>Tuple of (entity_or_none, bucket_dict).</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="zae_limiter.repository_protocol.RepositoryProtocol.select_shard" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">select_shard</span>
+
+
+<a href="#zae_limiter.repository_protocol.RepositoryProtocol.select_shard" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">select_shard</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_count</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Pick the bucket shard an acquire should target (GHSA-76rv, issue #439).</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>entity_id</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Entity owning the bucket</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>resource</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Resource name</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>shard_id</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Explicit shard to honour verbatim, or None to draw one
+at random from the shard_count</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>shard_count</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Count the caller observed (a speculative failure
+image), or None to read the entity cache</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Tuple of (shard_id, shard_count) where shard_count is the given</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>or cached value for this (entity, resource), defaulting to 1.</p>
               </div>
             </td>
           </tr>
