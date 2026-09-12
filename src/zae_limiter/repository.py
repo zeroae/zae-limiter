@@ -2464,6 +2464,13 @@ class Repository:
             if cascade_cached and parent_id_cached:
                 child_result: SpeculativeResult
                 parent_result: SpeculativeResult
+                # The parent shards independently of the child (issue #474):
+                # its shard comes from the parent's own cached shard_count.
+                # Defaulting to shard 0 kept every warm-path cascade write on
+                # parent shard 0 — the unmitigated hot partition write
+                # sharding exists to protect (GHSA-76rv, issue #116) — and
+                # disagreed with the slow path, which draws from that count.
+                parent_shard_id, _parent_count = self.select_shard(parent_id_cached, resource)
                 child_result, parent_result = await asyncio.gather(
                     self._speculative_consume_single(
                         entity_id,
@@ -2473,9 +2480,27 @@ class Repository:
                         shard_id=effective_shard_id,
                     ),
                     self._speculative_consume_single(
-                        parent_id_cached, resource, consume, ttl_seconds
+                        parent_id_cached,
+                        resource,
+                        consume,
+                        ttl_seconds,
+                        shard_id=parent_shard_id,
                     ),
                 )
+                if parent_result.success:
+                    # A failure learns inside _speculative_consume_single; a
+                    # success must too, or the parent's cached count never
+                    # grows and every later draw lands back on shard 0.
+                    #
+                    # No `meta`: the parent's shard N>0 was most likely created
+                    # by a *child's* cascade slow path, which denormalizes only
+                    # the acquiring entity's own flags and so stamps the parent
+                    # cascade=False / parent_id=None. Passing that as meta
+                    # would downgrade the parent's cache entry, and the next
+                    # acquire(parent) would silently stop debiting the
+                    # grandparent (the cache has no TTL). Without meta this
+                    # still grows the count on an entry that already exists.
+                    self._learn_shard_count(parent_id_cached, resource, parent_result.shard_count)
                 if child_result.success:
                     self._learn_shard_count(
                         entity_id,

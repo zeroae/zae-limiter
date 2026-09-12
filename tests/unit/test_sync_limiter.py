@@ -6085,6 +6085,446 @@ class TestClientShardCreation:
         assert next(b for b in parent if b.limit_name == "rpm").tokens_milli == 98000
 
 
+class TestCascadeParentSharding:
+    """The parallel cascade fast path must shard the parent too (issue #474).
+
+    ``speculative_consume`` drew the child's shard from the entity cache but
+    called the parent's ``_speculative_consume_single`` with the default
+    ``shard_id=0``. A high-fanout cascade parent — the exact case write
+    sharding exists to protect (GHSA-76rv, issue #116) — therefore kept every
+    warm-path write on parent shard 0 no matter how far its ``shard_count``
+    had been doubled, while the slow path (#466) drew the parent's shard from
+    its cached count: the two paths disagreed about which parent shard holds
+    the tokens.
+    """
+
+    CAPACITY = 100000
+
+    @staticmethod
+    def _n(item: dict, limit_name: str, field: str) -> int:
+        from zae_limiter import schema
+
+        return int(item[schema.bucket_attr(limit_name, field)]["N"])
+
+    @staticmethod
+    def _raw_item(repo, entity_id: str, shard_id: int) -> dict | None:
+        from zae_limiter import schema
+
+        client = repo._get_client()
+        resp = client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, "gpt-4", shard_id)},
+                "SK": {"S": schema.sk_state()},
+            },
+        )
+        return resp.get("Item")
+
+    @staticmethod
+    def _slow_wcu_refill(repo, entity_id: str, shard_id: int) -> None:
+        """Model sustained pressure: this shard's wcu refills once an hour, so
+        a drained wcu is a hot partition rather than a stale balance."""
+        from zae_limiter import schema
+
+        client = repo._get_client()
+        client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, "gpt-4", shard_id)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="SET #rp = :hour, #ra = :one",
+            ExpressionAttributeNames={
+                "#rp": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_RP),
+                "#ra": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_RA),
+            },
+            ExpressionAttributeValues={":hour": {"N": "3600000"}, ":one": {"N": "1"}},
+        )
+
+    @staticmethod
+    def _drain_wcu(repo, entity_id: str, shard_id: int) -> None:
+        """Zero this shard's wcu and slow its refill to once an hour.
+
+        A drained balance that refill cannot restore is what the client reads
+        as a hot partition (ADR-133); the stock 1000/s rate would restore a
+        write on any elapsed millisecond. ``rf`` is shared by every limit on
+        the item, so pinning it to now also freezes the app limits.
+        """
+        from zae_limiter import schema
+
+        client = repo._get_client()
+        client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, "gpt-4", shard_id)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="SET #wcu = :zero, #rf = :rf, #ra = :one, #rp = :hour",
+            ExpressionAttributeNames={
+                "#wcu": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK),
+                "#rf": schema.BUCKET_FIELD_RF,
+                "#ra": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_RA),
+                "#rp": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_RP),
+            },
+            ExpressionAttributeValues={
+                ":zero": {"N": "0"},
+                ":rf": {"N": str(int(time.time() * 1000))},
+                ":one": {"N": "1"},
+                ":hour": {"N": "3600000"},
+            },
+        )
+
+    def _seed(
+        self,
+        sync_limiter,
+        limit,
+        *,
+        parent_shard_count: int,
+        parent_shards=(0,),
+        parent_tokens_milli: int | None = None,
+        parent_rf_ms: int | None = None,
+    ):
+        """Child on a single shard; parent with ``parent_shard_count`` shards.
+
+        Only ``parent_shards`` exist as items, so a draw onto another one is a
+        ``BUCKET_MISSING`` the slow path has to create. The child's cache entry
+        is warm, which is what selects the parallel cascade path.
+        """
+        repo = sync_limiter._repository
+        ns = repo._namespace_id
+        now_ms = int(time.time() * 1000)
+        rf_ms = parent_rf_ms if parent_rf_ms is not None else now_ms
+        sync_limiter.create_entity("parent-1")
+        sync_limiter.create_entity("user-1", parent_id="parent-1", cascade=True)
+        sync_limiter.set_system_defaults([limit])
+        for shard_id in parent_shards:
+            state = BucketState.from_limit("parent-1", "gpt-4", limit, rf_ms, parent_shard_count)
+            if parent_tokens_milli is not None:
+                state.tokens_milli = parent_tokens_milli
+            repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        "parent-1",
+                        "gpt-4",
+                        [state],
+                        rf_ms,
+                        shard_id=shard_id,
+                        shard_count=parent_shard_count,
+                    )
+                ]
+            )
+        child = BucketState.from_limit("user-1", "gpt-4", limit, now_ms)
+        repo.transact_write(
+            [
+                repo.build_composite_create(
+                    "user-1", "gpt-4", [child], now_ms, cascade=True, parent_id="parent-1"
+                )
+            ]
+        )
+        repo._entity_cache[ns, "user-1"] = (True, "parent-1", {"gpt-4": 1})
+        repo._entity_cache[ns, "parent-1"] = (False, None, {"gpt-4": parent_shard_count})
+        sync_limiter._speculative_writes = True
+        return repo
+
+    def test_parallel_cascade_debits_the_parents_own_shard(self, sync_limiter):
+        """The parent's shard comes from the parent's cached shard_count, drawn
+        exactly once — not from the child's, and never hardcoded to 0."""
+        from zae_limiter import schema
+
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        repo = self._seed(sync_limiter, limit, parent_shard_count=4, parent_shards=range(4))
+        share = self.CAPACITY * 1000 // 4
+        with patch("zae_limiter.sync_repository.random.randrange", side_effect=[3]):
+            with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+                parent_entry = next(e for e in lease.entries if e.entity_id == "parent-1")
+                assert parent_entry._shard_id == 3
+        item3 = self._raw_item(repo, "parent-1", 3)
+        assert self._n(item3, "rpm", schema.BUCKET_FIELD_TK) == share - 1000
+        item0 = self._raw_item(repo, "parent-1", 0)
+        assert self._n(item0, "rpm", schema.BUCKET_FIELD_TK) == share, (
+            "parent shard 0 must not absorb every cascade write"
+        )
+
+    def test_parallel_cascade_spreads_the_parent_across_its_shards(self, sync_limiter):
+        """Unpatched, repeated cascade acquires must reach more than one parent
+        shard: shard 0 alone is the hot partition sharding exists to avoid."""
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        repo = self._seed(sync_limiter, limit, parent_shard_count=4, parent_shards=range(4))
+        parent_shards: set[int] = set()
+        original = repo._speculative_consume_single
+
+        def spy(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
+            if entity_id == "parent-1":
+                parent_shards.add(shard_id)
+            return original(entity_id, resource, consume, ttl_seconds, shard_id=shard_id)
+
+        repo._speculative_consume_single = spy
+        for _ in range(24):
+            with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+                pass
+        assert parent_shards <= {0, 1, 2, 3}
+        assert len(parent_shards) > 1, "every parent write landed on one shard"
+
+    def test_compensation_credits_the_parent_shard_that_was_debited(self, sync_limiter):
+        """The child fails while the parent's parallel debit succeeded: the
+        compensating credit must go back to the parent shard that was debited."""
+        from zae_limiter import schema
+
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        repo = self._seed(sync_limiter, limit, parent_shard_count=4, parent_shards=range(4))
+        repo._speculative_consume_single("user-1", "gpt-4", {"rpm": self.CAPACITY}, shard_id=0)
+        share = self.CAPACITY * 1000 // 4
+        with patch("zae_limiter.sync_repository.random.randrange", side_effect=[2]):
+            with pytest.raises(RateLimitExceeded):
+                with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+                    pass
+        shard2 = self._raw_item(repo, "parent-1", 2)
+        assert self._n(shard2, "rpm", schema.BUCKET_FIELD_TK) == share
+        assert (
+            self._n(shard2, schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK)
+            == (schema.WCU_LIMIT_CAPACITY - 1) * 1000
+        )
+        shard0 = self._raw_item(repo, "parent-1", 0)
+        assert (
+            self._n(shard0, schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK)
+            == schema.WCU_LIMIT_CAPACITY * 1000
+        )
+
+    def test_parent_only_fallback_reuses_the_drawn_parent_shard(self, sync_limiter):
+        """The "refill would help" decision was made on the ALL_OLD image of
+        the parent shard the parallel write hit; the parent-only slow path must
+        read and debit that same shard rather than draw a new one."""
+        from zae_limiter import schema
+
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=3600, refill_period_seconds=3600)
+        now_ms = int(time.time() * 1000)
+        repo = self._seed(
+            sync_limiter,
+            limit,
+            parent_shard_count=4,
+            parent_shards=range(4),
+            parent_tokens_milli=0,
+            parent_rf_ms=now_ms - 100000,
+        )
+        parent_reads: list[int] = []
+        original_fetch = sync_limiter._fetch_buckets
+
+        def spy(entity_ids, resource, shard_id):
+            if "parent-1" in entity_ids:
+                parent_reads.append(shard_id)
+            return original_fetch(entity_ids, resource, shard_id)
+
+        sync_limiter._fetch_buckets = spy
+        with patch("zae_limiter.sync_repository.random.randrange", side_effect=[2]):
+            with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 10}) as lease:
+                parent_entry = next(e for e in lease.entries if e.entity_id == "parent-1")
+                assert parent_entry._shard_id == 2
+        assert parent_reads == [2]
+        item2 = self._raw_item(repo, "parent-1", 2)
+        assert self._n(item2, "rpm", schema.BUCKET_FIELD_TK) > 0
+        item0 = self._raw_item(repo, "parent-1", 0)
+        assert self._n(item0, "rpm", schema.BUCKET_FIELD_TK) == 0, (
+            "a parent shard the fast path never judged must not be written"
+        )
+
+    def test_learning_the_parent_keeps_its_cascade_metadata(self, sync_limiter):
+        """Growing the parent's shard_count must not rewrite its cascade
+        metadata. A parent shard created by a *child's* cascade slow path is
+        stamped ``cascade=False, parent_id=None`` (`_do_acquire` only
+        denormalizes the acquiring entity's own flags), so learning
+        ``meta`` from such an item downgrades the parent's cache entry and the
+        next ``acquire(parent)`` silently stops debiting the grandparent for
+        the life of the process — ``_entity_cache`` has no TTL."""
+        from zae_limiter import schema
+
+        repo = sync_limiter._repository
+        ns = repo._namespace_id
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        sync_limiter.create_entity("grandparent-1")
+        sync_limiter.create_entity("parent-1", parent_id="grandparent-1", cascade=True)
+        sync_limiter.create_entity("user-1", parent_id="parent-1", cascade=True)
+        sync_limiter.set_system_defaults([limit])
+        sync_limiter._speculative_writes = True
+        with sync_limiter.acquire("parent-1", "gpt-4", {"rpm": 1}):
+            pass
+        assert repo._entity_cache[ns, "parent-1"][:2] == (True, "grandparent-1")
+        with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+            pass
+        now_ms = int(time.time() * 1000)
+        state = BucketState.from_limit("parent-1", "gpt-4", limit, now_ms, 2)
+        repo.transact_write(
+            [
+                repo.build_composite_create(
+                    "parent-1", "gpt-4", [state], now_ms, shard_id=1, shard_count=2
+                )
+            ]
+        )
+        repo._entity_cache[ns, "parent-1"] = (True, "grandparent-1", {"gpt-4": 2})
+        with patch("zae_limiter.sync_repository.random.randrange", return_value=1):
+            with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+                pass
+            assert repo._entity_cache[ns, "parent-1"][:2] == (True, "grandparent-1"), (
+                "a bucket item must not rewrite the parent's cascade metadata"
+            )
+            before = self._n(
+                self._raw_item(repo, "grandparent-1", 0), "rpm", schema.BUCKET_FIELD_TK
+            )
+            with sync_limiter.acquire("parent-1", "gpt-4", {"rpm": 1}) as lease:
+                assert "grandparent-1" in {e.entity_id for e in lease.entries}
+        after = self._n(self._raw_item(repo, "grandparent-1", 0), "rpm", schema.BUCKET_FIELD_TK)
+        assert after == before - 1000, "the grandparent must still be debited"
+
+    def test_exhausted_parent_shard_does_not_pin_the_slow_path(self, sync_limiter):
+        """An exhausted parent shard must not be handed to the slow path. Each
+        shard holds its own share and ADR-134 re-picks on every call, so
+        re-drawing can admit where the drawn shard could not — pinning turns a
+        recoverable cascade into a rejection (here: 3 of the parent's 4 shards
+        are full)."""
+        from zae_limiter import schema
+
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=3600, refill_period_seconds=3600)
+        now_ms = int(time.time() * 1000)
+        repo = self._seed(sync_limiter, limit, parent_shard_count=4, parent_shards=range(4))
+        ns = repo._namespace_id
+        client = repo._get_client()
+        client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(ns, "parent-1", "gpt-4", 2)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="SET #tk = :zero, #rf = :now",
+            ExpressionAttributeNames={
+                "#tk": schema.bucket_attr("rpm", schema.BUCKET_FIELD_TK),
+                "#rf": schema.BUCKET_FIELD_RF,
+            },
+            ExpressionAttributeValues={":zero": {"N": "0"}, ":now": {"N": str(now_ms)}},
+        )
+        client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(ns, "user-1", "gpt-4", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="SET #tk = :zero, #rf = :then",
+            ExpressionAttributeNames={
+                "#tk": schema.bucket_attr("rpm", schema.BUCKET_FIELD_TK),
+                "#rf": schema.BUCKET_FIELD_RF,
+            },
+            ExpressionAttributeValues={":zero": {"N": "0"}, ":then": {"N": str(now_ms - 100000)}},
+        )
+        with patch("zae_limiter.sync_repository.random.randrange", side_effect=[2, 1]):
+            with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+                parent_entry = next(e for e in lease.entries if e.entity_id == "parent-1")
+                assert parent_entry._shard_id == 1
+        drained = self._raw_item(repo, "parent-1", 2)
+        assert self._n(drained, "rpm", schema.BUCKET_FIELD_TK) == 0, (
+            "the drained shard must not be debited further"
+        )
+
+    def test_missing_parent_shard_is_still_created_where_it_was_sought(self, sync_limiter):
+        """The one reason that does pin the slow path: a parent shard the fast
+        path found missing must be created there, not re-drawn. Guards the
+        narrowing above — the patched draw raises StopIteration on a re-draw."""
+        from zae_limiter import schema
+
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        repo = self._seed(sync_limiter, limit, parent_shard_count=4)
+        with patch("zae_limiter.sync_repository.random.randrange", side_effect=[2]):
+            with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+                parent_entry = next(e for e in lease.entries if e.entity_id == "parent-1")
+                assert parent_entry._shard_id == 2
+        shard2 = self._raw_item(repo, "parent-1", 2)
+        assert shard2 is not None, "the missing parent shard must be created where it was sought"
+        assert shard2["shard_count"]["N"] == "4"
+        assert self._n(shard2, "rpm", schema.BUCKET_FIELD_TK) == self.CAPACITY * 1000 // 4 - 1000
+
+    def test_cold_cache_cascade_spreads_the_parent_too(self, sync_limiter):
+        """The sequential (cache-miss) cascade branch must handle a parent
+        failure exactly like the warm parallel path: the first acquire of an
+        entity is just as capable of finding the parent's shard hot, and left
+        to itself it kept writing to the hot partition forever."""
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        repo = self._seed(sync_limiter, limit, parent_shard_count=1)
+        ns = repo._namespace_id
+        self._drain_wcu(repo, "parent-1", 0)
+        del repo._entity_cache[ns, "user-1"]
+        with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+            parent_entry = next(e for e in lease.entries if e.entity_id == "parent-1")
+            assert parent_entry._shard_id == 1
+        assert repo._entity_cache[ns, "parent-1"][2]["gpt-4"] == 2
+        shard1 = self._raw_item(repo, "parent-1", 1)
+        assert shard1 is not None, "a cold-cache cascade must spread a hot parent too"
+        assert shard1["shard_count"]["N"] == "2"
+
+    def test_parent_doubling_skips_the_futile_parent_only_attempt(self, sync_limiter):
+        """A doubling hands back a shard from `range(old, new)`, which by
+        construction does not exist yet, so a parent-only attempt could only
+        resolve limits, BatchGet a miss and return None before the caller falls
+        through to the full slow path anyway. Skip it."""
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        repo = self._seed(sync_limiter, limit, parent_shard_count=1)
+        self._drain_wcu(repo, "parent-1", 0)
+        parent_only_shards: list[int] = []
+        original = sync_limiter._try_parent_only_acquire
+
+        def spy(parent_id, resource, consume, child_entries, parent_shard, parent_count):
+            parent_only_shards.append(parent_shard)
+            return original(parent_id, resource, consume, child_entries, parent_shard, parent_count)
+
+        sync_limiter._try_parent_only_acquire = spy
+        with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+            parent_entry = next(e for e in lease.entries if e.entity_id == "parent-1")
+            assert parent_entry._shard_id == 1
+        assert parent_only_shards == [], "a shard the doubling just added cannot exist yet"
+        assert self._raw_item(repo, "parent-1", 1) is not None
+
+    def test_rejected_cascade_never_doubles_the_parent(self, sync_limiter):
+        """A doubling on the way to a rejection is a pure side effect: nothing
+        creates or reads the shard it hands back. Repeating it once per
+        rejection walks a parent sitting at its limit from 1 to
+        MAX_SHARD_COUNT (``_learn_shard_count`` is monotonic, nothing shrinks
+        it), and every shard's share is then `capacity // 32` forever — the
+        "an exhausted shard must not drive doubling forever" failure ADR-133's
+        cap is meant to prevent, which the cap only guards for the
+        wcu-would-refill case."""
+        from zae_limiter import schema
+
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        repo = self._seed(sync_limiter, limit, parent_shard_count=1, parent_tokens_milli=0)
+        ns = repo._namespace_id
+        self._drain_wcu(repo, "parent-1", 0)
+        for _ in range(3):
+            with pytest.raises(RateLimitExceeded):
+                with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+                    pass
+        assert repo._entity_cache[ns, "parent-1"][2]["gpt-4"] == 1
+        item = self._raw_item(repo, "parent-1", 0)
+        assert item["shard_count"]["N"] == "1", "a rejected acquire must not shard the parent"
+        assert self._n(item, schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK) == 0
+
+    def test_parent_wcu_exhaustion_doubles_the_parents_shard_count(self, sync_limiter):
+        """A hot cascade parent must spread: the parent's own wcu exhaustion
+        doubles the parent's shard_count and routes the fallback to one of the
+        shards the doubling added, which the slow path then creates."""
+        from zae_limiter import schema
+
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        repo = self._seed(sync_limiter, limit, parent_shard_count=1)
+        ns = repo._namespace_id
+        self._slow_wcu_refill(repo, "parent-1", 0)
+        for _ in range(schema.WCU_LIMIT_CAPACITY):
+            repo._speculative_consume_single("parent-1", "gpt-4", {"rpm": 1}, shard_id=0)
+        with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+            parent_entry = next(e for e in lease.entries if e.entity_id == "parent-1")
+            assert parent_entry._shard_id == 1
+        assert repo._entity_cache[ns, "parent-1"][2]["gpt-4"] == 2
+        shard1 = self._raw_item(repo, "parent-1", 1)
+        assert shard1 is not None, "the parent must spread off its hot shard"
+        assert shard1["shard_count"]["N"] == "2"
+        assert self._n(shard1, "rpm", schema.BUCKET_FIELD_TK) == self.CAPACITY * 1000 // 2 - 1000
+
+
 class TestWcuHiddenFromUser:
     """Tests that wcu infrastructure limit is hidden from user-facing output."""
 
