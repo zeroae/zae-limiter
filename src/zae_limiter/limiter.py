@@ -928,49 +928,17 @@ class RateLimiter:
                         )
                     )
             else:
-                # Disabled wins over every other classification: no refill
-                # reasoning or slow-path fallback can help (ADR-125). The
-                # child's speculatively consumed tokens must be returned
-                # before the exception propagates.
-                if parent_result.failure_reason == SpeculativeFailureReason.DISABLED:
-                    await self._compensate_child(entity_id, resource, consume, result.shard_id)
-                    raise ResourceDisabled(entity_id=parent_id, resource=resource, level="bucket")
-
-                if parent_result.old_buckets is None:
-                    await self._compensate_child(entity_id, resource, consume, result.shard_id)
-                    return None, result.shard_id, result.shard_count, parent_result.shard_id
-
-                parent_names = {b.limit_name for b in parent_result.old_buckets}
-                if not all(name in parent_names for name in consume):
-                    await self._compensate_child(entity_id, resource, consume, result.shard_id)
-                    return None, result.shard_id, result.shard_count, None
-
-                would_help, parent_statuses = would_refill_satisfy(
-                    parent_result.old_buckets, consume, now_ms
+                # Identical handling to the warm parallel path, which is what
+                # `_handle_nested_parent_failure` is: the first acquire of an
+                # entity is just as able to find the parent's shard missing or
+                # hot, and it must spread, hint and compensate the same way
+                # (issue #474). The nested result is the contract that handler
+                # reads, so hand the sequential one over on the same field.
+                result.parent_result = parent_result
+                nested, parent_hint = await self._handle_nested_parent_failure(
+                    entity_id, resource, consume, result, now_ms
                 )
-                if not would_help:
-                    await self._compensate_child(entity_id, resource, consume, result.shard_id)
-                    child_statuses = declared_statuses(result.buckets, consume, now_ms)
-                    raise RateLimitExceeded(child_statuses + parent_statuses)
-
-                try:
-                    parent_lease = await self._try_parent_only_acquire(
-                        parent_id,
-                        resource,
-                        consume,
-                        entries,
-                        parent_result.shard_id,
-                        parent_result.shard_count,
-                    )
-                except Exception:
-                    await self._compensate_child(entity_id, resource, consume, result.shard_id)
-                    raise
-
-                if parent_lease is not None:
-                    return parent_lease, result.shard_id, result.shard_count, None
-
-                await self._compensate_child(entity_id, resource, consume, result.shard_id)
-                return None, result.shard_id, result.shard_count, None
+                return nested, result.shard_id, result.shard_count, parent_hint
 
         # Build pre-committed lease
         lease = Lease(

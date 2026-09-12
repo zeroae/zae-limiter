@@ -964,11 +964,15 @@ class TestCascadeParentSharding:
         await limiter.set_system_defaults([limit])
 
         # The first acquire creates both shard 0 items (slow path); the second
-        # is the parallel cascade path, which teaches both caches shard_count=1.
+        # takes the parallel cascade path. The parent has no cache entry of its
+        # own yet — a successful parent write deliberately does not seed one
+        # (its bucket item's denormalized cascade flags belong to whoever
+        # created the shard), so its count is learned from the first failure
+        # image instead. Until then every draw is shard 0, its real count.
         for _ in range(2):
             async with limiter.acquire(child_id, "gpt-4", {"rpm": 1}):
                 pass
-        assert repo._entity_cache[(ns, parent_id)][2]["gpt-4"] == 1
+        assert await self._raw_item(repo, parent_id, 0) is not None
 
         # The parent's shard 0 is now the hot partition; the child's is fine.
         await self._set_wcu(repo, parent_id, 0, tk=0, ra=1, rp=3_600_000)

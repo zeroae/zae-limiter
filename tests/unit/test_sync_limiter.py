@@ -6439,6 +6439,24 @@ class TestCascadeParentSharding:
         assert shard2["shard_count"]["N"] == "4"
         assert self._n(shard2, "rpm", schema.BUCKET_FIELD_TK) == self.CAPACITY * 1000 // 4 - 1000
 
+    def test_cold_cache_cascade_spreads_the_parent_too(self, sync_limiter):
+        """The sequential (cache-miss) cascade branch must handle a parent
+        failure exactly like the warm parallel path: the first acquire of an
+        entity is just as capable of finding the parent's shard hot, and left
+        to itself it kept writing to the hot partition forever."""
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        repo = self._seed(sync_limiter, limit, parent_shard_count=1)
+        ns = repo._namespace_id
+        self._drain_wcu(repo, "parent-1", 0)
+        del repo._entity_cache[ns, "user-1"]
+        with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+            parent_entry = next(e for e in lease.entries if e.entity_id == "parent-1")
+            assert parent_entry._shard_id == 1
+        assert repo._entity_cache[ns, "parent-1"][2]["gpt-4"] == 2
+        shard1 = self._raw_item(repo, "parent-1", 1)
+        assert shard1 is not None, "a cold-cache cascade must spread a hot parent too"
+        assert shard1["shard_count"]["N"] == "2"
+
     def test_parent_doubling_skips_the_futile_parent_only_attempt(self, sync_limiter):
         """A doubling hands back a shard from `range(old, new)`, which by
         construction does not exist yet, so a parent-only attempt could only

@@ -753,39 +753,11 @@ class SyncRateLimiter:
                         )
                     )
             else:
-                if parent_result.failure_reason == SpeculativeFailureReason.DISABLED:
-                    self._compensate_child(entity_id, resource, consume, result.shard_id)
-                    raise ResourceDisabled(entity_id=parent_id, resource=resource, level="bucket")
-                if parent_result.old_buckets is None:
-                    self._compensate_child(entity_id, resource, consume, result.shard_id)
-                    return (None, result.shard_id, result.shard_count, parent_result.shard_id)
-                parent_names = {b.limit_name for b in parent_result.old_buckets}
-                if not all(name in parent_names for name in consume):
-                    self._compensate_child(entity_id, resource, consume, result.shard_id)
-                    return (None, result.shard_id, result.shard_count, None)
-                would_help, parent_statuses = would_refill_satisfy(
-                    parent_result.old_buckets, consume, now_ms
+                result.parent_result = parent_result
+                nested, parent_hint = self._handle_nested_parent_failure(
+                    entity_id, resource, consume, result, now_ms
                 )
-                if not would_help:
-                    self._compensate_child(entity_id, resource, consume, result.shard_id)
-                    child_statuses = declared_statuses(result.buckets, consume, now_ms)
-                    raise RateLimitExceeded(child_statuses + parent_statuses)
-                try:
-                    parent_lease = self._try_parent_only_acquire(
-                        parent_id,
-                        resource,
-                        consume,
-                        entries,
-                        parent_result.shard_id,
-                        parent_result.shard_count,
-                    )
-                except Exception:
-                    self._compensate_child(entity_id, resource, consume, result.shard_id)
-                    raise
-                if parent_lease is not None:
-                    return (parent_lease, result.shard_id, result.shard_count, None)
-                self._compensate_child(entity_id, resource, consume, result.shard_id)
-                return (None, result.shard_id, result.shard_count, None)
+                return (nested, result.shard_id, result.shard_count, parent_hint)
         lease = SyncLease(repository=self._repository, entries=entries)
         lease._initial_committed = True
         for entry in entries:
