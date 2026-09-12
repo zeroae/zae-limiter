@@ -5670,6 +5670,29 @@ class TestClientShardCreation:
         parent = repo.get_buckets("parent-1", resource="gpt-4", shard_id=0)
         assert next(b for b in parent if b.limit_name == "rpm").tokens_milli == cp_milli - 1000
 
+    def test_sharded_cascade_child_still_fast_rejects(self, sync_limiter):
+        """Refill would not help on the child's shard: reject from the ALL_OLD
+        image with zero slow-path reads (as on main), compensating the parent
+        debit that succeeded in parallel. The slow path is only for the case
+        where refill would help."""
+        from zae_limiter.exceptions import RateLimitExceeded
+
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        cp_milli = self.CAPACITY * 1000
+        repo = self._seed_cascade_child(sync_limiter, limit, parent_tokens_milli=cp_milli)
+        repo._entity_cache[repo._namespace_id, "user-1"] = (True, "parent-1", {"gpt-4": 2})
+        reads = MagicMock(side_effect=AssertionError("slow path must not read"))
+        with (
+            patch.object(repo, "batch_get_entity_and_buckets", reads),
+            patch("zae_limiter.sync_repository.random.randrange", return_value=0),
+        ):
+            with pytest.raises(RateLimitExceeded):
+                with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+                    pass
+        reads.assert_not_called()
+        parent = repo.get_buckets("parent-1", resource="gpt-4", shard_id=0)
+        assert next(b for b in parent if b.limit_name == "rpm").tokens_milli == cp_milli
+
     def test_create_race_lost_to_aggregator_consumes_once(self, sync_limiter):
         """If the aggregator's Path 2 wins the create, the client retries as a
         consumption-only conditional write on that shard: one debit, no

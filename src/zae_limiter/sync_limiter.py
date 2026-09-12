@@ -666,6 +666,7 @@ class SyncRateLimiter:
                 and result.failure_reason == SpeculativeFailureReason.APP_LIMIT_EXHAUSTED
             ):
                 if result.cascade:
+                    self._check_speculative_failure(result, consume, now_ms)
                     untried = [s for s in range(result.shard_count) if s != result.shard_id]
                     return (None, random.choice(untried), result.shard_count)
                 retry_result, missing_shard = self._retry_on_other_shard(

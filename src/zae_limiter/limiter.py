@@ -814,8 +814,11 @@ class RateLimiter:
                     # A speculative retry is a child-only write: accepting its
                     # lease would admit the child past the parent's limit (the
                     # parent's parallel debit was compensated above, or never
-                    # attempted). Hand an untried shard to the slow path, which
-                    # commits child + parent atomically in one transaction.
+                    # attempted). Fast-reject from the child's image when a
+                    # refill would not help (0 reads, as for any other
+                    # exhausted bucket); otherwise hand an untried shard to the
+                    # slow path, which commits child + parent in one transaction.
+                    self._check_speculative_failure(result, consume, now_ms)
                     untried = [s for s in range(result.shard_count) if s != result.shard_id]
                     return None, random.choice(untried), result.shard_count
                 retry_result, missing_shard = await self._retry_on_other_shard(
