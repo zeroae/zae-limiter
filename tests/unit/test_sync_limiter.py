@@ -415,11 +415,13 @@ class TestLeaseRetryPath:
         limit = Limit.per_minute("rpm", 100)
         state = MagicMock()
         state.tokens_milli = 50000
-        state.effective_refill_amount_milli = 100000
+        state.retry_refill_amount_milli = 100000
         state.refill_period_ms = 60000
+        state.shard_count = 1
         entry = LeaseEntry(entity_id="e1", resource="gpt-4", limit=limit, state=state, consumed=60)
         undeclared_state = MagicMock()
         undeclared_state.tokens_milli = 0
+        undeclared_state.shard_count = 1
         undeclared = LeaseEntry(
             entity_id="e1",
             resource="gpt-4",
@@ -444,8 +446,9 @@ class TestLeaseRetryPath:
         limit = Limit.per_minute("rpm", 100)
         state = MagicMock()
         state.tokens_milli = 100000
-        state.effective_refill_amount_milli = 100000
+        state.retry_refill_amount_milli = 100000
         state.refill_period_ms = 60000
+        state.shard_count = 1
         entry = LeaseEntry(entity_id="e1", resource="gpt-4", limit=limit, state=state, consumed=10)
         statuses = _build_retry_failure_statuses([entry])
         assert statuses[0].retry_after_seconds == 0.0
@@ -467,6 +470,9 @@ class TestLeaseRetryPath:
         state.tokens_milli = 50000
         state.last_refill_ms = 1000
         state.total_consumed_milli = None
+        state.retry_refill_amount_milli = 100000
+        state.refill_period_ms = 60000
+        state.shard_count = 1
         entry = LeaseEntry(
             entity_id="e1",
             resource="gpt-4",
@@ -507,6 +513,9 @@ class TestWriteOnEnter:
         state.tokens_milli = 90000
         state.last_refill_ms = 1000
         state.total_consumed_milli = None
+        state.retry_refill_amount_milli = 100000
+        state.refill_period_ms = 60000
+        state.shard_count = 1
         return LeaseEntry(
             entity_id=entity_id,
             resource="gpt-4",
@@ -649,6 +658,52 @@ class TestWriteOnEnter:
         entry = LeaseEntry(entity_id="e1", resource="gpt-4", limit=limit, state=state, consumed=500)
         (status,) = _build_retry_failure_statuses([entry])
         assert status.retry_after_seconds == pytest.approx(60.0, abs=0.01)
+
+    def test_retry_failure_statuses_report_the_effective_limit(self):
+        """The reported limit must be the shard's share too (#475): a status
+        pairing the undivided capacity with a per-shard wait promises a
+        capacity no shard can serve."""
+        from zae_limiter.sync_lease import LeaseEntry, _build_retry_failure_statuses
+
+        limit = Limit.custom("rpm", 1000, refill_amount=1000, refill_period_seconds=60)
+        state = BucketState(
+            entity_id="e1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=0,
+            last_refill_ms=0,
+            capacity_milli=1000000,
+            refill_amount_milli=1000000,
+            refill_period_ms=60000,
+            shard_count=4,
+        )
+        entry = LeaseEntry(entity_id="e1", resource="gpt-4", limit=limit, state=state, consumed=500)
+        (status,) = _build_retry_failure_statuses([entry])
+        assert (status.limit.capacity, status.limit.refill_amount) == (250, 250)
+        assert status.limit_name == "rpm"
+
+    def test_admit_limit_reports_the_effective_limit_on_rejection(self):
+        """The slow-path admission gate reports the share the shard actually
+        holds, so a request above it is not told to retry against a capacity
+        that no shard can serve (#475)."""
+        limit = Limit.custom("rpm", 1000, refill_amount=1000, refill_period_seconds=60)
+        state = BucketState(
+            entity_id="e1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=0,
+            last_refill_ms=0,
+            capacity_milli=1000000,
+            refill_amount_milli=1000000,
+            refill_period_ms=60000,
+            shard_count=4,
+        )
+        status, consumed = SyncRateLimiter._admit_limit(
+            "e1", "gpt-4", limit, state, {"rpm": 600}, now_ms=0
+        )
+        assert consumed == 0
+        assert status is not None and status.exceeded
+        assert (status.limit.capacity, status.limit.refill_amount) == (250, 250)
 
     def test_commit_initial_lost_lock_with_nothing_consumed_needs_no_retry(self):
         """An rf-lock failure on a group that consumed nothing has nothing to

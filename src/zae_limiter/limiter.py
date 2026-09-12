@@ -1357,7 +1357,9 @@ class RateLimiter:
             entity_id=entity_id,
             resource=resource,
             limit_name=limit.name,
-            limit=limit,
+            # The shard holds only its share, so that is what is reported
+            # (#475); identity when the bucket is not sharded.
+            limit=limit.per_shard(state.shard_count),
             available=result.available,
             requested=amount,
             exceeded=not result.success,

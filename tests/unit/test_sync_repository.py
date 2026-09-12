@@ -2909,6 +2909,19 @@ class TestBumpShardCount:
         assert bucket is not None
         assert bucket.shard_count == 8, "propagation lowered a shard"
 
+    def test_propagation_reraises_unexpected_client_errors(self, repo):
+        """Only ConditionalCheckFailedException means "already caught up"; any
+        other error must surface rather than be silently counted as skipped."""
+        with patch.object(repo, "_get_client") as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.update_item.side_effect = ClientError(
+                {"Error": {"Code": "ProvisionedThroughputExceededException"}}, "UpdateItem"
+            )
+            mock_get_client.return_value = mock_client
+            with pytest.raises(ClientError) as exc_info:
+                repo._propagate_shard_count("e1", "gpt-4", old_count=2, new_count=4)
+        assert exc_info.value.response["Error"]["Code"] == "ProvisionedThroughputExceededException"
+
     def test_bump_from_one_propagates_nothing(self, repo):
         """At shard_count=1 there are no sibling shards to stamp."""
         now_ms = int(time.time() * 1000)

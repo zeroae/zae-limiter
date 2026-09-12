@@ -2,7 +2,7 @@
 
 import re
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 from .exceptions import InvalidIdentifierError, InvalidNameError
@@ -355,12 +355,34 @@ class Limit:
 
     @classmethod
     def from_bucket_state(cls, state: "BucketState") -> "Limit":
-        """Reconstruct a Limit from BucketState fields."""
+        """Reconstruct a Limit from BucketState fields, as that shard sees it."""
         return cls.custom(
             name=state.limit_name,
             capacity=state.capacity_milli // 1000,
             refill_amount=state.refill_amount_milli // 1000,
             refill_period_seconds=state.refill_period_ms // 1000,
+        ).per_shard(state.shard_count)
+
+    def per_shard(self, shard_count: int) -> "Limit":
+        """This limit as a single shard of ``shard_count`` sees it.
+
+        A sharded bucket holds and refills only its share — ``capacity //
+        shard_count``, ``refill_amount // shard_count`` (GHSA-76rv) — so a
+        status reported from one shard has to say so. Reporting the undivided
+        config would promise a capacity no shard can serve and, for a request
+        larger than the share, a ``retry_after_seconds`` that never pays off.
+
+        Shares are floored to one whole token because ``Limit`` is whole-token
+        and must stay constructible; ``schema.MAX_SHARD_COUNT`` bounds how
+        small a real share can get. Surfacing an unadmittable request as an
+        event or metric is tracked in #475.
+        """
+        if shard_count <= 1:
+            return self
+        return replace(
+            self,
+            capacity=max(1, self.capacity // shard_count),
+            refill_amount=max(1, self.refill_amount // shard_count),
         )
 
     @classmethod
@@ -488,6 +510,21 @@ class BucketState:
     def effective_refill_amount_milli(self) -> int:
         """This shard's share of the refill: ``refill_amount_milli // shard_count``."""
         return self.refill_amount_milli // self.shard_count
+
+    @property
+    def retry_refill_amount_milli(self) -> int:
+        """Refill rate to use for a "seconds until available" estimate.
+
+        ``effective_refill_amount_milli`` floors to 0 for a slow refill on a
+        heavily sharded bucket (1 token/minute at ``shard_count=1024``), and a
+        rate of 0 has no finite wait at all. Fall back to the *undivided* rate
+        rather than raise or invent infinity: the estimate is then optimistic
+        by up to ``shard_count``, but it is finite and honest about the rate
+        the limit itself refills at, and a retry draws a shard at random — so
+        it may well land somewhere that admits. ``schema.MAX_SHARD_COUNT``
+        bounds how far apart the two can get.
+        """
+        return self.effective_refill_amount_milli or self.refill_amount_milli
 
     @classmethod
     def from_limit(

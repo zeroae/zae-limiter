@@ -203,7 +203,7 @@ class Lease:
                 entity_id=entry.entity_id,
                 resource=entry.resource,
                 limit_name=entry.limit.name,
-                limit=entry.limit,
+                limit=entry.limit.per_shard(entry.state.shard_count),
                 available=result.available,
                 requested=amount,
                 exceeded=not result.success,
@@ -223,7 +223,7 @@ class Lease:
                         entity_id=entry.entity_id,
                         resource=entry.resource,
                         limit_name=entry.limit.name,
-                        limit=entry.limit,
+                        limit=entry.limit.per_shard(entry.state.shard_count),
                         available=available,
                         requested=0,
                         exceeded=False,
@@ -686,7 +686,7 @@ def _build_retry_failure_statuses(entries: list[LeaseEntry]) -> list[LimitStatus
         # rate would under-report the wait by shard_count.
         retry_after = calculate_retry_after(
             deficit_milli=deficit_milli,
-            refill_amount_milli=entry.state.effective_refill_amount_milli,
+            refill_amount_milli=entry.state.retry_refill_amount_milli,
             refill_period_ms=entry.state.refill_period_ms,
         )
         statuses.append(
@@ -694,7 +694,7 @@ def _build_retry_failure_statuses(entries: list[LeaseEntry]) -> list[LimitStatus
                 entity_id=entry.entity_id,
                 resource=entry.resource,
                 limit_name=entry.limit.name,
-                limit=entry.limit,
+                limit=entry.limit.per_shard(entry.state.shard_count),
                 available=entry.state.tokens_milli // 1000,
                 requested=entry.consumed,
                 exceeded=entry.consumed > 0,
