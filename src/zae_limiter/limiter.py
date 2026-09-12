@@ -665,6 +665,7 @@ class RateLimiter:
             # a failed speculative write never updates (issue #439).
             slow_path_shard: int | None = None
             slow_path_shard_count: int | None = None
+            slow_path_parent_shard: int | None = None
 
             # Try speculative fast path first (issue #315)
             if self._speculative_writes:
@@ -672,6 +673,7 @@ class RateLimiter:
                     lease,
                     slow_path_shard,
                     slow_path_shard_count,
+                    slow_path_parent_shard,
                 ) = await self._try_speculative_acquire(
                     entity_id=entity_id,
                     resource=resource,
@@ -687,6 +689,7 @@ class RateLimiter:
                     consume=consume,
                     shard_id=slow_path_shard,
                     shard_count=slow_path_shard_count,
+                    parent_shard_id=slow_path_parent_shard,
                 )
         except (RateLimitExceeded, ValidationError, ResourceDisabled, Warning):
             # `Warning`: under warnings-as-errors (-W error, or a
@@ -727,7 +730,7 @@ class RateLimiter:
         entity_id: str,
         resource: str,
         consume: dict[str, int],
-    ) -> tuple[Lease | None, int, int | None]:
+    ) -> tuple[Lease | None, int, int | None, int | None]:
         """Try the speculative fast path for acquire (issue #315).
 
         Repository checks its own entity cache (issue #318) and issues
@@ -803,7 +806,7 @@ class RateLimiter:
                     new_shard = random.randrange(result.shard_count, new_count)
                 else:
                     new_shard = result.shard_id
-                return None, new_shard, new_count
+                return None, new_shard, new_count, None
 
             # Shard retry: if multi-shard and app limit exhausted, try another shard
             if (
@@ -820,17 +823,17 @@ class RateLimiter:
                     # slow path, which commits child + parent in one transaction.
                     self._check_speculative_failure(result, consume, now_ms)
                     untried = [s for s in range(result.shard_count) if s != result.shard_id]
-                    return None, random.choice(untried), result.shard_count
+                    return None, random.choice(untried), result.shard_count, None
                 retry_result, missing_shard = await self._retry_on_other_shard(
                     entity_id, resource, consume, ttl_seconds=None, result=result
                 )
                 if retry_result is not None:
-                    return retry_result, result.shard_id, result.shard_count
+                    return retry_result, result.shard_id, result.shard_count, None
                 if missing_shard is not None:
                     # A shard the entity is entitled to does not exist yet —
                     # the slow path creates it rather than fast-rejecting on
                     # the drained shard's balance (issue #439).
-                    return None, missing_shard, result.shard_count
+                    return None, missing_shard, result.shard_count, None
 
             self._check_speculative_failure(result, consume, now_ms)
             # BUCKET_MISSING has no image to read a shard_count from; let the
@@ -840,7 +843,7 @@ class RateLimiter:
                 if result.failure_reason == SpeculativeFailureReason.BUCKET_MISSING
                 else result.shard_count
             )
-            return None, result.shard_id, observed_count
+            return None, result.shard_id, observed_count, None
 
         # Child succeeded — build entries from ALL_NEW
         entries: list[LeaseEntry] = []
@@ -891,7 +894,14 @@ class RateLimiter:
                 nested = await self._handle_nested_parent_failure(
                     entity_id, resource, consume, result, now_ms
                 )
-                return nested, result.shard_id, result.shard_count
+                # A missing parent shard is created where the fast path looked
+                parent_hint = (
+                    result.parent_result.shard_id
+                    if result.parent_result.failure_reason
+                    == SpeculativeFailureReason.BUCKET_MISSING
+                    else None
+                )
+                return nested, result.shard_id, result.shard_count, parent_hint
         elif result.cascade and result.parent_id:
             # Cache miss cascade — sequential parent speculative
             parent_id = result.parent_id
@@ -928,12 +938,12 @@ class RateLimiter:
 
                 if parent_result.old_buckets is None:
                     await self._compensate_child(entity_id, resource, consume, result.shard_id)
-                    return None, result.shard_id, result.shard_count
+                    return None, result.shard_id, result.shard_count, parent_result.shard_id
 
                 parent_names = {b.limit_name for b in parent_result.old_buckets}
                 if not all(name in parent_names for name in consume):
                     await self._compensate_child(entity_id, resource, consume, result.shard_id)
-                    return None, result.shard_id, result.shard_count
+                    return None, result.shard_id, result.shard_count, None
 
                 would_help, parent_statuses = would_refill_satisfy(
                     parent_result.old_buckets, consume, now_ms
@@ -957,10 +967,10 @@ class RateLimiter:
                     raise
 
                 if parent_lease is not None:
-                    return parent_lease, result.shard_id, result.shard_count
+                    return parent_lease, result.shard_id, result.shard_count, None
 
                 await self._compensate_child(entity_id, resource, consume, result.shard_id)
-                return None, result.shard_id, result.shard_count
+                return None, result.shard_id, result.shard_count, None
 
         # Build pre-committed lease
         lease = Lease(
@@ -970,7 +980,7 @@ class RateLimiter:
         lease._initial_committed = True
         for entry in entries:
             entry._initial_consumed = entry.consumed
-        return lease, result.shard_id, result.shard_count
+        return lease, result.shard_id, result.shard_count, None
 
     async def _handle_nested_parent_failure(
         self,
@@ -1463,6 +1473,7 @@ class RateLimiter:
         consume: dict[str, int],
         shard_id: int | None = None,
         shard_count: int | None = None,
+        parent_shard_id: int | None = None,
     ) -> Lease:
         """Internal acquire implementation (the slow path).
 
@@ -1473,6 +1484,8 @@ class RateLimiter:
             shard_count: The shard_count the fast path observed on its failure
                 image, used to size and stamp a shard created here. None
                 falls back to the entity cache.
+            parent_shard_id: Parent shard the fast path found missing, so it
+                is created where the fast path looked rather than re-drawn.
         """
         # Validate inputs at API boundary
         validate_identifier(entity_id, "entity_id")
@@ -1547,7 +1560,9 @@ class RateLimiter:
             entity_limits[parent_id] = parent_limits
             entity_config_sources[parent_id] = parent_config_source
             # The parent shards independently of the child (GHSA-76rv)
-            entity_shards[parent_id] = self._repository.select_shard(parent_id, resource)
+            entity_shards[parent_id] = self._repository.select_shard(
+                parent_id, resource, parent_shard_id
+            )
             parent_buckets = await self._fetch_buckets(
                 [parent_id], resource, entity_shards[parent_id][0]
             )

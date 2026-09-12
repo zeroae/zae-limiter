@@ -7354,6 +7354,57 @@ class TestClientShardCreation:
         assert await limiter.available("user-1", "other") == {"rpm": 0}
         assert await limiter.available("user-1", "unused") == {"rpm": 100}
 
+    async def test_missing_parent_shard_is_created_where_the_fast_path_looked(self, limiter):
+        """Parent cache says 2 shards; the speculative parent write hit shard 1
+        and found it missing. The slow path must create parent shard 1, not
+        draw a fresh parent shard (which could be 0)."""
+        from zae_limiter import schema
+
+        repo = limiter._repository
+        ns = repo._namespace_id
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        now_ms = int(time.time() * 1000)
+        await limiter.create_entity("parent-1")
+        await limiter.create_entity("user-1", parent_id="parent-1", cascade=True)
+        await limiter.set_system_defaults([limit])
+        child = BucketState.from_limit("user-1", "gpt-4", limit, now_ms)
+        await repo.transact_write(
+            [
+                repo.build_composite_create(
+                    "user-1", "gpt-4", [child], now_ms, cascade=True, parent_id="parent-1"
+                )
+            ]
+        )
+        # Cold child cache -> sequential parent speculative; parent draws from 2
+        repo._entity_cache.pop((ns, "user-1"), None)
+        repo._entity_cache[(ns, "parent-1")] = (False, None, {"gpt-4": 2})
+        limiter._speculative_writes = True
+
+        # First draw (parent speculative) -> shard 1; a re-draw would give 0
+        with patch("zae_limiter.repository.random.randrange", side_effect=[1, 0, 0]):
+            async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+                parent_entry = next(e for e in lease.entries if e.entity_id == "parent-1")
+                assert parent_entry._shard_id == 1
+
+        client = await repo._get_client()
+        for shard_id, expect in ((1, True), (0, False)):
+            resp = await client.get_item(
+                TableName=repo.table_name,
+                Key={
+                    "PK": {"S": schema.pk_bucket(ns, "parent-1", "gpt-4", shard_id)},
+                    "SK": {"S": schema.sk_state()},
+                },
+            )
+            assert ("Item" in resp) is expect, f"parent shard {shard_id}"
+        item1 = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(ns, "parent-1", "gpt-4", 1)},
+                "SK": {"S": schema.sk_state()},
+            },
+        )
+        assert item1["Item"]["shard_count"]["N"] == "2"
+
     async def test_create_race_lost_to_aggregator_consumes_once(self, limiter):
         """If the aggregator's Path 2 wins the create, the client retries as a
         consumption-only conditional write on that shard: one debit, no
