@@ -7974,6 +7974,85 @@ class TestCascadeParentSharding:
             "a parent shard the fast path never judged must not be written"
         )
 
+    async def test_exhausted_parent_shard_does_not_pin_the_slow_path(self, limiter):
+        """An exhausted parent shard must not be handed to the slow path. Each
+        shard holds its own share and ADR-134 re-picks on every call, so
+        re-drawing can admit where the drawn shard could not — pinning turns a
+        recoverable cascade into a rejection (here: 3 of the parent's 4 shards
+        are full)."""
+        from zae_limiter import schema
+
+        # 1 token/s
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=3600, refill_period_seconds=3600)
+        now_ms = int(time.time() * 1000)
+        repo = await self._seed(limiter, limit, parent_shard_count=4, parent_shards=range(4))
+        ns = repo._namespace_id
+        client = await repo._get_client()
+        # Parent shard 2 drained just now: refill cannot rescue it
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(ns, "parent-1", "gpt-4", 2)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="SET #tk = :zero, #rf = :now",
+            ExpressionAttributeNames={
+                "#tk": schema.bucket_attr("rpm", schema.BUCKET_FIELD_TK),
+                "#rf": schema.BUCKET_FIELD_RF,
+            },
+            ExpressionAttributeValues={":zero": {"N": "0"}, ":now": {"N": str(now_ms)}},
+        )
+        # Child drained 100 s ago: its own refill would help, so the child
+        # failure falls through to the slow path instead of fast-rejecting
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(ns, "user-1", "gpt-4", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="SET #tk = :zero, #rf = :then",
+            ExpressionAttributeNames={
+                "#tk": schema.bucket_attr("rpm", schema.BUCKET_FIELD_TK),
+                "#rf": schema.BUCKET_FIELD_RF,
+            },
+            ExpressionAttributeValues={
+                ":zero": {"N": "0"},
+                ":then": {"N": str(now_ms - 100_000)},
+            },
+        )
+
+        # Parent's parallel draw -> the drained shard 2; the slow path's
+        # re-draw -> shard 1, which is full.
+        with patch("zae_limiter.repository.random.randrange", side_effect=[2, 1]):
+            async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+                parent_entry = next(e for e in lease.entries if e.entity_id == "parent-1")
+                assert parent_entry._shard_id == 1
+
+        drained = await self._raw_item(repo, "parent-1", 2)
+        assert self._n(drained, "rpm", schema.BUCKET_FIELD_TK) == 0, (
+            "the drained shard must not be debited further"
+        )
+
+    async def test_missing_parent_shard_is_still_created_where_it_was_sought(self, limiter):
+        """The one reason that does pin the slow path: a parent shard the fast
+        path found missing must be created there, not re-drawn. Guards the
+        narrowing above — the patched draw raises StopIteration on a re-draw."""
+        from zae_limiter import schema
+
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        # Cached count of 4, but only the parent's shard 0 exists
+        repo = await self._seed(limiter, limit, parent_shard_count=4)
+
+        with patch("zae_limiter.repository.random.randrange", side_effect=[2]):
+            async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+                parent_entry = next(e for e in lease.entries if e.entity_id == "parent-1")
+                assert parent_entry._shard_id == 2
+
+        shard2 = await self._raw_item(repo, "parent-1", 2)
+        assert shard2 is not None, "the missing parent shard must be created where it was sought"
+        assert shard2["shard_count"]["N"] == "4"
+        assert self._n(shard2, "rpm", schema.BUCKET_FIELD_TK) == self.CAPACITY * 1000 // 4 - 1000
+
     async def test_rejected_cascade_never_doubles_the_parent(self, limiter):
         """A doubling on the way to a rejection is a pure side effect: nothing
         creates or reads the shard it hands back. Repeating it once per

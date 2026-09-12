@@ -640,7 +640,12 @@ class SyncRateLimiter:
             entity_id=entity_id, resource=resource, consume=consume
         )
         if not result.success:
-            parent_hint = result.parent_result.shard_id if result.parent_result else None
+            parent_hint = (
+                result.parent_result.shard_id
+                if result.parent_result is not None
+                and result.parent_result.failure_reason == SpeculativeFailureReason.BUCKET_MISSING
+                else None
+            )
             if result.parent_result is not None and result.parent_result.success:
                 assert result.parent_id is not None
                 self._compensate_speculative(
@@ -818,16 +823,21 @@ class SyncRateLimiter:
         parent_id = result.parent_id
         parent_shard = parent_result.shard_id
         parent_shard_count = parent_result.shard_count
+        parent_hint = (
+            parent_shard
+            if parent_result.failure_reason == SpeculativeFailureReason.BUCKET_MISSING
+            else None
+        )
         if parent_result.failure_reason == SpeculativeFailureReason.DISABLED:
             self._compensate_child(entity_id, resource, consume, result.shard_id)
             raise ResourceDisabled(entity_id=parent_id, resource=resource, level="bucket")
         if parent_result.old_buckets is None:
             self._compensate_child(entity_id, resource, consume, result.shard_id)
-            return (None, parent_shard)
+            return (None, parent_hint)
         parent_names = {b.limit_name for b in parent_result.old_buckets}
         if not all(name in parent_names for name in consume):
             self._compensate_child(entity_id, resource, consume, result.shard_id)
-            return (None, parent_shard)
+            return (None, parent_hint)
         would_help, parent_statuses = would_refill_satisfy(
             parent_result.old_buckets, consume, now_ms
         )
@@ -842,6 +852,8 @@ class SyncRateLimiter:
             parent_shard, parent_shard_count = self._shard_after_wcu_exhaustion(
                 parent_id, resource, parent_result, now_ms
             )
+            if parent_shard != parent_result.shard_id:
+                parent_hint = parent_shard
         entries: list[LeaseEntry] = []
         for state in result.buckets:
             if state.limit_name not in consume:
@@ -868,9 +880,9 @@ class SyncRateLimiter:
             self._compensate_child(entity_id, resource, consume, result.shard_id)
             raise
         if parent_lease is not None:
-            return (parent_lease, parent_shard)
+            return (parent_lease, parent_hint)
         self._compensate_child(entity_id, resource, consume, result.shard_id)
-        return (None, parent_shard)
+        return (None, parent_hint)
 
     def _shard_after_wcu_exhaustion(
         self, entity_id: str, resource: str, result: "SpeculativeResult", now_ms: int

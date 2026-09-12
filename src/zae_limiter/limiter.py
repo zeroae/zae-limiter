@@ -762,11 +762,18 @@ class RateLimiter:
         )
 
         if not result.success:
-            # One parent shard is drawn per acquire (issue #474): whatever the
-            # parallel write touched is what every fallback must reuse, so the
-            # slow path reads the shard whose state this decision was made on
-            # instead of drawing a second one.
-            parent_hint = result.parent_result.shard_id if result.parent_result else None
+            # Only a parent shard the fast path found MISSING pins the slow
+            # path, so it is created where the fast path looked (issue #474).
+            # An exhausted one must not: every shard holds its own share and
+            # ADR-134 re-picks on every call, so a re-draw can admit where the
+            # drawn shard could not — and pinning a wcu-exhausted shard would
+            # send the slow path's writes straight back onto the hot partition.
+            parent_hint = (
+                result.parent_result.shard_id
+                if result.parent_result is not None
+                and result.parent_result.failure_reason == SpeculativeFailureReason.BUCKET_MISSING
+                else None
+            )
 
             # Child failed — check if parent was also tried (parallel path)
             if result.parent_result is not None and result.parent_result.success:
@@ -1006,6 +1013,14 @@ class RateLimiter:
         parent_id = result.parent_id
         parent_shard = parent_result.shard_id
         parent_shard_count = parent_result.shard_count
+        # Same rule as the child-failure branch: only a MISSING parent shard
+        # pins the slow path to a shard. A wcu bump below replaces this with
+        # the shard the doubling added, which nothing else will create.
+        parent_hint = (
+            parent_shard
+            if parent_result.failure_reason == SpeculativeFailureReason.BUCKET_MISSING
+            else None
+        )
 
         # Disabled wins over every other classification: no refill or slow-path
         # retry can help (ADR-125). The child's speculatively consumed tokens
@@ -1016,12 +1031,12 @@ class RateLimiter:
 
         if parent_result.old_buckets is None:
             await self._compensate_child(entity_id, resource, consume, result.shard_id)
-            return None, parent_shard
+            return None, parent_hint
 
         parent_names = {b.limit_name for b in parent_result.old_buckets}
         if not all(name in parent_names for name in consume):
             await self._compensate_child(entity_id, resource, consume, result.shard_id)
-            return None, parent_shard
+            return None, parent_hint
 
         would_help, parent_statuses = would_refill_satisfy(
             parent_result.old_buckets, consume, now_ms
@@ -1045,6 +1060,8 @@ class RateLimiter:
             parent_shard, parent_shard_count = await self._shard_after_wcu_exhaustion(
                 parent_id, resource, parent_result, now_ms
             )
+            if parent_shard != parent_result.shard_id:
+                parent_hint = parent_shard
 
         # Refill would help — build child entries for parent-only slow path
         entries: list[LeaseEntry] = []
@@ -1087,10 +1104,10 @@ class RateLimiter:
             raise
 
         if parent_lease is not None:
-            return parent_lease, parent_shard
+            return parent_lease, parent_hint
 
         await self._compensate_child(entity_id, resource, consume, result.shard_id)
-        return None, parent_shard
+        return None, parent_hint
 
     async def _shard_after_wcu_exhaustion(
         self,
