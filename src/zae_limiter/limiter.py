@@ -48,7 +48,7 @@ from .models import (
 )
 from .repository import Repository
 from .repository_protocol import SpeculativeFailureReason
-from .schema import DEFAULT_RESOURCE, MAX_SHARD_COUNT, WCU_LIMIT_NAME
+from .schema import DEFAULT_RESOURCE, WCU_LIMIT_NAME
 
 _UNSET: Any = object()  # sentinel for detecting explicitly-passed deprecated params
 
@@ -1145,8 +1145,6 @@ class RateLimiter:
             raise RateLimitExceeded(statuses)
 
     _MAX_SHARD_RETRIES = 2
-    # Hard cap on shard_count (ADR-133); bump_shard_count() refuses beyond it
-    MAX_SHARD_COUNT = MAX_SHARD_COUNT
 
     async def _retry_on_other_shard(
         self,
@@ -1494,8 +1492,7 @@ class RateLimiter:
             parent_shard_count,
             has_custom_config,
         )
-        if carrier is not None:
-            parent_entries.append(carrier)
+        parent_carriers = [carrier] if carrier is not None else []
 
         # Check for violations
         violations = [s for s in statuses if s.exceeded]
@@ -1515,6 +1512,7 @@ class RateLimiter:
         parent_lease = Lease(
             repository=self._repository,
             entries=parent_entries,
+            _carriers=parent_carriers,
         )
         try:
             await parent_lease._commit_initial()
@@ -1647,6 +1645,7 @@ class RateLimiter:
 
         # Process buckets and build lease entries
         entries: list[LeaseEntry] = []
+        carriers: list[LeaseEntry] = []
         statuses: list[LimitStatus] = []
 
         for eid in entity_ids:
@@ -1720,7 +1719,7 @@ class RateLimiter:
                 entity_config_sources.get(eid) == "entity",
             )
             if carrier is not None:
-                entries.append(carrier)
+                carriers.append(carrier)
 
         # Check for any violations
         violations = [s for s in statuses if s.exceeded]
@@ -1730,6 +1729,7 @@ class RateLimiter:
         return Lease(
             repository=self._repository,
             entries=entries,
+            _carriers=carriers,
             _unknown_keys=unknown_keys,
         )
 

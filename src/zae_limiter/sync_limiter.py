@@ -44,7 +44,7 @@ from .models import (
     validate_identifier,
     validate_resource,
 )
-from .schema import DEFAULT_RESOURCE, MAX_SHARD_COUNT, WCU_LIMIT_NAME
+from .schema import DEFAULT_RESOURCE, WCU_LIMIT_NAME
 from .sync_config_cache import ConfigSource
 from .sync_lease import LeaseEntry, SyncLease
 from .sync_repository import SyncRepository
@@ -919,7 +919,6 @@ class SyncRateLimiter:
             raise RateLimitExceeded(statuses)
 
     _MAX_SHARD_RETRIES = 2
-    MAX_SHARD_COUNT = MAX_SHARD_COUNT
 
     def _retry_on_other_shard(
         self,
@@ -1213,8 +1212,7 @@ class SyncRateLimiter:
             parent_shard_count,
             has_custom_config,
         )
-        if carrier is not None:
-            parent_entries.append(carrier)
+        parent_carriers = [carrier] if carrier is not None else []
         violations = [s for s in statuses if s.exceeded]
         if violations:
             return None
@@ -1222,7 +1220,9 @@ class SyncRateLimiter:
         lease = SyncLease(repository=self._repository, entries=all_entries)
         for entry in child_entries:
             entry._initial_consumed = entry.consumed
-        parent_lease = SyncLease(repository=self._repository, entries=parent_entries)
+        parent_lease = SyncLease(
+            repository=self._repository, entries=parent_entries, _carriers=parent_carriers
+        )
         try:
             parent_lease._commit_initial()
         except RateLimitExceeded:
@@ -1303,6 +1303,7 @@ class SyncRateLimiter:
             consume, known_limits, resource, config_source=child_config_source, stacklevel=5
         )
         entries: list[LeaseEntry] = []
+        carriers: list[LeaseEntry] = []
         statuses: list[LimitStatus] = []
         for eid in entity_ids:
             eid_shard, eid_shard_count = entity_shards[eid]
@@ -1354,11 +1355,16 @@ class SyncRateLimiter:
                 entity_config_sources.get(eid) == "entity",
             )
             if carrier is not None:
-                entries.append(carrier)
+                carriers.append(carrier)
         violations = [s for s in statuses if s.exceeded]
         if violations:
             raise RateLimitExceeded(statuses)
-        return SyncLease(repository=self._repository, entries=entries, _unknown_keys=unknown_keys)
+        return SyncLease(
+            repository=self._repository,
+            entries=entries,
+            _carriers=carriers,
+            _unknown_keys=unknown_keys,
+        )
 
     def _fetch_entity_and_buckets(
         self, entity_id: str, resource: str, shard_id: int

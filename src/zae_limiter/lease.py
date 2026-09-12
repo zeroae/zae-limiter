@@ -94,6 +94,13 @@ class Lease:
     # limit in consume" — the caller did). Set where the slow path builds the
     # lease (Issue #455).
     _unknown_keys: frozenset[str] = frozenset()
+    # Infrastructure buckets that must be written but must never surface
+    # through the lease: today only the reserved `wcu` limit, refilled on the
+    # slow path so an idle shard does not look exhausted and drive doubling
+    # (ADR-133). Kept out of `entries` so `wcu` cannot reach `consumed`,
+    # `adjust()`, or a RateLimitExceeded status — CLAUDE.md requires it to be
+    # filtered from every user-facing surface. Only _commit_initial() reads it.
+    _carriers: list[LeaseEntry] = field(default_factory=list)
     # Names of the declared limits, computed once at construction so the hot
     # path (adjust/consume/release on every request) allocates nothing to
     # answer "is this key declared?". Entries are never appended after the
@@ -326,9 +333,10 @@ class Lease:
         repo = self.repository
 
         # Group entries by (entity_id, resource, shard) — one item per bucket,
-        # and the shard is part of a bucket's identity (GHSA-76rv).
+        # and the shard is part of a bucket's identity (GHSA-76rv). Carriers
+        # join here and nowhere else: they must be written, never seen.
         groups: dict[tuple[str, str, int], list[LeaseEntry]] = {}
-        for entry in self.entries:
+        for entry in (*self.entries, *self._carriers):
             key = (entry.entity_id, entry.resource, entry._shard_id)
             groups.setdefault(key, []).append(entry)
 

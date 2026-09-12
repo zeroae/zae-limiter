@@ -62,6 +62,7 @@ class SyncLease:
     degraded: bool = False
     "Whether this is the no-op lease yielded under ``on_unavailable=ALLOW``.\n\n    ``True`` only when the backend was unreachable and the limiter degraded\n    to allowing the request (Issue #455). Such a lease has no entries, and\n    ``adjust()``, ``consume()`` and ``release()`` are silent no-ops on it —\n    the declared-scope check that normally reports keys outside ``consume``\n    is skipped, so an outage never turns into a warning storm. Set\n    explicitly where that lease is built, never inferred from an empty\n    ``entries``: a real lease with nothing declared is not degraded.\n    "
     _unknown_keys: frozenset[str] = frozenset()
+    _carriers: list[LeaseEntry] = field(default_factory=list)
     _declared_names: frozenset[str] = field(init=False, default=frozenset())
 
     def __post_init__(self) -> None:
@@ -261,7 +262,7 @@ class SyncLease:
         now_ms = int(time.time() * 1000)
         repo = self.repository
         groups: dict[tuple[str, str, int], list[LeaseEntry]] = {}
-        for entry in self.entries:
+        for entry in (*self.entries, *self._carriers):
             key = (entry.entity_id, entry.resource, entry._shard_id)
             groups.setdefault(key, []).append(entry)
         items: list[dict[str, Any]] = []
