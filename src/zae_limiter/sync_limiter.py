@@ -640,6 +640,7 @@ class SyncRateLimiter:
             entity_id=entity_id, resource=resource, consume=consume
         )
         if not result.success:
+            parent_hint = result.parent_result.shard_id if result.parent_result else None
             if result.parent_result is not None and result.parent_result.success:
                 assert result.parent_id is not None
                 self._compensate_speculative(
@@ -659,19 +660,10 @@ class SyncRateLimiter:
                 SpeculativeFailureReason.WCU_EXHAUSTED,
                 SpeculativeFailureReason.BOTH_EXHAUSTED,
             ):
-                wcu_state = next(
-                    (b for b in result.old_buckets or [] if b.limit_name == WCU_LIMIT_NAME), None
+                new_shard, new_count = self._shard_after_wcu_exhaustion(
+                    entity_id, resource, result, now_ms
                 )
-                if wcu_state is not None and try_consume(wcu_state, 1, now_ms).success:
-                    return (None, result.shard_id, result.shard_count, None)
-                new_count = self._repository.bump_shard_count(
-                    entity_id, resource, result.shard_count
-                )
-                if new_count > result.shard_count:
-                    new_shard = random.randrange(result.shard_count, new_count)
-                else:
-                    new_shard = result.shard_id
-                return (None, new_shard, new_count, None)
+                return (None, new_shard, new_count, parent_hint)
             if (
                 result.shard_count > 1
                 and result.failure_reason == SpeculativeFailureReason.APP_LIMIT_EXHAUSTED
@@ -679,21 +671,21 @@ class SyncRateLimiter:
                 if result.cascade:
                     self._check_speculative_failure(result, consume, now_ms)
                     untried = [s for s in range(result.shard_count) if s != result.shard_id]
-                    return (None, random.choice(untried), result.shard_count, None)
+                    return (None, random.choice(untried), result.shard_count, parent_hint)
                 retry_result, missing_shard = self._retry_on_other_shard(
                     entity_id, resource, consume, ttl_seconds=None, result=result
                 )
                 if retry_result is not None:
-                    return (retry_result, result.shard_id, result.shard_count, None)
+                    return (retry_result, result.shard_id, result.shard_count, parent_hint)
                 if missing_shard is not None:
-                    return (None, missing_shard, result.shard_count, None)
+                    return (None, missing_shard, result.shard_count, parent_hint)
             self._check_speculative_failure(result, consume, now_ms)
             observed_count = (
                 None
                 if result.failure_reason == SpeculativeFailureReason.BUCKET_MISSING
                 else result.shard_count
             )
-            return (None, result.shard_id, observed_count, None)
+            return (None, result.shard_id, observed_count, parent_hint)
         entries: list[LeaseEntry] = []
         for state in result.buckets:
             if state.limit_name not in consume:
@@ -730,14 +722,8 @@ class SyncRateLimiter:
                         )
                     )
             else:
-                nested = self._handle_nested_parent_failure(
+                nested, parent_hint = self._handle_nested_parent_failure(
                     entity_id, resource, consume, result, now_ms
-                )
-                parent_hint = (
-                    result.parent_result.shard_id
-                    if result.parent_result.failure_reason
-                    == SpeculativeFailureReason.BUCKET_MISSING
-                    else None
                 )
                 return (nested, result.shard_id, result.shard_count, parent_hint)
         elif result.cascade and result.parent_id:
@@ -808,7 +794,7 @@ class SyncRateLimiter:
         consume: dict[str, int],
         result: "SpeculativeResult",
         now_ms: int,
-    ) -> SyncLease | None:
+    ) -> tuple[SyncLease | None, int | None]:
         """Handle parent failure from nested SpeculativeResult (issue #318).
 
         Child succeeded speculatively (result.success=True).
@@ -817,8 +803,11 @@ class SyncRateLimiter:
         slow path, or fast-reject.
 
         Returns:
-            SyncLease if parent-only slow path succeeded.
-            None if full slow path is needed.
+            ``(lease, parent_shard_id)``. ``lease`` is set when the parent-only
+            slow path succeeded, None when the full slow path is needed.
+            ``parent_shard_id`` is the parent shard that slow path must target:
+            the one the speculative write judged, or the brand-new shard a
+            wcu-driven doubling added (issue #474).
 
         Raises:
             RateLimitExceeded: If parent is truly exhausted.
@@ -827,16 +816,25 @@ class SyncRateLimiter:
         assert result.parent_id is not None
         parent_result = result.parent_result
         parent_id = result.parent_id
+        parent_shard = parent_result.shard_id
+        parent_shard_count = parent_result.shard_count
         if parent_result.failure_reason == SpeculativeFailureReason.DISABLED:
             self._compensate_child(entity_id, resource, consume, result.shard_id)
             raise ResourceDisabled(entity_id=parent_id, resource=resource, level="bucket")
+        if parent_result.failure_reason in (
+            SpeculativeFailureReason.WCU_EXHAUSTED,
+            SpeculativeFailureReason.BOTH_EXHAUSTED,
+        ):
+            parent_shard, parent_shard_count = self._shard_after_wcu_exhaustion(
+                parent_id, resource, parent_result, now_ms
+            )
         if parent_result.old_buckets is None:
             self._compensate_child(entity_id, resource, consume, result.shard_id)
-            return None
+            return (None, parent_shard)
         parent_names = {b.limit_name for b in parent_result.old_buckets}
         if not all(name in parent_names for name in consume):
             self._compensate_child(entity_id, resource, consume, result.shard_id)
-            return None
+            return (None, parent_shard)
         would_help, parent_statuses = would_refill_satisfy(
             parent_result.old_buckets, consume, now_ms
         )
@@ -864,20 +862,39 @@ class SyncRateLimiter:
             )
         try:
             parent_lease = self._try_parent_only_acquire(
-                parent_id,
-                resource,
-                consume,
-                entries,
-                parent_result.shard_id,
-                parent_result.shard_count,
+                parent_id, resource, consume, entries, parent_shard, parent_shard_count
             )
         except Exception:
             self._compensate_child(entity_id, resource, consume, result.shard_id)
             raise
         if parent_lease is not None:
-            return parent_lease
+            return (parent_lease, parent_shard)
         self._compensate_child(entity_id, resource, consume, result.shard_id)
-        return None
+        return (None, parent_shard)
+
+    def _shard_after_wcu_exhaustion(
+        self, entity_id: str, resource: str, result: "SpeculativeResult", now_ms: int
+    ) -> tuple[int, int]:
+        """Pick the shard to fall back to after a ``wcu`` exhaustion.
+
+        Used for the child and, since issue #474, for a cascade parent as well:
+        a hot cascade parent has to spread off its shard exactly like a hot
+        child, or every one of its children keeps hammering the same partition.
+
+        Returns:
+            ``(shard_id, shard_count)`` for the slow path — the same shard when
+            the exhaustion is not a hot partition, otherwise one of the shards
+            the doubling just added, with the new count.
+        """
+        wcu_state = next(
+            (b for b in result.old_buckets or [] if b.limit_name == WCU_LIMIT_NAME), None
+        )
+        if wcu_state is not None and try_consume(wcu_state, 1, now_ms).success:
+            return (result.shard_id, result.shard_count)
+        new_count = self._repository.bump_shard_count(entity_id, resource, result.shard_count)
+        if new_count > result.shard_count:
+            return (random.randrange(result.shard_count, new_count), new_count)
+        return (result.shard_id, new_count)
 
     def _compensate_child(
         self, entity_id: str, resource: str, consume: dict[str, int], shard_id: int

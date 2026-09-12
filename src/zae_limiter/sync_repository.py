@@ -2037,14 +2037,22 @@ class SyncRepository:
             if cascade_cached and parent_id_cached:
                 child_result: SpeculativeResult
                 parent_result: SpeculativeResult
+                parent_shard_id, _parent_count = self.select_shard(parent_id_cached, resource)
                 child_result, parent_result = self._run_in_executor(
                     lambda: self._speculative_consume_single(
                         entity_id, resource, consume, ttl_seconds, shard_id=effective_shard_id
                     ),
                     lambda: self._speculative_consume_single(
-                        parent_id_cached, resource, consume, ttl_seconds
+                        parent_id_cached, resource, consume, ttl_seconds, shard_id=parent_shard_id
                     ),
                 )
+                if parent_result.success:
+                    self._learn_shard_count(
+                        parent_id_cached,
+                        resource,
+                        parent_result.shard_count,
+                        meta=(parent_result.cascade, parent_result.parent_id),
+                    )
                 if child_result.success:
                     self._learn_shard_count(
                         entity_id,
