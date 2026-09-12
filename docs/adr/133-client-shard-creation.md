@@ -18,8 +18,7 @@ shard" — shows the original design expected the client to create shards. With
 shard 0: writes stayed on the hot partition and about half of all acquires paid a full
 slow-path fallback for nothing.
 
-**Option A**: the client creates shard N>0 items itself on the slow path. **Option B**: make
-the aggregator a hard requirement and document `--no-aggregator` deployments as unsharded.
+**Option A**: the client creates shard N>0 items itself. **Option B**: require the aggregator.
 
 ## Decision
 
@@ -40,31 +39,26 @@ deployment. `--no-aggregator` is a supported mode (it is what the test suite's s
 minimal stack runs), so Option B would leave a documented security control inert there.
 
 **Capacity bound.** Every refiller — the aggregator's `try_refill_bucket()` and the client
-slow path, which carries `shard_count` on `BucketState` and refills toward
-`capacity_milli // shard_count` — caps each shard at its effective share, so an entity with
-N shards admits at most `capacity` per refill window in steady state, never `N x capacity`.
-Neither `bump_shard_count()` nor Path 2 touches shard 0's balance when `shard_count`
-doubles, so shard 0 may still hold up to `capacity` while shard 1 starts at `capacity/2`:
-a one-time transient of up to **1.5x** after the first doubling, decaying as shard 0 drains
-and never replenished above its new share. This ADR matches that behaviour rather than
-introducing a reconciliation scheme.
+slow path, which carries `shard_count` on `BucketState` — caps each shard at
+`capacity_milli // shard_count`, so an entity with N shards admits at most `capacity` per
+refill window in steady state, never `N x capacity`. Neither `bump_shard_count()` nor Path 2
+touches shard 0's balance when `shard_count` doubles, so shard 0 may still hold `capacity`
+while shard 1 starts at `capacity/2`: a one-time transient of up to **1.5x**, decaying as
+shard 0 drains. This ADR matches that behaviour rather than adding a reconciliation scheme.
 
-**Race with the aggregator.** Client and aggregator both create under
-`attribute_not_exists(PK)`, so exactly one succeeds. The client losing costs one extra
-conditional write and never over-admits. The transaction still carries one item per
-(entity, resource, shard), so the 100-item limit is unaffected; a transaction cancelled by a
-*sibling* item's condition re-issues an innocent new-shard Put from its per-index reason.
+**Race with the aggregator.** Both create under `attribute_not_exists(PK)`, so exactly one
+succeeds; the client losing costs one extra conditional write and never over-admits. The
+transaction still carries one item per (entity, resource, shard), so the 100-item limit is
+unaffected; one cancelled by a *sibling* item re-issues its Put from its per-index reason.
 
-**Cost (non-cascade, one user limit, warm config cache; RT = round trips):**
+**Cost** (non-cascade, one user limit, warm cache; a cold config cache adds ~1.5 RCU):
 
 | Path | RT | RCU | WCU | Notes |
 |------|----|-----|-----|-------|
 | (a) Speculative hit on an existing shard | 1 | 0 | 1 | Unchanged steady state |
-| (b) First acquire on a not-yet-created shard | 4 | 2.5 | 2 | Failed conditional (1 WCU), disable walk (3-key BatchGet, 1.5 RCU), META + bucket BatchGet (1 RCU), single-item `PutItem` (1 WCU); **once per shard** |
+| (b) First acquire on a not-yet-created shard | 4 | 2.5 | 2 | Failed conditional (1 WCU), disable walk (3-key BatchGet, 1.5 RCU), META + bucket BatchGet (1 RCU), single-item transaction downgraded to `PutItem` (1 WCU); **once per shard** |
 | (b') …after a wcu-driven doubling | 5 | 2.5 | 3 | (b) plus the `shard_count` bump, once per doubling |
 | (c) Previous broken fallback | 4 | 2.5 | 2 | Same per-call cost as (b), paid on **every** acquire that drew a missing shard, every write landing on shard 0 |
-
-One-item transactions are downgraded to `PutItem` (1 WCU); a cold config cache adds ~1.5 RCU.
 
 ## Consequences
 
@@ -81,10 +75,16 @@ One-item transactions are downgraded to `PutItem` (1 WCU); a cold config cache a
 - Non-speculative clients (`speculative_writes=False`) never consume `wcu` and so never
   trigger doubling; they stay on shard 0.
 
+**Known limitation — per-shard request ceiling.** No shard holds more than its share, so a
+single request above `capacity // shard_count` is unadmittable on *every* shard while the
+entity is still under its configured limit. Statuses report the share, not the undivided
+config, so `RateLimitExceeded` is honest; `MAX_SHARD_COUNT` (32) bounds how small a share gets.
+
 ## Related (tracked separately)
 
 - `_sync_bucket_params()` reconciles shard 0 only ([#468](https://github.com/zeroae/zae-limiter/issues/468));
-  the parallel cascade fast path always writes the parent on shard 0 ([#474](https://github.com/zeroae/zae-limiter/issues/474)).
+  the parallel cascade fast path always writes the parent on shard 0 ([#474](https://github.com/zeroae/zae-limiter/issues/474));
+  the per-shard ceiling has no event or metric ([#475](https://github.com/zeroae/zae-limiter/issues/475)).
 
 ## Alternatives Considered
 

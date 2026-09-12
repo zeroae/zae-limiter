@@ -270,6 +270,18 @@ write-sharding behaviour; the only difference is that each new shard costs one s
 acquire (about 2.5 RCU + 2 WCU) to create, once, instead of being pre-created from the
 stream.
 
+**Known limitation — a single request cannot exceed `capacity // shard_count`.** No shard ever
+holds more than its share, so once a bucket has sharded, a request larger than one share is
+rejected on *every* shard even while the entity is well under its configured limit. For
+example, an entity limited to `rpm:1000` that has doubled to 4 shards admits at most 250 per
+call. `RateLimitExceeded` reports the per-shard capacity and refill rather than the undivided
+configuration, so the status is honest about what the shard can hold, and `MAX_SHARD_COUNT`
+(32) bounds how small a share can get. If your workload issues single requests of comparable
+size to a limit's capacity (large `tpm` estimates, most commonly), either raise the limit or
+keep the entity unsharded by lowering its write rate. Surfacing this occurrence as an event
+or CloudWatch metric is tracked in
+[#475](https://github.com/zeroae/zae-limiter/issues/475).
+
 **No application code changes required.** Pre-shard buckets are transparent to users.
 The `wcu` limit is filtered from all user-facing output (bucket states, exceptions,
 usage snapshots).
