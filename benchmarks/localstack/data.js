@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789173393556,
+  "lastUpdate": 1789222320747,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -16268,6 +16268,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.0793176662725492",
             "extra": "mean: 1.1273378827999978 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "697301e698155040178e35f89977ddcecebdd30d",
+          "message": "🔒 security(repository): sync limit changes to every bucket shard (#476)\n\n## Summary\n\n`Repository._sync_bucket_params()` keyed its `UpdateItem` on\n`schema.pk_bucket(..., 0)`, so a\nlimit change reached **shard 0 only**. Shards `1..N-1` — created by the\naggregator's Path 2\npropagation, or by the client slow path in `--no-aggregator` deployments\n(#466) — kept the\nlimits they were born with forever, and nothing on either path detects\nthe drift:\n`SpeculativeFailureReason` has no `CONFIG_CHANGED`, the speculative\nsuccess branch never\ncompares the returned item's `cp`/`ra` against resolved config, and the\nslow path refills from\nthe stored `capacity_milli` / `refill_amount_milli`. With\n`shard_count=2`, roughly half of all\n`acquire()` calls kept admitting at the *old* limit indefinitely — a\nlowered limit silently\nstaying un-enforced is a bypass of an intended restriction, not merely\nstale config.\n\n- Discover every shard for the `(entity, resource)` over GSI3\n(`GSI3PK={ns}/ENTITY#{id}`, `GSI3SK begins_with BUCKET#{resource}#`)\nexactly the way the\nADR-125 disable fan-out does, including its **two-pass** discovery so a\nbucket created by an\n  in-flight `acquire()` is usually caught.\n- Write the new `cp`/`ra`/`rp`, the TTL set/remove, and the stale-limit\n`REMOVE`s to every\ndiscovered shard concurrently. A shard that vanished between discovery\nand the write (TTL\n  expiry) is tolerated, as before.\n- **Stored values stay undivided** on every shard; the per-shard share\nis derived at read time\nby `BucketState.effective_*`. This matches what the aggregator's Path 2\nclone already writes.\n- Cost goes from 1 WCU to O(shards) WCU per `(entity, resource)`, plus\none KEYS_ONLY GSI3\nquery per discovery pass — the same shape as `disable_resource()` /\n`disable_entity()`.\n- CLAUDE.md's \"Pre-Shard Buckets\" section gains the fan-out bullet, and\nthe DynamoDB writer\n  table gains the per-shard limit-change row.\n\nThis is the **named residual** of security advisory\n**GHSA-w6c2-33wf-qfwf**, whose main\nfinding is fixed by #466. After this PR, the advisory's PoC grep\n`rg -n 'pk_bucket\\(.*, 0\\)' src/zae_limiter/repository.py` shows only\n`bump_shard_count`,\nwhich legitimately treats shard 0 as the `shard_count` authority.\n\n### Deviation from the issue's acceptance criteria\n\nThe issue asks that `set_resource_defaults()` and\n`set_system_defaults()` also fan out. They\ndo **not**, deliberately: neither has ever touched bucket items. A\nbucket running on\nresource/system defaults carries a TTL (#271, #296) and is recreated\nwith current params when\nit expires, so there is no durable drift to reconcile there. The fan-out\nis reached by\n`set_limits()` (entity custom limits, which have no TTL) and by\n`delete_limits()` via\n`reconcile_bucket_to_defaults()`. Tests assert that shape rather than\nthe criterion's literal\nwording.\n\n## Stacking\n\nBranched from `fix/439-client-shard-create` (#466), which threads the\nexplicit `shard_id`\nthrough the slow path's reads, writes, and creates and adds\n`BucketState.shard_count` /\n`effective_*`. **Depends on #466 — merge that first.**\n\nBase is `main` rather than #466's branch because `ci-lint.yml` /\n`ci-tests.yml` only trigger\nfor pull requests whose base is `main` / `release/*` / `milestone/*`:\nwith a stacked base no\nchecks run at all. The cost is that the diff shown here also contains\n#466's commits; the\nchange belonging to this PR is the last two (`5d792ca3`, `de1f5fa4`).\n\n## Test plan\n\n- [x] `uv run pytest tests/unit/ -q` — 3201 passed; `-m gevent -n 0` —\n26 passed\n- [x] New unit tests (moto) assert `set_limits()` and `delete_limits()`\nupdate `cp`/`ra`/`rp`\non **every** existing shard item for the affected `(entity, resource)`\n(4 shards and 2),\nthat stored values stay undivided, that stale limit attributes are\nremoved from every\nshard, and that a shard vanishing mid-fan-out is tolerated — async and\ngenerated sync\n- [x] New LocalStack integration tests\n(`TestLimitChangeFansOutToAllShards`) with\n`shard_count=2`: one asserts the new `cp`/`ra`/`rp` land on shard 1\nundivided, the other\nthat an `acquire()` drawing shard 1 (draw pinned via `random.randrange`)\nis gated by the\nlowered limit. Both were watched failing first — shard 1 kept\n`cp=1000000` and admitted\n      200 tokens against the old effective capacity of 500\n- [x] `uv run pytest tests/integration/test_bucket_sharding.py -m\nintegration -q` — 13 passed;\n      `test_disable_fanout.py` + `test_repository.py` — 40 passed\n- [x] `uv run mypy` — clean; `uv run python scripts/generate_sync.py` —\nno diff;\n`pre-commit run --all-files` — pass; pre-push patch coverage — 100% (232\nlines)\n- [x] `rg -n 'pk_bucket\\(.*, 0\\)' src/zae_limiter/repository.py` → only\n`bump_shard_count`\n- [x] CI: lint, Verify Generated Sync Code, unit (3.12), integration\n(3.12), benchmarks,\n      codecov patch + project — all green\n- [ ] CI: `e2e` (skipped while this PR is a draft)\n\nFixes #468\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01QdVj8nPhUwTz2aNJzMFqt5",
+          "timestamp": "2026-09-12T10:07:47-04:00",
+          "tree_id": "2f2454f5184d35b0bc4af746a5717abca3a95fd1",
+          "url": "https://github.com/zeroae/zae-limiter/commit/697301e698155040178e35f89977ddcecebdd30d"
+        },
+        "date": 1789222319732,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 34.86915194982409,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007104895367975794",
+            "extra": "mean: 28.678644133329577 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 24.19948592612583,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008866087525068225",
+            "extra": "mean: 41.323191866666775 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 54.601210514293584,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004041831157296257",
+            "extra": "mean: 18.314612269231993 msec\nrounds: 26"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 50.54608109982353,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005565620369615669",
+            "extra": "mean: 19.783927423079515 msec\nrounds: 26"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 34.19859295976912,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0028935692750074854",
+            "extra": "mean: 29.24096909999747 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 109.40983017143326,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00047561111388009673",
+            "extra": "mean: 9.139946551723087 msec\nrounds: 29"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 29.450670025297462,
+            "unit": "iter/sec",
+            "range": "stddev: 0.03001994115396188",
+            "extra": "mean: 33.955084863638845 msec\nrounds: 22"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 33.049669025591875,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006900375709224902",
+            "extra": "mean: 30.257489090909026 msec\nrounds: 22"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 33.329524990710055,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0068212890594071115",
+            "extra": "mean: 30.00342789999948 msec\nrounds: 40"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 32.60287313341475,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004929226751565175",
+            "extra": "mean: 30.6721433999968 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 39.14609973612145,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003190881193937237",
+            "extra": "mean: 25.545329081079966 msec\nrounds: 37"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 34.80932273202642,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004347156800500798",
+            "extra": "mean: 28.727936124995246 msec\nrounds: 32"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 39.545818645606005,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0027364187891502348",
+            "extra": "mean: 25.287123499998945 msec\nrounds: 38"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.7895787346297523,
+            "unit": "iter/sec",
+            "range": "stddev: 0.08167344940168621",
+            "extra": "mean: 558.7907257999973 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9522617548455492,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0010441286499583548",
+            "extra": "mean: 512.2263945999975 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9124199927124926,
+            "unit": "iter/sec",
+            "range": "stddev: 0.08590032121128635",
+            "extra": "mean: 1.0959865062000063 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9404137018754815,
+            "unit": "iter/sec",
+            "range": "stddev: 0.011720017037776899",
+            "extra": "mean: 1.0633617928000034 sec\nrounds: 5"
           }
         ]
       }
