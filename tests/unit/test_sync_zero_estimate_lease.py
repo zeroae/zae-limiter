@@ -560,8 +560,9 @@ class TestUnknownLimitInConsume:
                     )
         assert messages[0] == messages[1]
         logged = [r.getMessage() for r in caplog.records if "tpmm" in r.getMessage()]
-        assert any("e1" in m and "api" in m for m in logged)
-        assert any("e2" in m and "api" in m for m in logged)
+        assert len(logged) == 2
+        assert all("api" in m for m in logged)
+        assert not any("e1" in m or "e2" in m for m in logged)
 
     def test_override_wording_when_limits_passed(self, repo, speculative):
         """`limits=[...]` replaces stored config for this call, so "not

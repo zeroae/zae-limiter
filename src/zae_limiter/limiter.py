@@ -1157,7 +1157,6 @@ class RateLimiter:
     def _warn_unknown_limits(
         consume: dict[str, int],
         limits: list[Limit],
-        entity_id: str,
         resource: str,
         *,
         config_source: str,
@@ -1202,7 +1201,9 @@ class RateLimiter:
         # The text deliberately carries no entity id or resource name: the
         # warnings registry is keyed on (text, category, lineno), so per-entity
         # text would add a registry entry per entity and defeat the default
-        # once-per-location filter — a warning storm. They go to the log.
+        # once-per-location filter — a warning storm. The resource goes to the
+        # log; the entity id does not, because entity ids are routinely API keys
+        # and must not be written to logs in clear text.
         warnings.warn(
             f"acquire() names limit(s) {unknown} that are {where}; {listing}: {configured}. "
             "Unknown keys are ignored. This becomes a ValidationError in v1.0.0.",
@@ -1210,9 +1211,8 @@ class RateLimiter:
             stacklevel=stacklevel,
         )
         logger.warning(
-            "acquire(): unknown limit key(s) %s for entity %r resource %r (%s: %s)",
+            "acquire(): unknown limit key(s) %s for resource %r (%s: %s)",
             unknown,
-            entity_id,
             resource,
             listing,
             configured,
@@ -1444,7 +1444,6 @@ class RateLimiter:
         unknown_keys = self._warn_unknown_limits(
             consume,
             known_limits,
-            entity_id,
             resource,
             config_source=child_config_source,
             stacklevel=5,

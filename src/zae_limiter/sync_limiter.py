@@ -932,7 +932,6 @@ class SyncRateLimiter:
     def _warn_unknown_limits(
         consume: dict[str, int],
         limits: list[Limit],
-        entity_id: str,
         resource: str,
         *,
         config_source: str,
@@ -980,9 +979,8 @@ class SyncRateLimiter:
             stacklevel=stacklevel,
         )
         logger.warning(
-            "acquire(): unknown limit key(s) %s for entity %r resource %r (%s: %s)",
+            "acquire(): unknown limit key(s) %s for resource %r (%s: %s)",
             unknown,
-            entity_id,
             resource,
             listing,
             configured,
@@ -1144,12 +1142,7 @@ class SyncRateLimiter:
             existing_buckets.update(parent_buckets)
         known_limits = [limit for eid in entity_ids for limit in entity_limits[eid]]
         unknown_keys = self._warn_unknown_limits(
-            consume,
-            known_limits,
-            entity_id,
-            resource,
-            config_source=child_config_source,
-            stacklevel=5,
+            consume, known_limits, resource, config_source=child_config_source, stacklevel=5
         )
         entries: list[LeaseEntry] = []
         statuses: list[LimitStatus] = []
