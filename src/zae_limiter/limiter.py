@@ -968,9 +968,10 @@ class RateLimiter:
         Returns:
             ``(lease, parent_shard_id)``. ``lease`` is set when the parent-only
             slow path succeeded, None when the full slow path is needed.
-            ``parent_shard_id`` is the parent shard that slow path must target:
-            the one the speculative write judged, or the brand-new shard a
-            wcu-driven doubling added (issue #474).
+            ``parent_shard_id`` is a parent shard the slow path must target —
+            one the speculative write found MISSING, or the brand-new shard a
+            wcu-driven doubling added — and None when the slow path is free to
+            draw its own, which it must be for an exhausted shard (issue #474).
 
         Raises:
             RateLimitExceeded: If parent is truly exhausted.
