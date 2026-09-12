@@ -3044,6 +3044,19 @@ class Repository:
         Uses conditional update with attribute_exists(PK) to skip if
         bucket doesn't exist yet.
 
+        Fans out to **every** shard of the (entity, resource), discovered via
+        GSI3 like the ADR-125 disable fan-out. Keying only shard 0 left shards
+        1..N-1 — created by the aggregator's Path 2 propagation or by the client
+        slow path with ``--no-aggregator`` — enforcing the limits they were born
+        with forever, and nothing detects the drift (issue #468, named residual
+        of GHSA-w6c2-33wf-qfwf). The stored ``cp``/``ra``/``rp`` stay
+        **undivided** on every shard: the per-shard share is derived at read
+        time by ``BucketState.effective_*``, exactly as the aggregator's Path 2
+        clone writes it. Cost is O(shards) WCU plus the KEYS_ONLY GSI3 queries,
+        and the same narrow race ADR-125 documents applies: a bucket created by
+        an acquire already in flight can be missed (mitigated, not eliminated,
+        by the second discovery pass).
+
         Args:
             entity_id: ID of the entity
             resource: Resource name
@@ -3058,8 +3071,6 @@ class Repository:
         """
         if not limits:
             return
-
-        client = await self._get_client()
 
         # Build SET expression for static bucket params
         # Use numeric index for expression names since limit names can contain hyphens
@@ -3124,13 +3135,49 @@ class Repository:
         if remove_parts:
             update_expr += f" REMOVE {', '.join(remove_parts)}"
 
+        # Two discovery passes, exactly like the ADR-125 disable fan-out: the
+        # second catches a bucket created by an acquire that was already in
+        # flight during the first. Writes are independent single-item updates
+        # (no cross-shard atomicity to preserve), so they are issued
+        # concurrently. A list comprehension — not a generator — is required
+        # for the sync transformer.
+        synced: set[str] = set()
+        for _pass in range(2):
+            pks = [
+                pk
+                for pk in await self._discover_entity_bucket_pks(entity_id, resource)
+                if pk not in synced
+            ]
+            if not pks:
+                continue
+            await asyncio.gather(
+                *[
+                    self._sync_one_bucket_shard(pk, update_expr, expr_names, expr_values)
+                    for pk in pks
+                ]
+            )
+            synced.update(pks)
+
+    async def _sync_one_bucket_shard(
+        self,
+        pk: str,
+        update_expr: str,
+        expr_names: dict[str, str],
+        expr_values: dict[str, dict[str, str]],
+    ) -> None:
+        """Apply one shard's static-param update, tolerating a vanished shard.
+
+        Args:
+            pk: Full bucket partition key (namespace- and shard-qualified)
+            update_expr: SET/REMOVE expression built by `_sync_bucket_params`
+            expr_names: Expression attribute name aliases
+            expr_values: Expression attribute values
+        """
+        client = await self._get_client()
         try:
             await client.update_item(
                 TableName=self.table_name,
-                Key={
-                    "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, 0)},
-                    "SK": {"S": schema.sk_state()},
-                },
+                Key={"PK": {"S": pk}, "SK": {"S": schema.sk_state()}},
                 UpdateExpression=update_expr,
                 ConditionExpression="attribute_exists(PK)",
                 ExpressionAttributeNames=expr_names,
@@ -3138,8 +3185,10 @@ class Repository:
             )
         except ClientError as e:
             if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-                # Bucket doesn't exist yet - that's fine, it will be created
-                # with the correct params on first acquire()
+                # Bucket does not exist (yet, or any more: TTL can expire a
+                # shard between discovery and this write). Either way there is
+                # nothing to reconcile — a bucket created later is created with
+                # the current params.
                 return
             raise
 
