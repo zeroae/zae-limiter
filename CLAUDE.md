@@ -84,6 +84,7 @@ python scripts/generate_sync.py
 - `tests/unit/test_sync_stack_manager.py` ← `tests/unit/test_stack_manager.py`
 - `tests/unit/test_sync_discovery.py` ← `tests/unit/test_discovery.py`
 - `tests/unit/test_sync_config_cache.py` ← `tests/unit/test_config_cache.py`
+- `tests/unit/test_sync_zero_estimate_lease.py` ← `tests/unit/test_zero_estimate_lease.py`
 
 Pre-commit hook verifies generated code is up-to-date. CI also verifies before running tests.
 
@@ -711,7 +712,7 @@ Bucket items use per-(entity, resource, shard) partition keys: `PK={ns}/BUCKET#{
 - `ProcessResult` includes `refills_written` field; handler response body includes the count
 
 ### Exception Design
-- `RateLimitExceeded` includes **ALL** limit statuses
+- `RateLimitExceeded` includes a status for **every limit declared in `consume`** — both the ones that were exceeded and the ones that passed. Limits the caller did not name (and the reserved `wcu`) never appear (Issue #455), on the fast path, the slow path, and the consumption-only retry path alike
 - Both `violations` (exceeded) and `passed` (ok) are available
 - `retry_after_seconds` calculated from primary bottleneck
 
@@ -796,6 +797,7 @@ docs/
 
 1. **Write-on-enter**: `acquire()` writes initial consumption to DynamoDB before yielding the lease, making tokens immediately visible to concurrent callers. On exception, a compensating write restores the consumed tokens (see `.claude/rules/write-on-enter.md`)
 2. **Bucket can go negative (adjust only)**: `lease.adjust()` never throws, allows debt. The initial admission path (`try_consume` + `_commit_initial`) is a gate that MUST NOT over-admit — do not use "bucket can go negative" to justify skipping admission checks
+   - **`consume` is the declared scope of a lease (Issue #455)**: only limits named in `acquire(consume=...)` are adjustable through `adjust()`/`consume()`/`release()` and reported by `lease.consumed`, on both the fast and slow paths. The slow path still builds a `LeaseEntry` for every resolved limit because `_commit_initial()` needs them (`build_composite_create` writes only the states it is handed; `build_composite_normal` advances the shared `rf` and credits refill only to the limits it is handed), but those carry `_declared=False` and are write-only. A key that names no declared limit (a typo, or the reserved `wcu`) is ignored with a `FutureWarning` (not `DeprecationWarning`, which Python hides by default outside `__main__` and so would never surface from application code) naming the keys and the declared limits; it becomes a `ValidationError` at v1.0.0. The `on_unavailable=ALLOW` no-op lease is constructed with `degraded=True` and is exempt — never infer degradation from `entries == []`
 3. **Cascade is per-entity config**: Set `cascade=True` on `create_entity()` to auto-cascade to parent on every `acquire()`
 4. **Stored limits are the default (v0.5.0+)**: Limits resolved from System/Resource/Entity config automatically. Pass `limits` parameter to override.
 5. **Initial writes are atomic + optimistic lock on refill**: `_commit_initial` uses `transact_write` for cross-item atomicity. `build_composite_normal` locks on `last_refill_ms` (`ConditionExpression: #rf = :expected_rf`) to prevent stale refill overwrites. On lock failure, `build_composite_retry` skips refill and uses `tk >= consumed` condition to prevent over-admission

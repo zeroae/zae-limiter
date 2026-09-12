@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import time
+import warnings
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -47,6 +48,15 @@ class LeaseEntry:
     # Denormalized entity fields for speculative writes (Issue #315)
     _cascade: bool = False
     _parent_id: str | None = None
+    # Whether the caller named this limit in acquire(consume=...) (Issue #455).
+    # `consume` is the declared scope of a lease: only declared entries are
+    # visible through `consumed` and adjustable through adjust()/consume()/
+    # release(). The slow path still carries an entry for every resolved
+    # limit because _commit_initial() needs them — build_composite_create()
+    # writes only the states it is handed, and build_composite_normal()
+    # advances the shared `rf` while crediting refill only to the limits it
+    # is handed — but those undeclared entries are write-only carriers.
+    _declared: bool = True
 
 
 @dataclass
@@ -63,15 +73,84 @@ class Lease:
     _committed: bool = False
     _rolled_back: bool = False
     _initial_committed: bool = False  # True after _commit_initial() succeeds (Issue #309)
+    degraded: bool = False
+    """Whether this is the no-op lease yielded under ``on_unavailable=ALLOW``.
+
+    ``True`` only when the backend was unreachable and the limiter degraded
+    to allowing the request (Issue #455). Such a lease has no entries, and
+    ``adjust()``, ``consume()`` and ``release()`` are silent no-ops on it —
+    the declared-scope check that normally reports keys outside ``consume``
+    is skipped, so an outage never turns into a warning storm. Set
+    explicitly where that lease is built, never inferred from an empty
+    ``entries``: a real lease with nothing declared is not degraded.
+    """
+    # Keys in acquire(consume=...) that named no configured limit. acquire()
+    # already reported them with the right advice, so adjust()/consume()/
+    # release() must not report them again with the wrong one ("name the
+    # limit in consume" — the caller did). Set where the slow path builds the
+    # lease (Issue #455).
+    _unknown_keys: frozenset[str] = frozenset()
+    # Names of the declared limits, computed once at construction so the hot
+    # path (adjust/consume/release on every request) allocates nothing to
+    # answer "is this key declared?". Entries are never appended after the
+    # lease is built.
+    _declared_names: frozenset[str] = field(init=False, default=frozenset())
+
+    def __post_init__(self) -> None:
+        self._declared_names = frozenset(
+            entry.limit.name for entry in self.entries if entry._declared
+        )
 
     @property
     def consumed(self) -> dict[str, int]:
-        """Total consumed amounts by limit name."""
+        """Total consumed amounts by limit name (declared limits only)."""
         result: dict[str, int] = {}
         for entry in self.entries:
+            if not entry._declared:
+                continue
             name = entry.limit.name
             result[name] = result.get(name, 0) + entry.consumed
         return result
+
+    def _check_declared(self, amounts: dict[str, int], method: str) -> None:
+        """Report keys that name no declared limit on this lease (Issue #455).
+
+        A limit absent from ``consume`` was never checked at admission, so
+        adjusting it afterwards would drive a bucket negative that never had
+        the chance to reject; a typo (``tpmm`` for ``tpm``) would otherwise
+        be silent forever. Emits ``FutureWarning`` now; becomes
+        ``ValidationError`` in v1.0.0.
+
+        ``FutureWarning`` rather than ``DeprecationWarning``: Python's default
+        filters hide ``DeprecationWarning`` unless it is attributed to
+        ``__main__``, and ``stacklevel`` attributes this one to application
+        code, so it would never surface in a real deployment — the typo
+        would stay silent, the exact failure Issue #455 exists to fix.
+        ``FutureWarning`` is the category documented for warnings aimed at
+        end users of an application and is shown by default.
+
+        The degraded lease yielded under ``on_unavailable=ALLOW`` is exempt:
+        it has no entries by design, and warning on every call during an
+        outage would turn graceful degradation into noise.
+        """
+        # Fast exit, no allocation: every key is declared (the common case).
+        if self.degraded or amounts.keys() <= self._declared_names:
+            return
+        # Keys acquire() already reported as unknown are skipped silently.
+        undeclared = sorted(amounts.keys() - self._declared_names - self._unknown_keys)
+        if not undeclared:
+            return
+        declared = sorted(self._declared_names)
+        warnings.warn(
+            f"lease.{method}() names limit(s) {undeclared} that were not declared in "
+            f"acquire(consume=...); declared limits on this lease: {declared}. "
+            "Undeclared keys are ignored. Name the limit in `consume` (an estimate "
+            "of 0 is valid) to make it adjustable. This becomes a ValidationError "
+            "in v1.0.0.",
+            FutureWarning,
+            # 1 = this helper, 2 = adjust()/consume()/release(), 3 = the caller
+            stacklevel=3,
+        )
 
     @property
     def _has_adjustments(self) -> bool:
@@ -84,18 +163,25 @@ class Lease:
 
         Raises RateLimitExceeded if any bucket has insufficient capacity.
 
+        Only limits declared in ``acquire(consume=...)`` can be consumed;
+        other keys are reported (Issue #455) and ignored.
+
         Args:
             **amounts: Mapping of limit_name -> amount to consume
         """
         if self._committed or self._rolled_back:
             raise LeaseExpiredError()
 
+        self._check_declared(amounts, "consume")
+
         now_ms = int(time.time() * 1000)
         statuses: list[LimitStatus] = []
         updates: list[tuple[LeaseEntry, int, int]] = []  # (entry, new_tokens, new_refill)
 
-        # Check all limits first
+        # Check all declared limits first
         for entry in self.entries:
+            if not entry._declared:
+                continue
             amount = amounts.get(entry.limit.name, 0)
             if amount <= 0:
                 continue
@@ -118,9 +204,8 @@ class Lease:
                 updates.append((entry, result.new_tokens_milli, result.new_last_refill_ms))
 
         # Also include statuses for limits not being consumed (for full visibility)
-        consumed_names = set(amounts.keys())
         for entry in self.entries:
-            if entry.limit.name not in consumed_names:
+            if entry._declared and entry.limit.name not in amounts:
                 available = calculate_available(entry.state, now_ms)
                 statuses.append(
                     LimitStatus(
@@ -157,15 +242,25 @@ class Lease:
         Never raises - allows bucket to go negative.
         Use for post-hoc reconciliation (e.g., LLM token counts).
 
+        Only limits declared in ``acquire(consume=...)`` can be adjusted;
+        other keys are reported (Issue #455) and ignored.
+
         Args:
             **amounts: Mapping of limit_name -> delta (positive = consume more)
         """
         if self._committed or self._rolled_back:
             raise LeaseExpiredError()
 
+        self._check_declared(amounts, "adjust")
+        self._apply_adjust(amounts)
+
+    def _apply_adjust(self, amounts: dict[str, int]) -> None:
+        """Apply adjust() deltas to declared entries (shared with release())."""
         now_ms = int(time.time() * 1000)
 
         for entry in self.entries:
+            if not entry._declared:
+                continue
             amount = amounts.get(entry.limit.name, 0)
             if amount == 0:
                 continue
@@ -183,13 +278,22 @@ class Lease:
         """
         Return unused capacity to bucket.
 
-        Convenience wrapper for adjust() with negated values.
+        Equivalent to ``adjust()`` with every amount negated: the returned
+        tokens are credited unconditionally, so the bucket can end up above
+        its capacity until the next refill re-caps it.
+
+        Only limits declared in ``acquire(consume=...)`` can be released;
+        other keys are reported (Issue #455) and ignored.
 
         Args:
             **amounts: Mapping of limit_name -> amount to return
         """
+        if self._committed or self._rolled_back:
+            raise LeaseExpiredError()
+
+        self._check_declared(amounts, "release")
         negated = {k: -v for k, v in amounts.items()}
-        await self.adjust(**negated)
+        self._apply_adjust(negated)
 
     async def _commit_initial(self) -> None:
         """Write initial consumption to DynamoDB on context enter (Issue #309).
@@ -491,9 +595,15 @@ def _is_transaction_conflict(exc: Exception) -> bool:
 
 
 def _build_retry_failure_statuses(entries: list[LeaseEntry]) -> list[LimitStatus]:
-    """Build LimitStatus list for a retry failure (rate limit exceeded)."""
+    """Build LimitStatus list for a retry failure (rate limit exceeded).
+
+    Only declared entries are reported (Issue #455): undeclared entries are
+    write-only carriers that never gate admission.
+    """
     statuses: list[LimitStatus] = []
     for entry in entries:
+        if not entry._declared:
+            continue
         deficit_milli = max(0, entry.consumed * 1000 - entry.state.tokens_milli)
         retry_after = calculate_retry_after(
             deficit_milli=deficit_milli,

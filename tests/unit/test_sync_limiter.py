@@ -264,6 +264,20 @@ class TestLeaseEdgeCases:
         with pytest.raises(LeaseExpiredError):
             lease.adjust(tpm=50)
 
+    def test_release_after_commit_raises(self, sync_limiter):
+        """release() on a committed lease raises LeaseExpiredError.
+
+        release() no longer delegates to adjust() (#455), so it carries its
+        own expiry guard and needs its own test.
+        """
+        limits = [Limit.per_minute("tpm", 10000)]
+        with sync_limiter.acquire(
+            entity_id="key-edge-2b", resource="gpt-4", limits=limits, consume={"tpm": 100}
+        ) as lease:
+            pass
+        with pytest.raises(LeaseExpiredError):
+            lease.release(tpm=50)
+
     def test_consume_zero_amount_is_noop(self, sync_limiter):
         """consume() with zero amount skips processing."""
         limits = [Limit.per_minute("rpm", 100), Limit.per_minute("tpm", 10000)]
@@ -402,9 +416,20 @@ class TestLeaseRetryPath:
         state = MagicMock()
         state.tokens_milli = 50000
         entry = LeaseEntry(entity_id="e1", resource="gpt-4", limit=limit, state=state, consumed=60)
-        statuses = _build_retry_failure_statuses([entry])
+        undeclared_state = MagicMock()
+        undeclared_state.tokens_milli = 0
+        undeclared = LeaseEntry(
+            entity_id="e1",
+            resource="gpt-4",
+            limit=Limit.per_minute("tpm", 1000),
+            state=undeclared_state,
+            consumed=0,
+            _declared=False,
+        )
+        statuses = _build_retry_failure_statuses([entry, undeclared])
         assert len(statuses) == 1
         assert statuses[0].entity_id == "e1"
+        assert statuses[0].limit_name == "rpm"
         assert statuses[0].available == 50
         assert statuses[0].requested == 60
         assert statuses[0].exceeded is True
@@ -3819,6 +3844,72 @@ class TestSpeculativeAcquire:
         finally:
             sync_limiter._repository.speculative_consume = original_speculative
             sync_limiter._repository.write_each = original_write_each
+
+    def test_speculative_cascade_parent_only_skips_undeclared_limit(self, sync_limiter):
+        """Parent-only slow path: an undeclared parent limit is refilled but
+        never checked, never reported, and never adjustable (#455).
+
+        The parent has rpm and tpm; the call declares only rpm. The parent's
+        tpm entry is a write-only carrier: it does not gate admission (even
+        when in debt), does not appear in lease.consumed, and is untouched.
+        """
+        sync_limiter.create_entity("parent-1")
+        sync_limiter.create_entity("child-1", parent_id="parent-1", cascade=True)
+        sync_limiter.set_system_defaults(
+            [Limit.per_minute("rpm", 1000), Limit.per_minute("tpm", 1000)]
+        )
+        with sync_limiter.acquire("child-1", "gpt-4", {"rpm": 1, "tpm": 0}):
+            pass
+        with sync_limiter.acquire("parent-1", "gpt-4", {"tpm": 0}) as lease:
+            lease.adjust(tpm=1500)
+        sync_limiter._speculative_writes = True
+        now_ms = int(__import__("time").time() * 1000)
+        child_bucket = BucketState(
+            entity_id="child-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=900000,
+            last_refill_ms=now_ms,
+            capacity_milli=1000000,
+            refill_amount_milli=1000000,
+            refill_period_ms=60000,
+        )
+        parent_bucket = BucketState(
+            entity_id="parent-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=0,
+            last_refill_ms=now_ms - 30000,
+            capacity_milli=1000000,
+            refill_amount_milli=1000000,
+            refill_period_ms=60000,
+        )
+        original_speculative = sync_limiter._repository.speculative_consume
+        call_count = 0
+
+        def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return SpeculativeResult(
+                    success=True, buckets=[child_bucket], cascade=True, parent_id="parent-1"
+                )
+            if call_count == 2:
+                return SpeculativeResult(success=False, old_buckets=[parent_bucket])
+            return original_speculative(entity_id, resource, consume, ttl_seconds)
+
+        sync_limiter._repository.speculative_consume = mock_speculative
+        try:
+            with sync_limiter.acquire("child-1", "gpt-4", {"rpm": 1}) as lease:
+                parent_entries = [e for e in lease.entries if e.entity_id == "parent-1"]
+                assert {e.limit.name for e in parent_entries} == {"rpm", "tpm"}
+                assert {e.limit.name for e in parent_entries if e._declared} == {"rpm"}
+                assert lease.consumed == {"rpm": 2}
+        finally:
+            sync_limiter._repository.speculative_consume = original_speculative
+        buckets = sync_limiter._repository.get_buckets("parent-1", resource="gpt-4")
+        tpm = next(b for b in buckets if b.limit_name == "tpm")
+        assert tpm.tokens_milli < 0, "parent tpm was in debt and must be left untouched"
 
     def test_speculative_cascade_parent_slow_path_fails_compensates(self, sync_limiter):
         """Cascade: parent-only slow path fails → compensate child → full slow path.

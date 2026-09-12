@@ -14,9 +14,10 @@ if TYPE_CHECKING:
     from .repository_protocol import RepositoryProtocol, SpeculativeResult
 
 from .bucket import (
-    build_limit_status,
     calculate_available,
     calculate_time_until_available,
+    declared_statuses,
+    force_consume,
     try_consume,
     would_refill_satisfy,
 )
@@ -674,12 +675,18 @@ class RateLimiter:
                     limits_override=limits,
                     consume=consume,
                 )
-        except (RateLimitExceeded, ValidationError, ResourceDisabled):
+        except (RateLimitExceeded, ValidationError, ResourceDisabled, Warning):
+            # `Warning`: under warnings-as-errors (-W error, or a
+            # simplefilter("error")) the FutureWarnings this module emits
+            # (Issue #455) are raised as exceptions. They are the caller's
+            # signal, not a backend outage, and must never be turned into
+            # RateLimiterUnavailable or swallowed by a degraded lease.
             raise
         except Exception as e:
             if mode == OnUnavailable.ALLOW:
-                # Return a no-op lease
-                yield Lease(repository=self._repository)
+                # Return a no-op lease. `degraded` exempts it from declared-
+                # scope validation (Issue #455): it has no entries by design.
+                yield Lease(repository=self._repository, degraded=True)
                 return
             else:
                 raise RateLimiterUnavailable(
@@ -877,17 +884,7 @@ class RateLimiter:
                 )
                 if not would_help:
                     await self._compensate_child(entity_id, resource, consume)
-                    child_statuses = [
-                        build_limit_status(
-                            entity_id=s.entity_id,
-                            resource=s.resource,
-                            limit=Limit.from_bucket_state(s),
-                            state=s,
-                            requested=consume.get(s.limit_name, 0),
-                            now_ms=now_ms,
-                        )
-                        for s in result.buckets
-                    ]
+                    child_statuses = declared_statuses(result.buckets, consume, now_ms)
                     raise RateLimitExceeded(child_statuses + parent_statuses)
 
                 try:
@@ -962,17 +959,7 @@ class RateLimiter:
         )
         if not would_help:
             await self._compensate_child(entity_id, resource, consume)
-            child_statuses = [
-                build_limit_status(
-                    entity_id=s.entity_id,
-                    resource=s.resource,
-                    limit=Limit.from_bucket_state(s),
-                    state=s,
-                    requested=consume.get(s.limit_name, 0),
-                    now_ms=now_ms,
-                )
-                for s in result.buckets
-            ]
+            child_statuses = declared_statuses(result.buckets, consume, now_ms)
             raise RateLimitExceeded(child_statuses + parent_statuses)
 
         # Refill would help — build child entries for parent-only slow path
@@ -1166,6 +1153,120 @@ class RateLimiter:
             entry._initial_consumed = entry.consumed
         return lease
 
+    @staticmethod
+    def _warn_unknown_limits(
+        consume: dict[str, int],
+        limits: list[Limit],
+        resource: str,
+        *,
+        config_source: str,
+        stacklevel: int,
+    ) -> frozenset[str]:
+        """Report keys in ``consume`` that name no configured limit (Issue #455).
+
+        Returns the unknown keys so the lease can skip them in its own
+        declared-scope check: they were reported here with the right advice.
+
+        Such a key is dropped at admission (nothing gates it), after which
+        every ``lease.adjust()`` on it would warn "not declared in consume" —
+        pointing at the wrong fix, since the caller did declare it. Close it
+        at the boundary where the declaration is made. Warning only, same
+        staging as the rest of #455: ``FutureWarning`` now, ``ValidationError``
+        in v1.0.0. The fast path cannot see this (an unknown key makes the
+        speculative write fail and fall back), so the slow-path check covers
+        both paths.
+
+        Compared against every limit the acquire can gate: the acquiring
+        entity's own limits plus, when cascading, the parent's. Either side
+        may track a subset of the other (per-user rpm on the child, org-level
+        tpm on the parent, or a parent on rpm only); a key known to either
+        side is not unknown and must not warn.
+
+        Args:
+            stacklevel: Frames from this helper to the ``acquire()`` caller;
+                the ``with``/``async with`` context-manager machinery adds one.
+                The single call site is ``_do_acquire`` (helper -> _do_acquire
+                -> acquire -> __aenter__ -> caller), so it is always 5.
+        """
+        configured = sorted(limit.name for limit in limits)
+        unknown = sorted(set(consume) - set(configured))
+        if not unknown:
+            return frozenset()
+        if config_source == "override":
+            where = "not in the `limits` override passed to acquire()"
+            listing = "override limits"
+        else:
+            where = "not configured for this resource"
+            listing = "configured limits"
+        # The text deliberately carries no entity id or resource name: the
+        # warnings registry is keyed on (text, category, lineno), so per-entity
+        # text would add a registry entry per entity and defeat the default
+        # once-per-location filter — a warning storm. The resource goes to the
+        # log; the entity id does not, because entity ids are routinely API keys
+        # and must not be written to logs in clear text.
+        warnings.warn(
+            f"acquire() names limit(s) {unknown} that are {where}; {listing}: {configured}. "
+            "Unknown keys are ignored. This becomes a ValidationError in v1.0.0.",
+            FutureWarning,
+            stacklevel=stacklevel,
+        )
+        logger.warning(
+            "acquire(): unknown limit key(s) %s for resource %r (%s: %s)",
+            unknown,
+            resource,
+            listing,
+            configured,
+        )
+        return frozenset(unknown)
+
+    @staticmethod
+    def _admit_limit(
+        entity_id: str,
+        resource: str,
+        limit: Limit,
+        state: BucketState,
+        consume: dict[str, int],
+        now_ms: int,
+    ) -> tuple[LimitStatus | None, int]:
+        """Slow-path admission for one resolved limit (Issue #455).
+
+        Declared (named in ``consume``): ``try_consume`` gates admission even
+        at amount 0 — it fails when the bucket is in debt, so a declared
+        zero-estimate limit waits for refill to clear an earlier overdraw.
+        That is what declaring it means. On success the state is updated in
+        place. Returns ``(status, consumed)``.
+
+        Undeclared: refill only, so the composite write stays complete. It
+        never gates admission — not even when in debt, matching the fast
+        path, whose condition covers declared limits only — and never appears
+        in ``RateLimitExceeded``. Returns ``(None, 0)``.
+        """
+        if limit.name not in consume:
+            state.tokens_milli, state.last_refill_ms = force_consume(state, 0, now_ms)
+            return None, 0
+
+        amount = consume[limit.name]
+        result = try_consume(state, amount, now_ms)
+        status = LimitStatus(
+            entity_id=entity_id,
+            resource=resource,
+            limit_name=limit.name,
+            limit=limit,
+            available=result.available,
+            requested=amount,
+            exceeded=not result.success,
+            retry_after_seconds=result.retry_after_seconds,
+        )
+        if not result.success:
+            return status, 0
+
+        state.tokens_milli = result.new_tokens_milli
+        state.last_refill_ms = result.new_last_refill_ms
+        # Update consumption counter if initialized (issue #179)
+        if state.total_consumed_milli is not None and amount > 0:
+            state.total_consumed_milli += amount * 1000
+        return status, amount
+
     async def _try_parent_only_acquire(
         self,
         parent_id: str,
@@ -1185,6 +1286,9 @@ class RateLimiter:
 
         # Resolve parent limits
         parent_limits, parent_config_source = await self._resolve_limits(parent_id, resource, None)
+        # No unknown-key check here: the declaration in `consume` is about the
+        # child. A parent tracking a subset of the child's limits is a valid
+        # configuration; keys with no parent limit are simply not applied.
 
         # Fetch parent buckets
         parent_buckets = await self._fetch_buckets([parent_id], resource)
@@ -1204,37 +1308,26 @@ class RateLimiter:
             original_tk = existing.tokens_milli
             original_rf = existing.last_refill_ms
 
-            amount = consume.get(limit.name, 0)
-            result = try_consume(existing, amount, now_ms)
-
-            status = LimitStatus(
-                entity_id=parent_id,
-                resource=resource,
-                limit_name=limit.name,
-                limit=limit,
-                available=result.available,
-                requested=amount,
-                exceeded=not result.success,
-                retry_after_seconds=result.retry_after_seconds,
+            status, consumed = self._admit_limit(
+                parent_id, resource, limit, existing, consume, now_ms
             )
-            statuses.append(status)
+            if status is not None:
+                statuses.append(status)
 
-            if result.success:
-                existing.tokens_milli = result.new_tokens_milli
-                existing.last_refill_ms = result.new_last_refill_ms
-                if existing.total_consumed_milli is not None and amount > 0:
-                    existing.total_consumed_milli += amount * 1000
-
+            # Every resolved limit gets an entry so _commit_initial() persists
+            # refill for all of them; only the declared ones are adjustable
+            # through the lease (Issue #455).
             parent_entries.append(
                 LeaseEntry(
                     entity_id=parent_id,
                     resource=resource,
                     limit=limit,
                     state=existing,
-                    consumed=amount if result.success else 0,
+                    consumed=consumed,
                     _original_tokens_milli=original_tk,
                     _original_rf_ms=original_rf,
                     _has_custom_config=has_custom_config,
+                    _declared=status is not None,
                 )
             )
 
@@ -1341,6 +1434,21 @@ class RateLimiter:
             parent_buckets = await self._fetch_buckets([parent_id], resource)
             existing_buckets.update(parent_buckets)
 
+        # Unknown-key check (Issue #455) against every limit this acquire can
+        # gate: the child's, plus the parent's when cascading. Entity config
+        # replaces rather than merges, so a child pinned to [rpm] under a
+        # parent on [rpm, tpm] still has tpm gated and consumed on the parent
+        # — a key known to either side of the cascade is not unknown.
+        known_limits = [limit for eid in entity_ids for limit in entity_limits[eid]]
+        # helper -> here -> acquire -> __aenter__ -> caller
+        unknown_keys = self._warn_unknown_limits(
+            consume,
+            known_limits,
+            resource,
+            config_source=child_config_source,
+            stacklevel=5,
+        )
+
         # Process buckets and build lease entries
         entries: list[LeaseEntry] = []
         statuses: list[LimitStatus] = []
@@ -1366,46 +1474,33 @@ class RateLimiter:
                 original_tk = state.tokens_milli
                 original_rf = state.last_refill_ms
 
-                # Try to consume
-                amount = consume.get(limit.name, 0)
-                result = try_consume(state, amount, now_ms)
-
-                status = LimitStatus(
-                    entity_id=eid,
-                    resource=resource,
-                    limit_name=limit.name,
-                    limit=limit,
-                    available=result.available,
-                    requested=amount,
-                    exceeded=not result.success,
-                    retry_after_seconds=result.retry_after_seconds,
-                )
-                statuses.append(status)
-
-                if result.success:
-                    # Update local state
-                    state.tokens_milli = result.new_tokens_milli
-                    state.last_refill_ms = result.new_last_refill_ms
-                    # Update consumption counter if initialized (issue #179)
-                    if state.total_consumed_milli is not None and amount > 0:
-                        state.total_consumed_milli += amount * 1000
+                status, consumed = self._admit_limit(eid, resource, limit, state, consume, now_ms)
+                if status is not None:
+                    statuses.append(status)
 
                 # Determine if entity has custom config for TTL (Issue #271)
                 has_custom_config = entity_config_sources.get(eid) == "entity"
 
+                # Every resolved limit gets an entry: _commit_initial() needs
+                # them all to create the composite bucket and to credit refill
+                # when it advances the shared `rf`. Only limits the caller
+                # named in `consume` are declared, i.e. visible and adjustable
+                # through the lease — the same rule the fast path applies
+                # when it filters result.buckets (Issue #455).
                 entries.append(
                     LeaseEntry(
                         entity_id=eid,
                         resource=resource,
                         limit=limit,
                         state=state,
-                        consumed=amount if result.success else 0,
+                        consumed=consumed,
                         _original_tokens_milli=original_tk,
                         _original_rf_ms=original_rf,
                         _is_new=is_new and not any_existing,
                         _has_custom_config=has_custom_config,
                         _cascade=entity.cascade if entity and eid == entity_id else False,
                         _parent_id=entity.parent_id if entity and eid == entity_id else None,
+                        _declared=status is not None,
                     )
                 )
 
@@ -1417,6 +1512,7 @@ class RateLimiter:
         return Lease(
             repository=self._repository,
             entries=entries,
+            _unknown_keys=unknown_keys,
         )
 
     async def _fetch_entity_and_buckets(

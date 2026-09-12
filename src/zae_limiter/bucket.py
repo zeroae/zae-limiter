@@ -331,24 +331,46 @@ def would_refill_satisfy(
 
     Returns:
         Tuple of (would_satisfy, statuses) where:
-        - would_satisfy: True if ALL limits pass after refill
-        - statuses: LimitStatus for each limit (for RateLimitExceeded if needed)
+        - would_satisfy: True if ALL declared limits pass after refill
+        - statuses: LimitStatus for each declared limit (for RateLimitExceeded)
+    """
+    statuses = declared_statuses(buckets, consume, now_ms)
+    any_exceeded = any(s.exceeded for s in statuses)
+    return (not any_exceeded, statuses)
+
+
+def declared_statuses(
+    buckets: list[BucketState],
+    consume: dict[str, int],
+    now_ms: int,
+) -> list[LimitStatus]:
+    """Build a LimitStatus for every bucket whose limit is declared in ``consume``.
+
+    This is the single definition of "declared" for status reporting
+    (Issue #455): membership in ``consume``, not the amount. A declared
+    zero-estimate limit (``{"tpm": 0}``) gets a passed status with
+    ``requested=0``, exactly as on the slow path; a limit the caller never
+    named — including the reserved ``wcu`` infrastructure limit that
+    ``result.buckets`` carries — is skipped, so it never reaches
+    ``RateLimitExceeded``.
+
+    Args:
+        buckets: Bucket states to report on (typically a speculative result)
+        consume: Amount requested per limit (limit_name -> tokens)
+        now_ms: Current timestamp for refill calculation
     """
     statuses: list[LimitStatus] = []
     for state in buckets:
-        amount = consume.get(state.limit_name, 0)
-        if amount == 0:
+        if state.limit_name not in consume:
             continue
-        limit = Limit.from_bucket_state(state)
-        status = build_limit_status(
-            entity_id=state.entity_id,
-            resource=state.resource,
-            limit=limit,
-            state=state,
-            requested=amount,
-            now_ms=now_ms,
+        statuses.append(
+            build_limit_status(
+                entity_id=state.entity_id,
+                resource=state.resource,
+                limit=Limit.from_bucket_state(state),
+                state=state,
+                requested=consume[state.limit_name],
+                now_ms=now_ms,
+            )
         )
-        statuses.append(status)
-
-    any_exceeded = any(s.exceeded for s in statuses)
-    return (not any_exceeded, statuses)
+    return statuses
