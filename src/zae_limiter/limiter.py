@@ -1014,17 +1014,6 @@ class RateLimiter:
             await self._compensate_child(entity_id, resource, consume, result.shard_id)
             raise ResourceDisabled(entity_id=parent_id, resource=resource, level="bucket")
 
-        # The parent's own wcu is exhausted: spread the parent, exactly as the
-        # child path does for a hot child (issue #474). Nothing bumped the
-        # parent before, so a high-fanout parent never left shard 0.
-        if parent_result.failure_reason in (
-            SpeculativeFailureReason.WCU_EXHAUSTED,
-            SpeculativeFailureReason.BOTH_EXHAUSTED,
-        ):
-            parent_shard, parent_shard_count = await self._shard_after_wcu_exhaustion(
-                parent_id, resource, parent_result, now_ms
-            )
-
         if parent_result.old_buckets is None:
             await self._compensate_child(entity_id, resource, consume, result.shard_id)
             return None, parent_shard
@@ -1041,6 +1030,21 @@ class RateLimiter:
             await self._compensate_child(entity_id, resource, consume, result.shard_id)
             child_statuses = declared_statuses(result.buckets, consume, now_ms)
             raise RateLimitExceeded(child_statuses + parent_statuses)
+
+        # Only now that the acquire is going to proceed may the parent's wcu
+        # exhaustion spread it, exactly as the child path spreads a hot child
+        # (issue #474) — nothing bumped the parent before, so a high-fanout
+        # parent never left shard 0. Doubling above the `would_help` gate would
+        # be a pure side effect: the shard it hands back is never created or
+        # read, and one doubling per rejection walks a parent sitting at its
+        # limit to MAX_SHARD_COUNT, shrinking every shard's share for good.
+        if parent_result.failure_reason in (
+            SpeculativeFailureReason.WCU_EXHAUSTED,
+            SpeculativeFailureReason.BOTH_EXHAUSTED,
+        ):
+            parent_shard, parent_shard_count = await self._shard_after_wcu_exhaustion(
+                parent_id, resource, parent_result, now_ms
+            )
 
         # Refill would help — build child entries for parent-only slow path
         entries: list[LeaseEntry] = []

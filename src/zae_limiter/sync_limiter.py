@@ -821,13 +821,6 @@ class SyncRateLimiter:
         if parent_result.failure_reason == SpeculativeFailureReason.DISABLED:
             self._compensate_child(entity_id, resource, consume, result.shard_id)
             raise ResourceDisabled(entity_id=parent_id, resource=resource, level="bucket")
-        if parent_result.failure_reason in (
-            SpeculativeFailureReason.WCU_EXHAUSTED,
-            SpeculativeFailureReason.BOTH_EXHAUSTED,
-        ):
-            parent_shard, parent_shard_count = self._shard_after_wcu_exhaustion(
-                parent_id, resource, parent_result, now_ms
-            )
         if parent_result.old_buckets is None:
             self._compensate_child(entity_id, resource, consume, result.shard_id)
             return (None, parent_shard)
@@ -842,6 +835,13 @@ class SyncRateLimiter:
             self._compensate_child(entity_id, resource, consume, result.shard_id)
             child_statuses = declared_statuses(result.buckets, consume, now_ms)
             raise RateLimitExceeded(child_statuses + parent_statuses)
+        if parent_result.failure_reason in (
+            SpeculativeFailureReason.WCU_EXHAUSTED,
+            SpeculativeFailureReason.BOTH_EXHAUSTED,
+        ):
+            parent_shard, parent_shard_count = self._shard_after_wcu_exhaustion(
+                parent_id, resource, parent_result, now_ms
+            )
         entries: list[LeaseEntry] = []
         for state in result.buckets:
             if state.limit_name not in consume:

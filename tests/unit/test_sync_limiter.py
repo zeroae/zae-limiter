@@ -6141,6 +6141,39 @@ class TestCascadeParentSharding:
             ExpressionAttributeValues={":hour": {"N": "3600000"}, ":one": {"N": "1"}},
         )
 
+    @staticmethod
+    def _drain_wcu(repo, entity_id: str, shard_id: int) -> None:
+        """Zero this shard's wcu and slow its refill to once an hour.
+
+        A drained balance that refill cannot restore is what the client reads
+        as a hot partition (ADR-133); the stock 1000/s rate would restore a
+        write on any elapsed millisecond. ``rf`` is shared by every limit on
+        the item, so pinning it to now also freezes the app limits.
+        """
+        from zae_limiter import schema
+
+        client = repo._get_client()
+        client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, "gpt-4", shard_id)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="SET #wcu = :zero, #rf = :rf, #ra = :one, #rp = :hour",
+            ExpressionAttributeNames={
+                "#wcu": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK),
+                "#rf": schema.BUCKET_FIELD_RF,
+                "#ra": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_RA),
+                "#rp": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_RP),
+            },
+            ExpressionAttributeValues={
+                ":zero": {"N": "0"},
+                ":rf": {"N": str(int(time.time() * 1000))},
+                ":one": {"N": "1"},
+                ":hour": {"N": "3600000"},
+            },
+        )
+
     def _seed(
         self,
         sync_limiter,
@@ -6293,6 +6326,30 @@ class TestCascadeParentSharding:
         assert self._n(item0, "rpm", schema.BUCKET_FIELD_TK) == 0, (
             "a parent shard the fast path never judged must not be written"
         )
+
+    def test_rejected_cascade_never_doubles_the_parent(self, sync_limiter):
+        """A doubling on the way to a rejection is a pure side effect: nothing
+        creates or reads the shard it hands back. Repeating it once per
+        rejection walks a parent sitting at its limit from 1 to
+        MAX_SHARD_COUNT (``_learn_shard_count`` is monotonic, nothing shrinks
+        it), and every shard's share is then `capacity // 32` forever — the
+        "an exhausted shard must not drive doubling forever" failure ADR-133's
+        cap is meant to prevent, which the cap only guards for the
+        wcu-would-refill case."""
+        from zae_limiter import schema
+
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        repo = self._seed(sync_limiter, limit, parent_shard_count=1, parent_tokens_milli=0)
+        ns = repo._namespace_id
+        self._drain_wcu(repo, "parent-1", 0)
+        for _ in range(3):
+            with pytest.raises(RateLimitExceeded):
+                with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+                    pass
+        assert repo._entity_cache[ns, "parent-1"][2]["gpt-4"] == 1
+        item = self._raw_item(repo, "parent-1", 0)
+        assert item["shard_count"]["N"] == "1", "a rejected acquire must not shard the parent"
+        assert self._n(item, schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK) == 0
 
     def test_parent_wcu_exhaustion_doubles_the_parents_shard_count(self, sync_limiter):
         """A hot cascade parent must spread: the parent's own wcu exhaustion
