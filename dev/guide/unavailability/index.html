@@ -3621,9 +3621,12 @@
 <h3 id="no-op-lease-behavior">No-Op Lease Behavior<a class="headerlink" href="#no-op-lease-behavior" title="Permanent link">&para;</a></h3>
 <p>When <code>ALLOW</code> activates due to infrastructure failure:</p>
 <ul>
-<li>A <strong>no-op lease</strong> is returned with no bucket entries</li>
-<li><code>lease.consume()</code>, <code>lease.adjust()</code>, and <code>lease.release()</code> silently do nothing</li>
-<li>Your code cannot detect degraded mode from the lease itself</li>
+<li>A <strong>no-op lease</strong> is returned with no bucket entries and <code>lease.degraded == True</code></li>
+<li><code>lease.consume()</code>, <code>lease.adjust()</code>, and <code>lease.release()</code> silently do nothing —
+  the <a href="../basic-usage/#adjusting-consumption">declared-scope check</a> that normally
+  reports keys outside <code>consume</code> is skipped for a degraded lease, so an outage never
+  turns into a warning storm</li>
+<li><code>lease.degraded</code> is the only signal; a real lease with no entries is not degraded</li>
 </ul>
 <p>To detect and log degraded operations, wrap with custom error handling:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">acquire_with_metrics</span><span class="p">(</span><span class="n">limiter</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>

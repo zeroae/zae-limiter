@@ -3510,6 +3510,10 @@
 </span><span id="__span-2-15"><a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="k">except</span> <span class="n">RateLimitExceeded</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
 </span><span id="__span-2-16"><a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a>    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Retry after: </span><span class="si">{</span><span class="n">e</span><span class="o">.</span><span class="n">retry_after_seconds</span><span class="si">}</span><span class="s2">s"</span><span class="p">)</span>
 </span></code></pre></div>
+<p><code>lease.adjust()</code>, <code>lease.consume()</code>, and <code>lease.release()</code> accept only limits named in
+<code>consume</code> (an estimate of <code>0</code> counts). Other keys are ignored with a <code>FutureWarning</code>
+and become a <code>ValidationError</code> in v1.0.0. See
+<a href="../guide/basic-usage/#adjusting-consumption">Adjusting Consumption</a>.</p>
 <h3 id="handling-exceptions">Handling Exceptions<a class="headerlink" href="#handling-exceptions" title="Permanent link">&para;</a></h3>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">zae_limiter</span><span class="w"> </span><span class="kn">import</span> <span class="n">RateLimitExceeded</span><span class="p">,</span> <span class="n">RateLimiterUnavailable</span>
 </span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>

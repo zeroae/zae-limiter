@@ -5450,8 +5450,10 @@ and each stamp are idempotent.</p>
 </span></code></pre></div>
 <div class="admonition note">
 <p class="admonition-title">Single <code>limits</code> array</p>
-<p>All limits (both exceeded and passed) are returned in a single <code>limits</code> array.
-Use the <code>exceeded</code> field to distinguish between violations and passed limits.</p>
+<p>Every limit declared in <code>acquire(consume=...)</code> — both exceeded and passed — is
+returned in a single <code>limits</code> array. Limits you did not name in <code>consume</code> are
+never reported, since they never gate admission. Use the <code>exceeded</code> field to
+distinguish between violations and passed limits.</p>
 </div>
 
 
