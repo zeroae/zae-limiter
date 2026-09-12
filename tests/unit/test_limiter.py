@@ -7068,14 +7068,28 @@ class TestClientShardCreation:
 
     async def test_cascade_shard_retry_charges_the_parent(self, limiter):
         """Warm cache: the parallel parent debit was compensated after the
-        child failed on shard 0; the shard retry must not then admit the child
-        alone. The slow path commits child shard 1 and the parent together."""
+        child failed on shard 0 (where a refill would help, so no fast
+        rejection); the shard retry must not then admit the child alone. The
+        slow path commits child shard 1 and the parent together."""
         from zae_limiter import schema
 
-        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        # 1 token/s; child shard 0 was drained 100 s ago -> refill would help
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=3600, refill_period_seconds=3600)
         cp_milli = self.CAPACITY * 1000
         repo = await self._seed_cascade_child(limiter, limit, parent_tokens_milli=cp_milli)
-        repo._entity_cache[(repo._namespace_id, "user-1")] = (True, "parent-1", {"gpt-4": 2})
+        ns = repo._namespace_id
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(ns, "user-1", "gpt-4", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="SET #rf = :rf",
+            ExpressionAttributeNames={"#rf": schema.BUCKET_FIELD_RF},
+            ExpressionAttributeValues={":rf": {"N": str(int(time.time() * 1000) - 100_000)}},
+        )
+        repo._entity_cache[(ns, "user-1")] = (True, "parent-1", {"gpt-4": 2})
 
         with patch("zae_limiter.repository.random.randrange", return_value=0):
             async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
