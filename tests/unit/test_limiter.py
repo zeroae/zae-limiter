@@ -7974,6 +7974,66 @@ class TestCascadeParentSharding:
             "a parent shard the fast path never judged must not be written"
         )
 
+    async def test_learning_the_parent_keeps_its_cascade_metadata(self, limiter):
+        """Growing the parent's shard_count must not rewrite its cascade
+        metadata. A parent shard created by a *child's* cascade slow path is
+        stamped ``cascade=False, parent_id=None`` (`_do_acquire` only
+        denormalizes the acquiring entity's own flags), so learning
+        ``meta`` from such an item downgrades the parent's cache entry and the
+        next ``acquire(parent)`` silently stops debiting the grandparent for
+        the life of the process — ``_entity_cache`` has no TTL."""
+        from zae_limiter import schema
+
+        repo = limiter._repository
+        ns = repo._namespace_id
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        await limiter.create_entity("grandparent-1")
+        await limiter.create_entity("parent-1", parent_id="grandparent-1", cascade=True)
+        await limiter.create_entity("user-1", parent_id="parent-1", cascade=True)
+        await limiter.set_system_defaults([limit])
+        limiter._speculative_writes = True
+
+        # The parent's own acquire creates its shard 0 (stamped cascade=True)
+        # plus the grandparent's, and caches (cascade=True, "grandparent-1")
+        # from the authoritative entity META record.
+        async with limiter.acquire("parent-1", "gpt-4", {"rpm": 1}):
+            pass
+        assert repo._entity_cache[(ns, "parent-1")][:2] == (True, "grandparent-1")
+        # One child acquire to warm the child's cache for the parallel path
+        async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+            pass
+
+        # Parent shard 1 as a child's cascade slow path creates it: no cascade
+        # flag, no parent_id. The parent's cached count grows to cover it.
+        now_ms = int(time.time() * 1000)
+        state = BucketState.from_limit("parent-1", "gpt-4", limit, now_ms, 2)
+        await repo.transact_write(
+            [
+                repo.build_composite_create(
+                    "parent-1", "gpt-4", [state], now_ms, shard_id=1, shard_count=2
+                )
+            ]
+        )
+        repo._entity_cache[(ns, "parent-1")] = (True, "grandparent-1", {"gpt-4": 2})
+
+        with patch("zae_limiter.repository.random.randrange", return_value=1):
+            # Warm cascade acquire drawing the parent's shard 1
+            async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+                pass
+            assert repo._entity_cache[(ns, "parent-1")][:2] == (True, "grandparent-1"), (
+                "a bucket item must not rewrite the parent's cascade metadata"
+            )
+
+            before = self._n(
+                await self._raw_item(repo, "grandparent-1", 0), "rpm", schema.BUCKET_FIELD_TK
+            )
+            async with limiter.acquire("parent-1", "gpt-4", {"rpm": 1}) as lease:
+                assert "grandparent-1" in {e.entity_id for e in lease.entries}
+        after = self._n(
+            await self._raw_item(repo, "grandparent-1", 0), "rpm", schema.BUCKET_FIELD_TK
+        )
+        assert after == before - 1000, "the grandparent must still be debited"
+
     async def test_exhausted_parent_shard_does_not_pin_the_slow_path(self, limiter):
         """An exhausted parent shard must not be handed to the slow path. Each
         shard holds its own share and ADR-134 re-picks on every call, so

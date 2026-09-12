@@ -6327,6 +6327,53 @@ class TestCascadeParentSharding:
             "a parent shard the fast path never judged must not be written"
         )
 
+    def test_learning_the_parent_keeps_its_cascade_metadata(self, sync_limiter):
+        """Growing the parent's shard_count must not rewrite its cascade
+        metadata. A parent shard created by a *child's* cascade slow path is
+        stamped ``cascade=False, parent_id=None`` (`_do_acquire` only
+        denormalizes the acquiring entity's own flags), so learning
+        ``meta`` from such an item downgrades the parent's cache entry and the
+        next ``acquire(parent)`` silently stops debiting the grandparent for
+        the life of the process — ``_entity_cache`` has no TTL."""
+        from zae_limiter import schema
+
+        repo = sync_limiter._repository
+        ns = repo._namespace_id
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        sync_limiter.create_entity("grandparent-1")
+        sync_limiter.create_entity("parent-1", parent_id="grandparent-1", cascade=True)
+        sync_limiter.create_entity("user-1", parent_id="parent-1", cascade=True)
+        sync_limiter.set_system_defaults([limit])
+        sync_limiter._speculative_writes = True
+        with sync_limiter.acquire("parent-1", "gpt-4", {"rpm": 1}):
+            pass
+        assert repo._entity_cache[ns, "parent-1"][:2] == (True, "grandparent-1")
+        with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+            pass
+        now_ms = int(time.time() * 1000)
+        state = BucketState.from_limit("parent-1", "gpt-4", limit, now_ms, 2)
+        repo.transact_write(
+            [
+                repo.build_composite_create(
+                    "parent-1", "gpt-4", [state], now_ms, shard_id=1, shard_count=2
+                )
+            ]
+        )
+        repo._entity_cache[ns, "parent-1"] = (True, "grandparent-1", {"gpt-4": 2})
+        with patch("zae_limiter.sync_repository.random.randrange", return_value=1):
+            with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+                pass
+            assert repo._entity_cache[ns, "parent-1"][:2] == (True, "grandparent-1"), (
+                "a bucket item must not rewrite the parent's cascade metadata"
+            )
+            before = self._n(
+                self._raw_item(repo, "grandparent-1", 0), "rpm", schema.BUCKET_FIELD_TK
+            )
+            with sync_limiter.acquire("parent-1", "gpt-4", {"rpm": 1}) as lease:
+                assert "grandparent-1" in {e.entity_id for e in lease.entries}
+        after = self._n(self._raw_item(repo, "grandparent-1", 0), "rpm", schema.BUCKET_FIELD_TK)
+        assert after == before - 1000, "the grandparent must still be debited"
+
     def test_exhausted_parent_shard_does_not_pin_the_slow_path(self, sync_limiter):
         """An exhausted parent shard must not be handed to the slow path. Each
         shard holds its own share and ADR-134 re-picks on every call, so

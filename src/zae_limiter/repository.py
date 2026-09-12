@@ -2491,12 +2491,16 @@ class Repository:
                     # A failure learns inside _speculative_consume_single; a
                     # success must too, or the parent's cached count never
                     # grows and every later draw lands back on shard 0.
-                    self._learn_shard_count(
-                        parent_id_cached,
-                        resource,
-                        parent_result.shard_count,
-                        meta=(parent_result.cascade, parent_result.parent_id),
-                    )
+                    #
+                    # No `meta`: the parent's shard N>0 was most likely created
+                    # by a *child's* cascade slow path, which denormalizes only
+                    # the acquiring entity's own flags and so stamps the parent
+                    # cascade=False / parent_id=None. Passing that as meta
+                    # would downgrade the parent's cache entry, and the next
+                    # acquire(parent) would silently stop debiting the
+                    # grandparent (the cache has no TTL). Without meta this
+                    # still grows the count on an entry that already exists.
+                    self._learn_shard_count(parent_id_cached, resource, parent_result.shard_count)
                 if child_result.success:
                     self._learn_shard_count(
                         entity_id,

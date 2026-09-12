@@ -2047,12 +2047,7 @@ class SyncRepository:
                     ),
                 )
                 if parent_result.success:
-                    self._learn_shard_count(
-                        parent_id_cached,
-                        resource,
-                        parent_result.shard_count,
-                        meta=(parent_result.cascade, parent_result.parent_id),
-                    )
+                    self._learn_shard_count(parent_id_cached, resource, parent_result.shard_count)
                 if child_result.success:
                     self._learn_shard_count(
                         entity_id,
