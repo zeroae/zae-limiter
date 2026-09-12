@@ -5736,8 +5736,13 @@ class TestClientShardCreation:
         balance of shard 0 alone (which now holds at most capacity // N)."""
         limit = Limit.custom("rpm", 100, refill_amount=1, refill_period_seconds=3600)
         now_ms = int(time.time() * 1000)
-        self._seed_shards(sync_limiter, 2, limit, tokens_milli=50000, rf_ms=now_ms)
+        repo = self._seed_shards(sync_limiter, 2, limit, tokens_milli=50000, rf_ms=now_ms)
+        other = BucketState.from_limit("user-1", "other", limit, now_ms)
+        other.tokens_milli = 0
+        repo.transact_write([repo.build_composite_create("user-1", "other", [other], now_ms)])
         assert sync_limiter.available("user-1", "gpt-4") == {"rpm": 100}
+        assert sync_limiter.available("user-1", "other") == {"rpm": 0}
+        assert sync_limiter.available("user-1", "unused") == {"rpm": 100}
 
     def test_create_race_lost_to_aggregator_consumes_once(self, sync_limiter):
         """If the aggregator's Path 2 wins the create, the client retries as a
