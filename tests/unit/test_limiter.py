@@ -8113,6 +8113,34 @@ class TestCascadeParentSharding:
         assert shard2["shard_count"]["N"] == "4"
         assert self._n(shard2, "rpm", schema.BUCKET_FIELD_TK) == self.CAPACITY * 1000 // 4 - 1000
 
+    async def test_parent_doubling_skips_the_futile_parent_only_attempt(self, limiter):
+        """A doubling hands back a shard from `range(old, new)`, which by
+        construction does not exist yet, so a parent-only attempt could only
+        resolve limits, BatchGet a miss and return None before the caller falls
+        through to the full slow path anyway. Skip it."""
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        repo = await self._seed(limiter, limit, parent_shard_count=1)
+        # Parent wcu drained with an hourly refill, rpm untouched: a hot
+        # partition whose app limit still has room, so the acquire proceeds.
+        await self._drain_wcu(repo, "parent-1", 0)
+
+        parent_only_shards: list[int] = []
+        original = limiter._try_parent_only_acquire
+
+        async def spy(parent_id, resource, consume, child_entries, parent_shard, parent_count):
+            parent_only_shards.append(parent_shard)
+            return await original(
+                parent_id, resource, consume, child_entries, parent_shard, parent_count
+            )
+
+        limiter._try_parent_only_acquire = spy
+        async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+            parent_entry = next(e for e in lease.entries if e.entity_id == "parent-1")
+            assert parent_entry._shard_id == 1
+
+        assert parent_only_shards == [], "a shard the doubling just added cannot exist yet"
+        assert await self._raw_item(repo, "parent-1", 1) is not None
+
     async def test_rejected_cascade_never_doubles_the_parent(self, limiter):
         """A doubling on the way to a rejection is a pure side effect: nothing
         creates or reads the shard it hands back. Repeating it once per

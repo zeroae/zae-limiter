@@ -853,7 +853,8 @@ class SyncRateLimiter:
                 parent_id, resource, parent_result, now_ms
             )
             if parent_shard != parent_result.shard_id:
-                parent_hint = parent_shard
+                self._compensate_child(entity_id, resource, consume, result.shard_id)
+                return (None, parent_shard)
         entries: list[LeaseEntry] = []
         for state in result.buckets:
             if state.limit_name not in consume:

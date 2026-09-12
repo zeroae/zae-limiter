@@ -1061,7 +1061,12 @@ class RateLimiter:
                 parent_id, resource, parent_result, now_ms
             )
             if parent_shard != parent_result.shard_id:
-                parent_hint = parent_shard
+                # The doubling drew from range(old_count, new_count), so this
+                # shard does not exist yet: a parent-only attempt could only
+                # resolve limits, read a miss and return None. Hand the child
+                # straight to the full slow path, which creates it.
+                await self._compensate_child(entity_id, resource, consume, result.shard_id)
+                return None, parent_shard
 
         # Refill would help — build child entries for parent-only slow path
         entries: list[LeaseEntry] = []
