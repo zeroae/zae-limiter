@@ -2827,6 +2827,106 @@ class TestRepositoryEntityDuplicates:
         assert entity is None
 
 
+class TestResetBucket:
+    """Tests for Repository.reset_bucket (issue #470)."""
+
+    async def _put_bucket(self, repo, entity_id, resource, shard_id=0, shard_count=1):
+        now_ms = int(time.time() * 1000)
+        limits = [Limit.per_minute("rpm", 100)]
+        states = [BucketState.from_limit(entity_id, resource, lim, now_ms) for lim in limits]
+        put_item = repo.build_composite_create(
+            entity_id, resource, states, now_ms, shard_id=shard_id, shard_count=shard_count
+        )
+        await repo.transact_write([put_item])
+
+    @pytest.mark.asyncio
+    async def test_reset_bucket_deletes_the_bucket_item(self, repo):
+        await self._put_bucket(repo, "user-1", "gpt-4")
+        assert await repo.get_buckets("user-1", "gpt-4") != []
+
+        count = await repo.reset_bucket("user-1", "gpt-4")
+
+        assert count == 1
+        assert await repo.get_buckets("user-1", "gpt-4") == []
+
+    @pytest.mark.asyncio
+    async def test_reset_bucket_is_a_noop_for_missing_bucket(self, repo):
+        assert await repo.reset_bucket("nonexistent", "gpt-4") == 0
+
+    @pytest.mark.asyncio
+    async def test_reset_bucket_scoped_to_one_resource(self, repo):
+        await self._put_bucket(repo, "user-1", "gpt-4")
+        await self._put_bucket(repo, "user-1", "claude-3")
+
+        assert await repo.reset_bucket("user-1", "gpt-4") == 1
+
+        assert await repo.get_buckets("user-1", "gpt-4") == []
+        assert await repo.get_buckets("user-1", "claude-3") != []
+
+    @pytest.mark.asyncio
+    async def test_reset_bucket_deletes_all_shards(self, repo):
+        for shard_id in range(4):
+            await self._put_bucket(repo, "user-1", "gpt-4", shard_id=shard_id, shard_count=4)
+
+        count = await repo.reset_bucket("user-1", "gpt-4")
+
+        assert count == 4
+        for shard_id in range(4):
+            assert await repo.get_buckets("user-1", "gpt-4", shard_id=shard_id) == []
+
+    @pytest.mark.asyncio
+    async def test_reset_bucket_does_not_touch_config(self, repo):
+        await repo.set_limits("user-1", [Limit.per_minute("rpm", 500)], resource="gpt-4")
+        await self._put_bucket(repo, "user-1", "gpt-4")
+
+        await repo.reset_bucket("user-1", "gpt-4")
+
+        limits = await repo.get_limits("user-1", resource="gpt-4")
+        assert len(limits) == 1
+        assert limits[0].capacity == 500
+
+    @pytest.mark.asyncio
+    async def test_reset_bucket_does_not_touch_parent_bucket(self, repo):
+        """A cascade child's reset must not touch the parent's own bucket."""
+        await repo.create_entity("parent-1")
+        await repo.create_entity("child-1", parent_id="parent-1", cascade=True)
+        await self._put_bucket(repo, "parent-1", "gpt-4")
+        await self._put_bucket(repo, "child-1", "gpt-4")
+
+        assert await repo.reset_bucket("child-1", "gpt-4") == 1
+
+        assert await repo.get_buckets("child-1", "gpt-4") == []
+        assert await repo.get_buckets("parent-1", "gpt-4") != []
+
+    @pytest.mark.asyncio
+    async def test_reset_bucket_logs_audit_event(self, repo):
+        await self._put_bucket(repo, "user-1", "gpt-4")
+
+        await repo.reset_bucket("user-1", "gpt-4", principal="admin@example.com")
+
+        events = await repo.get_audit_events("user-1")
+        assert len(events) == 1
+        event = events[0]
+        assert event.action == AuditAction.BUCKET_RESET
+        assert event.entity_id == "user-1"
+        assert event.resource == "gpt-4"
+        assert event.principal == "admin@example.com"
+        assert event.details["buckets_deleted"] == 1
+
+    @pytest.mark.asyncio
+    async def test_reset_bucket_no_audit_event_when_noop(self, repo):
+        await repo.reset_bucket("nonexistent", "gpt-4")
+        events = await repo.get_audit_events("nonexistent")
+        assert events == []
+
+    @pytest.mark.asyncio
+    async def test_reset_bucket_rejects_invalid_resource_name(self, repo):
+        from zae_limiter.exceptions import ValidationError
+
+        with pytest.raises(ValidationError):
+            await repo.reset_bucket("user-1", "bad#resource")
+
+
 class TestRepositoryTableOperations:
     """Tests for table-level operations."""
 

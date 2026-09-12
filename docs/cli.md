@@ -236,6 +236,32 @@ Status: enabled (explicit override)
 No `Status:` line is printed when the level has no explicit `disabled` value (i.e. it
 inherits from elsewhere in the resolution walk).
 
+## Resetting Entity Usage
+
+`entity reset-bucket` clears an entity's accumulated usage for one resource, without touching
+its stored limits. The next request recreates the bucket at full capacity under whatever limits
+are configured now. This is the usual follow-up to raising an entity's limits, when the usage
+accrued under the old limits should not carry forward.
+
+```bash
+# Reset a user's usage for one resource
+zae-limiter entity reset-bucket user-123 --resource gpt-4
+```
+
+```
+Reset usage for entity 'user-123' on resource 'gpt-4' (2 buckets deleted)
+```
+
+Unlike `entity disable`/`enable`/`clear-disabled`, `--resource` / `-r` is **required** — usage
+is reset one resource at a time, and there is no "all resources" mode. Every shard backing that
+entity/resource pair is deleted, which is why the reported count can exceed one.
+
+Resetting an entity that has never acquired the resource (or was already reset) is a harmless
+no-op reporting `0 buckets deleted`. Resetting does **not** re-admit a disabled entity: the
+recreated bucket re-resolves `disabled` from config, so a disabled entity or resource keeps
+raising `ResourceDisabled`. For a cascading child, the parent keeps its own usage — reset the
+parent separately if that is also intended.
+
 ## Namespace Lifecycle
 
 The `namespace` command group manages the namespace registry:

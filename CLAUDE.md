@@ -1121,6 +1121,40 @@ never clobbers a carve-out made out of band directly against the table.
 
 See [ADR-125](docs/adr/125-resource-disable.md) for the full design and alternatives considered.
 
+### Resetting Bucket Usage (Issue #470)
+
+`Repository.reset_bucket(entity_id, resource, principal=None) -> int` clears an entity's
+accumulated usage for **one** resource by deleting its bucket item(s) — every shard, via the
+same `_discover_entity_bucket_pks` GSI3 walk the ADR-125 fan-out uses. The next `acquire()`
+misses the bucket, falls to the slow path, and recreates it at full capacity under whatever
+limits are configured *now*, with `shard_count` back to 1. Intended for the "operator just
+raised an entity's limits and does not want old usage carried forward" case.
+
+- **Token state only.** It neither reads nor writes limit config or `disabled`, and is
+  unrelated to ADR-125 — resetting usage is not a config change.
+- **Not a disable bypass.** Deleting the bucket also drops its `disabled` stamp, but the
+  recreating slow path re-runs `resolve_disabled()` against config, so a disabled
+  entity/resource still raises `ResourceDisabled`.
+- **One resource at a time.** `resource` is required; there is no "all resources" mode,
+  unlike `disable_entity(resource=None)`.
+- **Cascade is out of scope.** A cascading child's parent owns a separate bucket item;
+  resetting the child leaves the parent's usage alone.
+- **No-op when nothing exists** (never acquired, or already reset): returns 0 and logs no
+  audit event. Otherwise logs `AuditAction.BUCKET_RESET` (`"bucket_reset"`) with
+  `details={"buckets_deleted": n}`.
+- **Repository-only**, like `disable_entity`/`enable_entity`/`clear_entity_disabled` — there
+  is deliberately no `RateLimiter`/`SyncRateLimiter` wrapper.
+  `SyncRepository.reset_bucket()` is generated from the async source.
+
+**CLI:**
+
+```bash
+zae-limiter entity reset-bucket ENTITY_ID --resource RESOURCE
+```
+
+`--resource`/`-r` is required here, unlike `entity disable|enable|clear-disabled` where
+omitting it means "all resources for that entity".
+
 ### Namespace Registry
 
 The namespace registry stores bidirectional records under the reserved namespace `_` (constant: `RESERVED_NAMESPACE`):

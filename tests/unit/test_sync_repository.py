@@ -2065,6 +2065,85 @@ class TestRepositoryEntityDuplicates:
         assert entity is None
 
 
+class TestResetBucket:
+    """Tests for SyncRepository.reset_bucket (issue #470)."""
+
+    def _put_bucket(self, repo, entity_id, resource, shard_id=0, shard_count=1):
+        now_ms = int(time.time() * 1000)
+        limits = [Limit.per_minute("rpm", 100)]
+        states = [BucketState.from_limit(entity_id, resource, lim, now_ms) for lim in limits]
+        put_item = repo.build_composite_create(
+            entity_id, resource, states, now_ms, shard_id=shard_id, shard_count=shard_count
+        )
+        repo.transact_write([put_item])
+
+    def test_reset_bucket_deletes_the_bucket_item(self, repo):
+        self._put_bucket(repo, "user-1", "gpt-4")
+        assert repo.get_buckets("user-1", "gpt-4") != []
+        count = repo.reset_bucket("user-1", "gpt-4")
+        assert count == 1
+        assert repo.get_buckets("user-1", "gpt-4") == []
+
+    def test_reset_bucket_is_a_noop_for_missing_bucket(self, repo):
+        assert repo.reset_bucket("nonexistent", "gpt-4") == 0
+
+    def test_reset_bucket_scoped_to_one_resource(self, repo):
+        self._put_bucket(repo, "user-1", "gpt-4")
+        self._put_bucket(repo, "user-1", "claude-3")
+        assert repo.reset_bucket("user-1", "gpt-4") == 1
+        assert repo.get_buckets("user-1", "gpt-4") == []
+        assert repo.get_buckets("user-1", "claude-3") != []
+
+    def test_reset_bucket_deletes_all_shards(self, repo):
+        for shard_id in range(4):
+            self._put_bucket(repo, "user-1", "gpt-4", shard_id=shard_id, shard_count=4)
+        count = repo.reset_bucket("user-1", "gpt-4")
+        assert count == 4
+        for shard_id in range(4):
+            assert repo.get_buckets("user-1", "gpt-4", shard_id=shard_id) == []
+
+    def test_reset_bucket_does_not_touch_config(self, repo):
+        repo.set_limits("user-1", [Limit.per_minute("rpm", 500)], resource="gpt-4")
+        self._put_bucket(repo, "user-1", "gpt-4")
+        repo.reset_bucket("user-1", "gpt-4")
+        limits = repo.get_limits("user-1", resource="gpt-4")
+        assert len(limits) == 1
+        assert limits[0].capacity == 500
+
+    def test_reset_bucket_does_not_touch_parent_bucket(self, repo):
+        """A cascade child's reset must not touch the parent's own bucket."""
+        repo.create_entity("parent-1")
+        repo.create_entity("child-1", parent_id="parent-1", cascade=True)
+        self._put_bucket(repo, "parent-1", "gpt-4")
+        self._put_bucket(repo, "child-1", "gpt-4")
+        assert repo.reset_bucket("child-1", "gpt-4") == 1
+        assert repo.get_buckets("child-1", "gpt-4") == []
+        assert repo.get_buckets("parent-1", "gpt-4") != []
+
+    def test_reset_bucket_logs_audit_event(self, repo):
+        self._put_bucket(repo, "user-1", "gpt-4")
+        repo.reset_bucket("user-1", "gpt-4", principal="admin@example.com")
+        events = repo.get_audit_events("user-1")
+        assert len(events) == 1
+        event = events[0]
+        assert event.action == AuditAction.BUCKET_RESET
+        assert event.entity_id == "user-1"
+        assert event.resource == "gpt-4"
+        assert event.principal == "admin@example.com"
+        assert event.details["buckets_deleted"] == 1
+
+    def test_reset_bucket_no_audit_event_when_noop(self, repo):
+        repo.reset_bucket("nonexistent", "gpt-4")
+        events = repo.get_audit_events("nonexistent")
+        assert events == []
+
+    def test_reset_bucket_rejects_invalid_resource_name(self, repo):
+        from zae_limiter.exceptions import ValidationError
+
+        with pytest.raises(ValidationError):
+            repo.reset_bucket("user-1", "bad#resource")
+
+
 class TestRepositoryTableOperations:
     """Tests for table-level operations."""
 

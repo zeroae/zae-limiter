@@ -340,6 +340,21 @@ class SyncRepositoryProtocol(Protocol):
         """
         ...
 
+    def reset_bucket(self, entity_id: str, resource: str, principal: str | None = None) -> int:
+        """Reset an entity's bucket usage for one resource to a blank slate.
+
+        Deletes the bucket item(s) backing (entity_id, resource) — every
+        shard under write-sharding (GHSA-76rv) — so the next acquire()
+        recreates the bucket on the slow path at full capacity under
+        whatever limits are configured now, with shard_count collapsed
+        back to 1. A missing bucket is a no-op. Does not touch config, or
+        a cascading child's parent bucket.
+
+        Returns:
+            Number of bucket items deleted (0 if there was nothing to reset).
+        """
+        ...
+
     def get_or_create_bucket(self, entity_id: str, resource: str, limit: "Limit") -> "BucketState":
         """
         Get an existing bucket or create a new one with the given limit.
