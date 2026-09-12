@@ -2343,6 +2343,7 @@ class SyncRepository:
                 ReturnValuesOnConditionCheckFailure="ALL_OLD",
             )
             effective_count = new_count
+            self._propagate_shard_count(entity_id, resource, current_count, new_count)
             if new_count > schema.WCU_SHARD_WARN_THRESHOLD:
                 logger.warning(
                     "High shard count after doubling: entity_id=%s resource=%s shard_count=%d threshold=%d",
@@ -2359,6 +2360,56 @@ class SyncRepository:
             else:
                 raise
         return self._learn_shard_count(entity_id, resource, effective_count, meta=meta)
+
+    def _propagate_shard_count(
+        self, entity_id: str, resource: str, old_count: int, new_count: int
+    ) -> int:
+        """Stamp ``new_count`` on the shards that already exist.
+
+        Mirrors the aggregator's Path 1 (``processor.propagate_shard_count``)
+        so write sharding is self-consistent without the aggregator: every
+        shard must agree on ``shard_count`` because each refills toward
+        ``capacity_milli // shard_count`` (issue #439). Shards
+        ``old_count..new_count-1`` are not written here — they do not exist
+        yet and are created with the current count by whoever draws them.
+
+        The writes are independent single-item conditional updates issued
+        concurrently. ``shard_count < :new`` makes each one idempotent and
+        monotonic, so racing with the aggregator or another client is a no-op
+        rather than a conflict.
+
+        Returns:
+            The number of shards actually updated.
+        """
+        if old_count <= 1:
+            return 0
+        client = self._get_client()
+
+        def stamp(target_shard: int) -> int:
+            try:
+                client.update_item(
+                    TableName=self.table_name,
+                    Key={
+                        "PK": {
+                            "S": schema.pk_bucket(
+                                self._namespace_id, entity_id, resource, target_shard
+                            )
+                        },
+                        "SK": {"S": schema.sk_state()},
+                    },
+                    UpdateExpression="SET shard_count = :new",
+                    ConditionExpression="shard_count < :new",
+                    ExpressionAttributeValues={":new": {"N": str(new_count)}},
+                )
+                return 1
+            except ClientError as e:
+                code = e.response.get("Error", {}).get("Code")
+                if code == "ConditionalCheckFailedException":
+                    return 0
+                raise
+
+        results = self._run_in_executor(*[lambda n=n: stamp(n) for n in range(1, old_count)])
+        return sum(results)
 
     def set_limits(
         self,

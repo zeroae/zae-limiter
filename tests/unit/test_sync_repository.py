@@ -2864,6 +2864,61 @@ class TestBumpShardCount:
         cache_key = (repo._namespace_id, "e1")
         assert repo._entity_cache[cache_key][2]["gpt-4"] == 2
 
+    def test_bump_propagates_the_new_count_to_existing_shards(self, repo):
+        """A won bump stamps the new count on the shards that already exist.
+
+        Every shard refills toward ``capacity_milli // shard_count``, so a
+        shard left on a stale lower count would refill to a larger share and
+        the shares would sum to more than the limit. The aggregator's Path 1
+        does this from the stream; with --no-aggregator nothing else would
+        (issue #439).
+        """
+        now_ms = int(time.time() * 1000)
+        limits = [Limit.per_minute("rpm", 100000)]
+        for shard in (0, 1):
+            states = [BucketState.from_limit("e1", "gpt-4", lim, now_ms) for lim in limits]
+            repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        "e1", "gpt-4", states, now_ms, shard_id=shard, shard_count=2
+                    )
+                ]
+            )
+        assert repo.bump_shard_count("e1", "gpt-4", current_count=2) == 4
+        for shard in (0, 1):
+            bucket = repo.get_bucket("e1", "gpt-4", "rpm", shard_id=shard)
+            assert bucket is not None
+            assert bucket.shard_count == 4, f"shard {shard} kept a stale count"
+
+    def test_bump_propagation_is_monotonic(self, repo):
+        """Propagation never lowers a shard already at a higher count, so
+        racing the aggregator (or another client) is a no-op, not a conflict."""
+        now_ms = int(time.time() * 1000)
+        limits = [Limit.per_minute("rpm", 100000)]
+        for shard, count in ((0, 2), (1, 8)):
+            states = [BucketState.from_limit("e1", "gpt-4", lim, now_ms) for lim in limits]
+            repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        "e1", "gpt-4", states, now_ms, shard_id=shard, shard_count=count
+                    )
+                ]
+            )
+        repo.bump_shard_count("e1", "gpt-4", current_count=2)
+        bucket = repo.get_bucket("e1", "gpt-4", "rpm", shard_id=1)
+        assert bucket is not None
+        assert bucket.shard_count == 8, "propagation lowered a shard"
+
+    def test_bump_from_one_propagates_nothing(self, repo):
+        """At shard_count=1 there are no sibling shards to stamp."""
+        now_ms = int(time.time() * 1000)
+        limits = [Limit.per_minute("rpm", 100000)]
+        states = [BucketState.from_limit("e1", "gpt-4", lim, now_ms) for lim in limits]
+        repo.transact_write(
+            [repo.build_composite_create("e1", "gpt-4", states, now_ms, shard_id=0, shard_count=1)]
+        )
+        assert repo._propagate_shard_count("e1", "gpt-4", old_count=1, new_count=2) == 0
+
     def test_bump_shard_count_returns_current_on_race(self, repo):
         """When another client already doubled, the loser learns the winner's
         shard_count from the failed conditional write's ALL_OLD image, caches

@@ -643,6 +643,82 @@ class TestClientShardCreation:
         assert 0 in existing and len(existing) >= 3
         assert final == MAX_SHARD_COUNT
 
+    async def test_every_existing_shard_learns_the_final_count(
+        self, localstack_limiter, unique_name
+    ):
+        """After two real wcu-driven doublings, every shard that exists carries
+        the final ``shard_count`` and the per-shard shares still sum to at most
+        the configured limit.
+
+        Each shard refills toward ``cp // shard_count`` and by ``ra //
+        shard_count`` (``BucketState.effective_*``), so a shard left on a stale
+        lower count claims a *larger* share and the shares sum to more than the
+        configured limit — the entity would be admitted above its rate. With
+        ``--no-aggregator`` (this stack) the aggregator's Path 1 propagation is
+        not there to fix it, so the client that wins the bump must propagate
+        (issue #439).
+        """
+        from zae_limiter.models import Limit
+        from zae_limiter.schema import BUCKET_FIELD_RP, MAX_SHARD_COUNT
+
+        limiter = localstack_limiter
+        repo = limiter._repository
+        ns = repo._namespace_id
+        entity_id = f"shard-propagate-{unique_name}"
+        cp, ra = 10_000_000, 1_000_000
+        limit = Limit.custom("rpm", cp, refill_amount=ra, refill_period_seconds=3600)
+        await limiter.create_entity(entity_id)
+        await limiter.set_system_defaults([limit])
+        async with limiter.acquire(entity_id, "gpt-4", {"rpm": 1}):
+            pass  # creates shard 0
+
+        # Shard 0's wcu refills once an hour: it stays a hot partition, so every
+        # acquire that draws it drives a real doubling. Shards created later keep
+        # the default fast wcu refill and never exhaust, exactly as in production.
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={"PK": {"S": pk_bucket(ns, entity_id, "gpt-4", 0)}, "SK": {"S": sk_state()}},
+            UpdateExpression="SET #rp = :hour, #ra = :one, #tk = :zero",
+            ExpressionAttributeNames={
+                "#rp": bucket_attr(WCU_LIMIT_NAME, BUCKET_FIELD_RP),
+                "#ra": bucket_attr(WCU_LIMIT_NAME, BUCKET_FIELD_RA),
+                "#tk": bucket_attr(WCU_LIMIT_NAME, BUCKET_FIELD_TK),
+            },
+            ExpressionAttributeValues={
+                ":hour": {"N": str(3_600_000)},
+                ":one": {"N": "1"},
+                ":zero": {"N": "0"},
+            },
+        )
+
+        # Real acquires only. Shard selection is random, so keep going until two
+        # doublings have landed (1 -> 2 -> 4); bounded so a regression fails fast.
+        for _ in range(200):
+            async with limiter.acquire(entity_id, "gpt-4", {"rpm": 1}):
+                pass
+            if repo._entity_cache[(ns, entity_id)][2]["gpt-4"] >= 4:
+                break
+        final = repo._entity_cache[(ns, entity_id)][2]["gpt-4"]
+        assert final >= 4, f"expected two doublings, got shard_count={final}"
+
+        existing = {}
+        for shard_id in range(MAX_SHARD_COUNT):
+            item = await self._raw_item(repo, entity_id, shard_id)
+            if item is not None:
+                existing[shard_id] = int(item["shard_count"]["N"])
+        assert len(existing) >= 2, f"expected several shards, found {sorted(existing)}"
+        assert set(existing.values()) == {final}, (
+            f"shards disagree on shard_count: {existing} (final={final})"
+        )
+
+        # The shares are what the count actually buys: sum(cp // count) over the
+        # shards that exist must not exceed the configured limit. Token balances
+        # may transiently exceed their share for one refill window (shard 0 keeps
+        # its balance across a doubling), but the shares themselves must not.
+        assert sum(cp * 1000 // c for c in existing.values()) <= cp * 1000
+        assert sum(ra * 1000 // c for c in existing.values()) <= ra * 1000
+
     async def test_idle_sharded_entity_refills_to_capacity_not_shard_count_x_capacity(
         self, localstack_limiter, monkeypatch, unique_name
     ):
