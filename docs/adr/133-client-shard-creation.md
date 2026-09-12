@@ -1,6 +1,6 @@
 # ADR-133: Client-Side Shard Bucket Creation
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-09-11
 **Issue:** [#439](https://github.com/zeroae/zae-limiter/issues/439)
 
@@ -40,11 +40,11 @@ minimal stack runs), so Option B would leave a documented security control inert
 
 **Capacity bound.** Every refiller — the aggregator's `try_refill_bucket()` and the client
 slow path, which carries `shard_count` on `BucketState` — caps each shard at
-`capacity_milli // shard_count`, so an entity with N shards admits at most `capacity` per
-refill window in steady state, never `N x capacity`. Neither `bump_shard_count()` nor Path 2
-touches shard 0's balance when `shard_count` doubles, so shard 0 may still hold `capacity`
-while shard 1 starts at `capacity/2`: a one-time transient of up to **1.5x**, decaying as
-shard 0 drains. This ADR matches that behaviour rather than adding a reconciliation scheme.
+`capacity_milli // shard_count`, so N shards admit at most `capacity` per window, never
+`N x capacity`. That holds only while every shard agrees on the count, so a client winning a
+bump propagates it. Neither a bump nor Path 2 touches shard 0's balance when the count
+doubles, so shard 0 may hold `capacity` while shard 1 starts at `capacity/2`: a one-time
+transient of up to **1.5x**, decaying as shard 0 drains, not a reconciliation scheme.
 
 **Race with the aggregator.** Both create under `attribute_not_exists(PK)`, so exactly one
 succeeds; the client losing costs one extra conditional write and never over-admits. The

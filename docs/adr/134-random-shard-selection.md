@@ -1,6 +1,6 @@
 # ADR-134: Random Shard Selection
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-09-12
 **Issue:** [#439](https://github.com/zeroae/zae-limiter/issues/439)
 
