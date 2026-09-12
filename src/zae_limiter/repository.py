@@ -151,6 +151,8 @@ class Repository:
         self._config_cache_ttl = config_cache_ttl
 
         # Entity metadata cache for parallel cascade writes (issue #318)
+        # (entity_id, resource) pairs already warned about MAX_SHARD_COUNT
+        self._shard_cap_warned: set[tuple[str, str]] = set()
         # Value: (cascade, parent_id, {resource: shard_count})
         # cascade/parent_id are immutable; shard_count updated on doubling
         self._entity_cache: dict[tuple[str, str], tuple[bool, str | None, dict[str, int]]] = {}
@@ -1748,7 +1750,7 @@ class Repository:
 
     async def batch_get_buckets(
         self,
-        keys: list[tuple[str, str]],
+        keys: list[tuple[str, str, int]],
     ) -> dict[tuple[str, str, str], BucketState]:
         """
         Batch get composite buckets in a single DynamoDB call.
@@ -1758,7 +1760,9 @@ class Repository:
         keyed by (entity_id, resource, limit_name) for backward compatibility.
 
         Args:
-            keys: List of (entity_id, resource) tuples. Uses shard_id=0.
+            keys: List of (entity_id, resource, shard_id) tuples. The shard
+                is the one the acquire selected (issue #439); it is never
+                assumed to be 0.
 
         Returns:
             Dict mapping (entity_id, resource, limit_name) to BucketState.
@@ -1782,10 +1786,12 @@ class Repository:
 
             request_keys = [
                 {
-                    "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, 0)},
+                    "PK": {
+                        "S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)
+                    },
                     "SK": {"S": schema.sk_state()},
                 }
-                for entity_id, resource in chunk
+                for entity_id, resource, shard_id in chunk
             ]
 
             items = await self._batch_get_all(request_keys, context="rate limit buckets")
@@ -1802,18 +1808,19 @@ class Repository:
     async def batch_get_entity_and_buckets(
         self,
         entity_id: str,
-        bucket_keys: list[tuple[str, str]],
+        bucket_keys: list[tuple[str, str, int]],
     ) -> tuple[Entity | None, dict[tuple[str, str, str], BucketState]]:
         """
         Fetch entity metadata and composite buckets in a single BatchGetItem.
 
-        With composite items, each (entity_id, resource) pair is a single
+        With composite items, each (entity_id, resource, shard) is a single
         DynamoDB item. Includes the entity's #META record alongside bucket
         records to avoid a separate get_entity() round trip.
 
         Args:
             entity_id: Entity whose META record to include
-            bucket_keys: List of (entity_id, resource) for composite buckets
+            bucket_keys: List of (entity_id, resource, shard_id) for composite
+                buckets — the shard the acquire selected (issue #439)
 
         Returns:
             Tuple of (entity_or_none, bucket_dict) where bucket_dict maps
@@ -1831,10 +1838,10 @@ class Repository:
 
         request_keys = [meta_key]
         unique_bucket_keys = list(set(bucket_keys))
-        for eid, resource in unique_bucket_keys:
+        for eid, resource, shard_id in unique_bucket_keys:
             request_keys.append(
                 {
-                    "PK": {"S": schema.pk_bucket(self._namespace_id, eid, resource, 0)},
+                    "PK": {"S": schema.pk_bucket(self._namespace_id, eid, resource, shard_id)},
                     "SK": {"S": schema.sk_state()},
                 }
             )
@@ -2450,11 +2457,7 @@ class Repository:
         cache_key = (self._namespace_id, entity_id)
         cache_entry = self._entity_cache.get(cache_key)
 
-        # Determine shard from entity cache
-        shard_count = 1
-        if cache_entry is not None:
-            shard_count = cache_entry[2].get(resource, 1)
-        effective_shard_id = random.randrange(shard_count) if shard_count > 1 else 0
+        effective_shard_id, _shard_count = self.select_shard(entity_id, resource)
 
         if cache_entry is not None:
             cascade_cached, parent_id_cached, shards_cached = cache_entry
@@ -2474,11 +2477,11 @@ class Repository:
                     ),
                 )
                 if child_result.success:
-                    shards_cached = {**shards_cached, resource: child_result.shard_count}
-                    self._entity_cache[cache_key] = (
-                        child_result.cascade,
-                        child_result.parent_id,
-                        shards_cached,
+                    self._learn_shard_count(
+                        entity_id,
+                        resource,
+                        child_result.shard_count,
+                        meta=(child_result.cascade, child_result.parent_id),
                     )
                 else:
                     # On failure, _speculative_consume_single doesn't return
@@ -2494,9 +2497,9 @@ class Repository:
             entity_id, resource, consume, ttl_seconds, shard_id=effective_shard_id
         )
         if result.success:
-            existing_shards = self._entity_cache.get(cache_key, (False, None, {}))[2]
-            existing_shards = {**existing_shards, resource: result.shard_count}
-            self._entity_cache[cache_key] = (result.cascade, result.parent_id, existing_shards)
+            self._learn_shard_count(
+                entity_id, resource, result.shard_count, meta=(result.cascade, result.parent_id)
+            )
         return result
 
     async def _speculative_consume_single(
@@ -2626,6 +2629,18 @@ class Repository:
                 if old_item:
                     old_buckets = self._deserialize_composite_bucket(old_item)
                     old_shard_count = int(old_item.get("shard_count", {}).get("N", "1"))
+                    # Denormalized on the item, so a failure knows whether this
+                    # entity cascades even with a cold cache — a cascading child
+                    # must never be admitted by a child-only shard retry.
+                    old_cascade = old_item.get("cascade", {}).get("BOOL", False)
+                    old_parent_id = old_item.get("parent_id", {}).get("S")
+                    # Keep the cached shard_count current from the failure
+                    # image so later draws cover every shard (issue #439); the
+                    # image also carries cascade/parent_id, so a cold cache
+                    # can be populated correctly rather than skipped.
+                    self._learn_shard_count(
+                        entity_id, resource, old_shard_count, meta=(old_cascade, old_parent_id)
+                    )
 
                     # Disabled wins over every other classification: retrying on
                     # another shard or doubling shards cannot help (ADR-125).
@@ -2633,6 +2648,8 @@ class Repository:
                         return SpeculativeResult(
                             success=False,
                             old_buckets=old_buckets,
+                            cascade=old_cascade,
+                            parent_id=old_parent_id,
                             shard_id=shard_id,
                             shard_count=old_shard_count,
                             failure_reason=SpeculativeFailureReason.DISABLED,
@@ -2658,6 +2675,8 @@ class Repository:
                     return SpeculativeResult(
                         success=False,
                         old_buckets=old_buckets,
+                        cascade=old_cascade,
+                        parent_id=old_parent_id,
                         shard_id=shard_id,
                         shard_count=old_shard_count,
                         failure_reason=reason,
@@ -2669,6 +2688,80 @@ class Repository:
                         failure_reason=SpeculativeFailureReason.BUCKET_MISSING,
                     )
             raise
+
+    def _learn_shard_count(
+        self,
+        entity_id: str,
+        resource: str,
+        observed: int,
+        *,
+        meta: tuple[bool, str | None] | None = None,
+    ) -> int:
+        """Record an observed shard_count in the entity cache, monotonically.
+
+        The cache never shrinks: a shard N>0 item can carry a stale, lower
+        ``shard_count`` (propagation lag), and shard 0 itself can lag its
+        siblings after a TTL re-create. Adopting a lower value would narrow
+        the draw range and stamp the next client-created shard with the
+        lowered count (issue #439). ``meta`` supplies ``(cascade, parent_id)``
+        for a new entry; without it an unknown entity is left uncached.
+
+        Returns:
+            The count now cached (``observed`` when nothing was cached).
+        """
+        cache_key = (self._namespace_id, entity_id)
+        entry = self._entity_cache.get(cache_key)
+        if entry is None:
+            if meta is None:
+                return observed
+            cascade, parent_id = meta
+            shards: dict[str, int] = {}
+        else:
+            cascade, parent_id = meta if meta is not None else (entry[0], entry[1])
+            shards = dict(entry[2])
+        count = max(observed, shards.get(resource, 1))
+        shards[resource] = count
+        self._entity_cache[cache_key] = (cascade, parent_id, shards)
+        return count
+
+    def select_shard(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int | None = None,
+        shard_count: int | None = None,
+    ) -> tuple[int, int]:
+        """Pick the bucket shard an acquire should target (GHSA-76rv, issue #439).
+
+        This is the only place a shard is drawn. The speculative fast path
+        draws here, and the slow path reuses whatever shard the fast path
+        already selected (passing it back as ``shard_id``) so a
+        ``BUCKET_MISSING`` on shard N reads and creates shard N — never a
+        second random draw that lands on shard 0 again.
+
+        Selection is ``random.randrange(shard_count)`` from the cached
+        shard_count, not a hash of the entity id: every call re-picks, which
+        is what spreads one hot entity's writes across all of its shards.
+
+        Args:
+            entity_id: Entity owning the bucket.
+            resource: Resource name.
+            shard_id: Explicit shard to honour verbatim, or None to draw one.
+            shard_count: Count observed by the caller (e.g. on a speculative
+                failure image, which never updates the cache); None reads
+                the entity cache.
+
+        Returns:
+            ``(shard_id, shard_count)`` with shard_count from the argument or
+            the entity cache (1 when unknown).
+        """
+        if shard_count is None:
+            cache_key = (self._namespace_id, entity_id)
+            cache_entry = self._entity_cache.get(cache_key)
+            shard_count = cache_entry[2].get(resource, 1) if cache_entry is not None else 1
+        if shard_id is None:
+            shard_id = random.randrange(shard_count) if shard_count > 1 else 0
+        return shard_id, shard_count
 
     async def bump_shard_count(self, entity_id: str, resource: str, current_count: int) -> int:
         """Double shard_count on shard 0 via conditional write.
@@ -2684,9 +2777,32 @@ class Repository:
             current_count: Current shard_count to double.
 
         Returns:
-            The new shard_count (doubled), or the current value if another
-            client already doubled (ConditionalCheckFailedException).
+            The new shard_count (doubled), or — if another client already
+            doubled (ConditionalCheckFailedException) — the winner's count
+            read from the failed write's ALL_OLD image, so the loser draws
+            from the new shard range instead of caching its stale count and
+            landing back on the exhausted shard (issue #439).
         """
+        cache_key = (self._namespace_id, entity_id)
+        meta = None if cache_key in self._entity_cache else (False, None)
+        if current_count >= schema.MAX_SHARD_COUNT:
+            # Refused: the share per shard would fall below what a request
+            # can use, and an exhausted shard must not drive doubling forever
+            # (ADR-133). Warn once per (entity, resource); #475 adds a metric.
+            if (entity_id, resource) not in self._shard_cap_warned:
+                self._shard_cap_warned.add((entity_id, resource))
+                # Deduplicated per (entity, resource), but the entity id is not
+                # logged: entity ids are routinely API keys and must not be
+                # written to logs in clear text (py/clear-text-logging-sensitive
+                # -data). Per-entity attribution belongs on the metric in #475.
+                logger.warning(
+                    "shard_count for resource=%s is at MAX_SHARD_COUNT=%d; "
+                    "refusing to double further",
+                    resource,
+                    schema.MAX_SHARD_COUNT,
+                )
+            return self._learn_shard_count(entity_id, resource, current_count, meta=meta)
+
         new_count = current_count * 2
         client = await self._get_client()
         try:
@@ -2702,29 +2818,84 @@ class Repository:
                     ":old": {"N": str(current_count)},
                     ":new": {"N": str(new_count)},
                 },
+                ReturnValuesOnConditionCheckFailure="ALL_OLD",
             )
             effective_count = new_count
-            if new_count > schema.WCU_SHARD_WARN_THRESHOLD:
-                logger.warning(
-                    "High shard count after doubling: entity_id=%s resource=%s "
-                    "shard_count=%d threshold=%d",
-                    entity_id,
-                    resource,
-                    new_count,
-                    schema.WCU_SHARD_WARN_THRESHOLD,
-                )
+            # We won the bump, so we own propagating the new count to the
+            # shards that already exist (1..current_count-1). The aggregator's
+            # Path 1 does this from the stream, but with --no-aggregator
+            # nothing would, and a shard left on a stale lower count refills
+            # to cp // stale_count — the shares then sum to more than the
+            # limit (issue #439). Same conditional write, so whichever of us
+            # gets there first wins and the other is a no-op.
+            await self._propagate_shard_count(entity_id, resource, current_count, new_count)
         except ClientError as e:
             if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-                effective_count = current_count  # Another client already doubled
+                # Another client already doubled: adopt the winner's count —
+                # but never a lower one. Shard 0 can lag its siblings (a TTL
+                # re-create starts it at 1); adopting that would pin the
+                # client to shard 0. Without an image keep what we knew.
+                winner = cast(dict[str, Any] | None, e.response.get("Item")) or {}
+                winner_count = int(winner.get("shard_count", {}).get("N", str(current_count)))
+                effective_count = max(current_count, winner_count)
             else:
                 raise
 
-        # Update entity cache with new shard_count
-        cache_key = (self._namespace_id, entity_id)
-        entry = self._entity_cache.get(cache_key, (False, None, {}))
-        shards = {**entry[2], resource: effective_count}
-        self._entity_cache[cache_key] = (entry[0], entry[1], shards)
-        return effective_count
+        # Update entity cache with new shard_count (monotonic)
+        return self._learn_shard_count(entity_id, resource, effective_count, meta=meta)
+
+    async def _propagate_shard_count(
+        self, entity_id: str, resource: str, old_count: int, new_count: int
+    ) -> int:
+        """Stamp ``new_count`` on the shards that already exist.
+
+        Mirrors the aggregator's Path 1 (``processor.propagate_shard_count``)
+        so write sharding is self-consistent without the aggregator: every
+        shard must agree on ``shard_count`` because each refills toward
+        ``capacity_milli // shard_count`` (issue #439). Shards
+        ``old_count..new_count-1`` are not written here — they do not exist
+        yet and are created with the current count by whoever draws them.
+
+        The writes are independent single-item conditional updates issued
+        concurrently. ``shard_count < :new`` makes each one idempotent and
+        monotonic, so racing with the aggregator or another client is a no-op
+        rather than a conflict.
+
+        Returns:
+            The number of shards actually updated.
+        """
+        if old_count <= 1:
+            return 0
+        client = await self._get_client()
+
+        async def stamp(target_shard: int) -> int:
+            try:
+                await client.update_item(
+                    TableName=self.table_name,
+                    Key={
+                        "PK": {
+                            "S": schema.pk_bucket(
+                                self._namespace_id, entity_id, resource, target_shard
+                            )
+                        },
+                        "SK": {"S": schema.sk_state()},
+                    },
+                    UpdateExpression="SET shard_count = :new",
+                    ConditionExpression="shard_count < :new",
+                    ExpressionAttributeValues={":new": {"N": str(new_count)}},
+                )
+                return 1
+            except ClientError as e:
+                code = e.response.get("Error", {}).get("Code")
+                if code == "ConditionalCheckFailedException":
+                    return 0  # Already at or above the new count
+                raise
+
+        # List comprehension, not a generator: the sync transformer rewrites
+        # `gather(*[expr for x in it])` into `_run_in_executor(*[lambda x=x:
+        # expr for x in it])`, which needs the call deferred into the lambda.
+        results = await asyncio.gather(*[stamp(n) for n in range(1, old_count)])
+        return sum(results)
 
     # -------------------------------------------------------------------------
     # Limit config operations
@@ -4453,6 +4624,9 @@ class Repository:
         entity_id = item.get("entity_id", {}).get("S", "")
         resource = item.get("resource", {}).get("S", "")
         rf = int(item.get(schema.BUCKET_FIELD_RF, {}).get("N", "0"))
+        # Carried so refill math uses this shard's effective share (ADR-133).
+        # The reserved wcu limit is per-partition and stays undivided.
+        shard_count = int(item.get("shard_count", {}).get("N", "1"))
 
         # Discover limit names by scanning for b_{name}_tk attributes
         limit_names: list[str] = []
@@ -4484,6 +4658,7 @@ class Repository:
                     refill_amount_milli=_get(schema.BUCKET_FIELD_RA),
                     refill_period_ms=_get(schema.BUCKET_FIELD_RP),
                     total_consumed_milli=total_consumed,
+                    shard_count=1 if name == schema.WCU_LIMIT_NAME else shard_count,
                 )
             )
 

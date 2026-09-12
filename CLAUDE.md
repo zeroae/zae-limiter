@@ -656,15 +656,26 @@ Bucket items use per-(entity, resource, shard) partition keys: `PK={ns}/BUCKET#{
 **Write sharding mechanism:**
 - A reserved `wcu` (write capacity unit) infrastructure limit is auto-injected on every bucket (capacity=1000, 1 per write = 1000 milli consumed)
 - When `wcu` is exhausted on a shard, the client doubles `shard_count` and retries on a new shard, chosen at random from the shards it has not yet tried (`random.choice(untried)`, up to `_MAX_SHARD_RETRIES = 2` retries in `limiter.py`)
-- Shard selection: `random.randrange(shard_count)` when `shard_count > 1`, else shard 0 — **random, not a hash of the entity id**. Every call re-picks, so one hot entity's writes spread across all of its shards; which shard holds which portion of its tokens is not predictable from the entity id
+- Shard selection: `Repository.select_shard()` — `random.randrange(shard_count)` when `shard_count > 1`, else shard 0 — **random, not a hash of the entity id**. Every call re-picks, so one hot entity's writes spread across all of its shards; which shard holds which portion of its tokens is not predictable from the entity id. See [ADR-134](docs/adr/134-random-shard-selection.md) for why a hash (as GHSA-w6c2-33wf-qfwf suggested) would leave the hot entity on one shard
 - Tests that need a bucket on a specific shard must pass an explicit `shard_id` to `speculative_consume()` (the parameter exists to skip random selection). Assuming a given `acquire()` lands on a particular shard is flaky by construction
-- Effective per-shard limits: `capacity_milli // shard_count`, `refill_amount_milli // shard_count`
+- Effective per-shard limits: `capacity_milli // shard_count`, `refill_amount_milli // shard_count`. `BucketState.shard_count` is read from the item and `bucket.py` refills through `effective_capacity_milli` / `effective_refill_amount_milli`, so the client slow path caps each shard at its share exactly like the aggregator; `wcu` is never divided
+- **Every shard must agree on `shard_count`**, because each refills toward its own `cp // shard_count`: a shard left on a stale lower count claims a *larger* share and the shares sum to more than the configured limit. A client that wins a bump propagates it (`Repository._propagate_shard_count()`, mirroring the aggregator's Path 1) with concurrent conditional `UpdateItem`s (`shard_count < :new`) to shards `1..old_count-1` — monotonic and idempotent, so racing the aggregator or another client is a no-op. Shards `old_count..new_count-1` are not written: they do not exist yet and are created with the current count by whoever draws them
+- **Statuses report the share, not the config (#475):** `Limit.per_shard(shard_count)` divides `capacity` and `refill_amount` (identity at `shard_count == 1`) and is applied wherever a `LimitStatus` is built — `Limit.from_bucket_state()` on the fast path, `RateLimiter._admit_limit()` and the lease statuses on the slow path — so `RateLimitExceeded` never promises a capacity no shard can serve. Sub-token shares clamp to 1 (`Limit` validates `capacity > 0`). Retry estimates use `BucketState.retry_refill_amount_milli`, which falls back to the **undivided** rate when the share floors to 0 (1 token/min at `shard_count=1024`), and `calculate_retry_after` guards a stored rate of 0 instead of raising `ZeroDivisionError`
+- **Known limitation:** a single request above `capacity // shard_count` is unadmittable on *every* shard while the entity is under its configured limit; `MAX_SHARD_COUNT = 32` bounds how small a share gets. Surfacing an occurrence as an event/metric is #475
 - `wcu` is filtered from user-facing output (`get_buckets`, `RateLimitExceeded`, usage snapshots)
 
-**Aggregator proactive sharding:**
+**Client-side shard creation (ADR-133, issue #439) — no aggregator dependency:**
+- The slow path targets the **same shard** the speculative attempt selected, sized by the `shard_count` on its failure image: `_try_speculative_acquire()` hands both to `_do_acquire(shard_id=..., shard_count=...)`, which passes them through `Repository.select_shard()`, `batch_get_entity_and_buckets` / `batch_get_buckets` (keys are `(entity_id, resource, shard_id)`) and into `LeaseEntry._shard_id` / `_shard_count` for `_commit_initial()`. A failed speculative write never updates the entity cache, so the cache is not consulted for a shard the fast path already observed
+- A missing shard N>0 is created by the client with `capacity_milli // shard_count` tokens, `wcu` undivided, stored `cp`/`ra` undivided, and the observed `shard_count` stamped — identical to the aggregator's Path 2 clone, so shard creation never multiplies total capacity. Shard 0 keeps its own balance when `shard_count` doubles (transient up to 1.5x capacity for one refill window, same as with the aggregator; steady state is `capacity`, because every refiller caps each shard at its share)
+- After wcu-driven doubling the slow path draws from the **newly added** shards (`random.randrange(old_count, new_count)`); `bump_shard_count()` returns the winner's count (via `ReturnValuesOnConditionCheckFailure=ALL_OLD`) when another client doubled first, so a losing client still draws from the new range. A non-cascade shard-retry that hits `BUCKET_MISSING` stops probing and sends the slow path to create that shard instead of fast-rejecting
+- Cascade: a cascading child never accepts a child-only retry lease (it would bypass the parent); on `APP_LIMIT_EXHAUSTED` it hands an untried shard to the slow path, which commits child + parent in one transaction. Speculative compensation credits the shard that was debited (`result.shard_id` / `parent_result.shard_id`), and the parent-only slow path reuses `parent_result.shard_id`
+- Race with the aggregator: both create under `attribute_not_exists(PK)`; a lost race routes `_commit_initial()` to the consumption-only retry (`tk >= consumed`) on that same shard — one extra WCU, no over-admission. If a *sibling* item cancelled the transaction instead (parent rf lock), the innocent Put is re-issued from its per-index `CancellationReasons` entry
+- Write sharding therefore engages with `--no-aggregator`; the aggregator's proactive sharding and propagation below are an optimization, not a requirement
+
+**Aggregator proactive sharding (optional):**
 - Monitors `wcu` consumption ratio per bucket in each stream batch
 - When consumption >= 80% of capacity (`WCU_PROACTIVE_THRESHOLD = 0.8`), doubles `shard_count` on shard 0
-- Propagates `shard_count` changes from shard 0 to all other shards via conditional writes
+- Propagates `shard_count` changes from shard 0 to all other shards via conditional writes, pre-creating new shard items so clients skip the one-time create slow path
 
 **GSI3 bucket discovery:**
 - Bucket items set `GSI3PK={ns}/ENTITY#{id}, GSI3SK=BUCKET#{resource}#{shard}`
@@ -713,6 +724,7 @@ Bucket items use per-(entity, resource, shard) partition keys: `PK={ns}/BUCKET#{
 
 ### Exception Design
 - `RateLimitExceeded` includes a status for **every limit declared in `consume`** — both the ones that were exceeded and the ones that passed. Limits the caller did not name (and the reserved `wcu`) never appear (Issue #455), on the fast path, the slow path, and the consumption-only retry path alike
+- Each status reports the **effective per-shard** capacity and refill, not the undivided config (`Limit.per_shard()`, #475) — see [Pre-Shard Buckets](#pre-shard-buckets-ghsa-76rv-2r9v-c5m6-v090)
 - Both `violations` (exceeded) and `passed` (ok) are available
 - `retry_after_seconds` calculated from primary bottleneck
 
@@ -817,6 +829,7 @@ Non-cascade `acquire()` = 1 RCU + 1 WCU = $0.125 + $0.625 = **$0.75/M** (the pro
 Speculative non-cascade `acquire()` (success) = 0 RCU + 1 WCU = **$0.625/M** (~17% savings).
 Speculative fast rejection (exhausted) = 0 RCU + 0 WCU = **$0/M** (free).
 Speculative fallback (refill helps) = 1 RCU + 2 WCU = $0.125 + $1.25 = **$1.375/M** (worse than normal).
+Client shard create (`BUCKET_MISSING` on shard N, ADR-133, warm config cache) = 2.5 RCU + 2 WCU (1 failed conditional + disable-walk BatchGet 1.5 RCU + META/bucket BatchGet 1 RCU + single-item `PutItem`) = $0.3125 + $1.25 = **$1.56/M**, paid **once per shard** (+1 WCU when a wcu bump precedes it: **$2.19/M**); the previous broken fallback cost the same on every acquire that drew a missing shard.
 Speculative cascade (both succeed, sequential) = 0 RCU + 2 WCU = **$1.25/M** (vs $1.75/M normal cascade).
 Speculative cascade (both succeed, parallel, issue #318) = 0 RCU + 2 WCU = **$1.25/M** (same cost, lower latency).
 Speculative cascade fallback (parent refill helps) = 0.5 RCU + 3 WCU = **$1.94/M** (deferred compensation).
@@ -896,10 +909,12 @@ All PK and GSI PK values are prefixed with `{ns}/` where `{ns}` is the opaque na
 | Speculative consume | `ADD tk -consumed` | `attribute_exists(PK) AND tk >= consumed` | No |
 | Normal path (initial) | `SET rf = :new_rf ADD tk -consumed` | `rf = :expected_rf` | Yes (optimistic lock) |
 | Normal path (retry) | `ADD tk -consumed` | `tk >= consumed` | No (skips refill) |
+| Client shard create (ADR-133) | `Put` full item, `tk = cp // shard_count`, `wcu` undivided | `attribute_not_exists(PK)` | Sets `rf = now` |
 | Adjustment / rollback | `ADD tk +/-delta` | (unconditional) | No |
 | Aggregator refill | `ADD tk +refill SET rf = :now` | `rf = :expected_rf` | Yes (optimistic lock) |
 | Aggregator proactive shard | `SET shard_count = :new` | `shard_count = :old` | No |
 | Aggregator shard propagation | `SET shard_count = :new` | `attribute_not_exists(shard_count) OR shard_count < :new` | No |
+| Client shard propagation (#439) | `SET shard_count = :new` | `shard_count < :new` | No |
 | Disable stamp (ADR-125) | `SET disabled = :true` / `REMOVE disabled` | `attribute_exists(PK)` | No |
 
 **Hot partition risk with cascade (issue #116):** See [Hot Partition Risk Mitigation](#hot-partition-risk-mitigation-issue-116) above.

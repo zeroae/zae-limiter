@@ -347,6 +347,7 @@ class TestShardCountPropagationIntegration:
         assert shard_1["shard_count"] == Decimal("2")
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 class TestShardedAdjustmentRouting:
     """Adjustments and rollbacks must land on the shard that was consumed.
@@ -437,3 +438,328 @@ class TestShardedAdjustmentRouting:
         assert await self._rpm(repo, entity_id, 0) == 0, (
             "compensating shard 0 would mint capacity it never lost"
         )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+class TestClientShardCreation:
+    """Write sharding must engage with the aggregator DISABLED (issue #439).
+
+    ``localstack_limiter`` runs on the shared minimal stack, which is deployed
+    with ``enable_aggregator=False``, so nothing but the client can create a
+    shard N>0 item here. Before the fix the client bumped ``shard_count``,
+    selected shard 1, got ``BUCKET_MISSING``, and the slow path re-read and
+    re-wrote shard 0 — every write stayed on the hot partition.
+
+    See GHSA-76rv-2r9v-c5m6.
+    """
+
+    CAPACITY = 100_000
+
+    @staticmethod
+    async def _raw_item(repo, entity_id: str, shard_id: int) -> dict | None:
+        client = await repo._get_client()
+        resp = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "gpt-4", shard_id)},
+                "SK": {"S": sk_state()},
+            },
+        )
+        return resp.get("Item")
+
+    async def test_wcu_exhaustion_creates_shard_one_without_aggregator(
+        self, localstack_limiter, monkeypatch, unique_name
+    ):
+        from zae_limiter import repository as _repo_mod
+        from zae_limiter.models import Limit
+
+        limiter = localstack_limiter
+        repo = limiter._repository
+        ns = repo._namespace_id
+        entity_id = f"shard-create-{unique_name}"
+        cp_milli = self.CAPACITY * 1000
+        # 1 token/hour keeps refill out of the token assertions below
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+
+        await limiter.create_entity(entity_id)
+        await limiter.set_system_defaults([limit])
+
+        # First acquire creates shard 0 (slow path); the second is a
+        # speculative hit whose ALL_NEW teaches the cache shard_count=1.
+        for _ in range(2):
+            async with limiter.acquire(entity_id, "gpt-4", {"rpm": 1}):
+                pass
+        assert repo._entity_cache[(ns, entity_id)][2]["gpt-4"] == 1
+
+        # Exhaust wcu on shard 0 directly (equivalent to 1000 speculative writes)
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(ns, entity_id, "gpt-4", 0)},
+                "SK": {"S": sk_state()},
+            },
+            # wcu drained AND refilling 1 milli/hour: a hot partition. With the
+            # default 1000/s refill any elapsed millisecond would restore a
+            # write and the client correctly takes the slow path instead.
+            UpdateExpression="SET #wcu = :zero, #rf = :rf, #ra = :one, #rp = :hour",
+            ExpressionAttributeNames={
+                "#wcu": bucket_attr(WCU_LIMIT_NAME, BUCKET_FIELD_TK),
+                "#rf": "rf",
+                "#ra": bucket_attr(WCU_LIMIT_NAME, BUCKET_FIELD_RA),
+                "#rp": bucket_attr(WCU_LIMIT_NAME, BUCKET_FIELD_RP),
+            },
+            # rf pinned to now: an exhausted wcu whose refill would help is not
+            # a hot partition and takes the slow path instead of doubling
+            ExpressionAttributeValues={
+                ":zero": {"N": "0"},
+                ":rf": {"N": str(int(time.time() * 1000))},
+                ":one": {"N": "1"},
+                ":hour": {"N": "3600000"},
+            },
+        )
+        shard0_before = int(
+            (await self._raw_item(repo, entity_id, 0))[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"]
+        )
+
+        slow_path_shards: list[int | None] = []
+        original_do_acquire = limiter._do_acquire
+
+        async def spy(*args, **kwargs):
+            slow_path_shards.append(kwargs.get("shard_id"))
+            return await original_do_acquire(*args, **kwargs)
+
+        monkeypatch.setattr(limiter, "_do_acquire", spy)
+
+        # wcu exhausted -> shard_count 1 -> 2 -> slow path targets the new shard 1
+        async with limiter.acquire(entity_id, "gpt-4", {"rpm": 1}) as lease:
+            assert {e._shard_id for e in lease.entries} == {1}
+        assert slow_path_shards == [1]
+
+        shard1 = await self._raw_item(repo, entity_id, 1)
+        assert shard1 is not None, "shard 1 must exist without any aggregator"
+        assert shard1["shard_count"]["N"] == "2"
+        assert int(shard1[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"]) == cp_milli // 2 - 1000
+        assert int(shard1[bucket_attr("rpm", BUCKET_FIELD_CP)]["N"]) == cp_milli
+        assert int(shard1[bucket_attr(WCU_LIMIT_NAME, BUCKET_FIELD_TK)]["N"]) == 1_000_000
+        shard0_after = int(
+            (await self._raw_item(repo, entity_id, 0))[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"]
+        )
+        assert shard0_after == shard0_before, "the hot shard must not absorb the write"
+
+        # Subsequent acquires on shard 1 are fast-path hits: no BUCKET_MISSING fallback
+        slow_path_shards.clear()
+        # randrange(n) -> 1 (pin the fast-path draw); randrange(old, new) -> old
+        # (the post-bump draw from the newly added range, used further below)
+        monkeypatch.setattr(_repo_mod.random, "randrange", lambda *a: a[0] if len(a) == 2 else 1)
+        async with limiter.acquire(entity_id, "gpt-4", {"rpm": 1}) as lease:
+            assert {e._shard_id for e in lease.entries} == {1}
+        assert slow_path_shards == []
+        shard1 = await self._raw_item(repo, entity_id, 1)
+        assert int(shard1[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"]) == cp_milli // 2 - 2000
+
+        # Second doubling: exhaust shard 1 the same way -> 2 -> 4, and the
+        # slow path creates one of the two new shards (2 or 3).
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(ns, entity_id, "gpt-4", 1)},
+                "SK": {"S": sk_state()},
+            },
+            # wcu drained AND refilling 1 milli/hour: a hot partition. With the
+            # default 1000/s refill any elapsed millisecond would restore a
+            # write and the client correctly takes the slow path instead.
+            UpdateExpression="SET #wcu = :zero, #rf = :rf, #ra = :one, #rp = :hour",
+            ExpressionAttributeNames={
+                "#wcu": bucket_attr(WCU_LIMIT_NAME, BUCKET_FIELD_TK),
+                "#rf": "rf",
+                "#ra": bucket_attr(WCU_LIMIT_NAME, BUCKET_FIELD_RA),
+                "#rp": bucket_attr(WCU_LIMIT_NAME, BUCKET_FIELD_RP),
+            },
+            ExpressionAttributeValues={
+                ":zero": {"N": "0"},
+                ":rf": {"N": str(int(time.time() * 1000))},
+                ":one": {"N": "1"},
+                ":hour": {"N": "3600000"},
+            },
+        )
+        slow_path_shards.clear()
+        async with limiter.acquire(entity_id, "gpt-4", {"rpm": 1}) as lease:
+            (new_shard,) = {e._shard_id for e in lease.entries}
+        assert new_shard == 2
+        assert slow_path_shards == [new_shard]
+        assert repo._entity_cache[(ns, entity_id)][2]["gpt-4"] == 4
+        created = await self._raw_item(repo, entity_id, new_shard)
+        assert created["shard_count"]["N"] == "4"
+        assert int(created[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"]) == cp_milli // 4 - 1000
+
+    async def test_real_writes_double_and_stop_at_the_cap(self, localstack_limiter, unique_name):
+        """Real speculative writes exhaust a shard whose wcu does not refill
+        (its refill period is set to an hour to model sustained pressure):
+        shard_count doubles, every existing shard learns the new count, and
+        it never exceeds MAX_SHARD_COUNT. No hand-zeroing, no randrange pin."""
+        from zae_limiter.models import Limit
+        from zae_limiter.schema import BUCKET_FIELD_RP, MAX_SHARD_COUNT, WCU_LIMIT_CAPACITY
+
+        limiter = localstack_limiter
+        repo = limiter._repository
+        ns = repo._namespace_id
+        entity_id = f"shard-cap-{unique_name}"
+        limit = Limit.custom("rpm", 10_000_000, refill_amount=1, refill_period_seconds=3600)
+        await limiter.create_entity(entity_id)
+        await limiter.set_system_defaults([limit])
+        async with limiter.acquire(entity_id, "gpt-4", {"rpm": 1}):
+            pass  # creates shard 0
+        client = await repo._get_client()
+        await client.update_item(  # shard 0's wcu refills once an hour: sustained pressure
+            TableName=repo.table_name,
+            Key={"PK": {"S": pk_bucket(ns, entity_id, "gpt-4", 0)}, "SK": {"S": sk_state()}},
+            UpdateExpression="SET #rp = :hour, #ra = :one",
+            ExpressionAttributeNames={
+                "#rp": bucket_attr(WCU_LIMIT_NAME, BUCKET_FIELD_RP),
+                "#ra": bucket_attr(WCU_LIMIT_NAME, BUCKET_FIELD_RA),
+            },
+            ExpressionAttributeValues={":hour": {"N": str(3_600_000)}, ":one": {"N": "1"}},
+        )
+
+        counts_seen = set()
+        for _ in range(WCU_LIMIT_CAPACITY + 400):
+            async with limiter.acquire(entity_id, "gpt-4", {"rpm": 1}):
+                pass
+            count = repo._entity_cache[(ns, entity_id)][2]["gpt-4"]
+            counts_seen.add(count)
+            assert count <= MAX_SHARD_COUNT
+            if count == MAX_SHARD_COUNT:
+                break
+
+        assert {1, 2, 4} <= counts_seen, f"expected at least two doublings, saw {counts_seen}"
+        final = repo._entity_cache[(ns, entity_id)][2]["gpt-4"]
+        existing = []
+        for shard_id in range(MAX_SHARD_COUNT):
+            item = await self._raw_item(repo, entity_id, shard_id)
+            if item is not None:
+                existing.append(shard_id)
+        assert 0 in existing and len(existing) >= 3
+        assert final == MAX_SHARD_COUNT
+
+    async def test_every_existing_shard_learns_the_final_count(
+        self, localstack_limiter, unique_name
+    ):
+        """After two real wcu-driven doublings, every shard that exists carries
+        the final ``shard_count`` and the per-shard shares still sum to at most
+        the configured limit.
+
+        Each shard refills toward ``cp // shard_count`` and by ``ra //
+        shard_count`` (``BucketState.effective_*``), so a shard left on a stale
+        lower count claims a *larger* share and the shares sum to more than the
+        configured limit — the entity would be admitted above its rate. With
+        ``--no-aggregator`` (this stack) the aggregator's Path 1 propagation is
+        not there to fix it, so the client that wins the bump must propagate
+        (issue #439).
+        """
+        from zae_limiter.models import Limit
+        from zae_limiter.schema import BUCKET_FIELD_RP, MAX_SHARD_COUNT
+
+        limiter = localstack_limiter
+        repo = limiter._repository
+        ns = repo._namespace_id
+        entity_id = f"shard-propagate-{unique_name}"
+        cp, ra = 10_000_000, 1_000_000
+        limit = Limit.custom("rpm", cp, refill_amount=ra, refill_period_seconds=3600)
+        await limiter.create_entity(entity_id)
+        await limiter.set_system_defaults([limit])
+        async with limiter.acquire(entity_id, "gpt-4", {"rpm": 1}):
+            pass  # creates shard 0
+
+        # Shard 0's wcu refills once an hour: it stays a hot partition, so every
+        # acquire that draws it drives a real doubling. Shards created later keep
+        # the default fast wcu refill and never exhaust, exactly as in production.
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={"PK": {"S": pk_bucket(ns, entity_id, "gpt-4", 0)}, "SK": {"S": sk_state()}},
+            UpdateExpression="SET #rp = :hour, #ra = :one, #tk = :zero",
+            ExpressionAttributeNames={
+                "#rp": bucket_attr(WCU_LIMIT_NAME, BUCKET_FIELD_RP),
+                "#ra": bucket_attr(WCU_LIMIT_NAME, BUCKET_FIELD_RA),
+                "#tk": bucket_attr(WCU_LIMIT_NAME, BUCKET_FIELD_TK),
+            },
+            ExpressionAttributeValues={
+                ":hour": {"N": str(3_600_000)},
+                ":one": {"N": "1"},
+                ":zero": {"N": "0"},
+            },
+        )
+
+        # Real acquires only. Shard selection is random, so keep going until two
+        # doublings have landed (1 -> 2 -> 4); bounded so a regression fails fast.
+        for _ in range(200):
+            async with limiter.acquire(entity_id, "gpt-4", {"rpm": 1}):
+                pass
+            if repo._entity_cache[(ns, entity_id)][2]["gpt-4"] >= 4:
+                break
+        final = repo._entity_cache[(ns, entity_id)][2]["gpt-4"]
+        assert final >= 4, f"expected two doublings, got shard_count={final}"
+
+        existing = {}
+        for shard_id in range(MAX_SHARD_COUNT):
+            item = await self._raw_item(repo, entity_id, shard_id)
+            if item is not None:
+                existing[shard_id] = int(item["shard_count"]["N"])
+        assert len(existing) >= 2, f"expected several shards, found {sorted(existing)}"
+        assert set(existing.values()) == {final}, (
+            f"shards disagree on shard_count: {existing} (final={final})"
+        )
+
+        # The shares are what the count actually buys: sum(cp // count) over the
+        # shards that exist must not exceed the configured limit. Token balances
+        # may transiently exceed their share for one refill window (shard 0 keeps
+        # its balance across a doubling), but the shares themselves must not.
+        assert sum(cp * 1000 // c for c in existing.values()) <= cp * 1000
+        assert sum(ra * 1000 // c for c in existing.values()) <= ra * 1000
+
+    async def test_idle_sharded_entity_refills_to_capacity_not_shard_count_x_capacity(
+        self, localstack_limiter, monkeypatch, unique_name
+    ):
+        """Two drained shards, one idle refill window: the slow path must admit
+        at most the configured capacity in total, not capacity per shard."""
+        from zae_limiter import repository as _repo_mod
+        from zae_limiter.exceptions import RateLimitExceeded
+        from zae_limiter.models import BucketState, Limit
+
+        limiter = localstack_limiter
+        repo = limiter._repository
+        ns = repo._namespace_id
+        entity_id = f"shard-refill-{unique_name}"
+        limit = Limit.custom("rpm", 1000, refill_amount=1000, refill_period_seconds=60)
+
+        await limiter.create_entity(entity_id)
+        await limiter.set_system_defaults([limit])
+        past_ms = int(time.time() * 1000) - 120_000  # two windows ago
+        for shard_id in (0, 1):
+            state = BucketState.from_limit(entity_id, "gpt-4", limit, past_ms)
+            state.tokens_milli = 0
+            await repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        entity_id, "gpt-4", [state], past_ms, shard_id=shard_id, shard_count=2
+                    )
+                ]
+            )
+        repo._entity_cache[(ns, entity_id)] = (False, None, {"gpt-4": 2})
+        limiter._speculative_writes = False
+
+        monkeypatch.setattr(_repo_mod.random, "randrange", lambda _n: 0)
+        with pytest.raises(RateLimitExceeded):
+            async with limiter.acquire(entity_id, "gpt-4", {"rpm": 501}):
+                pass
+        async with limiter.acquire(entity_id, "gpt-4", {"rpm": 500}):
+            pass
+        monkeypatch.setattr(_repo_mod.random, "randrange", lambda _n: 1)
+        async with limiter.acquire(entity_id, "gpt-4", {"rpm": 500}):
+            pass
+
+        for shard_id in (0, 1):
+            item = await self._raw_item(repo, entity_id, shard_id)
+            assert int(item[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"]) == 0

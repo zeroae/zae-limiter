@@ -39,6 +39,7 @@ class LeaseEntry:
     _has_custom_config: bool = False
     _initial_consumed: int = 0
     _shard_id: int = 0
+    _shard_count: int = 1
     _cascade: bool = False
     _parent_id: str | None = None
     _declared: bool = True
@@ -61,6 +62,7 @@ class SyncLease:
     degraded: bool = False
     "Whether this is the no-op lease yielded under ``on_unavailable=ALLOW``.\n\n    ``True`` only when the backend was unreachable and the limiter degraded\n    to allowing the request (Issue #455). Such a lease has no entries, and\n    ``adjust()``, ``consume()`` and ``release()`` are silent no-ops on it —\n    the declared-scope check that normally reports keys outside ``consume``\n    is skipped, so an outage never turns into a warning storm. Set\n    explicitly where that lease is built, never inferred from an empty\n    ``entries``: a real lease with nothing declared is not degraded.\n    "
     _unknown_keys: frozenset[str] = frozenset()
+    _carriers: list[LeaseEntry] = field(default_factory=list)
     _declared_names: frozenset[str] = field(init=False, default=frozenset())
 
     def __post_init__(self) -> None:
@@ -146,7 +148,7 @@ class SyncLease:
                 entity_id=entry.entity_id,
                 resource=entry.resource,
                 limit_name=entry.limit.name,
-                limit=entry.limit,
+                limit=entry.limit.per_shard(entry.state.shard_count),
                 available=result.available,
                 requested=amount,
                 exceeded=not result.success,
@@ -163,7 +165,7 @@ class SyncLease:
                         entity_id=entry.entity_id,
                         resource=entry.resource,
                         limit_name=entry.limit.name,
-                        limit=entry.limit,
+                        limit=entry.limit.per_shard(entry.state.shard_count),
                         available=available,
                         requested=0,
                         exceeded=False,
@@ -239,9 +241,18 @@ class SyncLease:
         """Write initial consumption to DynamoDB on context enter (Issue #309).
 
         Persists bucket state using ADD-based writes (ADR-115). Groups entries
-        by (entity_id, resource) to build one composite update per group. Uses
-        Normal write path first (ADD with refill, CONDITION rf=expected). On
-        ConditionalCheckFailedException, falls back to Retry path.
+        by (entity_id, resource, shard) to build one composite update per
+        bucket item. Uses Normal write path first (ADD with refill, CONDITION
+        rf=expected). On ConditionalCheckFailedException, falls back to Retry
+        path.
+
+        A new bucket is created on the shard the acquire selected, with the
+        cached shard_count stamped on it (issue #439). The create is guarded
+        by ``attribute_not_exists(PK)``, so if the aggregator's shard
+        propagation wins the race the transaction fails its condition check
+        and the Retry path debits the now-existing item under ``tk >=
+        consumed`` — the same gate the speculative write uses, so the race
+        can never over-admit.
 
         After successful write, records _initial_consumed on each entry so
         that _commit_adjustments() can compute deltas.
@@ -250,12 +261,12 @@ class SyncLease:
             return
         now_ms = int(time.time() * 1000)
         repo = self.repository
-        groups: dict[tuple[str, str], list[LeaseEntry]] = {}
-        for entry in self.entries:
-            key = (entry.entity_id, entry.resource)
+        groups: dict[tuple[str, str, int], list[LeaseEntry]] = {}
+        for entry in (*self.entries, *self._carriers):
+            key = (entry.entity_id, entry.resource, entry._shard_id)
             groups.setdefault(key, []).append(entry)
         items: list[dict[str, Any]] = []
-        for (entity_id, resource), group_entries in groups.items():
+        for (entity_id, resource, shard_id), group_entries in groups.items():
             is_new = group_entries[0]._is_new
             has_custom_config = group_entries[0]._has_custom_config
             limits = [e.limit for e in group_entries]
@@ -277,6 +288,8 @@ class SyncLease:
                         ttl_seconds=ttl_seconds if ttl_seconds != 0 else None,
                         cascade=first_entry._cascade,
                         parent_id=first_entry._parent_id,
+                        shard_id=shard_id,
+                        shard_count=first_entry._shard_count,
                     )
                 )
             else:
@@ -299,12 +312,14 @@ class SyncLease:
                         now_ms=now_ms,
                         expected_rf=expected_rf,
                         ttl_seconds=ttl_seconds,
+                        shard_id=shard_id,
                     )
                 )
         if not items:
             self._initial_committed = True
             return
         condition_failed = False
+        condition_exc: Exception | None = None
         for attempt in range(_CONFLICT_MAX_RETRIES + 1):
             try:
                 repo.transact_write(items)
@@ -312,6 +327,7 @@ class SyncLease:
             except Exception as exc:
                 if _is_condition_check_failure(exc):
                     condition_failed = True
+                    condition_exc = exc
                     break
                 if _is_transaction_conflict(exc):
                     if attempt < _CONFLICT_MAX_RETRIES:
@@ -328,28 +344,69 @@ class SyncLease:
                 raise
         if condition_failed:
             logger.debug("Normal write failed (optimistic lock), retrying consumption-only")
+            reason_codes = (
+                _get_cancellation_reason_codes(condition_exc) if condition_exc is not None else None
+            )
+
+            def _consumption_only(
+                entity_id: str, resource: str, shard_id: int, group_entries: list[LeaseEntry]
+            ) -> dict[str, Any] | None:
+                consumed = {
+                    e.limit.name: e.consumed * 1000 for e in group_entries if e.consumed > 0
+                }
+                if not consumed:
+                    return None
+                return repo.build_composite_retry(
+                    entity_id=entity_id, resource=resource, consumed=consumed, shard_id=shard_id
+                )
+
             retry_items: list[dict[str, Any]] = []
-            for (entity_id, resource), group_entries in groups.items():
-                if group_entries[0]._is_new:
-                    pass
-                consumed = {}
-                for entry in group_entries:
-                    if entry.consumed > 0:
-                        consumed[entry.limit.name] = entry.consumed * 1000
-                if consumed:
-                    retry_items.append(
-                        repo.build_composite_retry(
-                            entity_id=entity_id, resource=resource, consumed=consumed
-                        )
-                    )
-            if retry_items:
+            retry_groups: list[tuple[tuple[str, str, int], list[LeaseEntry]]] = []
+            for idx, (key, group_entries) in enumerate(groups.items()):
+                failed_here = (
+                    reason_codes is None
+                    or idx >= len(reason_codes)
+                    or reason_codes[idx] == "ConditionalCheckFailed"
+                )
+                if group_entries[0]._is_new and (not failed_here):
+                    retry_items.append(items[idx])
+                    retry_groups.append((key, group_entries))
+                    continue
+                retry_item = _consumption_only(*key, group_entries)
+                if retry_item is not None:
+                    retry_items.append(retry_item)
+                    retry_groups.append((key, group_entries))
+            for retry_attempt in range(2):
+                if not retry_items:
+                    break
                 try:
                     repo.transact_write(retry_items)
+                    break
                 except Exception as retry_exc:
-                    if _is_condition_check_failure(retry_exc):
+                    if not _is_condition_check_failure(retry_exc):
+                        raise
+                    codes = _get_cancellation_reason_codes(retry_exc)
+                    downgraded: list[dict[str, Any]] = []
+                    lost_put = False
+                    for i, item in enumerate(retry_items):
+                        failed_here = (
+                            codes is None or i >= len(codes) or codes[i] == "ConditionalCheckFailed"
+                        )
+                        if isinstance(item, dict) and "Put" in item and failed_here:
+                            key, group_entries = retry_groups[i]
+                            fallback = _consumption_only(*key, group_entries)
+                            if fallback is not None:
+                                downgraded.append(fallback)
+                                lost_put = True
+                            continue
+                        if failed_here:
+                            lost_put = False
+                            break
+                        downgraded.append(item)
+                    if not lost_put or retry_attempt == 1:
                         statuses = _build_retry_failure_statuses(self.entries)
                         raise RateLimitExceeded(statuses) from retry_exc
-                    raise
+                    retry_items = downgraded
         self._initial_committed = True
         for entry in self.entries:
             entry._initial_consumed = entry.consumed
@@ -491,15 +548,15 @@ def _build_retry_failure_statuses(entries: list[LeaseEntry]) -> list[LimitStatus
         deficit_milli = max(0, entry.consumed * 1000 - entry.state.tokens_milli)
         retry_after = calculate_retry_after(
             deficit_milli=deficit_milli,
-            refill_amount_milli=entry.limit.refill_amount * 1000,
-            refill_period_ms=entry.limit.refill_period_seconds * 1000,
+            refill_amount_milli=entry.state.retry_refill_amount_milli,
+            refill_period_ms=entry.state.refill_period_ms,
         )
         statuses.append(
             LimitStatus(
                 entity_id=entry.entity_id,
                 resource=entry.resource,
                 limit_name=entry.limit.name,
-                limit=entry.limit,
+                limit=entry.limit.per_shard(entry.state.shard_count),
                 available=entry.state.tokens_milli // 1000,
                 requested=entry.consumed,
                 exceeded=entry.consumed > 0,

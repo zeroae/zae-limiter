@@ -130,6 +130,7 @@ class SyncRepository:
             ttl_seconds=config_cache_ttl, namespace_id=self._namespace_id
         )
         self._config_cache_ttl = config_cache_ttl
+        self._shard_cap_warned: set[tuple[str, str]] = set()
         self._entity_cache: dict[tuple[str, str], tuple[bool, str | None, dict[str, int]]] = {}
         self._on_unavailable_cache: OnUnavailableAction | None = None
         self._namespace_cache: dict[str, str] = {}
@@ -1455,7 +1456,7 @@ class SyncRepository:
         return [b for b in buckets if b.limit_name != schema.WCU_LIMIT_NAME]
 
     def batch_get_buckets(
-        self, keys: list[tuple[str, str]]
+        self, keys: list[tuple[str, str, int]]
     ) -> dict[tuple[str, str, str], BucketState]:
         """
         Batch get composite buckets in a single DynamoDB call.
@@ -1465,7 +1466,9 @@ class SyncRepository:
         keyed by (entity_id, resource, limit_name) for backward compatibility.
 
         Args:
-            keys: List of (entity_id, resource) tuples. Uses shard_id=0.
+            keys: List of (entity_id, resource, shard_id) tuples. The shard
+                is the one the acquire selected (issue #439); it is never
+                assumed to be 0.
 
         Returns:
             Dict mapping (entity_id, resource, limit_name) to BucketState.
@@ -1483,10 +1486,12 @@ class SyncRepository:
             chunk = unique_keys[i : i + 100]
             request_keys = [
                 {
-                    "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, 0)},
+                    "PK": {
+                        "S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)
+                    },
                     "SK": {"S": schema.sk_state()},
                 }
-                for entity_id, resource in chunk
+                for entity_id, resource, shard_id in chunk
             ]
             items = self._batch_get_all(request_keys, context="rate limit buckets")
             for item in items:
@@ -1497,18 +1502,19 @@ class SyncRepository:
         return result
 
     def batch_get_entity_and_buckets(
-        self, entity_id: str, bucket_keys: list[tuple[str, str]]
+        self, entity_id: str, bucket_keys: list[tuple[str, str, int]]
     ) -> tuple[Entity | None, dict[tuple[str, str, str], BucketState]]:
         """
         Fetch entity metadata and composite buckets in a single BatchGetItem.
 
-        With composite items, each (entity_id, resource) pair is a single
+        With composite items, each (entity_id, resource, shard) is a single
         DynamoDB item. Includes the entity's #META record alongside bucket
         records to avoid a separate get_entity() round trip.
 
         Args:
             entity_id: Entity whose META record to include
-            bucket_keys: List of (entity_id, resource) for composite buckets
+            bucket_keys: List of (entity_id, resource, shard_id) for composite
+                buckets — the shard the acquire selected (issue #439)
 
         Returns:
             Tuple of (entity_or_none, bucket_dict) where bucket_dict maps
@@ -1524,10 +1530,10 @@ class SyncRepository:
         }
         request_keys = [meta_key]
         unique_bucket_keys = list(set(bucket_keys))
-        for eid, resource in unique_bucket_keys:
+        for eid, resource, shard_id in unique_bucket_keys:
             request_keys.append(
                 {
-                    "PK": {"S": schema.pk_bucket(self._namespace_id, eid, resource, 0)},
+                    "PK": {"S": schema.pk_bucket(self._namespace_id, eid, resource, shard_id)},
                     "SK": {"S": schema.sk_state()},
                 }
             )
@@ -2025,10 +2031,7 @@ class SyncRepository:
             )
         cache_key = (self._namespace_id, entity_id)
         cache_entry = self._entity_cache.get(cache_key)
-        shard_count = 1
-        if cache_entry is not None:
-            shard_count = cache_entry[2].get(resource, 1)
-        effective_shard_id = random.randrange(shard_count) if shard_count > 1 else 0
+        effective_shard_id, _shard_count = self.select_shard(entity_id, resource)
         if cache_entry is not None:
             cascade_cached, parent_id_cached, shards_cached = cache_entry
             if cascade_cached and parent_id_cached:
@@ -2043,11 +2046,11 @@ class SyncRepository:
                     ),
                 )
                 if child_result.success:
-                    shards_cached = {**shards_cached, resource: child_result.shard_count}
-                    self._entity_cache[cache_key] = (
-                        child_result.cascade,
-                        child_result.parent_id,
-                        shards_cached,
+                    self._learn_shard_count(
+                        entity_id,
+                        resource,
+                        child_result.shard_count,
+                        meta=(child_result.cascade, child_result.parent_id),
                     )
                 else:
                     child_result.cascade = cascade_cached
@@ -2058,9 +2061,9 @@ class SyncRepository:
             entity_id, resource, consume, ttl_seconds, shard_id=effective_shard_id
         )
         if result.success:
-            existing_shards = self._entity_cache.get(cache_key, (False, None, {}))[2]
-            existing_shards = {**existing_shards, resource: result.shard_count}
-            self._entity_cache[cache_key] = (result.cascade, result.parent_id, existing_shards)
+            self._learn_shard_count(
+                entity_id, resource, result.shard_count, meta=(result.cascade, result.parent_id)
+            )
         return result
 
     def _speculative_consume_single(
@@ -2169,10 +2172,17 @@ class SyncRepository:
                 if old_item:
                     old_buckets = self._deserialize_composite_bucket(old_item)
                     old_shard_count = int(old_item.get("shard_count", {}).get("N", "1"))
+                    old_cascade = old_item.get("cascade", {}).get("BOOL", False)
+                    old_parent_id = old_item.get("parent_id", {}).get("S")
+                    self._learn_shard_count(
+                        entity_id, resource, old_shard_count, meta=(old_cascade, old_parent_id)
+                    )
                     if old_item.get(schema.BUCKET_FIELD_DISABLED, {}).get("BOOL", False):
                         return SpeculativeResult(
                             success=False,
                             old_buckets=old_buckets,
+                            cascade=old_cascade,
+                            parent_id=old_parent_id,
                             shard_id=shard_id,
                             shard_count=old_shard_count,
                             failure_reason=SpeculativeFailureReason.DISABLED,
@@ -2195,6 +2205,8 @@ class SyncRepository:
                     return SpeculativeResult(
                         success=False,
                         old_buckets=old_buckets,
+                        cascade=old_cascade,
+                        parent_id=old_parent_id,
                         shard_id=shard_id,
                         shard_count=old_shard_count,
                         failure_reason=reason,
@@ -2206,6 +2218,80 @@ class SyncRepository:
                         failure_reason=SpeculativeFailureReason.BUCKET_MISSING,
                     )
             raise
+
+    def _learn_shard_count(
+        self,
+        entity_id: str,
+        resource: str,
+        observed: int,
+        *,
+        meta: tuple[bool, str | None] | None = None,
+    ) -> int:
+        """Record an observed shard_count in the entity cache, monotonically.
+
+        The cache never shrinks: a shard N>0 item can carry a stale, lower
+        ``shard_count`` (propagation lag), and shard 0 itself can lag its
+        siblings after a TTL re-create. Adopting a lower value would narrow
+        the draw range and stamp the next client-created shard with the
+        lowered count (issue #439). ``meta`` supplies ``(cascade, parent_id)``
+        for a new entry; without it an unknown entity is left uncached.
+
+        Returns:
+            The count now cached (``observed`` when nothing was cached).
+        """
+        cache_key = (self._namespace_id, entity_id)
+        entry = self._entity_cache.get(cache_key)
+        if entry is None:
+            if meta is None:
+                return observed
+            cascade, parent_id = meta
+            shards: dict[str, int] = {}
+        else:
+            cascade, parent_id = meta if meta is not None else (entry[0], entry[1])
+            shards = dict(entry[2])
+        count = max(observed, shards.get(resource, 1))
+        shards[resource] = count
+        self._entity_cache[cache_key] = (cascade, parent_id, shards)
+        return count
+
+    def select_shard(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int | None = None,
+        shard_count: int | None = None,
+    ) -> tuple[int, int]:
+        """Pick the bucket shard an acquire should target (GHSA-76rv, issue #439).
+
+        This is the only place a shard is drawn. The speculative fast path
+        draws here, and the slow path reuses whatever shard the fast path
+        already selected (passing it back as ``shard_id``) so a
+        ``BUCKET_MISSING`` on shard N reads and creates shard N — never a
+        second random draw that lands on shard 0 again.
+
+        Selection is ``random.randrange(shard_count)`` from the cached
+        shard_count, not a hash of the entity id: every call re-picks, which
+        is what spreads one hot entity's writes across all of its shards.
+
+        Args:
+            entity_id: Entity owning the bucket.
+            resource: Resource name.
+            shard_id: Explicit shard to honour verbatim, or None to draw one.
+            shard_count: Count observed by the caller (e.g. on a speculative
+                failure image, which never updates the cache); None reads
+                the entity cache.
+
+        Returns:
+            ``(shard_id, shard_count)`` with shard_count from the argument or
+            the entity cache (1 when unknown).
+        """
+        if shard_count is None:
+            cache_key = (self._namespace_id, entity_id)
+            cache_entry = self._entity_cache.get(cache_key)
+            shard_count = cache_entry[2].get(resource, 1) if cache_entry is not None else 1
+        if shard_id is None:
+            shard_id = random.randrange(shard_count) if shard_count > 1 else 0
+        return (shard_id, shard_count)
 
     def bump_shard_count(self, entity_id: str, resource: str, current_count: int) -> int:
         """Double shard_count on shard 0 via conditional write.
@@ -2221,9 +2307,23 @@ class SyncRepository:
             current_count: Current shard_count to double.
 
         Returns:
-            The new shard_count (doubled), or the current value if another
-            client already doubled (ConditionalCheckFailedException).
+            The new shard_count (doubled), or — if another client already
+            doubled (ConditionalCheckFailedException) — the winner's count
+            read from the failed write's ALL_OLD image, so the loser draws
+            from the new shard range instead of caching its stale count and
+            landing back on the exhausted shard (issue #439).
         """
+        cache_key = (self._namespace_id, entity_id)
+        meta = None if cache_key in self._entity_cache else (False, None)
+        if current_count >= schema.MAX_SHARD_COUNT:
+            if (entity_id, resource) not in self._shard_cap_warned:
+                self._shard_cap_warned.add((entity_id, resource))
+                logger.warning(
+                    "shard_count for resource=%s is at MAX_SHARD_COUNT=%d; refusing to double further",
+                    resource,
+                    schema.MAX_SHARD_COUNT,
+                )
+            return self._learn_shard_count(entity_id, resource, current_count, meta=meta)
         new_count = current_count * 2
         client = self._get_client()
         try:
@@ -2239,26 +2339,68 @@ class SyncRepository:
                     ":old": {"N": str(current_count)},
                     ":new": {"N": str(new_count)},
                 },
+                ReturnValuesOnConditionCheckFailure="ALL_OLD",
             )
             effective_count = new_count
-            if new_count > schema.WCU_SHARD_WARN_THRESHOLD:
-                logger.warning(
-                    "High shard count after doubling: entity_id=%s resource=%s shard_count=%d threshold=%d",
-                    entity_id,
-                    resource,
-                    new_count,
-                    schema.WCU_SHARD_WARN_THRESHOLD,
-                )
+            self._propagate_shard_count(entity_id, resource, current_count, new_count)
         except ClientError as e:
             if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-                effective_count = current_count
+                winner = cast(dict[str, Any] | None, e.response.get("Item")) or {}
+                winner_count = int(winner.get("shard_count", {}).get("N", str(current_count)))
+                effective_count = max(current_count, winner_count)
             else:
                 raise
-        cache_key = (self._namespace_id, entity_id)
-        entry = self._entity_cache.get(cache_key, (False, None, {}))
-        shards = {**entry[2], resource: effective_count}
-        self._entity_cache[cache_key] = (entry[0], entry[1], shards)
-        return effective_count
+        return self._learn_shard_count(entity_id, resource, effective_count, meta=meta)
+
+    def _propagate_shard_count(
+        self, entity_id: str, resource: str, old_count: int, new_count: int
+    ) -> int:
+        """Stamp ``new_count`` on the shards that already exist.
+
+        Mirrors the aggregator's Path 1 (``processor.propagate_shard_count``)
+        so write sharding is self-consistent without the aggregator: every
+        shard must agree on ``shard_count`` because each refills toward
+        ``capacity_milli // shard_count`` (issue #439). Shards
+        ``old_count..new_count-1`` are not written here — they do not exist
+        yet and are created with the current count by whoever draws them.
+
+        The writes are independent single-item conditional updates issued
+        concurrently. ``shard_count < :new`` makes each one idempotent and
+        monotonic, so racing with the aggregator or another client is a no-op
+        rather than a conflict.
+
+        Returns:
+            The number of shards actually updated.
+        """
+        if old_count <= 1:
+            return 0
+        client = self._get_client()
+
+        def stamp(target_shard: int) -> int:
+            try:
+                client.update_item(
+                    TableName=self.table_name,
+                    Key={
+                        "PK": {
+                            "S": schema.pk_bucket(
+                                self._namespace_id, entity_id, resource, target_shard
+                            )
+                        },
+                        "SK": {"S": schema.sk_state()},
+                    },
+                    UpdateExpression="SET shard_count = :new",
+                    ConditionExpression="shard_count < :new",
+                    ExpressionAttributeValues={":new": {"N": str(new_count)}},
+                )
+                return 1
+            except ClientError as e:
+                code = e.response.get("Error", {}).get("Code")
+                if code == "ConditionalCheckFailedException":
+                    return 0
+                raise
+
+        results = self._run_in_executor(*[lambda n=n: stamp(n) for n in range(1, old_count)])
+        return sum(results)
 
     def set_limits(
         self,
@@ -3633,6 +3775,7 @@ class SyncRepository:
         entity_id = item.get("entity_id", {}).get("S", "")
         resource = item.get("resource", {}).get("S", "")
         rf = int(item.get(schema.BUCKET_FIELD_RF, {}).get("N", "0"))
+        shard_count = int(item.get("shard_count", {}).get("N", "1"))
         limit_names: list[str] = []
         suffix = f"_{schema.BUCKET_FIELD_TK}"
         for attr_name in item:
@@ -3660,6 +3803,7 @@ class SyncRepository:
                     refill_amount_milli=_get(schema.BUCKET_FIELD_RA),
                     refill_period_ms=_get(schema.BUCKET_FIELD_RP),
                     total_consumed_milli=total_consumed,
+                    shard_count=1 if name == schema.WCU_LIMIT_NAME else shard_count,
                 )
             )
         return buckets

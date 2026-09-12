@@ -121,8 +121,8 @@ def try_consume(
         tokens_milli=state.tokens_milli,
         last_refill_ms=state.last_refill_ms,
         now_ms=now_ms,
-        capacity_milli=state.capacity_milli,
-        refill_amount_milli=state.refill_amount_milli,
+        capacity_milli=state.effective_capacity_milli,
+        refill_amount_milli=state.effective_refill_amount_milli,
         refill_period_ms=state.refill_period_ms,
     )
 
@@ -144,7 +144,7 @@ def try_consume(
         deficit_milli = requested_milli - current_tokens_milli
         retry_after = calculate_retry_after(
             deficit_milli=deficit_milli,
-            refill_amount_milli=state.refill_amount_milli,
+            refill_amount_milli=state.retry_refill_amount_milli,
             refill_period_ms=state.refill_period_ms,
         )
         return ConsumeResult(
@@ -170,9 +170,17 @@ def calculate_retry_after(
         refill_period_ms: Refill rate denominator
 
     Returns:
-        Seconds until deficit is recovered (float)
+        Seconds until deficit is recovered (float), or 0.0 when the bucket has
+        no refill configured at all and no wait can be computed.
     """
     if deficit_milli <= 0:
+        return 0.0
+    if refill_amount_milli <= 0:
+        # A bucket that never refills has no finite wait. Callers pass
+        # BucketState.retry_refill_amount_milli, which already falls back to
+        # the undivided rate when a shard's share floors to zero, so this only
+        # guards a bucket item whose stored rate is itself 0 — report no wait
+        # rather than raise ZeroDivisionError from inside an error path.
         return 0.0
 
     # time_ms = deficit * period / amount
@@ -199,8 +207,8 @@ def calculate_available(
         tokens_milli=state.tokens_milli,
         last_refill_ms=state.last_refill_ms,
         now_ms=now_ms,
-        capacity_milli=state.capacity_milli,
-        refill_amount_milli=state.refill_amount_milli,
+        capacity_milli=state.effective_capacity_milli,
+        refill_amount_milli=state.effective_refill_amount_milli,
         refill_period_ms=state.refill_period_ms,
     )
     return refill.new_tokens_milli // 1000
@@ -226,8 +234,8 @@ def calculate_time_until_available(
         tokens_milli=state.tokens_milli,
         last_refill_ms=state.last_refill_ms,
         now_ms=now_ms,
-        capacity_milli=state.capacity_milli,
-        refill_amount_milli=state.refill_amount_milli,
+        capacity_milli=state.effective_capacity_milli,
+        refill_amount_milli=state.effective_refill_amount_milli,
         refill_period_ms=state.refill_period_ms,
     )
 
@@ -238,7 +246,7 @@ def calculate_time_until_available(
     deficit_milli = needed_milli - refill.new_tokens_milli
     return calculate_retry_after(
         deficit_milli=deficit_milli,
-        refill_amount_milli=state.refill_amount_milli,
+        refill_amount_milli=state.retry_refill_amount_milli,
         refill_period_ms=state.refill_period_ms,
     )
 
@@ -266,8 +274,8 @@ def force_consume(
         tokens_milli=state.tokens_milli,
         last_refill_ms=state.last_refill_ms,
         now_ms=now_ms,
-        capacity_milli=state.capacity_milli,
-        refill_amount_milli=state.refill_amount_milli,
+        capacity_milli=state.effective_capacity_milli,
+        refill_amount_milli=state.effective_refill_amount_milli,
         refill_period_ms=state.refill_period_ms,
     )
 

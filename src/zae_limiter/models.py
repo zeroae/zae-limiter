@@ -2,7 +2,7 @@
 
 import re
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 from .exceptions import InvalidIdentifierError, InvalidNameError
@@ -355,13 +355,51 @@ class Limit:
 
     @classmethod
     def from_bucket_state(cls, state: "BucketState") -> "Limit":
-        """Reconstruct a Limit from BucketState fields."""
+        """Reconstruct a Limit from BucketState fields, as that shard sees it."""
         return cls.custom(
             name=state.limit_name,
             capacity=state.capacity_milli // 1000,
             refill_amount=state.refill_amount_milli // 1000,
             refill_period_seconds=state.refill_period_ms // 1000,
+        ).per_shard(state.shard_count)
+
+    def per_shard(self, shard_count: int) -> "Limit":
+        """This limit as a single shard of ``shard_count`` sees it.
+
+        A sharded bucket holds and refills only its share — ``capacity //
+        shard_count``, ``refill_amount // shard_count`` (GHSA-76rv) — so a
+        status reported from one shard has to say so. Reporting the undivided
+        config would promise a capacity no shard can serve and, for a request
+        larger than the share, a ``retry_after_seconds`` that never pays off.
+
+        Shares are floored to one whole token because ``Limit`` is whole-token
+        and must stay constructible; ``schema.MAX_SHARD_COUNT`` bounds how
+        small a real share can get. Surfacing an unadmittable request as an
+        event or metric is tracked in #475.
+        """
+        if shard_count <= 1:
+            return self
+        return replace(
+            self,
+            capacity=max(1, self.capacity // shard_count),
+            refill_amount=max(1, self.refill_amount // shard_count),
         )
+
+    @classmethod
+    def _carrier(cls, state: "BucketState") -> "Limit":
+        """Limit view of a reserved infrastructure bucket such as ``wcu``.
+
+        The slow path carries the ``wcu`` bucket through a lease so its refill
+        is written back with the other limits (ADR-133); it is never declared,
+        never gated and never reported. The reserved name is rejected by the
+        public constructors on purpose, so this bypasses validation.
+        """
+        obj = object.__new__(cls)
+        object.__setattr__(obj, "name", state.limit_name)
+        object.__setattr__(obj, "capacity", max(1, state.capacity_milli // 1000))
+        object.__setattr__(obj, "refill_amount", max(1, state.refill_amount_milli // 1000))
+        object.__setattr__(obj, "refill_period_seconds", max(1, state.refill_period_ms // 1000))
+        return obj
 
 
 @dataclass
@@ -446,6 +484,12 @@ class BucketState:
     # (not in nested data.M) to enable atomic ADD operations. See issue #179.
     # None means counter not yet initialized (old bucket).
     total_consumed_milli: int | None = None
+    # Number of shards this bucket is split across (GHSA-76rv, ADR-133). The
+    # stored cp/ra stay undivided; refill math must use the effective
+    # per-shard share below or every shard refills to the full capacity and
+    # the entity admits shard_count x capacity. The reserved `wcu` limit is
+    # per-partition and is never divided (its shard_count stays 1).
+    shard_count: int = 1
 
     @property
     def tokens(self) -> int:
@@ -457,6 +501,31 @@ class BucketState:
         """Capacity / ceiling (not millitokens)."""
         return self.capacity_milli // 1000
 
+    @property
+    def effective_capacity_milli(self) -> int:
+        """This shard's share of the capacity: ``capacity_milli // shard_count``."""
+        return self.capacity_milli // self.shard_count
+
+    @property
+    def effective_refill_amount_milli(self) -> int:
+        """This shard's share of the refill: ``refill_amount_milli // shard_count``."""
+        return self.refill_amount_milli // self.shard_count
+
+    @property
+    def retry_refill_amount_milli(self) -> int:
+        """Refill rate to use for a "seconds until available" estimate.
+
+        ``effective_refill_amount_milli`` floors to 0 for a slow refill on a
+        heavily sharded bucket (1 token/minute at ``shard_count=1024``), and a
+        rate of 0 has no finite wait at all. Fall back to the *undivided* rate
+        rather than raise or invent infinity: the estimate is then optimistic
+        by up to ``shard_count``, but it is finite and honest about the rate
+        the limit itself refills at, and a retry draws a shard at random — so
+        it may well land somewhere that admits. ``schema.MAX_SHARD_COUNT``
+        bounds how far apart the two can get.
+        """
+        return self.effective_refill_amount_milli or self.refill_amount_milli
+
     @classmethod
     def from_limit(
         cls,
@@ -464,6 +533,7 @@ class BucketState:
         resource: str,
         limit: Limit,
         now_ms: int,
+        shard_count: int = 1,
     ) -> "BucketState":
         """
         Create a new bucket at full capacity from a Limit.
@@ -477,17 +547,21 @@ class BucketState:
             resource: Resource name (pre-validated by caller)
             limit: Limit configuration (validated via __post_init__)
             now_ms: Current time in milliseconds
+            shard_count: Shards the bucket is split across; a new shard
+                starts at its effective share, ``capacity // shard_count``
         """
+        capacity_milli = limit.capacity * 1000
         return cls(
             entity_id=entity_id,
             resource=resource,
             limit_name=limit.name,
-            tokens_milli=limit.capacity * 1000,  # start at full capacity
+            tokens_milli=capacity_milli // shard_count,  # start at full (per-shard) capacity
             last_refill_ms=now_ms,
-            capacity_milli=limit.capacity * 1000,
+            capacity_milli=capacity_milli,
             refill_amount_milli=limit.refill_amount * 1000,
             refill_period_ms=limit.refill_period_seconds * 1000,
             total_consumed_milli=0,  # initialize counter for new buckets
+            shard_count=shard_count,
         )
 
 

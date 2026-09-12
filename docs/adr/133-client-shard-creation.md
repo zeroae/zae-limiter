@@ -1,0 +1,100 @@
+# ADR-133: Client-Side Shard Bucket Creation
+
+**Status:** Accepted
+**Date:** 2026-09-11
+**Issue:** [#439](https://github.com/zeroae/zae-limiter/issues/439)
+
+## Context
+
+GHSA-76rv-2r9v-c5m6 mitigates DynamoDB hot partitions with pre-shard buckets: every
+bucket carries a reserved `wcu` limit, and when a speculative write exhausts it the client
+doubles `shard_count` on shard 0 and retries on another shard. That retry could never
+succeed in a fresh deployment: the speculative `UpdateItem` requires `attribute_exists(PK)`,
+the slow path's `batch_get_*` reads hardcoded shard 0, and `_commit_initial()` created
+buckets on shard 0 only. The sole writer of a shard N>0 item was the aggregator's
+`propagate_shard_count()` (Path 2), whose own comment — "Client already created this
+shard" — shows the original design expected the client to create shards. With
+`--no-aggregator`, or a lagging stream, every `BUCKET_MISSING` re-read and re-wrote
+shard 0: writes stayed on the hot partition and about half of all acquires paid a full
+slow-path fallback for nothing.
+
+**Option A**: the client creates shard N>0 items itself. **Option B**: require the aggregator.
+
+## Decision
+
+The client slow path must read and, when missing, create the **same shard the speculative
+attempt selected** (Option A). `Repository.select_shard()` is the single place a shard is
+drawn; the slow path receives that shard rather than drawing again. A shard N>0 item is
+created with **effective per-shard tokens** — `capacity_milli // shard_count` for
+application limits, `wcu` undivided, stored `cp`/`ra` undivided — exactly as the
+aggregator's Path 2 does, and stamped with the cached `shard_count`. The create keeps
+`attribute_not_exists(PK)`; if the aggregator wins the race, the transaction's condition
+failure routes to the existing consumption-only retry on that same shard, whose
+`tk >= consumed` condition is the same admission gate the speculative write uses.
+
+## Rationale
+
+The `security` label and the advisory make this a mitigation that must work in **every**
+deployment. `--no-aggregator` is a supported mode (it is what the test suite's shared
+minimal stack runs), so Option B would leave a documented security control inert there.
+
+**Capacity bound.** Every refiller — the aggregator's `try_refill_bucket()` and the client
+slow path, which carries `shard_count` on `BucketState` — caps each shard at
+`capacity_milli // shard_count`, so N shards admit at most `capacity` per window, never
+`N x capacity`. That holds only while every shard agrees on the count, so a client winning a
+bump propagates it. Neither a bump nor Path 2 touches shard 0's balance when the count
+doubles, so shard 0 may hold `capacity` while shard 1 starts at `capacity/2`: a one-time
+transient of up to **1.5x**, decaying as shard 0 drains, not a reconciliation scheme.
+
+**Race with the aggregator.** Both create under `attribute_not_exists(PK)`, so exactly one
+succeeds; the client losing costs one extra conditional write and never over-admits. The
+transaction still carries one item per (entity, resource, shard), so the 100-item limit is
+unaffected; one cancelled by a *sibling* item re-issues its Put from its per-index reason.
+
+**Cost** (non-cascade, one user limit, warm cache; a cold config cache adds ~1.5 RCU):
+
+| Path | RT | RCU | WCU | Notes |
+|------|----|-----|-----|-------|
+| (a) Speculative hit on an existing shard | 1 | 0 | 1 | Unchanged steady state |
+| (b) First acquire on a not-yet-created shard | 4 | 2.5 | 2 | Failed conditional (1 WCU), disable walk (3-key BatchGet, 1.5 RCU), META + bucket BatchGet (1 RCU), single-item transaction downgraded to `PutItem` (1 WCU); **once per shard** |
+| (b') …after a wcu-driven doubling | 5 | 2.5 | 3 | (b) plus the `shard_count` bump, once per doubling |
+| (c) Previous broken fallback | 4 | 2.5 | 2 | Same per-call cost as (b), paid on **every** acquire that drew a missing shard, every write landing on shard 0 |
+
+## Consequences
+
+**Positive:**
+- Write sharding engages with or without the aggregator, and without stream lag.
+- The `BUCKET_MISSING` fallback is now self-healing: one create, then fast-path hits.
+- A shard-retry that finds a missing shard creates it instead of fast-rejecting the caller.
+
+**Negative:**
+- The slow path now carries a shard and its count through read, `LeaseEntry` and write;
+  `batch_get_*` keys grow to `(entity_id, resource, shard_id)`.
+- A cascading child never takes the child-only shard retry (it would bypass the parent);
+  it pays the slow path instead — a rare-path extra round trip for correctness.
+- Non-speculative clients (`speculative_writes=False`) never consume `wcu` and so never
+  trigger doubling; they stay on shard 0.
+
+**Known limitation — per-shard request ceiling.** No shard holds more than its share, so a
+single request above `capacity // shard_count` is unadmittable on *every* shard while the
+entity is still under its configured limit. Statuses report the share, not the undivided
+config, so `RateLimitExceeded` is honest; `MAX_SHARD_COUNT` (32) bounds how small a share gets.
+
+## Related (tracked separately)
+
+- `_sync_bucket_params()` reconciles shard 0 only ([#468](https://github.com/zeroae/zae-limiter/issues/468));
+  the parallel cascade fast path always writes the parent on shard 0 ([#474](https://github.com/zeroae/zae-limiter/issues/474));
+  the per-shard ceiling has no event or metric ([#475](https://github.com/zeroae/zae-limiter/issues/475)).
+
+## Alternatives Considered
+
+### Option B — require the aggregator for write sharding
+Rejected because: a security mitigation cannot depend on an optional component being
+deployed and its stream being caught up.
+
+### Create the new shard with full (undivided) tokens
+Rejected because: it multiplies admitted capacity by `shard_count` and diverges from Path 2.
+
+### Re-draw a random shard on the slow path
+Rejected because: a second draw can land on shard 0 again, and a `BUCKET_MISSING` on shard N
+would then never create shard N — the same failure with extra randomness.

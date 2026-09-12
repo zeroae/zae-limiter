@@ -276,11 +276,100 @@ class TestRepositoryBucketOperations:
         every bucket. That made the slow path treat existing buckets as new.
         """
         entity, buckets = repo_with_buckets.batch_get_entity_and_buckets(
-            "entity-1", [("entity-1", "gpt-4")]
+            "entity-1", [("entity-1", "gpt-4", 0)]
         )
         assert entity is not None
         assert ("entity-1", "gpt-4", "rpm") in buckets
         assert ("entity-1", "gpt-4", "tpm") in buckets
+
+    def test_batch_get_buckets_reads_the_requested_shard(self, repo):
+        """The slow-path read targets the shard the key names, not shard 0.
+
+        Issue #439: with the shard hardcoded to 0, a speculative BUCKET_MISSING
+        on shard 1 fell back to a read of shard 0, so the client could never
+        create (or later find) a shard N>0 item.
+        """
+        limit = Limit.per_minute("rpm", 100)
+        now_ms = int(time.time() * 1000)
+        states = [BucketState.from_limit("sharded-1", "gpt-4", limit, now_ms)]
+        repo.transact_write(
+            [
+                repo.build_composite_create(
+                    "sharded-1", "gpt-4", states, now_ms, shard_id=1, shard_count=2
+                )
+            ]
+        )
+        assert ("sharded-1", "gpt-4", "rpm") in repo.batch_get_buckets([("sharded-1", "gpt-4", 1)])
+        assert repo.batch_get_buckets([("sharded-1", "gpt-4", 0)]) == {}
+
+    def test_batch_get_entity_and_buckets_reads_the_requested_shard(self, repo):
+        """Same as above for the META + bucket read (issue #439)."""
+        repo.create_entity("sharded-2")
+        limit = Limit.per_minute("rpm", 100)
+        now_ms = int(time.time() * 1000)
+        states = [BucketState.from_limit("sharded-2", "gpt-4", limit, now_ms)]
+        repo.transact_write(
+            [
+                repo.build_composite_create(
+                    "sharded-2", "gpt-4", states, now_ms, shard_id=1, shard_count=2
+                )
+            ]
+        )
+        entity, buckets = repo.batch_get_entity_and_buckets(
+            "sharded-2", [("sharded-2", "gpt-4", 1)]
+        )
+        assert entity is not None
+        assert ("sharded-2", "gpt-4", "rpm") in buckets
+        _entity, buckets0 = repo.batch_get_entity_and_buckets(
+            "sharded-2", [("sharded-2", "gpt-4", 0)]
+        )
+        assert buckets0 == {}
+
+    def test_speculative_images_never_lower_a_warm_shard_count(self, repo):
+        """A shard N>0 item can carry a stale, lower shard_count (propagation
+        lag). Neither a failure image nor a success image may shrink the
+        cached count learned from shard 0; the cache is monotonic (max)."""
+        ns = repo._namespace_id
+        limit = Limit.custom("rpm", 10, refill_amount=1, refill_period_seconds=3600)
+        now_ms = int(time.time() * 1000)
+        for shard_id, tokens in ((0, 0), (1, 10000)):
+            state = BucketState.from_limit("mono-1", "gpt-4", limit, now_ms, 2)
+            state.tokens_milli = tokens
+            repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        "mono-1", "gpt-4", [state], now_ms, shard_id=shard_id, shard_count=2
+                    )
+                ]
+            )
+        repo._entity_cache[ns, "mono-1"] = (False, None, {"gpt-4": 4})
+        failed = repo._speculative_consume_single("mono-1", "gpt-4", {"rpm": 1}, shard_id=0)
+        assert failed.success is False and failed.shard_count == 2
+        assert repo._entity_cache[ns, "mono-1"][2]["gpt-4"] == 4
+        with patch("zae_limiter.sync_repository.random.randrange", return_value=1):
+            ok = repo.speculative_consume("mono-1", "gpt-4", {"rpm": 1})
+        assert ok.success is True and ok.shard_count == 2
+        assert repo._entity_cache[ns, "mono-1"][2]["gpt-4"] == 4
+
+    def test_learn_shard_count_leaves_an_unknown_entity_uncached(self, repo):
+        """Without cascade/parent_id to store, an unknown entity stays out of
+        the cache; the observed count is still handed back to the caller."""
+        ns = repo._namespace_id
+        assert repo._learn_shard_count("nobody", "gpt-4", 3) == 3
+        assert (ns, "nobody") not in repo._entity_cache
+        assert repo._learn_shard_count("nobody", "gpt-4", 3, meta=(False, None)) == 3
+        assert repo._entity_cache[ns, "nobody"] == (False, None, {"gpt-4": 3})
+
+    def test_select_shard_uses_the_cached_shard_count(self, repo):
+        """select_shard is the single place a shard is picked (issue #439)."""
+        ns = repo._namespace_id
+        repo._entity_cache[ns, "sel-1"] = (False, None, {"gpt-4": 4})
+        with patch("zae_limiter.sync_repository.random.randrange", return_value=2) as randrange:
+            assert repo.select_shard("sel-1", "gpt-4") == (2, 4)
+            randrange.assert_called_once_with(4)
+        assert repo.select_shard("sel-1", "gpt-4", shard_id=3) == (3, 4)
+        assert repo.select_shard("sel-1", "other") == (0, 1)
+        assert repo.select_shard("nobody", "gpt-4") == (0, 1)
 
     def test_batch_get_entity_and_buckets_finds_bucket_without_meta(self, repo):
         """Buckets must be returned even when the entity has no #META record.
@@ -294,7 +383,7 @@ class TestRepositoryBucketOperations:
         now_ms = int(time.time() * 1000)
         states = [BucketState.from_limit("bare-1", "gpt-4", limit, now_ms) for limit in limits]
         repo.transact_write([repo.build_composite_create("bare-1", "gpt-4", states, now_ms)])
-        entity, buckets = repo.batch_get_entity_and_buckets("bare-1", [("bare-1", "gpt-4")])
+        entity, buckets = repo.batch_get_entity_and_buckets("bare-1", [("bare-1", "gpt-4", 0)])
         assert entity is None
         assert ("bare-1", "gpt-4", "rpm") in buckets
 
@@ -2775,8 +2864,80 @@ class TestBumpShardCount:
         cache_key = (repo._namespace_id, "e1")
         assert repo._entity_cache[cache_key][2]["gpt-4"] == 2
 
+    def test_bump_propagates_the_new_count_to_existing_shards(self, repo):
+        """A won bump stamps the new count on the shards that already exist.
+
+        Every shard refills toward ``capacity_milli // shard_count``, so a
+        shard left on a stale lower count would refill to a larger share and
+        the shares would sum to more than the limit. The aggregator's Path 1
+        does this from the stream; with --no-aggregator nothing else would
+        (issue #439).
+        """
+        now_ms = int(time.time() * 1000)
+        limits = [Limit.per_minute("rpm", 100000)]
+        for shard in (0, 1):
+            states = [BucketState.from_limit("e1", "gpt-4", lim, now_ms) for lim in limits]
+            repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        "e1", "gpt-4", states, now_ms, shard_id=shard, shard_count=2
+                    )
+                ]
+            )
+        assert repo.bump_shard_count("e1", "gpt-4", current_count=2) == 4
+        for shard in (0, 1):
+            bucket = repo.get_bucket("e1", "gpt-4", "rpm", shard_id=shard)
+            assert bucket is not None
+            assert bucket.shard_count == 4, f"shard {shard} kept a stale count"
+
+    def test_bump_propagation_is_monotonic(self, repo):
+        """Propagation never lowers a shard already at a higher count, so
+        racing the aggregator (or another client) is a no-op, not a conflict."""
+        now_ms = int(time.time() * 1000)
+        limits = [Limit.per_minute("rpm", 100000)]
+        for shard, count in ((0, 2), (1, 8)):
+            states = [BucketState.from_limit("e1", "gpt-4", lim, now_ms) for lim in limits]
+            repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        "e1", "gpt-4", states, now_ms, shard_id=shard, shard_count=count
+                    )
+                ]
+            )
+        repo.bump_shard_count("e1", "gpt-4", current_count=2)
+        bucket = repo.get_bucket("e1", "gpt-4", "rpm", shard_id=1)
+        assert bucket is not None
+        assert bucket.shard_count == 8, "propagation lowered a shard"
+
+    def test_propagation_reraises_unexpected_client_errors(self, repo):
+        """Only ConditionalCheckFailedException means "already caught up"; any
+        other error must surface rather than be silently counted as skipped."""
+        with patch.object(repo, "_get_client") as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.update_item.side_effect = ClientError(
+                {"Error": {"Code": "ProvisionedThroughputExceededException"}}, "UpdateItem"
+            )
+            mock_get_client.return_value = mock_client
+            with pytest.raises(ClientError) as exc_info:
+                repo._propagate_shard_count("e1", "gpt-4", old_count=2, new_count=4)
+        assert exc_info.value.response["Error"]["Code"] == "ProvisionedThroughputExceededException"
+
+    def test_bump_from_one_propagates_nothing(self, repo):
+        """At shard_count=1 there are no sibling shards to stamp."""
+        now_ms = int(time.time() * 1000)
+        limits = [Limit.per_minute("rpm", 100000)]
+        states = [BucketState.from_limit("e1", "gpt-4", lim, now_ms) for lim in limits]
+        repo.transact_write(
+            [repo.build_composite_create("e1", "gpt-4", states, now_ms, shard_id=0, shard_count=1)]
+        )
+        assert repo._propagate_shard_count("e1", "gpt-4", old_count=1, new_count=2) == 0
+
     def test_bump_shard_count_returns_current_on_race(self, repo):
-        """bump_shard_count returns current_count when another client already doubled."""
+        """When another client already doubled, the loser learns the winner's
+        shard_count from the failed conditional write's ALL_OLD image, caches
+        it, and returns it — not its own stale current_count (issue #439)."""
+        ns = repo._namespace_id
+        repo._entity_cache[ns, "e1"] = (False, None, {"gpt-4": 1})
         now_ms = int(time.time() * 1000)
         limits = [Limit.per_minute("rpm", 100000)]
         states = [BucketState.from_limit("e1", "gpt-4", lim, now_ms) for lim in limits]
@@ -2785,7 +2946,50 @@ class TestBumpShardCount:
         )
         repo.transact_write([put_item])
         result = repo.bump_shard_count("e1", "gpt-4", current_count=1)
-        assert result == 1
+        assert result == 2
+        assert repo._entity_cache[ns, "e1"][2]["gpt-4"] == 2
+
+    def test_bump_shard_count_never_lowers_a_warm_cache(self, repo):
+        """Shard 0 can lag its siblings (TTL-recreated at shard_count=1). A
+        losing bump must not adopt that lower count: the cache keeps the
+        higher count it already learned so draws still cover every shard."""
+        ns = repo._namespace_id
+        repo._entity_cache[ns, "e1"] = (False, None, {"gpt-4": 4})
+        now_ms = int(time.time() * 1000)
+        states = [BucketState.from_limit("e1", "gpt-4", Limit.per_minute("rpm", 100), now_ms)]
+        repo.transact_write(
+            [repo.build_composite_create("e1", "gpt-4", states, now_ms, shard_id=0, shard_count=1)]
+        )
+        assert repo.bump_shard_count("e1", "gpt-4", current_count=4) == 4
+        assert repo._entity_cache[ns, "e1"][2]["gpt-4"] == 4
+        assert repo.select_shard("e1", "gpt-4")[1] == 4
+
+    def test_bump_shard_count_refuses_to_exceed_the_cap(self, repo, caplog):
+        """shard_count is capped at MAX_SHARD_COUNT: the bump is refused (no
+        write), the current count is returned, and it warns once."""
+        import logging
+
+        from zae_limiter.schema import MAX_SHARD_COUNT
+
+        ns = repo._namespace_id
+        repo._entity_cache[ns, "e1"] = (False, None, {"gpt-4": MAX_SHARD_COUNT})
+        now_ms = int(time.time() * 1000)
+        states = [BucketState.from_limit("e1", "gpt-4", Limit.per_minute("rpm", 100), now_ms)]
+        repo.transact_write(
+            [
+                repo.build_composite_create(
+                    "e1", "gpt-4", states, now_ms, shard_id=0, shard_count=MAX_SHARD_COUNT
+                )
+            ]
+        )
+        with caplog.at_level(logging.WARNING, logger="zae_limiter.sync_repository"):
+            assert repo.bump_shard_count("e1", "gpt-4", MAX_SHARD_COUNT) == MAX_SHARD_COUNT
+            assert repo.bump_shard_count("e1", "gpt-4", MAX_SHARD_COUNT) == MAX_SHARD_COUNT
+        assert sum("MAX_SHARD_COUNT" in r.getMessage() for r in caplog.records) == 1
+        assert not any("e1" in r.getMessage() for r in caplog.records)
+        assert repo._entity_cache[ns, "e1"][2]["gpt-4"] == MAX_SHARD_COUNT
+        bucket = repo.get_bucket("e1", "gpt-4", "rpm")
+        assert bucket is not None and bucket.shard_count == MAX_SHARD_COUNT
 
     def test_bump_shard_count_reraises_other_errors(self, repo):
         """bump_shard_count re-raises non-ConditionalCheckFailedException errors."""
@@ -2800,23 +3004,3 @@ class TestBumpShardCount:
             assert (
                 exc_info.value.response["Error"]["Code"] == "ProvisionedThroughputExceededException"
             )
-
-    def test_bump_shard_count_warns_above_threshold(self, repo, caplog):
-        """bump_shard_count logs warning when new count exceeds threshold."""
-        import logging
-
-        now_ms = int(time.time() * 1000)
-        limits = [Limit.per_minute("rpm", 100000)]
-        states = [BucketState.from_limit("e1", "gpt-4", lim, now_ms) for lim in limits]
-        put_item = repo.build_composite_create(
-            "e1", "gpt-4", states, now_ms, shard_id=0, shard_count=32
-        )
-        repo.transact_write([put_item])
-        with caplog.at_level(logging.WARNING, logger="zae_limiter.sync_repository"):
-            result = repo.bump_shard_count("e1", "gpt-4", current_count=32)
-        assert result == 64
-        assert any(
-            "shard count" in r.message.lower() and "64" in str(r.message)
-            for r in caplog.records
-            if r.levelno >= logging.WARNING
-        )

@@ -246,17 +246,41 @@ infrastructure limit tracks per-partition write pressure.
 1. Every bucket starts with `shard_count=1` (shard 0)
 2. An internal `wcu` limit (capacity: 1000 millitokens) is auto-injected on every bucket
 3. When `wcu` is exhausted on a speculative write, the client doubles `shard_count` via a
-   conditional write on shard 0 (source of truth)
-4. The Lambda aggregator proactively doubles shards at >=80% wcu capacity before clients
-   experience throttling
-5. Shard count changes on shard 0 are propagated to all other shards by the aggregator
-6. Clients pick a random shard from the entity cache: `random.randrange(shard_count)`
-7. If application limits are exhausted on one shard but the entity has multiple shards,
-   the client retries on up to 2 other randomly chosen shards
+   conditional write on shard 0 (source of truth) and moves to one of the new shards
+4. The client creates the new shard's bucket item itself on its next slow-path acquire,
+   with `capacity / shard_count` tokens — the aggregator is **not** required for
+   sharding to engage (ADR-133)
+5. The Lambda aggregator, when deployed, proactively doubles shards at >=80% wcu capacity
+   and pre-creates the new shard items so clients skip that one-time slow path
+6. Shard count changes on shard 0 are propagated to all other shards by the aggregator
+7. Clients pick a random shard from the entity cache: `random.randrange(shard_count)`
+8. If application limits are exhausted on one shard but the entity has multiple shards,
+   the client retries on up to 2 other randomly chosen shards, creating any it finds
+   missing
 
-**Shard-aware capacity:** The aggregator divides effective capacity and refill amount
-by `shard_count` when computing refills, so each shard receives its proportional share
-of tokens.
+**Shard-aware capacity:** The aggregator's refill, the client's slow-path refill and the
+client's shard creation all divide capacity and refill amount by `shard_count`, so each
+shard holds its proportional share and the entity admits at most its configured capacity
+per refill window in steady state. Shard 0 keeps its existing balance when `shard_count`
+doubles, so admitted capacity can transiently reach 1.5x for one refill window after the
+first doubling; it is never refilled above its new share.
+
+**Works without the aggregator:** Deployments using `--no-aggregator` get the same
+write-sharding behaviour; the only difference is that each new shard costs one slow-path
+acquire (about 2.5 RCU + 2 WCU) to create, once, instead of being pre-created from the
+stream.
+
+**Known limitation — a single request cannot exceed `capacity // shard_count`.** No shard ever
+holds more than its share, so once a bucket has sharded, a request larger than one share is
+rejected on *every* shard even while the entity is well under its configured limit. For
+example, an entity limited to `rpm:1000` that has doubled to 4 shards admits at most 250 per
+call. `RateLimitExceeded` reports the per-shard capacity and refill rather than the undivided
+configuration, so the status is honest about what the shard can hold, and `MAX_SHARD_COUNT`
+(32) bounds how small a share can get. If your workload issues single requests of comparable
+size to a limit's capacity (large `tpm` estimates, most commonly), either raise the limit or
+keep the entity unsharded by lowering its write rate. Surfacing this occurrence as an event
+or CloudWatch metric is tracked in
+[#475](https://github.com/zeroae/zae-limiter/issues/475).
 
 **No application code changes required.** Pre-shard buckets are transparent to users.
 The `wcu` limit is filtered from all user-facing output (bucket states, exceptions,

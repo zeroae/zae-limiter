@@ -359,13 +359,15 @@ class SyncRepositoryProtocol(Protocol):
         ...
 
     def batch_get_buckets(
-        self, keys: list[tuple[str, str]]
+        self, keys: list[tuple[str, str, int]]
     ) -> dict[tuple[str, str, str], "BucketState"]:
         """
         Batch get composite buckets in a single call.
 
         Args:
-            keys: List of (entity_id, resource) tuples
+            keys: List of (entity_id, resource, shard_id) tuples. The shard
+                is part of a bucket item's identity (GHSA-76rv); callers pass
+                the shard the acquire selected rather than assuming shard 0.
 
         Returns:
             Dict mapping (entity_id, resource, limit_name) to BucketState.
@@ -373,17 +375,42 @@ class SyncRepositoryProtocol(Protocol):
         ...
 
     def batch_get_entity_and_buckets(
-        self, entity_id: str, bucket_keys: list[tuple[str, str]]
+        self, entity_id: str, bucket_keys: list[tuple[str, str, int]]
     ) -> tuple["Entity | None", dict[tuple[str, str, str], "BucketState"]]:
         """
         Fetch entity metadata and composite buckets in a single call.
 
         Args:
             entity_id: Entity whose metadata to include
-            bucket_keys: List of (entity_id, resource) for composite buckets
+            bucket_keys: List of (entity_id, resource, shard_id) for composite
+                buckets
 
         Returns:
             Tuple of (entity_or_none, bucket_dict).
+        """
+        ...
+
+    def select_shard(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int | None = None,
+        shard_count: int | None = None,
+    ) -> tuple[int, int]:
+        """
+        Pick the bucket shard an acquire should target (GHSA-76rv, issue #439).
+
+        Args:
+            entity_id: Entity owning the bucket
+            resource: Resource name
+            shard_id: Explicit shard to honour verbatim, or None to draw one
+                at random from the shard_count
+            shard_count: Count the caller observed (a speculative failure
+                image), or None to read the entity cache
+
+        Returns:
+            Tuple of (shard_id, shard_count) where shard_count is the given
+            or cached value for this (entity, resource), defaulting to 1.
         """
         ...
 

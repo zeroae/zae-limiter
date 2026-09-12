@@ -153,6 +153,57 @@ class TestCalculateRetryAfter:
         )
         assert 59.9 < result < 60.1  # approximately 60 seconds
 
+    def test_zero_refill_rate_does_not_raise(self):
+        """A stored rate of 0 must not divide by zero inside an error path."""
+        assert (
+            calculate_retry_after(
+                deficit_milli=1_000,
+                refill_amount_milli=0,
+                refill_period_ms=60_000,
+            )
+            == 0.0
+        )
+
+
+class TestShardedRetryEstimate:
+    """A per-shard refill share that floors to zero still needs a finite wait.
+
+    ``effective_refill_amount_milli`` is ``refill_amount_milli //
+    shard_count``, which is 0 for a slow refill on a heavily sharded bucket.
+    Dividing by it raised ``ZeroDivisionError`` from inside the rejection path
+    (#475); the estimate now falls back to the undivided rate.
+    """
+
+    @staticmethod
+    def _state(shard_count: int) -> BucketState:
+        # Limit.custom("rpd", 5, refill_amount=1, refill_period_seconds=60)
+        return BucketState(
+            entity_id="e1",
+            resource="gpt-4",
+            limit_name="rpd",
+            tokens_milli=0,
+            last_refill_ms=1_000,
+            capacity_milli=5_000,
+            refill_amount_milli=1_000,
+            refill_period_ms=60_000,
+            shard_count=shard_count,
+        )
+
+    def test_share_that_floors_to_zero_falls_back_to_the_undivided_rate(self):
+        state = self._state(1024)
+        assert state.effective_refill_amount_milli == 0
+        assert state.retry_refill_amount_milli == 1_000
+
+    def test_nonzero_share_is_used_as_is(self):
+        state = self._state(2)
+        assert state.retry_refill_amount_milli == 500
+
+    def test_try_consume_rejects_without_dividing_by_zero(self):
+        """The exact repro: 1 token/min at shard_count=1024."""
+        result = try_consume(self._state(1024), 1, 1_000)
+        assert result.success is False
+        assert result.retry_after_seconds > 0
+
 
 class TestForceConsume:
     """Tests for force_consume function."""
