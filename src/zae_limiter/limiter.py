@@ -762,6 +762,19 @@ class RateLimiter:
         )
 
         if not result.success:
+            # Only a parent shard the fast path found MISSING pins the slow
+            # path, so it is created where the fast path looked (issue #474).
+            # An exhausted one must not: every shard holds its own share and
+            # ADR-134 re-picks on every call, so a re-draw can admit where the
+            # drawn shard could not — and pinning a wcu-exhausted shard would
+            # send the slow path's writes straight back onto the hot partition.
+            parent_hint = (
+                result.parent_result.shard_id
+                if result.parent_result is not None
+                and result.parent_result.failure_reason == SpeculativeFailureReason.BUCKET_MISSING
+                else None
+            )
+
             # Child failed — check if parent was also tried (parallel path)
             if result.parent_result is not None and result.parent_result.success:
                 assert result.parent_id is not None  # set by repository cache path
@@ -794,30 +807,10 @@ class RateLimiter:
                 SpeculativeFailureReason.WCU_EXHAUSTED,
                 SpeculativeFailureReason.BOTH_EXHAUSTED,
             ):
-                # An exhausted wcu whose refill would already restore it is not
-                # a hot partition — nobody refills wcu on the fast path, and
-                # without the aggregator nobody refills it at all. Take the
-                # slow path on this shard (it refills wcu, ADR-133) rather
-                # than doubling toward MAX_SHARD_COUNT on a stale balance.
-                wcu_state = next(
-                    (b for b in result.old_buckets or [] if b.limit_name == WCU_LIMIT_NAME),
-                    None,
+                new_shard, new_count = await self._shard_after_wcu_exhaustion(
+                    entity_id, resource, result, now_ms
                 )
-                if wcu_state is not None and try_consume(wcu_state, 1, now_ms).success:
-                    return None, result.shard_id, result.shard_count, None
-                new_count = await self._repository.bump_shard_count(
-                    entity_id, resource, result.shard_count
-                )
-                # Send the slow path to a shard that is not the hot one: one of
-                # the shards the doubling just added, which it will create
-                # (issue #439). bump_shard_count returns the winner's count
-                # when another client doubled first, so this range is new
-                # either way; only a vanished shard 0 leaves nothing to add.
-                if new_count > result.shard_count:
-                    new_shard = random.randrange(result.shard_count, new_count)
-                else:
-                    new_shard = result.shard_id
-                return None, new_shard, new_count, None
+                return None, new_shard, new_count, parent_hint
 
             # Shard retry: if multi-shard and app limit exhausted, try another shard
             if (
@@ -834,17 +827,17 @@ class RateLimiter:
                     # slow path, which commits child + parent in one transaction.
                     self._check_speculative_failure(result, consume, now_ms)
                     untried = [s for s in range(result.shard_count) if s != result.shard_id]
-                    return None, random.choice(untried), result.shard_count, None
+                    return None, random.choice(untried), result.shard_count, parent_hint
                 retry_result, missing_shard = await self._retry_on_other_shard(
                     entity_id, resource, consume, ttl_seconds=None, result=result
                 )
                 if retry_result is not None:
-                    return retry_result, result.shard_id, result.shard_count, None
+                    return retry_result, result.shard_id, result.shard_count, parent_hint
                 if missing_shard is not None:
                     # A shard the entity is entitled to does not exist yet —
                     # the slow path creates it rather than fast-rejecting on
                     # the drained shard's balance (issue #439).
-                    return None, missing_shard, result.shard_count, None
+                    return None, missing_shard, result.shard_count, parent_hint
 
             self._check_speculative_failure(result, consume, now_ms)
             # BUCKET_MISSING has no image to read a shard_count from; let the
@@ -854,7 +847,7 @@ class RateLimiter:
                 if result.failure_reason == SpeculativeFailureReason.BUCKET_MISSING
                 else result.shard_count
             )
-            return None, result.shard_id, observed_count, None
+            return None, result.shard_id, observed_count, parent_hint
 
         # Child succeeded — build entries from ALL_NEW
         entries: list[LeaseEntry] = []
@@ -902,15 +895,11 @@ class RateLimiter:
                         )
                     )
             else:
-                nested = await self._handle_nested_parent_failure(
+                # The parent shard the fast path judged (or the new one a wcu
+                # doubling added) is where the slow path must look: a missing
+                # shard is created there, and an existing one is debited there.
+                nested, parent_hint = await self._handle_nested_parent_failure(
                     entity_id, resource, consume, result, now_ms
-                )
-                # A missing parent shard is created where the fast path looked
-                parent_hint = (
-                    result.parent_result.shard_id
-                    if result.parent_result.failure_reason
-                    == SpeculativeFailureReason.BUCKET_MISSING
-                    else None
                 )
                 return nested, result.shard_id, result.shard_count, parent_hint
         elif result.cascade and result.parent_id:
@@ -939,49 +928,17 @@ class RateLimiter:
                         )
                     )
             else:
-                # Disabled wins over every other classification: no refill
-                # reasoning or slow-path fallback can help (ADR-125). The
-                # child's speculatively consumed tokens must be returned
-                # before the exception propagates.
-                if parent_result.failure_reason == SpeculativeFailureReason.DISABLED:
-                    await self._compensate_child(entity_id, resource, consume, result.shard_id)
-                    raise ResourceDisabled(entity_id=parent_id, resource=resource, level="bucket")
-
-                if parent_result.old_buckets is None:
-                    await self._compensate_child(entity_id, resource, consume, result.shard_id)
-                    return None, result.shard_id, result.shard_count, parent_result.shard_id
-
-                parent_names = {b.limit_name for b in parent_result.old_buckets}
-                if not all(name in parent_names for name in consume):
-                    await self._compensate_child(entity_id, resource, consume, result.shard_id)
-                    return None, result.shard_id, result.shard_count, None
-
-                would_help, parent_statuses = would_refill_satisfy(
-                    parent_result.old_buckets, consume, now_ms
+                # Identical handling to the warm parallel path, which is what
+                # `_handle_nested_parent_failure` is: the first acquire of an
+                # entity is just as able to find the parent's shard missing or
+                # hot, and it must spread, hint and compensate the same way
+                # (issue #474). The nested result is the contract that handler
+                # reads, so hand the sequential one over on the same field.
+                result.parent_result = parent_result
+                nested, parent_hint = await self._handle_nested_parent_failure(
+                    entity_id, resource, consume, result, now_ms
                 )
-                if not would_help:
-                    await self._compensate_child(entity_id, resource, consume, result.shard_id)
-                    child_statuses = declared_statuses(result.buckets, consume, now_ms)
-                    raise RateLimitExceeded(child_statuses + parent_statuses)
-
-                try:
-                    parent_lease = await self._try_parent_only_acquire(
-                        parent_id,
-                        resource,
-                        consume,
-                        entries,
-                        parent_result.shard_id,
-                        parent_result.shard_count,
-                    )
-                except Exception:
-                    await self._compensate_child(entity_id, resource, consume, result.shard_id)
-                    raise
-
-                if parent_lease is not None:
-                    return parent_lease, result.shard_id, result.shard_count, None
-
-                await self._compensate_child(entity_id, resource, consume, result.shard_id)
-                return None, result.shard_id, result.shard_count, None
+                return nested, result.shard_id, result.shard_count, parent_hint
 
         # Build pre-committed lease
         lease = Lease(
@@ -1000,7 +957,7 @@ class RateLimiter:
         consume: dict[str, int],
         result: "SpeculativeResult",
         now_ms: int,
-    ) -> Lease | None:
+    ) -> tuple[Lease | None, int | None]:
         """Handle parent failure from nested SpeculativeResult (issue #318).
 
         Child succeeded speculatively (result.success=True).
@@ -1009,8 +966,12 @@ class RateLimiter:
         slow path, or fast-reject.
 
         Returns:
-            Lease if parent-only slow path succeeded.
-            None if full slow path is needed.
+            ``(lease, parent_shard_id)``. ``lease`` is set when the parent-only
+            slow path succeeded, None when the full slow path is needed.
+            ``parent_shard_id`` is a parent shard the slow path must target —
+            one the speculative write found MISSING, or the brand-new shard a
+            wcu-driven doubling added — and None when the slow path is free to
+            draw its own, which it must be for an exhausted shard (issue #474).
 
         Raises:
             RateLimitExceeded: If parent is truly exhausted.
@@ -1019,6 +980,16 @@ class RateLimiter:
         assert result.parent_id is not None  # set by repository cache path
         parent_result = result.parent_result
         parent_id = result.parent_id
+        parent_shard = parent_result.shard_id
+        parent_shard_count = parent_result.shard_count
+        # Same rule as the child-failure branch: only a MISSING parent shard
+        # pins the slow path to a shard. A wcu bump below replaces this with
+        # the shard the doubling added, which nothing else will create.
+        parent_hint = (
+            parent_shard
+            if parent_result.failure_reason == SpeculativeFailureReason.BUCKET_MISSING
+            else None
+        )
 
         # Disabled wins over every other classification: no refill or slow-path
         # retry can help (ADR-125). The child's speculatively consumed tokens
@@ -1029,12 +1000,12 @@ class RateLimiter:
 
         if parent_result.old_buckets is None:
             await self._compensate_child(entity_id, resource, consume, result.shard_id)
-            return None
+            return None, parent_hint
 
         parent_names = {b.limit_name for b in parent_result.old_buckets}
         if not all(name in parent_names for name in consume):
             await self._compensate_child(entity_id, resource, consume, result.shard_id)
-            return None
+            return None, parent_hint
 
         would_help, parent_statuses = would_refill_satisfy(
             parent_result.old_buckets, consume, now_ms
@@ -1043,6 +1014,28 @@ class RateLimiter:
             await self._compensate_child(entity_id, resource, consume, result.shard_id)
             child_statuses = declared_statuses(result.buckets, consume, now_ms)
             raise RateLimitExceeded(child_statuses + parent_statuses)
+
+        # Only now that the acquire is going to proceed may the parent's wcu
+        # exhaustion spread it, exactly as the child path spreads a hot child
+        # (issue #474) — nothing bumped the parent before, so a high-fanout
+        # parent never left shard 0. Doubling above the `would_help` gate would
+        # be a pure side effect: the shard it hands back is never created or
+        # read, and one doubling per rejection walks a parent sitting at its
+        # limit to MAX_SHARD_COUNT, shrinking every shard's share for good.
+        if parent_result.failure_reason in (
+            SpeculativeFailureReason.WCU_EXHAUSTED,
+            SpeculativeFailureReason.BOTH_EXHAUSTED,
+        ):
+            parent_shard, parent_shard_count = await self._shard_after_wcu_exhaustion(
+                parent_id, resource, parent_result, now_ms
+            )
+            if parent_shard != parent_result.shard_id:
+                # The doubling drew from range(old_count, new_count), so this
+                # shard does not exist yet: a parent-only attempt could only
+                # resolve limits, read a miss and return None. Hand the child
+                # straight to the full slow path, which creates it.
+                await self._compensate_child(entity_id, resource, consume, result.shard_id)
+                return None, parent_shard
 
         # Refill would help — build child entries for parent-only slow path
         entries: list[LeaseEntry] = []
@@ -1077,18 +1070,57 @@ class RateLimiter:
                 resource,
                 consume,
                 entries,
-                parent_result.shard_id,
-                parent_result.shard_count,
+                parent_shard,
+                parent_shard_count,
             )
         except Exception:
             await self._compensate_child(entity_id, resource, consume, result.shard_id)
             raise
 
         if parent_lease is not None:
-            return parent_lease
+            return parent_lease, parent_hint
 
         await self._compensate_child(entity_id, resource, consume, result.shard_id)
-        return None
+        return None, parent_hint
+
+    async def _shard_after_wcu_exhaustion(
+        self,
+        entity_id: str,
+        resource: str,
+        result: "SpeculativeResult",
+        now_ms: int,
+    ) -> tuple[int, int]:
+        """Pick the shard to fall back to after a ``wcu`` exhaustion.
+
+        Used for the child and, since issue #474, for a cascade parent as well:
+        a hot cascade parent has to spread off its shard exactly like a hot
+        child, or every one of its children keeps hammering the same partition.
+
+        Returns:
+            ``(shard_id, shard_count)`` for the slow path — the same shard when
+            the exhaustion is not a hot partition, otherwise one of the shards
+            the doubling just added, with the new count.
+        """
+        # An exhausted wcu whose refill would already restore it is not a hot
+        # partition — nobody refills wcu on the fast path, and without the
+        # aggregator nobody refills it at all. Take the slow path on this shard
+        # (it refills wcu, ADR-133) rather than doubling toward
+        # MAX_SHARD_COUNT on a stale balance.
+        wcu_state = next(
+            (b for b in result.old_buckets or [] if b.limit_name == WCU_LIMIT_NAME),
+            None,
+        )
+        if wcu_state is not None and try_consume(wcu_state, 1, now_ms).success:
+            return result.shard_id, result.shard_count
+        new_count = await self._repository.bump_shard_count(entity_id, resource, result.shard_count)
+        # Send the slow path to a shard that is not the hot one: one of the
+        # shards the doubling just added, which it will create (issue #439).
+        # bump_shard_count returns the winner's count when another client
+        # doubled first, so this range is new either way; only a vanished
+        # shard 0 leaves nothing to add.
+        if new_count > result.shard_count:
+            return random.randrange(result.shard_count, new_count), new_count
+        return result.shard_id, new_count
 
     async def _compensate_child(
         self,
