@@ -753,6 +753,10 @@ class TestLeaseRetryPath:
         mock_repo.build_composite_normal.return_value = {"Update": {}}
         mock_repo.build_composite_retry.return_value = {"Update": {}}
         mock_repo._bucket_ttl_refill_multiplier = 7
+        # Sync on the real Repository (issue #430): an AsyncMock attribute
+        # would hand the lease an un-awaited coroutine as `now_ms`, which
+        # then flows into the mocked builders and leaks a RuntimeWarning.
+        mock_repo._now_ms = MagicMock(return_value=1000)
 
         lease = Lease(repository=mock_repo, entries=[entry])
         with pytest.raises(RateLimitExceeded):
@@ -797,6 +801,12 @@ class TestWriteOnEnter:
         repo.build_composite_retry.return_value = {"Update": {}}
         repo.build_composite_adjust.return_value = {"Update": {}}
         repo._bucket_ttl_refill_multiplier = 7
+        # `_now_ms()` is sync on the real Repository (issue #430). Left as an
+        # AsyncMock attribute it returns a coroutine nobody awaits, which the
+        # lease then passes as `now_ms` into the mocked builders — harmless to
+        # the assertions, but it leaks "coroutine was never awaited"
+        # RuntimeWarnings and fails under -W error::RuntimeWarning.
+        repo._now_ms = MagicMock(return_value=1000)
         return repo
 
     async def test_commit_initial_empty_entries(self):

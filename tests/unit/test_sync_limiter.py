@@ -588,6 +588,7 @@ class TestLeaseRetryPath:
         mock_repo.build_composite_normal.return_value = {"Update": {}}
         mock_repo.build_composite_retry.return_value = {"Update": {}}
         mock_repo._bucket_ttl_refill_multiplier = 7
+        mock_repo._now_ms = MagicMock(return_value=1000)
         lease = SyncLease(repository=mock_repo, entries=[entry])
         with pytest.raises(RateLimitExceeded):
             lease._commit_initial()
@@ -631,6 +632,7 @@ class TestWriteOnEnter:
         repo.build_composite_retry.return_value = {"Update": {}}
         repo.build_composite_adjust.return_value = {"Update": {}}
         repo._bucket_ttl_refill_multiplier = 7
+        repo._now_ms = MagicMock(return_value=1000)
         return repo
 
     def test_commit_initial_empty_entries(self):
