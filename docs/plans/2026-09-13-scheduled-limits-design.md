@@ -301,7 +301,7 @@ Added to `infra/lambda_builder.py`'s stub copy list beside `schema/bucket/models
 ScheduleEntry                                   # the §1.1 dataclass lives here
 matches(parsed, now_ms) -> bool                 # cron-as-set-pattern, §1.2
 effective_params(cp_milli, ra_milli, rp_ms, sched, now_ms) -> tuple[int, int, int]
-next_boundary(sched, reset_sched, now_ms) -> int    # epoch ms, min across both tuples
+next_boundary(sched, reset_sched, *, now_ms) -> int  # epoch ms, min across both tuples
 prev_reset_edge(reset_sched, now_ms) -> int | None  # most recent rising edge, §3.6
 encode(sched) -> str / decode(s) -> tuple[...]  # §4
 ```

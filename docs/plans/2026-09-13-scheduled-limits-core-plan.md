@@ -593,7 +593,7 @@ Refs #222"
 **Interfaces:**
 - Consumes: `matches`, `effective_params`, `parse_cron`
 - Produces:
-  - `next_boundary(sched: tuple[ScheduleEntry, ...], reset_sched: tuple[ScheduleEntry, ...] = (), now_ms: int = 0) -> int | None` — `None` when both tuples are empty.
+  - `next_boundary(sched: tuple[ScheduleEntry, ...], reset_sched: tuple[ScheduleEntry, ...] = (), *, now_ms: int) -> int | None` — `None` when both tuples are empty. **`now_ms` is keyword-only on purpose:** it is the second thing a caller wants to pass and the second *positional* slot belongs to `reset_sched`, so a positional call silently binds a timestamp to a schedule tuple. Every call site in this plan and the surface plan passes `now_ms=`.
     **Take the two-tuple signature now even though `reset_sched` is unused here.** The surface plan adds reset edges as boundary candidates; accepting the parameter from the start means that lands as a behaviour change in one function rather than a signature change rippling through `lease.py` and `processor.py`.
   - `parse_cron` becomes `functools.lru_cache`-backed
 
@@ -629,27 +629,27 @@ BUSINESS = (ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scal
 
 class TestNextBoundary:
     def test_none_without_a_schedule(self):
-        assert next_boundary((), _ms("2026-09-15 06:00")) is None
+        assert next_boundary((), now_ms=_ms("2026-09-15 06:00")) is None
 
     def test_finds_a_window_opening(self):
-        assert _iso(next_boundary(BUSINESS, _ms("2026-09-15 06:00"))).startswith(
+        assert _iso(next_boundary(BUSINESS, now_ms=_ms("2026-09-15 06:00"))).startswith(
             "2026-09-15T09:00"
         )
 
     def test_finds_a_window_closing(self):
         """The half of the problem no cron library solves."""
-        assert _iso(next_boundary(BUSINESS, _ms("2026-09-15 14:00"))).startswith(
+        assert _iso(next_boundary(BUSINESS, now_ms=_ms("2026-09-15 14:00"))).startswith(
             "2026-09-15T18:00"
         )
 
     def test_skips_the_weekend(self):
-        assert _iso(next_boundary(BUSINESS, _ms("2026-09-12 18:30"))).startswith(
+        assert _iso(next_boundary(BUSINESS, now_ms=_ms("2026-09-12 18:30"))).startswith(
             "2026-09-14T09:00"
         )
 
     def test_window_edge_follows_local_time_across_dst(self):
-        before = next_boundary(BUSINESS, _ms("2027-03-12 08:30"))
-        after = next_boundary(BUSINESS, _ms("2027-03-16 08:30"))
+        before = next_boundary(BUSINESS, now_ms=_ms("2027-03-12 08:30"))
+        after = next_boundary(BUSINESS, now_ms=_ms("2027-03-16 08:30"))
         assert datetime.utcfromtimestamp(before / 1000).hour == 14   # EST
         assert datetime.utcfromtimestamp(after / 1000).hour == 13    # EDT
 
@@ -657,19 +657,19 @@ class TestNextBoundary:
         """A schedule that always matches has no boundary; cap rather than loop forever."""
         always = (ScheduleEntry(cron="* * * * *", scale=0.5),)
         now = _ms("2026-09-15 06:00")
-        assert next_boundary(always, now) == now + 31 * 86_400_000
+        assert next_boundary(always, now_ms=now) == now + 31 * 86_400_000
 
     def test_minute_granularity_uses_the_seven_day_cap(self):
         sched = (ScheduleEntry(cron="*/15 * * * *", scale=0.5),)
         now = _ms("2026-09-15 06:07")
-        assert _iso(next_boundary(sched, now)).startswith("2026-09-15T06:08")
+        assert _iso(next_boundary(sched, now_ms=now)).startswith("2026-09-15T06:08")
 
     def test_is_the_minimum_across_entries(self):
         sched = (
             ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.5),
             ScheduleEntry(cron="* 7-8 * * *", tz="America/New_York", scale=0.8),
         )
-        assert _iso(next_boundary(sched, _ms("2026-09-15 06:00"))).startswith(
+        assert _iso(next_boundary(sched, now_ms=_ms("2026-09-15 06:00"))).startswith(
             "2026-09-15T07:00"
         )
 
@@ -678,7 +678,7 @@ class TestNextBoundary:
         from zae_limiter.schedule import effective_params
 
         now = _ms("2026-09-15 06:00")
-        b = next_boundary(BUSINESS, now)
+        b = next_boundary(BUSINESS, now_ms=now)
         assert effective_params(1_000_000, 1_000_000, 60_000, BUSINESS, b - 60_000) != \
                effective_params(1_000_000, 1_000_000, 60_000, BUSINESS, b)
 
@@ -688,9 +688,9 @@ class TestParseCacheIsHot:
         from zae_limiter.schedule import parse_cron
 
         parse_cron.cache_clear()
-        next_boundary(BUSINESS, _ms("2026-09-15 06:00"))
+        next_boundary(BUSINESS, now_ms=_ms("2026-09-15 06:00"))
         first = parse_cron.cache_info().misses
-        next_boundary(BUSINESS, _ms("2026-09-15 06:00"))
+        next_boundary(BUSINESS, now_ms=_ms("2026-09-15 06:00"))
         assert parse_cron.cache_info().misses == first
 ```
 
