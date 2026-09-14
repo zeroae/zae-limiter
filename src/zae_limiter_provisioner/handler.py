@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import os
+import time
 import urllib.request
 from datetime import UTC, datetime
 from typing import Any
@@ -26,6 +27,7 @@ from zae_limiter.schema import (
 )
 
 from .applier import apply_changes
+from .bucket_sync import DEFAULT_TTL_MULTIPLIER, resolve_effective_limits, sync_bucket_params
 from .differ import Change, compute_diff
 from .fanout import fanout_entity, fanout_resource, resolve_disabled
 from .manifest import LimitsManifest
@@ -94,6 +96,7 @@ def _handle_cli(event: dict[str, Any], context: Any) -> dict[str, Any]:
     # Apply
     result = apply_changes(changes, table_name, namespace_id)
     _fanout_disabled_changes(table_name, namespace_id, changes)
+    _sync_bucket_param_changes(table_name, namespace_id, changes)
 
     # Update provisioner state
     manifest_hash = hashlib.sha256(
@@ -141,6 +144,7 @@ def _handle_cfn(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     result = apply_changes(changes, table_name, namespace_id)
     _fanout_disabled_changes(table_name, namespace_id, changes)
+    _sync_bucket_param_changes(table_name, namespace_id, changes)
 
     manifest_hash = hashlib.sha256(
         json.dumps(manifest.to_dict(), sort_keys=True).encode()
@@ -246,6 +250,62 @@ def _fanout_disabled_changes(
             fanout_entity(
                 client, table_name, namespace_id, entity_id, fanout_resource_arg, disabled
             )
+
+
+def _sync_bucket_param_changes(
+    table_name: str,
+    namespace_id: str,
+    changes: list[Change],
+) -> None:
+    """Push entity-level limit changes out to existing bucket items (#481).
+
+    Runs AFTER ``apply_changes``, so ``resolve_effective_limits`` sees the
+    config this apply has already written — the same ordering contract
+    ``_fanout_disabled_changes`` relies on.
+
+    **Entity level only.** Resource and system defaults deliberately never
+    touch buckets: a bucket on defaults carries a TTL and is recreated with
+    current params when it expires (#271, #296).
+    """
+    client = boto3.client("dynamodb")
+    now_ms = int(time.time() * 1000)
+
+    for change in changes:
+        if change.level != "entity" or change.target is None:
+            continue
+        entity_id, resource = change.target.split("/", 1)
+        declared = (change.data or {}).get("limits", {})
+
+        limits: dict[str, Any]
+        stale_limit_names: set[str] | None
+        if change.action == "delete":
+            # Reconcile to whatever now applies, and strip the limits that the
+            # deleted config had but the new effective config does not.
+            effective = resolve_effective_limits(
+                client, table_name, namespace_id, entity_id, resource
+            )
+            if not effective:
+                continue
+            stale = set(declared) - set(effective)
+            limits, ttl_multiplier = effective, DEFAULT_TTL_MULTIPLIER
+            stale_limit_names = stale or None
+        else:
+            if not declared:
+                continue
+            limits, ttl_multiplier = declared, 0
+            stale_limit_names = None
+
+        sync_bucket_params(
+            client=client,
+            table_name=table_name,
+            namespace_id=namespace_id,
+            entity_id=entity_id,
+            resource=resource,
+            limits=limits,
+            ttl_multiplier=ttl_multiplier,
+            stale_limit_names=stale_limit_names,
+            now_ms=now_ms,
+        )
 
 
 def _cfn_properties_to_manifest(properties: dict[str, Any]) -> dict[str, Any]:

@@ -153,6 +153,49 @@ class RepositoryProtocol(Protocol):
         """Multiplier for bucket TTL calculation (Issue #271)."""
         ...
 
+    # -------------------------------------------------------------------------
+    # Clock
+    # -------------------------------------------------------------------------
+
+    def _now_ms(self) -> int:
+        """Current time in epoch milliseconds — the token-bucket clock.
+
+        Every millisecond-resolution read that feeds refill math, an ``rf``
+        stamp or a bucket TTL goes through here — in the limiter, in the
+        lease and inside the backend alike — which makes it the one seam a
+        test patches to control that clock deterministically, with no
+        sleeping and no patching of the global ``time`` module (which would
+        also move moto's and botocore's clocks). Issue #430.
+
+        **It is not the library's only clock.** ``config_cache`` measures its
+        TTL in *seconds* against ``time.time()`` and is deliberately out of
+        scope for #430. Advancing this seam therefore ages buckets but not
+        cached config: a test that jumps an hour still resolves whatever
+        limits the cache held before the jump, until the 60s wall-clock TTL
+        expires or ``invalidate_config_cache()`` is called. A test that needs
+        a *config* change to take effect at a controlled instant must
+        invalidate the cache explicitly.
+
+        **One instant per write, not per acquire.** A caller that reads the
+        clock threads the value onward (see ``speculative_consume``'s
+        ``now_ms``) so that a single speculative ``UpdateItem`` — its ``ttl``
+        stamp, its TTL-expiry guard and the caller's admission decision —
+        agrees on one instant. The slow path deliberately reads again: it
+        runs after a ``BatchGetItem`` and then commits a transaction, and
+        inheriting the fast path's instant across those round trips would
+        stamp ``rf`` in the past and under-refill every bucket it writes. A
+        full ``acquire()`` therefore observes:
+
+        ===================================== ========
+        Path                                  readings
+        ===================================== ========
+        Warm speculative fast path            1
+        ``speculative_writes=False``          2
+        Speculative miss, then the slow path  3
+        ===================================== ========
+        """
+        ...
+
     @property
     def capabilities(self) -> "BackendCapabilities":
         """
@@ -408,13 +451,15 @@ class RepositoryProtocol(Protocol):
 
     async def batch_get_buckets(
         self,
-        keys: list[tuple[str, str]],
+        keys: list[tuple[str, str, int]],
     ) -> dict[tuple[str, str, str], "BucketState"]:
         """
         Batch get composite buckets in a single call.
 
         Args:
-            keys: List of (entity_id, resource) tuples
+            keys: List of (entity_id, resource, shard_id) tuples. The shard
+                is part of a bucket item's identity (GHSA-76rv); callers pass
+                the shard the acquire selected rather than assuming shard 0.
 
         Returns:
             Dict mapping (entity_id, resource, limit_name) to BucketState.
@@ -424,17 +469,42 @@ class RepositoryProtocol(Protocol):
     async def batch_get_entity_and_buckets(
         self,
         entity_id: str,
-        bucket_keys: list[tuple[str, str]],
+        bucket_keys: list[tuple[str, str, int]],
     ) -> tuple["Entity | None", dict[tuple[str, str, str], "BucketState"]]:
         """
         Fetch entity metadata and composite buckets in a single call.
 
         Args:
             entity_id: Entity whose metadata to include
-            bucket_keys: List of (entity_id, resource) for composite buckets
+            bucket_keys: List of (entity_id, resource, shard_id) for composite
+                buckets
 
         Returns:
             Tuple of (entity_or_none, bucket_dict).
+        """
+        ...
+
+    def select_shard(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int | None = None,
+        shard_count: int | None = None,
+    ) -> tuple[int, int]:
+        """
+        Pick the bucket shard an acquire should target (GHSA-76rv, issue #439).
+
+        Args:
+            entity_id: Entity owning the bucket
+            resource: Resource name
+            shard_id: Explicit shard to honour verbatim, or None to draw one
+                at random from the shard_count
+            shard_count: Count the caller observed (a speculative failure
+                image), or None to read the entity cache
+
+        Returns:
+            Tuple of (shard_id, shard_count) where shard_count is the given
+            or cached value for this (entity, resource), defaulting to 1.
         """
         ...
 
@@ -598,6 +668,7 @@ class RepositoryProtocol(Protocol):
         consume: dict[str, int],
         ttl_seconds: int | None = None,
         shard_id: int | None = None,
+        now_ms: int | None = None,
     ) -> SpeculativeResult:
         """Attempt speculative UpdateItem with condition check.
 
@@ -613,6 +684,9 @@ class RepositoryProtocol(Protocol):
             ttl_seconds: TTL in seconds from now, or None for no TTL change
             shard_id: Explicit shard to target (skips random selection and
                 cascade logic). None means auto-select from entity cache.
+            now_ms: The caller's "now" (issue #430), so one logical
+                ``acquire()`` observes one instant. None reads the clock via
+                ``_now_ms()`` once inside.
 
         Returns:
             SpeculativeResult with success flag and either:

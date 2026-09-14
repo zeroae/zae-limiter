@@ -7,7 +7,7 @@ Changes should be made to the source file, then regenerated.
 """
 
 import logging
-import time
+import random
 import warnings
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -19,9 +19,10 @@ from .limiter import OnUnavailable as OnUnavailable
 if TYPE_CHECKING:
     from .sync_repository_protocol import SpeculativeResult, SyncRepositoryProtocol
 from .bucket import (
-    build_limit_status,
     calculate_available,
     calculate_time_until_available,
+    declared_statuses,
+    force_consume,
     try_consume,
     would_refill_satisfy,
 )
@@ -43,7 +44,7 @@ from .models import (
     validate_identifier,
     validate_resource,
 )
-from .schema import DEFAULT_RESOURCE
+from .schema import DEFAULT_RESOURCE, WCU_LIMIT_NAME
 from .sync_config_cache import ConfigSource
 from .sync_lease import LeaseEntry, SyncLease
 from .sync_repository import SyncRepository
@@ -51,6 +52,19 @@ from .sync_repository_protocol import SpeculativeFailureReason
 
 _UNSET: Any = object()
 logger = logging.getLogger(__name__)
+_ENTITY_CONFIG_SOURCES: frozenset[str] = frozenset({"entity", "entity_default"})
+
+
+def _is_custom_config(config_source: str | None) -> bool:
+    """Whether limits from ``config_source`` are the entity's own (ADR-136).
+
+    Decides bucket TTL: a bucket whose limits resolve from **either** entity
+    level is custom and must persist indefinitely; only the resource and system
+    levels (and an explicit ``limits`` override) leave it ephemeral, which is
+    also how those levels propagate parameter changes, since they do not fan
+    out. Kept in one place so the call sites cannot drift apart again (#489).
+    """
+    return config_source in _ENTITY_CONFIG_SOURCES
 
 
 class SyncRateLimiter:
@@ -569,19 +583,30 @@ class SyncRateLimiter:
         mode = self._resolve_on_unavailable(on_unavailable)
         try:
             lease: SyncLease | None = None
+            slow_path_shard: int | None = None
+            slow_path_shard_count: int | None = None
+            slow_path_parent_shard: int | None = None
             if self._speculative_writes:
-                lease = self._try_speculative_acquire(
-                    entity_id=entity_id, resource=resource, consume=consume
+                lease, slow_path_shard, slow_path_shard_count, slow_path_parent_shard = (
+                    self._try_speculative_acquire(
+                        entity_id=entity_id, resource=resource, consume=consume
+                    )
                 )
             if lease is None:
                 lease = self._do_acquire(
-                    entity_id=entity_id, resource=resource, limits_override=limits, consume=consume
+                    entity_id=entity_id,
+                    resource=resource,
+                    limits_override=limits,
+                    consume=consume,
+                    shard_id=slow_path_shard,
+                    shard_count=slow_path_shard_count,
+                    parent_shard_id=slow_path_parent_shard,
                 )
-        except (RateLimitExceeded, ValidationError, ResourceDisabled):
+        except (RateLimitExceeded, ValidationError, ResourceDisabled, Warning):
             raise
         except Exception as e:
             if mode == OnUnavailable.ALLOW:
-                yield SyncLease(repository=self._repository)
+                yield SyncLease(repository=self._repository, degraded=True)
                 return
             else:
                 raise RateLimiterUnavailable(
@@ -601,29 +626,44 @@ class SyncRateLimiter:
 
     def _try_speculative_acquire(
         self, entity_id: str, resource: str, consume: dict[str, int]
-    ) -> SyncLease | None:
+    ) -> tuple[SyncLease | None, int, int | None, int | None]:
         """Try the speculative fast path for acquire (issue #315).
 
         SyncRepository checks its own entity cache (issue #318) and issues
         parallel child+parent UpdateItems when cache hit + cascade.
 
         Returns:
-            SyncLease if speculative write succeeded (already committed).
-            None if slow path is needed (refill would help, bucket missing,
-            or config changed).
+            ``(lease, shard_id, shard_count)``. ``lease`` is the pre-committed
+            SyncLease when the speculative write succeeded, or None when the slow
+            path is needed (refill would help, bucket missing, or config
+            changed). ``shard_id`` is the child shard the slow path must then
+            target: the shard that reported ``BUCKET_MISSING``, or a brand-new
+            shard after wcu-driven doubling; ``shard_count`` is the count
+            observed on the failure image (or after the bump), which the slow
+            path must use to size and stamp a shard it creates — a failed
+            speculative write never updates the entity cache (issue #439).
+            Both are meaningless when ``lease`` is not None.
 
         Raises:
             RateLimitExceeded: If the bucket is truly exhausted (refill
                 wouldn't help). Saves 1 RCU vs the slow path.
         """
-        now_ms = int(time.time() * 1000)
+        now_ms = self._repository._now_ms()
         result = self._repository.speculative_consume(
-            entity_id=entity_id, resource=resource, consume=consume
+            entity_id=entity_id, resource=resource, consume=consume, now_ms=now_ms
         )
         if not result.success:
+            parent_hint = (
+                result.parent_result.shard_id
+                if result.parent_result is not None
+                and result.parent_result.failure_reason == SpeculativeFailureReason.BUCKET_MISSING
+                else None
+            )
             if result.parent_result is not None and result.parent_result.success:
                 assert result.parent_id is not None
-                self._compensate_speculative(result.parent_id, resource, consume)
+                self._compensate_speculative(
+                    result.parent_id, resource, consume, result.parent_result.shard_id
+                )
             if result.failure_reason == SpeculativeFailureReason.DISABLED:
                 raise ResourceDisabled(entity_id=entity_id, resource=resource, level="bucket")
             if (
@@ -638,19 +678,32 @@ class SyncRateLimiter:
                 SpeculativeFailureReason.WCU_EXHAUSTED,
                 SpeculativeFailureReason.BOTH_EXHAUSTED,
             ):
-                self._repository.bump_shard_count(entity_id, resource, result.shard_count)
-                return None
+                new_shard, new_count = self._shard_after_wcu_exhaustion(
+                    entity_id, resource, result, now_ms
+                )
+                return (None, new_shard, new_count, parent_hint)
             if (
                 result.shard_count > 1
                 and result.failure_reason == SpeculativeFailureReason.APP_LIMIT_EXHAUSTED
             ):
-                retry_result = self._retry_on_other_shard(
-                    entity_id, resource, consume, ttl_seconds=None, result=result
+                if result.cascade:
+                    self._check_speculative_failure(result, consume, now_ms)
+                    untried = [s for s in range(result.shard_count) if s != result.shard_id]
+                    return (None, random.choice(untried), result.shard_count, parent_hint)
+                retry_result, missing_shard = self._retry_on_other_shard(
+                    entity_id, resource, consume, ttl_seconds=None, result=result, now_ms=now_ms
                 )
                 if retry_result is not None:
-                    return retry_result
+                    return (retry_result, result.shard_id, result.shard_count, parent_hint)
+                if missing_shard is not None:
+                    return (None, missing_shard, result.shard_count, parent_hint)
             self._check_speculative_failure(result, consume, now_ms)
-            return None
+            observed_count = (
+                None
+                if result.failure_reason == SpeculativeFailureReason.BUCKET_MISSING
+                else result.shard_count
+            )
+            return (None, result.shard_id, observed_count, parent_hint)
         entries: list[LeaseEntry] = []
         for state in result.buckets:
             if state.limit_name not in consume:
@@ -687,13 +740,14 @@ class SyncRateLimiter:
                         )
                     )
             else:
-                return self._handle_nested_parent_failure(
+                nested, parent_hint = self._handle_nested_parent_failure(
                     entity_id, resource, consume, result, now_ms
                 )
+                return (nested, result.shard_id, result.shard_count, parent_hint)
         elif result.cascade and result.parent_id:
             parent_id = result.parent_id
             parent_result = self._repository.speculative_consume(
-                entity_id=parent_id, resource=resource, consume=consume
+                entity_id=parent_id, resource=resource, consume=consume, now_ms=now_ms
             )
             if parent_result.success:
                 for state in parent_result.buckets:
@@ -712,49 +766,16 @@ class SyncRateLimiter:
                         )
                     )
             else:
-                if parent_result.failure_reason == SpeculativeFailureReason.DISABLED:
-                    self._compensate_child(entity_id, resource, consume)
-                    raise ResourceDisabled(entity_id=parent_id, resource=resource, level="bucket")
-                if parent_result.old_buckets is None:
-                    self._compensate_child(entity_id, resource, consume)
-                    return None
-                parent_names = {b.limit_name for b in parent_result.old_buckets}
-                if not all(name in parent_names for name in consume):
-                    self._compensate_child(entity_id, resource, consume)
-                    return None
-                would_help, parent_statuses = would_refill_satisfy(
-                    parent_result.old_buckets, consume, now_ms
+                result.parent_result = parent_result
+                nested, parent_hint = self._handle_nested_parent_failure(
+                    entity_id, resource, consume, result, now_ms
                 )
-                if not would_help:
-                    self._compensate_child(entity_id, resource, consume)
-                    child_statuses = [
-                        build_limit_status(
-                            entity_id=s.entity_id,
-                            resource=s.resource,
-                            limit=Limit.from_bucket_state(s),
-                            state=s,
-                            requested=consume.get(s.limit_name, 0),
-                            now_ms=now_ms,
-                        )
-                        for s in result.buckets
-                    ]
-                    raise RateLimitExceeded(child_statuses + parent_statuses)
-                try:
-                    parent_lease = self._try_parent_only_acquire(
-                        parent_id, resource, consume, entries
-                    )
-                except Exception:
-                    self._compensate_child(entity_id, resource, consume)
-                    raise
-                if parent_lease is not None:
-                    return parent_lease
-                self._compensate_child(entity_id, resource, consume)
-                return None
+                return (nested, result.shard_id, result.shard_count, parent_hint)
         lease = SyncLease(repository=self._repository, entries=entries)
         lease._initial_committed = True
         for entry in entries:
             entry._initial_consumed = entry.consumed
-        return lease
+        return (lease, result.shard_id, result.shard_count, None)
 
     def _handle_nested_parent_failure(
         self,
@@ -763,7 +784,7 @@ class SyncRateLimiter:
         consume: dict[str, int],
         result: "SpeculativeResult",
         now_ms: int,
-    ) -> SyncLease | None:
+    ) -> tuple[SyncLease | None, int | None]:
         """Handle parent failure from nested SpeculativeResult (issue #318).
 
         Child succeeded speculatively (result.success=True).
@@ -772,8 +793,12 @@ class SyncRateLimiter:
         slow path, or fast-reject.
 
         Returns:
-            SyncLease if parent-only slow path succeeded.
-            None if full slow path is needed.
+            ``(lease, parent_shard_id)``. ``lease`` is set when the parent-only
+            slow path succeeded, None when the full slow path is needed.
+            ``parent_shard_id`` is a parent shard the slow path must target —
+            one the speculative write found MISSING, or the brand-new shard a
+            wcu-driven doubling added — and None when the slow path is free to
+            draw its own, which it must be for an exhausted shard (issue #474).
 
         Raises:
             RateLimitExceeded: If parent is truly exhausted.
@@ -782,33 +807,40 @@ class SyncRateLimiter:
         assert result.parent_id is not None
         parent_result = result.parent_result
         parent_id = result.parent_id
+        parent_shard = parent_result.shard_id
+        parent_shard_count = parent_result.shard_count
+        parent_hint = (
+            parent_shard
+            if parent_result.failure_reason == SpeculativeFailureReason.BUCKET_MISSING
+            else None
+        )
         if parent_result.failure_reason == SpeculativeFailureReason.DISABLED:
-            self._compensate_child(entity_id, resource, consume)
+            self._compensate_child(entity_id, resource, consume, result.shard_id)
             raise ResourceDisabled(entity_id=parent_id, resource=resource, level="bucket")
         if parent_result.old_buckets is None:
-            self._compensate_child(entity_id, resource, consume)
-            return None
+            self._compensate_child(entity_id, resource, consume, result.shard_id)
+            return (None, parent_hint)
         parent_names = {b.limit_name for b in parent_result.old_buckets}
         if not all(name in parent_names for name in consume):
-            self._compensate_child(entity_id, resource, consume)
-            return None
+            self._compensate_child(entity_id, resource, consume, result.shard_id)
+            return (None, parent_hint)
         would_help, parent_statuses = would_refill_satisfy(
             parent_result.old_buckets, consume, now_ms
         )
         if not would_help:
-            self._compensate_child(entity_id, resource, consume)
-            child_statuses = [
-                build_limit_status(
-                    entity_id=s.entity_id,
-                    resource=s.resource,
-                    limit=Limit.from_bucket_state(s),
-                    state=s,
-                    requested=consume.get(s.limit_name, 0),
-                    now_ms=now_ms,
-                )
-                for s in result.buckets
-            ]
+            self._compensate_child(entity_id, resource, consume, result.shard_id)
+            child_statuses = declared_statuses(result.buckets, consume, now_ms)
             raise RateLimitExceeded(child_statuses + parent_statuses)
+        if parent_result.failure_reason in (
+            SpeculativeFailureReason.WCU_EXHAUSTED,
+            SpeculativeFailureReason.BOTH_EXHAUSTED,
+        ):
+            parent_shard, parent_shard_count = self._shard_after_wcu_exhaustion(
+                parent_id, resource, parent_result, now_ms
+            )
+            if parent_shard != parent_result.shard_id:
+                self._compensate_child(entity_id, resource, consume, result.shard_id)
+                return (None, parent_shard)
         entries: list[LeaseEntry] = []
         for state in result.buckets:
             if state.limit_name not in consume:
@@ -828,26 +860,59 @@ class SyncRateLimiter:
                 )
             )
         try:
-            parent_lease = self._try_parent_only_acquire(parent_id, resource, consume, entries)
+            parent_lease = self._try_parent_only_acquire(
+                parent_id, resource, consume, entries, parent_shard, parent_shard_count
+            )
         except Exception:
-            self._compensate_child(entity_id, resource, consume)
+            self._compensate_child(entity_id, resource, consume, result.shard_id)
             raise
         if parent_lease is not None:
-            return parent_lease
-        self._compensate_child(entity_id, resource, consume)
-        return None
+            return (parent_lease, parent_hint)
+        self._compensate_child(entity_id, resource, consume, result.shard_id)
+        return (None, parent_hint)
 
-    def _compensate_child(self, entity_id: str, resource: str, consume: dict[str, int]) -> None:
+    def _shard_after_wcu_exhaustion(
+        self, entity_id: str, resource: str, result: "SpeculativeResult", now_ms: int
+    ) -> tuple[int, int]:
+        """Pick the shard to fall back to after a ``wcu`` exhaustion.
+
+        Used for the child and, since issue #474, for a cascade parent as well:
+        a hot cascade parent has to spread off its shard exactly like a hot
+        child, or every one of its children keeps hammering the same partition.
+
+        Returns:
+            ``(shard_id, shard_count)`` for the slow path — the same shard when
+            the exhaustion is not a hot partition, otherwise one of the shards
+            the doubling just added, with the new count.
+        """
+        wcu_state = next(
+            (b for b in result.old_buckets or [] if b.limit_name == WCU_LIMIT_NAME), None
+        )
+        if wcu_state is not None and try_consume(wcu_state, 1, now_ms).success:
+            return (result.shard_id, result.shard_count)
+        new_count = self._repository.bump_shard_count(entity_id, resource, result.shard_count)
+        if new_count > result.shard_count:
+            return (random.randrange(result.shard_count, new_count), new_count)
+        return (result.shard_id, new_count)
+
+    def _compensate_child(
+        self, entity_id: str, resource: str, consume: dict[str, int], shard_id: int
+    ) -> None:
         """Compensate a speculatively consumed child by adding tokens back."""
-        self._compensate_speculative(entity_id, resource, consume)
+        self._compensate_speculative(entity_id, resource, consume, shard_id)
 
     def _compensate_speculative(
-        self, entity_id: str, resource: str, consume: dict[str, int]
+        self, entity_id: str, resource: str, consume: dict[str, int], shard_id: int
     ) -> None:
-        """Compensate a speculative write by adding consumed tokens back."""
+        """Compensate a speculative write by adding consumed tokens back.
+
+        The credit must land on the shard the speculative debit hit
+        (GHSA-76rv): crediting shard 0 leaves the debited shard short and
+        mints tokens on a shard that served nothing.
+        """
         deltas = {name: -(amount * 1000) for name, amount in consume.items()}
         compensate_item = self._repository.build_composite_adjust(
-            entity_id=entity_id, resource=resource, deltas=deltas
+            entity_id=entity_id, resource=resource, deltas=deltas, shard_id=shard_id
         )
         self._repository.write_each([compensate_item])
 
@@ -878,7 +943,8 @@ class SyncRateLimiter:
         consume: dict[str, int],
         ttl_seconds: int | None,
         result: "SpeculativeResult",
-    ) -> "SyncLease | None":
+        now_ms: int,
+    ) -> "tuple[SyncLease | None, int | None]":
         """Retry speculative consume on untried shards (GHSA-76rv shard retry).
 
         When application limits are exhausted on one shard, other shards may
@@ -891,15 +957,21 @@ class SyncRateLimiter:
             consume: Amount per limit (tokens, not milli)
             ttl_seconds: TTL in seconds from now, or None for no TTL change
             result: The failed SpeculativeResult from the initial shard
+            now_ms: The acquire's single clock reading (issue #430), carried
+                on so a retry does not observe a different instant than the
+                attempt that sent it here
 
         Returns:
-            SyncLease if a retry on another shard succeeded, None if all retries
-            failed or no untried shards remain.
+            ``(lease, missing_shard)``. ``lease`` is set if a retry on another
+            shard succeeded. Otherwise ``missing_shard`` is the first shard a
+            retry found not to exist yet (``BUCKET_MISSING``, probing stops
+            there), so the slow path can create it instead of fast-rejecting
+            (issue #439); None if every retried shard existed or no untried
+            shards remain. Never called for cascading entities.
         """
-        import random
-
         tried_shards = {result.shard_id}
         shard_count = result.shard_count
+        missing_shard: int | None = None
         for _ in range(self._MAX_SHARD_RETRIES):
             untried = [s for s in range(shard_count) if s not in tried_shards]
             if not untried:
@@ -907,11 +979,17 @@ class SyncRateLimiter:
             new_shard = random.choice(untried)
             tried_shards.add(new_shard)
             retry = self._repository.speculative_consume(
-                entity_id, resource, consume, ttl_seconds, shard_id=new_shard
+                entity_id, resource, consume, ttl_seconds, shard_id=new_shard, now_ms=now_ms
             )
             if retry.success:
-                return self._build_lease_from_speculative(entity_id, resource, consume, retry)
-        return None
+                return (
+                    self._build_lease_from_speculative(entity_id, resource, consume, retry),
+                    None,
+                )
+            if retry.failure_reason == SpeculativeFailureReason.BUCKET_MISSING:
+                missing_shard = new_shard
+                break
+        return (None, missing_shard)
 
     def _build_lease_from_speculative(
         self, entity_id: str, resource: str, consume: dict[str, int], result: "SpeculativeResult"
@@ -948,12 +1026,155 @@ class SyncRateLimiter:
             entry._initial_consumed = entry.consumed
         return lease
 
+    @staticmethod
+    def _warn_unknown_limits(
+        consume: dict[str, int],
+        limits: list[Limit],
+        resource: str,
+        *,
+        config_source: str,
+        stacklevel: int,
+    ) -> frozenset[str]:
+        """Report keys in ``consume`` that name no configured limit (Issue #455).
+
+        Returns the unknown keys so the lease can skip them in its own
+        declared-scope check: they were reported here with the right advice.
+
+        Such a key is dropped at admission (nothing gates it), after which
+        every ``lease.adjust()`` on it would warn "not declared in consume" —
+        pointing at the wrong fix, since the caller did declare it. Close it
+        at the boundary where the declaration is made. Warning only, same
+        staging as the rest of #455: ``FutureWarning`` now, ``ValidationError``
+        in v1.0.0. The fast path cannot see this (an unknown key makes the
+        speculative write fail and fall back), so the slow-path check covers
+        both paths.
+
+        Compared against every limit the acquire can gate: the acquiring
+        entity's own limits plus, when cascading, the parent's. Either side
+        may track a subset of the other (per-user rpm on the child, org-level
+        tpm on the parent, or a parent on rpm only); a key known to either
+        side is not unknown and must not warn.
+
+        Args:
+            stacklevel: Frames from this helper to the ``acquire()`` caller;
+                the ``with``/``async with`` context-manager machinery adds one.
+                The single call site is ``_do_acquire`` (helper -> _do_acquire
+                -> acquire -> __aenter__ -> caller), so it is always 5.
+        """
+        configured = sorted(limit.name for limit in limits)
+        unknown = sorted(set(consume) - set(configured))
+        if not unknown:
+            return frozenset()
+        if config_source == "override":
+            where = "not in the `limits` override passed to acquire()"
+            listing = "override limits"
+        else:
+            where = "not configured for this resource"
+            listing = "configured limits"
+        warnings.warn(
+            f"acquire() names limit(s) {unknown} that are {where}; {listing}: {configured}. Unknown keys are ignored. This becomes a ValidationError in v1.0.0.",
+            FutureWarning,
+            stacklevel=stacklevel,
+        )
+        logger.warning(
+            "acquire(): unknown limit key(s) %s for resource %r (%s: %s)",
+            unknown,
+            resource,
+            listing,
+            configured,
+        )
+        return frozenset(unknown)
+
+    @staticmethod
+    def _admit_limit(
+        entity_id: str,
+        resource: str,
+        limit: Limit,
+        state: BucketState,
+        consume: dict[str, int],
+        now_ms: int,
+    ) -> tuple[LimitStatus | None, int]:
+        """Slow-path admission for one resolved limit (Issue #455).
+
+        Declared (named in ``consume``): ``try_consume`` gates admission even
+        at amount 0 — it fails when the bucket is in debt, so a declared
+        zero-estimate limit waits for refill to clear an earlier overdraw.
+        That is what declaring it means. On success the state is updated in
+        place. Returns ``(status, consumed)``.
+
+        Undeclared: refill only, so the composite write stays complete. It
+        never gates admission — not even when in debt, matching the fast
+        path, whose condition covers declared limits only — and never appears
+        in ``RateLimitExceeded``. Returns ``(None, 0)``.
+        """
+        if limit.name not in consume:
+            state.tokens_milli, state.last_refill_ms = force_consume(state, 0, now_ms)
+            return (None, 0)
+        amount = consume[limit.name]
+        result = try_consume(state, amount, now_ms)
+        status = LimitStatus(
+            entity_id=entity_id,
+            resource=resource,
+            limit_name=limit.name,
+            limit=limit.per_shard(state.shard_count),
+            available=result.available,
+            requested=amount,
+            exceeded=not result.success,
+            retry_after_seconds=result.retry_after_seconds,
+        )
+        if not result.success:
+            return (status, 0)
+        state.tokens_milli = result.new_tokens_milli
+        state.last_refill_ms = result.new_last_refill_ms
+        if state.total_consumed_milli is not None and amount > 0:
+            state.total_consumed_milli += amount * 1000
+        return (status, amount)
+
+    @staticmethod
+    def _wcu_carrier(
+        entity_id: str,
+        resource: str,
+        buckets: dict[tuple[str, str, str], BucketState],
+        now_ms: int,
+        shard_id: int,
+        shard_count: int,
+        has_custom_config: bool,
+    ) -> LeaseEntry | None:
+        """Carry an existing ``wcu`` bucket through the lease, refill only.
+
+        The fast path never refills ``wcu`` and without the aggregator nothing
+        else does, so an idle shard would stay "exhausted" and drive doubling
+        (ADR-133). Treated exactly like an undeclared limit: refilled from its
+        stored ra/rp, written back under the shared rf lock, never gated,
+        never a LimitStatus, never visible through the lease.
+        """
+        state = buckets.get((entity_id, resource, WCU_LIMIT_NAME))
+        if state is None:
+            return None
+        original_tk, original_rf = (state.tokens_milli, state.last_refill_ms)
+        state.tokens_milli, state.last_refill_ms = force_consume(state, 0, now_ms)
+        return LeaseEntry(
+            entity_id=entity_id,
+            resource=resource,
+            limit=Limit._carrier(state),
+            state=state,
+            consumed=0,
+            _original_tokens_milli=original_tk,
+            _original_rf_ms=original_rf,
+            _has_custom_config=has_custom_config,
+            _declared=False,
+            _shard_id=shard_id,
+            _shard_count=shard_count,
+        )
+
     def _try_parent_only_acquire(
         self,
         parent_id: str,
         resource: str,
         consume: dict[str, int],
         child_entries: list[LeaseEntry],
+        parent_shard: int,
+        parent_shard_count: int,
     ) -> SyncLease | None:
         """Attempt parent-only slow path after child speculative succeeded.
 
@@ -961,14 +1182,20 @@ class SyncRateLimiter:
         and writes parent via single-item UpdateItem. Returns a SyncLease combining
         child's speculative entries with parent's slow-path entries.
 
+        Args:
+            parent_shard: The parent shard the speculative write hit — the
+                one whose ALL_OLD image the "refill would help" decision was
+                made on. Reused verbatim rather than drawn again (GHSA-76rv).
+            parent_shard_count: shard_count observed on that image.
+
         Returns None if parent acquire fails (caller should compensate child).
         """
-        now_ms = int(time.time() * 1000)
+        now_ms = self._repository._now_ms()
         parent_limits, parent_config_source = self._resolve_limits(parent_id, resource, None)
-        parent_buckets = self._fetch_buckets([parent_id], resource)
+        parent_buckets = self._fetch_buckets([parent_id], resource, parent_shard)
         parent_entries: list[LeaseEntry] = []
         statuses: list[LimitStatus] = []
-        has_custom_config = parent_config_source == "entity"
+        has_custom_config = _is_custom_config(parent_config_source)
         for limit in parent_limits:
             bucket_key = (parent_id, resource, limit.name)
             existing = parent_buckets.get(bucket_key)
@@ -976,36 +1203,36 @@ class SyncRateLimiter:
                 return None
             original_tk = existing.tokens_milli
             original_rf = existing.last_refill_ms
-            amount = consume.get(limit.name, 0)
-            result = try_consume(existing, amount, now_ms)
-            status = LimitStatus(
-                entity_id=parent_id,
-                resource=resource,
-                limit_name=limit.name,
-                limit=limit,
-                available=result.available,
-                requested=amount,
-                exceeded=not result.success,
-                retry_after_seconds=result.retry_after_seconds,
+            status, consumed = self._admit_limit(
+                parent_id, resource, limit, existing, consume, now_ms
             )
-            statuses.append(status)
-            if result.success:
-                existing.tokens_milli = result.new_tokens_milli
-                existing.last_refill_ms = result.new_last_refill_ms
-                if existing.total_consumed_milli is not None and amount > 0:
-                    existing.total_consumed_milli += amount * 1000
+            if status is not None:
+                statuses.append(status)
             parent_entries.append(
                 LeaseEntry(
                     entity_id=parent_id,
                     resource=resource,
                     limit=limit,
                     state=existing,
-                    consumed=amount if result.success else 0,
+                    consumed=consumed,
                     _original_tokens_milli=original_tk,
                     _original_rf_ms=original_rf,
                     _has_custom_config=has_custom_config,
+                    _declared=status is not None,
+                    _shard_id=parent_shard,
+                    _shard_count=parent_shard_count,
                 )
             )
+        carrier = self._wcu_carrier(
+            parent_id,
+            resource,
+            parent_buckets,
+            now_ms,
+            parent_shard,
+            parent_shard_count,
+            has_custom_config,
+        )
+        parent_carriers = [carrier] if carrier is not None else []
         violations = [s for s in statuses if s.exceeded]
         if violations:
             return None
@@ -1013,7 +1240,9 @@ class SyncRateLimiter:
         lease = SyncLease(repository=self._repository, entries=all_entries)
         for entry in child_entries:
             entry._initial_consumed = entry.consumed
-        parent_lease = SyncLease(repository=self._repository, entries=parent_entries)
+        parent_lease = SyncLease(
+            repository=self._repository, entries=parent_entries, _carriers=parent_carriers
+        )
         try:
             parent_lease._commit_initial()
         except RateLimitExceeded:
@@ -1029,11 +1258,29 @@ class SyncRateLimiter:
         resource: str,
         limits_override: list[Limit] | None,
         consume: dict[str, int],
+        shard_id: int | None = None,
+        shard_count: int | None = None,
+        parent_shard_id: int | None = None,
     ) -> SyncLease:
-        """Internal acquire implementation."""
+        """Internal acquire implementation (the slow path).
+
+        Args:
+            shard_id: Child shard the speculative fast path selected, so this
+                path reads and — if missing — creates that same shard
+                (issue #439). None draws one from the cached shard_count.
+            shard_count: The shard_count the fast path observed on its failure
+                image, used to size and stamp a shard created here. None
+                falls back to the entity cache.
+            parent_shard_id: Parent shard the fast path found missing, so it
+                is created where the fast path looked rather than re-drawn.
+        """
         validate_identifier(entity_id, "entity_id")
         validate_resource(resource)
-        now_ms = int(time.time() * 1000)
+        now_ms = self._repository._now_ms()
+        child_shard, child_shard_count = self._repository.select_shard(
+            entity_id, resource, shard_id, shard_count
+        )
+        entity_shards: dict[str, tuple[int, int]] = {entity_id: (child_shard, child_shard_count)}
         fetched_disabled: dict[tuple[str, str], bool | None] = {}
         child_limits, child_config_source = self._resolve_limits(
             entity_id, resource, limits_override, fetched_disabled
@@ -1048,7 +1295,7 @@ class SyncRateLimiter:
             raise ResourceDisabled(
                 entity_id=entity_id, resource=resource, level=level or "resource"
             )
-        entity, child_buckets = self._fetch_entity_and_buckets(entity_id, resource)
+        entity, child_buckets = self._fetch_entity_and_buckets(entity_id, resource, child_shard)
         entity_ids = [entity_id]
         existing_buckets: dict[tuple[str, str, str], BucketState] = dict(child_buckets)
         entity_limits: dict[str, list[Limit]] = {entity_id: child_limits}
@@ -1066,11 +1313,20 @@ class SyncRateLimiter:
             )
             entity_limits[parent_id] = parent_limits
             entity_config_sources[parent_id] = parent_config_source
-            parent_buckets = self._fetch_buckets([parent_id], resource)
+            entity_shards[parent_id] = self._repository.select_shard(
+                parent_id, resource, parent_shard_id
+            )
+            parent_buckets = self._fetch_buckets([parent_id], resource, entity_shards[parent_id][0])
             existing_buckets.update(parent_buckets)
+        known_limits = [limit for eid in entity_ids for limit in entity_limits[eid]]
+        unknown_keys = self._warn_unknown_limits(
+            consume, known_limits, resource, config_source=child_config_source, stacklevel=5
+        )
         entries: list[LeaseEntry] = []
+        carriers: list[LeaseEntry] = []
         statuses: list[LimitStatus] = []
         for eid in entity_ids:
+            eid_shard, eid_shard_count = entity_shards[eid]
             any_existing = any(
                 (eid, resource, limit.name) in existing_buckets for limit in entity_limits[eid]
             )
@@ -1079,101 +1335,111 @@ class SyncRateLimiter:
                 existing = existing_buckets.get(bucket_key)
                 if existing is None:
                     is_new = True
-                    state = BucketState.from_limit(eid, resource, limit, now_ms)
+                    state = BucketState.from_limit(
+                        eid, resource, limit, now_ms, shard_count=eid_shard_count
+                    )
                 else:
                     is_new = False
                     state = existing
                 original_tk = state.tokens_milli
                 original_rf = state.last_refill_ms
-                amount = consume.get(limit.name, 0)
-                result = try_consume(state, amount, now_ms)
-                status = LimitStatus(
-                    entity_id=eid,
-                    resource=resource,
-                    limit_name=limit.name,
-                    limit=limit,
-                    available=result.available,
-                    requested=amount,
-                    exceeded=not result.success,
-                    retry_after_seconds=result.retry_after_seconds,
-                )
-                statuses.append(status)
-                if result.success:
-                    state.tokens_milli = result.new_tokens_milli
-                    state.last_refill_ms = result.new_last_refill_ms
-                    if state.total_consumed_milli is not None and amount > 0:
-                        state.total_consumed_milli += amount * 1000
-                has_custom_config = entity_config_sources.get(eid) == "entity"
+                status, consumed = self._admit_limit(eid, resource, limit, state, consume, now_ms)
+                if status is not None:
+                    statuses.append(status)
+                has_custom_config = _is_custom_config(entity_config_sources.get(eid))
                 entries.append(
                     LeaseEntry(
                         entity_id=eid,
                         resource=resource,
                         limit=limit,
                         state=state,
-                        consumed=amount if result.success else 0,
+                        consumed=consumed,
                         _original_tokens_milli=original_tk,
                         _original_rf_ms=original_rf,
                         _is_new=is_new and (not any_existing),
                         _has_custom_config=has_custom_config,
+                        _shard_id=eid_shard,
+                        _shard_count=eid_shard_count,
                         _cascade=entity.cascade if entity and eid == entity_id else False,
                         _parent_id=entity.parent_id if entity and eid == entity_id else None,
+                        _declared=status is not None,
                     )
                 )
+            carrier = self._wcu_carrier(
+                eid,
+                resource,
+                existing_buckets,
+                now_ms,
+                eid_shard,
+                eid_shard_count,
+                _is_custom_config(entity_config_sources.get(eid)),
+            )
+            if carrier is not None:
+                carriers.append(carrier)
         violations = [s for s in statuses if s.exceeded]
         if violations:
             raise RateLimitExceeded(statuses)
-        return SyncLease(repository=self._repository, entries=entries)
+        return SyncLease(
+            repository=self._repository,
+            entries=entries,
+            _carriers=carriers,
+            _unknown_keys=unknown_keys,
+        )
 
     def _fetch_entity_and_buckets(
-        self, entity_id: str, resource: str
+        self, entity_id: str, resource: str, shard_id: int
     ) -> tuple[Entity | None, dict[tuple[str, str, str], BucketState]]:
         """
         Fetch entity metadata and its composite bucket in a single call.
 
-        With composite items (ADR-114), one item per (entity_id, resource)
-        contains all limits. Uses batch_get_entity_and_buckets if the backend
-        supports batch operations, otherwise falls back to separate calls.
+        With composite items (ADR-114), one item per (entity_id, resource,
+        shard) contains all limits. Uses batch_get_entity_and_buckets if the
+        backend supports batch operations, otherwise falls back to separate
+        calls. The shard is the one the acquire selected (issue #439).
         """
         if self._repository.capabilities.supports_batch_operations:
-            bucket_keys = [(entity_id, resource)]
+            bucket_keys = [(entity_id, resource, shard_id)]
             result: tuple[Entity | None, dict[tuple[str, str, str], BucketState]] = (
                 self._repository.batch_get_entity_and_buckets(entity_id, bucket_keys)
             )
             return result
         entity = self._repository.get_entity(entity_id)
-        buckets = self._repository.get_buckets(entity_id, resource)
+        buckets = self._repository.get_buckets(entity_id, resource, shard_id)
         bucket_dict: dict[tuple[str, str, str], BucketState] = {
             (b.entity_id, b.resource, b.limit_name): b for b in buckets
         }
         return (entity, bucket_dict)
 
     def _fetch_buckets(
-        self, entity_ids: list[str], resource: str
+        self, entity_ids: list[str], resource: str, shard_id: int
     ) -> dict[tuple[str, str, str], BucketState]:
         """
-        Fetch composite buckets for entity/resource pairs.
+        Fetch composite buckets for entity/resource pairs on one shard.
 
-        With composite items (ADR-114), each (entity_id, resource) is one
-        DynamoDB item containing all limits. Uses batch_get_buckets if the
+        With composite items (ADR-114), each (entity_id, resource, shard) is
+        one DynamoDB item containing all limits. Uses batch_get_buckets if the
         backend supports it, otherwise falls back to sequential calls.
 
         Args:
             entity_ids: List of entity IDs to fetch buckets for
             resource: Resource name
+            shard_id: Shard to read for every entity (issue #439)
 
         Returns:
             Dict mapping (entity_id, resource, limit_name) to BucketState.
             Missing buckets are not included in the result.
         """
         if self._repository.capabilities.supports_batch_operations:
-            bucket_keys: list[tuple[str, str]] = [(eid, resource) for eid in entity_ids]
+            bucket_keys: list[tuple[str, str, int]] = [
+                (eid, resource, shard_id) for eid in entity_ids
+            ]
             batch_result: dict[tuple[str, str, str], BucketState] = (
                 self._repository.batch_get_buckets(bucket_keys)
             )
             return batch_result
         result: dict[tuple[str, str, str], BucketState] = {}
         for eid in entity_ids:
-            buckets = self._repository.get_buckets(eid, resource)
+            buckets = self._repository.get_buckets(eid, resource, shard_id)
             for bucket in buckets:
                 key = (bucket.entity_id, bucket.resource, bucket.limit_name)
                 result[key] = bucket
@@ -1287,10 +1553,10 @@ class SyncRateLimiter:
             ```
         """
         self._ensure_initialized()
-        now_ms = int(time.time() * 1000)
+        now_ms = self._repository._now_ms()
         needed = needed or {}
         resolved_limits, _ = self._resolve_limits(entity_id, resource, limits)
-        buckets = self._fetch_buckets([entity_id], resource)
+        buckets = self._fetch_buckets([entity_id], resource, 0)
         available: dict[str, int] = {}
         max_wait = 0.0
         for limit in resolved_limits:
@@ -1343,14 +1609,29 @@ class SyncRateLimiter:
         Raises:
             ValidationError: If no limits found at any level and no override provided
         """
+        self._ensure_initialized()
+        now_ms = self._repository._now_ms()
         if use_stored_limits:
             warnings.warn(
                 "use_stored_limits is deprecated and will be removed in v1.0. Limits are now always resolved from stored config (Entity > Resource > System). Pass limits parameter as override if needed.",
                 DeprecationWarning,
                 stacklevel=2,
             )
-        check = self.check_availability(entity_id, resource, None, limits)
-        return check.available
+        resolved_limits, _ = self._resolve_limits(entity_id, resource, limits)
+        per_limit: dict[str, int] = {}
+        for bucket in self._repository.get_buckets(entity_id):
+            if bucket.resource != resource:
+                continue
+            per_limit[bucket.limit_name] = per_limit.get(
+                bucket.limit_name, 0
+            ) + calculate_available(bucket, now_ms)
+        result: dict[str, int] = {}
+        for limit in resolved_limits:
+            if limit.name in per_limit:
+                result[limit.name] = min(per_limit[limit.name], limit.capacity)
+            else:
+                result[limit.name] = limit.capacity
+        return result
 
     def time_until_available(
         self,
@@ -1383,14 +1664,26 @@ class SyncRateLimiter:
         Raises:
             ValidationError: If no limits found at any level and no override provided
         """
+        self._ensure_initialized()
+        now_ms = self._repository._now_ms()
         if use_stored_limits:
             warnings.warn(
                 "use_stored_limits is deprecated and will be removed in v1.0. Limits are now always resolved from stored config (Entity > Resource > System). Pass limits parameter as override if needed.",
                 DeprecationWarning,
                 stacklevel=2,
             )
-        check = self.check_availability(entity_id, resource, needed, limits)
-        return check.retry_after_seconds
+        resolved_limits, _ = self._resolve_limits(entity_id, resource, limits)
+        max_wait = 0.0
+        for limit in resolved_limits:
+            amount = needed.get(limit.name, 0)
+            if amount <= 0:
+                continue
+            state = self._repository.get_bucket(entity_id, resource, limit.name)
+            if state is None:
+                continue
+            wait = calculate_time_until_available(state, amount, now_ms)
+            max_wait = max(max_wait, wait)
+        return max_wait
 
     def set_limits(
         self,
@@ -1613,7 +1906,7 @@ class SyncRateLimiter:
             ResourceCapacity with aggregated data
         """
         self._ensure_initialized()
-        now_ms = int(time.time() * 1000)
+        now_ms = self._repository._now_ms()
         buckets = self._repository.get_resource_buckets(resource, limit_name)
         if parents_only:
             parent_ids = set()

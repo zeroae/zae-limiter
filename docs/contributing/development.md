@@ -43,7 +43,7 @@ pip install hatch  # Required for sync code generation
 pytest tests/unit/ -v
 
 # Run with coverage
-pytest --cov=zae_limiter --cov-report=html
+pytest --cov --cov-report=html
 
 # Run specific test file
 pytest tests/unit/test_limiter.py -v
@@ -61,7 +61,7 @@ ruff format .
 ruff check --fix .
 
 # Type checking
-mypy src/zae_limiter
+mypy
 ```
 
 ## Commit Messages

@@ -312,8 +312,8 @@ class TestRepositoryBatchGetBuckets:
             put_item = test_repo.build_composite_create(entity_id, "gpt-4", states, now_ms)
             await test_repo.transact_write([put_item])
 
-        # Batch get composite items (2-tuple keys: entity_id, resource)
-        keys = [(entity_id, "gpt-4") for entity_id in entity_ids]
+        # Batch get composite items (3-tuple keys: entity_id, resource, shard_id)
+        keys = [(entity_id, "gpt-4", 0) for entity_id in entity_ids]
         result = await test_repo.batch_get_buckets(keys)
 
         # Filter wcu infrastructure limit from result
@@ -322,7 +322,7 @@ class TestRepositoryBatchGetBuckets:
         # Should return all 6 user bucket states (3 entities × 2 limits per composite item)
         assert len(user_result) == 6
 
-        # Result uses 3-tuple keys for backward compatibility
+        # Result keys are (entity_id, resource, limit_name)
         for entity_id in entity_ids:
             for limit in limits:
                 key = (entity_id, "gpt-4", limit.name)
@@ -357,7 +357,7 @@ class TestRepositoryBatchGetBuckets:
         )
 
         entity, buckets = await test_repo.batch_get_entity_and_buckets(
-            "bge-entity", [("bge-entity", "gpt-4")]
+            "bge-entity", [("bge-entity", "gpt-4", 0)]
         )
 
         assert entity is not None
@@ -380,7 +380,7 @@ class TestRepositoryBatchGetBuckets:
         )
 
         entity, buckets = await test_repo.batch_get_entity_and_buckets(
-            "bge-bare", [("bge-bare", "gpt-4")]
+            "bge-bare", [("bge-bare", "gpt-4", 0)]
         )
 
         assert entity is None
@@ -396,11 +396,11 @@ class TestRepositoryBatchGetBuckets:
         state = BucketState.from_limit("dedup-entity", "api", limit, now_ms)
         await test_repo.transact_write([test_repo.build_bucket_put_item(state)])
 
-        # Request with duplicate 2-tuple keys
+        # Request with duplicate 3-tuple keys
         keys = [
-            ("dedup-entity", "api"),
-            ("dedup-entity", "api"),  # Duplicate
-            ("dedup-entity", "api"),  # Another duplicate
+            ("dedup-entity", "api", 0),
+            ("dedup-entity", "api", 0),  # Duplicate
+            ("dedup-entity", "api", 0),  # Another duplicate
         ]
         result = await test_repo.batch_get_buckets(keys)
         user_result = {k: v for k, v in result.items() if k[2] != WCU_LIMIT_NAME}
@@ -419,11 +419,11 @@ class TestRepositoryBatchGetBuckets:
         state = BucketState.from_limit("exists-entity", "api", limit, now_ms)
         await test_repo.transact_write([test_repo.build_bucket_put_item(state)])
 
-        # Request mix of existing and non-existing composite items (2-tuple keys)
+        # Request mix of existing and non-existing composite items (3-tuple keys)
         keys = [
-            ("exists-entity", "api"),  # Exists (has rpm)
-            ("exists-entity", "other"),  # Resource doesn't exist
-            ("missing-entity", "api"),  # Entity doesn't exist
+            ("exists-entity", "api", 0),  # Exists (has rpm)
+            ("exists-entity", "other", 0),  # Resource doesn't exist
+            ("missing-entity", "api", 0),  # Entity doesn't exist
         ]
         result = await test_repo.batch_get_buckets(keys)
         user_result = {k: v for k, v in result.items() if k[2] != WCU_LIMIT_NAME}
@@ -448,15 +448,15 @@ class TestRepositoryBatchGetBuckets:
             state = BucketState.from_limit(entity_id, "api", limit, now_ms)
             await test_repo.transact_write([test_repo.build_bucket_put_item(state)])
 
-        # Batch get all 110 composite items (2-tuple keys, requires 2 DynamoDB calls)
-        keys = [(entity_id, "api") for entity_id in entity_ids]
+        # Batch get all 110 composite items (3-tuple keys, requires 2 DynamoDB calls)
+        keys = [(entity_id, "api", 0) for entity_id in entity_ids]
         result = await test_repo.batch_get_buckets(keys)
         user_result = {k: v for k, v in result.items() if k[2] != WCU_LIMIT_NAME}
 
         # Should return all 110 user bucket states
         assert len(user_result) == 110
 
-        # Result uses 3-tuple keys for backward compatibility
+        # Result keys are (entity_id, resource, limit_name)
         for entity_id in entity_ids:
             key = (entity_id, "api", "rpm")
             assert key in user_result

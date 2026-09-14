@@ -280,5 +280,7 @@ The `as_dict()` method returns a dictionary suitable for API responses:
 ```
 
 !!! note "Single `limits` array"
-    All limits (both exceeded and passed) are returned in a single `limits` array.
-    Use the `exceeded` field to distinguish between violations and passed limits.
+    Every limit declared in `acquire(consume=...)` — both exceeded and passed — is
+    returned in a single `limits` array. Limits you did not name in `consume` are
+    never reported, since they never gate admission. Use the `exceeded` field to
+    distinguish between violations and passed limits.

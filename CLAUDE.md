@@ -29,7 +29,7 @@ uv run zae-limiter deploy --name limiter --region us-east-1
 uv run pytest
 
 # Type check
-uv run mypy src/zae_limiter
+uv run mypy
 
 # Lint (or let pre-commit run automatically on commit)
 uv run ruff check --fix .
@@ -84,6 +84,7 @@ python scripts/generate_sync.py
 - `tests/unit/test_sync_stack_manager.py` ← `tests/unit/test_stack_manager.py`
 - `tests/unit/test_sync_discovery.py` ← `tests/unit/test_discovery.py`
 - `tests/unit/test_sync_config_cache.py` ← `tests/unit/test_config_cache.py`
+- `tests/unit/test_sync_zero_estimate_lease.py` ← `tests/unit/test_zero_estimate_lease.py`
 
 Pre-commit hook verifies generated code is up-to-date. CI also verifies before running tests.
 
@@ -381,7 +382,8 @@ src/zae_limiter_provisioner/   # Lambda provisioner for declarative limits (#405
 ├── manifest.py               # LimitsManifest YAML parsing (LimitDecl, SystemDecl, ResourceDecl, EntityDecl)
 ├── differ.py                 # Diff engine (manifest vs #PROVISIONER state → list of Change)
 ├── applier.py                # Applies changes via boto3 DynamoDB (PutItem/DeleteItem)
-└── fanout.py                 # Sync boto3 mirror of Repository._fanout_resource/_fanout_entity for disable/enable (ADR-125)
+├── fanout.py                 # Sync boto3 mirror of Repository._fanout_resource/_fanout_entity for disable/enable (ADR-125)
+└── bucket_sync.py            # Sync boto3 mirror of Repository._sync_bucket_params (#481, #487)
 ```
 
 ### Repository Pattern (v0.5.0+)
@@ -655,15 +657,29 @@ Bucket items use per-(entity, resource, shard) partition keys: `PK={ns}/BUCKET#{
 **Write sharding mechanism:**
 - A reserved `wcu` (write capacity unit) infrastructure limit is auto-injected on every bucket (capacity=1000, 1 per write = 1000 milli consumed)
 - When `wcu` is exhausted on a shard, the client doubles `shard_count` and retries on a new shard, chosen at random from the shards it has not yet tried (`random.choice(untried)`, up to `_MAX_SHARD_RETRIES = 2` retries in `limiter.py`)
-- Shard selection: `random.randrange(shard_count)` when `shard_count > 1`, else shard 0 — **random, not a hash of the entity id**. Every call re-picks, so one hot entity's writes spread across all of its shards; which shard holds which portion of its tokens is not predictable from the entity id
+- Shard selection: `Repository.select_shard()` — `random.randrange(shard_count)` when `shard_count > 1`, else shard 0 — **random, not a hash of the entity id**. Every call re-picks, so one hot entity's writes spread across all of its shards; which shard holds which portion of its tokens is not predictable from the entity id. See [ADR-134](docs/adr/134-random-shard-selection.md) for why a hash (as GHSA-w6c2-33wf-qfwf suggested) would leave the hot entity on one shard
 - Tests that need a bucket on a specific shard must pass an explicit `shard_id` to `speculative_consume()` (the parameter exists to skip random selection). Assuming a given `acquire()` lands on a particular shard is flaky by construction
-- Effective per-shard limits: `capacity_milli // shard_count`, `refill_amount_milli // shard_count`
+- Effective per-shard limits: `capacity_milli // shard_count`, `refill_amount_milli // shard_count`. `BucketState.shard_count` is read from the item and `bucket.py` refills through `effective_capacity_milli` / `effective_refill_amount_milli`, so the client slow path caps each shard at its share exactly like the aggregator; `wcu` is never divided
+- **Every shard must agree on `shard_count`**, because each refills toward its own `cp // shard_count`: a shard left on a stale lower count claims a *larger* share and the shares sum to more than the configured limit. A client that wins a bump propagates it (`Repository._propagate_shard_count()`, mirroring the aggregator's Path 1) with concurrent conditional `UpdateItem`s (`shard_count < :new`) to shards `1..old_count-1` — monotonic and idempotent, so racing the aggregator or another client is a no-op. Shards `old_count..new_count-1` are not written: they do not exist yet and are created with the current count by whoever draws them
+- **Statuses report the share, not the config (#475):** `Limit.per_shard(shard_count)` divides `capacity` and `refill_amount` (identity at `shard_count == 1`) and is applied wherever a `LimitStatus` is built — `Limit.from_bucket_state()` on the fast path, `RateLimiter._admit_limit()` and the lease statuses on the slow path — so `RateLimitExceeded` never promises a capacity no shard can serve. Sub-token shares clamp to 1 (`Limit` validates `capacity > 0`). Retry estimates use `BucketState.retry_refill_amount_milli`, which falls back to the **undivided** rate when the share floors to 0 (1 token/min at `shard_count=1024`), and `calculate_retry_after` guards a stored rate of 0 instead of raising `ZeroDivisionError`
+- **A limit change fans out to every shard (#468):** stored `cp`/`ra`/`rp` are **undivided** on each shard item, so `Repository._sync_bucket_params()` — reached by `set_limits()` and by `delete_limits()`'s `reconcile_bucket_to_defaults()` — discovers all shards via GSI3 (`GSI3PK={ns}/ENTITY#{id}`, `GSI3SK begins_with BUCKET#{resource}#`) and writes the new params to each concurrently, two discovery passes like the ADR-125 disable fan-out. Keying only shard 0 left shards 1..N-1 enforcing the limits they were born with forever, and nothing detects the drift: `SpeculativeFailureReason` has no `CONFIG_CHANGED`, the speculative success branch never compares the item's `cp`/`ra` against config, and the slow path refills from the stored values. Cost is O(shards) WCU + the KEYS_ONLY queries, on an admin path. Named residual of GHSA-w6c2-33wf-qfwf. `set_resource_defaults()` / `set_system_defaults()` do **not** touch buckets at all — buckets running on defaults carry a TTL and are recreated with the current params when it expires (#271, #296)
+- **An entity-wide change fans out across every resource (#487):** `_default_` is the entity-WIDE config scope, not a resource, so `_sync_bucket_params()` translates it to an **unscoped** GSI3 discovery (`BUCKET#` prefix) exactly as the ADR-125 disable fan-out does. Forwarding the sentinel built `BUCKET#_default_#`, which no bucket item can carry, so `set_limits(entity_id, limits)` (the no-resource default) and `delete_limits(entity_id)` matched zero items and wrote nothing, silently, forever — entity configs carry no TTL, so nothing recreated the drifted buckets. Because Entity(resource) outranks Entity(`_default_`), each discovered bucket is then stamped from the limits **resolved for its own resource** (`_resolved_bucket_param_update()`, memoized per distinct resource), never from the caller's — stamping the caller's would clobber a resource that has its own entity config. Two consequences: the **TTL multiplier is decided per bucket** from the resolved level (entity/entity_default ⇒ REMOVE `ttl`, resource/system ⇒ SET it), not fixed at the call site; and the caller's `stale_limit_names` are **intersected** with each bucket's resolution, since a name still declared by that bucket's own level would otherwise be SET and REMOVEd in one expression (a DynamoDB `ValidationException`), while a directive limit absent from that resolution is stale there. `set_limits()` evicts the config cache **before** the sync so the per-resource resolution cannot read the level it just replaced. Mirrored on the Lambda side by `zae_limiter_provisioner/bucket_sync.py` (`resolve_bucket_limits()`, `_resolved_plan()`). Cost is O(distinct resources) config walks + O(buckets) WCU, on an admin path. Third instance of the #468 / #481 class
+- **The param sync is serial and reports partial progress:** unscoped, the write set is O(resources × shards) rather than the ≤ `MAX_SHARD_COUNT` of one resource, so `_sync_bucket_params()` writes **serially** like `_fanout_entity` instead of one unbounded `asyncio.gather`. A write that fails part-way raises **`FanoutIncomplete`** (not the raw `ClientError`) carrying the exact number of bucket items already written — the config item is committed before the fan-out runs, so a half-applied table needs a progress count, and every write is idempotent so re-running the same call reconciles the rest. Same contract the ADR-125 disable fan-out already used on this same method. Stale-limit `REMOVE` aliases use monotonic counters (`#stale{i}_{j}`), never the limit name: `NAME_PATTERN` allows `-` and `.`, neither legal in an `ExpressionAttributeNames` alias (`.` is a document-path separator), and the resulting `ValidationException` would land *after* the config write
+- **Known limitation:** a single request above `capacity // shard_count` is unadmittable on *every* shard while the entity is under its configured limit; `MAX_SHARD_COUNT = 32` bounds how small a share gets. Surfacing an occurrence as an event/metric is #475
 - `wcu` is filtered from user-facing output (`get_buckets`, `RateLimitExceeded`, usage snapshots)
 
-**Aggregator proactive sharding:**
+**Client-side shard creation (ADR-133, issue #439) — no aggregator dependency:**
+- The slow path targets the **same shard** the speculative attempt selected, sized by the `shard_count` on its failure image: `_try_speculative_acquire()` hands both to `_do_acquire(shard_id=..., shard_count=...)`, which passes them through `Repository.select_shard()`, `batch_get_entity_and_buckets` / `batch_get_buckets` (keys are `(entity_id, resource, shard_id)`) and into `LeaseEntry._shard_id` / `_shard_count` for `_commit_initial()`. A failed speculative write never updates the entity cache, so the cache is not consulted for a shard the fast path already observed
+- A missing shard N>0 is created by the client with `capacity_milli // shard_count` tokens, `wcu` undivided, stored `cp`/`ra` undivided, and the observed `shard_count` stamped — identical to the aggregator's Path 2 clone, so shard creation never multiplies total capacity. Shard 0 keeps its own balance when `shard_count` doubles (transient up to 1.5x capacity for one refill window, same as with the aggregator; steady state is `capacity`, because every refiller caps each shard at its share)
+- After wcu-driven doubling the slow path draws from the **newly added** shards (`random.randrange(old_count, new_count)`); `bump_shard_count()` returns the winner's count (via `ReturnValuesOnConditionCheckFailure=ALL_OLD`) when another client doubled first, so a losing client still draws from the new range. A non-cascade shard-retry that hits `BUCKET_MISSING` stops probing and sends the slow path to create that shard instead of fast-rejecting
+- Cascade: a cascading child never accepts a child-only retry lease (it would bypass the parent); on `APP_LIMIT_EXHAUSTED` it hands an untried shard to the slow path, which commits child + parent in one transaction. Speculative compensation credits the shard that was debited (`result.shard_id` / `parent_result.shard_id`), and the parent-only slow path reuses `parent_result.shard_id`
+- Race with the aggregator: both create under `attribute_not_exists(PK)`; a lost race routes `_commit_initial()` to the consumption-only retry (`tk >= consumed`) on that same shard — one extra WCU, no over-admission. If a *sibling* item cancelled the transaction instead (parent rf lock), the innocent Put is re-issued from its per-index `CancellationReasons` entry
+- Write sharding therefore engages with `--no-aggregator`; the aggregator's proactive sharding and propagation below are an optimization, not a requirement
+
+**Aggregator proactive sharding (optional):**
 - Monitors `wcu` consumption ratio per bucket in each stream batch
 - When consumption >= 80% of capacity (`WCU_PROACTIVE_THRESHOLD = 0.8`), doubles `shard_count` on shard 0
-- Propagates `shard_count` changes from shard 0 to all other shards via conditional writes
+- Propagates `shard_count` changes from shard 0 to all other shards via conditional writes, pre-creating new shard items so clients skip the one-time create slow path
 
 **GSI3 bucket discovery:**
 - Bucket items set `GSI3PK={ns}/ENTITY#{id}, GSI3SK=BUCKET#{resource}#{shard}`
@@ -732,7 +748,8 @@ plus 2 config resolutions. Now it is 1 `BatchGetItem` plus 1 config resolution r
 limit count.
 
 ### Exception Design
-- `RateLimitExceeded` includes **ALL** limit statuses
+- `RateLimitExceeded` includes a status for **every limit declared in `consume`** — both the ones that were exceeded and the ones that passed. Limits the caller did not name (and the reserved `wcu`) never appear (Issue #455), on the fast path, the slow path, and the consumption-only retry path alike
+- Each status reports the **effective per-shard** capacity and refill, not the undivided config (`Limit.per_shard()`, #475) — see [Pre-Shard Buckets](#pre-shard-buckets-ghsa-76rv-2r9v-c5m6-v090)
 - Both `violations` (exceeded) and `passed` (ok) are available
 - `retry_after_seconds` calculated from primary bottleneck
 
@@ -817,6 +834,7 @@ docs/
 
 1. **Write-on-enter**: `acquire()` writes initial consumption to DynamoDB before yielding the lease, making tokens immediately visible to concurrent callers. On exception, a compensating write restores the consumed tokens (see `.claude/rules/write-on-enter.md`)
 2. **Bucket can go negative (adjust only)**: `lease.adjust()` never throws, allows debt. The initial admission path (`try_consume` + `_commit_initial`) is a gate that MUST NOT over-admit — do not use "bucket can go negative" to justify skipping admission checks
+   - **`consume` is the declared scope of a lease (Issue #455)**: only limits named in `acquire(consume=...)` are adjustable through `adjust()`/`consume()`/`release()` and reported by `lease.consumed`, on both the fast and slow paths. The slow path still builds a `LeaseEntry` for every resolved limit because `_commit_initial()` needs them (`build_composite_create` writes only the states it is handed; `build_composite_normal` advances the shared `rf` and credits refill only to the limits it is handed), but those carry `_declared=False` and are write-only. A key that names no declared limit (a typo, or the reserved `wcu`) is ignored with a `FutureWarning` (not `DeprecationWarning`, which Python hides by default outside `__main__` and so would never surface from application code) naming the keys and the declared limits; it becomes a `ValidationError` at v1.0.0. The `on_unavailable=ALLOW` no-op lease is constructed with `degraded=True` and is exempt — never infer degradation from `entries == []`
 3. **Cascade is per-entity config**: Set `cascade=True` on `create_entity()` to auto-cascade to parent on every `acquire()`
 4. **Stored limits are the default (v0.5.0+)**: Limits resolved from System/Resource/Entity config automatically. Pass `limits` parameter to override.
 5. **Initial writes are atomic + optimistic lock on refill**: `_commit_initial` uses `transact_write` for cross-item atomicity. `build_composite_normal` locks on `last_refill_ms` (`ConditionExpression: #rf = :expected_rf`) to prevent stale refill overwrites. On lock failure, `build_composite_retry` skips refill and uses `tk >= consumed` condition to prevent over-admission
@@ -836,6 +854,7 @@ Non-cascade `acquire()` = 1 RCU + 1 WCU = $0.125 + $0.625 = **$0.75/M** (the pro
 Speculative non-cascade `acquire()` (success) = 0 RCU + 1 WCU = **$0.625/M** (~17% savings).
 Speculative fast rejection (exhausted) = 0 RCU + 0 WCU = **$0/M** (free).
 Speculative fallback (refill helps) = 1 RCU + 2 WCU = $0.125 + $1.25 = **$1.375/M** (worse than normal).
+Client shard create (`BUCKET_MISSING` on shard N, ADR-133, warm config cache) = 2.5 RCU + 2 WCU (1 failed conditional + disable-walk BatchGet 1.5 RCU + META/bucket BatchGet 1 RCU + single-item `PutItem`) = $0.3125 + $1.25 = **$1.56/M**, paid **once per shard** (+1 WCU when a wcu bump precedes it: **$2.19/M**); the previous broken fallback cost the same on every acquire that drew a missing shard.
 Speculative cascade (both succeed, sequential) = 0 RCU + 2 WCU = **$1.25/M** (vs $1.75/M normal cascade).
 Speculative cascade (both succeed, parallel, issue #318) = 0 RCU + 2 WCU = **$1.25/M** (same cost, lower latency).
 Speculative cascade fallback (parent refill helps) = 0.5 RCU + 3 WCU = **$1.94/M** (deferred compensation).
@@ -894,6 +913,9 @@ All PK and GSI PK values are prefixed with `{ns}/` where `{ns}` is the opaque na
 - `shard_counts` updated when shard doubling occurs (wcu exhaustion triggers `shard_count *= 2`)
 - Shard selection: `random.randrange(shard_count)` using the cached `shard_count`, re-picked on every call (not derived from the entity id)
 - On cache hit with `cascade=True`, `speculative_consume()` issues child + parent speculative writes concurrently via `asyncio.gather` (async) or `self._run_in_executor` (sync, strategy controlled by `parallel_mode`)
+- **The parent shards independently of the child (#474):** its shard is drawn from the **parent's own** cached `shard_count` (`select_shard(parent_id, resource)`), never hardcoded to 0 — that left the one partition every cascading child writes to as an unmitigated hot partition. Compensation and the parent-only fallback reuse `parent_result.shard_id` (the shard whose image the decision was made on), but the slow path is handed a parent shard only when it *needs that shard*: `BUCKET_MISSING` (create it where the fast path looked) or the brand-new shard a `wcu` doubling added. An **exhausted** parent shard is never handed over — every shard holds its own share and ADR-134 re-picks on every call, so `_do_acquire` re-drawing can admit where the drawn shard could not
+- **Parent `wcu` exhaustion doubles the parent's count** via `_shard_after_wcu_exhaustion` (shared with the child path), but **only after** the `would_refill_satisfy` gate: doubling on the way to a `RateLimitExceeded` never creates or reads the shard it picks, and one doubling per rejection walks a parent sitting at its limit to `MAX_SHARD_COUNT`, shrinking every shard's share permanently. The shard a doubling adds skips the parent-only attempt (it cannot exist yet) and goes straight to the full slow path. The warm parallel path and the cold-cache sequential path share this handling (`_handle_nested_parent_failure`)
+- A *successful* parent write grows the parent's cached `shard_count` but deliberately passes no `meta`: a parent shard N>0 is usually created by a **child's** cascade slow path, which denormalizes only the acquiring entity's flags and so stamps the parent `cascade=False`/`parent_id=None`. Learning that as metadata would downgrade the parent's cache entry and silently stop a three-level hierarchy from debiting the grandparent. The consequence is that a parent with no cache entry learns its count lazily, from the first failure image (`_speculative_consume_single`), rather than on success
 - Reduces cascade latency from 2 sequential round trips to 1 parallel round trip (same WCU cost)
 - First acquire for an entity always uses sequential path (populates cache); subsequent acquires use parallel path
 - **Sync parallel modes:** `"auto"` (default: gevent if patched, serial if single-CPU, threadpool otherwise), `"gevent"` (greenlets, warns if unpatched), `"threadpool"` (lazy ThreadPoolExecutor, warns on single-CPU), `"serial"` (sequential). Explicit modes warn on suboptimal conditions. Resolved once at `SyncRepository.__init__`
@@ -915,10 +937,13 @@ All PK and GSI PK values are prefixed with `{ns}/` where `{ns}` is the opaque na
 | Speculative consume | `ADD tk -consumed` | `attribute_exists(PK) AND tk >= consumed` | No |
 | Normal path (initial) | `SET rf = :new_rf ADD tk -consumed` | `rf = :expected_rf` | Yes (optimistic lock) |
 | Normal path (retry) | `ADD tk -consumed` | `tk >= consumed` | No (skips refill) |
+| Client shard create (ADR-133) | `Put` full item, `tk = cp // shard_count`, `wcu` undivided | `attribute_not_exists(PK)` | Sets `rf = now` |
 | Adjustment / rollback | `ADD tk +/-delta` | (unconditional) | No |
 | Aggregator refill | `ADD tk +refill SET rf = :now` | `rf = :expected_rf` | Yes (optimistic lock) |
 | Aggregator proactive shard | `SET shard_count = :new` | `shard_count = :old` | No |
 | Aggregator shard propagation | `SET shard_count = :new` | `attribute_not_exists(shard_count) OR shard_count < :new` | No |
+| Client shard propagation (#439) | `SET shard_count = :new` | `shard_count < :new` | No |
+| Limit-change sync, per shard (#468), per resource under `_default_` (#487) | `SET cp/ra/rp (+ ttl) REMOVE stale` | `attribute_exists(PK)` | No |
 | Disable stamp (ADR-125) | `SET disabled = :true` / `REMOVE disabled` | `attribute_exists(PK)` | No |
 
 **Hot partition risk with cascade (issue #116):** See [Hot Partition Risk Mitigation](#hot-partition-risk-mitigation-issue-116) above.
@@ -1155,16 +1180,19 @@ All records use flat schema (v0.6.0+, top-level attributes, no nested `data.M`).
 
 See [ADR-100](docs/adr/100-centralized-config.md) for full config design details.
 
-### Bucket TTL for Default Limits (Issue #271, #296)
+### Bucket TTL for Default Limits (Issue #271, #296, ADR-136)
 
 Buckets using system/resource default limits have TTL for auto-expiration:
 
-| Config Source | TTL Behavior |
-|---------------|--------------|
-| Entity custom limits | No TTL (persist indefinitely) |
-| Resource defaults | TTL = now + max_time_to_fill × multiplier |
-| System defaults | TTL = now + max_time_to_fill × multiplier |
+| Config Source (`ConfigSource`) | TTL Behavior |
+|--------------------------------|--------------|
+| Entity limits, resource-specific (`entity`) | No TTL (persist indefinitely) |
+| Entity limits, entity-wide `_default_` (`entity_default`) | No TTL (persist indefinitely) |
+| Resource defaults (`resource`) | TTL = now + max_time_to_fill × multiplier |
+| System defaults (`system`) | TTL = now + max_time_to_fill × multiplier |
 | Override parameter | TTL = now + max_time_to_fill × multiplier |
+
+**[ADR-136](docs/adr/136-entity-config-bucket-ttl.md) (supersedes ADR-119):** entity configuration is custom at **either** entity level, so an entity-wide `_default_` bucket persists like a resource-specific one. The test lives in `limiter.py`'s `_is_custom_config()` — a single helper, because the three call sites that consume it (`_try_parent_only_acquire`, `_do_acquire`'s per-entity entries, and the `_wcu_carrier` argument) had drifted to a two-way `== "entity"` test that silently excluded `entity_default` (#489). TTL is also the **propagation mechanism** for resource/system buckets, which do not fan out on change, so widening this test any further would stop them picking up new parameters.
 
 Where `time_to_fill = (capacity / refill_amount) × refill_period_seconds`. This ensures slow-refill limits (where `capacity >> refill_amount`) have enough time to fully refill before expiring.
 

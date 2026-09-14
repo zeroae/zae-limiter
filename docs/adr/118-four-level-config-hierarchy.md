@@ -22,7 +22,7 @@ When resolving limits for `acquire(entity_id, resource)`:
 4. Check system-level defaults
 5. Use constructor override parameter
 
-Entity `_default_` config is treated as a default for TTL purposes (TTL applied), distinguishing it from resource-specific entity config (no TTL).
+~~Entity `_default_` config is treated as a default for TTL purposes (TTL applied), distinguishing it from resource-specific entity config (no TTL).~~ **Superseded by [ADR-136](136-entity-config-bucket-ttl.md):** entity configuration at either level is custom, and those buckets persist. The rest of this ADR stands.
 
 ## Consequences
 
@@ -41,4 +41,4 @@ Entity `_default_` config is treated as a default for TTL purposes (TTL applied)
 Rejected because: Operators would need to duplicate entity config for every resource, which is error-prone and tedious.
 
 ### Treat entity `_default_` as custom config (no TTL)
-Rejected because: Entity `_default_` is semantically a default, not a resource-specific customization; TTL should apply.
+~~Rejected because: Entity `_default_` is semantically a default, not a resource-specific customization; TTL should apply.~~ **This rejection was reversed by [ADR-136](136-entity-config-bucket-ttl.md)**, which adopts this alternative.

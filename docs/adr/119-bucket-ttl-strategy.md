@@ -1,6 +1,6 @@
 # ADR-119: Bucket TTL Strategy
 
-**Status:** Accepted
+**Status:** Superseded by ADR-136
 **Date:** 2026-02-02
 **Issue:** [#271](https://github.com/zeroae/zae-limiter/issues/271), [#296](https://github.com/zeroae/zae-limiter/issues/296)
 

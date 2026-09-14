@@ -99,6 +99,41 @@ async with limiter.acquire(
     This is useful for post-hoc reconciliation when actual usage exceeds estimates.
     See [Token Bucket Algorithm - Negative Buckets](token-bucket.md#negative-buckets-debt) for how debt works.
 
+!!! warning "`consume` is the declared scope of a lease"
+    Only limits named in `acquire(consume=...)` can be adjusted, consumed, or
+    released through the lease, and only those appear in `lease.consumed`. A
+    limit you did not name was never checked at admission, so adjusting it
+    afterwards would drive a bucket negative that never had the chance to reject.
+
+    If the cost is unknown up front, declare the limit with an estimate of `0`:
+
+    ```python
+    async with limiter.acquire(
+        entity_id="key-123",
+        resource="gpt-4",
+        consume={"rpm": 1, "tpm": 0},  # tpm is in play; cost reconciled below
+    ) as lease:
+        response = await call_llm()
+        await lease.adjust(tpm=response.usage.total_tokens)
+    ```
+
+    Declaring a limit means it gates admission, even at an estimate of `0`: the
+    bucket must not be in debt. If a previous `adjust(tpm=...)` overdrew `tpm`,
+    `acquire(consume={"rpm": 1, "tpm": 0})` raises `RateLimitExceeded` with a
+    `retry_after` until refill clears the debt, while `{"rpm": 1}` alone is
+    admitted. That is the point — an overdrawn `tpm` should wait for refill.
+
+    An empty `consume` declares no limits, so nothing on that lease is adjustable —
+    use `{"name": 0}` to declare a limit whose cost is unknown. A key in `consume`
+    that names no limit configured for the resource is ignored at admission and
+    reported by `acquire()` with a `FutureWarning`.
+
+    Passing a key that names no declared limit (including a typo such as
+    `adjust(tpmm=...)`) is ignored and emits a `FutureWarning` that lists the
+    offending keys and the lease's declared limits. It becomes a `ValidationError`
+    in v1.0.0. The no-op lease yielded under
+    [`on_unavailable=ALLOW`](unavailability.md#no-op-lease-behavior) is exempt.
+
 ## Check Capacity Without Consuming
 
 ### Check Available Tokens

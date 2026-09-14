@@ -121,8 +121,8 @@ def try_consume(
         tokens_milli=state.tokens_milli,
         last_refill_ms=state.last_refill_ms,
         now_ms=now_ms,
-        capacity_milli=state.capacity_milli,
-        refill_amount_milli=state.refill_amount_milli,
+        capacity_milli=state.effective_capacity_milli,
+        refill_amount_milli=state.effective_refill_amount_milli,
         refill_period_ms=state.refill_period_ms,
     )
 
@@ -144,7 +144,7 @@ def try_consume(
         deficit_milli = requested_milli - current_tokens_milli
         retry_after = calculate_retry_after(
             deficit_milli=deficit_milli,
-            refill_amount_milli=state.refill_amount_milli,
+            refill_amount_milli=state.retry_refill_amount_milli,
             refill_period_ms=state.refill_period_ms,
         )
         return ConsumeResult(
@@ -170,9 +170,17 @@ def calculate_retry_after(
         refill_period_ms: Refill rate denominator
 
     Returns:
-        Seconds until deficit is recovered (float)
+        Seconds until deficit is recovered (float), or 0.0 when the bucket has
+        no refill configured at all and no wait can be computed.
     """
     if deficit_milli <= 0:
+        return 0.0
+    if refill_amount_milli <= 0:
+        # A bucket that never refills has no finite wait. Callers pass
+        # BucketState.retry_refill_amount_milli, which already falls back to
+        # the undivided rate when a shard's share floors to zero, so this only
+        # guards a bucket item whose stored rate is itself 0 — report no wait
+        # rather than raise ZeroDivisionError from inside an error path.
         return 0.0
 
     # time_ms = deficit * period / amount
@@ -199,8 +207,8 @@ def calculate_available(
         tokens_milli=state.tokens_milli,
         last_refill_ms=state.last_refill_ms,
         now_ms=now_ms,
-        capacity_milli=state.capacity_milli,
-        refill_amount_milli=state.refill_amount_milli,
+        capacity_milli=state.effective_capacity_milli,
+        refill_amount_milli=state.effective_refill_amount_milli,
         refill_period_ms=state.refill_period_ms,
     )
     return refill.new_tokens_milli // 1000
@@ -226,8 +234,8 @@ def calculate_time_until_available(
         tokens_milli=state.tokens_milli,
         last_refill_ms=state.last_refill_ms,
         now_ms=now_ms,
-        capacity_milli=state.capacity_milli,
-        refill_amount_milli=state.refill_amount_milli,
+        capacity_milli=state.effective_capacity_milli,
+        refill_amount_milli=state.effective_refill_amount_milli,
         refill_period_ms=state.refill_period_ms,
     )
 
@@ -238,7 +246,7 @@ def calculate_time_until_available(
     deficit_milli = needed_milli - refill.new_tokens_milli
     return calculate_retry_after(
         deficit_milli=deficit_milli,
-        refill_amount_milli=state.refill_amount_milli,
+        refill_amount_milli=state.retry_refill_amount_milli,
         refill_period_ms=state.refill_period_ms,
     )
 
@@ -266,8 +274,8 @@ def force_consume(
         tokens_milli=state.tokens_milli,
         last_refill_ms=state.last_refill_ms,
         now_ms=now_ms,
-        capacity_milli=state.capacity_milli,
-        refill_amount_milli=state.refill_amount_milli,
+        capacity_milli=state.effective_capacity_milli,
+        refill_amount_milli=state.effective_refill_amount_milli,
         refill_period_ms=state.refill_period_ms,
     )
 
@@ -331,24 +339,46 @@ def would_refill_satisfy(
 
     Returns:
         Tuple of (would_satisfy, statuses) where:
-        - would_satisfy: True if ALL limits pass after refill
-        - statuses: LimitStatus for each limit (for RateLimitExceeded if needed)
+        - would_satisfy: True if ALL declared limits pass after refill
+        - statuses: LimitStatus for each declared limit (for RateLimitExceeded)
+    """
+    statuses = declared_statuses(buckets, consume, now_ms)
+    any_exceeded = any(s.exceeded for s in statuses)
+    return (not any_exceeded, statuses)
+
+
+def declared_statuses(
+    buckets: list[BucketState],
+    consume: dict[str, int],
+    now_ms: int,
+) -> list[LimitStatus]:
+    """Build a LimitStatus for every bucket whose limit is declared in ``consume``.
+
+    This is the single definition of "declared" for status reporting
+    (Issue #455): membership in ``consume``, not the amount. A declared
+    zero-estimate limit (``{"tpm": 0}``) gets a passed status with
+    ``requested=0``, exactly as on the slow path; a limit the caller never
+    named — including the reserved ``wcu`` infrastructure limit that
+    ``result.buckets`` carries — is skipped, so it never reaches
+    ``RateLimitExceeded``.
+
+    Args:
+        buckets: Bucket states to report on (typically a speculative result)
+        consume: Amount requested per limit (limit_name -> tokens)
+        now_ms: Current timestamp for refill calculation
     """
     statuses: list[LimitStatus] = []
     for state in buckets:
-        amount = consume.get(state.limit_name, 0)
-        if amount == 0:
+        if state.limit_name not in consume:
             continue
-        limit = Limit.from_bucket_state(state)
-        status = build_limit_status(
-            entity_id=state.entity_id,
-            resource=state.resource,
-            limit=limit,
-            state=state,
-            requested=amount,
-            now_ms=now_ms,
+        statuses.append(
+            build_limit_status(
+                entity_id=state.entity_id,
+                resource=state.resource,
+                limit=Limit.from_bucket_state(state),
+                state=state,
+                requested=consume[state.limit_name],
+                now_ms=now_ms,
+            )
         )
-        statuses.append(status)
-
-    any_exceeded = any(s.exceeded for s in statuses)
-    return (not any_exceeded, statuses)
+    return statuses

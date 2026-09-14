@@ -25,10 +25,23 @@ class LimitDecl:
         # Accept "burst" from YAML for backwards-compat: use it as capacity
         if "burst" in d:
             capacity = d["burst"]
+        refill_amount = d.get("refill_amount", capacity)
+        refill_period = d.get("refill_period", 60)
+        for field_name, value in (
+            ("capacity", capacity),
+            ("refill_amount", refill_amount),
+            ("refill_period", refill_period),
+        ):
+            if value <= 0:
+                raise ValueError(
+                    f"{field_name} must be positive, got {value}. "
+                    "Limits are rejected at parse time so `limits plan` surfaces the "
+                    "problem before anything is written."
+                )
         return cls(
             capacity=capacity,
-            refill_amount=d.get("refill_amount", capacity),
-            refill_period=d.get("refill_period", 60),
+            refill_amount=refill_amount,
+            refill_period=refill_period,
         )
 
     def to_dict(self) -> dict[str, int]:

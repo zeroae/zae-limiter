@@ -151,6 +151,8 @@ class Repository:
         self._config_cache_ttl = config_cache_ttl
 
         # Entity metadata cache for parallel cascade writes (issue #318)
+        # (entity_id, resource) pairs already warned about MAX_SHARD_COUNT
+        self._shard_cap_warned: set[tuple[str, str]] = set()
         # Value: (cascade, parent_id, {resource: shard_count})
         # cascade/parent_id are immutable; shard_count updated on doubling
         self._entity_cache: dict[tuple[str, str], tuple[bool, str | None, dict[str, int]]] = {}
@@ -570,14 +572,19 @@ class Repository:
         return self._caller_identity_arn
 
     def _now_ms(self) -> int:
-        """Current time in milliseconds."""
-        # TODO(clock-seam): _now_ms() is not the single source of truth for time.
-        # limiter.py and lease.py compute now via inline `int(time.time() * 1000)`
-        # instead of routing through here, so a single acquire() reads the clock
-        # from multiple places and `_now_ms` cannot be monkeypatched to control
-        # time in tests. Make `_now_ms()` the injectable clock seam: add it to
-        # RepositoryProtocol and route limiter.py/lease.py through
-        # `self._repository._now_ms()` (regenerating all sync twins).
+        """Current time in epoch milliseconds — the token-bucket clock (#430).
+
+        Declared on ``RepositoryProtocol`` so the limiter and the lease read
+        the clock through here too. Patching this one method controls refill
+        math, ``rf`` stamps and bucket TTLs across a whole ``acquire()``
+        without sleeping and without touching the global ``time`` module
+        (which moto and botocore also read).
+
+        It does **not** control the config cache, whose TTL is in seconds
+        against ``time.time()``. See ``RepositoryProtocol._now_ms`` for what
+        that means for a test that jumps the clock, and for how many readings
+        each ``acquire()`` path takes.
+        """
         return int(time.time() * 1000)
 
     # -------------------------------------------------------------------------
@@ -1748,7 +1755,7 @@ class Repository:
 
     async def batch_get_buckets(
         self,
-        keys: list[tuple[str, str]],
+        keys: list[tuple[str, str, int]],
     ) -> dict[tuple[str, str, str], BucketState]:
         """
         Batch get composite buckets in a single DynamoDB call.
@@ -1758,7 +1765,9 @@ class Repository:
         keyed by (entity_id, resource, limit_name) for backward compatibility.
 
         Args:
-            keys: List of (entity_id, resource) tuples. Uses shard_id=0.
+            keys: List of (entity_id, resource, shard_id) tuples. The shard
+                is the one the acquire selected (issue #439); it is never
+                assumed to be 0.
 
         Returns:
             Dict mapping (entity_id, resource, limit_name) to BucketState.
@@ -1782,10 +1791,12 @@ class Repository:
 
             request_keys = [
                 {
-                    "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, 0)},
+                    "PK": {
+                        "S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)
+                    },
                     "SK": {"S": schema.sk_state()},
                 }
-                for entity_id, resource in chunk
+                for entity_id, resource, shard_id in chunk
             ]
 
             items = await self._batch_get_all(request_keys, context="rate limit buckets")
@@ -1802,18 +1813,19 @@ class Repository:
     async def batch_get_entity_and_buckets(
         self,
         entity_id: str,
-        bucket_keys: list[tuple[str, str]],
+        bucket_keys: list[tuple[str, str, int]],
     ) -> tuple[Entity | None, dict[tuple[str, str, str], BucketState]]:
         """
         Fetch entity metadata and composite buckets in a single BatchGetItem.
 
-        With composite items, each (entity_id, resource) pair is a single
+        With composite items, each (entity_id, resource, shard) is a single
         DynamoDB item. Includes the entity's #META record alongside bucket
         records to avoid a separate get_entity() round trip.
 
         Args:
             entity_id: Entity whose META record to include
-            bucket_keys: List of (entity_id, resource) for composite buckets
+            bucket_keys: List of (entity_id, resource, shard_id) for composite
+                buckets — the shard the acquire selected (issue #439)
 
         Returns:
             Tuple of (entity_or_none, bucket_dict) where bucket_dict maps
@@ -1831,10 +1843,10 @@ class Repository:
 
         request_keys = [meta_key]
         unique_bucket_keys = list(set(bucket_keys))
-        for eid, resource in unique_bucket_keys:
+        for eid, resource, shard_id in unique_bucket_keys:
             request_keys.append(
                 {
-                    "PK": {"S": schema.pk_bucket(self._namespace_id, eid, resource, 0)},
+                    "PK": {"S": schema.pk_bucket(self._namespace_id, eid, resource, shard_id)},
                     "SK": {"S": schema.sk_state()},
                 }
             )
@@ -2416,6 +2428,7 @@ class Repository:
         consume: dict[str, int],
         ttl_seconds: int | None = None,
         shard_id: int | None = None,
+        now_ms: int | None = None,
     ) -> SpeculativeResult:
         """Attempt speculative UpdateItem with condition check.
 
@@ -2433,6 +2446,11 @@ class Repository:
             ttl_seconds: TTL in seconds from now, or None for no TTL change
             shard_id: Explicit shard to target (skips random selection and
                 cascade logic). None means auto-select from entity cache.
+            now_ms: The caller's "now" (issue #430). The limiter passes the
+                same reading it used for its own refill math, so one logical
+                ``acquire()`` observes one instant: the ``ttl`` stamp, the
+                TTL-expiry guard and the caller's decision all agree. None
+                reads the clock once here, for callers outside an acquire.
 
         Returns:
             SpeculativeResult with:
@@ -2440,27 +2458,33 @@ class Repository:
             - On cache miss or non-cascade: parent_result is None
             - On failure: old_buckets from ALL_OLD (or None if bucket missing)
         """
+        if now_ms is None:
+            now_ms = self._now_ms()
+
         # Explicit shard_id: direct single-shard consume (shard retry path)
         if shard_id is not None:
             return await self._speculative_consume_single(
-                entity_id, resource, consume, ttl_seconds, shard_id=shard_id
+                entity_id, resource, consume, ttl_seconds, shard_id=shard_id, now_ms=now_ms
             )
 
         # Check entity cache for parallel cascade opportunity (issue #318)
         cache_key = (self._namespace_id, entity_id)
         cache_entry = self._entity_cache.get(cache_key)
 
-        # Determine shard from entity cache
-        shard_count = 1
-        if cache_entry is not None:
-            shard_count = cache_entry[2].get(resource, 1)
-        effective_shard_id = random.randrange(shard_count) if shard_count > 1 else 0
+        effective_shard_id, _shard_count = self.select_shard(entity_id, resource)
 
         if cache_entry is not None:
             cascade_cached, parent_id_cached, shards_cached = cache_entry
             if cascade_cached and parent_id_cached:
                 child_result: SpeculativeResult
                 parent_result: SpeculativeResult
+                # The parent shards independently of the child (issue #474):
+                # its shard comes from the parent's own cached shard_count.
+                # Defaulting to shard 0 kept every warm-path cascade write on
+                # parent shard 0 — the unmitigated hot partition write
+                # sharding exists to protect (GHSA-76rv, issue #116) — and
+                # disagreed with the slow path, which draws from that count.
+                parent_shard_id, _parent_count = self.select_shard(parent_id_cached, resource)
                 child_result, parent_result = await asyncio.gather(
                     self._speculative_consume_single(
                         entity_id,
@@ -2468,17 +2492,37 @@ class Repository:
                         consume,
                         ttl_seconds,
                         shard_id=effective_shard_id,
+                        now_ms=now_ms,
                     ),
                     self._speculative_consume_single(
-                        parent_id_cached, resource, consume, ttl_seconds
+                        parent_id_cached,
+                        resource,
+                        consume,
+                        ttl_seconds,
+                        shard_id=parent_shard_id,
+                        now_ms=now_ms,
                     ),
                 )
+                if parent_result.success:
+                    # A failure learns inside _speculative_consume_single; a
+                    # success must too, or the parent's cached count never
+                    # grows and every later draw lands back on shard 0.
+                    #
+                    # No `meta`: the parent's shard N>0 was most likely created
+                    # by a *child's* cascade slow path, which denormalizes only
+                    # the acquiring entity's own flags and so stamps the parent
+                    # cascade=False / parent_id=None. Passing that as meta
+                    # would downgrade the parent's cache entry, and the next
+                    # acquire(parent) would silently stop debiting the
+                    # grandparent (the cache has no TTL). Without meta this
+                    # still grows the count on an entry that already exists.
+                    self._learn_shard_count(parent_id_cached, resource, parent_result.shard_count)
                 if child_result.success:
-                    shards_cached = {**shards_cached, resource: child_result.shard_count}
-                    self._entity_cache[cache_key] = (
-                        child_result.cascade,
-                        child_result.parent_id,
-                        shards_cached,
+                    self._learn_shard_count(
+                        entity_id,
+                        resource,
+                        child_result.shard_count,
+                        meta=(child_result.cascade, child_result.parent_id),
                     )
                 else:
                     # On failure, _speculative_consume_single doesn't return
@@ -2491,12 +2535,12 @@ class Repository:
 
         # Cache miss or non-cascade: single UpdateItem
         result = await self._speculative_consume_single(
-            entity_id, resource, consume, ttl_seconds, shard_id=effective_shard_id
+            entity_id, resource, consume, ttl_seconds, shard_id=effective_shard_id, now_ms=now_ms
         )
         if result.success:
-            existing_shards = self._entity_cache.get(cache_key, (False, None, {}))[2]
-            existing_shards = {**existing_shards, resource: result.shard_count}
-            self._entity_cache[cache_key] = (result.cascade, result.parent_id, existing_shards)
+            self._learn_shard_count(
+                entity_id, resource, result.shard_count, meta=(result.cascade, result.parent_id)
+            )
         return result
 
     async def _speculative_consume_single(
@@ -2506,6 +2550,7 @@ class Repository:
         consume: dict[str, int],
         ttl_seconds: int | None = None,
         shard_id: int = 0,
+        now_ms: int | None = None,
     ) -> SpeculativeResult:
         """Issue a single speculative UpdateItem on a bucket shard.
 
@@ -2519,10 +2564,17 @@ class Repository:
             consume: Amount per limit (tokens, not milli).
             ttl_seconds: TTL in seconds, or None for no TTL change.
             shard_id: Target shard index (default 0).
+            now_ms: The caller's "now" (issue #430). Both clock-derived parts
+                of the write — the ``ttl`` stamp and the ``#ttl > :now_epoch``
+                expiry guard — are derived from this one value. None reads
+                the clock once here.
 
         Returns:
             SpeculativeResult with shard_id and shard_count populated.
         """
+        if now_ms is None:
+            now_ms = self._now_ms()
+
         client = await self._get_client()
 
         # Build ADD expression for each limit
@@ -2568,14 +2620,13 @@ class Repository:
 
         # Handle TTL
         if ttl_seconds is not None:
-            now_ms = self._now_ms()
             ttl_epoch = schema.calculate_ttl(now_ms, ttl_seconds)
             update_expr = f"SET #ttl = :ttl {update_expr}"
             attr_names["#ttl"] = "ttl"
             attr_values[":ttl"] = {"N": str(ttl_epoch)}
 
         # Reject expired-but-not-yet-deleted buckets (DynamoDB TTL is eventual)
-        now_epoch = self._now_ms() // 1000
+        now_epoch = now_ms // 1000
         attr_names["#ttl"] = "ttl"
         attr_values[":now_epoch"] = {"N": str(now_epoch)}
         condition_parts.append("(attribute_not_exists(#ttl) OR #ttl > :now_epoch)")
@@ -2626,6 +2677,18 @@ class Repository:
                 if old_item:
                     old_buckets = self._deserialize_composite_bucket(old_item)
                     old_shard_count = int(old_item.get("shard_count", {}).get("N", "1"))
+                    # Denormalized on the item, so a failure knows whether this
+                    # entity cascades even with a cold cache — a cascading child
+                    # must never be admitted by a child-only shard retry.
+                    old_cascade = old_item.get("cascade", {}).get("BOOL", False)
+                    old_parent_id = old_item.get("parent_id", {}).get("S")
+                    # Keep the cached shard_count current from the failure
+                    # image so later draws cover every shard (issue #439); the
+                    # image also carries cascade/parent_id, so a cold cache
+                    # can be populated correctly rather than skipped.
+                    self._learn_shard_count(
+                        entity_id, resource, old_shard_count, meta=(old_cascade, old_parent_id)
+                    )
 
                     # Disabled wins over every other classification: retrying on
                     # another shard or doubling shards cannot help (ADR-125).
@@ -2633,6 +2696,8 @@ class Repository:
                         return SpeculativeResult(
                             success=False,
                             old_buckets=old_buckets,
+                            cascade=old_cascade,
+                            parent_id=old_parent_id,
                             shard_id=shard_id,
                             shard_count=old_shard_count,
                             failure_reason=SpeculativeFailureReason.DISABLED,
@@ -2658,6 +2723,8 @@ class Repository:
                     return SpeculativeResult(
                         success=False,
                         old_buckets=old_buckets,
+                        cascade=old_cascade,
+                        parent_id=old_parent_id,
                         shard_id=shard_id,
                         shard_count=old_shard_count,
                         failure_reason=reason,
@@ -2669,6 +2736,80 @@ class Repository:
                         failure_reason=SpeculativeFailureReason.BUCKET_MISSING,
                     )
             raise
+
+    def _learn_shard_count(
+        self,
+        entity_id: str,
+        resource: str,
+        observed: int,
+        *,
+        meta: tuple[bool, str | None] | None = None,
+    ) -> int:
+        """Record an observed shard_count in the entity cache, monotonically.
+
+        The cache never shrinks: a shard N>0 item can carry a stale, lower
+        ``shard_count`` (propagation lag), and shard 0 itself can lag its
+        siblings after a TTL re-create. Adopting a lower value would narrow
+        the draw range and stamp the next client-created shard with the
+        lowered count (issue #439). ``meta`` supplies ``(cascade, parent_id)``
+        for a new entry; without it an unknown entity is left uncached.
+
+        Returns:
+            The count now cached (``observed`` when nothing was cached).
+        """
+        cache_key = (self._namespace_id, entity_id)
+        entry = self._entity_cache.get(cache_key)
+        if entry is None:
+            if meta is None:
+                return observed
+            cascade, parent_id = meta
+            shards: dict[str, int] = {}
+        else:
+            cascade, parent_id = meta if meta is not None else (entry[0], entry[1])
+            shards = dict(entry[2])
+        count = max(observed, shards.get(resource, 1))
+        shards[resource] = count
+        self._entity_cache[cache_key] = (cascade, parent_id, shards)
+        return count
+
+    def select_shard(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int | None = None,
+        shard_count: int | None = None,
+    ) -> tuple[int, int]:
+        """Pick the bucket shard an acquire should target (GHSA-76rv, issue #439).
+
+        This is the only place a shard is drawn. The speculative fast path
+        draws here, and the slow path reuses whatever shard the fast path
+        already selected (passing it back as ``shard_id``) so a
+        ``BUCKET_MISSING`` on shard N reads and creates shard N — never a
+        second random draw that lands on shard 0 again.
+
+        Selection is ``random.randrange(shard_count)`` from the cached
+        shard_count, not a hash of the entity id: every call re-picks, which
+        is what spreads one hot entity's writes across all of its shards.
+
+        Args:
+            entity_id: Entity owning the bucket.
+            resource: Resource name.
+            shard_id: Explicit shard to honour verbatim, or None to draw one.
+            shard_count: Count observed by the caller (e.g. on a speculative
+                failure image, which never updates the cache); None reads
+                the entity cache.
+
+        Returns:
+            ``(shard_id, shard_count)`` with shard_count from the argument or
+            the entity cache (1 when unknown).
+        """
+        if shard_count is None:
+            cache_key = (self._namespace_id, entity_id)
+            cache_entry = self._entity_cache.get(cache_key)
+            shard_count = cache_entry[2].get(resource, 1) if cache_entry is not None else 1
+        if shard_id is None:
+            shard_id = random.randrange(shard_count) if shard_count > 1 else 0
+        return shard_id, shard_count
 
     async def bump_shard_count(self, entity_id: str, resource: str, current_count: int) -> int:
         """Double shard_count on shard 0 via conditional write.
@@ -2684,9 +2825,32 @@ class Repository:
             current_count: Current shard_count to double.
 
         Returns:
-            The new shard_count (doubled), or the current value if another
-            client already doubled (ConditionalCheckFailedException).
+            The new shard_count (doubled), or — if another client already
+            doubled (ConditionalCheckFailedException) — the winner's count
+            read from the failed write's ALL_OLD image, so the loser draws
+            from the new shard range instead of caching its stale count and
+            landing back on the exhausted shard (issue #439).
         """
+        cache_key = (self._namespace_id, entity_id)
+        meta = None if cache_key in self._entity_cache else (False, None)
+        if current_count >= schema.MAX_SHARD_COUNT:
+            # Refused: the share per shard would fall below what a request
+            # can use, and an exhausted shard must not drive doubling forever
+            # (ADR-133). Warn once per (entity, resource); #475 adds a metric.
+            if (entity_id, resource) not in self._shard_cap_warned:
+                self._shard_cap_warned.add((entity_id, resource))
+                # Deduplicated per (entity, resource), but the entity id is not
+                # logged: entity ids are routinely API keys and must not be
+                # written to logs in clear text (py/clear-text-logging-sensitive
+                # -data). Per-entity attribution belongs on the metric in #475.
+                logger.warning(
+                    "shard_count for resource=%s is at MAX_SHARD_COUNT=%d; "
+                    "refusing to double further",
+                    resource,
+                    schema.MAX_SHARD_COUNT,
+                )
+            return self._learn_shard_count(entity_id, resource, current_count, meta=meta)
+
         new_count = current_count * 2
         client = await self._get_client()
         try:
@@ -2702,29 +2866,84 @@ class Repository:
                     ":old": {"N": str(current_count)},
                     ":new": {"N": str(new_count)},
                 },
+                ReturnValuesOnConditionCheckFailure="ALL_OLD",
             )
             effective_count = new_count
-            if new_count > schema.WCU_SHARD_WARN_THRESHOLD:
-                logger.warning(
-                    "High shard count after doubling: entity_id=%s resource=%s "
-                    "shard_count=%d threshold=%d",
-                    entity_id,
-                    resource,
-                    new_count,
-                    schema.WCU_SHARD_WARN_THRESHOLD,
-                )
+            # We won the bump, so we own propagating the new count to the
+            # shards that already exist (1..current_count-1). The aggregator's
+            # Path 1 does this from the stream, but with --no-aggregator
+            # nothing would, and a shard left on a stale lower count refills
+            # to cp // stale_count — the shares then sum to more than the
+            # limit (issue #439). Same conditional write, so whichever of us
+            # gets there first wins and the other is a no-op.
+            await self._propagate_shard_count(entity_id, resource, current_count, new_count)
         except ClientError as e:
             if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-                effective_count = current_count  # Another client already doubled
+                # Another client already doubled: adopt the winner's count —
+                # but never a lower one. Shard 0 can lag its siblings (a TTL
+                # re-create starts it at 1); adopting that would pin the
+                # client to shard 0. Without an image keep what we knew.
+                winner = cast(dict[str, Any] | None, e.response.get("Item")) or {}
+                winner_count = int(winner.get("shard_count", {}).get("N", str(current_count)))
+                effective_count = max(current_count, winner_count)
             else:
                 raise
 
-        # Update entity cache with new shard_count
-        cache_key = (self._namespace_id, entity_id)
-        entry = self._entity_cache.get(cache_key, (False, None, {}))
-        shards = {**entry[2], resource: effective_count}
-        self._entity_cache[cache_key] = (entry[0], entry[1], shards)
-        return effective_count
+        # Update entity cache with new shard_count (monotonic)
+        return self._learn_shard_count(entity_id, resource, effective_count, meta=meta)
+
+    async def _propagate_shard_count(
+        self, entity_id: str, resource: str, old_count: int, new_count: int
+    ) -> int:
+        """Stamp ``new_count`` on the shards that already exist.
+
+        Mirrors the aggregator's Path 1 (``processor.propagate_shard_count``)
+        so write sharding is self-consistent without the aggregator: every
+        shard must agree on ``shard_count`` because each refills toward
+        ``capacity_milli // shard_count`` (issue #439). Shards
+        ``old_count..new_count-1`` are not written here — they do not exist
+        yet and are created with the current count by whoever draws them.
+
+        The writes are independent single-item conditional updates issued
+        concurrently. ``shard_count < :new`` makes each one idempotent and
+        monotonic, so racing with the aggregator or another client is a no-op
+        rather than a conflict.
+
+        Returns:
+            The number of shards actually updated.
+        """
+        if old_count <= 1:
+            return 0
+        client = await self._get_client()
+
+        async def stamp(target_shard: int) -> int:
+            try:
+                await client.update_item(
+                    TableName=self.table_name,
+                    Key={
+                        "PK": {
+                            "S": schema.pk_bucket(
+                                self._namespace_id, entity_id, resource, target_shard
+                            )
+                        },
+                        "SK": {"S": schema.sk_state()},
+                    },
+                    UpdateExpression="SET shard_count = :new",
+                    ConditionExpression="shard_count < :new",
+                    ExpressionAttributeValues={":new": {"N": str(new_count)}},
+                )
+                return 1
+            except ClientError as e:
+                code = e.response.get("Error", {}).get("Code")
+                if code == "ConditionalCheckFailedException":
+                    return 0  # Already at or above the new count
+                raise
+
+        # List comprehension, not a generator: the sync transformer rewrites
+        # `gather(*[expr for x in it])` into `_run_in_executor(*[lambda x=x:
+        # expr for x in it])`, which needs the call deferred into the lambda.
+        results = await asyncio.gather(*[stamp(n) for n in range(1, old_count)])
+        return sum(results)
 
     # -------------------------------------------------------------------------
     # Limit config operations
@@ -2833,12 +3052,16 @@ class Repository:
             else:
                 raise
 
+        # Auto-evict from config cache so next resolve reads fresh config
+        # (ADR-122). Strictly BEFORE the bucket sync: under the entity-wide
+        # `_default_` scope that sync re-resolves per bucket resource, and a
+        # stale cached `_default_` level would make it write the limits this
+        # call just replaced (#487).
+        self._config_cache.evict_entity(entity_id, resource)
+
         # Sync bucket static params if bucket exists (issue #294, #327)
         # Entity config = no TTL (bucket_ttl_refill_multiplier=0 → REMOVE ttl)
         await self._sync_bucket_params(entity_id, resource, limits, bucket_ttl_refill_multiplier=0)
-
-        # Auto-evict from config cache so next resolve reads fresh config (ADR-122)
-        self._config_cache.evict_entity(entity_id, resource)
 
         # An explicit `disabled` changes what resolve_disabled() answers, so the
         # denormalized bucket stamp has to follow it eagerly — same contract as
@@ -2873,23 +3096,179 @@ class Repository:
         Uses conditional update with attribute_exists(PK) to skip if
         bucket doesn't exist yet.
 
+        Fans out to **every** shard of the (entity, resource), discovered via
+        GSI3 like the ADR-125 disable fan-out. Keying only shard 0 left shards
+        1..N-1 — created by the aggregator's Path 2 propagation or by the client
+        slow path with ``--no-aggregator`` — enforcing the limits they were born
+        with forever, and nothing detects the drift (issue #468, named residual
+        of GHSA-w6c2-33wf-qfwf). The stored ``cp``/``ra``/``rp`` stay
+        **undivided** on every shard: the per-shard share is derived at read
+        time by ``BucketState.effective_*``, exactly as the aggregator's Path 2
+        clone writes it. Cost is O(shards) WCU plus the KEYS_ONLY GSI3 queries,
+        and the same narrow race ADR-125 documents applies: a bucket created by
+        an acquire already in flight can be missed (mitigated, not eliminated,
+        by the second discovery pass).
+
+        Writes are issued **serially**, exactly like `_fanout_entity`. Under
+        the entity-wide scope below the write set is O(resources x shards), not
+        the <= MAX_SHARD_COUNT of one resource, so a single `asyncio.gather`
+        over it would put thousands of concurrent `UpdateItem`s in flight on an
+        admin call. Serial also makes an exact partial-progress count possible:
+        the config item is already committed by the time this runs, so a
+        failure part-way leaves the table half-applied and the operator needs
+        to know how far it got. That is `FanoutIncomplete`, raised here for the
+        same reason and with the same re-run-to-reconcile remedy as the ADR-125
+        fan-out — each write is idempotent. The cost is up to MAX_SHARD_COUNT
+        sequential round trips where #468 issued one concurrent batch; the
+        disable fan-out already pays exactly that over exactly these buckets.
+
+        ``_default_`` is the entity-WIDE config scope, not a resource, and a
+        caller passing it means "every resource this entity has a bucket for".
+        No bucket item can ever carry the GSI3SK ``BUCKET#_default_#``, so
+        forwarding it to discovery matched zero items and the whole sync was a
+        silent no-op — the exact ``_default_`` -> unscoped translation the
+        ADR-125 disable fan-out performs a few lines below (issue #487).
+        Discovery therefore widens, and because Entity(resource) outranks
+        Entity(``_default_``), each discovered bucket is stamped from the
+        limits resolved for its OWN resource rather than from the caller's,
+        exactly as `_fanout_entity` re-resolves `disabled` per bucket. See
+        `_resolved_bucket_param_update` for what that implies for TTL and for
+        the caller's stale-name set.
+
         Args:
             entity_id: ID of the entity
-            resource: Resource name
-            limits: New limit configurations
+            resource: Resource name, or `schema.DEFAULT_RESOURCE` for the
+                entity-wide scope (every resource the entity has a bucket for)
+            limits: New limit configurations. Under the entity-wide scope these
+                are the caller's *directive*, not what gets written: each
+                bucket is written from its own resolved limits.
             bucket_ttl_refill_multiplier: TTL behavior (issue #327):
                 - None: Don't change TTL
                 - 0: REMOVE ttl (entity has custom limits)
                 - >0: SET ttl to (now + calculated_seconds)
+                Ignored under the entity-wide scope, where the resolved level
+                decides per bucket.
             stale_limit_names: Limit names to REMOVE from bucket (issue #327).
                 Used when downgrading from entity config to defaults where
                 the old config had limits not present in the new defaults.
+
+        Raises:
+            FanoutIncomplete: A write failed part-way through. Carries the
+                number of bucket items already written and the underlying
+                error; the config item is committed either way, so re-running
+                the same call reconciles the remainder.
         """
         if not limits:
             return
 
-        client = await self._get_client()
+        # `_default_` names no bucket: widen discovery and re-resolve per
+        # bucket resource (#487). A real resource is an unambiguous directive.
+        unscoped = resource == schema.DEFAULT_RESOURCE
+        plans: dict[str, tuple[str, dict[str, str], dict[str, dict[str, str]]]] = {}
+        if not unscoped:
+            plans[resource] = self._build_bucket_param_update(
+                limits, bucket_ttl_refill_multiplier, stale_limit_names
+            )
 
+        # Two discovery passes, exactly like the ADR-125 disable fan-out: the
+        # second catches a bucket created by an acquire that was already in
+        # flight during the first.
+        synced: set[str] = set()
+        written = 0
+        for _pass in range(2):
+            for pk in await self._discover_entity_bucket_pks(
+                entity_id, None if unscoped else resource
+            ):
+                if pk in synced:
+                    continue
+                if unscoped:
+                    # Memoized per distinct resource, like `_fanout_entity`'s
+                    # `effective_by_resource`: a 500-bucket entity spread over
+                    # three resources resolves three times.
+                    _ns, _eid, bucket_resource, _shard = schema.parse_bucket_pk(pk)
+                    if bucket_resource not in plans:
+                        plans[bucket_resource] = await self._resolved_bucket_param_update(
+                            entity_id, bucket_resource, limits, stale_limit_names
+                        )
+                try:
+                    if await self._sync_one_bucket_shard_from_plans(pk, plans):
+                        written += 1
+                except Exception as e:
+                    # Config is already committed, so this is half-applied and
+                    # nothing self-heals it. Report how far it got (ADR-125).
+                    raise FanoutIncomplete(
+                        written,
+                        e,
+                        resource=None if unscoped else resource,
+                        entity_id=entity_id,
+                        action="syncing",
+                    ) from e
+                synced.add(pk)
+
+    async def _resolved_bucket_param_update(
+        self,
+        entity_id: str,
+        bucket_resource: str,
+        directive_limits: list[Limit],
+        stale_limit_names: set[str] | None,
+    ) -> tuple[str, dict[str, str], dict[str, dict[str, str]]]:
+        """Build one bucket's update from the limits resolved for ITS resource.
+
+        Used only under the entity-wide (`_default_`) scope. The caller's
+        limits are a directive for the level it wrote, and a resource with its
+        own entity config outranks that level; writing the caller's limits
+        everywhere would clobber the more specific config with the less
+        specific one (issue #487).
+
+        Two things follow from resolving per bucket:
+
+        * **TTL follows the level that answered.** Entity-level limits mean the
+          bucket persists, resource/system defaults mean it expires and is
+          recreated with current params (#271, #296). One `set_limits` call can
+          touch buckets resolving at different levels, so the multiplier cannot
+          be fixed at the call site.
+        * **The caller's stale names are intersected with the resolution.**
+          `delete_limits` computes them against `_default_`'s own fallback, so
+          a limit the *deleted* config declared may still be declared by a
+          resource's own entity config. Removing it there would strip a
+          configured limit — and SET and REMOVE on one attribute in a single
+          expression is a DynamoDB ValidationException. Conversely a directive
+          limit absent from this resource's resolution is stale *here* even
+          though the caller did not name it.
+        """
+        resolved, _on_unavailable, source = await self.resolve_limits(entity_id, bucket_resource)
+        if not resolved:
+            # Nothing applies anywhere any more. There is no correct value to
+            # write, so leave the bucket alone — the same choice the delete
+            # path makes when no fallback config exists at all.
+            return "", {}, {}
+
+        resolved_names = {limit.name for limit in resolved}
+        stale = (set(stale_limit_names or ()) | {limit.name for limit in directive_limits}) - (
+            resolved_names
+        )
+        entity_level = source in ("entity", "entity_default")
+        multiplier = 0 if entity_level else self._bucket_ttl_refill_multiplier
+        return self._build_bucket_param_update(resolved, multiplier, stale or None)
+
+    def _build_bucket_param_update(
+        self,
+        limits: list[Limit],
+        bucket_ttl_refill_multiplier: int | None,
+        stale_limit_names: set[str] | None,
+    ) -> tuple[str, dict[str, str], dict[str, dict[str, str]]]:
+        """Build the SET/REMOVE UpdateExpression for one bucket item.
+
+        Args:
+            limits: Limits to stamp (stored undivided; the per-shard share is
+                derived at read time by `BucketState.effective_*`)
+            bucket_ttl_refill_multiplier: None leaves `ttl` alone, 0 REMOVEs it,
+                >0 SETs it from the limits' max time-to-fill
+            stale_limit_names: Limit names to strip from the bucket entirely
+
+        Returns:
+            `(update_expr, expr_names, expr_values)`
+        """
         # Build SET expression for static bucket params
         # Use numeric index for expression names since limit names can contain hyphens
         set_parts: list[str] = []
@@ -2935,31 +3314,80 @@ class Repository:
         # Handle stale limit attribute removal (issue #327)
         # Note: RF (last_refill_ms) is shared across all limits in a composite
         # bucket and must NOT be removed when individual limits are stale.
-        if stale_limit_names:
-            for stale_name in stale_limit_names:
-                for field in (
+        #
+        # Monotonic counters, NOT the stale name: `NAME_PATTERN` allows `-` and
+        # `.` in a limit name and neither is legal in an expression attribute
+        # alias (`.` is parsed as a document-path separator), so interpolating
+        # the name builds an expression DynamoDB rejects with a
+        # ValidationException — after the config item has already been written.
+        # `sorted` only to keep the expression deterministic for tests.
+        # The provisioner mirror does the same (`bucket_sync.py`).
+        for i, stale_name in enumerate(sorted(stale_limit_names or ())):
+            for j, field in enumerate(
+                (
                     schema.BUCKET_FIELD_TK,
                     schema.BUCKET_FIELD_CP,
                     schema.BUCKET_FIELD_RA,
                     schema.BUCKET_FIELD_RP,
                     schema.BUCKET_FIELD_TC,
-                ):
-                    alias = f"#stale_{stale_name}_{field}"
-                    expr_names[alias] = schema.bucket_attr(stale_name, field)
-                    remove_parts.append(alias)
+                )
+            ):
+                alias = f"#stale{i}_{j}"
+                expr_names[alias] = schema.bucket_attr(stale_name, field)
+                remove_parts.append(alias)
 
         # Build update expression
         update_expr = f"SET {', '.join(set_parts)}"
         if remove_parts:
             update_expr += f" REMOVE {', '.join(remove_parts)}"
+        return update_expr, expr_names, expr_values
 
+    async def _sync_one_bucket_shard_from_plans(
+        self,
+        pk: str,
+        plans: dict[str, tuple[str, dict[str, str], dict[str, dict[str, str]]]],
+    ) -> bool:
+        """Apply the plan built for this bucket's own resource.
+
+        Args:
+            pk: Full bucket partition key (namespace- and shard-qualified)
+            plans: Prepared updates keyed by resource; every discovered bucket's
+                resource has an entry. An entry with an empty expression is
+                skipped — nothing resolved for that resource, so there is no
+                correct value to write.
+
+        Returns:
+            True if a bucket item was written.
+        """
+        _ns, _eid, bucket_resource, _shard = schema.parse_bucket_pk(pk)
+        update_expr, expr_names, expr_values = plans[bucket_resource]
+        if not update_expr:
+            return False
+        return await self._sync_one_bucket_shard(pk, update_expr, expr_names, expr_values)
+
+    async def _sync_one_bucket_shard(
+        self,
+        pk: str,
+        update_expr: str,
+        expr_names: dict[str, str],
+        expr_values: dict[str, dict[str, str]],
+    ) -> bool:
+        """Apply one shard's static-param update, tolerating a vanished shard.
+
+        Args:
+            pk: Full bucket partition key (namespace- and shard-qualified)
+            update_expr: SET/REMOVE expression built by `_sync_bucket_params`
+            expr_names: Expression attribute name aliases
+            expr_values: Expression attribute values
+
+        Returns:
+            True if the item was written, False if the shard had vanished.
+        """
+        client = await self._get_client()
         try:
             await client.update_item(
                 TableName=self.table_name,
-                Key={
-                    "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, 0)},
-                    "SK": {"S": schema.sk_state()},
-                },
+                Key={"PK": {"S": pk}, "SK": {"S": schema.sk_state()}},
                 UpdateExpression=update_expr,
                 ConditionExpression="attribute_exists(PK)",
                 ExpressionAttributeNames=expr_names,
@@ -2967,10 +3395,13 @@ class Repository:
             )
         except ClientError as e:
             if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-                # Bucket doesn't exist yet - that's fine, it will be created
-                # with the correct params on first acquire()
-                return
+                # Bucket does not exist (yet, or any more: TTL can expire a
+                # shard between discovery and this write). Either way there is
+                # nothing to reconcile — a bucket created later is created with
+                # the current params.
+                return False
             raise
+        return True
 
     async def reconcile_bucket_to_defaults(
         self,
@@ -4453,6 +4884,9 @@ class Repository:
         entity_id = item.get("entity_id", {}).get("S", "")
         resource = item.get("resource", {}).get("S", "")
         rf = int(item.get(schema.BUCKET_FIELD_RF, {}).get("N", "0"))
+        # Carried so refill math uses this shard's effective share (ADR-133).
+        # The reserved wcu limit is per-partition and stays undivided.
+        shard_count = int(item.get("shard_count", {}).get("N", "1"))
 
         # Discover limit names by scanning for b_{name}_tk attributes
         limit_names: list[str] = []
@@ -4484,6 +4918,7 @@ class Repository:
                     refill_amount_milli=_get(schema.BUCKET_FIELD_RA),
                     refill_period_ms=_get(schema.BUCKET_FIELD_RP),
                     total_consumed_milli=total_consumed,
+                    shard_count=1 if name == schema.WCU_LIMIT_NAME else shard_count,
                 )
             )
 

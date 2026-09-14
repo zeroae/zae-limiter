@@ -340,13 +340,120 @@ class TestRepositoryBucketOperations:
         every bucket. That made the slow path treat existing buckets as new.
         """
         entity, buckets = await repo_with_buckets.batch_get_entity_and_buckets(
-            "entity-1", [("entity-1", "gpt-4")]
+            "entity-1", [("entity-1", "gpt-4", 0)]
         )
 
         assert entity is not None  # entity-1 was created via create_entity
         # Bucket must be discovered (the bug returned an empty dict here)
         assert ("entity-1", "gpt-4", "rpm") in buckets
         assert ("entity-1", "gpt-4", "tpm") in buckets
+
+    @pytest.mark.asyncio
+    async def test_batch_get_buckets_reads_the_requested_shard(self, repo):
+        """The slow-path read targets the shard the key names, not shard 0.
+
+        Issue #439: with the shard hardcoded to 0, a speculative BUCKET_MISSING
+        on shard 1 fell back to a read of shard 0, so the client could never
+        create (or later find) a shard N>0 item.
+        """
+        limit = Limit.per_minute("rpm", 100)
+        now_ms = int(time.time() * 1000)
+        states = [BucketState.from_limit("sharded-1", "gpt-4", limit, now_ms)]
+        await repo.transact_write(
+            [
+                repo.build_composite_create(
+                    "sharded-1", "gpt-4", states, now_ms, shard_id=1, shard_count=2
+                )
+            ]
+        )
+
+        assert ("sharded-1", "gpt-4", "rpm") in await repo.batch_get_buckets(
+            [("sharded-1", "gpt-4", 1)]
+        )
+        assert await repo.batch_get_buckets([("sharded-1", "gpt-4", 0)]) == {}
+
+    @pytest.mark.asyncio
+    async def test_batch_get_entity_and_buckets_reads_the_requested_shard(self, repo):
+        """Same as above for the META + bucket read (issue #439)."""
+        await repo.create_entity("sharded-2")
+        limit = Limit.per_minute("rpm", 100)
+        now_ms = int(time.time() * 1000)
+        states = [BucketState.from_limit("sharded-2", "gpt-4", limit, now_ms)]
+        await repo.transact_write(
+            [
+                repo.build_composite_create(
+                    "sharded-2", "gpt-4", states, now_ms, shard_id=1, shard_count=2
+                )
+            ]
+        )
+
+        entity, buckets = await repo.batch_get_entity_and_buckets(
+            "sharded-2", [("sharded-2", "gpt-4", 1)]
+        )
+        assert entity is not None
+        assert ("sharded-2", "gpt-4", "rpm") in buckets
+
+        _entity, buckets0 = await repo.batch_get_entity_and_buckets(
+            "sharded-2", [("sharded-2", "gpt-4", 0)]
+        )
+        assert buckets0 == {}
+
+    @pytest.mark.asyncio
+    async def test_speculative_images_never_lower_a_warm_shard_count(self, repo):
+        """A shard N>0 item can carry a stale, lower shard_count (propagation
+        lag). Neither a failure image nor a success image may shrink the
+        cached count learned from shard 0; the cache is monotonic (max)."""
+        ns = repo._namespace_id
+        limit = Limit.custom("rpm", 10, refill_amount=1, refill_period_seconds=3600)
+        now_ms = int(time.time() * 1000)
+        for shard_id, tokens in ((0, 0), (1, 10_000)):
+            state = BucketState.from_limit("mono-1", "gpt-4", limit, now_ms, 2)
+            state.tokens_milli = tokens
+            await repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        "mono-1", "gpt-4", [state], now_ms, shard_id=shard_id, shard_count=2
+                    )
+                ]
+            )
+        repo._entity_cache[(ns, "mono-1")] = (False, None, {"gpt-4": 4})
+
+        # Failure image (shard 0 drained) says shard_count=2
+        failed = await repo._speculative_consume_single("mono-1", "gpt-4", {"rpm": 1}, shard_id=0)
+        assert failed.success is False and failed.shard_count == 2
+        assert repo._entity_cache[(ns, "mono-1")][2]["gpt-4"] == 4
+
+        # Success image (shard 1) also says 2 — via the cached, non-cascade path
+        with patch("zae_limiter.repository.random.randrange", return_value=1):
+            ok = await repo.speculative_consume("mono-1", "gpt-4", {"rpm": 1})
+        assert ok.success is True and ok.shard_count == 2
+        assert repo._entity_cache[(ns, "mono-1")][2]["gpt-4"] == 4
+
+    @pytest.mark.asyncio
+    async def test_learn_shard_count_leaves_an_unknown_entity_uncached(self, repo):
+        """Without cascade/parent_id to store, an unknown entity stays out of
+        the cache; the observed count is still handed back to the caller."""
+        ns = repo._namespace_id
+        assert repo._learn_shard_count("nobody", "gpt-4", 3) == 3
+        assert (ns, "nobody") not in repo._entity_cache
+        assert repo._learn_shard_count("nobody", "gpt-4", 3, meta=(False, None)) == 3
+        assert repo._entity_cache[(ns, "nobody")] == (False, None, {"gpt-4": 3})
+
+    @pytest.mark.asyncio
+    async def test_select_shard_uses_the_cached_shard_count(self, repo):
+        """select_shard is the single place a shard is picked (issue #439)."""
+        ns = repo._namespace_id
+        repo._entity_cache[(ns, "sel-1")] = (False, None, {"gpt-4": 4})
+
+        with patch("zae_limiter.repository.random.randrange", return_value=2) as randrange:
+            assert repo.select_shard("sel-1", "gpt-4") == (2, 4)
+            randrange.assert_called_once_with(4)
+
+        # An explicit shard is honoured verbatim, with the cached count alongside
+        assert repo.select_shard("sel-1", "gpt-4", shard_id=3) == (3, 4)
+        # Unknown entity/resource: single shard, no random draw
+        assert repo.select_shard("sel-1", "other") == (0, 1)
+        assert repo.select_shard("nobody", "gpt-4") == (0, 1)
 
     @pytest.mark.asyncio
     async def test_batch_get_entity_and_buckets_finds_bucket_without_meta(self, repo):
@@ -362,7 +469,9 @@ class TestRepositoryBucketOperations:
         states = [BucketState.from_limit("bare-1", "gpt-4", limit, now_ms) for limit in limits]
         await repo.transact_write([repo.build_composite_create("bare-1", "gpt-4", states, now_ms)])
 
-        entity, buckets = await repo.batch_get_entity_and_buckets("bare-1", [("bare-1", "gpt-4")])
+        entity, buckets = await repo.batch_get_entity_and_buckets(
+            "bare-1", [("bare-1", "gpt-4", 0)]
+        )
 
         assert entity is None  # never created via create_entity
         assert ("bare-1", "gpt-4", "rpm") in buckets  # bug returned {} here
@@ -3762,8 +3871,92 @@ class TestBumpShardCount:
         assert repo._entity_cache[cache_key][2]["gpt-4"] == 2
 
     @pytest.mark.asyncio
+    async def test_bump_propagates_the_new_count_to_existing_shards(self, repo):
+        """A won bump stamps the new count on the shards that already exist.
+
+        Every shard refills toward ``capacity_milli // shard_count``, so a
+        shard left on a stale lower count would refill to a larger share and
+        the shares would sum to more than the limit. The aggregator's Path 1
+        does this from the stream; with --no-aggregator nothing else would
+        (issue #439).
+        """
+        now_ms = int(time.time() * 1000)
+        limits = [Limit.per_minute("rpm", 100_000)]
+        # Shards 0 and 1 exist at shard_count=2; shard 1 is the stale one.
+        for shard in (0, 1):
+            states = [BucketState.from_limit("e1", "gpt-4", lim, now_ms) for lim in limits]
+            await repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        "e1", "gpt-4", states, now_ms, shard_id=shard, shard_count=2
+                    )
+                ]
+            )
+
+        assert await repo.bump_shard_count("e1", "gpt-4", current_count=2) == 4
+
+        for shard in (0, 1):
+            bucket = await repo.get_bucket("e1", "gpt-4", "rpm", shard_id=shard)
+            assert bucket is not None
+            assert bucket.shard_count == 4, f"shard {shard} kept a stale count"
+
+    @pytest.mark.asyncio
+    async def test_bump_propagation_is_monotonic(self, repo):
+        """Propagation never lowers a shard already at a higher count, so
+        racing the aggregator (or another client) is a no-op, not a conflict."""
+        now_ms = int(time.time() * 1000)
+        limits = [Limit.per_minute("rpm", 100_000)]
+        for shard, count in ((0, 2), (1, 8)):
+            states = [BucketState.from_limit("e1", "gpt-4", lim, now_ms) for lim in limits]
+            await repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        "e1", "gpt-4", states, now_ms, shard_id=shard, shard_count=count
+                    )
+                ]
+            )
+
+        await repo.bump_shard_count("e1", "gpt-4", current_count=2)
+
+        bucket = await repo.get_bucket("e1", "gpt-4", "rpm", shard_id=1)
+        assert bucket is not None
+        assert bucket.shard_count == 8, "propagation lowered a shard"
+
+    @pytest.mark.asyncio
+    async def test_propagation_reraises_unexpected_client_errors(self, repo):
+        """Only ConditionalCheckFailedException means "already caught up"; any
+        other error must surface rather than be silently counted as skipped."""
+        with patch.object(repo, "_get_client") as mock_get_client:
+            mock_client = AsyncMock()
+            mock_client.update_item.side_effect = ClientError(
+                {"Error": {"Code": "ProvisionedThroughputExceededException"}},
+                "UpdateItem",
+            )
+            mock_get_client.return_value = mock_client
+
+            with pytest.raises(ClientError) as exc_info:
+                await repo._propagate_shard_count("e1", "gpt-4", old_count=2, new_count=4)
+        assert exc_info.value.response["Error"]["Code"] == "ProvisionedThroughputExceededException"
+
+    @pytest.mark.asyncio
+    async def test_bump_from_one_propagates_nothing(self, repo):
+        """At shard_count=1 there are no sibling shards to stamp."""
+        now_ms = int(time.time() * 1000)
+        limits = [Limit.per_minute("rpm", 100_000)]
+        states = [BucketState.from_limit("e1", "gpt-4", lim, now_ms) for lim in limits]
+        await repo.transact_write(
+            [repo.build_composite_create("e1", "gpt-4", states, now_ms, shard_id=0, shard_count=1)]
+        )
+
+        assert await repo._propagate_shard_count("e1", "gpt-4", old_count=1, new_count=2) == 0
+
+    @pytest.mark.asyncio
     async def test_bump_shard_count_returns_current_on_race(self, repo):
-        """bump_shard_count returns current_count when another client already doubled."""
+        """When another client already doubled, the loser learns the winner's
+        shard_count from the failed conditional write's ALL_OLD image, caches
+        it, and returns it — not its own stale current_count (issue #439)."""
+        ns = repo._namespace_id
+        repo._entity_cache[(ns, "e1")] = (False, None, {"gpt-4": 1})
         now_ms = int(time.time() * 1000)
         limits = [Limit.per_minute("rpm", 100_000)]
         states = [BucketState.from_limit("e1", "gpt-4", lim, now_ms) for lim in limits]
@@ -3775,7 +3968,57 @@ class TestBumpShardCount:
 
         # Try to bump from 1 to 2, but actual shard_count is already 2
         result = await repo.bump_shard_count("e1", "gpt-4", current_count=1)
-        assert result == 1  # Returns current_count (condition failed)
+        assert result == 2  # the winner's count, read from ALL_OLD
+        assert repo._entity_cache[(ns, "e1")][2]["gpt-4"] == 2
+
+    @pytest.mark.asyncio
+    async def test_bump_shard_count_never_lowers_a_warm_cache(self, repo):
+        """Shard 0 can lag its siblings (TTL-recreated at shard_count=1). A
+        losing bump must not adopt that lower count: the cache keeps the
+        higher count it already learned so draws still cover every shard."""
+        ns = repo._namespace_id
+        repo._entity_cache[(ns, "e1")] = (False, None, {"gpt-4": 4})
+        now_ms = int(time.time() * 1000)
+        states = [BucketState.from_limit("e1", "gpt-4", Limit.per_minute("rpm", 100), now_ms)]
+        await repo.transact_write(
+            [repo.build_composite_create("e1", "gpt-4", states, now_ms, shard_id=0, shard_count=1)]
+        )
+
+        # Our view is 4; shard 0 says 1 -> condition fails, image says 1
+        assert await repo.bump_shard_count("e1", "gpt-4", current_count=4) == 4
+        assert repo._entity_cache[(ns, "e1")][2]["gpt-4"] == 4
+        assert repo.select_shard("e1", "gpt-4")[1] == 4
+
+    @pytest.mark.asyncio
+    async def test_bump_shard_count_refuses_to_exceed_the_cap(self, repo, caplog):
+        """shard_count is capped at MAX_SHARD_COUNT: the bump is refused (no
+        write), the current count is returned, and it warns once."""
+        import logging
+
+        from zae_limiter.schema import MAX_SHARD_COUNT
+
+        ns = repo._namespace_id
+        repo._entity_cache[(ns, "e1")] = (False, None, {"gpt-4": MAX_SHARD_COUNT})
+        now_ms = int(time.time() * 1000)
+        states = [BucketState.from_limit("e1", "gpt-4", Limit.per_minute("rpm", 100), now_ms)]
+        await repo.transact_write(
+            [
+                repo.build_composite_create(
+                    "e1", "gpt-4", states, now_ms, shard_id=0, shard_count=MAX_SHARD_COUNT
+                )
+            ]
+        )
+
+        with caplog.at_level(logging.WARNING, logger="zae_limiter.repository"):
+            assert await repo.bump_shard_count("e1", "gpt-4", MAX_SHARD_COUNT) == MAX_SHARD_COUNT
+            assert await repo.bump_shard_count("e1", "gpt-4", MAX_SHARD_COUNT) == MAX_SHARD_COUNT
+        assert sum("MAX_SHARD_COUNT" in r.getMessage() for r in caplog.records) == 1
+        # Entity ids are routinely API keys: deduplicated per entity, never
+        # logged in clear text (py/clear-text-logging-sensitive-data).
+        assert not any("e1" in r.getMessage() for r in caplog.records)
+        assert repo._entity_cache[(ns, "e1")][2]["gpt-4"] == MAX_SHARD_COUNT
+        bucket = await repo.get_bucket("e1", "gpt-4", "rpm")
+        assert bucket is not None and bucket.shard_count == MAX_SHARD_COUNT
 
     @pytest.mark.asyncio
     async def test_bump_shard_count_reraises_other_errors(self, repo):
@@ -3794,25 +4037,544 @@ class TestBumpShardCount:
                 exc_info.value.response["Error"]["Code"] == "ProvisionedThroughputExceededException"
             )
 
-    @pytest.mark.asyncio
-    async def test_bump_shard_count_warns_above_threshold(self, repo, caplog):
-        """bump_shard_count logs warning when new count exceeds threshold."""
-        import logging
 
+class TestSyncBucketParamsFansOutToAllShards:
+    """`_sync_bucket_params` must reach every shard, not only shard 0 (#468).
+
+    Keying the update on `pk_bucket(..., 0)` left shards 1..N-1 enforcing the
+    limits they were born with forever: nothing compares a bucket's stored
+    `cp`/`ra` against config on either path. Named residual of
+    GHSA-w6c2-33wf-qfwf.
+    """
+
+    OLD = 1000
+    NEW = 100
+
+    @staticmethod
+    async def _seed_shards(repo, entity_id, resource, shard_count):
+        """Create one bucket item per shard on the old (undivided) limits."""
         now_ms = int(time.time() * 1000)
-        limits = [Limit.per_minute("rpm", 100_000)]
-        states = [BucketState.from_limit("e1", "gpt-4", lim, now_ms) for lim in limits]
-        put_item = repo.build_composite_create(
-            "e1", "gpt-4", states, now_ms, shard_id=0, shard_count=32
+        old = Limit.custom("rpm", 1000, refill_amount=1000, refill_period_seconds=60)
+        for shard_id in range(shard_count):
+            states = [BucketState.from_limit(entity_id, resource, old, now_ms)]
+            await repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        entity_id,
+                        resource,
+                        states,
+                        now_ms,
+                        shard_id=shard_id,
+                        shard_count=shard_count,
+                    )
+                ]
+            )
+
+    @staticmethod
+    async def _params(repo, entity_id, resource, shard_id):
+        bucket = await repo.get_bucket(entity_id, resource, "rpm", shard_id=shard_id)
+        assert bucket is not None, f"shard {shard_id} missing"
+        return (bucket.capacity_milli, bucket.refill_amount_milli, bucket.refill_period_ms)
+
+    @pytest.mark.asyncio
+    async def test_set_limits_updates_every_shard(self, repo):
+        """Entity-level set_limits rewrites cp/ra/rp on all 4 shards."""
+        await repo.create_entity("user-1")
+        await self._seed_shards(repo, "user-1", "gpt-4", 4)
+
+        await repo.set_limits(
+            "user-1",
+            [Limit.custom("rpm", self.NEW, refill_amount=self.NEW, refill_period_seconds=30)],
+            resource="gpt-4",
         )
-        await repo.transact_write([put_item])
 
-        with caplog.at_level(logging.WARNING, logger="zae_limiter.repository"):
-            result = await repo.bump_shard_count("e1", "gpt-4", current_count=32)
+        for shard_id in range(4):
+            # Stored values stay UNDIVIDED on every shard: the per-shard share
+            # is derived at read time by BucketState.effective_*.
+            assert await self._params(repo, "user-1", "gpt-4", shard_id) == (
+                self.NEW * 1000,
+                self.NEW * 1000,
+                30_000,
+            )
 
-        assert result == 64
-        assert any(
-            "shard count" in r.message.lower() and "64" in str(r.message)
-            for r in caplog.records
-            if r.levelno >= logging.WARNING
+    @pytest.mark.asyncio
+    async def test_reconcile_to_defaults_updates_every_shard(self, repo):
+        """The delete path (reconcile_bucket_to_defaults) fans out too."""
+        await repo.create_entity("user-2")
+        await self._seed_shards(repo, "user-2", "gpt-4", 2)
+
+        await repo.reconcile_bucket_to_defaults(
+            "user-2",
+            "gpt-4",
+            [Limit.custom("rpm", self.NEW, refill_amount=self.NEW, refill_period_seconds=60)],
+        )
+
+        for shard_id in (0, 1):
+            assert await self._params(repo, "user-2", "gpt-4", shard_id) == (
+                self.NEW * 1000,
+                self.NEW * 1000,
+                60_000,
+            )
+
+    @pytest.mark.asyncio
+    async def test_stale_limit_attributes_are_removed_from_every_shard(self, repo):
+        """A limit dropped from the config is removed from all shards (#327)."""
+        now_ms = int(time.time() * 1000)
+        await repo.create_entity("user-3")
+        limits = [
+            Limit.custom("rpm", 1000, refill_amount=1000, refill_period_seconds=60),
+            Limit.custom("tpm", 50_000, refill_amount=50_000, refill_period_seconds=60),
+        ]
+        for shard_id in (0, 1):
+            states = [BucketState.from_limit("user-3", "gpt-4", lim, now_ms) for lim in limits]
+            await repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        "user-3", "gpt-4", states, now_ms, shard_id=shard_id, shard_count=2
+                    )
+                ]
+            )
+
+        await repo.reconcile_bucket_to_defaults(
+            "user-3",
+            "gpt-4",
+            [Limit.custom("rpm", self.NEW, refill_amount=self.NEW, refill_period_seconds=60)],
+            stale_limit_names={"tpm"},
+        )
+
+        for shard_id in (0, 1):
+            assert await repo.get_bucket("user-3", "gpt-4", "tpm", shard_id=shard_id) is None
+            assert await repo.get_bucket("user-3", "gpt-4", "rpm", shard_id=shard_id) is not None
+
+    @pytest.mark.asyncio
+    async def test_a_shard_that_vanished_mid_fanout_is_tolerated(self, repo):
+        """A shard TTL-expired between discovery and the write must not raise."""
+        await repo.create_entity("user-4")
+        await self._seed_shards(repo, "user-4", "gpt-4", 2)
+
+        from zae_limiter import schema
+
+        ghost = schema.pk_bucket(repo._namespace_id, "user-4", "gpt-4", 7)
+        real = await repo._discover_entity_bucket_pks("user-4", "gpt-4")
+        with patch.object(
+            repo, "_discover_entity_bucket_pks", AsyncMock(return_value=[*real, ghost])
+        ):
+            await repo.reconcile_bucket_to_defaults(
+                "user-4",
+                "gpt-4",
+                [Limit.custom("rpm", self.NEW, refill_amount=self.NEW, refill_period_seconds=60)],
+            )
+
+        assert await repo.get_bucket("user-4", "gpt-4", "rpm", shard_id=7) is None
+        for shard_id in (0, 1):
+            assert (await self._params(repo, "user-4", "gpt-4", shard_id))[0] == self.NEW * 1000
+
+    @pytest.mark.asyncio
+    async def test_other_client_errors_propagate(self, repo):
+        """A non-conditional failure is not swallowed by the fan-out.
+
+        It surfaces as `FanoutIncomplete` carrying the underlying error, the
+        same contract the ADR-125 disable fan-out uses on this same method.
+        """
+        from zae_limiter import schema
+        from zae_limiter.exceptions import FanoutIncomplete
+
+        pk = schema.pk_bucket(repo._namespace_id, "user-5", "gpt-4", 0)
+        with patch.object(repo, "_get_client") as mock_get_client:
+            mock_client = AsyncMock()
+            mock_client.query.return_value = {"Items": [{"PK": {"S": pk}}]}
+            mock_client.update_item.side_effect = ClientError(
+                {"Error": {"Code": "ProvisionedThroughputExceededException"}}, "UpdateItem"
+            )
+            mock_get_client.return_value = mock_client
+
+            with pytest.raises(FanoutIncomplete) as exc_info:
+                await repo.reconcile_bucket_to_defaults(
+                    "user-5", "gpt-4", [Limit.per_minute("rpm", 10)]
+                )
+            assert isinstance(exc_info.value.cause, ClientError)
+            assert exc_info.value.stamped == 0
+
+
+class TestSyncBucketParamsBoundsConcurrencyAndReportsProgress:
+    """The fan-out is serial and reports partial progress on failure.
+
+    Unscoped, the write set is O(resources x shards), not the <=32 shards of
+    one resource, so a single unbounded `asyncio.gather` could issue thousands
+    of concurrent `UpdateItem`s. It is now serial, exactly like the ADR-125
+    `_fanout_entity` whose shape the docstring claims — which also makes an
+    exact partial-progress count possible, on a path that has ALREADY
+    committed the config item.
+    """
+
+    @staticmethod
+    def _pks(repo, entity_id, count):
+        from zae_limiter import schema
+
+        return [
+            {"PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, "gpt-4", shard)}}
+            for shard in range(count)
+        ]
+
+    @pytest.mark.asyncio
+    async def test_stops_at_the_failing_write_rather_than_issuing_the_rest(self, repo):
+        """A gather would have issued all 5; serial stops after the third."""
+        from zae_limiter.exceptions import FanoutIncomplete
+
+        throttle = ClientError(
+            {"Error": {"Code": "ProvisionedThroughputExceededException"}}, "UpdateItem"
+        )
+        with patch.object(repo, "_get_client") as mock_get_client:
+            mock_client = AsyncMock()
+            mock_client.query.return_value = {"Items": self._pks(repo, "user-p1", 5)}
+            mock_client.update_item.side_effect = [None, None, throttle]
+            mock_get_client.return_value = mock_client
+
+            with pytest.raises(FanoutIncomplete) as exc_info:
+                await repo.reconcile_bucket_to_defaults(
+                    "user-p1", "gpt-4", [Limit.per_minute("rpm", 10)]
+                )
+
+        assert mock_client.update_item.call_count == 3, (
+            "a concurrent gather would have issued all five writes"
+        )
+        assert exc_info.value.stamped == 2, "two writes landed before the failure"
+        assert exc_info.value.entity_id == "user-p1"
+        assert exc_info.value.resource == "gpt-4"
+
+    @pytest.mark.asyncio
+    async def test_unscoped_failure_reports_no_resource(self, repo):
+        """The entity-wide scope is not one resource, so none is named."""
+        from zae_limiter.exceptions import FanoutIncomplete
+
+        await repo.create_entity("user-p2")
+        await repo.set_limits("user-p2", [Limit.per_minute("rpm", 100)])
+        now_ms = int(time.time() * 1000)
+        for resource in ("gpt-4", "claude-3"):
+            states = [
+                BucketState.from_limit("user-p2", resource, Limit.per_minute("rpm", 100), now_ms)
+            ]
+            await repo.transact_write(
+                [repo.build_composite_create("user-p2", resource, states, now_ms)]
+            )
+
+        throttle = ClientError(
+            {"Error": {"Code": "ProvisionedThroughputExceededException"}}, "UpdateItem"
+        )
+        with (
+            patch.object(repo, "_sync_one_bucket_shard", AsyncMock(side_effect=throttle)),
+            pytest.raises(FanoutIncomplete) as exc_info,
+        ):
+            await repo.set_limits("user-p2", [Limit.per_minute("rpm", 500)])
+
+        assert exc_info.value.entity_id == "user-p2"
+        assert exc_info.value.resource is None
+        assert exc_info.value.stamped == 0
+
+    @pytest.mark.asyncio
+    async def test_a_vanished_shard_does_not_count_as_written(self, repo):
+        """A TTL-expired shard is tolerated, but it is not progress."""
+        from zae_limiter.exceptions import FanoutIncomplete
+
+        conditional = ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem"
+        )
+        throttle = ClientError(
+            {"Error": {"Code": "ProvisionedThroughputExceededException"}}, "UpdateItem"
+        )
+        with patch.object(repo, "_get_client") as mock_get_client:
+            mock_client = AsyncMock()
+            mock_client.query.return_value = {"Items": self._pks(repo, "user-p3", 3)}
+            mock_client.update_item.side_effect = [None, conditional, throttle]
+            mock_get_client.return_value = mock_client
+
+            with pytest.raises(FanoutIncomplete) as exc_info:
+                await repo.reconcile_bucket_to_defaults(
+                    "user-p3", "gpt-4", [Limit.per_minute("rpm", 10)]
+                )
+
+        assert exc_info.value.stamped == 1, "the vanished shard wrote nothing"
+
+
+class TestDefaultResourceSyncReachesEveryResource:
+    """An entity-wide `_default_` limit change must reach existing buckets (#487).
+
+    `_default_` is a config scope, not a resource: no bucket item ever carries
+    the GSI3SK `BUCKET#_default_#`, so passing it straight through to the GSI3
+    discovery query matched zero items and the sync was a silent no-op that
+    wrote nothing and raised nothing. Entity configs carry no TTL, so the
+    affected buckets enforced the params they were born with forever.
+
+    Widening discovery is necessary but not sufficient: precedence is
+    Entity(resource) > Entity(`_default_`) > Resource > System, so an unscoped
+    sync that stamped the caller's `_default_` limits onto every discovered
+    bucket would clobber a resource that has its own, higher-precedence entity
+    config. Each bucket is therefore re-stamped from the limits resolved for
+    its OWN resource, exactly as `_fanout_entity` re-resolves `disabled`.
+    """
+
+    @staticmethod
+    async def _seed(repo, entity_id, resource, *limits):
+        """Create a bucket item for one (entity, resource) on the given limits."""
+        now_ms = int(time.time() * 1000)
+        states = [BucketState.from_limit(entity_id, resource, lim, now_ms) for lim in limits]
+        await repo.transact_write(
+            [repo.build_composite_create(entity_id, resource, states, now_ms)]
+        )
+
+    @staticmethod
+    async def _raw(repo, entity_id, resource):
+        from zae_limiter import schema
+
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, resource, 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+        )
+        return response.get("Item") or {}
+
+    @classmethod
+    async def _cap(cls, repo, entity_id, resource, limit_name="rpm"):
+        from zae_limiter.schema import BUCKET_FIELD_CP, bucket_attr
+
+        item = await cls._raw(repo, entity_id, resource)
+        attr = bucket_attr(limit_name, BUCKET_FIELD_CP)
+        assert attr in item, f"{limit_name} missing from {entity_id}/{resource}"
+        return int(item[attr]["N"])
+
+    @pytest.mark.asyncio
+    async def test_entity_wide_change_reaches_an_existing_bucket(self, repo):
+        """The regression: `set_limits` with no resource must reach the bucket."""
+        await repo.create_entity("user-1")
+        await repo.set_limits("user-1", [Limit.per_minute("rpm", 100)])
+        await self._seed(repo, "user-1", "gpt-4", Limit.per_minute("rpm", 100))
+
+        await repo.set_limits("user-1", [Limit.per_minute("rpm", 500)])
+
+        assert await self._cap(repo, "user-1", "gpt-4") == 500_000
+
+    @pytest.mark.asyncio
+    async def test_entity_wide_change_does_not_clobber_a_resource_specific_config(self, repo):
+        """The guard against the naive `resource=None` fix.
+
+        `gpt-4` has its own entity config, which outranks the entity-wide
+        `_default_` one. An unscoped sync that stamped the caller's limits on
+        every discovered bucket would overwrite the more specific config with
+        the less specific one.
+        """
+        await repo.create_entity("user-2")
+        await repo.set_limits("user-2", [Limit.per_minute("rpm", 100)])
+        await repo.set_limits("user-2", [Limit.per_minute("rpm", 900)], resource="gpt-4")
+        await self._seed(repo, "user-2", "gpt-4", Limit.per_minute("rpm", 900))
+        await self._seed(repo, "user-2", "claude-3", Limit.per_minute("rpm", 100))
+
+        await repo.set_limits("user-2", [Limit.per_minute("rpm", 500)])
+
+        assert await self._cap(repo, "user-2", "gpt-4") == 900_000, (
+            "the resource-specific entity config outranks `_default_`"
+        )
+        assert await self._cap(repo, "user-2", "claude-3") == 500_000
+
+    @pytest.mark.asyncio
+    async def test_entity_wide_change_keeps_no_ttl_on_any_bucket(self, repo):
+        """Every bucket still resolves at an entity level, so none gets a TTL."""
+        await repo.create_entity("user-3")
+        await repo.set_limits("user-3", [Limit.per_minute("rpm", 100)])
+        await repo.set_limits("user-3", [Limit.per_minute("rpm", 900)], resource="gpt-4")
+        await self._seed(repo, "user-3", "gpt-4", Limit.per_minute("rpm", 900))
+        await self._seed(repo, "user-3", "claude-3", Limit.per_minute("rpm", 100))
+
+        await repo.set_limits("user-3", [Limit.per_minute("rpm", 500)])
+
+        for resource in ("gpt-4", "claude-3"):
+            assert "ttl" not in await self._raw(repo, "user-3", resource)
+
+    @pytest.mark.asyncio
+    async def test_reconcile_resolves_and_ttls_each_bucket_at_its_own_level(self, repo):
+        """The `delete_limits('_default_')` path, and per-bucket TTL (#271, #296).
+
+        The caller hands `reconcile_bucket_to_defaults` the limits that
+        `_default_` itself falls back to (system). Those are right for a bucket
+        with nothing more specific and wrong for every other bucket, so the
+        unscoped path ignores them and re-resolves per resource. TTL follows
+        whichever level answered: entity means persist, resource or system
+        means expire.
+        """
+        await repo.create_entity("user-4")
+        await repo.set_system_defaults([Limit.per_minute("rpm", 50)])
+        await repo.set_resource_defaults("claude-3", [Limit.per_minute("rpm", 200)])
+        await repo.set_limits("user-4", [Limit.per_minute("rpm", 100)])
+        await repo.set_limits("user-4", [Limit.per_minute("rpm", 900)], resource="gpt-4")
+        for resource in ("gpt-4", "claude-3", "llama3"):
+            await self._seed(repo, "user-4", resource, Limit.per_minute("rpm", 100))
+
+        await repo.delete_limits("user-4")
+        await repo.reconcile_bucket_to_defaults(
+            "user-4", "_default_", [Limit.per_minute("rpm", 50)]
+        )
+
+        assert await self._cap(repo, "user-4", "gpt-4") == 900_000, "entity config still wins"
+        assert await self._cap(repo, "user-4", "claude-3") == 200_000, "resource default applies"
+        assert await self._cap(repo, "user-4", "llama3") == 50_000, "system default applies"
+
+        assert "ttl" not in await self._raw(repo, "user-4", "gpt-4")
+        assert "ttl" in await self._raw(repo, "user-4", "claude-3")
+        assert "ttl" in await self._raw(repo, "user-4", "llama3")
+
+    @pytest.mark.asyncio
+    async def test_stale_names_are_intersected_against_each_bucket_resolution(self, repo):
+        """A caller's stale name that the bucket's own level still defines is kept.
+
+        `delete_limits` computes stale names against the `_default_` fallback
+        (system). Applying that set verbatim to a bucket whose own entity
+        config still declares the limit would SET and REMOVE the same attribute
+        in one expression — a DynamoDB ValidationException — and, if it landed,
+        would strip a configured limit.
+        """
+        rpm, tpm = Limit.per_minute("rpm", 100), Limit.per_minute("tpm", 10_000)
+        await repo.create_entity("user-5")
+        await repo.set_system_defaults([Limit.per_minute("rpm", 50)])
+        await repo.set_limits("user-5", [rpm, tpm])
+        await repo.set_limits("user-5", [rpm, tpm], resource="gpt-4")
+        await self._seed(repo, "user-5", "gpt-4", rpm, tpm)
+        await self._seed(repo, "user-5", "llama3", rpm, tpm)
+
+        await repo.delete_limits("user-5")
+        await repo.reconcile_bucket_to_defaults(
+            "user-5",
+            "_default_",
+            [Limit.per_minute("rpm", 50)],
+            stale_limit_names={"tpm"},
+        )
+
+        assert await self._cap(repo, "user-5", "gpt-4", "tpm") == 10_000_000, (
+            "gpt-4's own entity config still declares tpm"
+        )
+        assert await repo.get_bucket("user-5", "llama3", "tpm") is None, (
+            "llama3 falls back to system, which has no tpm"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_resource_that_resolves_to_nothing_is_left_alone(self, repo):
+        """No configured level means no correct value to write.
+
+        The same choice the delete path already makes when no fallback config
+        exists at all — better a bucket on stale params than one stamped with
+        limits nothing actually configures.
+        """
+        await repo.create_entity("user-7")
+        await self._seed(repo, "user-7", "ghost", Limit.per_minute("rpm", 100))
+
+        await repo.reconcile_bucket_to_defaults(
+            "user-7", "_default_", [Limit.per_minute("rpm", 50)]
+        )
+
+        assert await self._cap(repo, "user-7", "ghost") == 100_000
+        assert "ttl" in await self._raw(repo, "user-7", "ghost"), (
+            "the seeded TTL is untouched, not recomputed from limits that do not apply"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_real_resource_is_still_scoped_to_that_resource(self, repo):
+        """The scoped path is untouched: a sibling resource is not rewritten."""
+        await repo.create_entity("user-6")
+        await repo.set_limits("user-6", [Limit.per_minute("rpm", 100)], resource="gpt-4")
+        await self._seed(repo, "user-6", "gpt-4", Limit.per_minute("rpm", 100))
+        await self._seed(repo, "user-6", "claude-3", Limit.per_minute("rpm", 100))
+
+        await repo.set_limits("user-6", [Limit.per_minute("rpm", 700)], resource="gpt-4")
+
+        assert await self._cap(repo, "user-6", "gpt-4") == 700_000
+        assert await self._cap(repo, "user-6", "claude-3") == 100_000
+
+
+class TestStaleLimitAliasesAreExpressionSafe:
+    """Stale-limit REMOVE aliases must be legal expression attribute names.
+
+    `NAME_PATTERN` (models.py) allows `-` and `.` in a limit name. Neither is
+    legal in an `ExpressionAttributeNames` alias, and `.` is parsed as a
+    document-path separator, so interpolating the limit name into the alias
+    builds an expression DynamoDB rejects with a `ValidationException` —
+    raised out of `set_limits()`/`delete_limits()` *after* the config item has
+    already been written, leaving half-applied state.
+
+    The provisioner mirror (`bucket_sync.build_bucket_param_update`) already
+    used a monotonic counter for exactly this reason; the two halves of #487
+    disagreed until now.
+    """
+
+    ILLEGAL_IN_ALIAS = ("-", ".", " ")
+
+    @staticmethod
+    def _aliases(expr: str, names: dict[str, str]) -> list[str]:
+        assert "REMOVE" in expr, expr
+        return [part.strip() for part in expr.split("REMOVE", 1)[1].split(",")]
+
+    @pytest.mark.asyncio
+    async def test_hyphenated_and_dotted_stale_names_build_legal_aliases(self, repo):
+        from zae_limiter.schema import bucket_attr
+
+        expr, names, _values = repo._build_bucket_param_update(
+            [Limit.per_minute("rpm", 100)],
+            None,
+            {"req-min", "tok.sec"},
+        )
+        aliases = self._aliases(expr, names)
+        assert aliases, "expected REMOVE clauses for the stale limits"
+        for alias in aliases:
+            assert alias.startswith("#")
+            for bad in self.ILLEGAL_IN_ALIAS:
+                assert bad not in alias, f"{alias!r} is not a legal expression alias"
+        # The aliases must still resolve to the right attributes.
+        removed = {names[alias] for alias in aliases}
+        assert removed == {
+            bucket_attr(name, field)
+            for name in ("req-min", "tok.sec")
+            for field in ("tk", "cp", "ra", "rp", "tc")
+        }
+
+    @pytest.mark.asyncio
+    async def test_scoped_reconcile_with_a_hyphenated_stale_name(self, repo):
+        """The pre-existing #327 reach: `delete_limits` computes stale names."""
+        await repo.create_entity("user-h1")
+        await self._seed(repo, "user-h1", "gpt-4")
+
+        await repo.reconcile_bucket_to_defaults(
+            "user-h1",
+            "gpt-4",
+            [Limit.per_minute("rpm", 50)],
+            stale_limit_names={"req-min"},
+        )
+
+        assert await repo.get_bucket("user-h1", "gpt-4", "req-min") is None
+        assert await repo.get_bucket("user-h1", "gpt-4", "rpm") is not None
+
+    @pytest.mark.asyncio
+    async def test_entity_wide_set_limits_with_a_hyphenated_stale_name(self, repo):
+        """The reach #487 added: the entity-wide scope derives stale names too.
+
+        `gpt-4` has its own entity config declaring only `rpm`, so the
+        entity-wide directive's `req-min` is stale for that bucket — a stale
+        name `set_limits()` never produced before this PR.
+        """
+        await repo.create_entity("user-h2")
+        await repo.set_limits("user-h2", [Limit.per_minute("rpm", 100)], resource="gpt-4")
+        await self._seed(repo, "user-h2", "gpt-4")
+
+        await repo.set_limits("user-h2", [Limit.per_minute("req-min", 900)])
+
+        assert await repo.get_bucket("user-h2", "gpt-4", "req-min") is None
+        assert await repo.get_bucket("user-h2", "gpt-4", "rpm") is not None
+
+    @staticmethod
+    async def _seed(repo, entity_id, resource):
+        """A bucket carrying both a plain and a hyphenated limit."""
+        now_ms = int(time.time() * 1000)
+        limits = [Limit.per_minute("rpm", 100), Limit.per_minute("req-min", 100)]
+        states = [BucketState.from_limit(entity_id, resource, lim, now_ms) for lim in limits]
+        await repo.transact_write(
+            [repo.build_composite_create(entity_id, resource, states, now_ms)]
         )

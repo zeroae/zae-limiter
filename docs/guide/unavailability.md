@@ -106,9 +106,12 @@ async with limiter.acquire(
 
 When `ALLOW` activates due to infrastructure failure:
 
-- A **no-op lease** is returned with no bucket entries
-- `lease.consume()`, `lease.adjust()`, and `lease.release()` silently do nothing
-- Your code cannot detect degraded mode from the lease itself
+- A **no-op lease** is returned with no bucket entries and `lease.degraded == True`
+- `lease.consume()`, `lease.adjust()`, and `lease.release()` silently do nothing —
+  the [declared-scope check](basic-usage.md#adjusting-consumption) that normally
+  reports keys outside `consume` is skipped for a degraded lease, so an outage never
+  turns into a warning storm
+- `lease.degraded` is the only signal; a real lease with no entries is not degraded
 
 To detect and log degraded operations, wrap with custom error handling:
 

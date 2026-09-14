@@ -264,6 +264,186 @@ class TestRateLimiterRefillRecovery:
             assert lease.consumed == {"rpm": 50}
 
 
+class TestClockSeam:
+    """``Repository._now_ms()`` is the injectable token-bucket clock (#430).
+
+    Every clock read that feeds refill math, an ``rf`` stamp or a bucket TTL
+    routes through ``_now_ms()``, so a test controls that clock by patching
+    one method — no ``sleep``, and no patching of the global ``time``
+    module, which would also move moto's and botocore's clocks. It is not
+    the library's only clock: ``config_cache`` ages in *seconds* against
+    ``time.time()`` and is deliberately out of scope for #430, so advancing
+    this seam ages buckets but leaves cached config exactly as it was.
+
+    **One instant per write, not per acquire.** A single speculative
+    ``UpdateItem`` derives its ``ttl`` stamp, its TTL-expiry guard and the
+    caller's admission decision from one reading. The slow path reads again
+    on purpose: it runs after a ``BatchGetItem`` and then commits a
+    transaction, and reusing the fast path's instant across those round
+    trips would stamp ``rf`` in the past and under-refill. The counts are
+    the contract, and each row below is pinned by a test here:
+
+    ===================================== ========
+    Path                                  readings
+    ===================================== ========
+    Warm speculative fast path            1
+    ``speculative_writes=False``          2
+    Speculative miss, then the slow path  3
+    ===================================== ========
+
+    #222 (scheduled limits) is why the speculative write needs its single
+    instant: it puts an item-level ``vu`` (valid-until, epoch ms) into that
+    ConditionExpression. The slow path always runs *after* the fast path, so
+    ``now_slow >= now_fast`` — and with two readings straddling a window
+    boundary ``T`` (``now_fast < T <= now_slow``) the fast path evaluates
+    ``vu`` while still inside the expiring window and passes, then the slow
+    path materialises tokens at ``now_slow``, already past ``T``, minting
+    the old window's allowance into the new one. One reading per write
+    closes that gap.
+    """
+
+    LIMITS = [Limit.custom("rpm", capacity=100, refill_amount=100, refill_period_seconds=60)]
+
+    @staticmethod
+    def _counting_clock(repo, step_ms: int = 60_000):
+        """Patch ``repo._now_ms`` with a counter; return the list of readings.
+
+        Each reading jumps a full minute, so a surviving second read cannot
+        be confused with the first — while staying inside the bucket TTL, so
+        the speculative write's expiry guard still passes.
+        """
+        readings: list[int] = []
+        base = repo._now_ms()
+
+        def fake_now_ms() -> int:
+            readings.append(base + step_ms * len(readings))
+            return readings[-1]
+
+        repo._now_ms = fake_now_ms
+        return readings
+
+    async def test_acquire_reads_the_clock_once(self, limiter):
+        """One speculative ``acquire()`` observes exactly one ``_now_ms()``."""
+        repo = limiter._repository
+
+        # Warm up: create the bucket and the entity cache so the measured
+        # acquire is a pure speculative fast path.
+        async with limiter.acquire("clock-1", "gpt-4", limits=self.LIMITS, consume={"rpm": 1}):
+            pass
+
+        readings = self._counting_clock(repo)
+        async with limiter.acquire("clock-1", "gpt-4", limits=self.LIMITS, consume={"rpm": 1}):
+            pass
+
+        assert len(readings) == 1, f"acquire() read the clock {len(readings)} times: {readings}"
+
+    async def test_non_speculative_acquire_reads_the_clock_twice(self, limiter):
+        """``speculative_writes=False``: the slow path, then the lease commit.
+
+        Pins the second row of the contract. `_do_acquire()` reads to refill
+        and admit; `Lease._commit_initial()` reads again to stamp ``rf`` on
+        the transaction it is about to send. Reusing the first reading would
+        backdate ``rf`` by the BatchGetItem round trip.
+        """
+        repo = limiter._repository
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+
+        # Warm up: create the bucket and the entity, so the measured acquire
+        # is a plain slow-path admission rather than a bucket creation.
+        async with slow.acquire("clock-4", "gpt-4", limits=self.LIMITS, consume={"rpm": 1}):
+            pass
+
+        readings = self._counting_clock(repo)
+        async with slow.acquire("clock-4", "gpt-4", limits=self.LIMITS, consume={"rpm": 1}):
+            pass
+
+        assert len(readings) == 2, f"acquire() read the clock {len(readings)} times: {readings}"
+
+    async def test_speculative_miss_falls_back_and_reads_three_times(self, limiter):
+        """A speculative miss adds the fast path's reading to the slow path's.
+
+        Pins the third row: fast path (1) + ``_do_acquire`` (2) +
+        ``Lease._commit_initial`` (3). The bucket does not exist yet, so the
+        conditional ``UpdateItem`` fails with ``BUCKET_MISSING`` and the slow
+        path creates it.
+        """
+        repo = limiter._repository
+
+        # Warm up on a *different* entity so `_ensure_initialized()` and the
+        # config cache are settled; the measured entity stays untouched, so
+        # its first acquire is a genuine speculative miss.
+        async with limiter.acquire("clock-5-warm", "gpt-4", limits=self.LIMITS, consume={"rpm": 1}):
+            pass
+
+        readings = self._counting_clock(repo)
+        async with limiter.acquire("clock-5", "gpt-4", limits=self.LIMITS, consume={"rpm": 1}):
+            pass
+
+        assert len(readings) == 3, f"acquire() read the clock {len(readings)} times: {readings}"
+
+    async def test_speculative_consume_stamps_a_single_instant(self, limiter):
+        """``ttl`` and the TTL-expiry guard derive from the same reading."""
+        repo = limiter._repository
+
+        async with limiter.acquire("clock-2", "gpt-4", limits=self.LIMITS, consume={"rpm": 1}):
+            pass
+
+        client = await repo._get_client()
+        captured: list[dict] = []
+        original_update_item = client.update_item
+
+        async def spy_update_item(**kwargs):
+            captured.append(kwargs)
+            return await original_update_item(**kwargs)
+
+        client.update_item = spy_update_item
+        readings = self._counting_clock(repo)
+        try:
+            result = await repo.speculative_consume(
+                "clock-2", "gpt-4", {"rpm": 1}, ttl_seconds=3600
+            )
+        finally:
+            client.update_item = original_update_item
+
+        assert result.success
+        assert len(readings) == 1, (
+            f"speculative_consume() read the clock {len(readings)} times: {readings}"
+        )
+        now_ms = readings[0]
+        values = captured[0]["ExpressionAttributeValues"]
+        # calculate_ttl(now_ms, 3600) == now_ms // 1000 + 3600
+        assert int(values[":ttl"]["N"]) == now_ms // 1000 + 3600
+        assert int(values[":now_epoch"]["N"]) == now_ms // 1000
+
+    async def test_now_ms_alone_drives_refill_recovery(self, limiter):
+        """Exhaust, advance the clock via ``_now_ms`` only, acquire again.
+
+        No ``sleep``, no patching of the global ``time`` module.
+        """
+        repo = limiter._repository
+        clock = {"now": repo._now_ms()}
+        repo._now_ms = lambda: clock["now"]
+
+        # Drain the bucket completely.
+        async with limiter.acquire("clock-3", "gpt-4", limits=self.LIMITS, consume={"rpm": 100}):
+            pass
+
+        # Frozen clock: no refill has happened, so this must be rejected.
+        with pytest.raises(RateLimitExceeded):
+            async with limiter.acquire(
+                "clock-3", "gpt-4", limits=self.LIMITS, consume={"rpm": 100}
+            ):
+                pass
+
+        # Advance one full refill period through the seam alone.
+        clock["now"] += 60_000
+
+        async with limiter.acquire(
+            "clock-3", "gpt-4", limits=self.LIMITS, consume={"rpm": 100}
+        ) as lease:
+            assert lease.consumed == {"rpm": 100}
+
+
 class TestRateLimiterLease:
     """Tests for Lease functionality."""
 
@@ -353,6 +533,25 @@ class TestLeaseEdgeCases:
 
         with pytest.raises(LeaseExpiredError):
             await lease.adjust(tpm=50)
+
+    async def test_release_after_commit_raises(self, limiter):
+        """release() on a committed lease raises LeaseExpiredError.
+
+        release() no longer delegates to adjust() (#455), so it carries its
+        own expiry guard and needs its own test.
+        """
+        limits = [Limit.per_minute("tpm", 10_000)]
+
+        async with limiter.acquire(
+            entity_id="key-edge-2b",
+            resource="gpt-4",
+            limits=limits,
+            consume={"tpm": 100},
+        ) as lease:
+            pass
+
+        with pytest.raises(LeaseExpiredError):
+            await lease.release(tpm=50)
 
     async def test_consume_zero_amount_is_noop(self, limiter):
         """consume() with zero amount skips processing."""
@@ -517,6 +716,9 @@ class TestLeaseRetryPath:
         limit = Limit.per_minute("rpm", 100)
         state = MagicMock()
         state.tokens_milli = 50_000
+        state.retry_refill_amount_milli = 100_000
+        state.refill_period_ms = 60_000
+        state.shard_count = 1
         entry = LeaseEntry(
             entity_id="e1",
             resource="gpt-4",
@@ -524,9 +726,22 @@ class TestLeaseRetryPath:
             state=state,
             consumed=60,
         )
-        statuses = _build_retry_failure_statuses([entry])
+        # An undeclared carrier entry (#455) must not appear in the statuses.
+        undeclared_state = MagicMock()
+        undeclared_state.tokens_milli = 0
+        undeclared_state.shard_count = 1
+        undeclared = LeaseEntry(
+            entity_id="e1",
+            resource="gpt-4",
+            limit=Limit.per_minute("tpm", 1000),
+            state=undeclared_state,
+            consumed=0,
+            _declared=False,
+        )
+        statuses = _build_retry_failure_statuses([entry, undeclared])
         assert len(statuses) == 1
         assert statuses[0].entity_id == "e1"
+        assert statuses[0].limit_name == "rpm"
         assert statuses[0].available == 50
         assert statuses[0].requested == 60
         assert statuses[0].exceeded is True
@@ -541,6 +756,9 @@ class TestLeaseRetryPath:
         limit = Limit.per_minute("rpm", 100)
         state = MagicMock()
         state.tokens_milli = 100_000
+        state.retry_refill_amount_milli = 100_000
+        state.refill_period_ms = 60_000
+        state.shard_count = 1
         entry = LeaseEntry(
             entity_id="e1",
             resource="gpt-4",
@@ -574,6 +792,9 @@ class TestLeaseRetryPath:
         state.tokens_milli = 50_000
         state.last_refill_ms = 1000
         state.total_consumed_milli = None
+        state.retry_refill_amount_milli = 100_000
+        state.refill_period_ms = 60_000
+        state.shard_count = 1
 
         entry = LeaseEntry(
             entity_id="e1",
@@ -597,6 +818,10 @@ class TestLeaseRetryPath:
         mock_repo.build_composite_normal.return_value = {"Update": {}}
         mock_repo.build_composite_retry.return_value = {"Update": {}}
         mock_repo._bucket_ttl_refill_multiplier = 7
+        # Sync on the real Repository (issue #430): an AsyncMock attribute
+        # would hand the lease an un-awaited coroutine as `now_ms`, which
+        # then flows into the mocked builders and leaks a RuntimeWarning.
+        mock_repo._now_ms = MagicMock(return_value=1000)
 
         lease = Lease(repository=mock_repo, entries=[entry])
         with pytest.raises(RateLimitExceeded):
@@ -618,6 +843,9 @@ class TestWriteOnEnter:
         state.tokens_milli = 90_000
         state.last_refill_ms = 1000
         state.total_consumed_milli = None
+        state.retry_refill_amount_milli = 100_000
+        state.refill_period_ms = 60_000
+        state.shard_count = 1
         return LeaseEntry(
             entity_id=entity_id,
             resource="gpt-4",
@@ -638,6 +866,12 @@ class TestWriteOnEnter:
         repo.build_composite_retry.return_value = {"Update": {}}
         repo.build_composite_adjust.return_value = {"Update": {}}
         repo._bucket_ttl_refill_multiplier = 7
+        # `_now_ms()` is sync on the real Repository (issue #430). Left as an
+        # AsyncMock attribute it returns a coroutine nobody awaits, which the
+        # lease then passes as `now_ms` into the mocked builders — harmless to
+        # the assertions, but it leaks "coroutine was never awaited"
+        # RuntimeWarnings and fails under -W error::RuntimeWarning.
+        repo._now_ms = MagicMock(return_value=1000)
         return repo
 
     async def test_commit_initial_empty_entries(self):
@@ -685,6 +919,197 @@ class TestWriteOnEnter:
         assert mock_repo.transact_write.call_count == 2
         # Second call uses retry items
         mock_repo.build_composite_retry.assert_called_once()
+
+    async def test_commit_initial_create_targets_the_entry_shard(self):
+        """A new bucket is created on the shard the acquire selected, stamped
+        with the cached shard_count (issue #439)."""
+        from zae_limiter.lease import Lease
+
+        entry = self._make_entry(is_new=True)
+        entry._shard_id = 3
+        entry._shard_count = 4
+        mock_repo = self._make_mock_repo()
+
+        lease = Lease(repository=mock_repo, entries=[entry])
+        await lease._commit_initial()
+
+        kwargs = mock_repo.build_composite_create.call_args.kwargs
+        assert kwargs["shard_id"] == 3
+        assert kwargs["shard_count"] == 4
+
+    async def test_commit_initial_normal_targets_the_entry_shard(self):
+        """An existing sharded bucket is debited on its own shard (issue #439)."""
+        from zae_limiter.lease import Lease
+
+        entry = self._make_entry()
+        entry._shard_id = 2
+        mock_repo = self._make_mock_repo()
+
+        lease = Lease(repository=mock_repo, entries=[entry])
+        await lease._commit_initial()
+
+        assert mock_repo.build_composite_normal.call_args.kwargs["shard_id"] == 2
+
+    async def test_commit_initial_reissues_the_put_when_a_sibling_failed(self):
+        """A cancelled transaction rolls back every item. If the new-shard Put
+        was innocent (reason ``None``) and only the parent's rf lock failed,
+        the retry must re-issue the Put and debit the parent consumption-only;
+        a consumption-only retry against the still-missing shard would fail
+        its ``tk >= consumed`` condition and surface as RateLimitExceeded."""
+        from zae_limiter.lease import Lease
+
+        child = self._make_entry(is_new=True, entity_id="e1")
+        child._shard_id = 1
+        parent = self._make_entry(entity_id="p1")
+        mock_repo = self._make_mock_repo()
+        # Plain (non-async) builders so the transaction items compare by value
+        mock_repo.build_composite_create = MagicMock(return_value={"Put": {"who": "e1"}})
+        mock_repo.build_composite_normal = MagicMock(return_value={"Update": {"who": "p1-rf"}})
+        mock_repo.build_composite_retry = MagicMock(return_value={"Update": {"who": "p1"}})
+
+        exc_cls = type(
+            "TransactionCanceledException",
+            (Exception,),
+            {
+                "response": {
+                    "Error": {"Code": "TransactionCanceledException"},
+                    "CancellationReasons": [{"Code": "None"}, {"Code": "ConditionalCheckFailed"}],
+                }
+            },
+        )
+        mock_repo.transact_write.side_effect = [exc_cls(), None]
+
+        lease = Lease(repository=mock_repo, entries=[child, parent])
+        await lease._commit_initial()
+
+        assert lease._initial_committed is True
+        retry_items = mock_repo.transact_write.call_args_list[1].args[0]
+        assert retry_items == [{"Put": {"who": "e1"}}, {"Update": {"who": "p1"}}]
+        mock_repo.build_composite_retry.assert_called_once()
+        assert mock_repo.build_composite_retry.call_args.kwargs["entity_id"] == "p1"
+
+    def test_retry_failure_statuses_use_the_effective_refill(self):
+        """A sharded bucket refills at refill_amount // shard_count, so the
+        retry-path retry_after must use that share, not the undivided rate."""
+        from zae_limiter.lease import LeaseEntry, _build_retry_failure_statuses
+
+        limit = Limit.custom("rpm", 1000, refill_amount=1000, refill_period_seconds=60)
+        state = BucketState(
+            entity_id="e1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=0,
+            last_refill_ms=0,
+            capacity_milli=1_000_000,
+            refill_amount_milli=1_000_000,
+            refill_period_ms=60_000,
+            shard_count=2,
+        )
+        entry = LeaseEntry(entity_id="e1", resource="gpt-4", limit=limit, state=state, consumed=500)
+
+        (status,) = _build_retry_failure_statuses([entry])
+        # 500 tokens at 500 tokens/60 s (the shard's share) = 60 s, not 30 s
+        assert status.retry_after_seconds == pytest.approx(60.0, abs=0.01)
+
+    def test_retry_failure_statuses_report_the_effective_limit(self):
+        """The reported limit must be the shard's share too (#475): a status
+        pairing the undivided capacity with a per-shard wait promises a
+        capacity no shard can serve."""
+        from zae_limiter.lease import LeaseEntry, _build_retry_failure_statuses
+
+        limit = Limit.custom("rpm", 1000, refill_amount=1000, refill_period_seconds=60)
+        state = BucketState(
+            entity_id="e1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=0,
+            last_refill_ms=0,
+            capacity_milli=1_000_000,
+            refill_amount_milli=1_000_000,
+            refill_period_ms=60_000,
+            shard_count=4,
+        )
+        entry = LeaseEntry(entity_id="e1", resource="gpt-4", limit=limit, state=state, consumed=500)
+
+        (status,) = _build_retry_failure_statuses([entry])
+        assert (status.limit.capacity, status.limit.refill_amount) == (250, 250)
+        assert status.limit_name == "rpm"
+
+    def test_admit_limit_reports_the_effective_limit_on_rejection(self):
+        """The slow-path admission gate reports the share the shard actually
+        holds, so a request above it is not told to retry against a capacity
+        that no shard can serve (#475)."""
+        limit = Limit.custom("rpm", 1000, refill_amount=1000, refill_period_seconds=60)
+        state = BucketState(
+            entity_id="e1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=0,
+            last_refill_ms=0,
+            capacity_milli=1_000_000,
+            refill_amount_milli=1_000_000,
+            refill_period_ms=60_000,
+            shard_count=4,
+        )
+        # 600 exceeds this shard's 250-token share on every shard.
+        status, consumed = RateLimiter._admit_limit(
+            "e1", "gpt-4", limit, state, {"rpm": 600}, now_ms=0
+        )
+        assert consumed == 0
+        assert status is not None and status.exceeded
+        assert (status.limit.capacity, status.limit.refill_amount) == (250, 250)
+
+    async def test_commit_initial_lost_lock_with_nothing_consumed_needs_no_retry(self):
+        """An rf-lock failure on a group that consumed nothing has nothing to
+        debit: no retry transaction is issued and the commit still completes."""
+        from zae_limiter.lease import Lease
+
+        entry = self._make_entry(consumed=0)
+        mock_repo = self._make_mock_repo()
+        exc_cls = type(
+            "TransactionCanceledException",
+            (Exception,),
+            {
+                "response": {
+                    "Error": {"Code": "TransactionCanceledException"},
+                    "CancellationReasons": [{"Code": "ConditionalCheckFailed"}],
+                }
+            },
+        )
+        mock_repo.transact_write.side_effect = [exc_cls()]
+
+        lease = Lease(repository=mock_repo, entries=[entry])
+        await lease._commit_initial()
+
+        assert lease._initial_committed is True
+        assert mock_repo.transact_write.call_count == 1
+        mock_repo.build_composite_retry.assert_not_called()
+
+    async def test_commit_initial_create_race_retries_on_the_same_shard(self):
+        """Losing the create race to the aggregator retries consumption-only
+        on that same shard, never on shard 0 (issue #439)."""
+        from zae_limiter.lease import Lease
+
+        entry = self._make_entry(is_new=True)
+        entry._shard_id = 1
+        mock_repo = self._make_mock_repo()
+
+        exc_cls = type(
+            "TransactionCanceledException",
+            (Exception,),
+            {
+                "response": {
+                    "Error": {"Code": "TransactionCanceledException"},
+                    "CancellationReasons": [{"Code": "ConditionalCheckFailed"}],
+                }
+            },
+        )
+        mock_repo.transact_write.side_effect = [exc_cls(), None]
+
+        lease = Lease(repository=mock_repo, entries=[entry])
+        await lease._commit_initial()
+
+        assert mock_repo.build_composite_retry.call_args.kwargs["shard_id"] == 1
 
     async def test_retry_non_condition_check_reraises(self):
         """Non-condition-check error in retry path propagates (line 301)."""
@@ -4200,12 +4625,14 @@ class TestLeaseCommitTTL:
         assert item is not None
         assert "ttl" not in item
 
-    async def test_commit_sets_ttl_for_entity_default_config(self, limiter):
-        """Lease._commit() sets TTL when entity has _default_ config (not resource-specific).
+    async def test_commit_removes_ttl_for_entity_default_config(self, limiter):
+        """Lease._commit() removes TTL when limits come from the entity's `_default_` config.
 
-        Entity _default_ config is treated as a kind of default (not custom config),
-        so TTL should be applied. This contrasts with resource-specific entity config
-        which removes TTL.
+        ADR-136: entity configuration is custom at *either* entity level — the
+        per-resource one and the entity-wide `_default_` one — so a bucket born
+        from `_default_` limits must persist indefinitely, exactly like one born
+        from resource-specific entity limits. Only the resource and system levels
+        make a bucket ephemeral. (Inverts the ADR-119 behaviour, issue #489.)
         """
         # Set entity _default_ config (applies to all resources for this entity)
         await limiter.set_limits("user-1", [Limit.per_minute("rpm", 100)])  # resource="_default_"
@@ -4218,13 +4645,143 @@ class TestLeaseCommitTTL:
         ):
             pass
 
-        # Verify TTL IS set (entity_default is treated as a default, not custom)
+        # Verify no TTL (entity_default is the entity's own config, so custom)
         from zae_limiter.schema import pk_bucket, sk_state
 
         pk = pk_bucket(limiter._repository.namespace_id, "user-1", "gpt-4", 0)
         item = await limiter._repository._get_item(pk, sk_state())
         assert item is not None
-        assert "ttl" in item, "entity_default config should have TTL (treated as default)"
+        assert "ttl" not in item, "entity_default config is custom config (ADR-136): no TTL"
+
+    async def test_commit_sets_ttl_for_resource_config(self, limiter):
+        """Guard (ADR-136): resource-derived buckets still carry a TTL.
+
+        The fix for #489 widens "custom config" to cover entity `_default_`; it
+        must not widen to *everything*. Resource and system defaults do not fan
+        out on change, so their buckets pick up new parameters by expiring and
+        being recreated — making them custom would break that mechanism and
+        stop ephemeral buckets from ever being reclaimed.
+        """
+        await limiter.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 100)])
+
+        async with limiter.acquire(
+            entity_id="user-1",
+            resource="gpt-4",
+            consume={"rpm": 1},
+        ):
+            pass
+
+        from zae_limiter.schema import pk_bucket, sk_state
+
+        pk = pk_bucket(limiter._repository.namespace_id, "user-1", "gpt-4", 0)
+        item = await limiter._repository._get_item(pk, sk_state())
+        assert item is not None
+        assert "ttl" in item, "resource defaults are not custom config: TTL must stay"
+
+    async def test_parent_only_path_removes_ttl_for_parent_default_config(self, limiter):
+        """Parent-only slow path drops the TTL when the parent's own `_default_` config wins.
+
+        ADR-136 / issue #489. `_try_parent_only_acquire` returns None when the
+        parent bucket is missing, so this path can only ever *update* a bucket —
+        a "created via the parent-only path" test is not constructible.
+
+        The arrangement writes the `ttl` attribute onto the parent's bucket
+        directly rather than getting some API to stamp it. That is the state
+        under test — a bucket that predates the entity's configuration, or was
+        created by a pre-ADR-136 client — and stamping it by hand keeps the
+        precondition from depending on which writer happens to set TTLs today.
+        Deriving it from `set_limits(..., resource="_default_")` was the
+        original arrangement and it silently stopped working when #487/#488
+        made that call reach real-resource buckets and clear their TTL itself,
+        which would have left the final assertion passing vacuously.
+        """
+        from zae_limiter.schema import pk_bucket, sk_state
+
+        await limiter.create_entity("parent-1")
+        await limiter.create_entity("child-1", parent_id="parent-1", cascade=True)
+        # The parent carries an entity-wide `_default_` config; the child has
+        # none, so it resolves from system. Configured before any bucket
+        # exists, so the fan-out has nothing to find and writes nothing.
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
+        await limiter.set_limits("parent-1", [Limit.per_minute("rpm", 1000)])
+
+        # Prime both buckets
+        async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}):
+            pass
+
+        parent_pk = pk_bucket(limiter._repository.namespace_id, "parent-1", "gpt-4", 0)
+        client = await limiter._repository._get_client()
+        await client.update_item(
+            TableName=limiter._repository.table_name,
+            Key={"PK": {"S": parent_pk}, "SK": {"S": sk_state()}},
+            UpdateExpression="SET #ttl = :ttl",
+            ExpressionAttributeNames={"#ttl": "ttl"},
+            ExpressionAttributeValues={":ttl": {"N": str(int(time.time()) + 3600)}},
+        )
+        item = await limiter._repository._get_item(parent_pk, sk_state())
+        assert item is not None
+        assert "ttl" in item, "precondition: the parent bucket under test carries a TTL"
+
+        limiter._speculative_writes = True
+        now_ms = int(time.time() * 1000)
+
+        child_bucket = BucketState(
+            entity_id="child-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=900_000,
+            last_refill_ms=now_ms,
+            capacity_milli=1_000_000,
+            refill_amount_milli=1_000_000,
+            refill_period_ms=60_000,
+        )
+        # Parent rpm exhausted on the image, but a full refill period elapsed,
+        # so would_refill_satisfy() sends us to the parent-only slow path.
+        parent_bucket = BucketState(
+            entity_id="parent-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=0,
+            last_refill_ms=now_ms - 60_000,
+            capacity_milli=1_000_000,
+            refill_amount_milli=1_000_000,
+            refill_period_ms=60_000,
+        )
+
+        original_speculative = limiter._repository.speculative_consume
+        call_count = 0
+
+        async def mock_speculative(
+            entity_id, resource, consume, ttl_seconds=None, shard_id=None, now_ms=None
+        ):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return SpeculativeResult(
+                    success=True,
+                    buckets=[child_bucket],
+                    cascade=True,
+                    parent_id="parent-1",
+                )
+            if call_count == 2:
+                return SpeculativeResult(success=False, old_buckets=[parent_bucket])
+            return await original_speculative(
+                entity_id, resource, consume, ttl_seconds, shard_id, now_ms
+            )
+
+        limiter._repository.speculative_consume = mock_speculative
+        try:
+            async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}) as lease:
+                assert "parent-1" in {e.entity_id for e in lease.entries}
+        finally:
+            limiter._repository.speculative_consume = original_speculative
+
+        item = await limiter._repository._get_item(parent_pk, sk_state())
+        assert item is not None
+        assert "ttl" not in item, (
+            "parent limits resolved from the parent's own `_default_` config: "
+            "the parent-only path must REMOVE the TTL (ADR-136)"
+        )
 
     async def test_ttl_value_matches_formula(self, limiter):
         """TTL = now + max_refill_period × multiplier."""
@@ -4573,8 +5130,13 @@ class TestBucketLimitSync:
     async def test_bucket_sync_reraises_unexpected_client_error(self, limiter):
         """Unexpected ClientError during bucket sync is re-raised.
 
-        Verifies that non-ConditionalCheckFailed errors propagate.
+        Verifies that non-ConditionalCheckFailed errors propagate. They
+        surface wrapped in `FanoutIncomplete`, which reports how many bucket
+        items the fan-out managed to write before stopping — the config item
+        is already committed at that point, so the caller has to be told the
+        change is half-applied (#487, same contract as the ADR-125 fan-out).
         """
+        from zae_limiter.exceptions import FanoutIncomplete
 
         # First create a bucket so the conditional check passes
         await limiter.set_limits("user-6", [Limit.per_minute("rpm", 100)], resource="api")
@@ -4595,10 +5157,14 @@ class TestBucketLimitSync:
 
         limiter._repository._client.update_item = mock_update_item
 
-        with pytest.raises(ClientError) as exc_info:
+        with pytest.raises(FanoutIncomplete) as exc_info:
             await limiter.set_limits("user-6", [Limit.per_minute("rpm", 200)], resource="api")
 
-        assert exc_info.value.response["Error"]["Code"] == "InternalServerError"
+        assert isinstance(exc_info.value.cause, ClientError)
+        assert exc_info.value.cause.response["Error"]["Code"] == "InternalServerError"
+        assert exc_info.value.stamped == 0
+        assert exc_info.value.entity_id == "user-6"
+        assert exc_info.value.resource == "api"
 
 
 class TestBucketReconciliation:
@@ -4970,7 +5536,7 @@ class TestSpeculativeAcquire:
 
         call_count = 0
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, now_ms=None):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -5024,7 +5590,7 @@ class TestSpeculativeAcquire:
         original_speculative = limiter._repository.speculative_consume
         call_count = 0
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, now_ms=None):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -5077,7 +5643,7 @@ class TestSpeculativeAcquire:
         original_speculative = limiter._repository.speculative_consume
         call_count = 0
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, now_ms=None):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -5136,7 +5702,7 @@ class TestSpeculativeAcquire:
         original_speculative = limiter._repository.speculative_consume
         call_count = 0
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, now_ms=None):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -5193,7 +5759,7 @@ class TestSpeculativeAcquire:
         original_speculative = limiter._repository.speculative_consume
         call_count = 0
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, now_ms=None):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -5261,7 +5827,7 @@ class TestSpeculativeAcquire:
         call_count = 0
         child_compensated = False
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, now_ms=None):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -5301,6 +5867,87 @@ class TestSpeculativeAcquire:
         finally:
             limiter._repository.speculative_consume = original_speculative
             limiter._repository.write_each = original_write_each
+
+    async def test_speculative_cascade_parent_only_skips_undeclared_limit(self, limiter):
+        """Parent-only slow path: an undeclared parent limit is refilled but
+        never checked, never reported, and never adjustable (#455).
+
+        The parent has rpm and tpm; the call declares only rpm. The parent's
+        tpm entry is a write-only carrier: it does not gate admission (even
+        when in debt), does not appear in lease.consumed, and is untouched.
+        """
+        await limiter.create_entity("parent-1")
+        await limiter.create_entity("child-1", parent_id="parent-1", cascade=True)
+        await limiter.set_system_defaults(
+            [Limit.per_minute("rpm", 1000), Limit.per_minute("tpm", 1000)]
+        )
+
+        # Prime both buckets, then drive the parent's tpm into debt.
+        async with limiter.acquire("child-1", "gpt-4", {"rpm": 1, "tpm": 0}):
+            pass
+        async with limiter.acquire("parent-1", "gpt-4", {"tpm": 0}) as lease:
+            await lease.adjust(tpm=1500)
+
+        limiter._speculative_writes = True
+        now_ms = int(__import__("time").time() * 1000)
+
+        child_bucket = BucketState(
+            entity_id="child-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=900_000,
+            last_refill_ms=now_ms,
+            capacity_milli=1_000_000,
+            refill_amount_milli=1_000_000,
+            refill_period_ms=60_000,
+        )
+        # Parent rpm exhausted but refill would help -> parent-only slow path
+        parent_bucket = BucketState(
+            entity_id="parent-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=0,
+            last_refill_ms=now_ms - 30_000,
+            capacity_milli=1_000_000,
+            refill_amount_milli=1_000_000,
+            refill_period_ms=60_000,
+        )
+
+        original_speculative = limiter._repository.speculative_consume
+        call_count = 0
+
+        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, now_ms=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return SpeculativeResult(
+                    success=True,
+                    buckets=[child_bucket],
+                    cascade=True,
+                    parent_id="parent-1",
+                )
+            if call_count == 2:
+                return SpeculativeResult(success=False, old_buckets=[parent_bucket])
+            return await original_speculative(entity_id, resource, consume, ttl_seconds)
+
+        limiter._repository.speculative_consume = mock_speculative
+        try:
+            async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}) as lease:
+                parent_entries = [e for e in lease.entries if e.entity_id == "parent-1"]
+                # The reserved wcu carrier rides along undeclared (ADR-133)
+                assert {e.limit.name for e in parent_entries if e.limit.name != "wcu"} == {
+                    "rpm",
+                    "tpm",
+                }
+                assert {e.limit.name for e in parent_entries if e._declared} == {"rpm"}
+                # consumed sums across entities (child 1 + parent 1); no tpm key
+                assert lease.consumed == {"rpm": 2}
+        finally:
+            limiter._repository.speculative_consume = original_speculative
+
+        buckets = await limiter._repository.get_buckets("parent-1", resource="gpt-4")
+        tpm = next(b for b in buckets if b.limit_name == "tpm")
+        assert tpm.tokens_milli < 0, "parent tpm was in debt and must be left untouched"
 
     async def test_speculative_cascade_parent_slow_path_fails_compensates(self, limiter):
         """Cascade: parent-only slow path fails → compensate child → full slow path.
@@ -5345,7 +5992,7 @@ class TestSpeculativeAcquire:
         original_speculative = limiter._repository.speculative_consume
         call_count = 0
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, now_ms=None):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -5419,7 +6066,7 @@ class TestSpeculativeAcquire:
         call_count = 0
         fetch_call_count = 0
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, now_ms=None):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -5433,13 +6080,13 @@ class TestSpeculativeAcquire:
                 return SpeculativeResult(success=False, old_buckets=[parent_bucket_old])
             return await original_speculative(entity_id, resource, consume, ttl_seconds)
 
-        async def mock_fetch_buckets(entity_ids, resource):
+        async def mock_fetch_buckets(entity_ids, resource, shard_id):
             nonlocal fetch_call_count
             fetch_call_count += 1
             if fetch_call_count == 1:
                 # First call from _try_parent_only_acquire — return empty
                 return {}
-            return await original_fetch(entity_ids, resource)
+            return await original_fetch(entity_ids, resource, shard_id)
 
         limiter._repository.speculative_consume = mock_speculative
         limiter._fetch_buckets = mock_fetch_buckets
@@ -5498,7 +6145,7 @@ class TestSpeculativeAcquire:
         call_count = 0
         transact_call_count = 0
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, now_ms=None):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -5580,7 +6227,7 @@ class TestSpeculativeAcquire:
 
         original_speculative = limiter._repository.speculative_consume
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, now_ms=None):
             return SpeculativeResult(
                 success=True,
                 buckets=[rpm_bucket, tpm_bucket],
@@ -5647,7 +6294,7 @@ class TestSpeculativeAcquire:
         original_speculative = limiter._repository.speculative_consume
         call_count = 0
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, now_ms=None):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -5707,7 +6354,7 @@ class TestSpeculativeAcquire:
         original_speculative = limiter._repository.speculative_consume
         call_count = 0
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, now_ms=None):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -5738,7 +6385,7 @@ class TestSpeculativeAcquire:
         # Prime both buckets and record child's initial balance
         async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}):
             pass
-        buckets_before = await limiter._fetch_buckets(["child-1"], "gpt-4")
+        buckets_before = await limiter._fetch_buckets(["child-1"], "gpt-4", 0)
         child_key = ("child-1", "gpt-4", "rpm")
         tokens_before = buckets_before[child_key].tokens_milli
 
@@ -5772,7 +6419,7 @@ class TestSpeculativeAcquire:
         spec_call_count = 0
         fetch_call_count = 0
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, now_ms=None):
             nonlocal spec_call_count
             spec_call_count += 1
             if spec_call_count == 1:
@@ -5788,12 +6435,12 @@ class TestSpeculativeAcquire:
                 return SpeculativeResult(success=False, old_buckets=[parent_bucket_old])
             return await original_speculative(entity_id, resource, consume, ttl_seconds)
 
-        async def mock_fetch_raising(entity_ids, resource):
+        async def mock_fetch_raising(entity_ids, resource, shard_id):
             nonlocal fetch_call_count
             fetch_call_count += 1
             if fetch_call_count == 1 and "parent-1" in entity_ids:
                 raise RuntimeError("DynamoDB service unavailable")
-            return await original_fetch(entity_ids, resource)
+            return await original_fetch(entity_ids, resource, shard_id)
 
         limiter._repository.speculative_consume = mock_speculative
         limiter._fetch_buckets = mock_fetch_raising
@@ -5803,7 +6450,7 @@ class TestSpeculativeAcquire:
                     pass
 
             # Verify child tokens were restored in DynamoDB
-            buckets_after = await original_fetch(["child-1"], "gpt-4")
+            buckets_after = await original_fetch(["child-1"], "gpt-4", 0)
             tokens_after = buckets_after[child_key].tokens_milli
             assert tokens_after == tokens_before, (
                 f"Child tokens leaked! Before={tokens_before}, after={tokens_after}. "
@@ -5893,7 +6540,9 @@ class TestCascadeEntityCache:
         single_call_count = 0
         original_single = limiter._repository._speculative_consume_single
 
-        async def counting_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
+        async def counting_single(
+            entity_id, resource, consume, ttl_seconds=None, shard_id=0, now_ms=None
+        ):
             nonlocal single_call_count
             single_call_count += 1
             return await original_single(entity_id, resource, consume, ttl_seconds)
@@ -5926,7 +6575,9 @@ class TestCascadeEntityCache:
         single_calls: list[str] = []
         original_single = limiter._repository._speculative_consume_single
 
-        async def tracking_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
+        async def tracking_single(
+            entity_id, resource, consume, ttl_seconds=None, shard_id=0, now_ms=None
+        ):
             single_calls.append(entity_id)
             return await original_single(
                 entity_id, resource, consume, ttl_seconds, shard_id=shard_id
@@ -5989,11 +6640,13 @@ class TestCascadeEntityCache:
         compensated_entity_ids: list[str] = []
         original_compensate = limiter._compensate_speculative
 
-        async def tracking_compensate(entity_id, resource, consume):
+        async def tracking_compensate(entity_id, resource, consume, shard_id):
             compensated_entity_ids.append(entity_id)
-            return await original_compensate(entity_id, resource, consume)
+            return await original_compensate(entity_id, resource, consume, shard_id)
 
-        async def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
+        async def mock_single(
+            entity_id, resource, consume, ttl_seconds=None, shard_id=0, now_ms=None
+        ):
             if entity_id == "child-1":
                 return SpeculativeResult(
                     success=False,
@@ -6052,7 +6705,9 @@ class TestCascadeEntityCache:
         original_single = limiter._repository._speculative_consume_single
         call_count = 0
 
-        async def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
+        async def mock_single(
+            entity_id, resource, consume, ttl_seconds=None, shard_id=0, now_ms=None
+        ):
             nonlocal call_count
             call_count += 1
             if entity_id == "child-1" and call_count <= 2:
@@ -6119,7 +6774,9 @@ class TestCascadeEntityCache:
         original_single = limiter._repository._speculative_consume_single
         call_count = 0
 
-        async def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
+        async def mock_single(
+            entity_id, resource, consume, ttl_seconds=None, shard_id=0, now_ms=None
+        ):
             nonlocal call_count
             call_count += 1
             if entity_id == "child-1" and call_count <= 2:
@@ -6177,7 +6834,9 @@ class TestCascadeEntityCache:
 
         original_single = limiter._repository._speculative_consume_single
 
-        async def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
+        async def mock_single(
+            entity_id, resource, consume, ttl_seconds=None, shard_id=0, now_ms=None
+        ):
             if entity_id == "child-1":
                 return SpeculativeResult(
                     success=True,
@@ -6252,7 +6911,9 @@ class TestCascadeEntityCache:
 
         original_single = limiter._repository._speculative_consume_single
 
-        async def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
+        async def mock_single(
+            entity_id, resource, consume, ttl_seconds=None, shard_id=0, now_ms=None
+        ):
             if entity_id == "child-1":
                 return SpeculativeResult(
                     success=True,
@@ -6333,7 +6994,9 @@ class TestCascadeEntityCache:
         original_single = limiter._repository._speculative_consume_single
         call_count = 0
 
-        async def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
+        async def mock_single(
+            entity_id, resource, consume, ttl_seconds=None, shard_id=0, now_ms=None
+        ):
             nonlocal call_count
             call_count += 1
             if entity_id == "child-1" and call_count <= 2:
@@ -6411,7 +7074,9 @@ class TestCascadeEntityCache:
         )
         original_single = limiter._repository._speculative_consume_single
 
-        async def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
+        async def mock_single(
+            entity_id, resource, consume, ttl_seconds=None, shard_id=0, now_ms=None
+        ):
             if entity_id == "child-1":
                 return SpeculativeResult(
                     success=True,
@@ -6473,7 +7138,9 @@ class TestCascadeEntityCache:
         )
         original_single = limiter._repository._speculative_consume_single
 
-        async def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
+        async def mock_single(
+            entity_id, resource, consume, ttl_seconds=None, shard_id=0, now_ms=None
+        ):
             if entity_id == "child-1":
                 return SpeculativeResult(
                     success=True,
@@ -6528,7 +7195,9 @@ class TestCascadeEntityCache:
         original_single = limiter._repository._speculative_consume_single
         original_parent_acquire = limiter._try_parent_only_acquire
 
-        async def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
+        async def mock_single(
+            entity_id, resource, consume, ttl_seconds=None, shard_id=0, now_ms=None
+        ):
             if entity_id == "child-1":
                 return SpeculativeResult(
                     success=True,
@@ -6589,7 +7258,9 @@ class TestCascadeEntityCache:
         original_single = limiter._repository._speculative_consume_single
         original_parent_acquire = limiter._try_parent_only_acquire
 
-        async def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
+        async def mock_single(
+            entity_id, resource, consume, ttl_seconds=None, shard_id=0, now_ms=None
+        ):
             if entity_id == "child-1":
                 return SpeculativeResult(
                     success=True,
@@ -6673,7 +7344,23 @@ class TestShardRetry:
         # Pre-populate entity cache
         repo._entity_cache[(ns, "user-1")] = (False, None, {"gpt-4": 1})
 
-        # Exhaust wcu tokens on shard 0
+        # Exhaust wcu tokens on shard 0 under sustained pressure: its wcu
+        # refills once an hour, so the drained balance means a hot partition
+        # (a wcu that would refill takes the slow path instead, ADR-133)
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(ns, "user-1", "gpt-4", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="SET #rp = :hour, #ra = :one",
+            ExpressionAttributeNames={
+                "#rp": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_RP),
+                "#ra": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_RA),
+            },
+            ExpressionAttributeValues={":hour": {"N": "3600000"}, ":one": {"N": "1"}},
+        )
         for _ in range(schema.WCU_LIMIT_CAPACITY):
             await repo._speculative_consume_single("user-1", "gpt-4", {"rpm": 1}, shard_id=0)
 
@@ -6724,6 +7411,1373 @@ class TestShardRetry:
         with pytest.raises(RateLimitExceeded):
             async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
                 pass
+
+
+class TestClientShardCreation:
+    """The client slow path creates shard N>0 bucket items itself (issue #439).
+
+    Before this, only the aggregator's ``propagate_shard_count`` (Path 2) ever
+    wrote a shard N>0 item, so with ``--no-aggregator`` the GHSA-76rv write
+    sharding mitigation never engaged: the slow path read and wrote shard 0
+    regardless of which shard the speculative write had selected.
+    """
+
+    # Refill of 1 token/hour keeps refill out of every token assertion below.
+    CAPACITY = 100_000
+
+    @staticmethod
+    async def _seed_shard0(limiter, shard_count: int, limit):
+        repo = limiter._repository
+        ns = repo._namespace_id
+        await limiter.create_entity("user-1")
+        await limiter.set_system_defaults([limit])
+        now_ms = int(time.time() * 1000)
+        states = [BucketState.from_limit("user-1", "gpt-4", limit, now_ms)]
+        await repo.transact_write(
+            [
+                repo.build_composite_create(
+                    "user-1", "gpt-4", states, now_ms, shard_id=0, shard_count=shard_count
+                )
+            ]
+        )
+        repo._entity_cache[(ns, "user-1")] = (False, None, {"gpt-4": shard_count})
+        limiter._speculative_writes = True
+        return repo
+
+    @staticmethod
+    async def _raw_item(repo, shard_id: int) -> dict | None:
+        from zae_limiter import schema
+
+        client = await repo._get_client()
+        resp = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, "user-1", "gpt-4", shard_id)},
+                "SK": {"S": schema.sk_state()},
+            },
+        )
+        return resp.get("Item")
+
+    @staticmethod
+    def _n(item: dict, limit_name: str, field: str) -> int:
+        from zae_limiter import schema
+
+        return int(item[schema.bucket_attr(limit_name, field)]["N"])
+
+    @staticmethod
+    async def _seed_shards(limiter, shard_count: int, limit, *, tokens_milli: int, rf_ms: int):
+        """Create every shard 0..shard_count-1 at the same balance and rf."""
+        repo = limiter._repository
+        ns = repo._namespace_id
+        await limiter.create_entity("user-1")
+        await limiter.set_system_defaults([limit])
+        for shard_id in range(shard_count):
+            state = BucketState.from_limit("user-1", "gpt-4", limit, rf_ms)
+            state.tokens_milli = tokens_milli
+            await repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        "user-1",
+                        "gpt-4",
+                        [state],
+                        rf_ms,
+                        shard_id=shard_id,
+                        shard_count=shard_count,
+                    )
+                ]
+            )
+        repo._entity_cache[(ns, "user-1")] = (False, None, {"gpt-4": shard_count})
+        return repo
+
+    async def test_slow_path_refills_a_shard_to_its_effective_share(self, limiter):
+        """The slow path must refill shard N toward capacity // shard_count.
+
+        The bucket item stores undivided cp/ra (ADR-133 keeps that), so a
+        refill that reads them verbatim tops every shard up to the full
+        capacity after one idle window and the entity admits
+        shard_count x capacity in steady state. Per-shard refill is what the
+        aggregator's try_refill_bucket does; the client must match it.
+        """
+        from zae_limiter import schema
+        from zae_limiter.exceptions import RateLimitExceeded
+
+        limit = Limit.custom("rpm", 1000, refill_amount=1000, refill_period_seconds=60)
+        now_ms = int(time.time() * 1000)
+        # Both shards drained two full refill windows ago
+        repo = await self._seed_shards(limiter, 2, limit, tokens_milli=0, rf_ms=now_ms - 120_000)
+        limiter._speculative_writes = False  # slow path only
+
+        with patch("zae_limiter.repository.random.randrange", return_value=0):
+            with pytest.raises(RateLimitExceeded):
+                async with limiter.acquire("user-1", "gpt-4", {"rpm": 501}):
+                    pass
+            async with limiter.acquire("user-1", "gpt-4", {"rpm": 500}):
+                pass
+        with patch("zae_limiter.repository.random.randrange", return_value=1):
+            async with limiter.acquire("user-1", "gpt-4", {"rpm": 500}):
+                pass
+
+        # 500 + 500 = the configured 1000, not 2 x 1000
+        for shard_id in (0, 1):
+            item = await self._raw_item(repo, shard_id)
+            assert self._n(item, "rpm", schema.BUCKET_FIELD_TK) == 0
+
+    async def test_slow_path_creates_the_selected_shard(self, limiter):
+        """BUCKET_MISSING on shard 1 creates shard 1; shard 0 is not touched."""
+        from zae_limiter import schema
+
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        repo = await self._seed_shard0(limiter, shard_count=2, limit=limit)
+
+        with patch("zae_limiter.repository.random.randrange", return_value=1):
+            async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+                assert {e._shard_id for e in lease.entries} == {1}
+
+        shard1 = await self._raw_item(repo, 1)
+        assert shard1 is not None, "the client slow path must create the shard it selected"
+        assert shard1["shard_count"]["N"] == "2"
+        cp_milli = self.CAPACITY * 1000
+        # Effective per-shard tokens, exactly like processor.propagate_shard_count Path 2
+        assert self._n(shard1, "rpm", schema.BUCKET_FIELD_TK) == cp_milli // 2 - 1000
+        # Stored limits stay undivided; only the token balance is per-shard
+        assert self._n(shard1, "rpm", schema.BUCKET_FIELD_CP) == cp_milli
+        assert self._n(shard1, "rpm", schema.BUCKET_FIELD_RA) == 1000
+        # wcu is per-partition and is NOT divided
+        assert (
+            self._n(shard1, schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK)
+            == schema.WCU_LIMIT_CAPACITY * 1000
+        )
+
+        shard0 = await self._raw_item(repo, 0)
+        assert self._n(shard0, "rpm", schema.BUCKET_FIELD_TK) == cp_milli, (
+            "shard 0 served nothing and must not be debited"
+        )
+
+    async def test_wcu_exhaustion_creates_the_new_shard(self, limiter):
+        """After doubling, the slow path lands on the brand-new shard and creates it."""
+        from zae_limiter import schema
+
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        repo = await self._seed_shard0(limiter, shard_count=1, limit=limit)
+        await self._slow_wcu_refill(repo)
+
+        for _ in range(schema.WCU_LIMIT_CAPACITY):
+            await repo._speculative_consume_single("user-1", "gpt-4", {"rpm": 1}, shard_id=0)
+        cp_milli = self.CAPACITY * 1000
+        shard0_before = self._n(await self._raw_item(repo, 0), "rpm", schema.BUCKET_FIELD_TK)
+        assert shard0_before == cp_milli - schema.WCU_LIMIT_CAPACITY * 1000
+
+        async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+            assert {e._shard_id for e in lease.entries} == {1}
+
+        shard1 = await self._raw_item(repo, 1)
+        assert shard1 is not None, "write sharding must engage without the aggregator"
+        assert shard1["shard_count"]["N"] == "2"
+        assert self._n(shard1, "rpm", schema.BUCKET_FIELD_TK) == cp_milli // 2 - 1000
+        shard0_after = self._n(await self._raw_item(repo, 0), "rpm", schema.BUCKET_FIELD_TK)
+        assert shard0_after == shard0_before, "the hot shard must not absorb the write"
+
+        # The shard now exists, so the next acquire on it is a fast-path hit.
+        slow_path_calls: list[int | None] = []
+        original = limiter._do_acquire
+
+        async def spy(*args, **kwargs):
+            slow_path_calls.append(kwargs.get("shard_id"))
+            return await original(*args, **kwargs)
+
+        limiter._do_acquire = spy
+        with patch("zae_limiter.repository.random.randrange", return_value=1):
+            async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+                assert {e._shard_id for e in lease.entries} == {1}
+        assert slow_path_calls == [], "a created shard must not BUCKET_MISSING-fallback"
+        assert self._n(await self._raw_item(repo, 1), "rpm", schema.BUCKET_FIELD_TK) == (
+            cp_milli // 2 - 2000
+        )
+
+    async def test_retry_on_a_missing_shard_creates_it(self, limiter):
+        """Shard 0 drained, shard 1 never created: the retry's BUCKET_MISSING
+        sends the slow path to shard 1 instead of fast-rejecting the caller."""
+        import random as _random
+
+        from zae_limiter import schema
+
+        limit = Limit.custom("rpm", 10, refill_amount=1, refill_period_seconds=3600)
+        repo = await self._seed_shard0(limiter, shard_count=2, limit=limit)
+        await repo._speculative_consume_single("user-1", "gpt-4", {"rpm": 10}, shard_id=0)
+
+        with (
+            patch("zae_limiter.repository.random.randrange", return_value=0),
+            patch.object(_random, "choice", lambda seq: seq[0]),
+        ):
+            async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+                assert {e._shard_id for e in lease.entries} == {1}
+
+        shard1 = await self._raw_item(repo, 1)
+        assert shard1 is not None
+        assert self._n(shard1, "rpm", schema.BUCKET_FIELD_TK) == 10_000 // 2 - 1000
+
+    async def test_cold_cache_retry_sizes_the_new_shard_from_the_failure_image(self, limiter):
+        """A failed speculative write never updates the entity cache, so with a
+        cold cache the retry knows shard_count=2 (ALL_OLD) but the slow path
+        used to size the new shard from the cache: full tokens, shard_count=1.
+        The count observed on the failure image must reach the create."""
+        from zae_limiter import schema
+
+        limit = Limit.custom("rpm", 10, refill_amount=1, refill_period_seconds=3600)
+        repo = await self._seed_shard0(limiter, shard_count=2, limit=limit)
+        # Deliberately NOT seeding the entity cache
+        del repo._entity_cache[(repo._namespace_id, "user-1")]
+        await repo._speculative_consume_single("user-1", "gpt-4", {"rpm": 10}, shard_id=0)
+
+        # Cold cache draws shard 0 (drained); the only untried shard is 1.
+        async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+            assert {e._shard_id for e in lease.entries} == {1}
+
+        shard1 = await self._raw_item(repo, 1)
+        assert shard1 is not None
+        assert shard1["shard_count"]["N"] == "2"
+        assert self._n(shard1, "rpm", schema.BUCKET_FIELD_TK) == 10_000 // 2 - 1000
+
+    async def test_child_compensation_credits_the_shard_that_was_debited(self, limiter):
+        """Child succeeds speculatively on shard 3, parent is BUCKET_MISSING:
+        the compensating credit must land on shard 3, not on shard 0. Crediting
+        shard 0 leaves shard 3 double-debited and mints tokens on shard 0."""
+        from zae_limiter import schema
+
+        repo = limiter._repository
+        ns = repo._namespace_id
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        await limiter.create_entity("parent-1")
+        await limiter.create_entity("user-1", parent_id="parent-1", cascade=True)
+        await limiter.set_system_defaults([limit])
+        now_ms = int(time.time() * 1000)
+        for shard_id in range(4):
+            state = BucketState.from_limit("user-1", "gpt-4", limit, now_ms, shard_count=4)
+            await repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        "user-1",
+                        "gpt-4",
+                        [state],
+                        now_ms,
+                        cascade=True,
+                        parent_id="parent-1",
+                        shard_id=shard_id,
+                        shard_count=4,
+                    )
+                ]
+            )
+        # Warm cache -> parallel child+parent speculative path; no parent bucket yet
+        repo._entity_cache[(ns, "user-1")] = (True, "parent-1", {"gpt-4": 4})
+        limiter._speculative_writes = True
+        share = self.CAPACITY * 1000 // 4
+
+        with patch("zae_limiter.repository.random.randrange", return_value=3):
+            async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+                assert {e._shard_id for e in lease.entries if e.entity_id == "user-1"} == {3}
+
+        # One net debit on shard 3 (speculative debit, compensated, slow-path debit)
+        assert self._n(await self._raw_item(repo, 3), "rpm", schema.BUCKET_FIELD_TK) == (
+            share - 1000
+        )
+        assert self._n(await self._raw_item(repo, 0), "rpm", schema.BUCKET_FIELD_TK) == share, (
+            "shard 0 served nothing; a credit here mints capacity"
+        )
+
+    async def _seed_cascade_child(self, limiter, limit, *, parent_tokens_milli: int):
+        """Parent bucket at the given balance; child with 2 shards, shard 0 drained."""
+        repo = limiter._repository
+        now_ms = int(time.time() * 1000)
+        await limiter.create_entity("parent-1")
+        await limiter.create_entity("user-1", parent_id="parent-1", cascade=True)
+        await limiter.set_system_defaults([limit])
+        parent_state = BucketState.from_limit("parent-1", "gpt-4", limit, now_ms)
+        parent_state.tokens_milli = parent_tokens_milli
+        await repo.transact_write(
+            [repo.build_composite_create("parent-1", "gpt-4", [parent_state], now_ms)]
+        )
+        for shard_id in range(2):
+            state = BucketState.from_limit("user-1", "gpt-4", limit, now_ms, shard_count=2)
+            if shard_id == 0:
+                state.tokens_milli = 0
+            await repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        "user-1",
+                        "gpt-4",
+                        [state],
+                        now_ms,
+                        cascade=True,
+                        parent_id="parent-1",
+                        shard_id=shard_id,
+                        shard_count=2,
+                    )
+                ]
+            )
+        limiter._speculative_writes = True
+        return repo
+
+    async def test_cascade_shard_retry_cannot_bypass_an_exhausted_parent(self, limiter):
+        """Cold cache: child shard 0 drained, parent exhausted. The shard retry
+        used to succeed on child shard 1 and hand back a child-only lease,
+        admitting unbounded child traffic past the parent's limit."""
+        from zae_limiter import schema
+        from zae_limiter.exceptions import RateLimitExceeded
+
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        repo = await self._seed_cascade_child(limiter, limit, parent_tokens_milli=0)
+        repo._entity_cache.pop((repo._namespace_id, "user-1"), None)
+
+        with pytest.raises(RateLimitExceeded):
+            async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+                pass
+
+        share = self.CAPACITY * 1000 // 2
+        assert self._n(await self._raw_item(repo, 1), "rpm", schema.BUCKET_FIELD_TK) == share, (
+            "nothing may be consumed from the child when the parent rejects"
+        )
+
+    async def test_cascade_shard_retry_charges_the_parent(self, limiter):
+        """Warm cache: the parallel parent debit was compensated after the
+        child failed on shard 0 (where a refill would help, so no fast
+        rejection); the shard retry must not then admit the child alone. The
+        slow path commits child shard 1 and the parent together."""
+        from zae_limiter import schema
+
+        # 1 token/s; child shard 0 was drained 100 s ago -> refill would help
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=3600, refill_period_seconds=3600)
+        cp_milli = self.CAPACITY * 1000
+        repo = await self._seed_cascade_child(limiter, limit, parent_tokens_milli=cp_milli)
+        ns = repo._namespace_id
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(ns, "user-1", "gpt-4", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="SET #rf = :rf",
+            ExpressionAttributeNames={"#rf": schema.BUCKET_FIELD_RF},
+            ExpressionAttributeValues={":rf": {"N": str(int(time.time() * 1000) - 100_000)}},
+        )
+        repo._entity_cache[(ns, "user-1")] = (True, "parent-1", {"gpt-4": 2})
+
+        with patch("zae_limiter.repository.random.randrange", return_value=0):
+            async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+                assert {e.entity_id for e in lease.entries} == {"user-1", "parent-1"}
+
+        parent = await repo.get_buckets("parent-1", resource="gpt-4", shard_id=0)
+        assert next(b for b in parent if b.limit_name == "rpm").tokens_milli == cp_milli - 1000
+        assert self._n(await self._raw_item(repo, 1), "rpm", schema.BUCKET_FIELD_TK) == (
+            cp_milli // 2 - 1000
+        )
+
+    async def test_new_child_shard_survives_a_parent_rf_conflict(self, limiter):
+        """Cascade slow path creating child shard 1 while the parent's rf lock
+        is lost to a concurrent refill: the acquire must succeed and shard 1
+        must exist afterwards (the Put is re-issued, not retried as a debit)."""
+        from zae_limiter import schema
+
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        cp_milli = self.CAPACITY * 1000
+        repo = await self._seed_cascade_child(limiter, limit, parent_tokens_milli=cp_milli)
+        ns = repo._namespace_id
+        # Child shard 1 must not exist yet: the slow path will create it
+        client = await repo._get_client()
+        await client.delete_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(ns, "user-1", "gpt-4", 1)},
+                "SK": {"S": schema.sk_state()},
+            },
+        )
+        repo._entity_cache[(ns, "user-1")] = (True, "parent-1", {"gpt-4": 2})
+
+        original_transact = repo.transact_write
+        bumped = False
+
+        async def parent_refilled_first(items):
+            nonlocal bumped
+            if not bumped and len(items) == 2:
+                bumped = True
+                # A concurrent refill moves the parent's rf; the transaction's
+                # rf lock on the parent fails while the child's Put is innocent
+                await client.update_item(
+                    TableName=repo.table_name,
+                    Key={
+                        "PK": {"S": schema.pk_bucket(ns, "parent-1", "gpt-4", 0)},
+                        "SK": {"S": schema.sk_state()},
+                    },
+                    UpdateExpression="SET #rf = :rf",
+                    ExpressionAttributeNames={"#rf": schema.BUCKET_FIELD_RF},
+                    ExpressionAttributeValues={":rf": {"N": str(int(time.time() * 1000) + 5)}},
+                )
+            return await original_transact(items)
+
+        repo.transact_write = parent_refilled_first
+        with patch("zae_limiter.repository.random.randrange", return_value=1):
+            async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+                assert {e.entity_id for e in lease.entries} == {"user-1", "parent-1"}
+
+        assert bumped
+        shard1 = await self._raw_item(repo, 1)
+        assert shard1 is not None, "the innocent Put must be re-issued after the rollback"
+        assert self._n(shard1, "rpm", schema.BUCKET_FIELD_TK) == cp_milli // 2 - 1000
+        parent = await repo.get_buckets("parent-1", resource="gpt-4", shard_id=0)
+        assert next(b for b in parent if b.limit_name == "rpm").tokens_milli == cp_milli - 1000
+
+    async def test_parent_only_slow_path_reuses_the_parent_shard_it_judged(self, limiter):
+        """The "refill would help" decision was made on the ALL_OLD image of
+        the parent shard the speculative write hit; the parent-only slow path
+        must read and debit that same shard rather than draw a new one."""
+        from zae_limiter import schema
+
+        repo = limiter._repository
+        ns = repo._namespace_id
+        # 1 token/s; both parent shards drained 100 s ago -> refill would help
+        limit = Limit.custom("rpm", 100_000, refill_amount=3600, refill_period_seconds=3600)
+        now_ms = int(time.time() * 1000)
+        await limiter.create_entity("parent-1")
+        await limiter.create_entity("user-1", parent_id="parent-1", cascade=True)
+        await limiter.set_system_defaults([limit])
+        for shard_id in range(2):
+            state = BucketState.from_limit("parent-1", "gpt-4", limit, now_ms - 100_000, 2)
+            state.tokens_milli = 0
+            await repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        "parent-1",
+                        "gpt-4",
+                        [state],
+                        now_ms - 100_000,
+                        shard_id=shard_id,
+                        shard_count=2,
+                    )
+                ]
+            )
+        child = BucketState.from_limit("user-1", "gpt-4", limit, now_ms)
+        await repo.transact_write(
+            [
+                repo.build_composite_create(
+                    "user-1", "gpt-4", [child], now_ms, cascade=True, parent_id="parent-1"
+                )
+            ]
+        )
+        # Cold child cache -> sequential parent speculative; parent draws from 2
+        repo._entity_cache.pop((ns, "user-1"), None)
+        repo._entity_cache[(ns, "parent-1")] = (False, None, {"gpt-4": 2})
+        limiter._speculative_writes = True
+
+        parent_reads: list[int] = []
+        original_fetch = limiter._fetch_buckets
+
+        async def spy(entity_ids, resource, shard_id):
+            if "parent-1" in entity_ids:
+                parent_reads.append(shard_id)
+            return await original_fetch(entity_ids, resource, shard_id)
+
+        limiter._fetch_buckets = spy
+        # First draw (parent speculative) -> shard 1; a second draw would give 0
+        with patch("zae_limiter.repository.random.randrange", side_effect=[1, 0, 0]):
+            async with limiter.acquire("user-1", "gpt-4", {"rpm": 10}) as lease:
+                parent_entry = next(e for e in lease.entries if e.entity_id == "parent-1")
+                assert parent_entry._shard_id == 1
+
+        assert parent_reads == [1]
+        shard0 = await repo.get_buckets("parent-1", resource="gpt-4", shard_id=0)
+        assert next(b for b in shard0 if b.limit_name == "rpm").tokens_milli == 0, (
+            "parent shard 0 was never judged and must not be written"
+        )
+        item1 = await (await repo._get_client()).get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(ns, "parent-1", "gpt-4", 1)},
+                "SK": {"S": schema.sk_state()},
+            },
+        )
+        assert int(item1["Item"][schema.bucket_attr("rpm", schema.BUCKET_FIELD_TK)]["N"]) > 0
+
+    async def test_reissued_put_that_loses_the_create_race_is_downgraded(self, limiter):
+        """First transaction: parent rf conflict rolls back the innocent child
+        Put. The Put is re-issued, but the aggregator creates the shard in
+        between, so the retry transaction cancels on the Put. That must be
+        downgraded to a consumption-only debit, not surfaced as a rejection."""
+        from zae_limiter import schema
+
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        cp_milli = self.CAPACITY * 1000
+        repo = await self._seed_cascade_child(limiter, limit, parent_tokens_milli=cp_milli)
+        ns = repo._namespace_id
+        client = await repo._get_client()
+        await client.delete_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(ns, "user-1", "gpt-4", 1)},
+                "SK": {"S": schema.sk_state()},
+            },
+        )
+        repo._entity_cache[(ns, "user-1")] = (True, "parent-1", {"gpt-4": 2})
+
+        original_transact = repo.transact_write
+        calls = 0
+
+        async def hostile_environment(items):
+            nonlocal calls
+            calls += 1
+            if calls == 1:  # parent refilled concurrently -> rf lock lost
+                await client.update_item(
+                    TableName=repo.table_name,
+                    Key={
+                        "PK": {"S": schema.pk_bucket(ns, "parent-1", "gpt-4", 0)},
+                        "SK": {"S": schema.sk_state()},
+                    },
+                    UpdateExpression="SET #rf = :rf",
+                    ExpressionAttributeNames={"#rf": schema.BUCKET_FIELD_RF},
+                    ExpressionAttributeValues={":rf": {"N": str(int(time.time() * 1000) + 5)}},
+                )
+            elif calls == 2:  # aggregator Path 2 creates shard 1 first
+                now_ms = int(time.time() * 1000)
+                state = BucketState.from_limit("user-1", "gpt-4", limit, now_ms, 2)
+                await original_transact(
+                    [
+                        repo.build_composite_create(
+                            "user-1", "gpt-4", [state], now_ms, shard_id=1, shard_count=2
+                        )
+                    ]
+                )
+            return await original_transact(items)
+
+        repo.transact_write = hostile_environment
+        with patch("zae_limiter.repository.random.randrange", return_value=1):
+            async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+                assert {e.entity_id for e in lease.entries} == {"user-1", "parent-1"}
+
+        assert calls == 3
+        shard1 = await self._raw_item(repo, 1)
+        assert self._n(shard1, "rpm", schema.BUCKET_FIELD_TK) == cp_milli // 2 - 1000
+        parent = await repo.get_buckets("parent-1", resource="gpt-4", shard_id=0)
+        assert next(b for b in parent if b.limit_name == "rpm").tokens_milli == cp_milli - 1000
+
+    async def test_sharded_cascade_child_still_fast_rejects(self, limiter):
+        """Refill would not help on the child's shard: reject from the ALL_OLD
+        image with zero slow-path reads (as on main), compensating the parent
+        debit that succeeded in parallel. The slow path is only for the case
+        where refill would help."""
+        from zae_limiter.exceptions import RateLimitExceeded
+
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        cp_milli = self.CAPACITY * 1000
+        repo = await self._seed_cascade_child(limiter, limit, parent_tokens_milli=cp_milli)
+        repo._entity_cache[(repo._namespace_id, "user-1")] = (True, "parent-1", {"gpt-4": 2})
+
+        reads = AsyncMock(side_effect=AssertionError("slow path must not read"))
+        with (
+            patch.object(repo, "batch_get_entity_and_buckets", reads),
+            patch("zae_limiter.repository.random.randrange", return_value=0),
+        ):
+            with pytest.raises(RateLimitExceeded):
+                async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+                    pass
+
+        reads.assert_not_called()
+        parent = await repo.get_buckets("parent-1", resource="gpt-4", shard_id=0)
+        assert next(b for b in parent if b.limit_name == "rpm").tokens_milli == cp_milli
+
+    async def test_available_sums_every_shard(self, limiter):
+        """available() must report the entity's total across shards, not the
+        balance of shard 0 alone (which now holds at most capacity // N)."""
+        limit = Limit.custom("rpm", 100, refill_amount=1, refill_period_seconds=3600)
+        now_ms = int(time.time() * 1000)
+        repo = await self._seed_shards(limiter, 2, limit, tokens_milli=50_000, rf_ms=now_ms)
+        # A drained bucket for another resource must not leak into the sum
+        other = BucketState.from_limit("user-1", "other", limit, now_ms)
+        other.tokens_milli = 0
+        await repo.transact_write([repo.build_composite_create("user-1", "other", [other], now_ms)])
+
+        assert await limiter.available("user-1", "gpt-4") == {"rpm": 100}
+        assert await limiter.available("user-1", "other") == {"rpm": 0}
+        assert await limiter.available("user-1", "unused") == {"rpm": 100}
+
+    async def test_missing_parent_shard_is_created_where_the_fast_path_looked(self, limiter):
+        """Parent cache says 2 shards; the speculative parent write hit shard 1
+        and found it missing. The slow path must create parent shard 1, not
+        draw a fresh parent shard (which could be 0)."""
+        from zae_limiter import schema
+
+        repo = limiter._repository
+        ns = repo._namespace_id
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        now_ms = int(time.time() * 1000)
+        await limiter.create_entity("parent-1")
+        await limiter.create_entity("user-1", parent_id="parent-1", cascade=True)
+        await limiter.set_system_defaults([limit])
+        child = BucketState.from_limit("user-1", "gpt-4", limit, now_ms)
+        await repo.transact_write(
+            [
+                repo.build_composite_create(
+                    "user-1", "gpt-4", [child], now_ms, cascade=True, parent_id="parent-1"
+                )
+            ]
+        )
+        # Cold child cache -> sequential parent speculative; parent draws from 2
+        repo._entity_cache.pop((ns, "user-1"), None)
+        repo._entity_cache[(ns, "parent-1")] = (False, None, {"gpt-4": 2})
+        limiter._speculative_writes = True
+
+        # First draw (parent speculative) -> shard 1; a re-draw would give 0
+        with patch("zae_limiter.repository.random.randrange", side_effect=[1, 0, 0]):
+            async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+                parent_entry = next(e for e in lease.entries if e.entity_id == "parent-1")
+                assert parent_entry._shard_id == 1
+
+        client = await repo._get_client()
+        for shard_id, expect in ((1, True), (0, False)):
+            resp = await client.get_item(
+                TableName=repo.table_name,
+                Key={
+                    "PK": {"S": schema.pk_bucket(ns, "parent-1", "gpt-4", shard_id)},
+                    "SK": {"S": schema.sk_state()},
+                },
+            )
+            assert ("Item" in resp) is expect, f"parent shard {shard_id}"
+        item1 = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(ns, "parent-1", "gpt-4", 1)},
+                "SK": {"S": schema.sk_state()},
+            },
+        )
+        assert item1["Item"]["shard_count"]["N"] == "2"
+
+    @staticmethod
+    async def _slow_wcu_refill(repo, shard_id: int = 0) -> None:
+        """Model sustained pressure: this shard's wcu refills once an hour, so
+        a drained wcu is a hot partition rather than a stale balance."""
+        from zae_limiter import schema
+
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, "user-1", "gpt-4", shard_id)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="SET #rp = :hour, #ra = :one",
+            ExpressionAttributeNames={
+                "#rp": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_RP),
+                "#ra": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_RA),
+            },
+            ExpressionAttributeValues={":hour": {"N": "3600000"}, ":one": {"N": "1"}},
+        )
+
+    @staticmethod
+    async def _drain_wcu(repo, shard_id: int, rf_ms: int) -> None:
+        """Zero the wcu balance on a shard and pin the shared rf."""
+        from zae_limiter import schema
+
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, "user-1", "gpt-4", shard_id)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="SET #wcu = :zero, #rf = :rf",
+            ExpressionAttributeNames={
+                "#wcu": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK),
+                "#rf": schema.BUCKET_FIELD_RF,
+            },
+            ExpressionAttributeValues={":zero": {"N": "0"}, ":rf": {"N": str(rf_ms)}},
+        )
+
+    async def test_slow_path_refills_wcu_as_an_undeclared_carrier(self, limiter):
+        """Without the aggregator nobody refilled wcu. The slow path must refill
+        it from its stored ra/rp like any undeclared limit — never gated,
+        never a status, never visible through the lease."""
+        from zae_limiter import schema
+
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        now_ms = int(time.time() * 1000)
+        repo = await self._seed_shards(
+            limiter, 1, limit, tokens_milli=self.CAPACITY * 1000, rf_ms=now_ms
+        )
+        await self._drain_wcu(repo, 0, now_ms - 2_000)  # two wcu refill windows ago
+        limiter._speculative_writes = False
+
+        async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+            assert lease.consumed == {"rpm": 1}
+            assert {e.limit.name for e in lease.entries if e._declared} == {"rpm"}
+
+        item = await self._raw_item(repo, 0)
+        assert (
+            self._n(item, schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK)
+            == schema.WCU_LIMIT_CAPACITY * 1000
+        )
+
+    async def test_exhausted_wcu_that_would_refill_does_not_double(self, limiter):
+        """wcu exhausted an instant ago is not a hot partition: the image's
+        refill would restore it, so take the slow path on the same shard
+        (which refills wcu) instead of doubling toward the cap."""
+        from zae_limiter import schema
+
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        now_ms = int(time.time() * 1000)
+        repo = await self._seed_shards(
+            limiter, 1, limit, tokens_milli=self.CAPACITY * 1000, rf_ms=now_ms
+        )
+        await self._drain_wcu(repo, 0, now_ms - 2_000)
+        ns = repo._namespace_id
+
+        async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+            assert {e._shard_id for e in lease.entries} == {0}
+
+        assert repo._entity_cache[(ns, "user-1")][2]["gpt-4"] == 1, "no doubling"
+        assert await self._raw_item(repo, 1) is None
+        item = await self._raw_item(repo, 0)
+        assert (
+            self._n(item, schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK)
+            == schema.WCU_LIMIT_CAPACITY * 1000
+        )
+        assert self._n(item, "rpm", schema.BUCKET_FIELD_TK) == self.CAPACITY * 1000 - 1000
+
+    async def test_create_race_lost_to_aggregator_consumes_once(self, limiter):
+        """If the aggregator's Path 2 wins the create, the client retries as a
+        consumption-only conditional write on that shard: one debit, no
+        over-admission, no second fallback."""
+        from zae_limiter import schema
+
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        repo = await self._seed_shard0(limiter, shard_count=2, limit=limit)
+        cp_milli = self.CAPACITY * 1000
+
+        original_transact = repo.transact_write
+        raced = False
+
+        async def aggregator_wins(items):
+            nonlocal raced
+            if not raced and any("Put" in item for item in items):
+                raced = True
+                # Path 2 clone: effective per-shard tokens, undivided wcu
+                now_ms = int(time.time() * 1000)
+                state = BucketState.from_limit("user-1", "gpt-4", limit, now_ms)
+                state.tokens_milli = cp_milli // 2
+                await original_transact(
+                    [
+                        repo.build_composite_create(
+                            "user-1", "gpt-4", [state], now_ms, shard_id=1, shard_count=2
+                        )
+                    ]
+                )
+            return await original_transact(items)
+
+        repo.transact_write = aggregator_wins
+        with patch("zae_limiter.repository.random.randrange", return_value=1):
+            async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+                assert {e._shard_id for e in lease.entries} == {1}
+
+        assert raced
+        shard1 = await self._raw_item(repo, 1)
+        assert self._n(shard1, "rpm", schema.BUCKET_FIELD_TK) == cp_milli // 2 - 1000
+
+    async def test_bump_lost_race_still_moves_off_the_hot_shard(self, limiter):
+        """If another client doubled first, our conditional bump loses. The
+        loser must learn the winner's shard_count from the failed write's
+        ALL_OLD image and draw from the newly added range, not cache its own
+        stale count and land back on the exhausted shard 0."""
+        from zae_limiter import schema
+
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        repo = await self._seed_shard0(limiter, shard_count=1, limit=limit)
+        ns = repo._namespace_id
+        await self._slow_wcu_refill(repo)
+        for _ in range(schema.WCU_LIMIT_CAPACITY):
+            await repo._speculative_consume_single("user-1", "gpt-4", {"rpm": 1}, shard_id=0)
+
+        client = await repo._get_client()
+        original_bump = repo.bump_shard_count
+
+        async def winner_doubles_first(entity_id, resource, current_count):
+            # The concurrent winner lands 1 -> 2 just before our bump
+            await client.update_item(
+                TableName=repo.table_name,
+                Key={
+                    "PK": {"S": schema.pk_bucket(ns, "user-1", "gpt-4", 0)},
+                    "SK": {"S": schema.sk_state()},
+                },
+                UpdateExpression="SET shard_count = :two",
+                ExpressionAttributeValues={":two": {"N": "2"}},
+            )
+            return await original_bump(entity_id, resource, current_count)
+
+        repo.bump_shard_count = winner_doubles_first
+
+        slow_path_shards: list[int | None] = []
+        original_do_acquire = limiter._do_acquire
+
+        async def spy(*args, **kwargs):
+            slow_path_shards.append(kwargs.get("shard_id"))
+            return await original_do_acquire(*args, **kwargs)
+
+        limiter._do_acquire = spy
+        async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+            assert {e._shard_id for e in lease.entries} == {1}
+
+        assert slow_path_shards == [1], "the loser must draw from range(old=1, new=2)"
+        assert repo._entity_cache[(ns, "user-1")][2]["gpt-4"] == 2
+        shard1 = await self._raw_item(repo, 1)
+        assert shard1 is not None and shard1["shard_count"]["N"] == "2"
+
+    async def test_bump_without_increase_stays_on_the_selected_shard(self, limiter):
+        """If the bump cannot report a larger count (shard 0 vanished between
+        the failed write and the bump), there is no new range to draw from;
+        the slow path keeps the shard it already selected."""
+        from zae_limiter import schema
+
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        repo = await self._seed_shard0(limiter, shard_count=1, limit=limit)
+        await self._slow_wcu_refill(repo)
+        for _ in range(schema.WCU_LIMIT_CAPACITY):
+            await repo._speculative_consume_single("user-1", "gpt-4", {"rpm": 1}, shard_id=0)
+        repo.bump_shard_count = AsyncMock(return_value=1)
+
+        slow_path_shards: list[int | None] = []
+        original_do_acquire = limiter._do_acquire
+
+        async def spy(*args, **kwargs):
+            slow_path_shards.append(kwargs.get("shard_id"))
+            return await original_do_acquire(*args, **kwargs)
+
+        limiter._do_acquire = spy
+        async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+            assert {e._shard_id for e in lease.entries} == {0}
+        assert slow_path_shards == [0]
+
+    async def test_cascade_slow_path_reads_parent_shard_without_batch_support(
+        self, limiter, monkeypatch
+    ):
+        """The sequential get_buckets fallback carries the parent's shard too."""
+        from zae_limiter.models import BackendCapabilities
+
+        await limiter.create_entity("parent-1")
+        await limiter.create_entity("child-1", parent_id="parent-1", cascade=True)
+        await limiter.set_system_defaults(
+            [Limit.custom("rpm", 100, refill_amount=1, refill_period_seconds=3600)]
+        )
+        monkeypatch.setattr(
+            limiter._repository,
+            "_capabilities",
+            BackendCapabilities(
+                supports_audit_logging=True,
+                supports_usage_snapshots=True,
+                supports_infrastructure_management=True,
+                supports_change_streams=True,
+                supports_batch_operations=False,
+            ),
+        )
+
+        for _ in range(2):  # create, then read back existing buckets via get_buckets
+            async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}) as lease:
+                by_entity = {e.entity_id: e._shard_id for e in lease.entries}
+                assert by_entity == {"child-1": 0, "parent-1": 0}
+
+        parent = await limiter._repository.get_buckets("parent-1", "gpt-4", shard_id=0)
+        assert next(b for b in parent if b.limit_name == "rpm").tokens_milli == 98_000
+
+
+class TestCascadeParentSharding:
+    """The parallel cascade fast path must shard the parent too (issue #474).
+
+    ``speculative_consume`` drew the child's shard from the entity cache but
+    called the parent's ``_speculative_consume_single`` with the default
+    ``shard_id=0``. A high-fanout cascade parent — the exact case write
+    sharding exists to protect (GHSA-76rv, issue #116) — therefore kept every
+    warm-path write on parent shard 0 no matter how far its ``shard_count``
+    had been doubled, while the slow path (#466) drew the parent's shard from
+    its cached count: the two paths disagreed about which parent shard holds
+    the tokens.
+    """
+
+    CAPACITY = 100_000
+
+    @staticmethod
+    def _n(item: dict, limit_name: str, field: str) -> int:
+        from zae_limiter import schema
+
+        return int(item[schema.bucket_attr(limit_name, field)]["N"])
+
+    @staticmethod
+    async def _raw_item(repo, entity_id: str, shard_id: int) -> dict | None:
+        from zae_limiter import schema
+
+        client = await repo._get_client()
+        resp = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, "gpt-4", shard_id)},
+                "SK": {"S": schema.sk_state()},
+            },
+        )
+        return resp.get("Item")
+
+    @staticmethod
+    async def _slow_wcu_refill(repo, entity_id: str, shard_id: int) -> None:
+        """Model sustained pressure: this shard's wcu refills once an hour, so
+        a drained wcu is a hot partition rather than a stale balance."""
+        from zae_limiter import schema
+
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, "gpt-4", shard_id)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="SET #rp = :hour, #ra = :one",
+            ExpressionAttributeNames={
+                "#rp": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_RP),
+                "#ra": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_RA),
+            },
+            ExpressionAttributeValues={":hour": {"N": "3600000"}, ":one": {"N": "1"}},
+        )
+
+    @staticmethod
+    async def _drain_wcu(repo, entity_id: str, shard_id: int) -> None:
+        """Zero this shard's wcu and slow its refill to once an hour.
+
+        A drained balance that refill cannot restore is what the client reads
+        as a hot partition (ADR-133); the stock 1000/s rate would restore a
+        write on any elapsed millisecond. ``rf`` is shared by every limit on
+        the item, so pinning it to now also freezes the app limits.
+        """
+        from zae_limiter import schema
+
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, "gpt-4", shard_id)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="SET #wcu = :zero, #rf = :rf, #ra = :one, #rp = :hour",
+            ExpressionAttributeNames={
+                "#wcu": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK),
+                "#rf": schema.BUCKET_FIELD_RF,
+                "#ra": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_RA),
+                "#rp": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_RP),
+            },
+            ExpressionAttributeValues={
+                ":zero": {"N": "0"},
+                ":rf": {"N": str(int(time.time() * 1000))},
+                ":one": {"N": "1"},
+                ":hour": {"N": "3600000"},
+            },
+        )
+
+    async def _seed(
+        self,
+        limiter,
+        limit,
+        *,
+        parent_shard_count: int,
+        parent_shards=(0,),
+        parent_tokens_milli: int | None = None,
+        parent_rf_ms: int | None = None,
+    ):
+        """Child on a single shard; parent with ``parent_shard_count`` shards.
+
+        Only ``parent_shards`` exist as items, so a draw onto another one is a
+        ``BUCKET_MISSING`` the slow path has to create. The child's cache entry
+        is warm, which is what selects the parallel cascade path.
+        """
+        repo = limiter._repository
+        ns = repo._namespace_id
+        now_ms = int(time.time() * 1000)
+        rf_ms = parent_rf_ms if parent_rf_ms is not None else now_ms
+        await limiter.create_entity("parent-1")
+        await limiter.create_entity("user-1", parent_id="parent-1", cascade=True)
+        await limiter.set_system_defaults([limit])
+        for shard_id in parent_shards:
+            state = BucketState.from_limit("parent-1", "gpt-4", limit, rf_ms, parent_shard_count)
+            if parent_tokens_milli is not None:
+                state.tokens_milli = parent_tokens_milli
+            await repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        "parent-1",
+                        "gpt-4",
+                        [state],
+                        rf_ms,
+                        shard_id=shard_id,
+                        shard_count=parent_shard_count,
+                    )
+                ]
+            )
+        child = BucketState.from_limit("user-1", "gpt-4", limit, now_ms)
+        await repo.transact_write(
+            [
+                repo.build_composite_create(
+                    "user-1", "gpt-4", [child], now_ms, cascade=True, parent_id="parent-1"
+                )
+            ]
+        )
+        repo._entity_cache[(ns, "user-1")] = (True, "parent-1", {"gpt-4": 1})
+        repo._entity_cache[(ns, "parent-1")] = (False, None, {"gpt-4": parent_shard_count})
+        limiter._speculative_writes = True
+        return repo
+
+    async def test_parallel_cascade_debits_the_parents_own_shard(self, limiter):
+        """The parent's shard comes from the parent's cached shard_count, drawn
+        exactly once — not from the child's, and never hardcoded to 0."""
+        from zae_limiter import schema
+
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        repo = await self._seed(limiter, limit, parent_shard_count=4, parent_shards=range(4))
+        share = self.CAPACITY * 1000 // 4
+
+        # The child's cached count is 1, so the single draw is the parent's.
+        with patch("zae_limiter.repository.random.randrange", side_effect=[3]):
+            async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+                parent_entry = next(e for e in lease.entries if e.entity_id == "parent-1")
+                assert parent_entry._shard_id == 3
+
+        item3 = await self._raw_item(repo, "parent-1", 3)
+        assert self._n(item3, "rpm", schema.BUCKET_FIELD_TK) == share - 1000
+        item0 = await self._raw_item(repo, "parent-1", 0)
+        assert self._n(item0, "rpm", schema.BUCKET_FIELD_TK) == share, (
+            "parent shard 0 must not absorb every cascade write"
+        )
+
+    async def test_parallel_cascade_spreads_the_parent_across_its_shards(self, limiter):
+        """Unpatched, repeated cascade acquires must reach more than one parent
+        shard: shard 0 alone is the hot partition sharding exists to avoid."""
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        repo = await self._seed(limiter, limit, parent_shard_count=4, parent_shards=range(4))
+
+        parent_shards: set[int] = set()
+        original = repo._speculative_consume_single
+
+        async def spy(entity_id, resource, consume, ttl_seconds=None, shard_id=0, now_ms=None):
+            if entity_id == "parent-1":
+                parent_shards.add(shard_id)
+            return await original(entity_id, resource, consume, ttl_seconds, shard_id=shard_id)
+
+        repo._speculative_consume_single = spy
+        for _ in range(24):
+            async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+                pass
+
+        assert parent_shards <= {0, 1, 2, 3}
+        assert len(parent_shards) > 1, "every parent write landed on one shard"
+
+    async def test_compensation_credits_the_parent_shard_that_was_debited(self, limiter):
+        """The child fails while the parent's parallel debit succeeded: the
+        compensating credit must go back to the parent shard that was debited."""
+        from zae_limiter import schema
+
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        repo = await self._seed(limiter, limit, parent_shard_count=4, parent_shards=range(4))
+        # Drain the child: its speculative write fails and refill cannot help
+        await repo._speculative_consume_single(
+            "user-1", "gpt-4", {"rpm": self.CAPACITY}, shard_id=0
+        )
+        share = self.CAPACITY * 1000 // 4
+
+        with patch("zae_limiter.repository.random.randrange", side_effect=[2]):
+            with pytest.raises(RateLimitExceeded):
+                async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+                    pass
+
+        # rpm is debited and credited back on the same shard, so the wcu the
+        # debit spent (and compensation never returns) is the fingerprint of
+        # which parent shard the pair of writes hit.
+        shard2 = await self._raw_item(repo, "parent-1", 2)
+        assert self._n(shard2, "rpm", schema.BUCKET_FIELD_TK) == share
+        assert self._n(shard2, schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK) == (
+            (schema.WCU_LIMIT_CAPACITY - 1) * 1000
+        )
+        shard0 = await self._raw_item(repo, "parent-1", 0)
+        assert self._n(shard0, schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK) == (
+            schema.WCU_LIMIT_CAPACITY * 1000
+        )
+
+    async def test_parent_only_fallback_reuses_the_drawn_parent_shard(self, limiter):
+        """The "refill would help" decision was made on the ALL_OLD image of
+        the parent shard the parallel write hit; the parent-only slow path must
+        read and debit that same shard rather than draw a new one."""
+        from zae_limiter import schema
+
+        # 1 token/s; every parent shard was drained 100 s ago -> refill helps
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=3600, refill_period_seconds=3600)
+        now_ms = int(time.time() * 1000)
+        repo = await self._seed(
+            limiter,
+            limit,
+            parent_shard_count=4,
+            parent_shards=range(4),
+            parent_tokens_milli=0,
+            parent_rf_ms=now_ms - 100_000,
+        )
+
+        parent_reads: list[int] = []
+        original_fetch = limiter._fetch_buckets
+
+        async def spy(entity_ids, resource, shard_id):
+            if "parent-1" in entity_ids:
+                parent_reads.append(shard_id)
+            return await original_fetch(entity_ids, resource, shard_id)
+
+        limiter._fetch_buckets = spy
+        with patch("zae_limiter.repository.random.randrange", side_effect=[2]):
+            async with limiter.acquire("user-1", "gpt-4", {"rpm": 10}) as lease:
+                parent_entry = next(e for e in lease.entries if e.entity_id == "parent-1")
+                assert parent_entry._shard_id == 2
+
+        assert parent_reads == [2]
+        item2 = await self._raw_item(repo, "parent-1", 2)
+        assert self._n(item2, "rpm", schema.BUCKET_FIELD_TK) > 0
+        item0 = await self._raw_item(repo, "parent-1", 0)
+        assert self._n(item0, "rpm", schema.BUCKET_FIELD_TK) == 0, (
+            "a parent shard the fast path never judged must not be written"
+        )
+
+    async def test_learning_the_parent_keeps_its_cascade_metadata(self, limiter):
+        """Growing the parent's shard_count must not rewrite its cascade
+        metadata. A parent shard created by a *child's* cascade slow path is
+        stamped ``cascade=False, parent_id=None`` (`_do_acquire` only
+        denormalizes the acquiring entity's own flags), so learning
+        ``meta`` from such an item downgrades the parent's cache entry and the
+        next ``acquire(parent)`` silently stops debiting the grandparent for
+        the life of the process — ``_entity_cache`` has no TTL."""
+        from zae_limiter import schema
+
+        repo = limiter._repository
+        ns = repo._namespace_id
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        await limiter.create_entity("grandparent-1")
+        await limiter.create_entity("parent-1", parent_id="grandparent-1", cascade=True)
+        await limiter.create_entity("user-1", parent_id="parent-1", cascade=True)
+        await limiter.set_system_defaults([limit])
+        limiter._speculative_writes = True
+
+        # The parent's own acquire creates its shard 0 (stamped cascade=True)
+        # plus the grandparent's, and caches (cascade=True, "grandparent-1")
+        # from the authoritative entity META record.
+        async with limiter.acquire("parent-1", "gpt-4", {"rpm": 1}):
+            pass
+        assert repo._entity_cache[(ns, "parent-1")][:2] == (True, "grandparent-1")
+        # One child acquire to warm the child's cache for the parallel path
+        async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+            pass
+
+        # Parent shard 1 as a child's cascade slow path creates it: no cascade
+        # flag, no parent_id. The parent's cached count grows to cover it.
+        now_ms = int(time.time() * 1000)
+        state = BucketState.from_limit("parent-1", "gpt-4", limit, now_ms, 2)
+        await repo.transact_write(
+            [
+                repo.build_composite_create(
+                    "parent-1", "gpt-4", [state], now_ms, shard_id=1, shard_count=2
+                )
+            ]
+        )
+        repo._entity_cache[(ns, "parent-1")] = (True, "grandparent-1", {"gpt-4": 2})
+
+        with patch("zae_limiter.repository.random.randrange", return_value=1):
+            # Warm cascade acquire drawing the parent's shard 1
+            async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+                pass
+            assert repo._entity_cache[(ns, "parent-1")][:2] == (True, "grandparent-1"), (
+                "a bucket item must not rewrite the parent's cascade metadata"
+            )
+
+            before = self._n(
+                await self._raw_item(repo, "grandparent-1", 0), "rpm", schema.BUCKET_FIELD_TK
+            )
+            async with limiter.acquire("parent-1", "gpt-4", {"rpm": 1}) as lease:
+                assert "grandparent-1" in {e.entity_id for e in lease.entries}
+        after = self._n(
+            await self._raw_item(repo, "grandparent-1", 0), "rpm", schema.BUCKET_FIELD_TK
+        )
+        assert after == before - 1000, "the grandparent must still be debited"
+
+    async def test_exhausted_parent_shard_does_not_pin_the_slow_path(self, limiter):
+        """An exhausted parent shard must not be handed to the slow path. Each
+        shard holds its own share and ADR-134 re-picks on every call, so
+        re-drawing can admit where the drawn shard could not — pinning turns a
+        recoverable cascade into a rejection (here: 3 of the parent's 4 shards
+        are full)."""
+        from zae_limiter import schema
+
+        # 1 token/s
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=3600, refill_period_seconds=3600)
+        now_ms = int(time.time() * 1000)
+        repo = await self._seed(limiter, limit, parent_shard_count=4, parent_shards=range(4))
+        ns = repo._namespace_id
+        client = await repo._get_client()
+        # Parent shard 2 drained just now: refill cannot rescue it
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(ns, "parent-1", "gpt-4", 2)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="SET #tk = :zero, #rf = :now",
+            ExpressionAttributeNames={
+                "#tk": schema.bucket_attr("rpm", schema.BUCKET_FIELD_TK),
+                "#rf": schema.BUCKET_FIELD_RF,
+            },
+            ExpressionAttributeValues={":zero": {"N": "0"}, ":now": {"N": str(now_ms)}},
+        )
+        # Child drained 100 s ago: its own refill would help, so the child
+        # failure falls through to the slow path instead of fast-rejecting
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(ns, "user-1", "gpt-4", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="SET #tk = :zero, #rf = :then",
+            ExpressionAttributeNames={
+                "#tk": schema.bucket_attr("rpm", schema.BUCKET_FIELD_TK),
+                "#rf": schema.BUCKET_FIELD_RF,
+            },
+            ExpressionAttributeValues={
+                ":zero": {"N": "0"},
+                ":then": {"N": str(now_ms - 100_000)},
+            },
+        )
+
+        # Parent's parallel draw -> the drained shard 2; the slow path's
+        # re-draw -> shard 1, which is full.
+        with patch("zae_limiter.repository.random.randrange", side_effect=[2, 1]):
+            async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+                parent_entry = next(e for e in lease.entries if e.entity_id == "parent-1")
+                assert parent_entry._shard_id == 1
+
+        drained = await self._raw_item(repo, "parent-1", 2)
+        assert self._n(drained, "rpm", schema.BUCKET_FIELD_TK) == 0, (
+            "the drained shard must not be debited further"
+        )
+
+    async def test_missing_parent_shard_is_still_created_where_it_was_sought(self, limiter):
+        """The one reason that does pin the slow path: a parent shard the fast
+        path found missing must be created there, not re-drawn. Guards the
+        narrowing above — the patched draw raises StopIteration on a re-draw."""
+        from zae_limiter import schema
+
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        # Cached count of 4, but only the parent's shard 0 exists
+        repo = await self._seed(limiter, limit, parent_shard_count=4)
+
+        with patch("zae_limiter.repository.random.randrange", side_effect=[2]):
+            async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+                parent_entry = next(e for e in lease.entries if e.entity_id == "parent-1")
+                assert parent_entry._shard_id == 2
+
+        shard2 = await self._raw_item(repo, "parent-1", 2)
+        assert shard2 is not None, "the missing parent shard must be created where it was sought"
+        assert shard2["shard_count"]["N"] == "4"
+        assert self._n(shard2, "rpm", schema.BUCKET_FIELD_TK) == self.CAPACITY * 1000 // 4 - 1000
+
+    async def test_cold_cache_cascade_spreads_the_parent_too(self, limiter):
+        """The sequential (cache-miss) cascade branch must handle a parent
+        failure exactly like the warm parallel path: the first acquire of an
+        entity is just as capable of finding the parent's shard hot, and left
+        to itself it kept writing to the hot partition forever."""
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        repo = await self._seed(limiter, limit, parent_shard_count=1)
+        ns = repo._namespace_id
+        await self._drain_wcu(repo, "parent-1", 0)
+        # Cold child cache -> the sequential parent speculative write
+        del repo._entity_cache[(ns, "user-1")]
+
+        async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+            parent_entry = next(e for e in lease.entries if e.entity_id == "parent-1")
+            assert parent_entry._shard_id == 1
+
+        assert repo._entity_cache[(ns, "parent-1")][2]["gpt-4"] == 2
+        shard1 = await self._raw_item(repo, "parent-1", 1)
+        assert shard1 is not None, "a cold-cache cascade must spread a hot parent too"
+        assert shard1["shard_count"]["N"] == "2"
+
+    async def test_parent_doubling_skips_the_futile_parent_only_attempt(self, limiter):
+        """A doubling hands back a shard from `range(old, new)`, which by
+        construction does not exist yet, so a parent-only attempt could only
+        resolve limits, BatchGet a miss and return None before the caller falls
+        through to the full slow path anyway. Skip it."""
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        repo = await self._seed(limiter, limit, parent_shard_count=1)
+        # Parent wcu drained with an hourly refill, rpm untouched: a hot
+        # partition whose app limit still has room, so the acquire proceeds.
+        await self._drain_wcu(repo, "parent-1", 0)
+
+        parent_only_shards: list[int] = []
+        original = limiter._try_parent_only_acquire
+
+        async def spy(parent_id, resource, consume, child_entries, parent_shard, parent_count):
+            parent_only_shards.append(parent_shard)
+            return await original(
+                parent_id, resource, consume, child_entries, parent_shard, parent_count
+            )
+
+        limiter._try_parent_only_acquire = spy
+        async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+            parent_entry = next(e for e in lease.entries if e.entity_id == "parent-1")
+            assert parent_entry._shard_id == 1
+
+        assert parent_only_shards == [], "a shard the doubling just added cannot exist yet"
+        assert await self._raw_item(repo, "parent-1", 1) is not None
+
+    async def test_rejected_cascade_never_doubles_the_parent(self, limiter):
+        """A doubling on the way to a rejection is a pure side effect: nothing
+        creates or reads the shard it hands back. Repeating it once per
+        rejection walks a parent sitting at its limit from 1 to
+        MAX_SHARD_COUNT (``_learn_shard_count`` is monotonic, nothing shrinks
+        it), and every shard's share is then `capacity // 32` forever — the
+        "an exhausted shard must not drive doubling forever" failure ADR-133's
+        cap is meant to prevent, which the cap only guards for the
+        wcu-would-refill case."""
+        from zae_limiter import schema
+
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        # Parent drained on both rpm and wcu, refilling once an hour: this is
+        # BOTH_EXHAUSTED, the steady state of a hot parent at its limit.
+        repo = await self._seed(limiter, limit, parent_shard_count=1, parent_tokens_milli=0)
+        ns = repo._namespace_id
+        await self._drain_wcu(repo, "parent-1", 0)
+
+        for _ in range(3):
+            with pytest.raises(RateLimitExceeded):
+                async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+                    pass
+
+        assert repo._entity_cache[(ns, "parent-1")][2]["gpt-4"] == 1
+        item = await self._raw_item(repo, "parent-1", 0)
+        assert item["shard_count"]["N"] == "1", "a rejected acquire must not shard the parent"
+        assert self._n(item, schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK) == 0
+
+    async def test_parent_wcu_exhaustion_doubles_the_parents_shard_count(self, limiter):
+        """A hot cascade parent must spread: the parent's own wcu exhaustion
+        doubles the parent's shard_count and routes the fallback to one of the
+        shards the doubling added, which the slow path then creates."""
+        from zae_limiter import schema
+
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        repo = await self._seed(limiter, limit, parent_shard_count=1)
+        ns = repo._namespace_id
+        await self._slow_wcu_refill(repo, "parent-1", 0)
+        for _ in range(schema.WCU_LIMIT_CAPACITY):
+            await repo._speculative_consume_single("parent-1", "gpt-4", {"rpm": 1}, shard_id=0)
+
+        async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+            parent_entry = next(e for e in lease.entries if e.entity_id == "parent-1")
+            assert parent_entry._shard_id == 1
+
+        assert repo._entity_cache[(ns, "parent-1")][2]["gpt-4"] == 2
+        shard1 = await self._raw_item(repo, "parent-1", 1)
+        assert shard1 is not None, "the parent must spread off its hot shard"
+        assert shard1["shard_count"]["N"] == "2"
+        assert self._n(shard1, "rpm", schema.BUCKET_FIELD_TK) == self.CAPACITY * 1000 // 2 - 1000
 
 
 class TestWcuHiddenFromUser:

@@ -116,6 +116,42 @@ class TestLimit:
         assert limit.refill_amount == 100
         assert limit.refill_period_seconds == 60
 
+    def test_from_bucket_state_reports_the_shards_share(self):
+        """A sharded bucket holds only ``capacity // shard_count``, so that is
+        what a status built from it must report (#475). Reporting the undivided
+        config promises a capacity no single shard can serve."""
+        state = BucketState(
+            entity_id="e1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=0,
+            last_refill_ms=1000,
+            capacity_milli=100_000,
+            refill_amount_milli=100_000,
+            refill_period_ms=60_000,
+            shard_count=4,
+        )
+        limit = Limit.from_bucket_state(state)
+        assert (limit.capacity, limit.refill_amount) == (25, 25)
+        assert limit.refill_period_seconds == 60
+
+    def test_per_shard_is_identity_for_an_unsharded_bucket(self):
+        limit = Limit.per_minute("rpm", 100)
+        assert limit.per_shard(1) is limit
+
+    def test_per_shard_divides_capacity_and_refill(self):
+        limit = Limit.per_minute("rpm", 1000, burst=2000)
+        shard = limit.per_shard(4)
+        assert (shard.capacity, shard.refill_amount) == (500, 250)
+        assert (shard.name, shard.refill_period_seconds) == ("rpm", 60)
+        assert (limit.capacity, limit.refill_amount) == (2000, 1000), "must not mutate"
+
+    def test_per_shard_floors_a_sub_token_share_to_one(self):
+        """``Limit`` is whole-token and validates ``capacity > 0``, so a share
+        below one token clamps rather than raising while building a status."""
+        shard = Limit.custom("rpd", 5, refill_amount=1, refill_period_seconds=60).per_shard(32)
+        assert (shard.capacity, shard.refill_amount) == (1, 1)
+
 
 class TestEntity:
     """Tests for Entity model."""

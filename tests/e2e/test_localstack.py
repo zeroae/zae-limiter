@@ -1223,3 +1223,103 @@ class TestE2EDeletionProtection:
                     "--yes",
                 ],
             )
+
+
+class TestE2EProvisionerReachesLiveBuckets:
+    """A manifest apply must change what an already-created bucket enforces (#481).
+
+    The bug is the seam between the provisioner and DynamoDB: ``_apply_set``
+    was a bare ``put_item`` on the config item and nothing pushed the new
+    params out to bucket items that already existed. Entity-level limits carry
+    no TTL (deliberately, #271/#296), so such a bucket kept enforcing the
+    numbers it was born with forever.
+
+    A unit test with a mocked client cannot catch a wrong attribute name or a
+    missing 1000x conversion (config items store whole tokens and seconds,
+    bucket items millitokens and milliseconds); only a real acquire against a
+    real table can.
+
+    ``_handle_cli`` is invoked in-process, exactly as
+    ``tests/integration/test_provisioner.py`` does -- the provisioner is sync
+    boto3 and needs no deployed Lambda to exercise this path.
+    """
+
+    @pytest_asyncio.fixture(scope="class", loop_scope="class")
+    async def provisioner_repo(self, shared_minimal_stack, unique_name_class):
+        """Namespace-scoped Repository on the shared minimal stack.
+
+        Minimal (no aggregator) on purpose: the aggregator's proactive refill
+        writes to the same bucket items and would make the token assertions
+        below racy.
+        """
+        ns = f"prov-{unique_name_class}"
+        repo = await Repository.open(
+            stack=shared_minimal_stack.name,
+            region=shared_minimal_stack.region,
+            endpoint_url=shared_minimal_stack.endpoint_url,
+        )
+        await repo.register_namespace(ns)
+        scoped = await repo.namespace(ns)
+        yield scoped
+        await repo.close()
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_apply_changes_an_existing_bucket(self, provisioner_repo):
+        from zae_limiter_provisioner.handler import _handle_cli
+
+        repo = provisioner_repo
+        limiter = RateLimiter(repository=repo)
+
+        # 1. Create a bucket by acquiring against a generous entity limit.
+        await repo.set_limits("user-1", [Limit.per_minute("rpm", 1000)], resource="gpt-4")
+        async with limiter.acquire("user-1", "gpt-4", consume={"rpm": 1}):
+            pass
+
+        before = await repo.get_buckets("user-1", resource="gpt-4")
+        rpm_before = next(b for b in before if b.limit_name == "rpm")
+        assert rpm_before.capacity == 1000
+
+        # 2. Apply a manifest that lowers it.
+        result = _handle_cli(
+            {
+                "action": "apply",
+                "table_name": repo.table_name,
+                "namespace_id": repo._namespace_id,
+                "manifest": {
+                    "namespace": "default",
+                    "entities": {
+                        "user-1": {"resources": {"gpt-4": {"limits": {"rpm": {"capacity": 10}}}}}
+                    },
+                },
+            },
+            None,
+        )
+        assert result["status"] == "applied"
+        assert result["errors"] == []
+
+        # 3. The EXISTING bucket item must now carry the new capacity.
+        #
+        # The config cache is per-Repository and the provisioner wrote the
+        # config item out of band, so evict before anything resolves limits.
+        await repo.invalidate_config_cache()
+        after = await repo.get_buckets("user-1", resource="gpt-4")
+        rpm_after = next(b for b in after if b.limit_name == "rpm")
+        assert rpm_after.capacity == 10, "manifest apply did not reach the live bucket"
+
+        # 4. And it must actually be enforced.
+        #
+        # Enforcement is only observable once a refill clamps the balance down
+        # to the new ceiling: `refill_bucket` does `min(capacity_milli, ...)`,
+        # and the bucket still holds the ~999 tokens it was created with. The
+        # default speculative fast path never refills -- it is a bare
+        # `ADD tk -consumed` guarded by `tk >= consumed` -- so it would admit
+        # 50 out of that stale balance no matter what `cp` says. The slow path
+        # refills from the stored params, which is where the synced `cp` bites.
+        # This is a property of the token bucket, not of the fix: lowering a
+        # limit lowers the ceiling, it does not confiscate tokens already in
+        # the bucket.
+        await asyncio.sleep(0.1)  # ensure a non-zero refill tick, so the clamp runs
+        slow_limiter = RateLimiter(repository=repo, speculative_writes=False)
+        with pytest.raises(RateLimitExceeded):
+            async with slow_limiter.acquire("user-1", "gpt-4", consume={"rpm": 50}):
+                pass
