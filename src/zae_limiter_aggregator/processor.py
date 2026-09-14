@@ -12,13 +12,22 @@ from boto3.dynamodb.types import TypeDeserializer
 from botocore.exceptions import ClientError
 
 from zae_limiter.bucket import refill_bucket
+from zae_limiter.schedule import (
+    ScheduleEntry,
+    decode,
+    effective_params,
+    next_boundary,
+)
 from zae_limiter.schema import (
     BUCKET_ATTR_PREFIX,
     BUCKET_FIELD_CP,
     BUCKET_FIELD_RA,
     BUCKET_FIELD_RP,
+    BUCKET_FIELD_SCHED,
+    BUCKET_FIELD_SCHED_TZ,
     BUCKET_FIELD_TC,
     BUCKET_FIELD_TK,
+    BUCKET_FIELD_VU,
     BUCKET_PREFIX,
     SK_BUCKET,
     WCU_LIMIT_NAME,
@@ -105,6 +114,9 @@ class LimitRefillInfo:
     cp_milli: int  # capacity / ceiling (millitokens)
     ra_milli: int  # refill_amount (millitokens)
     rp_ms: int  # refill_period (milliseconds)
+    # Schedule in force for *this* limit (#222): the item-level default unless
+    # the item carries a `b_{name}_sched` override. Empty means unscheduled.
+    sched: tuple[ScheduleEntry, ...] = ()
 
 
 @dataclass
@@ -122,6 +134,18 @@ class BucketRefillState:
     limits: dict[str, LimitRefillInfo] = field(default_factory=dict)
     shard_id: int = 0
     shard_count: int = 1
+    # Item-level default schedule (#222), decoded, plus the raw compact string
+    # the decode came from. The raw form is what the write conditions on, so a
+    # refill computed from a pre-fan-out image cannot land on an item whose
+    # schedule has since changed.
+    sched: tuple[ScheduleEntry, ...] = ()
+    sched_compact: str | None = None
+    # Item-level materialisation stamp. None when the attribute is absent.
+    vu_ms: int | None = None
+    # Set when a stored schedule could not be decoded (§6 — realistically a
+    # newer client's encoding). The bucket is then skipped entirely rather
+    # than refilled at the *base* rate, which would silently undo a scale-down.
+    sched_error: str | None = None
 
 
 def process_stream_records(
@@ -256,7 +280,7 @@ def process_stream_records(
         if record.get("eventName") != "MODIFY":
             continue
         try:
-            propagate_shard_count(table, record)
+            propagate_shard_count(table, record, now_ms)
         except Exception as e:
             error_msg = f"Error propagating shard_count: {e}"
             logger.warning(
@@ -288,6 +312,7 @@ class ParsedBucketLimit:
     cp_milli: int  # capacity / ceiling from NewImage
     ra_milli: int  # refill_amount from NewImage
     rp_ms: int  # refill_period from NewImage
+    sched: tuple[ScheduleEntry, ...] = ()  # per-limit schedule (#222)
 
 
 @dataclass
@@ -301,6 +326,28 @@ class ParsedBucketRecord:
     limits: dict[str, ParsedBucketLimit]
     shard_id: int = 0
     shard_count: int = 1
+    sched: tuple[ScheduleEntry, ...] = ()  # item-level default schedule (#222)
+    sched_compact: str | None = None  # raw stored form of ``sched``
+    vu_ms: int | None = None  # materialisation stamp, None when absent
+    sched_error: str | None = None  # set when a stored schedule would not decode
+
+
+def _decode_schedule(compact: str | None, tz: str) -> tuple[tuple[ScheduleEntry, ...], str | None]:
+    """Decode a stored compact schedule into ``(schedule, error)``.
+
+    A schedule that will not decode is reported rather than raised: the caller
+    degrades to "do not touch this bucket". Raising here would abort the whole
+    stream batch — including the usage snapshots, which do not care about
+    schedules — and a poison-pill record would then retry until the stream
+    stalled. §6 puts the decision about an unreadable schedule on the client,
+    where the operator's ``on_unavailable`` setting lives.
+    """
+    if not compact:
+        return (), None
+    try:
+        return decode(compact, tz), None
+    except ValueError as e:
+        return (), f"{compact!r} ({tz}): {e}"
 
 
 def _parse_bucket_record(record: dict[str, Any]) -> ParsedBucketRecord | None:
@@ -364,6 +411,17 @@ def _parse_bucket_record(record: dict[str, Any]) -> ParsedBucketRecord | None:
 
     rf_ms = int(new_image.get("rf", {}).get("N", "0"))
 
+    # Scheduled limits (#222). The bucket item carries its own schedule, so the
+    # aggregator evaluates one without ever reading config — the same property
+    # the client fast path relies on.
+    sched_tz = new_image.get(BUCKET_FIELD_SCHED_TZ, {}).get("S", "UTC")
+    sched_compact = new_image.get(BUCKET_FIELD_SCHED, {}).get("S")
+    sched, decode_error = _decode_schedule(sched_compact, sched_tz)
+    sched_error = f"item schedule {decode_error}" if decode_error else None
+
+    vu_raw = new_image.get(BUCKET_FIELD_VU, {}).get("N")
+    vu_ms = int(vu_raw) if vu_raw is not None else None
+
     # Discover limits by scanning b_{name}_tc attributes
     limits: dict[str, ParsedBucketLimit] = {}
     for attr_name in new_image:
@@ -398,16 +456,38 @@ def _parse_bucket_record(record: dict[str, Any]) -> ParsedBucketRecord | None:
         ra_attr = f"{BUCKET_ATTR_PREFIX}{limit_name}_{BUCKET_FIELD_RA}"
         rp_attr = f"{BUCKET_ATTR_PREFIX}{limit_name}_{BUCKET_FIELD_RP}"
 
+        # `b_{name}_sched` overrides the item-level default for this limit
+        # only (§4.1). Ignoring it would refill an overridden limit at the
+        # item default's rate — over-refilling whenever the override is the
+        # tighter of the two.
+        limit_sched = sched
+        sched_attr = f"{BUCKET_ATTR_PREFIX}{limit_name}_{BUCKET_FIELD_SCHED}"
+        limit_compact = new_image.get(sched_attr, {}).get("S")
+        if limit_compact and limit_compact != sched_compact:
+            limit_sched, decode_error = _decode_schedule(limit_compact, sched_tz)
+            if decode_error:
+                sched_error = f"{limit_name} schedule {decode_error}"
+
         limits[limit_name] = ParsedBucketLimit(
             tc_delta=tc_delta,
             tk_milli=int(new_image.get(tk_attr, {}).get("N", "0")),
             cp_milli=int(new_image.get(cp_attr, {}).get("N", "0")),
             ra_milli=int(new_image.get(ra_attr, {}).get("N", "0")),
             rp_ms=int(new_image.get(rp_attr, {}).get("N", "0")),
+            sched=limit_sched,
         )
 
     if not limits:
         return None
+
+    if sched_error is not None:
+        logger.warning(
+            "Undecodable stored schedule - skipping refill for this bucket",
+            entity_id=entity_id,
+            resource=resource,
+            shard_id=shard_id,
+            reason=sched_error,
+        )
 
     return ParsedBucketRecord(
         namespace_id=namespace_id,
@@ -417,6 +497,10 @@ def _parse_bucket_record(record: dict[str, Any]) -> ParsedBucketRecord | None:
         limits=limits,
         shard_id=shard_id,
         shard_count=shard_count,
+        sched=sched,
+        sched_compact=sched_compact,
+        vu_ms=vu_ms,
+        sched_error=sched_error,
     )
 
 
@@ -495,9 +579,20 @@ def aggregate_bucket_states(
                 rf_ms=parsed.rf_ms,
                 shard_id=parsed.shard_id,
                 shard_count=parsed.shard_count,
+                sched=parsed.sched,
+                sched_compact=parsed.sched_compact,
+                vu_ms=parsed.vu_ms,
+                sched_error=parsed.sched_error,
             )
         else:
+            # Last NewImage wins, exactly as it does for rf/tk/cp below: stream
+            # records for one key arrive in order, so the last image is the
+            # closest thing to the item's current state.
             bucket_states[key].rf_ms = parsed.rf_ms
+            bucket_states[key].sched = parsed.sched
+            bucket_states[key].sched_compact = parsed.sched_compact
+            bucket_states[key].vu_ms = parsed.vu_ms
+            bucket_states[key].sched_error = parsed.sched_error
 
         state = bucket_states[key]
 
@@ -509,6 +604,7 @@ def aggregate_bucket_states(
                 existing.cp_milli = parsed_limit.cp_milli
                 existing.ra_milli = parsed_limit.ra_milli
                 existing.rp_ms = parsed_limit.rp_ms
+                existing.sched = parsed_limit.sched
             else:
                 state.limits[limit_name] = LimitRefillInfo(
                     tc_delta=parsed_limit.tc_delta,
@@ -516,9 +612,27 @@ def aggregate_bucket_states(
                     cp_milli=parsed_limit.cp_milli,
                     ra_milli=parsed_limit.ra_milli,
                     rp_ms=parsed_limit.rp_ms,
+                    sched=parsed_limit.sched,
                 )
 
     return bucket_states
+
+
+def _item_next_boundary(state: BucketRefillState, now_ms: int) -> int | None:
+    """The earliest instant after ``now_ms`` where any schedule on the item changes.
+
+    ``vu`` is one item-level attribute, so the *earliest* change anywhere on the
+    item is what has to force the next materialising pass — the same ``min``
+    rule the client slow path applies across a bucket's limits. Taking only the
+    item-level default schedule would stamp a later ``vu`` whenever a per-limit
+    override turns over first, and a late ``vu`` is the unsafe direction: it
+    leaves the fast path admitting at the previous window's rate.
+
+    Returns None when nothing on the item is scheduled.
+    """
+    scheds = {state.sched} | {info.sched for info in state.limits.values()}
+    boundaries = [b for s in scheds if s and (b := next_boundary(s, now_ms=now_ms)) is not None]
+    return min(boundaries) if boundaries else None
 
 
 def try_refill_bucket(
@@ -535,6 +649,12 @@ def try_refill_bucket(
     bucket holds more than its effective cap after a shrink — is always
     written, ungated by that threshold.
 
+    Scheduled limits (#222) are honoured from the bucket item's own ``sched``
+    attributes, so the aggregator tops up toward the *scheduled* ceiling at the
+    *scheduled* rate without reading config. An expired ``vu`` is replaced with
+    the next boundary in the same ``rf``-locked write, which is what lets the
+    fast path resume.
+
     Uses ``ADD`` for token deltas (commutative with concurrent speculative
     writes) and an optimistic lock on the shared ``rf`` timestamp to prevent
     double-refill with the slow path.
@@ -550,18 +670,43 @@ def try_refill_bucket(
     if not state.limits:
         return False
 
+    if state.sched_error is not None:
+        # Refilling at the *base* rate would silently undo a scale-down, so a
+        # schedule we cannot read means we do not touch the bucket at all. The
+        # client slow path still applies the operator's `on_unavailable`
+        # setting to the same item (§6). Already logged at parse time.
+        return False
+
     # Compute per-limit refill deltas
     add_parts: list[str] = []
     expr_values: dict[str, Any] = {}
+    expr_names: dict[str, str] = {}
     any_needs_refill = False
 
     for limit_name, info in state.limits.items():
         if info.rp_ms <= 0 or info.ra_milli <= 0:
             continue
 
-        # Effective limits: divide capacity and refill_amount by shard_count
-        effective_cp = info.cp_milli // state.shard_count
-        effective_ra = info.ra_milli // state.shard_count
+        if limit_name == WCU_LIMIT_NAME:
+            # `wcu` is the per-partition DynamoDB write ceiling, not a user
+            # limit: it is never divided by shard_count (every shard is its own
+            # partition — `_deserialize_composite_bucket` and the Path 2 clone
+            # below both say so) and a user's schedule must never scale it.
+            effective_cp = info.cp_milli
+            effective_ra = info.ra_milli
+            effective_rp = info.rp_ms
+        else:
+            # Scale first, THEN divide by shard_count: the schedule applies to
+            # the whole limit, the shard split to what is left of it.
+            # `info.sched` is the item-level default unless the item carried a
+            # per-limit override; falling back keeps a state assembled without
+            # the per-limit copy (a hand-built one, or a future caller) from
+            # silently refilling at the unscheduled base rate.
+            scaled_cp, scaled_ra, effective_rp = effective_params(
+                info.cp_milli, info.ra_milli, info.rp_ms, info.sched or state.sched, now_ms
+            )
+            effective_cp = scaled_cp // state.shard_count
+            effective_ra = scaled_ra // state.shard_count
 
         result = refill_bucket(
             tokens_milli=info.tk_milli,
@@ -569,7 +714,7 @@ def try_refill_bucket(
             now_ms=now_ms,
             capacity_milli=effective_cp,
             refill_amount_milli=effective_ra,
-            refill_period_ms=info.rp_ms,
+            refill_period_ms=effective_rp,
         )
 
         refill_delta = result.new_tokens_milli - info.tk_milli
@@ -609,23 +754,51 @@ def try_refill_bucket(
 
     # Build single UpdateItem for the composite bucket
     # ADD is commutative with concurrent speculative writes (Issue #317)
-    new_rf = now_ms
-    update_expr = f"SET rf = :new_rf ADD {', '.join(add_parts)}"
-    expr_values[":new_rf"] = new_rf
+    set_parts = ["rf = :new_rf"]
+    expr_values[":new_rf"] = now_ms
     expr_values[":expected_rf"] = state.rf_ms
+    condition = "rf = :expected_rf"
+
+    # An expired `vu` means this pass is the materialisation the fast path is
+    # waiting on: stamp the next boundary so it can resume. A `vu` still in the
+    # future is left alone — re-stamping it would move the gate the client is
+    # already honouring.
+    if state.vu_ms is not None and state.vu_ms <= now_ms:
+        boundary = _item_next_boundary(state, now_ms)
+        if boundary is not None:
+            set_parts.append("#vu = :new_vu")
+            expr_names["#vu"] = BUCKET_FIELD_VU
+            expr_values[":new_vu"] = boundary
+            # The stream image the boundary was computed from can be older than
+            # the item: the #468 fan-out rewrites `sched`/`cp` and `vu = 0`
+            # *without* touching `rf`, so the rf lock alone does not detect it.
+            # Pinning the schedule keeps a pre-fan-out image from pushing `vu`
+            # back into the future and cancelling the pass `vu = 0` forced.
+            expr_names["#sched"] = BUCKET_FIELD_SCHED
+            if state.sched_compact is None:
+                condition += " AND attribute_not_exists(#sched)"
+            else:
+                condition += " AND #sched = :expected_sched"
+                expr_values[":expected_sched"] = state.sched_compact
+
+    update_expr = f"SET {', '.join(set_parts)} ADD {', '.join(add_parts)}"
+
+    update_kwargs: dict[str, Any] = {
+        "Key": {
+            "PK": pk_bucket(state.namespace_id, state.entity_id, state.resource, state.shard_id),
+            "SK": sk_state(),
+        },
+        "UpdateExpression": update_expr,
+        "ConditionExpression": condition,
+        "ExpressionAttributeValues": expr_values,
+    }
+    # DynamoDB rejects an unused ExpressionAttributeNames entry, so the map is
+    # only sent when the `vu` re-stamp above actually put aliases in it.
+    if expr_names:
+        update_kwargs["ExpressionAttributeNames"] = expr_names
 
     try:
-        table.update_item(
-            Key={
-                "PK": pk_bucket(
-                    state.namespace_id, state.entity_id, state.resource, state.shard_id
-                ),
-                "SK": sk_state(),
-            },
-            UpdateExpression=update_expr,
-            ConditionExpression="rf = :expected_rf",
-            ExpressionAttributeValues=expr_values,
-        )
+        table.update_item(**update_kwargs)
 
         logger.debug(
             "Bucket refilled",
@@ -729,12 +902,12 @@ def try_proactive_shard(
 def _extract_limit_attrs(
     image: dict[str, Any],
 ) -> dict[str, dict[str, int]]:
-    """Extract limit names and their capacity/token fields from a stream image.
+    """Extract limit names and their bucket parameters from a stream image.
 
     Scans ``b_{name}_cp`` attributes to discover limits and their values.
 
     Returns:
-        Dict of limit_name -> {"cp_milli": int, "tk_milli": int}
+        Dict of limit_name -> {"cp_milli", "tk_milli", "ra_milli", "rp_ms"}
     """
     limits: dict[str, dict[str, int]] = {}
     for attr_name in image:
@@ -750,11 +923,14 @@ def _extract_limit_attrs(
         if not limit_name:
             continue
 
-        cp_attr = bucket_attr(limit_name, BUCKET_FIELD_CP)
-        tk_attr = bucket_attr(limit_name, BUCKET_FIELD_TK)
         limits[limit_name] = {
-            "cp_milli": int(image.get(cp_attr, {}).get("N", "0")),
-            "tk_milli": int(image.get(tk_attr, {}).get("N", "0")),
+            field_key: int(image.get(bucket_attr(limit_name, field), {}).get("N", "0"))
+            for field_key, field in (
+                ("cp_milli", BUCKET_FIELD_CP),
+                ("tk_milli", BUCKET_FIELD_TK),
+                ("ra_milli", BUCKET_FIELD_RA),
+                ("rp_ms", BUCKET_FIELD_RP),
+            )
         }
     return limits
 
@@ -762,6 +938,7 @@ def _extract_limit_attrs(
 def propagate_shard_count(
     table: Any,
     record: dict[str, Any],
+    now_ms: int | None = None,
 ) -> int:
     """Propagate shard_count changes to all other shard items.
 
@@ -775,10 +952,15 @@ def propagate_shard_count(
     Args:
         table: boto3 Table resource
         record: DynamoDB stream record
+        now_ms: Current time (epoch milliseconds); read from the clock when
+            omitted. Only used to evaluate the cloned item's schedule.
 
     Returns:
         Number of shard items created or updated
     """
+    if now_ms is None:
+        now_ms = int(time_module.time() * 1000)
+
     dynamodb_data = record.get("dynamodb", {})
     new_image = dynamodb_data.get("NewImage", {})
     old_image = dynamodb_data.get("OldImage", {})
@@ -830,6 +1012,45 @@ def propagate_shard_count(
     deserializer = TypeDeserializer()
     base_item = {k: deserializer.deserialize(v) for k, v in new_image.items()}
     limit_attrs = _extract_limit_attrs(new_image)
+
+    # A cloned shard is created *full*, so it must be filled to the ceiling in
+    # force right now — the scheduled one, not the base (#222). Cloning the
+    # base during a 0.5x window would hand the new shard twice the tokens the
+    # schedule allows, and the item carries shard 0's `vu`, which is in the
+    # future, so the fast path would spend them before any pass trimmed it.
+    sched_tz = new_image.get(BUCKET_FIELD_SCHED_TZ, {}).get("S", "UTC")
+    item_sched, sched_error = _decode_schedule(
+        new_image.get(BUCKET_FIELD_SCHED, {}).get("S"), sched_tz
+    )
+    # Per-limit starting balance, computed once rather than per target shard.
+    starting_tokens: dict[str, int] = {}
+    for limit_name, info in limit_attrs.items():
+        if limit_name == WCU_LIMIT_NAME:
+            starting_tokens[limit_name] = info["cp_milli"]  # per-partition, not divided
+            continue
+        limit_compact = new_image.get(
+            f"{BUCKET_ATTR_PREFIX}{limit_name}_{BUCKET_FIELD_SCHED}", {}
+        ).get("S")
+        limit_sched, limit_error = _decode_schedule(limit_compact, sched_tz)
+        error = sched_error or limit_error
+        if error is not None:
+            logger.warning(
+                "Undecodable stored schedule - not pre-creating shards",
+                entity_id=entity_id,
+                resource=resource,
+                limit_name=limit_name,
+                reason=error,
+            )
+            return updated
+        scaled_cp, _ra, _rp = effective_params(
+            info["cp_milli"],
+            info["ra_milli"],
+            info["rp_ms"],
+            limit_sched or item_sched,
+            now_ms,
+        )
+        starting_tokens[limit_name] = scaled_cp // new_count
+
     for target_shard in range(old_count, new_count):
         try:
             item = dict(base_item)
@@ -839,12 +1060,7 @@ def propagate_shard_count(
             item["GSI4SK"] = gsi4_sk_bucket(entity_id, resource, target_shard)
             item["shard_count"] = new_count
             # Reset tokens to effective per-shard capacity (full bucket)
-            for limit_name, info in limit_attrs.items():
-                cp_milli = info["cp_milli"]
-                if limit_name == WCU_LIMIT_NAME:
-                    effective_cp = cp_milli  # wcu is per-partition, not divided
-                else:
-                    effective_cp = cp_milli // new_count
+            for limit_name, effective_cp in starting_tokens.items():
                 item[bucket_attr(limit_name, BUCKET_FIELD_TK)] = effective_cp
                 item[bucket_attr(limit_name, BUCKET_FIELD_TC)] = 0
             table.put_item(

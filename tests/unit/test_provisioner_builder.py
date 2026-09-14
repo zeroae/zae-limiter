@@ -211,3 +211,32 @@ class TestProvisionerBuilder:
             # Real files should be present
             assert "zae_limiter_provisioner/__init__.py" in names
             assert "zae_limiter/__init__.py" in names
+
+
+class TestVendoredSchedule:
+    """`schedule.py` must be packaged, or the provisioner dies at cold start (#222)."""
+
+    def _build(self) -> bytes:
+        from zae_limiter.infra.provisioner_builder import build_provisioner_package
+
+        with patch("aws_lambda_builders.builder.LambdaBuilder") as mock_builder_cls:
+            mock_builder_cls.return_value.build.side_effect = _mock_builder_build
+            return build_provisioner_package()
+
+    def test_provisioner_package_vendors_schedule(self) -> None:
+        with zipfile.ZipFile(io.BytesIO(self._build())) as zf:
+            assert "zae_limiter/schedule.py" in zf.namelist()
+
+    def test_every_import_in_the_package_resolves(self) -> None:
+        """The general form of the test above. See the aggregator twin."""
+        from tests.fixtures.lambda_packages import assert_package_imports_resolve
+        from zae_limiter.infra.provisioner_builder import _get_runtime_requirements
+
+        assert_package_imports_resolve(self._build(), _get_runtime_requirements())
+
+    def test_lambda_extra_carries_cronsim_and_tzdata(self) -> None:
+        from zae_limiter.infra.provisioner_builder import _get_runtime_requirements
+
+        reqs = _get_runtime_requirements()
+        assert any(r.startswith("cronsim") for r in reqs), reqs
+        assert any(r.startswith("tzdata") for r in reqs), reqs

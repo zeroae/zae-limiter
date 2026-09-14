@@ -3,7 +3,8 @@
 Uses aws-lambda-builders to install dependencies (pyyaml,
 aws-lambda-powertools) for the Lambda target platform, then copies the
 ``zae_limiter_provisioner`` package and a minimal ``zae_limiter`` stub
-(``schema.py``, ``models.py``, ``exceptions.py``) into the artifact.
+(``schema.py``, ``models.py``, ``exceptions.py``, ``schedule.py``) into the
+artifact.
 """
 
 import importlib.metadata
@@ -52,6 +53,7 @@ def build_provisioner_package() -> bytes:
     - ``zae_limiter/schema.py`` (key builders, no external deps)
     - ``zae_limiter/models.py`` (dataclasses used by schema)
     - ``zae_limiter/exceptions.py`` (exceptions used by models)
+    - ``zae_limiter/schedule.py`` (cron evaluation for scheduled limits, #222)
 
     Returns:
         Zip file contents as bytes.
@@ -137,6 +139,15 @@ def build_provisioner_package() -> bytes:
         shutil.copy2(
             zae_limiter_path / "exceptions.py",
             dest_zae_limiter / "exceptions.py",
+        )
+
+        # schedule.py — cron evaluation for scheduled limits (#222). models.py
+        # imports ScheduleEntry from it, so an unvendored copy is an
+        # ImportError at cold start. Its only non-stdlib dependency is cronsim,
+        # which the [lambda] extra installs.
+        shutil.copy2(
+            zae_limiter_path / "schedule.py",
+            dest_zae_limiter / "schedule.py",
         )
 
         # Create zip
