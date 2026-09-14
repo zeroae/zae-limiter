@@ -134,7 +134,7 @@ class SyncLease:
         if self._committed or self._rolled_back:
             raise LeaseExpiredError()
         self._check_declared(amounts, "consume")
-        now_ms = int(time.time() * 1000)
+        now_ms = self.repository._now_ms()
         statuses: list[LimitStatus] = []
         updates: list[tuple[LeaseEntry, int, int]] = []
         for entry in self.entries:
@@ -203,7 +203,7 @@ class SyncLease:
 
     def _apply_adjust(self, amounts: dict[str, int]) -> None:
         """Apply adjust() deltas to declared entries (shared with release())."""
-        now_ms = int(time.time() * 1000)
+        now_ms = self.repository._now_ms()
         for entry in self.entries:
             if not entry._declared:
                 continue
@@ -259,7 +259,7 @@ class SyncLease:
         """
         if self._initial_committed or self._committed or self._rolled_back:
             return
-        now_ms = int(time.time() * 1000)
+        now_ms = self.repository._now_ms()
         repo = self.repository
         groups: dict[tuple[str, str, int], list[LeaseEntry]] = {}
         for entry in (*self.entries, *self._carriers):
