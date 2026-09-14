@@ -1,7 +1,7 @@
 # ADR-136: Entity Configuration Determines Bucket TTL
 
 **Status:** Accepted
-**Supersedes:** ADR-119
+**Supersedes:** ADR-119 (in full); ADR-118's TTL clause only
 **Date:** 2026-09-14
 **Issue:** [#487](https://github.com/zeroae/zae-limiter/issues/487), [#489](https://github.com/zeroae/zae-limiter/issues/489)
 
@@ -14,6 +14,12 @@ ADR-119 scopes the TTL to "ephemeral entities (anonymous users, one-time callers
 TTL also serves a second purpose ADR-119 did not record: it is the propagation mechanism for default-derived buckets. `set_resource_defaults()` and `set_system_defaults()` do not fan out, so those buckets pick up changed parameters by expiring and being recreated. Entity `_default_` relied on the same mechanism only because `_sync_bucket_params` could not reach those buckets, which #487 fixes.
 
 ## Decision
+
+> **Scope note.** ADR-118 §Decision also stated the superseded rule, and its Alternatives
+> Considered explicitly rejected the rule below. This ADR supersedes that clause of ADR-118.
+> ADR-118 otherwise remains **Accepted** and authoritative on the four-level configuration
+> hierarchy itself — it is not superseded in full, because marking it so would remove the
+> hierarchy decision from enforcement entirely.
 
 A bucket carries a TTL only when its limits resolve from the resource or system level; entity configuration at either the per-resource or the entity-wide `_default_` level is custom, and those buckets must persist indefinitely. ADR-119's time-to-fill TTL formula is unchanged.
 
