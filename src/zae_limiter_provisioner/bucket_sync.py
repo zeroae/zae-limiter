@@ -18,6 +18,7 @@ millitokens and milliseconds. Everything crossing over is multiplied by 1000.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from zae_limiter.models import Limit
 from zae_limiter.schema import (
@@ -26,9 +27,12 @@ from zae_limiter.schema import (
     BUCKET_FIELD_RP,
     BUCKET_FIELD_TC,
     BUCKET_FIELD_TK,
+    GSI3_NAME,
     bucket_attr,
     calculate_bucket_ttl_seconds,
     calculate_ttl,
+    gsi3_pk_entity,
+    sk_state,
 )
 
 logger = logging.getLogger(__name__)
@@ -114,3 +118,88 @@ def build_bucket_param_update(
     if remove_parts:
         update_expr += f" REMOVE {', '.join(remove_parts)}"
     return update_expr, expr_names, expr_values
+
+
+def _update_one_shard(
+    client: Any,
+    table_name: str,
+    pk: str,
+    update_expr: str,
+    expr_names: dict[str, str],
+    expr_values: dict[str, dict[str, str]],
+) -> bool:
+    """Apply one shard's param update. Returns False if the shard vanished."""
+    try:
+        client.update_item(
+            TableName=table_name,
+            Key={"PK": {"S": pk}, "SK": {"S": sk_state()}},
+            UpdateExpression=update_expr,
+            ConditionExpression="attribute_exists(PK)",
+            ExpressionAttributeNames=expr_names,
+            ExpressionAttributeValues=expr_values,
+        )
+        return True
+    except client.exceptions.ConditionalCheckFailedException:
+        # Bucket does not exist yet, or no longer does: TTL can expire a shard
+        # between discovery and this write. A bucket created later is created
+        # with the current params, so there is nothing to reconcile.
+        logger.debug("Bucket %s vanished before param sync", pk)
+        return False
+
+
+def sync_bucket_params(
+    client: Any,
+    table_name: str,
+    namespace_id: str,
+    entity_id: str,
+    resource: str,
+    limits: dict[str, dict[str, int]],
+    ttl_multiplier: int | None,
+    stale_limit_names: set[str] | None,
+    now_ms: int,
+) -> int:
+    """Push changed limit params to every shard of one entity+resource bucket.
+
+    Two discovery passes, exactly like the ADR-125 disable fan-out in
+    ``fanout.py``: the second catches a bucket created by an ``acquire()``
+    already in flight when the first pass's query ran. Mitigates, but does not
+    eliminate, that race.
+
+    Returns the number of shards actually written.
+    """
+    if not limits:
+        return 0
+
+    update_expr, expr_names, expr_values = build_bucket_param_update(
+        limits, ttl_multiplier, stale_limit_names, now_ms
+    )
+
+    synced: set[str] = set()
+    written = 0
+    for _pass in range(2):
+        start_key: dict[str, Any] | None = None
+        while True:
+            params: dict[str, Any] = {
+                "TableName": table_name,
+                "IndexName": GSI3_NAME,
+                "KeyConditionExpression": "GSI3PK = :pk AND begins_with(GSI3SK, :sk)",
+                "ExpressionAttributeValues": {
+                    ":pk": {"S": gsi3_pk_entity(namespace_id, entity_id)},
+                    ":sk": {"S": f"BUCKET#{resource}#"},
+                },
+            }
+            if start_key:
+                params["ExclusiveStartKey"] = start_key
+            response = client.query(**params)
+            for item in response.get("Items", []):
+                pk = item.get("PK", {}).get("S", "")
+                if pk and pk not in synced:
+                    synced.add(pk)
+                    if _update_one_shard(
+                        client, table_name, pk, update_expr, expr_names, expr_values
+                    ):
+                        written += 1
+            start_key = response.get("LastEvaluatedKey")
+            if not start_key:
+                break
+    return written
