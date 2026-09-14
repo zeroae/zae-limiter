@@ -562,7 +562,7 @@ name is `ScheduleEntry`, exported from `zae_limiter`.
 *(This supersedes the earlier open item's assumption of a `set_limits(schedule=...)`
 parameter.)*
 
-### 5.2 The provisioner gap — blocking
+### 5.2 The provisioner gap — fixed first, in this work
 
 `_apply_set` in `src/zae_limiter_provisioner/applier.py` is a bare `put_item` on the config
 item and nothing else. The provisioner never touches bucket items except through `fanout.py`
@@ -574,10 +574,21 @@ on the provisioner path.
 For scheduling this is blocking, not incidental: a manifest-applied schedule would land on
 config and never reach a live bucket, so schedules would not work via the manifest at all.
 
-Required: `_sync_bucket_params` mirrored in sync boto3 alongside the existing `fanout.py`
-mirror, including the `sched` / `sched_tz` stamp and `vu = 0`.
+**This is in scope for this work and lands first**, as a standalone commit before any
+scheduling code. It is a pre-existing bug that predates #222, it is independently valuable
+(it fixes plain limit numbers, not just schedules), and it is independently testable — apply
+a manifest that changes an entity limit, assert the existing bucket item reflects it — so it
+does not need scheduling to land to be verified.
 
-**This is very likely a pre-existing bug that predates #222 and deserves its own issue.**
+Required: `_sync_bucket_params` mirrored in sync boto3 alongside the existing `fanout.py`
+mirror — GSI3 KEYS_ONLY shard discovery with the same two-pass race mitigation ADR-125 uses,
+`cp`/`ra`/`rp` plus TTL handling and stale-attribute removal — and then, once §3 lands, the
+`sched` / `sched_tz` / `rsched` stamp and `vu = 0`.
+
+**Scope is entity-level only.** `set_resource_defaults()` and `set_system_defaults()`
+deliberately do not touch buckets: a bucket running on defaults carries a TTL and is recreated
+with current params when it expires (#271, #296). The provisioner mirror inherits that rule
+rather than widening it.
 
 ### 5.3 Manifest and CloudFormation
 
@@ -687,6 +698,11 @@ Plus the generated sync counterparts throughout.
   the table.
 - A reset applies on the first request after its edge, not at the edge itself, so an idle
   bucket's quota visibly returns late. Nothing observes a bucket that no one is using.
+- A **resource- or system-level** schedule change reaches existing buckets only when their TTL
+  expires and they are recreated, because a `vu` boundary re-materialises from the item's own
+  stamped `sched` and never reads config. This is consistent with the existing treatment of
+  default-derived params (#271, #296) rather than a new gap, but schedules make the staleness
+  window easier to notice. Entity-level changes fan out immediately (§3.4, §5.2).
 - A reset sets the balance to the *effective* capacity in force at that instant, so a reset
   landing inside a `scale: 0.5` window restores half. That is the intended reading of
   "reset to the current limit", but it is worth stating because the alternative reading —
