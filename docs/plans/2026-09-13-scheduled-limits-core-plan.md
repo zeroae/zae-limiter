@@ -1745,7 +1745,14 @@ class TestScheduleBoundaryClassification:
         assert result.success is True
 
     async def test_absent_vu_does_not_affect_the_fast_path(self, repo):
-        """Unscheduled buckets carry no `vu` at all — the overwhelming case."""
+        """Unscheduled buckets carry no `vu` at all — the overwhelming case.
+
+        (Task 13 stamps `vu = 0` on every fan-out, so an unscheduled bucket
+        does carry one transiently between a `set_limits` and the next
+        materialising pass. This helper's `set_limits` precedes the bucket's
+        creation, so no fan-out reaches it and the attribute is genuinely
+        absent here.)
+        """
         entity_id = await self._make_bucket(repo, "vu-absent")
         result = await repo.speculative_consume(entity_id, "gpt-4", {"rpm": 1})
         assert result.success is True
@@ -2101,7 +2108,13 @@ class TestFanOutStampsSchedule:
         assert item["sched_tz"]["S"] == "America/New_York"
         assert item[schema.BUCKET_FIELD_VU]["N"] == "0"
 
-    async def test_removing_a_schedule_removes_the_stamps(self, repo):
+    async def test_removing_a_schedule_removes_sched_but_still_expires_vu(self, repo):
+        """The two stamps are not removed together, and must not be conflated.
+
+        `sched`/`sched_tz` go away with the schedule. `vu` does **not**: it is
+        SET to 0 on every fan-out, scheduled or not, and self-clears on the
+        next materialising pass — which has not run yet at this assertion.
+        """
         await repo.create_entity("fan-2", parent_id=None, name="fan-2")
         await repo.set_limits(
             "fan-2",
@@ -2115,7 +2128,27 @@ class TestFanOutStampsSchedule:
         item = await _raw_bucket_item(repo, "fan-2", "gpt-4", shard=0)
         assert "sched" not in item
         assert "sched_tz" not in item
-        assert schema.BUCKET_FIELD_VU not in item
+        assert item[schema.BUCKET_FIELD_VU]["N"] == "0"
+
+    async def test_a_never_scheduled_fan_out_still_expires_vu(self, repo):
+        """The case the unconditional write exists for, and the common one.
+
+        The test above also lands on the `else` branch, but by *removing* a
+        schedule. This one never had a schedule at all and is shrinking a
+        capacity — literally #469's scenario, and the shape most `set_limits`
+        calls in production take. Nesting `vu = 0` back inside `if scheduled:`
+        leaves this bucket free to spend its surplus over the lowered ceiling
+        before any refiller trims it.
+        """
+        await repo.create_entity("fan-4", parent_id=None, name="fan-4")
+        await repo.set_limits("fan-4", [Limit.per_minute("rpm", 1000)], resource="gpt-4")
+        await repo.speculative_consume("fan-4", "gpt-4", {"rpm": 1})
+
+        await repo.set_limits("fan-4", [Limit.per_minute("rpm", 10)], resource="gpt-4")
+
+        item = await _raw_bucket_item(repo, "fan-4", "gpt-4", shard=0)
+        assert "sched" not in item
+        assert item[schema.BUCKET_FIELD_VU]["N"] == "0"
 
     async def test_base_params_stay_undivided_and_unscaled(self, repo):
         """The schedule never rewrites cp/ra — it applies on top (§2.1)."""
@@ -2136,7 +2169,10 @@ class TestFanOutStampsSchedule:
 - [ ] **Step 2: Run the test and watch it fail**
 
 Run: `uv run pytest tests/unit/test_repository.py -k FanOutStampsSchedule -v`
-Expected: FAIL with `KeyError: 'sched'`
+Expected: FAIL — `KeyError: 'sched'` on the scheduled tests, and `KeyError: 'vu'` on
+`test_a_never_scheduled_fan_out_still_expires_vu`. Watch for that second one
+specifically: it is the assertion that fails again if `vu = 0` is ever moved back
+inside `if scheduled:`.
 
 - [ ] **Step 3: Implement**
 
@@ -2165,8 +2201,6 @@ Note `vu = 0` is appended **outside** the `if scheduled:` block, after it:
                 set_parts.append(f"{alias} = :lsched{i}")
                 expr_names[alias] = schema.bucket_attr(name, schema.BUCKET_FIELD_SCHED)
                 expr_values[f":lsched{i}"] = {"S": compact}
-            # Force exactly one materialising pass, which trims any surplus
-            # over a lowered ceiling before the fast path can spend it.
         else:
             for alias, attr in (
                 ("#sched", schema.BUCKET_FIELD_SCHED),
@@ -2178,6 +2212,14 @@ Note `vu = 0` is appended **outside** the `if scheduled:` block, after it:
                 alias = f"#lsched{i}"
                 expr_names[alias] = schema.bucket_attr(limit.name, schema.BUCKET_FIELD_SCHED)
                 remove_parts.append(alias)
+
+        # Outside both branches, so it runs on EVERY fan-out: force exactly one
+        # materialising pass, which trims any surplus over a lowered ceiling
+        # before the fast path can spend it. Note `#vu` is SET here and must
+        # therefore never be added to `remove_parts` above (#488).
+        set_parts.append("#vu = :vu_zero")
+        expr_names["#vu"] = schema.BUCKET_FIELD_VU
+        expr_values[":vu_zero"] = {"N": "0"}
 ```
 
 Add the two bucket-field constants to `schema.py` beside `BUCKET_FIELD_VU`:
@@ -2237,7 +2279,9 @@ git commit -m "$(cat <<'EOF'
 ✨ feat(repository): stamp schedules onto buckets and force one pass
 
 The #468 fan-out now carries `sched`/`sched_tz` (plus per-limit
-overrides where a limit differs) to every shard, and sets `vu = 0`.
+overrides where a limit differs) to every shard, and sets `vu = 0` on
+every fan-out — scheduled or not, since an unscheduled capacity shrink
+needs the forced materialising pass just as much.
 
 vu = 0 rather than a computed boundary: a future `vu` would leave the
 fast path admitting against a surplus over a lowered ceiling until
