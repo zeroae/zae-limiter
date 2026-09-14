@@ -2679,6 +2679,25 @@ class TestUndecodableSchedule:
         assert try_refill_bucket(table, state, now_ms=TUE_1400) is False
         table.update_item.assert_not_called()
 
+    def test_an_undecodable_per_limit_override_also_skips(self) -> None:
+        """The override is decoded separately from the item default, so it has
+        its own way of being unreadable — and the same consequence."""
+        table = MagicMock()
+        states = aggregate_bucket_states(
+            [
+                _sched_record(
+                    limits=self.LIMITS,
+                    sched=BUSINESS_COMPACT,
+                    limit_sched={"rpm": "not-a-schedule"},
+                )
+            ]
+        )
+        state = next(iter(states.values()))
+        assert state.sched_error is not None
+        assert "rpm schedule" in state.sched_error
+        assert try_refill_bucket(table, state, now_ms=TUE_1400) is False
+        table.update_item.assert_not_called()
+
     def test_a_readable_schedule_on_the_same_shape_does_refill(self) -> None:
         """Discriminates the test above."""
         table = MagicMock()
