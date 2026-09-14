@@ -51,6 +51,19 @@ from .sync_repository_protocol import SpeculativeFailureReason
 
 _UNSET: Any = object()
 logger = logging.getLogger(__name__)
+_ENTITY_CONFIG_SOURCES: frozenset[str] = frozenset({"entity", "entity_default"})
+
+
+def _is_custom_config(config_source: str | None) -> bool:
+    """Whether limits from ``config_source`` are the entity's own (ADR-136).
+
+    Decides bucket TTL: a bucket whose limits resolve from **either** entity
+    level is custom and must persist indefinitely; only the resource and system
+    levels (and an explicit ``limits`` override) leave it ephemeral, which is
+    also how those levels propagate parameter changes, since they do not fan
+    out. Kept in one place so the call sites cannot drift apart again (#489).
+    """
+    return config_source in _ENTITY_CONFIG_SOURCES
 
 
 class SyncRateLimiter:
@@ -1181,7 +1194,7 @@ class SyncRateLimiter:
         parent_buckets = self._fetch_buckets([parent_id], resource, parent_shard)
         parent_entries: list[LeaseEntry] = []
         statuses: list[LimitStatus] = []
-        has_custom_config = parent_config_source == "entity"
+        has_custom_config = _is_custom_config(parent_config_source)
         for limit in parent_limits:
             bucket_key = (parent_id, resource, limit.name)
             existing = parent_buckets.get(bucket_key)
@@ -1332,7 +1345,7 @@ class SyncRateLimiter:
                 status, consumed = self._admit_limit(eid, resource, limit, state, consume, now_ms)
                 if status is not None:
                     statuses.append(status)
-                has_custom_config = entity_config_sources.get(eid) == "entity"
+                has_custom_config = _is_custom_config(entity_config_sources.get(eid))
                 entries.append(
                     LeaseEntry(
                         entity_id=eid,
@@ -1358,7 +1371,7 @@ class SyncRateLimiter:
                 now_ms,
                 eid_shard,
                 eid_shard_count,
-                entity_config_sources.get(eid) == "entity",
+                _is_custom_config(entity_config_sources.get(eid)),
             )
             if carrier is not None:
                 carriers.append(carrier)

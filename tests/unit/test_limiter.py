@@ -4414,12 +4414,14 @@ class TestLeaseCommitTTL:
         assert item is not None
         assert "ttl" not in item
 
-    async def test_commit_sets_ttl_for_entity_default_config(self, limiter):
-        """Lease._commit() sets TTL when entity has _default_ config (not resource-specific).
+    async def test_commit_removes_ttl_for_entity_default_config(self, limiter):
+        """Lease._commit() removes TTL when limits come from the entity's `_default_` config.
 
-        Entity _default_ config is treated as a kind of default (not custom config),
-        so TTL should be applied. This contrasts with resource-specific entity config
-        which removes TTL.
+        ADR-136: entity configuration is custom at *either* entity level — the
+        per-resource one and the entity-wide `_default_` one — so a bucket born
+        from `_default_` limits must persist indefinitely, exactly like one born
+        from resource-specific entity limits. Only the resource and system levels
+        make a bucket ephemeral. (Inverts the ADR-119 behaviour, issue #489.)
         """
         # Set entity _default_ config (applies to all resources for this entity)
         await limiter.set_limits("user-1", [Limit.per_minute("rpm", 100)])  # resource="_default_"
@@ -4432,13 +4434,143 @@ class TestLeaseCommitTTL:
         ):
             pass
 
-        # Verify TTL IS set (entity_default is treated as a default, not custom)
+        # Verify no TTL (entity_default is the entity's own config, so custom)
         from zae_limiter.schema import pk_bucket, sk_state
 
         pk = pk_bucket(limiter._repository.namespace_id, "user-1", "gpt-4", 0)
         item = await limiter._repository._get_item(pk, sk_state())
         assert item is not None
-        assert "ttl" in item, "entity_default config should have TTL (treated as default)"
+        assert "ttl" not in item, "entity_default config is custom config (ADR-136): no TTL"
+
+    async def test_commit_sets_ttl_for_resource_config(self, limiter):
+        """Guard (ADR-136): resource-derived buckets still carry a TTL.
+
+        The fix for #489 widens "custom config" to cover entity `_default_`; it
+        must not widen to *everything*. Resource and system defaults do not fan
+        out on change, so their buckets pick up new parameters by expiring and
+        being recreated — making them custom would break that mechanism and
+        stop ephemeral buckets from ever being reclaimed.
+        """
+        await limiter.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 100)])
+
+        async with limiter.acquire(
+            entity_id="user-1",
+            resource="gpt-4",
+            consume={"rpm": 1},
+        ):
+            pass
+
+        from zae_limiter.schema import pk_bucket, sk_state
+
+        pk = pk_bucket(limiter._repository.namespace_id, "user-1", "gpt-4", 0)
+        item = await limiter._repository._get_item(pk, sk_state())
+        assert item is not None
+        assert "ttl" in item, "resource defaults are not custom config: TTL must stay"
+
+    async def test_parent_only_path_removes_ttl_for_parent_default_config(self, limiter):
+        """Parent-only slow path drops the TTL when the parent's own `_default_` config wins.
+
+        ADR-136 / issue #489. `_try_parent_only_acquire` returns None when the
+        parent bucket is missing, so this path can only ever *update* a bucket —
+        a "created via the parent-only path" test is not constructible.
+
+        The arrangement writes the `ttl` attribute onto the parent's bucket
+        directly rather than getting some API to stamp it. That is the state
+        under test — a bucket that predates the entity's configuration, or was
+        created by a pre-ADR-136 client — and stamping it by hand keeps the
+        precondition from depending on which writer happens to set TTLs today.
+        Deriving it from `set_limits(..., resource="_default_")` was the
+        original arrangement and it silently stopped working when #487/#488
+        made that call reach real-resource buckets and clear their TTL itself,
+        which would have left the final assertion passing vacuously.
+        """
+        from zae_limiter.schema import pk_bucket, sk_state
+
+        await limiter.create_entity("parent-1")
+        await limiter.create_entity("child-1", parent_id="parent-1", cascade=True)
+        # The parent carries an entity-wide `_default_` config; the child has
+        # none, so it resolves from system. Configured before any bucket
+        # exists, so the fan-out has nothing to find and writes nothing.
+        await limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
+        await limiter.set_limits("parent-1", [Limit.per_minute("rpm", 1000)])
+
+        # Prime both buckets
+        async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}):
+            pass
+
+        parent_pk = pk_bucket(limiter._repository.namespace_id, "parent-1", "gpt-4", 0)
+        client = await limiter._repository._get_client()
+        await client.update_item(
+            TableName=limiter._repository.table_name,
+            Key={"PK": {"S": parent_pk}, "SK": {"S": sk_state()}},
+            UpdateExpression="SET #ttl = :ttl",
+            ExpressionAttributeNames={"#ttl": "ttl"},
+            ExpressionAttributeValues={":ttl": {"N": str(int(time.time()) + 3600)}},
+        )
+        item = await limiter._repository._get_item(parent_pk, sk_state())
+        assert item is not None
+        assert "ttl" in item, "precondition: the parent bucket under test carries a TTL"
+
+        limiter._speculative_writes = True
+        now_ms = int(time.time() * 1000)
+
+        child_bucket = BucketState(
+            entity_id="child-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=900_000,
+            last_refill_ms=now_ms,
+            capacity_milli=1_000_000,
+            refill_amount_milli=1_000_000,
+            refill_period_ms=60_000,
+        )
+        # Parent rpm exhausted on the image, but a full refill period elapsed,
+        # so would_refill_satisfy() sends us to the parent-only slow path.
+        parent_bucket = BucketState(
+            entity_id="parent-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=0,
+            last_refill_ms=now_ms - 60_000,
+            capacity_milli=1_000_000,
+            refill_amount_milli=1_000_000,
+            refill_period_ms=60_000,
+        )
+
+        original_speculative = limiter._repository.speculative_consume
+        call_count = 0
+
+        async def mock_speculative(
+            entity_id, resource, consume, ttl_seconds=None, shard_id=None, now_ms=None
+        ):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return SpeculativeResult(
+                    success=True,
+                    buckets=[child_bucket],
+                    cascade=True,
+                    parent_id="parent-1",
+                )
+            if call_count == 2:
+                return SpeculativeResult(success=False, old_buckets=[parent_bucket])
+            return await original_speculative(
+                entity_id, resource, consume, ttl_seconds, shard_id, now_ms
+            )
+
+        limiter._repository.speculative_consume = mock_speculative
+        try:
+            async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}) as lease:
+                assert "parent-1" in {e.entity_id for e in lease.entries}
+        finally:
+            limiter._repository.speculative_consume = original_speculative
+
+        item = await limiter._repository._get_item(parent_pk, sk_state())
+        assert item is not None
+        assert "ttl" not in item, (
+            "parent limits resolved from the parent's own `_default_` config: "
+            "the parent-only path must REMOVE the TTL (ADR-136)"
+        )
 
     async def test_ttl_value_matches_formula(self, limiter):
         """TTL = now + max_refill_period × multiplier."""
