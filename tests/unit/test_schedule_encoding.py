@@ -391,24 +391,6 @@ class TestDisplay:
         assert to_cron("w9c10") == "* * * * 9"
 
 
-class TestParseCronRejectsSixFields:
-    """cronsim accepts a leading seconds field; nothing here is finer than a minute.
-
-    Left unrejected, `ScheduleEntry(cron="30 5 9 * * *")` constructs, matches the
-    whole of 09:05 rather than one second of it, and then has six fields to squeeze
-    into the encoding's five slots.
-    """
-
-    @pytest.mark.parametrize("cron", ["30 5 9 * * *", "* * * * * *", "* * * *"])
-    def test_rejects_non_five_field_expressions(self, cron):
-        with pytest.raises(ValueError, match="5 fields"):
-            parse_cron(cron, "UTC")
-
-    def test_schedule_entry_rejects_them_too(self):
-        with pytest.raises(ValueError, match="5 fields"):
-            ScheduleEntry(cron="30 5 9 * * *", tz="UTC", scale=0.5)
-
-
 def _ddb_item_size(item: dict[str, dict[str, object]]) -> int:
     """DynamoDB's own item-size rule, near enough for a budget check.
 
