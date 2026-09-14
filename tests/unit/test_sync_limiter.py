@@ -202,20 +202,41 @@ class TestRateLimiterRefillRecovery:
 
 
 class TestClockSeam:
-    """``SyncRepository._now_ms()`` is the single injectable clock (issue #430).
+    """``SyncRepository._now_ms()`` is the injectable token-bucket clock (#430).
 
-    Every clock read on the acquire / lease paths routes through
-    ``_now_ms()``, so a test can control time by patching that one method —
-    no ``sleep``, no patching the global ``time`` module (which would also
-    move moto's and botocore's clocks).
+    Every clock read that feeds refill math, an ``rf`` stamp or a bucket TTL
+    routes through ``_now_ms()``, so a test controls that clock by patching
+    one method — no ``sleep``, and no patching of the global ``time``
+    module, which would also move moto's and botocore's clocks. It is not
+    the library's only clock: ``config_cache`` ages in *seconds* against
+    ``time.time()`` and is deliberately out of scope for #430, so advancing
+    this seam ages buckets but leaves cached config exactly as it was.
 
-    One logical ``acquire()`` must also observe exactly *one* reading. #222
-    (scheduled limits) puts an item-level ``vu`` (valid-until, epoch ms) into
-    the speculative ConditionExpression: at a window boundary ``T`` with
-    ``now_b < T <= now_a``, two readings let the fast path reject on ``now_a``
-    while the slow path materialises tokens from the *old* window on
-    ``now_b`` and stamps a ``vu`` already in the past — leaking a burst at
-    exactly the boundary the mechanism exists to enforce.
+    **One instant per write, not per acquire.** A single speculative
+    ``UpdateItem`` derives its ``ttl`` stamp, its TTL-expiry guard and the
+    caller's admission decision from one reading. The slow path reads again
+    on purpose: it runs after a ``BatchGetItem`` and then commits a
+    transaction, and reusing the fast path's instant across those round
+    trips would stamp ``rf`` in the past and under-refill. The counts are
+    the contract, and each row below is pinned by a test here:
+
+    ===================================== ========
+    Path                                  readings
+    ===================================== ========
+    Warm speculative fast path            1
+    ``speculative_writes=False``          2
+    Speculative miss, then the slow path  3
+    ===================================== ========
+
+    #222 (scheduled limits) is why the speculative write needs its single
+    instant: it puts an item-level ``vu`` (valid-until, epoch ms) into that
+    ConditionExpression. The slow path always runs *after* the fast path, so
+    ``now_slow >= now_fast`` — and with two readings straddling a window
+    boundary ``T`` (``now_fast < T <= now_slow``) the fast path evaluates
+    ``vu`` while still inside the expiring window and passes, then the slow
+    path materialises tokens at ``now_slow``, already past ``T``, minting
+    the old window's allowance into the new one. One reading per write
+    closes that gap.
     """
 
     LIMITS = [Limit.custom("rpm", capacity=100, refill_amount=100, refill_period_seconds=60)]
@@ -247,6 +268,39 @@ class TestClockSeam:
         with sync_limiter.acquire("clock-1", "gpt-4", limits=self.LIMITS, consume={"rpm": 1}):
             pass
         assert len(readings) == 1, f"acquire() read the clock {len(readings)} times: {readings}"
+
+    def test_non_speculative_acquire_reads_the_clock_twice(self, sync_limiter):
+        """``speculative_writes=False``: the slow path, then the lease commit.
+
+        Pins the second row of the contract. `_do_acquire()` reads to refill
+        and admit; `SyncLease._commit_initial()` reads again to stamp ``rf`` on
+        the transaction it is about to send. Reusing the first reading would
+        backdate ``rf`` by the BatchGetItem round trip.
+        """
+        repo = sync_limiter._repository
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        with slow.acquire("clock-4", "gpt-4", limits=self.LIMITS, consume={"rpm": 1}):
+            pass
+        readings = self._counting_clock(repo)
+        with slow.acquire("clock-4", "gpt-4", limits=self.LIMITS, consume={"rpm": 1}):
+            pass
+        assert len(readings) == 2, f"acquire() read the clock {len(readings)} times: {readings}"
+
+    def test_speculative_miss_falls_back_and_reads_three_times(self, sync_limiter):
+        """A speculative miss adds the fast path's reading to the slow path's.
+
+        Pins the third row: fast path (1) + ``_do_acquire`` (2) +
+        ``SyncLease._commit_initial`` (3). The bucket does not exist yet, so the
+        conditional ``UpdateItem`` fails with ``BUCKET_MISSING`` and the slow
+        path creates it.
+        """
+        repo = sync_limiter._repository
+        with sync_limiter.acquire("clock-5-warm", "gpt-4", limits=self.LIMITS, consume={"rpm": 1}):
+            pass
+        readings = self._counting_clock(repo)
+        with sync_limiter.acquire("clock-5", "gpt-4", limits=self.LIMITS, consume={"rpm": 1}):
+            pass
+        assert len(readings) == 3, f"acquire() read the clock {len(readings)} times: {readings}"
 
     def test_speculative_consume_stamps_a_single_instant(self, sync_limiter):
         """``ttl`` and the TTL-expiry guard derive from the same reading."""
