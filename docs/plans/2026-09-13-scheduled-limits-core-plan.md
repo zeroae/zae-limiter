@@ -2065,6 +2065,18 @@ EOF
 - Consumes: `encode` (Task 5), `schema.BUCKET_FIELD_VU` (Task 11)
 - Produces: bucket items carrying `sched` / `sched_tz` / `b_{name}_sched`, and `vu = 0` after any limit change
 
+**`vu = 0` is written on EVERY fan-out, not only when a schedule exists.** This is what lets
+#222 subsume parked PR #469 completely rather than partially. #496 made `refill_bucket` clamp
+on its early-return paths, but the speculative fast path is still a pure `ADD` with no cap
+math — so after a `set_limits` capacity shrink a bucket can spend its surplus before any
+refiller trims it. An unconditional `vu = 0` forces exactly one materialising pass, which
+clamps. On an unscheduled bucket that pass computes `next_boundary(()) -> None` and removes
+`vu` again, so it is self-clearing and leaves no residue. **Do not nest the `vu = 0` write
+inside `if scheduled:`** — that was the plan's original shape and it would have left every
+unscheduled entity exposed, which is most of them. Note also that `vu` must NOT appear in the
+`else` branch's REMOVE list: `SET` and `REMOVE` on one attribute in a single
+`UpdateExpression` is the `ValidationException` #488 hit.
+
 **`vu = 0`, not a computed boundary.** Computing it would leave `vu` in the future while `tk` still holds a surplus over the new cap, so the fast path would admit against it until natural refill caught up — the exact burst #469 existed to prevent. `vu = 0` forces one materialising pass that trims. Cost at 10k active buckets is one failed conditional plus one slow pass each, ≈ $0.014 per admin operation.
 
 - [ ] **Step 1: Write the failing test**
@@ -2130,6 +2142,8 @@ Expected: FAIL with `KeyError: 'sched'`
 
 In `_sync_bucket_params`, after the `cp`/`ra`/`rp` loop and before the TTL handling:
 
+Note `vu = 0` is appended **outside** the `if scheduled:` block, after it:
+
 ```python
         scheduled = [limit for limit in limits if limit.schedule]
         if scheduled:
@@ -2153,14 +2167,10 @@ In `_sync_bucket_params`, after the `cp`/`ra`/`rp` loop and before the TTL handl
                 expr_values[f":lsched{i}"] = {"S": compact}
             # Force exactly one materialising pass, which trims any surplus
             # over a lowered ceiling before the fast path can spend it.
-            set_parts.append("#vu = :vu_zero")
-            expr_names["#vu"] = schema.BUCKET_FIELD_VU
-            expr_values[":vu_zero"] = {"N": "0"}
         else:
             for alias, attr in (
                 ("#sched", schema.BUCKET_FIELD_SCHED),
                 ("#sched_tz", schema.BUCKET_FIELD_SCHED_TZ),
-                ("#vu", schema.BUCKET_FIELD_VU),
             ):
                 expr_names[alias] = attr
                 remove_parts.append(alias)
