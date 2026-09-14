@@ -1091,10 +1091,14 @@ Limit configs use composite items (v0.8.0+, ADR-114 for configs). All limits for
 
 **Limit attribute format:** `l_{limit_name}_{field}` where field is one of:
 - `cp` (capacity), `ra` (refill_amount), `rp` (refill_period_seconds)
+- `sched` (string, #222): the limit's schedule in the compact storage encoding (`schedule.encode()`), written only when that limit has one. `cp`/`ra`/`rp` stay the **base** parameters; the schedule is applied on top of them at read time, never materialised onto the item.
 
 **Config fields:**
 - `config_version` (int): Atomic counter for cache invalidation
 - `on_unavailable` (string): "allow" or "block" (system level only)
+- `sched_tz` (string, #222): the IANA timezone shared by every schedule on the item, hoisted out of the individual entries — **one attribute per item, not per limit** (§4.1), which is why all scheduled limits written to one config item must agree on a zone (`models.hoisted_schedule_timezone()` raises otherwise). Absent when nothing on the item is scheduled; a `sched` with no `sched_tz` decodes as UTC.
+
+Config items are written with full-replace `PutItem` at every level, so storage is override-not-merge: a limit re-written without a schedule loses the stored one, no explicit REMOVE needed.
 
 **Caching:** 60s TTL in-memory cache per Repository instance (configurable via `config_cache_ttl` parameter on Repository constructor, 0 to disable). Use `repo.invalidate_config_cache()` for immediate refresh. Use `repo.get_cache_stats()` for monitoring. `set_limits()` and `delete_limits()` auto-evict relevant cache entries. Negative caching for entities without custom config. Config resolution is handled by `repo.resolve_limits()` (ADR-122).
 
