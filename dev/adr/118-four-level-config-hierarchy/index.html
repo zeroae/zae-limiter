@@ -3417,7 +3417,7 @@
 3. Check resource-level defaults
 4. Check system-level defaults
 5. Use constructor override parameter</p>
-<p>Entity <code>_default_</code> config is treated as a default for TTL purposes (TTL applied), distinguishing it from resource-specific entity config (no TTL).</p>
+<p>~~Entity <code>_default_</code> config is treated as a default for TTL purposes (TTL applied), distinguishing it from resource-specific entity config (no TTL).~~ <strong>Superseded by <a href="../136-entity-config-bucket-ttl/">ADR-136</a>:</strong> entity configuration at either level is custom, and those buckets persist. The rest of this ADR stands.</p>
 <h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>
 <p><strong>Positive:</strong>
 - Premium users can have elevated limits on all resources with a single config entry
@@ -3430,7 +3430,7 @@
 <h3 id="keep-three-level-hierarchy">Keep three-level hierarchy<a class="headerlink" href="#keep-three-level-hierarchy" title="Permanent link">&para;</a></h3>
 <p>Rejected because: Operators would need to duplicate entity config for every resource, which is error-prone and tedious.</p>
 <h3 id="treat-entity-_default_-as-custom-config-no-ttl">Treat entity <code>_default_</code> as custom config (no TTL)<a class="headerlink" href="#treat-entity-_default_-as-custom-config-no-ttl" title="Permanent link">&para;</a></h3>
-<p>Rejected because: Entity <code>_default_</code> is semantically a default, not a resource-specific customization; TTL should apply.</p>
+<p>~~Rejected because: Entity <code>_default_</code> is semantically a default, not a resource-specific customization; TTL should apply.~~ <strong>This rejection was reversed by <a href="../136-entity-config-bucket-ttl/">ADR-136</a></strong>, which adopts this alternative.</p>
 
 
 

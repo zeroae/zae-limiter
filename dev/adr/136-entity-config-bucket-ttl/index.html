@@ -3287,7 +3287,7 @@
 
 <h1 id="adr-136-entity-configuration-determines-bucket-ttl">ADR-136: Entity Configuration Determines Bucket TTL<a class="headerlink" href="#adr-136-entity-configuration-determines-bucket-ttl" title="Permanent link">&para;</a></h1>
 <p><strong>Status:</strong> Accepted
-<strong>Supersedes:</strong> ADR-119
+<strong>Supersedes:</strong> ADR-119 (in full); ADR-118's TTL clause only
 <strong>Date:</strong> 2026-09-14
 <strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/487">#487</a>, <a href="https://github.com/zeroae/zae-limiter/issues/489">#489</a></p>
 <h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
@@ -3295,6 +3295,13 @@
 <p>ADR-119 scopes the TTL to "ephemeral entities (anonymous users, one-time callers)" and exempts custom limits because they "signal explicit intent". An entity carrying an explicit <code>_default_</code> configuration satisfies that exemption — an operator configured it deliberately. Expiring its bucket inflicts the harm ADR-119 itself names, an unintended rate limit reset, and additionally breaks the continuity of the total-consumed counter that usage snapshots derive from. The storage reclaimed is negligible at realistic scale (measured in #489).</p>
 <p>TTL also serves a second purpose ADR-119 did not record: it is the propagation mechanism for default-derived buckets. <code>set_resource_defaults()</code> and <code>set_system_defaults()</code> do not fan out, so those buckets pick up changed parameters by expiring and being recreated. Entity <code>_default_</code> relied on the same mechanism only because <code>_sync_bucket_params</code> could not reach those buckets, which #487 fixes.</p>
 <h2 id="decision">Decision<a class="headerlink" href="#decision" title="Permanent link">&para;</a></h2>
+<blockquote>
+<p><strong>Scope note.</strong> ADR-118 §Decision also stated the superseded rule, and its Alternatives
+Considered explicitly rejected the rule below. This ADR supersedes that clause of ADR-118.
+ADR-118 otherwise remains <strong>Accepted</strong> and authoritative on the four-level configuration
+hierarchy itself — it is not superseded in full, because marking it so would remove the
+hierarchy decision from enforcement entirely.</p>
+</blockquote>
 <p>A bucket carries a TTL only when its limits resolve from the resource or system level; entity configuration at either the per-resource or the entity-wide <code>_default_</code> level is custom, and those buckets must persist indefinitely. ADR-119's time-to-fill TTL formula is unchanged.</p>
 <h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>
 <p><strong>Positive:</strong>
