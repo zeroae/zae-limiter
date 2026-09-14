@@ -3376,12 +3376,14 @@ class TestLeaseCommitTTL:
         assert item is not None
         assert "ttl" not in item
 
-    def test_commit_sets_ttl_for_entity_default_config(self, sync_limiter):
-        """SyncLease._commit() sets TTL when entity has _default_ config (not resource-specific).
+    def test_commit_removes_ttl_for_entity_default_config(self, sync_limiter):
+        """SyncLease._commit() removes TTL when limits come from the entity's `_default_` config.
 
-        Entity _default_ config is treated as a kind of default (not custom config),
-        so TTL should be applied. This contrasts with resource-specific entity config
-        which removes TTL.
+        ADR-136: entity configuration is custom at *either* entity level — the
+        per-resource one and the entity-wide `_default_` one — so a bucket born
+        from `_default_` limits must persist indefinitely, exactly like one born
+        from resource-specific entity limits. Only the resource and system levels
+        make a bucket ephemeral. (Inverts the ADR-119 behaviour, issue #489.)
         """
         sync_limiter.set_limits("user-1", [Limit.per_minute("rpm", 100)])
         with sync_limiter.acquire(entity_id="user-1", resource="gpt-4", consume={"rpm": 1}):
@@ -3391,7 +3393,102 @@ class TestLeaseCommitTTL:
         pk = pk_bucket(sync_limiter._repository.namespace_id, "user-1", "gpt-4", 0)
         item = sync_limiter._repository._get_item(pk, sk_state())
         assert item is not None
-        assert "ttl" in item, "entity_default config should have TTL (treated as default)"
+        assert "ttl" not in item, "entity_default config is custom config (ADR-136): no TTL"
+
+    def test_commit_sets_ttl_for_resource_config(self, sync_limiter):
+        """Guard (ADR-136): resource-derived buckets still carry a TTL.
+
+        The fix for #489 widens "custom config" to cover entity `_default_`; it
+        must not widen to *everything*. Resource and system defaults do not fan
+        out on change, so their buckets pick up new parameters by expiring and
+        being recreated — making them custom would break that mechanism and
+        stop ephemeral buckets from ever being reclaimed.
+        """
+        sync_limiter.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 100)])
+        with sync_limiter.acquire(entity_id="user-1", resource="gpt-4", consume={"rpm": 1}):
+            pass
+        from zae_limiter.schema import pk_bucket, sk_state
+
+        pk = pk_bucket(sync_limiter._repository.namespace_id, "user-1", "gpt-4", 0)
+        item = sync_limiter._repository._get_item(pk, sk_state())
+        assert item is not None
+        assert "ttl" in item, "resource defaults are not custom config: TTL must stay"
+
+    def test_parent_only_path_removes_ttl_for_parent_default_config(self, sync_limiter):
+        """Parent-only slow path drops the TTL when the parent's own `_default_` config wins.
+
+        ADR-136 / issue #489. `_try_parent_only_acquire` returns None when the
+        parent bucket is missing, so this path can only ever *update* a bucket —
+        a "created via the parent-only path" test is not constructible. The
+        parent's bucket is therefore born under system defaults (with a TTL),
+        the parent is then given an entity-wide `_default_` config, and the next
+        cascade acquire that routes through the parent-only path must remove it.
+        """
+        from zae_limiter.schema import pk_bucket, sk_state
+
+        sync_limiter.create_entity("parent-1")
+        sync_limiter.create_entity("child-1", parent_id="parent-1", cascade=True)
+        sync_limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
+        with sync_limiter.acquire("child-1", "gpt-4", {"rpm": 1}):
+            pass
+        parent_pk = pk_bucket(sync_limiter._repository.namespace_id, "parent-1", "gpt-4", 0)
+        item = sync_limiter._repository._get_item(parent_pk, sk_state())
+        assert item is not None
+        assert "ttl" in item, "precondition: system-derived parent bucket starts with a TTL"
+        sync_limiter.set_limits("parent-1", [Limit.per_minute("rpm", 1000)])
+        sync_limiter._repository.invalidate_config_cache()
+        item = sync_limiter._repository._get_item(parent_pk, sk_state())
+        assert item is not None
+        assert "ttl" in item, "precondition: set_limits(_default_) must not touch gpt-4"
+        sync_limiter._speculative_writes = True
+        now_ms = int(time.time() * 1000)
+        child_bucket = BucketState(
+            entity_id="child-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=900000,
+            last_refill_ms=now_ms,
+            capacity_milli=1000000,
+            refill_amount_milli=1000000,
+            refill_period_ms=60000,
+        )
+        parent_bucket = BucketState(
+            entity_id="parent-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=0,
+            last_refill_ms=now_ms - 60000,
+            capacity_milli=1000000,
+            refill_amount_milli=1000000,
+            refill_period_ms=60000,
+        )
+        original_speculative = sync_limiter._repository.speculative_consume
+        call_count = 0
+
+        def mock_speculative(
+            entity_id, resource, consume, ttl_seconds=None, shard_id=None, now_ms=None
+        ):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return SpeculativeResult(
+                    success=True, buckets=[child_bucket], cascade=True, parent_id="parent-1"
+                )
+            if call_count == 2:
+                return SpeculativeResult(success=False, old_buckets=[parent_bucket])
+            return original_speculative(entity_id, resource, consume, ttl_seconds, shard_id, now_ms)
+
+        sync_limiter._repository.speculative_consume = mock_speculative
+        try:
+            with sync_limiter.acquire("child-1", "gpt-4", {"rpm": 1}) as lease:
+                assert "parent-1" in {e.entity_id for e in lease.entries}
+        finally:
+            sync_limiter._repository.speculative_consume = original_speculative
+        item = sync_limiter._repository._get_item(parent_pk, sk_state())
+        assert item is not None
+        assert "ttl" not in item, (
+            "parent limits resolved from the parent's own `_default_` config: the parent-only path must REMOVE the TTL (ADR-136)"
+        )
 
     def test_ttl_value_matches_formula(self, sync_limiter):
         """TTL = now + max_refill_period × multiplier."""

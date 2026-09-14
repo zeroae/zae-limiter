@@ -53,6 +53,23 @@ _UNSET: Any = object()  # sentinel for detecting explicitly-passed deprecated pa
 
 logger = logging.getLogger(__name__)
 
+#: The two :data:`~.config_cache.ConfigSource` members that mean "the entity's
+#: own configuration": the per-resource level and the entity-wide ``_default_``
+#: level (ADR-136).
+_ENTITY_CONFIG_SOURCES: frozenset[str] = frozenset({"entity", "entity_default"})
+
+
+def _is_custom_config(config_source: str | None) -> bool:
+    """Whether limits from ``config_source`` are the entity's own (ADR-136).
+
+    Decides bucket TTL: a bucket whose limits resolve from **either** entity
+    level is custom and must persist indefinitely; only the resource and system
+    levels (and an explicit ``limits`` override) leave it ephemeral, which is
+    also how those levels propagate parameter changes, since they do not fan
+    out. Kept in one place so the call sites cannot drift apart again (#489).
+    """
+    return config_source in _ENTITY_CONFIG_SOURCES
+
 
 class OnUnavailable(Enum):
     """Behavior when DynamoDB is unavailable."""
@@ -1485,7 +1502,7 @@ class RateLimiter:
         # Process parent buckets: refill + try_consume
         parent_entries: list[LeaseEntry] = []
         statuses: list[LimitStatus] = []
-        has_custom_config = parent_config_source == "entity"
+        has_custom_config = _is_custom_config(parent_config_source)
 
         for limit in parent_limits:
             bucket_key = (parent_id, resource, limit.name)
@@ -1721,7 +1738,7 @@ class RateLimiter:
                     statuses.append(status)
 
                 # Determine if entity has custom config for TTL (Issue #271)
-                has_custom_config = entity_config_sources.get(eid) == "entity"
+                has_custom_config = _is_custom_config(entity_config_sources.get(eid))
 
                 # Every resolved limit gets an entry: _commit_initial() needs
                 # them all to create the composite bucket and to credit refill
@@ -1755,7 +1772,7 @@ class RateLimiter:
                 now_ms,
                 eid_shard,
                 eid_shard_count,
-                entity_config_sources.get(eid) == "entity",
+                _is_custom_config(entity_config_sources.get(eid)),
             )
             if carrier is not None:
                 carriers.append(carrier)

@@ -1156,16 +1156,19 @@ All records use flat schema (v0.6.0+, top-level attributes, no nested `data.M`).
 
 See [ADR-100](docs/adr/100-centralized-config.md) for full config design details.
 
-### Bucket TTL for Default Limits (Issue #271, #296)
+### Bucket TTL for Default Limits (Issue #271, #296, ADR-136)
 
 Buckets using system/resource default limits have TTL for auto-expiration:
 
-| Config Source | TTL Behavior |
-|---------------|--------------|
-| Entity custom limits | No TTL (persist indefinitely) |
-| Resource defaults | TTL = now + max_time_to_fill × multiplier |
-| System defaults | TTL = now + max_time_to_fill × multiplier |
+| Config Source (`ConfigSource`) | TTL Behavior |
+|--------------------------------|--------------|
+| Entity limits, resource-specific (`entity`) | No TTL (persist indefinitely) |
+| Entity limits, entity-wide `_default_` (`entity_default`) | No TTL (persist indefinitely) |
+| Resource defaults (`resource`) | TTL = now + max_time_to_fill × multiplier |
+| System defaults (`system`) | TTL = now + max_time_to_fill × multiplier |
 | Override parameter | TTL = now + max_time_to_fill × multiplier |
+
+**[ADR-136](docs/adr/136-entity-config-bucket-ttl.md) (supersedes ADR-119):** entity configuration is custom at **either** entity level, so an entity-wide `_default_` bucket persists like a resource-specific one. The test lives in `limiter.py`'s `_is_custom_config()` — a single helper, because the three call sites that consume it (`_try_parent_only_acquire`, `_do_acquire`'s per-entity entries, and the `_wcu_carrier` argument) had drifted to a two-way `== "entity"` test that silently excluded `entity_default` (#489). TTL is also the **propagation mechanism** for resource/system buckets, which do not fan out on change, so widening this test any further would stop them picking up new parameters.
 
 Where `time_to_fill = (capacity / refill_amount) × refill_period_seconds`. This ensures slow-refill limits (where `capacity >> refill_amount`) have enough time to fully refill before expiring.
 
