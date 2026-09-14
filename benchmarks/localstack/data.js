@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789418304189,
+  "lastUpdate": 1789418961929,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -18127,6 +18127,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.006007842177267182",
             "extra": "mean: 1.0810522356000092 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "15974744a5327f01cc34305ae6a1f1e2cc6942e6",
+          "message": "📝 docs(models): make next_boundary call sites match its signature (#500)\n\n## Summary\n\nTask 4 of the scheduled-limits core plan declared `next_boundary`\n**three different ways within the same task**:\n\n| Location | Declared signature |\n|----------|--------------------|\n| Task 4 Interfaces block | `next_boundary(sched, reset_sched=(),\nnow_ms=0)` |\n| Task 4 Step 3 implementation | `next_boundary(sched, reset_sched=(),\n*, now_ms)` — keyword-only |\n| Task 4 Step 1 tests (12 call sites) | `next_boundary(sched,\n<timestamp>)` — timestamp positional, second argument |\n\nAgainst the Step 3 implementation, every one of those twelve tests\nraises `TypeError: next_boundary() missing 1 required keyword-only\nargument: 'now_ms'`, *after* first binding the timestamp to\n`reset_sched`. That is not the failure Step 2 documents as the expected\nred, so Task 4's red phase would have been unreadable — the implementer\nwould be debugging an argument-binding error instead of reading an\nassertion.\n\n## Why the call sites move, not the signature\n\nThe plan's own Type-consistency section already settles the shape and\nstates the reason: the keyword-only `now_ms` **stops a positional call\nbinding a timestamp to `reset_sched`** once the surface plan starts\npassing two tuples. The tests then went on to commit exactly that error\n— which is the strongest possible evidence the marker is doing its job.\n\nRelaxing the signature to positional would turn those tests green while\nre-arming the very trap the keyword-only marker exists to prevent. The\nreal consumers corroborate the keyword-only shape: the `next_boundary`\ncall sites in Tasks 9 and 14 already pass `now_ms=`.\n\n## Changes\n\n- **Core plan, Task 4 Interfaces block** — corrected to the keyword-only\nsignature, and now carries the rationale inline rather than leaving it\nburied in the self-review section.\n- **Core plan, Task 4 tests** — 12 call sites now pass `now_ms=`.\n- **Surface plan, Task 2 tests** — 3 call sites now pass `now_ms=`.\n- **Surface plan, Step 3** — reworded. It read: *\"Change\n`next_boundary(sched, now_ms)` to `next_boundary(sched, reset_sched,\nnow_ms)` ... update the core plan's call sites.\"* That contradicted its\nown Interfaces block two screens earlier (\"no signature change\"), and\ndescribed a signature that never existed in either plan.\n- **Design doc §7** — interface sketch aligned with the same shape.\n\nDocs-only: no source or test files are touched. This is a pre-existing\ndefect from the plan expansion, not something introduced by #499.\n\n## Test plan\n\n- [x] No runnable tests — the change is confined to planning documents\nunder `docs/plans/`.\n- [x] Swept every `next_boundary(` occurrence across the core plan,\nsurface plan, and design doc. The only remaining non-keyword forms are\nprose ellipses and one single-argument example.\n\nRefs #222\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01QdVj8nPhUwTz2aNJzMFqt5",
+          "timestamp": "2026-09-14T16:44:19-04:00",
+          "tree_id": "8d04eb67a1b172efc9b1596dd18c7d093889f487",
+          "url": "https://github.com/zeroae/zae-limiter/commit/15974744a5327f01cc34305ae6a1f1e2cc6942e6"
+        },
+        "date": 1789418960363,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 23.45013414449791,
+            "unit": "iter/sec",
+            "range": "stddev: 0.01205964097647522",
+            "extra": "mean: 42.64367930000219 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 16.249668438440953,
+            "unit": "iter/sec",
+            "range": "stddev: 0.019956709650302166",
+            "extra": "mean: 61.539717181819825 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 38.26718146095909,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004327899304317226",
+            "extra": "mean: 26.132052631579864 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 38.32213479555428,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004007082972002193",
+            "extra": "mean: 26.09457968181901 msec\nrounds: 22"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 21.423428734501467,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008607730939460583",
+            "extra": "mean: 46.67786900000489 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 73.77018344600899,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0024595876464736785",
+            "extra": "mean: 13.555612217392428 msec\nrounds: 23"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 24.17175022477058,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006577903007825068",
+            "extra": "mean: 41.370607866666845 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 24.831758759491937,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008194768623956817",
+            "extra": "mean: 40.27100978571444 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 27.492783006996888,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004682292739319488",
+            "extra": "mean: 36.373181999999815 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 23.465169174217404,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009699475794623009",
+            "extra": "mean: 42.61635586666728 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 24.828755255651753,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005956525462982266",
+            "extra": "mean: 40.27588132000176 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 19.281912798761148,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008972654920860832",
+            "extra": "mean: 51.86207459999764 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 29.57934233748706,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00288508607666607",
+            "extra": "mean: 33.807377750000235 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9220622767505882,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006436056274667918",
+            "extra": "mean: 520.2745052000012 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9333146263489849,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0033180903832992375",
+            "extra": "mean: 517.246384200007 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9381004203272452,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00885670382253241",
+            "extra": "mean: 1.065983958999999 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9228414289368744,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004384808964719822",
+            "extra": "mean: 1.0836097824000093 sec\nrounds: 5"
           }
         ]
       }
