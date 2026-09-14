@@ -56,6 +56,10 @@ jobs:
         run: uv run pytest tests/doctest/test_docs_run.py -v -p no:xdist -o "addopts=" --cov --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
 
       - name: Upload coverage
+        # !cancelled() so a failing doctest run still reports its coverage. Without it
+        # the implicit success() gate skips the upload, and codecov.yml's carryforward
+        # silently substitutes this flag from the base commit (issue #494).
+        if: "!cancelled()"
         uses: codecov/codecov-action@v7
         with:
           files: coverage.xml
