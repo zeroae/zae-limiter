@@ -1,6 +1,6 @@
 # ADR-136: Entity Configuration Determines Bucket TTL
 
-**Status:** Proposed
+**Status:** Accepted
 **Supersedes:** ADR-119
 **Date:** 2026-09-14
 **Issue:** [#487](https://github.com/zeroae/zae-limiter/issues/487), [#489](https://github.com/zeroae/zae-limiter/issues/489)
