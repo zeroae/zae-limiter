@@ -658,10 +658,20 @@ class TestProvisionerHandler:
         assert ("resource", "claude-3", "create") in actions
 
 
+@patch("zae_limiter_provisioner.handler.boto3")
 class TestSyncBucketParamChanges:
-    """A manifest apply must reach bucket items that already exist (#481)."""
+    """A manifest apply must reach bucket items that already exist (#481).
 
-    def test_entity_set_syncs_with_ttl_removed(self):
+    `_sync_bucket_param_changes` calls `boto3.client("dynamodb")` itself, so
+    `handler.boto3` is patched at class level exactly as `TestProvisionerHandler`
+    does for the same reason. Without it a real client is constructed and the
+    tests fail with `NoRegionError` on any machine without AWS configured — CI
+    included — while passing locally. The client is only threaded through to
+    `sync_bucket_params` / `resolve_effective_limits`, which these tests patch,
+    so the mock is never exercised beyond construction.
+    """
+
+    def test_entity_set_syncs_with_ttl_removed(self, mock_handler_boto3):
         """Entity custom limits mean the bucket must persist: multiplier 0."""
         changes = [
             Change(
@@ -679,7 +689,7 @@ class TestSyncBucketParamChanges:
         assert kwargs["ttl_multiplier"] == 0
         assert kwargs["stale_limit_names"] is None
 
-    def test_entity_delete_reconciles_to_defaults_with_ttl(self):
+    def test_entity_delete_reconciles_to_defaults_with_ttl(self, mock_handler_boto3):
         changes = [
             Change(
                 action="delete",
@@ -700,7 +710,7 @@ class TestSyncBucketParamChanges:
         assert kwargs["ttl_multiplier"] == 7
         assert kwargs["limits"] == {"rpm": {"capacity": 1, "refill_amount": 1, "refill_period": 60}}
 
-    def test_delete_strips_limits_absent_from_the_new_effective_config(self):
+    def test_delete_strips_limits_absent_from_the_new_effective_config(self, mock_handler_boto3):
         changes = [
             Change(
                 action="delete",
@@ -724,7 +734,7 @@ class TestSyncBucketParamChanges:
             _sync_bucket_param_changes("tbl", "ns123", changes)
         assert sync.call_args.kwargs["stale_limit_names"] == {"tpm"}
 
-    def test_entity_set_with_no_declared_limits_is_a_noop(self):
+    def test_entity_set_with_no_declared_limits_is_a_noop(self, mock_handler_boto3):
         """A `disabled`-only entity entry declares no limits: nothing to push.
 
         `EntityResourceDecl.to_dict()` always emits a `limits` key, empty when
@@ -743,7 +753,7 @@ class TestSyncBucketParamChanges:
             _sync_bucket_param_changes("tbl", "ns123", changes)
         sync.assert_not_called()
 
-    def test_resource_and_system_levels_are_never_synced(self):
+    def test_resource_and_system_levels_are_never_synced(self, mock_handler_boto3):
         """Buckets on defaults carry a TTL and are recreated (#271, #296)."""
         changes = [
             Change(action="update", level="resource", target="gpt-4", data={"limits": {}}),
@@ -753,7 +763,7 @@ class TestSyncBucketParamChanges:
             _sync_bucket_param_changes("tbl", "ns123", changes)
         sync.assert_not_called()
 
-    def test_entity_id_containing_a_slash_splits_once(self):
+    def test_entity_id_containing_a_slash_splits_once(self, mock_handler_boto3):
         changes = [
             Change(
                 action="update",
@@ -767,7 +777,7 @@ class TestSyncBucketParamChanges:
         kwargs = sync.call_args.kwargs
         assert (kwargs["entity_id"], kwargs["resource"]) == ("org", "team/gpt-4")
 
-    def test_delete_with_no_effective_limits_is_a_noop(self):
+    def test_delete_with_no_effective_limits_is_a_noop(self, mock_handler_boto3):
         """Nothing left to reconcile to; leave the bucket for its TTL/recreate."""
         changes = [
             Change(action="delete", level="entity", target="user-1/gpt-4", data={"limits": {}})
