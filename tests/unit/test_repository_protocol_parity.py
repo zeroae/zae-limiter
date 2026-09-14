@@ -21,11 +21,20 @@ from zae_limiter.repository_protocol import RepositoryProtocol
 
 
 def _protocol_methods() -> list[str]:
-    """Public methods declared on the protocol."""
+    """Methods declared on the protocol — private ones included.
+
+    A leading underscore marks a member as internal to *callers of the
+    library*, not as excluded from the backend contract: ``lease.py`` calls
+    ``self.repository._now_ms()`` on every ``adjust()``, ``consume()``,
+    ``release()`` and ``_commit_initial()`` (issue #430). Filtering those out
+    here would leave a rename or a signature change green in this suite while
+    every protocol-typed backend breaks — exactly the drift this file exists
+    to catch. Dunders are ``Protocol`` machinery (``__init__``), not contract.
+    """
     return sorted(
         name
         for name, member in vars(RepositoryProtocol).items()
-        if not name.startswith("_") and inspect.isfunction(member)
+        if not name.startswith("__") and inspect.isfunction(member)
     )
 
 
@@ -47,6 +56,15 @@ class TestRepositoryProtocolParity:
     def test_protocol_declares_methods(self) -> None:
         """Sanity check that introspection finds the contract at all."""
         assert len(_protocol_methods()) > 20
+
+    def test_private_members_are_guarded(self) -> None:
+        """The clock seam is contract, not an implementation detail (#430).
+
+        Pins the underscore policy in `_protocol_methods()`: narrowing it back
+        to public names would silently drop `_now_ms` — and with it the only
+        check that `Repository` still satisfies what `lease.py` calls.
+        """
+        assert "_now_ms" in _protocol_methods()
 
     @pytest.mark.parametrize("name", _protocol_methods())
     def test_repository_implements_protocol_method(self, name: str) -> None:
