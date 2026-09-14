@@ -3,7 +3,25 @@
 from unittest.mock import MagicMock, patch
 
 from zae_limiter.schema import DEFAULT_RESOURCE, pk_entity, pk_resource, sk_config
-from zae_limiter_provisioner.handler import _cfn_properties_to_manifest, on_event
+from zae_limiter_provisioner.differ import Change
+from zae_limiter_provisioner.handler import (
+    _cfn_properties_to_manifest,
+    _sync_bucket_param_changes,
+    on_event,
+)
+
+
+def _disable_stamps(mock_client):
+    """The ADR-125 disable/enable stamps among a mock client's update_item calls.
+
+    An apply also writes bucket limit params (#481) through the same client, so
+    tests that pin stamping behaviour filter to the `#disabled` writes.
+    """
+    return [
+        c
+        for c in mock_client.update_item.call_args_list
+        if "#disabled" in c.kwargs.get("UpdateExpression", "")
+    ]
 
 
 def _entity_default_get_item(namespace_id: str, entity_id: str, value: bool):
@@ -449,9 +467,13 @@ class TestProvisionerHandler:
         # entity-level REMOVE on vip-1 (its own carve-out) last. vip-1 is
         # never SET by the resource-level pass -- that would be the wasted,
         # briefly-wrong write the pre-C3 behavior produced.
-        assert mock_client.update_item.call_count == 2
-        first_call = mock_client.update_item.call_args_list[0]
-        second_call = mock_client.update_item.call_args_list[1]
+        #
+        # Filtered to the disable stamps: the same apply also writes bucket
+        # limit params now (#481), which is a separate concern with its own
+        # tests in TestSyncBucketParamChanges.
+        stamps = _disable_stamps(mock_client)
+        assert len(stamps) == 2
+        first_call, second_call = stamps
         assert first_call.kwargs["Key"]["PK"] == {"S": "ns123/BUCKET#user-1#gpt-4#0"}
         assert first_call.kwargs["UpdateExpression"] == "SET #disabled = :true"
         assert second_call.kwargs["Key"]["PK"] == {"S": "ns123/BUCKET#vip-1#gpt-4#0"}
@@ -507,13 +529,15 @@ class TestProvisionerHandler:
 
         # The GSI3 discovery query must be unscoped ("BUCKET#"), never
         # "BUCKET#_default_#" -- this is the exact assertion that
-        # distinguishes the fix from the pre-fix bug.
-        query_kwargs = mock_client.query.call_args.kwargs
+        # distinguishes the fix from the pre-fix bug. The disable fan-out runs
+        # first, so its query is the apply's first query (bucket param sync
+        # queries afterwards, #481).
+        query_kwargs = mock_client.query.call_args_list[0].kwargs
         assert query_kwargs["IndexName"] == "GSI3"
         assert query_kwargs["ExpressionAttributeValues"][":sk"] == {"S": "BUCKET#"}
 
         # Both buckets, across two different real resources, get stamped.
-        stamped_pks = {c.kwargs["Key"]["PK"]["S"] for c in mock_client.update_item.call_args_list}
+        stamped_pks = {c.kwargs["Key"]["PK"]["S"] for c in _disable_stamps(mock_client)}
         assert stamped_pks == {
             "ns123/BUCKET#vip-1#gpt-4#0",
             "ns123/BUCKET#vip-1#claude-3#0",
@@ -632,3 +656,106 @@ class TestProvisionerHandler:
         actions = {(c["level"], c["target"], c["action"]) for c in result["changes"]}
         assert ("resource", "gpt-4", "update") in actions
         assert ("resource", "claude-3", "create") in actions
+
+
+class TestSyncBucketParamChanges:
+    """A manifest apply must reach bucket items that already exist (#481)."""
+
+    def test_entity_set_syncs_with_ttl_removed(self):
+        """Entity custom limits mean the bucket must persist: multiplier 0."""
+        changes = [
+            Change(
+                action="update",
+                level="entity",
+                target="user-1/gpt-4",
+                data={"limits": {"rpm": {"capacity": 5, "refill_amount": 5, "refill_period": 60}}},
+            )
+        ]
+        with patch("zae_limiter_provisioner.handler.sync_bucket_params") as sync:
+            _sync_bucket_param_changes("tbl", "ns123", changes)
+        assert sync.call_count == 1
+        kwargs = sync.call_args.kwargs
+        assert (kwargs["entity_id"], kwargs["resource"]) == ("user-1", "gpt-4")
+        assert kwargs["ttl_multiplier"] == 0
+        assert kwargs["stale_limit_names"] is None
+
+    def test_entity_delete_reconciles_to_defaults_with_ttl(self):
+        changes = [
+            Change(
+                action="delete",
+                level="entity",
+                target="user-1/gpt-4",
+                data={"limits": {"rpm": {"capacity": 5, "refill_amount": 5, "refill_period": 60}}},
+            )
+        ]
+        with (
+            patch("zae_limiter_provisioner.handler.sync_bucket_params") as sync,
+            patch(
+                "zae_limiter_provisioner.handler.resolve_effective_limits",
+                return_value={"rpm": {"capacity": 1, "refill_amount": 1, "refill_period": 60}},
+            ),
+        ):
+            _sync_bucket_param_changes("tbl", "ns123", changes)
+        kwargs = sync.call_args.kwargs
+        assert kwargs["ttl_multiplier"] == 7
+        assert kwargs["limits"] == {"rpm": {"capacity": 1, "refill_amount": 1, "refill_period": 60}}
+
+    def test_delete_strips_limits_absent_from_the_new_effective_config(self):
+        changes = [
+            Change(
+                action="delete",
+                level="entity",
+                target="user-1/gpt-4",
+                data={
+                    "limits": {
+                        "rpm": {"capacity": 5, "refill_amount": 5, "refill_period": 60},
+                        "tpm": {"capacity": 9, "refill_amount": 9, "refill_period": 60},
+                    }
+                },
+            )
+        ]
+        with (
+            patch("zae_limiter_provisioner.handler.sync_bucket_params") as sync,
+            patch(
+                "zae_limiter_provisioner.handler.resolve_effective_limits",
+                return_value={"rpm": {"capacity": 1, "refill_amount": 1, "refill_period": 60}},
+            ),
+        ):
+            _sync_bucket_param_changes("tbl", "ns123", changes)
+        assert sync.call_args.kwargs["stale_limit_names"] == {"tpm"}
+
+    def test_resource_and_system_levels_are_never_synced(self):
+        """Buckets on defaults carry a TTL and are recreated (#271, #296)."""
+        changes = [
+            Change(action="update", level="resource", target="gpt-4", data={"limits": {}}),
+            Change(action="update", level="system", target=None, data={"limits": {}}),
+        ]
+        with patch("zae_limiter_provisioner.handler.sync_bucket_params") as sync:
+            _sync_bucket_param_changes("tbl", "ns123", changes)
+        sync.assert_not_called()
+
+    def test_entity_id_containing_a_slash_splits_once(self):
+        changes = [
+            Change(
+                action="update",
+                level="entity",
+                target="org/team/gpt-4",
+                data={"limits": {"rpm": {"capacity": 5, "refill_amount": 5, "refill_period": 60}}},
+            )
+        ]
+        with patch("zae_limiter_provisioner.handler.sync_bucket_params") as sync:
+            _sync_bucket_param_changes("tbl", "ns123", changes)
+        kwargs = sync.call_args.kwargs
+        assert (kwargs["entity_id"], kwargs["resource"]) == ("org", "team/gpt-4")
+
+    def test_delete_with_no_effective_limits_is_a_noop(self):
+        """Nothing left to reconcile to; leave the bucket for its TTL/recreate."""
+        changes = [
+            Change(action="delete", level="entity", target="user-1/gpt-4", data={"limits": {}})
+        ]
+        with (
+            patch("zae_limiter_provisioner.handler.sync_bucket_params") as sync,
+            patch("zae_limiter_provisioner.handler.resolve_effective_limits", return_value={}),
+        ):
+            _sync_bucket_param_changes("tbl", "ns123", changes)
+        sync.assert_not_called()
