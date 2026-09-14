@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789422676633,
+  "lastUpdate": 1789426359492,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -18413,6 +18413,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.045188892497083466",
             "extra": "mean: 1.0916228301999809 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d2ac517b80226c0aeab9e9cf73b20ef354a58398",
+          "message": "✨ feat(schema): compact storage encoding for schedules (#504)\n\n## Summary\n\nTask 5 of the #222 scheduled-limits core plan: `encode` / `decode` /\n`to_cron` in `src/zae_limiter/schedule.py`. Standard 5-field cron stays\nthe interface at every API boundary; a compact non-JSON form is used\nonly in storage, because a bucket item crossing DynamoDB's 1 KB WCU\nboundary doubles the write cost of every `acquire()` on it forever.\n\nGrammar (design §4.1): wildcard fields omitted, the rest letter-tagged\n`m h D M w`, names normalised to numbers, `scale` as integer per-mille\ntagged `s`, absolutes `c` / `a` / `p`, entries joined with `;`, timezone\nhoisted out. `encode((BUSINESS, NIGHTS))` is\n`(\"h9-17w1-5s500;h0-6c2000\", \"America/New_York\")`.\n\n## Measured sizes (design §4.2 verified, not restated)\n\nReconstructed against the real `build_composite_create` shape using\nDynamoDB's sizing rules:\n\n| bucket item | JSON (§1.4's original proposal) | compact + item-level\ndefault |\n|---|---|---|\n| 2 limits, no schedule | 487 B | 487 B |\n| 2 limits × 2 entries | 741 B | 551 B |\n| 3 limits × 2 entries | 934 B | 617 B |\n| 4 limits × 3 entries | **1363 B — over** | 698 B |\n| 6 limits × 4 entries | **2221 B — over** | 845 B |\n| 6 limits, no schedule | 751 B | 751 B |\n\n- The design's headline **4.9×** is confirmed: its own two-entry example\nis 112 B of JSON against 23 B compact = **4.87×** (2.87× if the 16 B\nhoisted timezone is charged to the schedule).\n- Worst shared case **845 B**, under 1 KB, against **751 B** for the\nsame item with no schedule — a 94 B schedule contribution (design\npredicted 805 / 721 / 84 B; the small offset is longer entity and\nresource names plus a `ttl` attribute in the reconstruction).\n- **Correction to the design and the plan:** both say \"the JSON proposal\ncrossed 1 KB at 3 limits × 2 entries (917 B)\". 917 B is *under* 1024 B,\ncontradicting their own table. The first row over 1 KB is 4 limits × 3\nentries. The conclusion is unaffected; the sentence is off by one row.\n\n## Defects found and fixed beyond the plan's text\n\n1. **`parse_cron` accepted 6-field crons** (separate commit, 7c59d5fd).\ncronsim supports an optional leading *seconds* field, so\n`ScheduleEntry(cron=\"30 5 9 * * *\")` constructed and `matches()`\nsilently widened it to the whole of 09:05 — and left six fields to\nsqueeze into the encoding's five slots.\n2. **Sunday's number is positional.** The plan's \"inverse of\n`DOW_NAMES`\" maps `SUN` to 7 everywhere. That is right standalone but\nbreaks in a range or step: cronsim *rejects* `7-4`, so `SUN-THU` would\nbecome unparseable, and it reads `7/2` as `{7}` where `SUN/2` means\nevery other day. Encode now uses 7 for a bare item and 0 inside a\ncompound one. (cronsim already rejects every range that *ends* at\nSunday, so `SUN-SUN` → `0-0` is the only end-position case.)\n3. **`int(scale * 1000)` truncates.** `int(2.3 * 1000)` is 2299 — 2.3\nhas no exact binary representation — so a scale of 2.3 would have been\nstored as 2.299. Now `round`. A sub-per-mille scale also floors at 1,\nmirroring `effective_params`' floor at one milli-unit, so `encode` is\ntotal and never emits an `s0` that `decode` would reject.\n4. **A bare weekday `0` now normalises to `7`** as well as the names, so\n`SUN` / `0` / `7` all converge on one stored spelling. Without it\n`differ.py` would read two spellings of one schedule as a change on\nevery apply — the exact motivation §4.3 gives for normalising names.\n5. `to_cron` renames only the part before a `/`: the step of `1-5/2` is\na divisor, not a weekday.\n6. `decode` rejects corruption rather than silently recovering from it:\nleading junk, duplicated tags, unparseable remainders.\n\nThe plan's round-trip test asserted `encode(restored) == (compact, tz)`\nonly. `decode(encode(x)) == x` cannot hold literally for name forms,\nsince normalising them is the point — the tests now assert semantic\nequality (parsed field sets plus every modifier plus tz), byte-identical\nre-encoding, and idempotence of decode→encode→decode, over a generated\nsweep of field shapes rather than a hand-picked few.\n\n## Test plan\n\n- [x] `uv run pytest tests/unit/ -q` → **3607 passed** (3462 before this\ntask + 145 new)\n- [x] `uv run pytest tests/unit/ -m gevent -n 0 -q` → **26 passed**\n- [x] Patch coverage **100%** (98/98 new lines); `schedule.py` at 100%\nstatement coverage across its four test files\n- [x] ruff + ruff-format (pre-commit's pinned 0.9.2) + mypy clean\n- [x] Mutation-verified: identity `_encode_dow_item` fails 32 tests;\ndropping the scale rounding, the scale floor, the duplicate-tag check,\nthe tokeniser's leftover check, the 5-field guard, `to_cron`'s name\nrendering, and the `/step` split each fail at least one test\n\nRefs #222\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01QdVj8nPhUwTz2aNJzMFqt5",
+          "timestamp": "2026-09-14T18:47:22-04:00",
+          "tree_id": "79d8b1cf27741f2e3d7f5eb7235da6bbb0e76004",
+          "url": "https://github.com/zeroae/zae-limiter/commit/d2ac517b80226c0aeab9e9cf73b20ef354a58398"
+        },
+        "date": 1789426358122,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 29.699209450852468,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005003977835704192",
+            "extra": "mean: 33.670929916664726 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 21.24145887664976,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00776567798416243",
+            "extra": "mean: 47.077745733334574 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 49.59874661228365,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0032363029087208763",
+            "extra": "mean: 20.16179980952058 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 44.95240764982935,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005061655967629637",
+            "extra": "mean: 22.245749500000283 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 25.24943088216345,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004555858711992883",
+            "extra": "mean: 39.604853062506606 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 94.17810514083834,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0011843857375602104",
+            "extra": "mean: 10.618179230772942 msec\nrounds: 26"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 23.450017399444963,
+            "unit": "iter/sec",
+            "range": "stddev: 0.04510890423407811",
+            "extra": "mean: 42.643891599998085 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 27.042114334219832,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007450017787560469",
+            "extra": "mean: 36.979357000002494 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 29.7921543729721,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00590453702090423",
+            "extra": "mean: 33.565884074070695 msec\nrounds: 27"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 28.062887607739516,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005819529827719189",
+            "extra": "mean: 35.634251684214 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 32.37007144347657,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004086520298954794",
+            "extra": "mean: 30.892733794121007 msec\nrounds: 34"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 27.80415102705653,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007847606658885085",
+            "extra": "mean: 35.965852689653744 msec\nrounds: 29"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 32.32657093003668,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005846296985134388",
+            "extra": "mean: 30.934304852941768 msec\nrounds: 34"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.398839194221311,
+            "unit": "iter/sec",
+            "range": "stddev: 0.2707149324831717",
+            "extra": "mean: 714.8784535999994 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.645977539908286,
+            "unit": "iter/sec",
+            "range": "stddev: 0.11727948736660355",
+            "extra": "mean: 607.5417044000005 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.7480720556816522,
+            "unit": "iter/sec",
+            "range": "stddev: 0.26809283146968677",
+            "extra": "mean: 1.3367696231999844 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.4006251414319927,
+            "unit": "iter/sec",
+            "range": "stddev: 1.2769717746558",
+            "extra": "mean: 2.496098962799999 sec\nrounds: 5"
           }
         ]
       }
