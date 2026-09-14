@@ -305,6 +305,21 @@ class TestResolveEffectiveLimits:
         client.get_item.side_effect = _levels({(pk_resource("ns123", "gpt-4"), sk_config()): item})
         assert set(resolve_effective_limits(client, "tbl", "ns123", "user-1", "gpt-4")) == {"rpm"}
 
+    def test_unknown_limit_field_is_ignored(self):
+        """An `l_{name}_{field}` attribute for a field we do not map is skipped.
+
+        Forward compatibility: a newer writer can add a per-limit field this
+        code does not know about (the #222 scheduling fields will), and it must
+        not be mistaken for cp/ra/rp or make an otherwise-valid limit malformed.
+        """
+        client = _make_client()
+        item = _limits_item(rpm=(10, 10, 60))
+        item[limit_attr("rpm", "zz")] = {"N": "7"}
+        client.get_item.side_effect = _levels({(pk_resource("ns123", "gpt-4"), sk_config()): item})
+        assert resolve_effective_limits(client, "tbl", "ns123", "user-1", "gpt-4") == {
+            "rpm": {"capacity": 10, "refill_amount": 10, "refill_period": 60}
+        }
+
     def test_partial_limit_attributes_are_skipped(self):
         """A limit missing cp/ra/rp is malformed; do not synthesise defaults."""
         client = _make_client()

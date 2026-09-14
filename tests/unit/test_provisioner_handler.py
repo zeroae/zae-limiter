@@ -724,6 +724,25 @@ class TestSyncBucketParamChanges:
             _sync_bucket_param_changes("tbl", "ns123", changes)
         assert sync.call_args.kwargs["stale_limit_names"] == {"tpm"}
 
+    def test_entity_set_with_no_declared_limits_is_a_noop(self):
+        """A `disabled`-only entity entry declares no limits: nothing to push.
+
+        `EntityResourceDecl.to_dict()` always emits a `limits` key, empty when
+        the manifest entry only carries `disabled`. Syncing that would build a
+        `SET` expression with no assignments.
+        """
+        changes = [
+            Change(
+                action="update",
+                level="entity",
+                target="user-1/gpt-4",
+                data={"limits": {}, "disabled": True},
+            )
+        ]
+        with patch("zae_limiter_provisioner.handler.sync_bucket_params") as sync:
+            _sync_bucket_param_changes("tbl", "ns123", changes)
+        sync.assert_not_called()
+
     def test_resource_and_system_levels_are_never_synced(self):
         """Buckets on defaults carry a TTL and are recreated (#271, #296)."""
         changes = [
