@@ -4,6 +4,20 @@
 
 **Goal:** Make `zae-limiter limits apply` propagate entity-level limit changes to existing bucket items, so a manifest-applied change actually takes effect.
 
+> **Status: delivered.** This plan shipped as PR #485 (`d22199b5`), closing #481. It is kept as
+> the record of how the fix was specified, not as pending work.
+>
+> **One known gap it left, now tracked as #487.** Both this plan and the code it produced scope
+> discovery with `f"BUCKET#{resource}#"`, so an entity change targeting the entity-wide
+> `_default_` config queries `BUCKET#_default_#` and matches no real bucket — a silent no-op.
+> `Repository._sync_bucket_params` has the identical behaviour, so the mirror was faithful
+> rather than wrong, and #487 widens both together. Note the fix is **not** simply passing an
+> unscoped `None`: precedence is Entity(resource) > Entity(`_default_`) > Resource > System, so
+> an unscoped sync would stamp `_default_` limits onto buckets whose resource has its own
+> higher-precedence entity config. The correct shape is `_fanout_entity`'s per-bucket
+> re-resolution, and the TTL multiplier has to follow each bucket's resolved level rather than
+> being fixed at the call site.
+
 **Architecture:** The provisioner writes config items with a bare `put_item` and never touches buckets, so entity-level limits — which carry no TTL and therefore never expire — keep enforcing whatever numbers they were born with. This mirrors `Repository._sync_bucket_params` into sync boto3 in a new `bucket_sync.py`, reusing the two-pass GSI3 discovery pattern already proven in `fanout.py`, and wires it into the handler after `apply_changes` for both the set and delete paths.
 
 **Tech Stack:** Python 3.11/3.12, sync boto3 (the provisioner runs in Lambda where aiobotocore is unavailable), pytest with `MagicMock` DynamoDB clients, LocalStack for E2E.
