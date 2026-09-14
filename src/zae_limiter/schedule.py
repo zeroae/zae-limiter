@@ -19,6 +19,7 @@ confirmed by test:
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -30,10 +31,13 @@ from cronsim import CronSim, CronSimError
 __all__ = [
     "ParsedCron",
     "ScheduleEntry",
+    "decode",
     "effective_params",
+    "encode",
     "matches",
     "next_boundary",
     "parse_cron",
+    "to_cron",
 ]
 
 # cronsim's sentinels for the extended tokens we do not support.
@@ -89,6 +93,19 @@ def parse_cron(cron: str, tz: str) -> ParsedCron:
         zone = ZoneInfo(tz)
     except (ZoneInfoNotFoundError, ValueError) as exc:
         raise ValueError(f"unknown timezone {tz!r}: {exc}") from exc
+
+    # cronsim also accepts a SIX-field expression whose leading field is seconds.
+    # Nothing here is finer than a minute — `matches` compares minute/hour/day,
+    # `next_boundary` steps by the minute, and the compact encoding (§4.1) has
+    # five field slots — so a seconds field would be silently widened to its
+    # whole minute and then be unrepresentable in storage. Reject it up front.
+    if len(cron.split()) != 5:
+        raise ValueError(
+            f"invalid cron expression {cron!r}: exactly 5 fields are required "
+            f"(minute hour day-of-month month day-of-week). A 6-field expression "
+            f"with a leading seconds field parses but cannot be honoured: nothing "
+            f"in this module is finer than one minute."
+        )
 
     try:
         parsed = CronSim(cron, _EPOCH)
@@ -302,3 +319,258 @@ def next_boundary(
         lo = probe
         probe += step
     return now_ms + cap
+
+
+# ---------------------------------------------------------------------------
+# Compact storage encoding (§4.1)
+#
+# Standard 5-field cron is the interface at every boundary of the system — API,
+# YAML, CloudFormation, CLI display, audit events. The compact form below exists
+# only in storage, because DynamoDB bills a WCU per 1 KB and a bucket item that
+# crosses 1 KB doubles the write cost of every acquire on it forever.
+#
+# Wildcard fields are omitted, the rest are letter-tagged `m h D M w`, names are
+# normalised to numbers, `scale` is an integer per-mille tagged `s`, the absolute
+# overrides are `c`/`a`/`p`, and entries are joined with `;`. The timezone is
+# hoisted to a single item-level attribute, so every entry in one schedule must
+# agree on it. Example: `h9-17w1-5s500;h0-6c2000`.
+#
+# Decoding rebuilds a canonical 5-field cron string and hands it to
+# `ScheduleEntry`, so cronsim remains the only parser and the §3.1 oracle test
+# covers this path unchanged.
+# ---------------------------------------------------------------------------
+
+# Field tags, in cron field order.
+_FIELD_TAGS = ("m", "h", "D", "M", "w")
+
+# Modifier tags, in the order `encode` emits them.
+_MODIFIER_TAGS = ("s", "c", "a", "p")
+
+_ALL_TAGS = _FIELD_TAGS + _MODIFIER_TAGS
+
+# A field spec contains only digits, `-`, `,`, `/` and `*`; a modifier value only
+# digits. None of those collide with a tag letter, so the stream is unambiguous.
+_TOKEN_RE = re.compile(rf"([{''.join(_ALL_TAGS)}])([^{''.join(_ALL_TAGS)}]+)")
+
+_DOW_NAMES = {
+    0: "SUN",
+    1: "MON",
+    2: "TUE",
+    3: "WED",
+    4: "THU",
+    5: "FRI",
+    6: "SAT",
+    7: "SUN",
+}
+_MONTH_NAMES = {
+    1: "JAN",
+    2: "FEB",
+    3: "MAR",
+    4: "APR",
+    5: "MAY",
+    6: "JUN",
+    7: "JUL",
+    8: "AUG",
+    9: "SEP",
+    10: "OCT",
+    11: "NOV",
+    12: "DEC",
+}
+
+# Inverse maps for encoding. `7` wins for SUN because `_DOW_NAMES` lists it last,
+# which is `datetime.isoweekday()`'s spelling and the one `parse_cron` normalises
+# to — but see `_encode_dow_item` for the range case, where it must be 0.
+_DOW_NUMBERS = {name: number for number, name in _DOW_NAMES.items()}
+_MONTH_NUMBERS = {name: number for number, name in _MONTH_NAMES.items()}
+
+_NAME_RE = re.compile(r"[A-Za-z]+")
+
+
+def _name_to_number(spec: str, table: dict[str, int]) -> str:
+    """Replace every alphabetic run in ``spec`` with its number."""
+
+    def repl(m: re.Match[str]) -> str:
+        name = m.group(0).upper()
+        if name not in table:
+            # Unreachable through `encode`: cronsim accepts exactly these three-letter
+            # abbreviations and `ScheduleEntry.__post_init__` has already run. Kept so a
+            # widened cronsim cannot silently store text this module does not understand.
+            raise ValueError(  # pragma: no cover
+                f"unknown name {m.group(0)!r} in cron field {spec!r}"
+            )
+        return str(table[name])
+
+    return _NAME_RE.sub(repl, spec)
+
+
+def _encode_dow_item(item: str) -> str:
+    """Encode one comma-separated day-of-week item, resolving SUN's two numbers.
+
+    cron spells Sunday both 0 and 7, and which one is correct depends on where it
+    sits. Standalone, 7 is right: it is ``isoweekday()``'s spelling, the one
+    ``parse_cron`` folds 0 into, and it keeps ``SAT,SUN`` ascending as ``6,7``.
+    Inside a range or a step it must be 0 — ``SUN-THU`` is ``0-4`` (``7-4`` is a
+    backwards range cronsim rejects) and ``SUN/2`` is ``0/2`` (``7/2`` is just
+    ``{7}``). cronsim already rejects every range that *ends* at Sunday
+    (``SAT-SUN``, ``MON-SUN``), so the only such item that reaches us is
+    ``SUN-SUN``, and ``0-0`` is right there too.
+
+    A bare ``0`` is folded to ``7`` for the same reason the names are normalised:
+    so `differ.py` does not read ``0`` versus ``SUN`` versus ``7`` as a change.
+    """
+    bare = item.upper()
+    if bare in _DOW_NUMBERS:
+        return str(_DOW_NUMBERS[bare])
+    if bare == "0":
+        return "7"
+    return _name_to_number(item, {**_DOW_NUMBERS, "SUN": 0})
+
+
+def _encode_field(tag: str, spec: str) -> str:
+    """Normalise one cron field to its stored spelling (names -> numbers)."""
+    if tag == "w":
+        return ",".join(_encode_dow_item(item) for item in spec.split(","))
+    if tag == "M":
+        return _name_to_number(spec, _MONTH_NUMBERS)
+    return spec
+
+
+def _encode_cron(cron: str) -> str:
+    """Encode the five cron fields, omitting every wildcard."""
+    fields = cron.split()
+    if len(fields) != 5:  # pragma: no cover - parse_cron rejects this first
+        raise ValueError(f"expected a 5-field cron expression, got {cron!r}")
+    out = []
+    for tag, spec in zip(_FIELD_TAGS, fields, strict=True):
+        encoded = _encode_field(tag, spec)
+        if encoded == "*":
+            continue
+        out.append(f"{tag}{encoded}")
+    return "".join(out)
+
+
+def _encode_entry(entry: ScheduleEntry) -> str:
+    out = _encode_cron(entry.cron)
+    if entry.scale is not None:
+        # Per-mille, rounded rather than truncated: `int(2.3 * 1000)` is 2299,
+        # because 2.3 has no exact binary representation. Sub-per-mille scales
+        # floor at 1, mirroring `effective_params`' floor at one milli-unit, so
+        # that `encode` is total and never emits an entry `decode` would reject.
+        out += f"s{max(1, round(entry.scale * 1000))}"
+    for tag, value in (
+        ("c", entry.capacity),
+        ("a", entry.refill_amount),
+        ("p", entry.refill_period_seconds),
+    ):
+        if value is not None:
+            out += f"{tag}{value}"
+    return out
+
+
+def encode(sched: tuple[ScheduleEntry, ...]) -> tuple[str, str | None]:
+    """Encode a schedule into its compact storage form and its shared timezone.
+
+    Returns ``("", None)`` for an empty schedule. Raises ``ValueError`` if the
+    entries disagree on ``tz``: it is hoisted to one item-level attribute, so a
+    schedule cannot carry two.
+
+    The encoding is **canonical** — weekday and month names normalise to numbers
+    and Sunday to a single spelling — so re-encoding a decoded schedule is
+    byte-identical, and `differ.py` does not read ``MON-FRI`` against ``1-5`` as
+    a change on every apply. The one lossy dimension is ``scale``, which is
+    quantised to per-mille.
+    """
+    if not sched:
+        return "", None
+    timezones = {entry.tz for entry in sched}
+    if len(timezones) > 1:
+        raise ValueError(
+            f"every entry in a schedule must share one timezone, since it is hoisted "
+            f"to a single item-level attribute; got {sorted(timezones)}"
+        )
+    return ";".join(_encode_entry(entry) for entry in sched), sched[0].tz
+
+
+def _tokenise(compact_entry: str) -> dict[str, str]:
+    """Split one compact entry into ``{tag: value}``, rejecting anything else."""
+    tokens: dict[str, str] = {}
+    consumed = 0
+    for match in _TOKEN_RE.finditer(compact_entry):
+        if match.start() != consumed:
+            break
+        tag, value = match.group(1), match.group(2)
+        if tag in tokens:
+            raise ValueError(f"duplicate {tag!r} tag in compact schedule entry {compact_entry!r}")
+        tokens[tag] = value
+        consumed = match.end()
+    if consumed != len(compact_entry):
+        raise ValueError(
+            f"malformed compact schedule entry {compact_entry!r}: "
+            f"cannot parse from offset {consumed}"
+        )
+    return tokens
+
+
+def _cron_from_tokens(tokens: dict[str, str]) -> str:
+    return " ".join(tokens.get(tag, "*") for tag in _FIELD_TAGS)
+
+
+def decode(compact: str, tz: str) -> tuple[ScheduleEntry, ...]:
+    """Decode the compact storage form back into schedule entries.
+
+    ``tz`` is the hoisted item-level timezone and is applied to every entry.
+    Each entry is rebuilt as a canonical 5-field cron string and handed to
+    ``ScheduleEntry``, so cronsim stays the only cron parser in the codebase.
+    """
+    if not compact:
+        return ()
+    entries = []
+    for part in compact.split(";"):
+        tokens = _tokenise(part)
+        scale = int(tokens["s"]) / 1000 if "s" in tokens else None
+        entries.append(
+            ScheduleEntry(
+                cron=_cron_from_tokens(tokens),
+                tz=tz,
+                scale=scale,
+                capacity=int(tokens["c"]) if "c" in tokens else None,
+                refill_amount=int(tokens["a"]) if "a" in tokens else None,
+                refill_period_seconds=int(tokens["p"]) if "p" in tokens else None,
+            )
+        )
+    return tuple(entries)
+
+
+def _render_named(spec: str, table: dict[int, str]) -> str:
+    """Render one field's numbers as names, leaving ``/step`` divisors alone.
+
+    The step of ``1-5/2`` is a divisor, not a weekday, so only the part before
+    the slash is renamed. A number with no name is left as-is: this is a display
+    helper and must not raise on a corrupt attribute.
+    """
+    out = []
+    for item in spec.split(","):
+        base, slash, step = item.partition("/")
+        renamed = re.sub(r"\d+", lambda m: table.get(int(m.group(0)), m.group(0)), base)
+        out.append(renamed + slash + step)
+    return ",".join(out)
+
+
+def to_cron(compact_entry: str) -> str:
+    """Render one compact entry as a canonical 5-field cron string, for display.
+
+    Display only — nothing in the evaluation or storage paths goes through this.
+    Weekday and month always come back as **names**, so an operator who typed
+    ``1-5`` is shown ``MON-FRI``. That is semantically identical and re-encodes
+    byte-for-byte, so it is safe to feed the result back into ``encode``.
+    """
+    tokens = _tokenise(compact_entry)
+    fields = []
+    for tag in _FIELD_TAGS:
+        spec = tokens.get(tag, "*")
+        if tag == "w":
+            spec = _render_named(spec, _DOW_NAMES)
+        elif tag == "M":
+            spec = _render_named(spec, _MONTH_NAMES)
+        fields.append(spec)
+    return " ".join(fields)
