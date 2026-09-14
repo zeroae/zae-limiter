@@ -27,9 +27,12 @@ three library primitives, now parked at v1.0.0 pending this design:
 `set_limits()` on schedule" as adding operational complexity with no atomicity. So the
 scheduler belongs in the library, and these primitives are symptoms of its absence.
 
-**The goal is to close all three PRs, not to land them.** That is a design constraint, not a
-preference: each of the three has to be *subsumed* by native scheduling; §3.3, §3.6 and §7
-record where each one goes.
+**#469 and #471 are subsumed and closed; #473 is adopted and landed.** That split is a design
+constraint, not a preference. #469 and #471 ask for mechanisms native scheduling supplies
+directly, so landing them would ship two ways to do one thing (§3.3, §3.6). #473 is different
+in kind: it is a **non-consuming read**, and nothing in this design replaces a read that must
+not consume. It is landed with a corrected, shard-aware implementation; §7 records what
+scheduling owes it.
 
 **What native scheduling replaces:**
 
@@ -38,7 +41,7 @@ record where each one goes.
 | Swap capacity at a boundary | Effective limit = `f(base, schedule, now)`, resolved by every refiller |
 | Clamp the surplus after a shrink (#469) | `refill_bucket` clamps unconditionally on every path, §3.3 |
 | Reset usage at a boundary (daily quota) (#471) | `reset_schedule` — calendar-aligned token reset, §3.6. 0 extra RT, nothing deleted, `tc` left monotonic |
-| "Can I proceed, and if not when?" (#473) | `acquire()` answers in 1 WCU (0 RCU + 0 WCU on fast rejection) with a boundary-aware `retry_after_seconds`, §7 |
+| Show "how much is left, and when does it reset?" (#473) | **Nothing here replaces it.** `acquire()` answers "can I proceed" in 1 WCU (0 RCU + 0 WCU on fast rejection), but it is a write that *consumes*, and the caller is a display. The non-consuming query — `available()` / `time_until_available()` / the combined `check_availability()` they now both wrap — stays, and §7's boundary-aware estimate has to reach it |
 
 ## 1. Data model and storage — SETTLED
 
@@ -634,18 +637,24 @@ Worked example: empty bucket, 500 tokens needed, 1000/min now, boundary in 10 s 
 500/min. Naive estimate **30 s**; real wait **50 s** — 10 s yielding 167 tokens, then 333
 remaining at half rate.
 
-Because #473 is being deleted and `retry_after_seconds` inherits its job as the only
-"when can I proceed" answer, this is fixed rather than documented: walk forward window by
-window using `next_boundary`, accumulating tokens at each window's rate until the deficit
-clears, capped at ~8 windows with a fall back to the flat estimate. It is isolated in the two
-places that build statuses, the boundaries are memoized, and it costs microseconds on a path
-that is already the rejection path.
+This is fixed rather than documented: walk forward window by window using `next_boundary`,
+accumulating tokens at each window's rate until the deficit clears, capped at ~8 windows with
+a fall back to the flat estimate. The boundaries are memoized and it costs microseconds.
+
+**It must reach the query surface, not only the rejection path.** The two places that build a
+`LimitStatus` — `lease.py`'s `_build_retry_failure_statuses` and `RateLimiter._admit_limit` —
+both run *after* a request was rejected. `RateLimiter.check_availability()` is a third call
+site and is not reached by either: it is the non-consuming read, and `available()` and
+`time_until_available()` are thin wrappers over it. Wiring only the first two would leave the
+display on the flat estimate — the exact thing this section opens by calling wrong in the
+direction that matters, and the number a user actually sees.
 
 **A reset edge dominates the walk.** If a `reset_schedule` boundary falls before the deficit
 clears by refill, that instant *is* the answer. For a daily quota this is the difference
 between reporting hours of drip-refill and reporting "at midnight" — and midnight is the only
-useful answer. This is also the clearest demonstration that #473's `check_availability()` is
-subsumed rather than dropped.
+useful answer. It is also the sharpest case for wiring the walk into the query surface: with
+only the rejection path converted, `acquire()` would say "at midnight" while
+`check_availability()` said "in eleven hours" about the same bucket at the same instant.
 
 ## 8. Testing
 
