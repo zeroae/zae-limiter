@@ -6,6 +6,13 @@
 # a base built from all four flags (~93%) and reports a spurious coverage drop
 # on codecov/project (issue #452). Carryforward reuses the most recent upload
 # of each missing flag from the base commit instead.
+#
+# The flip side: carryforward cannot distinguish "this job did not run" from
+# "this job ran and produced nothing", so a flag that goes missing for any other
+# reason is silently backfilled from a commit that predates the PR's new lines,
+# and genuinely-covered lines are scored as missed. Every coverage upload step
+# must therefore run even when its tests fail — hence the `if: "!cancelled()"`
+# on each one. See issue #494 for the failure this caused on PR #493.
 flag_management:
   individual_flags:
     - name: unit
