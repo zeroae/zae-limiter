@@ -18,6 +18,14 @@
 - **Native sync code is generated, never hand-edited.** After touching `repository.py`, `limiter.py`, `lease.py`, `config_cache.py`, `repository_protocol.py` or `infra/{stack_manager,discovery}.py`, run `hatch run generate-sync` and commit the regenerated files. The pre-commit hook and CI both verify this. The generated files are listed in `CLAUDE.md`.
 - **`asyncio.gather(a, b)` is transformed into `self._run_in_executor(...)` by the sync transformer.** A list comprehension — not a generator expression — is required inside `gather`.
 - **Do not disable or suppress lint rules** (ruff, mypy, cfn-lint) without asking. See `.claude/rules/lint-rules.md`.
+- **`Repository._now_ms()` is the clock seam (#430) — but it does NOT cover the config cache.**
+  Patch `_now_ms` to control time deterministically; never patch global `time`. The trap:
+  `config_cache.py:99` (`_is_expired`) and `:103` (`_make_entry`) still call `time.time()`, so a
+  test that advances `_now_ms` by an hour to cross a schedule boundary gets the **pre-boundary
+  limits** back — the 60s config-cache TTL has not expired in real time. The seam controls refill
+  math, not config staleness. Either call `repo.invalidate_config_cache()` after advancing the
+  clock, or build the repository with `config_cache_ttl=0`. This will bite Tasks 11-13 and
+  surface-plan Task 3 specifically; #430 scoped `config_cache` out on purpose.
 - **Never run `pytest tests/unit/` with `-o "addopts="`** — it un-skips the gevent tests, which then monkey-patch the same process as the asyncio tests and hang indefinitely with no output. Run `uv run pytest tests/unit/ -q` (~3 min) and `uv run pytest tests/unit/ -m gevent -n 0 -q` (~2 s) separately. See `.claude/rules/testing.md`.
 - **Millitokens everywhere below the model layer.** `Limit` is whole tokens; `BucketState` and every `bucket.py` function are millitokens and milliseconds.
 - Commit messages follow `.claude/rules/commits.md`. Scopes used here: `models`, `bucket`, `schema`, `repository`, `aggregator`, `infra`, `test`.
