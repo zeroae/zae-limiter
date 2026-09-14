@@ -277,8 +277,14 @@ quota it reports the time until the reset rather than a long drip-refill.
   mechanism, not both. This keeps "why is my limit this number" answerable.
 - **Extended cron syntax is not supported.** `L` (last), `W` (weekday) and `#` (nth weekday) are
   rejected at construction. Standard ranges, lists, steps and names — `1-5`, `1,3`, `*/15`,
-  `MON-FRI`, `JAN,JUL` — all work. Sunday may be written `0`, `7` or `SUN`.
-- **Seconds are not addressable.** Cron's finest granularity is one minute.
+  `MON-FRI`, `JAN,JUL` — all work. Sunday may be written `0`, `7` or `SUN`; all three are
+  equivalent and store identically, so they never read back as two different schedules.
+- **Seconds are not addressable, and a six-field expression is rejected.** Cron's finest
+  granularity here is one minute. Schedulers such as Quartz and Spring accept an extra leading
+  *seconds* field, and `cronsim` will parse one — but nothing in this library is finer than a
+  minute, so a six-field expression would silently widen to the whole of the minute it names.
+  `ScheduleEntry(cron="30 5 9 * * *", ...)` therefore raises `ValueError` at construction,
+  naming the five required fields, rather than quietly covering sixty times the intended window.
 - **Resource- and system-level schedule changes reach existing buckets when those buckets expire**
   rather than immediately, consistent with how default-derived limits already behave. Entity-level
   changes take effect immediately.
