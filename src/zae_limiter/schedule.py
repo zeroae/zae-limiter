@@ -26,7 +26,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from cronsim import CronSim, CronSimError
 
-__all__ = ["ParsedCron", "ScheduleEntry", "parse_cron"]
+__all__ = ["ParsedCron", "ScheduleEntry", "matches", "parse_cron"]
 
 # cronsim's sentinels for the extended tokens we do not support.
 _SENTINELS = {CronSim.LAST, CronSim.LAST_WEEKDAY}
@@ -133,3 +133,23 @@ class ScheduleEntry:
         ):
             if value is not None and value <= 0:
                 raise ValueError(f"{name} must be positive, got {value}")
+
+
+def matches(parsed: ParsedCron, now_ms: int) -> bool:
+    """Is ``now_ms`` inside a window this expression matches?
+
+    Converts the UTC instant into the expression's local timezone, which is
+    always well-defined — so the nonexistent local hour at spring-forward and
+    the doubled hour at fall-back never arise, and DST needs no special case.
+    """
+    d = datetime.fromtimestamp(now_ms / 1000, parsed.tz)
+    if d.minute not in parsed.minutes:
+        return False
+    if d.hour not in parsed.hours:
+        return False
+    if d.month not in parsed.months:
+        return False
+    dom_ok = d.day in parsed.days
+    dow_ok = d.isoweekday() in parsed.weekdays
+    # When BOTH day fields are constrained, cron means OR, not AND.
+    return (dom_ok and dow_ok) if parsed.day_and else (dom_ok or dow_ok)
