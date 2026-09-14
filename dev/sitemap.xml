@@ -316,48 +316,4 @@
          <loc>https://zeroae.github.io/zae-limiter/dev/operations/version/</loc>
          <lastmod>2026-09-14</lastmod>
     </url>
-    <url>
-         <loc>https://zeroae.github.io/zae-limiter/dev/plans/2026-01-30-iam-role-naming-design/</loc>
-         <lastmod>2026-09-14</lastmod>
-    </url>
-    <url>
-         <loc>https://zeroae.github.io/zae-limiter/dev/plans/2026-02-02-native-sync-implementation/</loc>
-         <lastmod>2026-09-14</lastmod>
-    </url>
-    <url>
-         <loc>https://zeroae.github.io/zae-limiter/dev/plans/2026-02-02-native-sync-unasync-design/</loc>
-         <lastmod>2026-09-14</lastmod>
-    </url>
-    <url>
-         <loc>https://zeroae.github.io/zae-limiter/dev/plans/2026-02-19-declarative-limits-design/</loc>
-         <lastmod>2026-09-14</lastmod>
-    </url>
-    <url>
-         <loc>https://zeroae.github.io/zae-limiter/dev/plans/2026-02-19-declarative-limits-implementation/</loc>
-         <lastmod>2026-09-14</lastmod>
-    </url>
-    <url>
-         <loc>https://zeroae.github.io/zae-limiter/dev/plans/2026-02-19-repository-open-design/</loc>
-         <lastmod>2026-09-14</lastmod>
-    </url>
-    <url>
-         <loc>https://zeroae.github.io/zae-limiter/dev/plans/2026-02-21-pre-shard-buckets-design/</loc>
-         <lastmod>2026-09-14</lastmod>
-    </url>
-    <url>
-         <loc>https://zeroae.github.io/zae-limiter/dev/plans/2026-02-21-pre-shard-buckets-implementation/</loc>
-         <lastmod>2026-09-14</lastmod>
-    </url>
-    <url>
-         <loc>https://zeroae.github.io/zae-limiter/dev/plans/2026-06-22-aiobotocore-migration-design/</loc>
-         <lastmod>2026-09-14</lastmod>
-    </url>
-    <url>
-         <loc>https://zeroae.github.io/zae-limiter/dev/plans/2026-06-22-aiobotocore-migration-plan/</loc>
-         <lastmod>2026-09-14</lastmod>
-    </url>
-    <url>
-         <loc>https://zeroae.github.io/zae-limiter/dev/plans/2026-08-30-resource-disable-plan/</loc>
-         <lastmod>2026-09-14</lastmod>
-    </url>
 </urlset>
