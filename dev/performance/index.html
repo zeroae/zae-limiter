@@ -4875,10 +4875,16 @@
 <td>ADR-125 gate: uncached 3-key BatchGetItem (entity, entity <code>_default_</code>, resource config). Cascade pays it per entity; the speculative fast path pays 0</td>
 </tr>
 <tr>
-<td><code>available()</code></td>
-<td>1</td>
+<td><code>check_availability()</code></td>
+<td>1 + shards/4</td>
 <td>0</td>
-<td>Read-only, single composite bucket item</td>
+<td>Read-only. GSI3 KEYS_ONLY query + one <code>BatchGetItem</code> over the entity's shards (GHSA-76rv); both answers come from that one snapshot</td>
+</tr>
+<tr>
+<td><code>available()</code> / <code>time_until_available()</code></td>
+<td>1 + shards/4</td>
+<td>0</td>
+<td>Thin wrappers over <code>check_availability()</code>, so the cost is the same and the two can never disagree</td>
 </tr>
 <tr>
 <td><code>get_limits()</code></td>

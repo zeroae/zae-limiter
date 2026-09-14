@@ -1373,6 +1373,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.limiter.RateLimiter.check_availability" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;check_availability
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.limiter.RateLimiter.available" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1792,6 +1803,17 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;acquire
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.sync_limiter.SyncRateLimiter.check_availability" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;check_availability
       
     </span>
   </a>
@@ -4512,6 +4534,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.limiter.RateLimiter.check_availability" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;check_availability
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.limiter.RateLimiter.available" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -4931,6 +4964,17 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;acquire
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.sync_limiter.SyncRateLimiter.check_availability" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;check_availability
       
     </span>
   </a>
@@ -7044,6 +7088,229 @@ stored config. This parameter will be removed in v1.0.</p>
 <div class="doc doc-object doc-function">
 
 
+<h4 id="zae_limiter.limiter.RateLimiter.check_availability" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">check_availability</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+  </span>
+
+<a href="#zae_limiter.limiter.RateLimiter.check_availability" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">check_availability</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">needed</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">limits</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Check available capacity and wait time in a single read (issue #472).</p>
+<p>Answers both "how much is left?" and "how long until I can proceed?"
+for every resolved limit, from one config resolution and one bucket
+read taken at one instant.</p>
+<p><strong>Why one call rather than two.</strong> Calling :meth:<code>available</code> and
+:meth:<code>time_until_available</code> back to back is two reads at two instants,
+and they can disagree: tokens refill in between, and each discovers the
+entity's shards separately. A display built from the pair can render
+"0 remaining, available now" or "47 remaining, wait 0s". Both are lies
+a user acts on. Everything on the returned :class:<code>Availability</code> is
+derived from a single snapshot stamped with <code>checked_at_ms</code>, so the
+numbers cannot contradict each other.</p>
+<p>Limits are resolved using four-tier hierarchy: Entity &gt; Entity Default &gt;
+Resource &gt; System. If no stored limits found, falls back to the <code>limits</code>
+parameter.</p>
+<p>Consumes nothing and writes nothing. This is a read; it is not a
+pre-flight check for :meth:<code>acquire</code>. Deciding with it and then calling
+<code>acquire()</code> is TOCTOU and costs an extra read — <code>acquire()</code> already
+answers "may I proceed, and if not when" in 1 WCU, or 0 RCU + 0 WCU on
+a fast rejection, via <code>RateLimitExceeded.retry_after_seconds</code>. Use
+this when the answer is <em>displayed</em> rather than acted on.</p>
+<p><strong>Sharding.</strong> A sharded entity's balance is spread across its shards
+(GHSA-76rv), so this sums every shard, exactly as :meth:<code>available</code>
+and <code>get_resource_capacity()</code> do, and computes the wait against the
+summed refill rate. The reported <code>limit</code> is therefore the undivided
+configured limit, not one shard's share — unlike the per-shard
+statuses in <code>RateLimitExceeded</code> (#475), which describe the one shard
+a rejection happened on. Known limitation, inherited from #475: a
+<em>single</em> request larger than <code>capacity // shard_count</code> is
+unadmittable on every shard even while the entity is under its
+configured limit, so <code>acquire()</code> can reject an amount this call
+reports as available.</p>
+<p>Cost: 1 GSI3 query (KEYS_ONLY) + 1 <code>BatchGetItem</code>, plus config
+resolution (free on a cache hit), regardless of limit count or shard
+count.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>entity_id</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Entity to check</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>resource</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Resource to check</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>needed</code>
+            </td>
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="int">int</span>] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Required amounts by limit name. Omit to ask only about
+current availability (<code>retry_after_seconds</code> is then 0.0);
+pass e.g. <code>{"rpm": 1}</code> for "when may I make one more
+request". Keys naming no resolved limit are ignored.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>limits</code>
+            </td>
+            <td>
+                  <code><span title="list">list</span>[<a class="autorefs autorefs-internal" title="            Limit
+
+
+  
+      dataclass
+   (zae_limiter.models.Limit)" href="../models/#zae_limiter.models.Limit">Limit</a>] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Override limits (optional, falls back to stored config)</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            Availability
+
+
+  
+      dataclass
+   (zae_limiter.models.Availability)" href="../models/#zae_limiter.models.Availability">Availability</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Availability carrying one :class:<code>LimitStatus</code> per resolved limit,</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            Availability
+
+
+  
+      dataclass
+   (zae_limiter.models.Availability)" href="../models/#zae_limiter.models.Availability">Availability</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>plus the derived aggregate verdict and countdown.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            ValidationError (zae_limiter.exceptions.ValidationError)" href="../exceptions/#zae_limiter.exceptions.ValidationError">ValidationError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If no limits found at any level and no override provided</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<details class="example" open>
+  <summary>Example</summary>
+  <div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">check</span> <span class="o">=</span> <span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">check_availability</span><span class="p">(</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">"key-abc"</span><span class="p">,</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">resource</span><span class="o">=</span><span class="s2">"gpt-4"</span><span class="p">,</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">needed</span><span class="o">=</span><span class="p">{</span><span class="s2">"rpm"</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="s2">"tpm"</span><span class="p">:</span> <span class="mi">500</span><span class="p">},</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="p">)</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="k">for</span> <span class="n">status</span> <span class="ow">in</span> <span class="n">check</span><span class="o">.</span><span class="n">statuses</span><span class="p">:</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">render</span><span class="p">(</span><span class="n">status</span><span class="o">.</span><span class="n">limit_name</span><span class="p">,</span> <span class="n">status</span><span class="o">.</span><span class="n">available</span><span class="p">,</span> <span class="n">status</span><span class="o">.</span><span class="n">retry_after_seconds</span><span class="p">)</span>
+</span></code></pre></div>
+</details>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
 <h4 id="zae_limiter.limiter.RateLimiter.available" class="doc doc-heading">
 <code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">available</span>
 
@@ -7061,8 +7328,12 @@ stored config. This parameter will be removed in v1.0.</p>
         <p>Check available capacity without consuming.</p>
 <p>Limits are resolved using four-tier hierarchy: Entity &gt; Entity Default &gt; Resource &gt; System.
 If no stored limits found, falls back to the <code>limits</code> parameter.</p>
-<p>Returns minimum available across entity (and parent if cascade).
-Can return negative values if bucket is in debt.</p>
+<p>Sums every shard of the entity (GHSA-76rv). Can return negative values
+if the bucket is in debt.</p>
+<p>Thin wrapper over :meth:<code>check_availability</code>, which returns this and
+the wait time together from one read at one instant. Prefer it when
+you want both — asking here and there is two snapshots that can
+disagree.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -7220,6 +7491,12 @@ stored config. This parameter will be removed in v1.0.</p>
         <p>Calculate seconds until requested capacity is available.</p>
 <p>Limits are resolved using four-tier hierarchy: Entity &gt; Entity Default &gt; Resource &gt; System.
 If no stored limits found, falls back to the <code>limits</code> parameter.</p>
+<p>The estimate is computed against the entity's total across every shard
+and the summed refill rate (GHSA-76rv), matching :meth:<code>available</code>.</p>
+<p>Thin wrapper over :meth:<code>check_availability</code>, which returns this and
+the available capacity together from one read at one instant. Prefer
+it when you want both, or when you want the wait per limit rather than
+the slowest one.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -10073,6 +10350,225 @@ stored config. This parameter will be removed in v1.0.</p>
 <div class="doc doc-object doc-function">
 
 
+<h4 id="zae_limiter.sync_limiter.SyncRateLimiter.check_availability" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">check_availability</span>
+
+
+<a href="#zae_limiter.sync_limiter.SyncRateLimiter.check_availability" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">check_availability</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">needed</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">limits</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Check available capacity and wait time in a single read (issue #472).</p>
+<p>Answers both "how much is left?" and "how long until I can proceed?"
+for every resolved limit, from one config resolution and one bucket
+read taken at one instant.</p>
+<p><strong>Why one call rather than two.</strong> Calling :meth:<code>available</code> and
+:meth:<code>time_until_available</code> back to back is two reads at two instants,
+and they can disagree: tokens refill in between, and each discovers the
+entity's shards separately. A display built from the pair can render
+"0 remaining, available now" or "47 remaining, wait 0s". Both are lies
+a user acts on. Everything on the returned :class:<code>Availability</code> is
+derived from a single snapshot stamped with <code>checked_at_ms</code>, so the
+numbers cannot contradict each other.</p>
+<p>Limits are resolved using four-tier hierarchy: Entity &gt; Entity Default &gt;
+Resource &gt; System. If no stored limits found, falls back to the <code>limits</code>
+parameter.</p>
+<p>Consumes nothing and writes nothing. This is a read; it is not a
+pre-flight check for :meth:<code>acquire</code>. Deciding with it and then calling
+<code>acquire()</code> is TOCTOU and costs an extra read — <code>acquire()</code> already
+answers "may I proceed, and if not when" in 1 WCU, or 0 RCU + 0 WCU on
+a fast rejection, via <code>RateLimitExceeded.retry_after_seconds</code>. Use
+this when the answer is <em>displayed</em> rather than acted on.</p>
+<p><strong>Sharding.</strong> A sharded entity's balance is spread across its shards
+(GHSA-76rv), so this sums every shard, exactly as :meth:<code>available</code>
+and <code>get_resource_capacity()</code> do, and computes the wait against the
+summed refill rate. The reported <code>limit</code> is therefore the undivided
+configured limit, not one shard's share — unlike the per-shard
+statuses in <code>RateLimitExceeded</code> (#475), which describe the one shard
+a rejection happened on. Known limitation, inherited from #475: a
+<em>single</em> request larger than <code>capacity // shard_count</code> is
+unadmittable on every shard even while the entity is under its
+configured limit, so <code>acquire()</code> can reject an amount this call
+reports as available.</p>
+<p>Cost: 1 GSI3 query (KEYS_ONLY) + 1 <code>BatchGetItem</code>, plus config
+resolution (free on a cache hit), regardless of limit count or shard
+count.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>entity_id</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Entity to check</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>resource</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Resource to check</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>needed</code>
+            </td>
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="int">int</span>] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Required amounts by limit name. Omit to ask only about
+current availability (<code>retry_after_seconds</code> is then 0.0);
+pass e.g. <code>{"rpm": 1}</code> for "when may I make one more
+request". Keys naming no resolved limit are ignored.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>limits</code>
+            </td>
+            <td>
+                  <code><span title="list">list</span>[<a class="autorefs autorefs-internal" title="            Limit
+
+
+  
+      dataclass
+   (zae_limiter.models.Limit)" href="../models/#zae_limiter.models.Limit">Limit</a>] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Override limits (optional, falls back to stored config)</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            Availability
+
+
+  
+      dataclass
+   (zae_limiter.models.Availability)" href="../models/#zae_limiter.models.Availability">Availability</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Availability carrying one :class:<code>LimitStatus</code> per resolved limit,</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            Availability
+
+
+  
+      dataclass
+   (zae_limiter.models.Availability)" href="../models/#zae_limiter.models.Availability">Availability</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>plus the derived aggregate verdict and countdown.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            ValidationError (zae_limiter.exceptions.ValidationError)" href="../exceptions/#zae_limiter.exceptions.ValidationError">ValidationError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If no limits found at any level and no override provided</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<details class="example" open>
+  <summary>Example</summary>
+  <div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">check</span> <span class="o">=</span> <span class="n">limiter</span><span class="o">.</span><span class="n">check_availability</span><span class="p">(</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">"key-abc"</span><span class="p">,</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">resource</span><span class="o">=</span><span class="s2">"gpt-4"</span><span class="p">,</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">needed</span><span class="o">=</span><span class="p">{</span><span class="s2">"rpm"</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="s2">"tpm"</span><span class="p">:</span> <span class="mi">500</span><span class="p">},</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="p">)</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="k">for</span> <span class="n">status</span> <span class="ow">in</span> <span class="n">check</span><span class="o">.</span><span class="n">statuses</span><span class="p">:</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">render</span><span class="p">(</span><span class="n">status</span><span class="o">.</span><span class="n">limit_name</span><span class="p">,</span> <span class="n">status</span><span class="o">.</span><span class="n">available</span><span class="p">,</span> <span class="n">status</span><span class="o">.</span><span class="n">retry_after_seconds</span><span class="p">)</span>
+</span></code></pre></div>
+</details>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
 <h4 id="zae_limiter.sync_limiter.SyncRateLimiter.available" class="doc doc-heading">
 <code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">available</span>
 
@@ -10086,8 +10582,12 @@ stored config. This parameter will be removed in v1.0.</p>
         <p>Check available capacity without consuming.</p>
 <p>Limits are resolved using four-tier hierarchy: Entity &gt; Entity Default &gt; Resource &gt; System.
 If no stored limits found, falls back to the <code>limits</code> parameter.</p>
-<p>Returns minimum available across entity (and parent if cascade).
-Can return negative values if bucket is in debt.</p>
+<p>Sums every shard of the entity (GHSA-76rv). Can return negative values
+if the bucket is in debt.</p>
+<p>Thin wrapper over :meth:<code>check_availability</code>, which returns this and
+the wait time together from one read at one instant. Prefer it when
+you want both — asking here and there is two snapshots that can
+disagree.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -10241,6 +10741,12 @@ stored config. This parameter will be removed in v1.0.</p>
         <p>Calculate seconds until requested capacity is available.</p>
 <p>Limits are resolved using four-tier hierarchy: Entity &gt; Entity Default &gt; Resource &gt; System.
 If no stored limits found, falls back to the <code>limits</code> parameter.</p>
+<p>The estimate is computed against the entity's total across every shard
+and the summed refill rate (GHSA-76rv), matching :meth:<code>available</code>.</p>
+<p>Thin wrapper over :meth:<code>check_availability</code>, which returns this and
+the available capacity together from one read at one instant. Prefer
+it when you want both, or when you want the wait per limit rather than
+the slowest one.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>

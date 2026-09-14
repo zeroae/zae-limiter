@@ -3706,27 +3706,31 @@
 </span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="p">):</span>
 </span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a>    <span class="n">limits</span> <span class="o">=</span> <span class="n">MODEL_LIMITS</span><span class="p">[</span><span class="n">model</span><span class="p">]</span>
 </span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a>
-</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a>    <span class="c1"># Check available capacity</span>
-</span><span id="__span-7-10"><a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a>    <span class="n">available</span> <span class="o">=</span> <span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">available</span><span class="p">(</span>
+</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a>    <span class="c1"># Check capacity and wait time in a single read</span>
+</span><span id="__span-7-10"><a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a>    <span class="n">check</span> <span class="o">=</span> <span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">check_availability</span><span class="p">(</span>
 </span><span id="__span-7-11"><a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a>        <span class="n">entity_id</span><span class="o">=</span><span class="n">entity_id</span><span class="p">,</span>
 </span><span id="__span-7-12"><a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a>        <span class="n">resource</span><span class="o">=</span><span class="n">model</span><span class="p">,</span>
-</span><span id="__span-7-13"><a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a>        <span class="n">limits</span><span class="o">=</span><span class="n">limits</span><span class="p">,</span>
-</span><span id="__span-7-14"><a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a>    <span class="p">)</span>
-</span><span id="__span-7-15"><a id="__codelineno-7-15" name="__codelineno-7-15" href="#__codelineno-7-15"></a>
-</span><span id="__span-7-16"><a id="__codelineno-7-16" name="__codelineno-7-16" href="#__codelineno-7-16"></a>    <span class="k">if</span> <span class="n">available</span><span class="p">[</span><span class="s2">"tpm"</span><span class="p">]</span> <span class="o">&lt;</span> <span class="n">estimated_tokens</span><span class="p">:</span>
-</span><span id="__span-7-17"><a id="__codelineno-7-17" name="__codelineno-7-17" href="#__codelineno-7-17"></a>        <span class="c1"># Not enough capacity - check when it will be available</span>
-</span><span id="__span-7-18"><a id="__codelineno-7-18" name="__codelineno-7-18" href="#__codelineno-7-18"></a>        <span class="n">wait_time</span> <span class="o">=</span> <span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">time_until_available</span><span class="p">(</span>
-</span><span id="__span-7-19"><a id="__codelineno-7-19" name="__codelineno-7-19" href="#__codelineno-7-19"></a>            <span class="n">entity_id</span><span class="o">=</span><span class="n">entity_id</span><span class="p">,</span>
-</span><span id="__span-7-20"><a id="__codelineno-7-20" name="__codelineno-7-20" href="#__codelineno-7-20"></a>            <span class="n">resource</span><span class="o">=</span><span class="n">model</span><span class="p">,</span>
-</span><span id="__span-7-21"><a id="__codelineno-7-21" name="__codelineno-7-21" href="#__codelineno-7-21"></a>            <span class="n">limits</span><span class="o">=</span><span class="n">limits</span><span class="p">,</span>
-</span><span id="__span-7-22"><a id="__codelineno-7-22" name="__codelineno-7-22" href="#__codelineno-7-22"></a>            <span class="n">needed</span><span class="o">=</span><span class="p">{</span><span class="s2">"tpm"</span><span class="p">:</span> <span class="n">estimated_tokens</span><span class="p">},</span>
-</span><span id="__span-7-23"><a id="__codelineno-7-23" name="__codelineno-7-23" href="#__codelineno-7-23"></a>        <span class="p">)</span>
-</span><span id="__span-7-24"><a id="__codelineno-7-24" name="__codelineno-7-24" href="#__codelineno-7-24"></a>        <span class="k">raise</span> <span class="n">RetryAfter</span><span class="p">(</span><span class="n">seconds</span><span class="o">=</span><span class="n">wait_time</span><span class="p">)</span>
-</span><span id="__span-7-25"><a id="__codelineno-7-25" name="__codelineno-7-25" href="#__codelineno-7-25"></a>
-</span><span id="__span-7-26"><a id="__codelineno-7-26" name="__codelineno-7-26" href="#__codelineno-7-26"></a>    <span class="c1"># Proceed with rate-limited call</span>
-</span><span id="__span-7-27"><a id="__codelineno-7-27" name="__codelineno-7-27" href="#__codelineno-7-27"></a>    <span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span><span class="o">...</span><span class="p">):</span>
-</span><span id="__span-7-28"><a id="__codelineno-7-28" name="__codelineno-7-28" href="#__codelineno-7-28"></a>        <span class="o">...</span>
+</span><span id="__span-7-13"><a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a>        <span class="n">needed</span><span class="o">=</span><span class="p">{</span><span class="s2">"tpm"</span><span class="p">:</span> <span class="n">estimated_tokens</span><span class="p">},</span>
+</span><span id="__span-7-14"><a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a>        <span class="n">limits</span><span class="o">=</span><span class="n">limits</span><span class="p">,</span>
+</span><span id="__span-7-15"><a id="__codelineno-7-15" name="__codelineno-7-15" href="#__codelineno-7-15"></a>    <span class="p">)</span>
+</span><span id="__span-7-16"><a id="__codelineno-7-16" name="__codelineno-7-16" href="#__codelineno-7-16"></a>
+</span><span id="__span-7-17"><a id="__codelineno-7-17" name="__codelineno-7-17" href="#__codelineno-7-17"></a>    <span class="k">if</span> <span class="ow">not</span> <span class="n">check</span><span class="o">.</span><span class="n">allowed</span><span class="p">:</span>
+</span><span id="__span-7-18"><a id="__codelineno-7-18" name="__codelineno-7-18" href="#__codelineno-7-18"></a>        <span class="k">raise</span> <span class="n">RetryAfter</span><span class="p">(</span><span class="n">seconds</span><span class="o">=</span><span class="n">check</span><span class="o">.</span><span class="n">retry_after_seconds</span><span class="p">)</span>
+</span><span id="__span-7-19"><a id="__codelineno-7-19" name="__codelineno-7-19" href="#__codelineno-7-19"></a>
+</span><span id="__span-7-20"><a id="__codelineno-7-20" name="__codelineno-7-20" href="#__codelineno-7-20"></a>    <span class="c1"># Proceed with rate-limited call</span>
+</span><span id="__span-7-21"><a id="__codelineno-7-21" name="__codelineno-7-21" href="#__codelineno-7-21"></a>    <span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span><span class="o">...</span><span class="p">):</span>
+</span><span id="__span-7-22"><a id="__codelineno-7-22" name="__codelineno-7-22" href="#__codelineno-7-22"></a>        <span class="o">...</span>
 </span></code></pre></div>
+<div class="admonition note">
+<p class="admonition-title">Prefer letting <code>acquire()</code> decide</p>
+<p>The check above and the <code>acquire()</code> below it are two separate moments, so
+the decision can be stale by the time it is used, and the check costs a read
+that <code>acquire()</code> does not need. <code>acquire()</code> raises <code>RateLimitExceeded</code> with
+the same <code>retry_after_seconds</code> — in 1 WCU, or 0 RCU + 0 WCU when it can
+reject from the failure image — so catching that is both cheaper and
+race-free. Reach for <code>check_availability()</code> when the number is <em>shown</em> to
+someone, not when it gates the call.</p>
+</div>
 <h2 id="integration-with-retry-libraries">Integration with Retry Libraries<a class="headerlink" href="#integration-with-retry-libraries" title="Permanent link">&para;</a></h2>
 <p>Combine with retry libraries like <code>tenacity</code>:</p>
 <div class="language-python requires-external highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">tenacity</span><span class="w"> </span><span class="kn">import</span> <span class="n">retry</span><span class="p">,</span> <span class="n">retry_if_exception_type</span><span class="p">,</span> <span class="n">wait_fixed</span>
