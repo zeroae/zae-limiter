@@ -22,11 +22,19 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import lru_cache
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from cronsim import CronSim, CronSimError
 
-__all__ = ["ParsedCron", "ScheduleEntry", "effective_params", "matches", "parse_cron"]
+__all__ = [
+    "ParsedCron",
+    "ScheduleEntry",
+    "effective_params",
+    "matches",
+    "next_boundary",
+    "parse_cron",
+]
 
 # cronsim's sentinels for the extended tokens we do not support.
 _SENTINELS = {CronSim.LAST, CronSim.LAST_WEEKDAY}
@@ -67,8 +75,16 @@ def _plain_ints(values: Iterable[object], field: str) -> frozenset[int]:
     return frozenset(out)
 
 
+@lru_cache(maxsize=512)
 def parse_cron(cron: str, tz: str) -> ParsedCron:
-    """Parse a 5-field cron expression and timezone into matchable field sets."""
+    """Parse a 5-field cron expression and timezone into matchable field sets.
+
+    Cached: the arguments are two strings and the result is a frozen dataclass of
+    frozensets, so it is safe to share. Every evaluation path re-parses the same
+    handful of expressions — ``effective_params`` once per entry per call, and
+    ``next_boundary`` once per entry per call — so the cache turns a ``CronSim``
+    construction into a dict lookup.
+    """
     try:
         zone = ZoneInfo(tz)
     except (ZoneInfoNotFoundError, ValueError) as exc:
@@ -194,3 +210,95 @@ def effective_params(
             else rp_ms,
         )
     return cp_milli, ra_milli, rp_ms
+
+
+# Step size and scan horizon, chosen by the finest field any entry constrains.
+_MINUTE_MS = 60_000
+_HOUR_MS = 3_600_000
+_DAY_MS = 86_400_000
+_GRANULARITY = {
+    "minute": (_MINUTE_MS, 7 * _DAY_MS),
+    "hour": (_HOUR_MS, 31 * _DAY_MS),
+    "day": (_DAY_MS, 366 * _DAY_MS),
+}
+
+
+def _granularity(parsed: tuple[ParsedCron, ...]) -> tuple[int, int]:
+    """Step and cap for a scan, from the finest field any entry constrains."""
+    if any(len(p.minutes) < 60 for p in parsed):
+        return _GRANULARITY["minute"]
+    if any(len(p.hours) < 24 for p in parsed):
+        return _GRANULARITY["hour"]
+    return _GRANULARITY["day"]
+
+
+def _active_index(parsed: tuple[ParsedCron, ...], now_ms: int) -> int | None:
+    """Index of the first matching entry, or None. First match wins (§1.2)."""
+    for i, p in enumerate(parsed):
+        if matches(p, now_ms):
+            return i
+    return None
+
+
+def next_boundary(
+    sched: tuple[ScheduleEntry, ...],
+    reset_sched: tuple[ScheduleEntry, ...] = (),
+    *,
+    now_ms: int,
+) -> int | None:
+    """The earliest instant after ``now_ms`` where the active entry changes.
+
+    ``reset_sched`` is accepted but unused until the surface plan folds reset
+    edges in as boundary candidates; taking it now keeps that a one-function
+    change rather than a signature change across every caller. ``now_ms`` is
+    **keyword-only on purpose**: the second positional slot belongs to
+    ``reset_sched``, so a positional call would silently bind a timestamp to a
+    schedule tuple (#500). Do not "simplify" it.
+
+    Returns None when there is no schedule. Returns ``now_ms + cap`` when no
+    transition is found within the horizon, which forces one cheap
+    re-materialisation per active bucket per cap period rather than looping.
+
+    This is a scan, not a library call, because the boundary set includes
+    window *closings* and no cron library computes those (§3.2).
+
+    The scan is two-phase. The coarse pass steps by the finest field any entry
+    constrains, over a grid aligned to the **UTC** epoch — but window edges fall
+    on *local* minutes, and a timezone offset need not be a whole number of
+    steps, so a coarse probe is only an upper bound on the boundary. Asia/Kolkata
+    (+05:30) puts a 09:00 local edge at 03:30Z, half a step off an hourly grid;
+    a day-granularity edge at New York midnight is twenty hours off a UTC-midnight
+    grid. A returned boundary that is *late* is the unsafe direction — ``vu``
+    would keep the fast path on the old limits well inside the new window — so
+    the step that straddles the change is re-walked at minute resolution. That
+    costs at most 59 (hourly) or 1439 (daily) extra matches, once, and only on
+    the step where the change actually happens.
+    """
+    if not sched:
+        return None
+
+    parsed = tuple(parse_cron(e.cron, e.tz) for e in sched)
+    step, cap = _granularity(parsed)
+    current = _active_index(parsed, now_ms)
+    horizon = now_ms + cap
+
+    # Align the coarse probes to the step grid. Cosmetic rather than load-bearing:
+    # any grid of spacing `step` straddles the change (every window is at least one
+    # local hour or one local day long), and the refinement below pins the exact
+    # minute either way. It just keeps the probed instants tidy.
+    lo = now_ms
+    probe = (now_ms // step + 1) * step
+    while probe <= horizon:
+        if _active_index(parsed, probe) != current:
+            # Refine: the true edge lies in (lo, probe]. `probe` itself is a
+            # multiple of `step` and therefore minute-aligned, so this loop is
+            # bounded and `probe` is always a valid answer if nothing earlier is.
+            fine = (lo // _MINUTE_MS + 1) * _MINUTE_MS
+            while fine < probe:
+                if _active_index(parsed, fine) != current:
+                    return fine
+                fine += _MINUTE_MS
+            return probe
+        lo = probe
+        probe += step
+    return now_ms + cap
