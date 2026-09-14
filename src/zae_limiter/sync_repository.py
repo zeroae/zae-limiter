@@ -509,13 +509,18 @@ class SyncRepository:
         return self._caller_identity_arn
 
     def _now_ms(self) -> int:
-        """Current time in epoch milliseconds — the single clock seam (#430).
+        """Current time in epoch milliseconds — the token-bucket clock (#430).
 
-        Declared on ``SyncRepositoryProtocol`` so ``limiter.py`` and ``lease.py``
-        read the clock through here too. Patching this one method controls
-        time across a whole ``acquire()`` without sleeping and without
-        touching the global ``time`` module (which moto and botocore also
-        read).
+        Declared on ``SyncRepositoryProtocol`` so the limiter and the lease read
+        the clock through here too. Patching this one method controls refill
+        math, ``rf`` stamps and bucket TTLs across a whole ``acquire()``
+        without sleeping and without touching the global ``time`` module
+        (which moto and botocore also read).
+
+        It does **not** control the config cache, whose TTL is in seconds
+        against ``time.time()``. See ``SyncRepositoryProtocol._now_ms`` for what
+        that means for a test that jumps the clock, and for how many readings
+        each ``acquire()`` path takes.
         """
         return int(time.time() * 1000)
 

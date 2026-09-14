@@ -145,17 +145,41 @@ class SyncRepositoryProtocol(Protocol):
         ...
 
     def _now_ms(self) -> int:
-        """Current time in epoch milliseconds — the backend's only clock.
+        """Current time in epoch milliseconds — the token-bucket clock.
 
-        Every millisecond-resolution clock read on the rate-limiting paths
-        (limiter, lease and backend alike) goes through here, which makes it
-        the one seam a test patches to control time deterministically —
-        no sleeping, and no patching of the global ``time`` module, which
-        would also move moto's and botocore's clocks (issue #430).
+        Every millisecond-resolution read that feeds refill math, an ``rf``
+        stamp or a bucket TTL goes through here — in the limiter, in the
+        lease and inside the backend alike — which makes it the one seam a
+        test patches to control that clock deterministically, with no
+        sleeping and no patching of the global ``time`` module (which would
+        also move moto's and botocore's clocks). Issue #430.
 
-        One logical ``acquire()`` must observe exactly one reading: callers
-        that read it thread the value onward (see ``speculative_consume``'s
-        ``now_ms``) rather than reading again.
+        **It is not the library's only clock.** ``config_cache`` measures its
+        TTL in *seconds* against ``time.time()`` and is deliberately out of
+        scope for #430. Advancing this seam therefore ages buckets but not
+        cached config: a test that jumps an hour still resolves whatever
+        limits the cache held before the jump, until the 60s wall-clock TTL
+        expires or ``invalidate_config_cache()`` is called. A test that needs
+        a *config* change to take effect at a controlled instant must
+        invalidate the cache explicitly.
+
+        **One instant per write, not per acquire.** A caller that reads the
+        clock threads the value onward (see ``speculative_consume``'s
+        ``now_ms``) so that a single speculative ``UpdateItem`` — its ``ttl``
+        stamp, its TTL-expiry guard and the caller's admission decision —
+        agrees on one instant. The slow path deliberately reads again: it
+        runs after a ``BatchGetItem`` and then commits a transaction, and
+        inheriting the fast path's instant across those round trips would
+        stamp ``rf`` in the past and under-refill every bucket it writes. A
+        full ``acquire()`` therefore observes:
+
+        ===================================== ========
+        Path                                  readings
+        ===================================== ========
+        Warm speculative fast path            1
+        ``speculative_writes=False``          2
+        Speculative miss, then the slow path  3
+        ===================================== ========
         """
         ...
 
