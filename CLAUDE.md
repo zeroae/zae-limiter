@@ -729,23 +729,45 @@ Bucket items use per-(entity, resource, shard) partition keys: `PK={ns}/BUCKET#{
 ### Combined Capacity Check (Issue #472)
 
 `RateLimiter.check_availability(entity_id, resource, needed=None, limits=None) -> Availability`
-answers both "how much is left?" and "how long until I can proceed?" from **one** config
-resolution and **one** bucket read. `available()` and `time_until_available()` are now thin
-wrappers over it, so the three can never disagree; both keep their existing signatures and
-return types (including the deprecated `use_stored_limits` parameter).
+is the **one** non-consuming read path. `available()` and `time_until_available()` are thin
+wrappers over it (both keep their signatures, return types and the deprecated
+`use_stored_limits`), so there is one implementation rather than three.
 
-`Availability` is a frozen dataclass carrying `entity_id`, `resource`, `limits`, `available`
-(limit name → tokens, may be negative), `needed`, and `retry_after_seconds`, plus derived
-`allowed`, `exceeded`, and `deficit` properties.
+**Why a combined call, and why it is not "convenience".** The driving consumer is a UI that
+displays "47 remaining · resets in 3m 12s", per limit. Calling the two methods separately is
+two reads at two *instants*: tokens refill in between and each discovers the entity's shards
+independently, so the pair can render "0 remaining · available now" or "47 remaining · 0s".
+Everything on `Availability` is derived from one snapshot stamped `checked_at_ms`, so the
+numbers cannot contradict each other.
 
-Non-consuming and write-free. Like the two methods it subsumes, it reads **shard 0 only** —
-GHSA-76rv write sharding is not modelled by this path — and treats a missing bucket as full
-capacity with no wait.
+`Availability` is a frozen dataclass carrying `entity_id`, `resource`, `checked_at_ms`, and
+`statuses: list[LimitStatus]` — one per resolved limit, reusing the model
+`RateLimitExceeded` already carries. `limits`, `available`, `needed`, `retry_after_seconds`
+(max over statuses), `allowed`, `exceeded` and `deficit` are **derived** properties, plus
+`status(limit_name)`. A `needed` key naming no resolved limit is ignored.
 
-Cost: previously each of the two methods issued one `GetItem` **per limit** (against the same
-composite item, ADR-114), so asking both questions about a 2-limit resource cost 4 `GetItem`s
-plus 2 config resolutions. Now it is 1 `BatchGetItem` plus 1 config resolution regardless of
-limit count.
+**Two bugs this fixed on main, which is most of its value:**
+- `time_until_available()` issued one `get_bucket()` **per limit** against a single ADR-114
+  composite item — a pure N+1.
+- `get_bucket()` defaults to `shard_id=0`, so that wait estimate was computed from one
+  shard's balance *and* one shard's share of the refill, while `available()` summed across
+  shards (#466). On a 2-shard entity holding 40 tokens at 100/min the pair reported "40
+  available" and "47.97s until 60" where the truth is ~12s.
+
+**Sharding:** sums across every shard (GSI3), matching `available()` and
+`get_resource_capacity()`, and computes the wait from the **summed** refill rate against the
+same `available` it reports. Shares that floor to 0 fall back to the undivided rate, as
+`BucketState.retry_refill_amount_milli` does. The reported `limit` is therefore the
+**undivided** config, unlike the per-shard statuses in `RateLimitExceeded` (`Limit.per_shard()`,
+#475). Known limitation inherited from #475: a single request above `capacity // shard_count`
+is unadmittable on every shard, so `acquire()` can reject an amount this reports as available.
+
+Non-consuming and write-free, and **not** a pre-flight gate for `acquire()`: check-then-acquire
+is TOCTOU and costs an extra read, where `acquire()` answers the same question in 1 WCU (0 RCU +
+0 WCU on a fast rejection) via `RateLimitExceeded.retry_after_seconds`. It is for *display*.
+
+Cost: 1 GSI3 KEYS_ONLY query + 1 `BatchGetItem` + 1 config resolution, regardless of limit
+count or shard count. A missing bucket means full capacity and no wait.
 
 ### Exception Design
 - `RateLimitExceeded` includes a status for **every limit declared in `consume`** — both the ones that were exceeded and the ones that passed. Limits the caller did not name (and the reserved `wcu`) never appear (Issue #455), on the fast path, the slow path, and the consumption-only retry path alike

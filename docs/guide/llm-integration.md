@@ -223,6 +223,15 @@ async def call_with_capacity_check(
         ...
 ```
 
+!!! note "Prefer letting `acquire()` decide"
+    The check above and the `acquire()` below it are two separate moments, so
+    the decision can be stale by the time it is used, and the check costs a read
+    that `acquire()` does not need. `acquire()` raises `RateLimitExceeded` with
+    the same `retry_after_seconds` — in 1 WCU, or 0 RCU + 0 WCU when it can
+    reject from the failure image — so catching that is both cheaper and
+    race-free. Reach for `check_availability()` when the number is *shown* to
+    someone, not when it gates the call.
+
 ## Integration with Retry Libraries
 
 Combine with retry libraries like `tenacity`:

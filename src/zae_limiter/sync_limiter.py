@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from .sync_repository_protocol import SpeculativeResult, SyncRepositoryProtocol
 from .bucket import (
     calculate_available,
-    calculate_time_until_available,
+    calculate_retry_after,
     declared_statuses,
     force_consume,
     try_consume,
@@ -1516,27 +1516,57 @@ class SyncRateLimiter:
         Check available capacity and wait time in a single read (issue #472).
 
         Answers both "how much is left?" and "how long until I can proceed?"
-        from one config resolution and one bucket read, instead of the two
-        independent round trips that calling :meth:`available` and
-        :meth:`time_until_available` back to back would cost.
+        for every resolved limit, from one config resolution and one bucket
+        read taken at one instant.
+
+        **Why one call rather than two.** Calling :meth:`available` and
+        :meth:`time_until_available` back to back is two reads at two instants,
+        and they can disagree: tokens refill in between, and each discovers the
+        entity's shards separately. A display built from the pair can render
+        "0 remaining, available now" or "47 remaining, wait 0s". Both are lies
+        a user acts on. Everything on the returned :class:`Availability` is
+        derived from a single snapshot stamped with ``checked_at_ms``, so the
+        numbers cannot contradict each other.
 
         Limits are resolved using four-tier hierarchy: Entity > Entity Default >
         Resource > System. If no stored limits found, falls back to the `limits`
         parameter.
 
-        Consumes nothing and writes nothing. Reads shard 0 only, matching
-        :meth:`available` and :meth:`time_until_available`.
+        Consumes nothing and writes nothing. This is a read; it is not a
+        pre-flight check for :meth:`acquire`. Deciding with it and then calling
+        ``acquire()`` is TOCTOU and costs an extra read — ``acquire()`` already
+        answers "may I proceed, and if not when" in 1 WCU, or 0 RCU + 0 WCU on
+        a fast rejection, via ``RateLimitExceeded.retry_after_seconds``. Use
+        this when the answer is *displayed* rather than acted on.
+
+        **Sharding.** A sharded entity's balance is spread across its shards
+        (GHSA-76rv), so this sums every shard, exactly as :meth:`available`
+        and ``get_resource_capacity()`` do, and computes the wait against the
+        summed refill rate. The reported ``limit`` is therefore the undivided
+        configured limit, not one shard's share — unlike the per-shard
+        statuses in ``RateLimitExceeded`` (#475), which describe the one shard
+        a rejection happened on. Known limitation, inherited from #475: a
+        *single* request larger than ``capacity // shard_count`` is
+        unadmittable on every shard even while the entity is under its
+        configured limit, so ``acquire()`` can reject an amount this call
+        reports as available.
+
+        Cost: 1 GSI3 query (KEYS_ONLY) + 1 ``BatchGetItem``, plus config
+        resolution (free on a cache hit), regardless of limit count or shard
+        count.
 
         Args:
             entity_id: Entity to check
             resource: Resource to check
             needed: Required amounts by limit name. Omit to ask only about
-                current availability (`retry_after_seconds` is then 0.0).
+                current availability (`retry_after_seconds` is then 0.0);
+                pass e.g. ``{"rpm": 1}`` for "when may I make one more
+                request". Keys naming no resolved limit are ignored.
             limits: Override limits (optional, falls back to stored config)
 
         Returns:
-            Availability with per-limit available tokens, the requested amounts,
-            and seconds until every requested amount is available.
+            Availability carrying one :class:`LimitStatus` per resolved limit,
+            plus the derived aggregate verdict and countdown.
 
         Raises:
             ValidationError: If no limits found at any level and no override provided
@@ -1548,33 +1578,56 @@ class SyncRateLimiter:
                 resource="gpt-4",
                 needed={"rpm": 1, "tpm": 500},
             )
-            if not check.allowed:
-                asyncio.sleep(check.retry_after_seconds)
+            for status in check.statuses:
+                render(status.limit_name, status.available, status.retry_after_seconds)
             ```
         """
         self._ensure_initialized()
         now_ms = self._repository._now_ms()
         needed = needed or {}
         resolved_limits, _ = self._resolve_limits(entity_id, resource, limits)
-        buckets = self._fetch_buckets([entity_id], resource, 0)
-        available: dict[str, int] = {}
-        max_wait = 0.0
-        for limit in resolved_limits:
-            state = buckets.get((entity_id, resource, limit.name))
-            if state is None:
-                available[limit.name] = limit.capacity
+        totals: dict[str, int] = {}
+        refill_milli: dict[str, int] = {}
+        undivided_refill_milli: dict[str, int] = {}
+        period_ms: dict[str, int] = {}
+        for bucket in self._repository.get_buckets(entity_id):
+            if bucket.resource != resource:
                 continue
-            available[limit.name] = calculate_available(state, now_ms)
-            amount = needed.get(limit.name, 0)
-            if amount > 0:
-                max_wait = max(max_wait, calculate_time_until_available(state, amount, now_ms))
+            name = bucket.limit_name
+            totals[name] = totals.get(name, 0) + calculate_available(bucket, now_ms)
+            refill_milli[name] = refill_milli.get(name, 0) + bucket.effective_refill_amount_milli
+            undivided_refill_milli.setdefault(name, bucket.retry_refill_amount_milli)
+            period_ms.setdefault(name, bucket.refill_period_ms)
+        statuses: list[LimitStatus] = []
+        for limit in resolved_limits:
+            if limit.name in totals:
+                available = min(totals[limit.name], limit.capacity)
+            else:
+                available = limit.capacity
+            requested = needed.get(limit.name, 0)
+            exceeded = requested > 0 and available < requested
+            wait = 0.0
+            if exceeded and limit.name in period_ms:
+                wait = calculate_retry_after(
+                    deficit_milli=(requested - available) * 1000,
+                    refill_amount_milli=refill_milli[limit.name]
+                    or undivided_refill_milli[limit.name],
+                    refill_period_ms=period_ms[limit.name],
+                )
+            statuses.append(
+                LimitStatus(
+                    entity_id=entity_id,
+                    resource=resource,
+                    limit_name=limit.name,
+                    limit=limit,
+                    available=available,
+                    requested=requested,
+                    exceeded=exceeded,
+                    retry_after_seconds=wait,
+                )
+            )
         return Availability(
-            entity_id=entity_id,
-            resource=resource,
-            limits=resolved_limits,
-            available=available,
-            needed=dict(needed),
-            retry_after_seconds=max_wait,
+            entity_id=entity_id, resource=resource, checked_at_ms=now_ms, statuses=statuses
         )
 
     def available(
@@ -1590,11 +1643,13 @@ class SyncRateLimiter:
         Limits are resolved using four-tier hierarchy: Entity > Entity Default > Resource > System.
         If no stored limits found, falls back to the `limits` parameter.
 
-        Returns minimum available across entity (and parent if cascade).
-        Can return negative values if bucket is in debt.
+        Sums every shard of the entity (GHSA-76rv). Can return negative values
+        if the bucket is in debt.
 
-        See :meth:`check_availability` to get this and the wait time from a
-        single read.
+        Thin wrapper over :meth:`check_availability`, which returns this and
+        the wait time together from one read at one instant. Prefer it when
+        you want both — asking here and there is two snapshots that can
+        disagree.
 
         Args:
             entity_id: Entity to check
@@ -1609,29 +1664,14 @@ class SyncRateLimiter:
         Raises:
             ValidationError: If no limits found at any level and no override provided
         """
-        self._ensure_initialized()
-        now_ms = self._repository._now_ms()
         if use_stored_limits:
             warnings.warn(
                 "use_stored_limits is deprecated and will be removed in v1.0. Limits are now always resolved from stored config (Entity > Resource > System). Pass limits parameter as override if needed.",
                 DeprecationWarning,
                 stacklevel=2,
             )
-        resolved_limits, _ = self._resolve_limits(entity_id, resource, limits)
-        per_limit: dict[str, int] = {}
-        for bucket in self._repository.get_buckets(entity_id):
-            if bucket.resource != resource:
-                continue
-            per_limit[bucket.limit_name] = per_limit.get(
-                bucket.limit_name, 0
-            ) + calculate_available(bucket, now_ms)
-        result: dict[str, int] = {}
-        for limit in resolved_limits:
-            if limit.name in per_limit:
-                result[limit.name] = min(per_limit[limit.name], limit.capacity)
-            else:
-                result[limit.name] = limit.capacity
-        return result
+        check = self.check_availability(entity_id, resource, None, limits)
+        return check.available
 
     def time_until_available(
         self,
@@ -1647,8 +1687,13 @@ class SyncRateLimiter:
         Limits are resolved using four-tier hierarchy: Entity > Entity Default > Resource > System.
         If no stored limits found, falls back to the `limits` parameter.
 
-        See :meth:`check_availability` to get this and the available capacity
-        from a single read.
+        The estimate is computed against the entity's total across every shard
+        and the summed refill rate (GHSA-76rv), matching :meth:`available`.
+
+        Thin wrapper over :meth:`check_availability`, which returns this and
+        the available capacity together from one read at one instant. Prefer
+        it when you want both, or when you want the wait per limit rather than
+        the slowest one.
 
         Args:
             entity_id: Entity to check
@@ -1664,26 +1709,14 @@ class SyncRateLimiter:
         Raises:
             ValidationError: If no limits found at any level and no override provided
         """
-        self._ensure_initialized()
-        now_ms = self._repository._now_ms()
         if use_stored_limits:
             warnings.warn(
                 "use_stored_limits is deprecated and will be removed in v1.0. Limits are now always resolved from stored config (Entity > Resource > System). Pass limits parameter as override if needed.",
                 DeprecationWarning,
                 stacklevel=2,
             )
-        resolved_limits, _ = self._resolve_limits(entity_id, resource, limits)
-        max_wait = 0.0
-        for limit in resolved_limits:
-            amount = needed.get(limit.name, 0)
-            if amount <= 0:
-                continue
-            state = self._repository.get_bucket(entity_id, resource, limit.name)
-            if state is None:
-                continue
-            wait = calculate_time_until_available(state, amount, now_ms)
-            max_wait = max(max_wait, wait)
-        return max_wait
+        check = self.check_availability(entity_id, resource, needed, limits)
+        return check.retry_after_seconds
 
     def set_limits(
         self,
