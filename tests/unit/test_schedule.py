@@ -51,6 +51,24 @@ class TestParseCron:
             parse_cron("* * * * *", "Mars/Olympus_Mons")
 
 
+class TestParseCronRejectsSixFields:
+    """cronsim accepts a leading seconds field; nothing here is finer than a minute.
+
+    Left unrejected, `ScheduleEntry(cron="30 5 9 * * *")` constructs, matches the
+    whole of 09:05 rather than one second of it, and then has six fields to squeeze
+    into the encoding's five slots.
+    """
+
+    @pytest.mark.parametrize("cron", ["30 5 9 * * *", "* * * * * *", "* * * *"])
+    def test_rejects_non_five_field_expressions(self, cron):
+        with pytest.raises(ValueError, match="5 fields"):
+            parse_cron(cron, "UTC")
+
+    def test_schedule_entry_rejects_them_too(self):
+        with pytest.raises(ValueError, match="5 fields"):
+            ScheduleEntry(cron="30 5 9 * * *", tz="UTC", scale=0.5)
+
+
 class TestScheduleEntry:
     def test_scale_entry(self):
         e = ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.5)

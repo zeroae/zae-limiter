@@ -90,6 +90,18 @@ def parse_cron(cron: str, tz: str) -> ParsedCron:
     except (ZoneInfoNotFoundError, ValueError) as exc:
         raise ValueError(f"unknown timezone {tz!r}: {exc}") from exc
 
+    # cronsim also accepts a SIX-field expression whose leading field is seconds.
+    # Nothing here is finer than a minute — `matches` compares minute/hour/day and
+    # `next_boundary` steps by the minute — so a seconds field would be silently
+    # widened to its whole minute. Reject it up front.
+    if len(cron.split()) != 5:
+        raise ValueError(
+            f"invalid cron expression {cron!r}: exactly 5 fields are required "
+            f"(minute hour day-of-month month day-of-week). A 6-field expression "
+            f"with a leading seconds field parses but cannot be honoured: nothing "
+            f"in this module is finer than one minute."
+        )
+
     try:
         parsed = CronSim(cron, _EPOCH)
     except CronSimError as exc:
