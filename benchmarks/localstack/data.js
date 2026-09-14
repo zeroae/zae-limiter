@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789418961929,
+  "lastUpdate": 1789422676633,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -18270,6 +18270,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.004384808964719822",
             "extra": "mean: 1.0836097824000093 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1f6349606bf0a27583e001e1bb76e46df5231b8a",
+          "message": "✨ feat(models): compute the next schedule boundary by scanning (#501)\n\n## Summary\n\nTask 4 of 14 in the #222 scheduled-limits core plan.\n\n- Adds `next_boundary(sched, reset_sched=(), *, now_ms)` to\n`src/zae_limiter/schedule.py`, and makes `parse_cron` `lru_cache`-backed\n(which also retires `effective_params`' per-call re-parse).\n- No cron library can answer this question: they all compute *fire\ntimes*, which give window **starts** and say nothing about window\n**ends**, and `vu` needs both. `croniter.match()` is also ~362 us per\ncall because it re-parses every time, so the scan matches against\npre-parsed sets at ~1 us per step instead.\n- Granularity adapts to the finest constrained field, bounding the\ncoarse scan at 10080 / 744 / 366 steps.\n- New test file `tests/unit/test_schedule_boundary.py` (44 tests).\n\n## Defects found in the plan's own Task 4 text (and fixed here)\n\n**1. Implementation defect — the coarse scan reports a LATE boundary.**\nThe plan's single-phase scan steps over a grid aligned to the **UTC\nepoch**, but window edges fall on **local** minutes and a zone offset\nneed not be a whole number of steps. It therefore lands past the true\nedge — 30 min for `Asia/Kolkata` (+05:30) at hour granularity, 20 h for\n`America/New_York` at day granularity — and a late `vu` keeps the fast\npath on the **old** limits well inside the new window.\n\nFixed by re-walking the straddling step at minute resolution. Measured\nagainst a brute-force minute scan over 400 random schedules x 8 zones:\nthe single-phase form was late on **112/400**, worst case **21.5 h**;\nthe two-phase form matches ground truth exactly (**0/400**). Cost: at\nmost 59 (hourly) or 1439 (daily) extra matches, once, only on the step\nwhere the change happens. Hourly case measured at 53 us/call; worst case\n(minute cap, 10080 steps) 10 ms.\n\n**2. `test_minute_granularity_uses_the_seven_day_cap` asserted the wrong\nvalue.** It expected `06:08` for `*/15 * * * *` at `06:07`; the correct\nboundary is `06:15`. It also asserted nothing about the 7-day cap\ndespite its name. Renamed to\n`test_minute_granularity_steps_by_the_minute` with the right value, and\na real 7-day-cap test added.\n\n**3. `test_no_transition_returns_now_plus_cap` expected the wrong cap.**\nIt expected the 31-day hour cap for `* * * * *`, which is day\ngranularity, so the cap is 366 days (the plan's own Step 4 anticipates\nthis).\n\n## Test plan\n\n- [x] Full unit suite: 3462 passed (3418 before, +44)\n- [x] gevent suite: 26 passed\n- [x] Patch coverage 100% (38 new lines, 0 missing)\n- [x] `ruff` + `mypy` clean\n- [x] Mutation check: 13 of 15 mutants of the implementation are caught;\nthe 2 survivors were verified to be equivalent mutants\n- [x] Two-phase scan validated against a brute-force minute scan (400\nschedules x 8 zones, exact match)\n\nRefs #222\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01QdVj8nPhUwTz2aNJzMFqt5",
+          "timestamp": "2026-09-14T17:46:24-04:00",
+          "tree_id": "d608cdeae2b0b98901c5e76d31676b7814579fe4",
+          "url": "https://github.com/zeroae/zae-limiter/commit/1f6349606bf0a27583e001e1bb76e46df5231b8a"
+        },
+        "date": 1789422675699,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 35.10334775515405,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0069776405867675965",
+            "extra": "mean: 28.487311437501717 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 22.48231637865811,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009920180598350597",
+            "extra": "mean: 44.479402529415275 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 49.071511935938695,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004858193392288194",
+            "extra": "mean: 20.378422439998758 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 51.66097415877353,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004663749492044306",
+            "extra": "mean: 19.356971413791488 msec\nrounds: 29"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 31.60239989193183,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004583457375832767",
+            "extra": "mean: 31.6431664500044 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 115.70904824669029,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0016059629811697323",
+            "extra": "mean: 8.642366480000874 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 17.766749644010133,
+            "unit": "iter/sec",
+            "range": "stddev: 0.08360280609343287",
+            "extra": "mean: 56.28491536363485 msec\nrounds: 22"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 30.920660365406942,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005909834808314654",
+            "extra": "mean: 32.34083580953427 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 31.468248987820036,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008807011732126934",
+            "extra": "mean: 31.778063037033156 msec\nrounds: 27"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 36.80006002472022,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004939741396188042",
+            "extra": "mean: 27.17386872000361 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 36.55325698522433,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007565743061853416",
+            "extra": "mean: 27.357343297868727 msec\nrounds: 47"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 7.248672250737801,
+            "unit": "iter/sec",
+            "range": "stddev: 0.16645232796655116",
+            "extra": "mean: 137.956299499983 msec\nrounds: 8"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 38.90643763756713,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0043157986468405265",
+            "extra": "mean: 25.702687285726306 msec\nrounds: 35"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9203759490191445,
+            "unit": "iter/sec",
+            "range": "stddev: 0.017212464766134812",
+            "extra": "mean: 520.7313705999923 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9273000444309554,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009101566046170545",
+            "extra": "mean: 518.8605702000359 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.8562193488852873,
+            "unit": "iter/sec",
+            "range": "stddev: 0.16775961884437174",
+            "extra": "mean: 1.167925019800009 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9160673195308714,
+            "unit": "iter/sec",
+            "range": "stddev: 0.045188892497083466",
+            "extra": "mean: 1.0916228301999809 sec\nrounds: 5"
           }
         ]
       }
