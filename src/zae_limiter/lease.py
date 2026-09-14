@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-import time
 import warnings
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -185,7 +184,7 @@ class Lease:
 
         self._check_declared(amounts, "consume")
 
-        now_ms = int(time.time() * 1000)
+        now_ms = self.repository._now_ms()
         statuses: list[LimitStatus] = []
         updates: list[tuple[LeaseEntry, int, int]] = []  # (entry, new_tokens, new_refill)
 
@@ -267,7 +266,7 @@ class Lease:
 
     def _apply_adjust(self, amounts: dict[str, int]) -> None:
         """Apply adjust() deltas to declared entries (shared with release())."""
-        now_ms = int(time.time() * 1000)
+        now_ms = self.repository._now_ms()
 
         for entry in self.entries:
             if not entry._declared:
@@ -329,7 +328,7 @@ class Lease:
         if self._initial_committed or self._committed or self._rolled_back:
             return
 
-        now_ms = int(time.time() * 1000)
+        now_ms = self.repository._now_ms()
         repo = self.repository
 
         # Group entries by (entity_id, resource, shard) — one item per bucket,

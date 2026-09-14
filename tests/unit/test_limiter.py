@@ -264,6 +264,186 @@ class TestRateLimiterRefillRecovery:
             assert lease.consumed == {"rpm": 50}
 
 
+class TestClockSeam:
+    """``Repository._now_ms()`` is the injectable token-bucket clock (#430).
+
+    Every clock read that feeds refill math, an ``rf`` stamp or a bucket TTL
+    routes through ``_now_ms()``, so a test controls that clock by patching
+    one method — no ``sleep``, and no patching of the global ``time``
+    module, which would also move moto's and botocore's clocks. It is not
+    the library's only clock: ``config_cache`` ages in *seconds* against
+    ``time.time()`` and is deliberately out of scope for #430, so advancing
+    this seam ages buckets but leaves cached config exactly as it was.
+
+    **One instant per write, not per acquire.** A single speculative
+    ``UpdateItem`` derives its ``ttl`` stamp, its TTL-expiry guard and the
+    caller's admission decision from one reading. The slow path reads again
+    on purpose: it runs after a ``BatchGetItem`` and then commits a
+    transaction, and reusing the fast path's instant across those round
+    trips would stamp ``rf`` in the past and under-refill. The counts are
+    the contract, and each row below is pinned by a test here:
+
+    ===================================== ========
+    Path                                  readings
+    ===================================== ========
+    Warm speculative fast path            1
+    ``speculative_writes=False``          2
+    Speculative miss, then the slow path  3
+    ===================================== ========
+
+    #222 (scheduled limits) is why the speculative write needs its single
+    instant: it puts an item-level ``vu`` (valid-until, epoch ms) into that
+    ConditionExpression. The slow path always runs *after* the fast path, so
+    ``now_slow >= now_fast`` — and with two readings straddling a window
+    boundary ``T`` (``now_fast < T <= now_slow``) the fast path evaluates
+    ``vu`` while still inside the expiring window and passes, then the slow
+    path materialises tokens at ``now_slow``, already past ``T``, minting
+    the old window's allowance into the new one. One reading per write
+    closes that gap.
+    """
+
+    LIMITS = [Limit.custom("rpm", capacity=100, refill_amount=100, refill_period_seconds=60)]
+
+    @staticmethod
+    def _counting_clock(repo, step_ms: int = 60_000):
+        """Patch ``repo._now_ms`` with a counter; return the list of readings.
+
+        Each reading jumps a full minute, so a surviving second read cannot
+        be confused with the first — while staying inside the bucket TTL, so
+        the speculative write's expiry guard still passes.
+        """
+        readings: list[int] = []
+        base = repo._now_ms()
+
+        def fake_now_ms() -> int:
+            readings.append(base + step_ms * len(readings))
+            return readings[-1]
+
+        repo._now_ms = fake_now_ms
+        return readings
+
+    async def test_acquire_reads_the_clock_once(self, limiter):
+        """One speculative ``acquire()`` observes exactly one ``_now_ms()``."""
+        repo = limiter._repository
+
+        # Warm up: create the bucket and the entity cache so the measured
+        # acquire is a pure speculative fast path.
+        async with limiter.acquire("clock-1", "gpt-4", limits=self.LIMITS, consume={"rpm": 1}):
+            pass
+
+        readings = self._counting_clock(repo)
+        async with limiter.acquire("clock-1", "gpt-4", limits=self.LIMITS, consume={"rpm": 1}):
+            pass
+
+        assert len(readings) == 1, f"acquire() read the clock {len(readings)} times: {readings}"
+
+    async def test_non_speculative_acquire_reads_the_clock_twice(self, limiter):
+        """``speculative_writes=False``: the slow path, then the lease commit.
+
+        Pins the second row of the contract. `_do_acquire()` reads to refill
+        and admit; `Lease._commit_initial()` reads again to stamp ``rf`` on
+        the transaction it is about to send. Reusing the first reading would
+        backdate ``rf`` by the BatchGetItem round trip.
+        """
+        repo = limiter._repository
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+
+        # Warm up: create the bucket and the entity, so the measured acquire
+        # is a plain slow-path admission rather than a bucket creation.
+        async with slow.acquire("clock-4", "gpt-4", limits=self.LIMITS, consume={"rpm": 1}):
+            pass
+
+        readings = self._counting_clock(repo)
+        async with slow.acquire("clock-4", "gpt-4", limits=self.LIMITS, consume={"rpm": 1}):
+            pass
+
+        assert len(readings) == 2, f"acquire() read the clock {len(readings)} times: {readings}"
+
+    async def test_speculative_miss_falls_back_and_reads_three_times(self, limiter):
+        """A speculative miss adds the fast path's reading to the slow path's.
+
+        Pins the third row: fast path (1) + ``_do_acquire`` (2) +
+        ``Lease._commit_initial`` (3). The bucket does not exist yet, so the
+        conditional ``UpdateItem`` fails with ``BUCKET_MISSING`` and the slow
+        path creates it.
+        """
+        repo = limiter._repository
+
+        # Warm up on a *different* entity so `_ensure_initialized()` and the
+        # config cache are settled; the measured entity stays untouched, so
+        # its first acquire is a genuine speculative miss.
+        async with limiter.acquire("clock-5-warm", "gpt-4", limits=self.LIMITS, consume={"rpm": 1}):
+            pass
+
+        readings = self._counting_clock(repo)
+        async with limiter.acquire("clock-5", "gpt-4", limits=self.LIMITS, consume={"rpm": 1}):
+            pass
+
+        assert len(readings) == 3, f"acquire() read the clock {len(readings)} times: {readings}"
+
+    async def test_speculative_consume_stamps_a_single_instant(self, limiter):
+        """``ttl`` and the TTL-expiry guard derive from the same reading."""
+        repo = limiter._repository
+
+        async with limiter.acquire("clock-2", "gpt-4", limits=self.LIMITS, consume={"rpm": 1}):
+            pass
+
+        client = await repo._get_client()
+        captured: list[dict] = []
+        original_update_item = client.update_item
+
+        async def spy_update_item(**kwargs):
+            captured.append(kwargs)
+            return await original_update_item(**kwargs)
+
+        client.update_item = spy_update_item
+        readings = self._counting_clock(repo)
+        try:
+            result = await repo.speculative_consume(
+                "clock-2", "gpt-4", {"rpm": 1}, ttl_seconds=3600
+            )
+        finally:
+            client.update_item = original_update_item
+
+        assert result.success
+        assert len(readings) == 1, (
+            f"speculative_consume() read the clock {len(readings)} times: {readings}"
+        )
+        now_ms = readings[0]
+        values = captured[0]["ExpressionAttributeValues"]
+        # calculate_ttl(now_ms, 3600) == now_ms // 1000 + 3600
+        assert int(values[":ttl"]["N"]) == now_ms // 1000 + 3600
+        assert int(values[":now_epoch"]["N"]) == now_ms // 1000
+
+    async def test_now_ms_alone_drives_refill_recovery(self, limiter):
+        """Exhaust, advance the clock via ``_now_ms`` only, acquire again.
+
+        No ``sleep``, no patching of the global ``time`` module.
+        """
+        repo = limiter._repository
+        clock = {"now": repo._now_ms()}
+        repo._now_ms = lambda: clock["now"]
+
+        # Drain the bucket completely.
+        async with limiter.acquire("clock-3", "gpt-4", limits=self.LIMITS, consume={"rpm": 100}):
+            pass
+
+        # Frozen clock: no refill has happened, so this must be rejected.
+        with pytest.raises(RateLimitExceeded):
+            async with limiter.acquire(
+                "clock-3", "gpt-4", limits=self.LIMITS, consume={"rpm": 100}
+            ):
+                pass
+
+        # Advance one full refill period through the seam alone.
+        clock["now"] += 60_000
+
+        async with limiter.acquire(
+            "clock-3", "gpt-4", limits=self.LIMITS, consume={"rpm": 100}
+        ) as lease:
+            assert lease.consumed == {"rpm": 100}
+
+
 class TestRateLimiterLease:
     """Tests for Lease functionality."""
 
@@ -638,6 +818,10 @@ class TestLeaseRetryPath:
         mock_repo.build_composite_normal.return_value = {"Update": {}}
         mock_repo.build_composite_retry.return_value = {"Update": {}}
         mock_repo._bucket_ttl_refill_multiplier = 7
+        # Sync on the real Repository (issue #430): an AsyncMock attribute
+        # would hand the lease an un-awaited coroutine as `now_ms`, which
+        # then flows into the mocked builders and leaks a RuntimeWarning.
+        mock_repo._now_ms = MagicMock(return_value=1000)
 
         lease = Lease(repository=mock_repo, entries=[entry])
         with pytest.raises(RateLimitExceeded):
@@ -682,6 +866,12 @@ class TestWriteOnEnter:
         repo.build_composite_retry.return_value = {"Update": {}}
         repo.build_composite_adjust.return_value = {"Update": {}}
         repo._bucket_ttl_refill_multiplier = 7
+        # `_now_ms()` is sync on the real Repository (issue #430). Left as an
+        # AsyncMock attribute it returns a coroutine nobody awaits, which the
+        # lease then passes as `now_ms` into the mocked builders — harmless to
+        # the assertions, but it leaks "coroutine was never awaited"
+        # RuntimeWarnings and fails under -W error::RuntimeWarning.
+        repo._now_ms = MagicMock(return_value=1000)
         return repo
 
     async def test_commit_initial_empty_entries(self):
@@ -4994,7 +5184,7 @@ class TestSpeculativeAcquire:
 
         call_count = 0
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, now_ms=None):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -5048,7 +5238,7 @@ class TestSpeculativeAcquire:
         original_speculative = limiter._repository.speculative_consume
         call_count = 0
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, now_ms=None):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -5101,7 +5291,7 @@ class TestSpeculativeAcquire:
         original_speculative = limiter._repository.speculative_consume
         call_count = 0
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, now_ms=None):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -5160,7 +5350,7 @@ class TestSpeculativeAcquire:
         original_speculative = limiter._repository.speculative_consume
         call_count = 0
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, now_ms=None):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -5217,7 +5407,7 @@ class TestSpeculativeAcquire:
         original_speculative = limiter._repository.speculative_consume
         call_count = 0
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, now_ms=None):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -5285,7 +5475,7 @@ class TestSpeculativeAcquire:
         call_count = 0
         child_compensated = False
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, now_ms=None):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -5374,7 +5564,7 @@ class TestSpeculativeAcquire:
         original_speculative = limiter._repository.speculative_consume
         call_count = 0
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, now_ms=None):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -5450,7 +5640,7 @@ class TestSpeculativeAcquire:
         original_speculative = limiter._repository.speculative_consume
         call_count = 0
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, now_ms=None):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -5524,7 +5714,7 @@ class TestSpeculativeAcquire:
         call_count = 0
         fetch_call_count = 0
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, now_ms=None):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -5603,7 +5793,7 @@ class TestSpeculativeAcquire:
         call_count = 0
         transact_call_count = 0
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, now_ms=None):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -5685,7 +5875,7 @@ class TestSpeculativeAcquire:
 
         original_speculative = limiter._repository.speculative_consume
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, now_ms=None):
             return SpeculativeResult(
                 success=True,
                 buckets=[rpm_bucket, tpm_bucket],
@@ -5752,7 +5942,7 @@ class TestSpeculativeAcquire:
         original_speculative = limiter._repository.speculative_consume
         call_count = 0
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, now_ms=None):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -5812,7 +6002,7 @@ class TestSpeculativeAcquire:
         original_speculative = limiter._repository.speculative_consume
         call_count = 0
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, now_ms=None):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -5877,7 +6067,7 @@ class TestSpeculativeAcquire:
         spec_call_count = 0
         fetch_call_count = 0
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None):
+        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, now_ms=None):
             nonlocal spec_call_count
             spec_call_count += 1
             if spec_call_count == 1:
@@ -5998,7 +6188,9 @@ class TestCascadeEntityCache:
         single_call_count = 0
         original_single = limiter._repository._speculative_consume_single
 
-        async def counting_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
+        async def counting_single(
+            entity_id, resource, consume, ttl_seconds=None, shard_id=0, now_ms=None
+        ):
             nonlocal single_call_count
             single_call_count += 1
             return await original_single(entity_id, resource, consume, ttl_seconds)
@@ -6031,7 +6223,9 @@ class TestCascadeEntityCache:
         single_calls: list[str] = []
         original_single = limiter._repository._speculative_consume_single
 
-        async def tracking_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
+        async def tracking_single(
+            entity_id, resource, consume, ttl_seconds=None, shard_id=0, now_ms=None
+        ):
             single_calls.append(entity_id)
             return await original_single(
                 entity_id, resource, consume, ttl_seconds, shard_id=shard_id
@@ -6098,7 +6292,9 @@ class TestCascadeEntityCache:
             compensated_entity_ids.append(entity_id)
             return await original_compensate(entity_id, resource, consume, shard_id)
 
-        async def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
+        async def mock_single(
+            entity_id, resource, consume, ttl_seconds=None, shard_id=0, now_ms=None
+        ):
             if entity_id == "child-1":
                 return SpeculativeResult(
                     success=False,
@@ -6157,7 +6353,9 @@ class TestCascadeEntityCache:
         original_single = limiter._repository._speculative_consume_single
         call_count = 0
 
-        async def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
+        async def mock_single(
+            entity_id, resource, consume, ttl_seconds=None, shard_id=0, now_ms=None
+        ):
             nonlocal call_count
             call_count += 1
             if entity_id == "child-1" and call_count <= 2:
@@ -6224,7 +6422,9 @@ class TestCascadeEntityCache:
         original_single = limiter._repository._speculative_consume_single
         call_count = 0
 
-        async def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
+        async def mock_single(
+            entity_id, resource, consume, ttl_seconds=None, shard_id=0, now_ms=None
+        ):
             nonlocal call_count
             call_count += 1
             if entity_id == "child-1" and call_count <= 2:
@@ -6282,7 +6482,9 @@ class TestCascadeEntityCache:
 
         original_single = limiter._repository._speculative_consume_single
 
-        async def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
+        async def mock_single(
+            entity_id, resource, consume, ttl_seconds=None, shard_id=0, now_ms=None
+        ):
             if entity_id == "child-1":
                 return SpeculativeResult(
                     success=True,
@@ -6357,7 +6559,9 @@ class TestCascadeEntityCache:
 
         original_single = limiter._repository._speculative_consume_single
 
-        async def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
+        async def mock_single(
+            entity_id, resource, consume, ttl_seconds=None, shard_id=0, now_ms=None
+        ):
             if entity_id == "child-1":
                 return SpeculativeResult(
                     success=True,
@@ -6438,7 +6642,9 @@ class TestCascadeEntityCache:
         original_single = limiter._repository._speculative_consume_single
         call_count = 0
 
-        async def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
+        async def mock_single(
+            entity_id, resource, consume, ttl_seconds=None, shard_id=0, now_ms=None
+        ):
             nonlocal call_count
             call_count += 1
             if entity_id == "child-1" and call_count <= 2:
@@ -6516,7 +6722,9 @@ class TestCascadeEntityCache:
         )
         original_single = limiter._repository._speculative_consume_single
 
-        async def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
+        async def mock_single(
+            entity_id, resource, consume, ttl_seconds=None, shard_id=0, now_ms=None
+        ):
             if entity_id == "child-1":
                 return SpeculativeResult(
                     success=True,
@@ -6578,7 +6786,9 @@ class TestCascadeEntityCache:
         )
         original_single = limiter._repository._speculative_consume_single
 
-        async def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
+        async def mock_single(
+            entity_id, resource, consume, ttl_seconds=None, shard_id=0, now_ms=None
+        ):
             if entity_id == "child-1":
                 return SpeculativeResult(
                     success=True,
@@ -6633,7 +6843,9 @@ class TestCascadeEntityCache:
         original_single = limiter._repository._speculative_consume_single
         original_parent_acquire = limiter._try_parent_only_acquire
 
-        async def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
+        async def mock_single(
+            entity_id, resource, consume, ttl_seconds=None, shard_id=0, now_ms=None
+        ):
             if entity_id == "child-1":
                 return SpeculativeResult(
                     success=True,
@@ -6694,7 +6906,9 @@ class TestCascadeEntityCache:
         original_single = limiter._repository._speculative_consume_single
         original_parent_acquire = limiter._try_parent_only_acquire
 
-        async def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
+        async def mock_single(
+            entity_id, resource, consume, ttl_seconds=None, shard_id=0, now_ms=None
+        ):
             if entity_id == "child-1":
                 return SpeculativeResult(
                     success=True,
@@ -7890,7 +8104,7 @@ class TestCascadeParentSharding:
         parent_shards: set[int] = set()
         original = repo._speculative_consume_single
 
-        async def spy(entity_id, resource, consume, ttl_seconds=None, shard_id=0):
+        async def spy(entity_id, resource, consume, ttl_seconds=None, shard_id=0, now_ms=None):
             if entity_id == "parent-1":
                 parent_shards.add(shard_id)
             return await original(entity_id, resource, consume, ttl_seconds, shard_id=shard_id)
