@@ -3109,6 +3109,19 @@ class Repository:
         an acquire already in flight can be missed (mitigated, not eliminated,
         by the second discovery pass).
 
+        Writes are issued **serially**, exactly like `_fanout_entity`. Under
+        the entity-wide scope below the write set is O(resources x shards), not
+        the <= MAX_SHARD_COUNT of one resource, so a single `asyncio.gather`
+        over it would put thousands of concurrent `UpdateItem`s in flight on an
+        admin call. Serial also makes an exact partial-progress count possible:
+        the config item is already committed by the time this runs, so a
+        failure part-way leaves the table half-applied and the operator needs
+        to know how far it got. That is `FanoutIncomplete`, raised here for the
+        same reason and with the same re-run-to-reconcile remedy as the ADR-125
+        fan-out — each write is idempotent. The cost is up to MAX_SHARD_COUNT
+        sequential round trips where #468 issued one concurrent batch; the
+        disable fan-out already pays exactly that over exactly these buckets.
+
         ``_default_`` is the entity-WIDE config scope, not a resource, and a
         caller passing it means "every resource this entity has a bucket for".
         No bucket item can ever carry the GSI3SK ``BUCKET#_default_#``, so
@@ -3138,6 +3151,12 @@ class Repository:
             stale_limit_names: Limit names to REMOVE from bucket (issue #327).
                 Used when downgrading from entity config to defaults where
                 the old config had limits not present in the new defaults.
+
+        Raises:
+            FanoutIncomplete: A write failed part-way through. Carries the
+                number of bucket items already written and the underlying
+                error; the config item is committed either way, so re-running
+                the same call reconciles the remainder.
         """
         if not limits:
             return
@@ -3153,33 +3172,38 @@ class Repository:
 
         # Two discovery passes, exactly like the ADR-125 disable fan-out: the
         # second catches a bucket created by an acquire that was already in
-        # flight during the first. Writes are independent single-item updates
-        # (no cross-shard atomicity to preserve), so they are issued
-        # concurrently. A list comprehension — not a generator — is required
-        # for the sync transformer.
+        # flight during the first.
         synced: set[str] = set()
+        written = 0
         for _pass in range(2):
-            pks = [
-                pk
-                for pk in await self._discover_entity_bucket_pks(
-                    entity_id, None if unscoped else resource
-                )
-                if pk not in synced
-            ]
-            if not pks:
-                continue
-            if unscoped:
-                # Serial and memoized per distinct resource, like
-                # `_fanout_entity`'s `effective_by_resource`: a 500-bucket
-                # entity spread over three resources resolves three times.
-                for pk in pks:
+            for pk in await self._discover_entity_bucket_pks(
+                entity_id, None if unscoped else resource
+            ):
+                if pk in synced:
+                    continue
+                if unscoped:
+                    # Memoized per distinct resource, like `_fanout_entity`'s
+                    # `effective_by_resource`: a 500-bucket entity spread over
+                    # three resources resolves three times.
                     _ns, _eid, bucket_resource, _shard = schema.parse_bucket_pk(pk)
                     if bucket_resource not in plans:
                         plans[bucket_resource] = await self._resolved_bucket_param_update(
                             entity_id, bucket_resource, limits, stale_limit_names
                         )
-            await asyncio.gather(*[self._sync_one_bucket_shard_from_plans(pk, plans) for pk in pks])
-            synced.update(pks)
+                try:
+                    if await self._sync_one_bucket_shard_from_plans(pk, plans):
+                        written += 1
+                except Exception as e:
+                    # Config is already committed, so this is half-applied and
+                    # nothing self-heals it. Report how far it got (ADR-125).
+                    raise FanoutIncomplete(
+                        written,
+                        e,
+                        resource=None if unscoped else resource,
+                        entity_id=entity_id,
+                        action="syncing",
+                    ) from e
+                synced.add(pk)
 
     async def _resolved_bucket_param_update(
         self,
@@ -3290,18 +3314,27 @@ class Repository:
         # Handle stale limit attribute removal (issue #327)
         # Note: RF (last_refill_ms) is shared across all limits in a composite
         # bucket and must NOT be removed when individual limits are stale.
-        if stale_limit_names:
-            for stale_name in stale_limit_names:
-                for field in (
+        #
+        # Monotonic counters, NOT the stale name: `NAME_PATTERN` allows `-` and
+        # `.` in a limit name and neither is legal in an expression attribute
+        # alias (`.` is parsed as a document-path separator), so interpolating
+        # the name builds an expression DynamoDB rejects with a
+        # ValidationException — after the config item has already been written.
+        # `sorted` only to keep the expression deterministic for tests.
+        # The provisioner mirror does the same (`bucket_sync.py`).
+        for i, stale_name in enumerate(sorted(stale_limit_names or ())):
+            for j, field in enumerate(
+                (
                     schema.BUCKET_FIELD_TK,
                     schema.BUCKET_FIELD_CP,
                     schema.BUCKET_FIELD_RA,
                     schema.BUCKET_FIELD_RP,
                     schema.BUCKET_FIELD_TC,
-                ):
-                    alias = f"#stale_{stale_name}_{field}"
-                    expr_names[alias] = schema.bucket_attr(stale_name, field)
-                    remove_parts.append(alias)
+                )
+            ):
+                alias = f"#stale{i}_{j}"
+                expr_names[alias] = schema.bucket_attr(stale_name, field)
+                remove_parts.append(alias)
 
         # Build update expression
         update_expr = f"SET {', '.join(set_parts)}"
@@ -3313,7 +3346,7 @@ class Repository:
         self,
         pk: str,
         plans: dict[str, tuple[str, dict[str, str], dict[str, dict[str, str]]]],
-    ) -> None:
+    ) -> bool:
         """Apply the plan built for this bucket's own resource.
 
         Args:
@@ -3322,12 +3355,15 @@ class Repository:
                 resource has an entry. An entry with an empty expression is
                 skipped — nothing resolved for that resource, so there is no
                 correct value to write.
+
+        Returns:
+            True if a bucket item was written.
         """
         _ns, _eid, bucket_resource, _shard = schema.parse_bucket_pk(pk)
         update_expr, expr_names, expr_values = plans[bucket_resource]
         if not update_expr:
-            return
-        await self._sync_one_bucket_shard(pk, update_expr, expr_names, expr_values)
+            return False
+        return await self._sync_one_bucket_shard(pk, update_expr, expr_names, expr_values)
 
     async def _sync_one_bucket_shard(
         self,
@@ -3335,7 +3371,7 @@ class Repository:
         update_expr: str,
         expr_names: dict[str, str],
         expr_values: dict[str, dict[str, str]],
-    ) -> None:
+    ) -> bool:
         """Apply one shard's static-param update, tolerating a vanished shard.
 
         Args:
@@ -3343,6 +3379,9 @@ class Repository:
             update_expr: SET/REMOVE expression built by `_sync_bucket_params`
             expr_names: Expression attribute name aliases
             expr_values: Expression attribute values
+
+        Returns:
+            True if the item was written, False if the shard had vanished.
         """
         client = await self._get_client()
         try:
@@ -3360,8 +3399,9 @@ class Repository:
                 # shard between discovery and this write). Either way there is
                 # nothing to reconcile — a bucket created later is created with
                 # the current params.
-                return
+                return False
             raise
+        return True
 
     async def reconcile_bucket_to_defaults(
         self,

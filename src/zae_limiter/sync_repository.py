@@ -2566,6 +2566,19 @@ class SyncRepository:
         an acquire already in flight can be missed (mitigated, not eliminated,
         by the second discovery pass).
 
+        Writes are issued **serially**, exactly like `_fanout_entity`. Under
+        the entity-wide scope below the write set is O(resources x shards), not
+        the <= MAX_SHARD_COUNT of one resource, so a single `asyncio.gather`
+        over it would put thousands of concurrent `UpdateItem`s in flight on an
+        admin call. Serial also makes an exact partial-progress count possible:
+        the config item is already committed by the time this runs, so a
+        failure part-way leaves the table half-applied and the operator needs
+        to know how far it got. That is `FanoutIncomplete`, raised here for the
+        same reason and with the same re-run-to-reconcile remedy as the ADR-125
+        fan-out — each write is idempotent. The cost is up to MAX_SHARD_COUNT
+        sequential round trips where #468 issued one concurrent batch; the
+        disable fan-out already pays exactly that over exactly these buckets.
+
         ``_default_`` is the entity-WIDE config scope, not a resource, and a
         caller passing it means "every resource this entity has a bucket for".
         No bucket item can ever carry the GSI3SK ``BUCKET#_default_#``, so
@@ -2595,6 +2608,12 @@ class SyncRepository:
             stale_limit_names: Limit names to REMOVE from bucket (issue #327).
                 Used when downgrading from entity config to defaults where
                 the old config had limits not present in the new defaults.
+
+        Raises:
+            FanoutIncomplete: A write failed part-way through. Carries the
+                number of bucket items already written and the underlying
+                error; the config item is committed either way, so re-running
+                the same call reconciles the remainder.
         """
         if not limits:
             return
@@ -2605,27 +2624,29 @@ class SyncRepository:
                 limits, bucket_ttl_refill_multiplier, stale_limit_names
             )
         synced: set[str] = set()
+        written = 0
         for _pass in range(2):
-            pks = [
-                pk
-                for pk in self._discover_entity_bucket_pks(
-                    entity_id, None if unscoped else resource
-                )
-                if pk not in synced
-            ]
-            if not pks:
-                continue
-            if unscoped:
-                for pk in pks:
+            for pk in self._discover_entity_bucket_pks(entity_id, None if unscoped else resource):
+                if pk in synced:
+                    continue
+                if unscoped:
                     _ns, _eid, bucket_resource, _shard = schema.parse_bucket_pk(pk)
                     if bucket_resource not in plans:
                         plans[bucket_resource] = self._resolved_bucket_param_update(
                             entity_id, bucket_resource, limits, stale_limit_names
                         )
-            self._run_in_executor(
-                *[lambda pk=pk: self._sync_one_bucket_shard_from_plans(pk, plans) for pk in pks]
-            )
-            synced.update(pks)
+                try:
+                    if self._sync_one_bucket_shard_from_plans(pk, plans):
+                        written += 1
+                except Exception as e:
+                    raise FanoutIncomplete(
+                        written,
+                        e,
+                        resource=None if unscoped else resource,
+                        entity_id=entity_id,
+                        action="syncing",
+                    ) from e
+                synced.add(pk)
 
     def _resolved_bucket_param_update(
         self,
@@ -2717,18 +2738,19 @@ class SyncRepository:
                     expr_values[":ttl_val"] = {"N": str(schema.calculate_ttl(now_ms, ttl_seconds))}
             else:
                 remove_parts.append("#ttl")
-        if stale_limit_names:
-            for stale_name in stale_limit_names:
-                for field in (
+        for i, stale_name in enumerate(sorted(stale_limit_names or ())):
+            for j, field in enumerate(
+                (
                     schema.BUCKET_FIELD_TK,
                     schema.BUCKET_FIELD_CP,
                     schema.BUCKET_FIELD_RA,
                     schema.BUCKET_FIELD_RP,
                     schema.BUCKET_FIELD_TC,
-                ):
-                    alias = f"#stale_{stale_name}_{field}"
-                    expr_names[alias] = schema.bucket_attr(stale_name, field)
-                    remove_parts.append(alias)
+                )
+            ):
+                alias = f"#stale{i}_{j}"
+                expr_names[alias] = schema.bucket_attr(stale_name, field)
+                remove_parts.append(alias)
         update_expr = f"SET {', '.join(set_parts)}"
         if remove_parts:
             update_expr += f" REMOVE {', '.join(remove_parts)}"
@@ -2736,7 +2758,7 @@ class SyncRepository:
 
     def _sync_one_bucket_shard_from_plans(
         self, pk: str, plans: dict[str, tuple[str, dict[str, str], dict[str, dict[str, str]]]]
-    ) -> None:
+    ) -> bool:
         """Apply the plan built for this bucket's own resource.
 
         Args:
@@ -2745,12 +2767,15 @@ class SyncRepository:
                 resource has an entry. An entry with an empty expression is
                 skipped — nothing resolved for that resource, so there is no
                 correct value to write.
+
+        Returns:
+            True if a bucket item was written.
         """
         _ns, _eid, bucket_resource, _shard = schema.parse_bucket_pk(pk)
         update_expr, expr_names, expr_values = plans[bucket_resource]
         if not update_expr:
-            return
-        self._sync_one_bucket_shard(pk, update_expr, expr_names, expr_values)
+            return False
+        return self._sync_one_bucket_shard(pk, update_expr, expr_names, expr_values)
 
     def _sync_one_bucket_shard(
         self,
@@ -2758,7 +2783,7 @@ class SyncRepository:
         update_expr: str,
         expr_names: dict[str, str],
         expr_values: dict[str, dict[str, str]],
-    ) -> None:
+    ) -> bool:
         """Apply one shard's static-param update, tolerating a vanished shard.
 
         Args:
@@ -2766,6 +2791,9 @@ class SyncRepository:
             update_expr: SET/REMOVE expression built by `_sync_bucket_params`
             expr_names: Expression attribute name aliases
             expr_values: Expression attribute values
+
+        Returns:
+            True if the item was written, False if the shard had vanished.
         """
         client = self._get_client()
         try:
@@ -2779,8 +2807,9 @@ class SyncRepository:
             )
         except ClientError as e:
             if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-                return
+                return False
             raise
+        return True
 
     def reconcile_bucket_to_defaults(
         self,

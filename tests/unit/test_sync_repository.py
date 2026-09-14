@@ -3124,8 +3124,13 @@ class TestSyncBucketParamsFansOutToAllShards:
             assert self._params(repo, "user-4", "gpt-4", shard_id)[0] == self.NEW * 1000
 
     def test_other_client_errors_propagate(self, repo):
-        """A non-conditional failure is not swallowed by the fan-out."""
+        """A non-conditional failure is not swallowed by the fan-out.
+
+        It surfaces as `FanoutIncomplete` carrying the underlying error, the
+        same contract the ADR-125 disable fan-out uses on this same method.
+        """
         from zae_limiter import schema
+        from zae_limiter.exceptions import FanoutIncomplete
 
         pk = schema.pk_bucket(repo._namespace_id, "user-5", "gpt-4", 0)
         with patch.object(repo, "_get_client") as mock_get_client:
@@ -3135,8 +3140,95 @@ class TestSyncBucketParamsFansOutToAllShards:
                 {"Error": {"Code": "ProvisionedThroughputExceededException"}}, "UpdateItem"
             )
             mock_get_client.return_value = mock_client
-            with pytest.raises(ClientError):
+            with pytest.raises(FanoutIncomplete) as exc_info:
                 repo.reconcile_bucket_to_defaults("user-5", "gpt-4", [Limit.per_minute("rpm", 10)])
+            assert isinstance(exc_info.value.cause, ClientError)
+            assert exc_info.value.stamped == 0
+
+
+class TestSyncBucketParamsBoundsConcurrencyAndReportsProgress:
+    """The fan-out is serial and reports partial progress on failure.
+
+    Unscoped, the write set is O(resources x shards), not the <=32 shards of
+    one resource, so a single unbounded `asyncio.gather` could issue thousands
+    of concurrent `UpdateItem`s. It is now serial, exactly like the ADR-125
+    `_fanout_entity` whose shape the docstring claims — which also makes an
+    exact partial-progress count possible, on a path that has ALREADY
+    committed the config item.
+    """
+
+    @staticmethod
+    def _pks(repo, entity_id, count):
+        from zae_limiter import schema
+
+        return [
+            {"PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, "gpt-4", shard)}}
+            for shard in range(count)
+        ]
+
+    def test_stops_at_the_failing_write_rather_than_issuing_the_rest(self, repo):
+        """A gather would have issued all 5; serial stops after the third."""
+        from zae_limiter.exceptions import FanoutIncomplete
+
+        throttle = ClientError(
+            {"Error": {"Code": "ProvisionedThroughputExceededException"}}, "UpdateItem"
+        )
+        with patch.object(repo, "_get_client") as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.query.return_value = {"Items": self._pks(repo, "user-p1", 5)}
+            mock_client.update_item.side_effect = [None, None, throttle]
+            mock_get_client.return_value = mock_client
+            with pytest.raises(FanoutIncomplete) as exc_info:
+                repo.reconcile_bucket_to_defaults("user-p1", "gpt-4", [Limit.per_minute("rpm", 10)])
+        assert mock_client.update_item.call_count == 3, (
+            "a concurrent gather would have issued all five writes"
+        )
+        assert exc_info.value.stamped == 2, "two writes landed before the failure"
+        assert exc_info.value.entity_id == "user-p1"
+        assert exc_info.value.resource == "gpt-4"
+
+    def test_unscoped_failure_reports_no_resource(self, repo):
+        """The entity-wide scope is not one resource, so none is named."""
+        from zae_limiter.exceptions import FanoutIncomplete
+
+        repo.create_entity("user-p2")
+        repo.set_limits("user-p2", [Limit.per_minute("rpm", 100)])
+        now_ms = int(time.time() * 1000)
+        for resource in ("gpt-4", "claude-3"):
+            states = [
+                BucketState.from_limit("user-p2", resource, Limit.per_minute("rpm", 100), now_ms)
+            ]
+            repo.transact_write([repo.build_composite_create("user-p2", resource, states, now_ms)])
+        throttle = ClientError(
+            {"Error": {"Code": "ProvisionedThroughputExceededException"}}, "UpdateItem"
+        )
+        with (
+            patch.object(repo, "_sync_one_bucket_shard", MagicMock(side_effect=throttle)),
+            pytest.raises(FanoutIncomplete) as exc_info,
+        ):
+            repo.set_limits("user-p2", [Limit.per_minute("rpm", 500)])
+        assert exc_info.value.entity_id == "user-p2"
+        assert exc_info.value.resource is None
+        assert exc_info.value.stamped == 0
+
+    def test_a_vanished_shard_does_not_count_as_written(self, repo):
+        """A TTL-expired shard is tolerated, but it is not progress."""
+        from zae_limiter.exceptions import FanoutIncomplete
+
+        conditional = ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem"
+        )
+        throttle = ClientError(
+            {"Error": {"Code": "ProvisionedThroughputExceededException"}}, "UpdateItem"
+        )
+        with patch.object(repo, "_get_client") as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.query.return_value = {"Items": self._pks(repo, "user-p3", 3)}
+            mock_client.update_item.side_effect = [None, conditional, throttle]
+            mock_get_client.return_value = mock_client
+            with pytest.raises(FanoutIncomplete) as exc_info:
+                repo.reconcile_bucket_to_defaults("user-p3", "gpt-4", [Limit.per_minute("rpm", 10)])
+        assert exc_info.value.stamped == 1, "the vanished shard wrote nothing"
 
 
 class TestDefaultResourceSyncReachesEveryResource:
@@ -3301,3 +3393,77 @@ class TestDefaultResourceSyncReachesEveryResource:
         repo.set_limits("user-6", [Limit.per_minute("rpm", 700)], resource="gpt-4")
         assert self._cap(repo, "user-6", "gpt-4") == 700000
         assert self._cap(repo, "user-6", "claude-3") == 100000
+
+
+class TestStaleLimitAliasesAreExpressionSafe:
+    """Stale-limit REMOVE aliases must be legal expression attribute names.
+
+    `NAME_PATTERN` (models.py) allows `-` and `.` in a limit name. Neither is
+    legal in an `ExpressionAttributeNames` alias, and `.` is parsed as a
+    document-path separator, so interpolating the limit name into the alias
+    builds an expression DynamoDB rejects with a `ValidationException` —
+    raised out of `set_limits()`/`delete_limits()` *after* the config item has
+    already been written, leaving half-applied state.
+
+    The provisioner mirror (`bucket_sync.build_bucket_param_update`) already
+    used a monotonic counter for exactly this reason; the two halves of #487
+    disagreed until now.
+    """
+
+    ILLEGAL_IN_ALIAS = ("-", ".", " ")
+
+    @staticmethod
+    def _aliases(expr: str, names: dict[str, str]) -> list[str]:
+        assert "REMOVE" in expr, expr
+        return [part.strip() for part in expr.split("REMOVE", 1)[1].split(",")]
+
+    def test_hyphenated_and_dotted_stale_names_build_legal_aliases(self, repo):
+        from zae_limiter.schema import bucket_attr
+
+        expr, names, _values = repo._build_bucket_param_update(
+            [Limit.per_minute("rpm", 100)], None, {"req-min", "tok.sec"}
+        )
+        aliases = self._aliases(expr, names)
+        assert aliases, "expected REMOVE clauses for the stale limits"
+        for alias in aliases:
+            assert alias.startswith("#")
+            for bad in self.ILLEGAL_IN_ALIAS:
+                assert bad not in alias, f"{alias!r} is not a legal expression alias"
+        removed = {names[alias] for alias in aliases}
+        assert removed == {
+            bucket_attr(name, field)
+            for name in ("req-min", "tok.sec")
+            for field in ("tk", "cp", "ra", "rp", "tc")
+        }
+
+    def test_scoped_reconcile_with_a_hyphenated_stale_name(self, repo):
+        """The pre-existing #327 reach: `delete_limits` computes stale names."""
+        repo.create_entity("user-h1")
+        self._seed(repo, "user-h1", "gpt-4")
+        repo.reconcile_bucket_to_defaults(
+            "user-h1", "gpt-4", [Limit.per_minute("rpm", 50)], stale_limit_names={"req-min"}
+        )
+        assert repo.get_bucket("user-h1", "gpt-4", "req-min") is None
+        assert repo.get_bucket("user-h1", "gpt-4", "rpm") is not None
+
+    def test_entity_wide_set_limits_with_a_hyphenated_stale_name(self, repo):
+        """The reach #487 added: the entity-wide scope derives stale names too.
+
+        `gpt-4` has its own entity config declaring only `rpm`, so the
+        entity-wide directive's `req-min` is stale for that bucket — a stale
+        name `set_limits()` never produced before this PR.
+        """
+        repo.create_entity("user-h2")
+        repo.set_limits("user-h2", [Limit.per_minute("rpm", 100)], resource="gpt-4")
+        self._seed(repo, "user-h2", "gpt-4")
+        repo.set_limits("user-h2", [Limit.per_minute("req-min", 900)])
+        assert repo.get_bucket("user-h2", "gpt-4", "req-min") is None
+        assert repo.get_bucket("user-h2", "gpt-4", "rpm") is not None
+
+    @staticmethod
+    def _seed(repo, entity_id, resource):
+        """A bucket carrying both a plain and a hyphenated limit."""
+        now_ms = int(time.time() * 1000)
+        limits = [Limit.per_minute("rpm", 100), Limit.per_minute("req-min", 100)]
+        states = [BucketState.from_limit(entity_id, resource, lim, now_ms) for lim in limits]
+        repo.transact_write([repo.build_composite_create(entity_id, resource, states, now_ms)])
