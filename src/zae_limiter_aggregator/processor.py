@@ -529,9 +529,11 @@ def try_refill_bucket(
     """Try to refill a composite bucket if projected tokens are insufficient.
 
     For each limit in the bucket, computes the refill delta using
-    ``refill_bucket()``.  Only writes if at least one limit's projected tokens
-    (after natural refill) won't cover the observed consumption rate for the
-    next batch window.
+    ``refill_bucket()``.  A *positive* delta is only written if the limit's
+    projected tokens (after natural refill) won't cover the observed
+    consumption rate for the next batch window.  A *negative* delta — the
+    bucket holds more than its effective cap after a shrink — is always
+    written, ungated by that threshold.
 
     Uses ``ADD`` for token deltas (commutative with concurrent speculative
     writes) and an optimistic lock on the shared ``rf`` timestamp to prevent
@@ -571,15 +573,25 @@ def try_refill_bucket(
         )
 
         refill_delta = result.new_tokens_milli - info.tk_milli
-        if refill_delta <= 0:
+        if refill_delta == 0:
             continue
 
-        # Threshold: only refill if projected tokens < consumption for next window
-        # Use the accumulated tc delta as proxy for next-window consumption
-        projected = result.new_tokens_milli
-        consumption_estimate = max(0, info.tc_delta)
-        if projected >= consumption_estimate:
-            continue
+        if refill_delta > 0:
+            # Threshold: only top up if projected tokens < consumption for next
+            # window. Use the accumulated tc delta as proxy for next-window
+            # consumption.
+            projected = result.new_tokens_milli
+            consumption_estimate = max(0, info.tc_delta)
+            if projected >= consumption_estimate:
+                continue
+        # A negative delta is a clamp: the bucket holds more than its effective
+        # cap after a shrink (set_limits, a shard doubling, or a schedule
+        # boundary). It bypasses the threshold above — a hot bucket has the
+        # largest tc_delta, and that is exactly where a shrink most needs to
+        # land, since the aggregator exists to keep the slow path from running
+        # there at all. Safe as an ADD for the same commutativity reason the
+        # positive case is: it removes exactly the surplus, and concurrent
+        # consumption subtracts independently (#222 §3.3, replaces #469).
 
         any_needs_refill = True
         tk_attr = bucket_attr(limit_name, BUCKET_FIELD_TK)
