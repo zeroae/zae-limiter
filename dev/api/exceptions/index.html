@@ -1582,6 +1582,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label=" FanoutIncomplete">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.exceptions.FanoutIncomplete--487-both-share-the-same-hazard" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        487). Both share the same hazard.
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
         
       </ul>
@@ -4007,6 +4024,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label=" FanoutIncomplete">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.exceptions.FanoutIncomplete--487-both-share-the-same-hazard" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        487). Both share the same hazard.
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
         
       </ul>
@@ -5294,7 +5328,7 @@ denormalized bucket attribute on the fast path)</p>
 
 
 <a href="#zae_limiter.exceptions.FanoutIncomplete" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">FanoutIncomplete</span><span class="p">(</span><span class="n">stamped</span><span class="p">,</span> <span class="n">cause</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">resource</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">entity_id</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">FanoutIncomplete</span><span class="p">(</span><span class="n">stamped</span><span class="p">,</span> <span class="n">cause</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">resource</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">entity_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">action</span><span class="o">=</span><span class="s1">'stamping'</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
@@ -5303,17 +5337,20 @@ denormalized bucket attribute on the fast path)</p>
 
 
 
-        <p>Raised when a disable/enable fan-out fails partway through (ADR-125).</p>
+        <p>Raised when a config fan-out to bucket items fails partway through.</p>
+<p>Two fan-outs raise this: the disable/enable stamp (ADR-125) and the
+limit-param sync that follows <code>set_limits</code>/<code>delete_limits</code> (#468,</p>
+<h4 id="zae_limiter.exceptions.FanoutIncomplete--487-both-share-the-same-hazard">487). Both share the same hazard.<a class="headerlink" href="#zae_limiter.exceptions.FanoutIncomplete--487-both-share-the-same-hazard" title="Permanent link">&para;</a></h4>
 <p>The config write lands before the fan-out begins, so a failure here
 leaves the table half-applied: the config item carries the new value,
-some bucket items are stamped to match and the rest still hold the old
-one. Unstamped buckets keep passing the speculative fast path, which
-tests <code>attribute_not_exists(#disabled)</code> on the bucket and never
-re-reads config.</p>
+some bucket items match and the rest still hold the old one. Stale
+buckets keep passing the speculative fast path, which tests
+<code>attribute_not_exists(#disabled)</code> and the bucket's own stored
+<code>cp</code>/<code>ra</code> and never re-reads config.</p>
 <p>Nothing reconciles this on its own. Buckets backed by entity-level
-custom limits carry no TTL, so a stale stamp persists until the same
+custom limits carry no TTL, so the drift persists until the same
 command is run again — which is safe to do, since both the config write
-and each stamp are idempotent.</p>
+and each bucket write are idempotent.</p>
 
 
 <p><span class="doc-section-title">Attributes:</span></p>
@@ -5342,7 +5379,7 @@ and each stamp are idempotent.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Resource being disabled or enabled, if scoped to one</p>
+                <p>Resource being changed, if scoped to one</p>
               </div>
             </td>
           </tr>
@@ -5352,7 +5389,7 @@ and each stamp are idempotent.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Entity being disabled or enabled, if scoped to one</p>
+                <p>Entity being changed, if scoped to one</p>
               </div>
             </td>
           </tr>
