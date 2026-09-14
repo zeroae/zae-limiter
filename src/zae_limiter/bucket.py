@@ -63,6 +63,12 @@ def refill_bucket(
     We track how much time we "used" for the refill to avoid drift
     from accumulated rounding errors.
 
+    The result is *always* clamped to ``capacity_milli``, including on the
+    paths that add no tokens. A bucket holding more than its ceiling — because
+    the ceiling shrank under it — is trimmed on the next pass rather than
+    keeping the surplus forever. Debt (negative tokens) is untouched: the
+    clamp is ``min()``, not a clamp into range.
+
     Args:
         tokens_milli: Current tokens in millitokens
         last_refill_ms: Last refill timestamp in epoch milliseconds
@@ -77,14 +83,18 @@ def refill_bucket(
     elapsed_ms = now_ms - last_refill_ms
 
     if elapsed_ms <= 0:
-        return RefillResult(tokens_milli, last_refill_ms)
+        # Clamp even with no elapsed time: a capacity that shrank under a full
+        # bucket — via set_limits, a schedule boundary, or a shard doubling —
+        # leaves a surplus that must not survive (#222 §3.3, replaces #469).
+        return RefillResult(min(capacity_milli, tokens_milli), last_refill_ms)
 
     # Integer division for tokens to add
     tokens_to_add = (elapsed_ms * refill_amount_milli) // refill_period_ms
 
     if tokens_to_add == 0:
-        # Not enough time has passed for even 1 millitoken
-        return RefillResult(tokens_milli, last_refill_ms)
+        # Not enough time has passed for even 1 millitoken — but still clamp,
+        # for the same reason as above.
+        return RefillResult(min(capacity_milli, tokens_milli), last_refill_ms)
 
     # Track how much time we "consumed" for this refill to avoid drift
     # This is the inverse: time_used = tokens_added * period / amount

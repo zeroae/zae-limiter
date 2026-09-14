@@ -69,6 +69,67 @@ class TestRefillBucket:
         assert result.new_tokens_milli == 0
 
 
+class TestUnconditionalClamp:
+    """A surplus over a lowered cap must not survive a pass that adds no tokens (#469)."""
+
+    def test_clamps_when_no_time_has_passed(self):
+        r = refill_bucket(
+            tokens_milli=900_000,
+            last_refill_ms=1000,
+            now_ms=1000,
+            capacity_milli=500_000,
+            refill_amount_milli=500_000,
+            refill_period_ms=60_000,
+        )
+        assert r.new_tokens_milli == 500_000
+        assert r.new_last_refill_ms == 1000
+
+    def test_clamps_when_elapsed_is_negative(self):
+        r = refill_bucket(
+            tokens_milli=900_000,
+            last_refill_ms=2000,
+            now_ms=1000,
+            capacity_milli=500_000,
+            refill_amount_milli=500_000,
+            refill_period_ms=60_000,
+        )
+        assert r.new_tokens_milli == 500_000
+
+    def test_clamps_when_elapsed_is_too_short_to_add_a_millitoken(self):
+        r = refill_bucket(
+            tokens_milli=900_000,
+            last_refill_ms=1000,
+            now_ms=1001,
+            capacity_milli=500_000,
+            refill_amount_milli=1,
+            refill_period_ms=60_000,
+        )
+        assert r.new_tokens_milli == 500_000
+
+    def test_does_not_disturb_a_bucket_already_at_or_below_capacity(self):
+        r = refill_bucket(
+            tokens_milli=100_000,
+            last_refill_ms=1000,
+            now_ms=1000,
+            capacity_milli=500_000,
+            refill_amount_milli=500_000,
+            refill_period_ms=60_000,
+        )
+        assert r.new_tokens_milli == 100_000
+
+    def test_leaves_debt_alone(self):
+        """Buckets go negative for post-hoc reconciliation; clamping is min(), not max()."""
+        r = refill_bucket(
+            tokens_milli=-50_000,
+            last_refill_ms=1000,
+            now_ms=1000,
+            capacity_milli=500_000,
+            refill_amount_milli=500_000,
+            refill_period_ms=60_000,
+        )
+        assert r.new_tokens_milli == -50_000
+
+
 class TestTryConsume:
     """Tests for try_consume function."""
 

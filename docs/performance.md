@@ -261,9 +261,11 @@ infrastructure limit tracks per-partition write pressure.
 **Shard-aware capacity:** The aggregator's refill, the client's slow-path refill and the
 client's shard creation all divide capacity and refill amount by `shard_count`, so each
 shard holds its proportional share and the entity admits at most its configured capacity
-per refill window in steady state. Shard 0 keeps its existing balance when `shard_count`
-doubles, so admitted capacity can transiently reach 1.5x for one refill window after the
-first doubling; it is never refilled above its new share.
+per refill window. A doubling does not rewrite shard 0's balance, but the refill
+calculation clamps tokens to the shard's share on every pass — including the passes that
+add no tokens — so shard 0 is trimmed to its new share by the next refiller to touch it
+(the client slow path, or the aggregator, which writes the trim as a negative delta).
+There is no transient above the configured capacity.
 
 **Works without the aggregator:** Deployments using `--no-aggregator` get the same
 write-sharding behaviour; the only difference is that each new shard costs one slow-path

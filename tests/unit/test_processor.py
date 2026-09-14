@@ -1305,6 +1305,103 @@ class TestTryRefillBucket:
         mock_table.update_item.assert_not_called()
 
 
+class TestNegativeRefillDelta:
+    """A bucket over its effective cap must be trimmed, not skipped (#222 §3.3, #469)."""
+
+    def test_writes_a_negative_delta_to_trim_a_surplus(self) -> None:
+        """A bucket holding more than its cap must be trimmed, not skipped."""
+        table = MagicMock()
+        state = BucketRefillState(
+            namespace_id="ns123",
+            entity_id="user-1",
+            resource="gpt-4",
+            shard_count=1,
+            rf_ms=1000,
+            limits={
+                "rpm": LimitRefillInfo(
+                    tc_delta=0,
+                    tk_milli=900_000,
+                    cp_milli=500_000,
+                    ra_milli=500_000,
+                    rp_ms=60_000,
+                )
+            },
+        )
+        assert try_refill_bucket(table, state, now_ms=1000) is True
+        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+        assert values[":rd_rpm"] == -400_000
+
+    def test_still_skips_when_nothing_to_do(self) -> None:
+        table = MagicMock()
+        state = BucketRefillState(
+            namespace_id="ns123",
+            entity_id="user-1",
+            resource="gpt-4",
+            shard_count=1,
+            rf_ms=1000,
+            limits={
+                "rpm": LimitRefillInfo(
+                    tc_delta=0,
+                    tk_milli=500_000,
+                    cp_milli=500_000,
+                    ra_milli=500_000,
+                    rp_ms=60_000,
+                )
+            },
+        )
+        assert try_refill_bucket(table, state, now_ms=1000) is False
+        table.update_item.assert_not_called()
+
+    def test_trims_against_the_per_shard_share(self) -> None:
+        """Effective cap is capacity // shard_count; trimming to the undivided
+        capacity would leave every shard holding the whole limit."""
+        table = MagicMock()
+        state = BucketRefillState(
+            namespace_id="ns123",
+            entity_id="user-1",
+            resource="gpt-4",
+            shard_count=4,
+            rf_ms=1000,
+            limits={
+                "rpm": LimitRefillInfo(
+                    tc_delta=0,
+                    tk_milli=400_000,
+                    cp_milli=800_000,
+                    ra_milli=800_000,
+                    rp_ms=60_000,
+                )
+            },
+        )
+        assert try_refill_bucket(table, state, now_ms=1000) is True
+        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+        assert values[":rd_rpm"] == -200_000  # 400_000 -> 800_000 // 4 == 200_000
+
+    def test_trim_is_not_gated_by_the_consumption_threshold(self) -> None:
+        """The positive-delta threshold (projected >= consumption estimate) must
+        not suppress a trim: a hot bucket has a large tc_delta, and that is
+        exactly where a shrink most needs to land."""
+        table = MagicMock()
+        state = BucketRefillState(
+            namespace_id="ns123",
+            entity_id="user-1",
+            resource="gpt-4",
+            shard_count=1,
+            rf_ms=1000,
+            limits={
+                "rpm": LimitRefillInfo(
+                    tc_delta=10_000_000,  # busy bucket
+                    tk_milli=900_000,
+                    cp_milli=500_000,
+                    ra_milli=500_000,
+                    rp_ms=60_000,
+                )
+            },
+        )
+        assert try_refill_bucket(table, state, now_ms=1000) is True
+        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+        assert values[":rd_rpm"] == -400_000
+
+
 class TestProcessStreamRecordsRefill:
     """Tests for refill integration in process_stream_records."""
 
