@@ -1077,6 +1077,12 @@ EOF
 
 **Why Task 6 alone is not enough.** `try_refill_bucket` computes `refill_delta = new - old` and skips on `refill_delta <= 0`. With Task 6's clamp the delta at a shrink is *negative*, so the aggregator silently skips the trim — and on a hot bucket the aggregator's whole job is to keep tokens topped up so the client slow path never runs. Without this change, a `set_limits` shrink never takes effect on exactly the buckets that matter.
 
+**Constructor note (verified against `processor.py:111`).** `BucketRefillState` requires
+`namespace_id` — it has no default and `try_refill_bucket` uses it to build the key, so a test
+that omits it fails with `TypeError` rather than an assertion. `LimitRefillInfo`'s field order is
+`tc_delta, tk_milli, cp_milli, ra_milli, rp_ms`. `table` is a boto3 **Table resource**, so
+`ExpressionAttributeValues` carries plain ints, not `{"N": "..."}`.
+
 **Why a negative `ADD` is safe.** Same commutativity argument as the positive case: the delta removes exactly `T0 − eff_cp`, and concurrent consumption subtracts independently. During a boundary window the fast path is blocked by `vu` (Task 10), so consumption is bounded by slow paths already using the new cap.
 
 - [ ] **Step 1: Write the failing test**
@@ -1087,7 +1093,7 @@ class TestNegativeRefillDelta:
         """A bucket holding more than its cap must be trimmed, not skipped."""
         table = MagicMock()
         state = BucketRefillState(
-            entity_id="user-1", resource="gpt-4", shard_count=1, rf_ms=1000,
+            namespace_id="ns123", entity_id="user-1", resource="gpt-4", shard_count=1, rf_ms=1000,
             limits={"rpm": LimitRefillInfo(
                 tk_milli=900_000, cp_milli=500_000, ra_milli=500_000,
                 rp_ms=60_000, tc_delta=0,
@@ -1100,7 +1106,7 @@ class TestNegativeRefillDelta:
     def test_still_skips_when_nothing_to_do(self):
         table = MagicMock()
         state = BucketRefillState(
-            entity_id="user-1", resource="gpt-4", shard_count=1, rf_ms=1000,
+            namespace_id="ns123", entity_id="user-1", resource="gpt-4", shard_count=1, rf_ms=1000,
             limits={"rpm": LimitRefillInfo(
                 tk_milli=500_000, cp_milli=500_000, ra_milli=500_000,
                 rp_ms=60_000, tc_delta=0,
@@ -1114,7 +1120,7 @@ class TestNegativeRefillDelta:
         capacity would leave every shard holding the whole limit."""
         table = MagicMock()
         state = BucketRefillState(
-            entity_id="user-1", resource="gpt-4", shard_count=4, rf_ms=1000,
+            namespace_id="ns123", entity_id="user-1", resource="gpt-4", shard_count=4, rf_ms=1000,
             limits={"rpm": LimitRefillInfo(
                 tk_milli=400_000, cp_milli=800_000, ra_milli=800_000,
                 rp_ms=60_000, tc_delta=0,
@@ -1182,386 +1188,1280 @@ EOF
 
 ### Task 8: `Limit.schedule` and config serialisation
 
-**Files:** Modify `src/zae_limiter/models.py`, `src/zae_limiter/repository.py` (config write ~4761, config read ~4794) · Test `tests/unit/test_repository.py`
+**Files:**
+- Modify: `src/zae_limiter/models.py` (`Limit` at :186), `src/zae_limiter/repository.py` (config write :4784-4790, config read :4817)
+- Test: `tests/unit/test_repository.py`
 
 **Interfaces:**
-- Consumes: `ScheduleEntry`, `encode`, `decode` (Tasks 1, 5)
-- Produces: `Limit.schedule: tuple[ScheduleEntry, ...] = ()`; config items carry `l_{name}_sched` plus one item-level `sched_tz`
+- Consumes: `ScheduleEntry` (Task 1), `encode` / `decode` (Task 5)
+- Produces: `Limit.schedule: tuple[ScheduleEntry, ...] = ()`; `Limit.with_schedule(schedule) -> Limit`; config items carry `l_{name}_sched` plus one item-level `sched_tz`
+
+**Fixture note:** `tests/unit/test_repository.py` uses the moto-backed **`repo`** fixture (`tests/unit/test_repository.py:24`), not `test_repo` — that name belongs to the LocalStack integration fixture in `tests/fixtures/repositories.py:76`.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
 class TestScheduleConfigRoundTrip:
-    async def test_schedule_survives_set_and_get(self, test_repo):
-        sched = (ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.5),)
-        await test_repo.set_limits(
-            "user-1", [Limit.per_minute("rpm", 1000).with_schedule(sched)], resource="gpt-4"
-        )
-        (limit,) = await test_repo.get_limits("user-1", resource="gpt-4")
-        assert limit.schedule == sched
+    """`l_{name}_sched` round-trips through set_limits/get_limits (§1.4)."""
 
-    async def test_limit_without_schedule_round_trips_as_empty(self, test_repo):
-        await test_repo.set_limits("user-1", [Limit.per_minute("rpm", 1000)], resource="gpt-4")
-        (limit,) = await test_repo.get_limits("user-1", resource="gpt-4")
+    SCHED = (ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.5),)
+
+    async def test_schedule_survives_set_and_get(self, repo):
+        await repo.set_limits(
+            "user-1",
+            [Limit.per_minute("rpm", 1000).with_schedule(self.SCHED)],
+            resource="gpt-4",
+        )
+        (limit,) = await repo.get_limits("user-1", resource="gpt-4")
+        assert limit.schedule == self.SCHED
+
+    async def test_limit_without_schedule_round_trips_as_empty(self, repo):
+        await repo.set_limits("user-1", [Limit.per_minute("rpm", 1000)], resource="gpt-4")
+        (limit,) = await repo.get_limits("user-1", resource="gpt-4")
         assert limit.schedule == ()
 
-    async def test_replacing_a_limit_without_a_schedule_removes_the_stored_one(self, test_repo):
-        """No inheritance and no merge: a limit with no schedule has no schedule (1.6)."""
-        sched = (ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.5),)
-        await test_repo.set_limits(
-            "user-1", [Limit.per_minute("rpm", 1000).with_schedule(sched)], resource="gpt-4"
+    async def test_replacing_a_limit_without_a_schedule_removes_the_stored_one(self, repo):
+        """Override, not merge: a limit with no schedule has no schedule (§1.6).
+
+        This is the test that catches a write path which merely *skips*
+        `l_{name}_sched` when the schedule is empty instead of REMOVEing it.
+        """
+        await repo.set_limits(
+            "user-1",
+            [Limit.per_minute("rpm", 1000).with_schedule(self.SCHED)],
+            resource="gpt-4",
         )
-        await test_repo.set_limits("user-1", [Limit.per_minute("rpm", 1000)], resource="gpt-4")
-        (limit,) = await test_repo.get_limits("user-1", resource="gpt-4")
+        await repo.set_limits("user-1", [Limit.per_minute("rpm", 1000)], resource="gpt-4")
+        (limit,) = await repo.get_limits("user-1", resource="gpt-4")
         assert limit.schedule == ()
+
+    async def test_two_limits_with_different_schedules(self, repo):
+        """Schedules are per-limit (§2.2); tz is shared, the crons need not be."""
+        night = (ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", capacity=2000),)
+        await repo.set_limits(
+            "user-1",
+            [
+                Limit.per_minute("rpm", 1000).with_schedule(self.SCHED),
+                Limit.per_minute("tpm", 100_000).with_schedule(night),
+            ],
+            resource="gpt-4",
+        )
+        by_name = {lim.name: lim for lim in await repo.get_limits("user-1", resource="gpt-4")}
+        assert by_name["rpm"].schedule == self.SCHED
+        assert by_name["tpm"].schedule == night
+
+
+class TestScheduleValidation:
+    def test_rejects_entries_disagreeing_on_timezone(self):
+        """`sched_tz` is one item-level attribute, so entries must agree (§4.1)."""
+        with pytest.raises(ValueError, match="timezone"):
+            Limit.per_minute("rpm", 1000).with_schedule(
+                (
+                    ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.5),
+                    ScheduleEntry(cron="* 0-6 * * *", tz="UTC", scale=0.5),
+                )
+            )
+
+    def test_with_schedule_returns_a_new_limit(self):
+        """`Limit` is frozen; `with_schedule` must not mutate."""
+        base = Limit.per_minute("rpm", 1000)
+        scheduled = base.with_schedule(
+            (ScheduleEntry(cron="* * * * *", tz="UTC", scale=0.5),)
+        )
+        assert base.schedule == ()
+        assert scheduled is not base
+        assert scheduled.capacity == base.capacity
 ```
 
-- [ ] **Step 2: Run it and watch it fail** — `uv run pytest tests/unit/test_repository.py -k Schedule -v`; expected `AttributeError: 'Limit' object has no attribute 'schedule'`
+- [ ] **Step 2: Run the test and watch it fail**
 
-- [ ] **Step 3: Implement**
+Run: `uv run pytest tests/unit/test_repository.py -k "ScheduleConfig or ScheduleValidation" -v`
+Expected: FAIL with `AttributeError: 'Limit' object has no attribute 'with_schedule'`
 
-Add to `Limit`: `schedule: tuple[ScheduleEntry, ...] = ()`, and a `with_schedule(self, schedule)` helper returning `replace(self, schedule=schedule)` — `Limit` is frozen and the factory methods (`per_minute`, `per_hour`, ...) do not take a schedule, so a helper keeps call sites readable. Extend `__post_init__` to reject a schedule whose entries disagree on `tz` (matching `encode`'s constraint, so an invalid combination fails at construction rather than at write).
+- [ ] **Step 3: Add the field and the helper**
 
-In the config **write** path, alongside `limit_attr(name, LIMIT_FIELD_CP)`: when `limit.schedule`, call `encode(limit.schedule)` and write `limit_attr(name, "sched")` plus the item-level `sched_tz`. When it is empty, **REMOVE** both rather than skipping — the third test above is the one that catches a skip.
+In `models.py`, add to `Limit` after `refill_period_seconds`:
 
-In the config **read** path, decode `l_{name}_sched` with the item's `sched_tz`.
+```python
+    schedule: tuple[ScheduleEntry, ...] = ()
+```
 
-- [ ] **Step 4: Run it and watch it pass**; then `hatch run generate-sync`
+Extend `Limit.__post_init__` with the shared-timezone rule, which mirrors `encode`'s constraint so an unstorable combination fails at construction rather than at write time:
 
-- [ ] **Step 5: Commit**
+```python
+        if self.schedule:
+            zones = {entry.tz for entry in self.schedule}
+            if len(zones) > 1:
+                raise ValueError(
+                    f"all schedule entries on one limit must share a timezone, got "
+                    f"{sorted(zones)}. The timezone is stored once per bucket item "
+                    f"as `sched_tz`, not per entry."
+                )
+```
+
+And the helper — the factory methods (`per_minute`, `per_hour`, …) do not take a schedule, and `Limit` is frozen, so this keeps call sites readable:
+
+```python
+    def with_schedule(self, schedule: tuple[ScheduleEntry, ...]) -> "Limit":
+        """This limit with a schedule attached (§1.1).
+
+        Returns a new instance; `Limit` is frozen. Validation runs through
+        `__post_init__`, so a schedule whose entries disagree on timezone is
+        rejected here rather than at the DynamoDB write.
+        """
+        return replace(self, schedule=schedule)
+```
+
+`replace` is already imported in `models.py` (it backs `per_shard`).
+
+- [ ] **Step 4: Write and read the config attribute**
+
+In `repository.py`'s config **write** path, alongside the existing `limit_attr` block at :4784:
+
+```python
+            if limit.schedule:
+                compact, tz = schedule.encode(limit.schedule)
+                base_item[schema.limit_attr(name, schema.LIMIT_FIELD_SCHED)] = {"S": compact}
+                base_item[schema.CONFIG_FIELD_SCHED_TZ] = {"S": tz or "UTC"}
+```
+
+An empty schedule must **REMOVE** rather than skip — a config item is written with `put_item`, so an omitted attribute already disappears; confirm that against the write path you are editing, and if the level uses `update_item` instead, add the explicit REMOVE. `test_replacing_a_limit_without_a_schedule_removes_the_stored_one` is what distinguishes the two.
+
+In the config **read** path at :4817, after the numeric fields are collected:
+
+```python
+        sched_attr = item.get(schema.limit_attr(name, schema.LIMIT_FIELD_SCHED), {}).get("S")
+        sched = (
+            schedule.decode(sched_attr, item.get(schema.CONFIG_FIELD_SCHED_TZ, {}).get("S", "UTC"))
+            if sched_attr
+            else ()
+        )
+```
+
+Add to `schema.py` beside the existing `LIMIT_FIELD_*` constants at :96-98:
+
+```python
+LIMIT_FIELD_SCHED = "sched"  # compact-encoded schedule (§4.1)
+CONFIG_FIELD_SCHED_TZ = "sched_tz"  # IANA name, hoisted out of every entry
+```
+
+- [ ] **Step 5: Run the test and watch it pass**
+
+Run: `uv run pytest tests/unit/test_repository.py -k "ScheduleConfig or ScheduleValidation" -v`
+Expected: PASS (6 tests)
+
+- [ ] **Step 6: Regenerate sync, lint, type check**
 
 ```bash
+hatch run generate-sync
 uv run ruff check --fix . && uv run ruff format . && uv run mypy
-git add -A && git commit -m "✨ feat(models): carry a schedule on Limit and persist it
+uv run pytest tests/unit/ -q
+```
 
-Refs #222"
+- [ ] **Step 7: Commit**
+
+```bash
+git add -A
+git commit -m "$(cat <<'EOF'
+✨ feat(models): carry a schedule on Limit and persist it
+
+Limit gains `schedule` plus a `with_schedule()` helper, stored as
+`l_{name}_sched` with the timezone hoisted to one item-level `sched_tz`.
+
+Entries on one limit must share a timezone — the encoding stores it once
+per item, so a disagreeing pair is unstorable and is rejected at
+construction rather than at the write.
+
+Refs #222
+EOF
+)"
 ```
 
 ---
 
 ### Task 9: `BucketState.sched`; effective params become time-dependent
 
-**Files:** Modify `src/zae_limiter/models.py` (properties at 494-527), `src/zae_limiter/bucket.py` (9 call sites), `src/zae_limiter/lease.py:689` · Test `tests/unit/test_bucket.py`
+**Files:**
+- Modify: `src/zae_limiter/models.py` (`BucketState` at :464, the three properties at :504-527), `src/zae_limiter/bucket.py` (10 attribute references across 5 functions), `src/zae_limiter/lease.py` (`_build_retry_failure_statuses` at :673, its `retry_refill_amount_milli` use at :688)
+- Test: `tests/unit/test_bucket.py`
 
 **Interfaces:**
-- Consumes: `effective_params` (Task 3)
+- Consumes: `effective_params` (Task 3), `ScheduleEntry` (Task 1)
 - Produces: `BucketState.sched`; `effective_capacity_milli(now_ms)`, `effective_refill_amount_milli(now_ms)`, `retry_refill_amount_milli(now_ms)` as **methods**
 
 **Order is scale-then-shard-divide.** The schedule applies to the whole limit; shards split the result.
 
+**`BucketState` requires `entity_id`, `resource` and `limit_name`** (`models.py:476-478`) — they have no defaults. Every construction below supplies them; a test that omits them fails with `TypeError`, not an assertion.
+
 - [ ] **Step 1: Write the failing test**
 
 ```python
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from zae_limiter.models import BucketState
+from zae_limiter.schedule import ScheduleEntry
+
+NY = ZoneInfo("America/New_York")
+TUE_1400 = int(datetime(2026, 9, 15, 14, 0, tzinfo=NY).timestamp() * 1000)  # inside 9-17
+TUE_0300 = int(datetime(2026, 9, 15, 3, 0, tzinfo=NY).timestamp() * 1000)   # outside
+
+
+def _state(**kwargs) -> BucketState:
+    """A BucketState with the three required identity fields filled in."""
+    base = dict(
+        entity_id="user-1",
+        resource="gpt-4",
+        limit_name="rpm",
+        tokens_milli=0,
+        last_refill_ms=0,
+        capacity_milli=1_000_000,
+        refill_amount_milli=1_000_000,
+        refill_period_ms=60_000,
+    )
+    base.update(kwargs)
+    return BucketState(**base)
+
+
+BUSINESS = (ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.5),)
+
+
 class TestScheduledEffectiveParams:
     def test_scale_applies_before_shard_division(self):
-        """Dividing first then scaling would compound the flooring differently."""
-        state = BucketState(
-            limit_name="rpm", tokens_milli=0, capacity_milli=1_000_000,
-            refill_amount_milli=1_000_000, refill_period_ms=60_000, last_refill_ms=0,
-            shard_count=4,
-            sched=(ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.5),),
-        )
-        assert state.effective_capacity_milli(TUE_1400) == 125_000    # (1_000_000*0.5)//4
-        assert state.effective_capacity_milli(TUE_0300) == 250_000    # base//4, no match
+        """Scale then divide: the schedule applies to the whole limit, shards
+        split the result. Dividing first would floor twice against a smaller
+        numerator and drift."""
+        state = _state(shard_count=4, sched=BUSINESS)
+        assert state.effective_capacity_milli(TUE_1400) == 125_000   # (1_000_000*0.5)//4
+        assert state.effective_capacity_milli(TUE_0300) == 250_000   # 1_000_000//4, no match
 
-    def test_unscheduled_state_is_unchanged(self):
-        state = BucketState(
-            limit_name="rpm", tokens_milli=0, capacity_milli=1_000_000,
-            refill_amount_milli=1_000_000, refill_period_ms=60_000, last_refill_ms=0,
-            shard_count=1,
-        )
+    def test_refill_scales_with_capacity(self):
+        state = _state(shard_count=1, sched=BUSINESS)
+        assert state.effective_refill_amount_milli(TUE_1400) == 500_000
+        assert state.effective_refill_amount_milli(TUE_0300) == 1_000_000
+
+    def test_unscheduled_state_is_unchanged_at_any_instant(self):
+        state = _state(shard_count=1)
+        assert state.effective_capacity_milli(TUE_1400) == 1_000_000
+        assert state.effective_capacity_milli(TUE_0300) == 1_000_000
+
+    def test_absolute_entry_overrides_capacity(self):
+        night = (ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", capacity=2000),)
+        state = _state(shard_count=1, sched=night)
+        assert state.effective_capacity_milli(TUE_0300) == 2_000_000
         assert state.effective_capacity_milli(TUE_1400) == 1_000_000
 
     def test_retry_rate_falls_back_to_the_undivided_scheduled_rate(self):
-        """A share that floors to 0 has no finite wait; fall back to the
-        scheduled-but-undivided rate, not the base rate."""
-        state = BucketState(
-            limit_name="rpm", tokens_milli=0, capacity_milli=1_000_000,
-            refill_amount_milli=1_000, refill_period_ms=60_000, last_refill_ms=0,
-            shard_count=1024,
-            sched=(ScheduleEntry(cron="* * * * *", scale=0.5),),
-        )
+        """A share that floors to 0 has no finite wait. Fall back to the
+        *scheduled* undivided rate — falling back to the base rate would quote
+        a speed nothing in the system refills at during the window."""
+        state = _state(refill_amount_milli=1_000, shard_count=1024, sched=BUSINESS)
         assert state.effective_refill_amount_milli(TUE_1400) == 0
-        assert state.retry_refill_amount_milli(TUE_1400) == 500
+        assert state.retry_refill_amount_milli(TUE_1400) == 500   # 1_000*0.5, undivided
+
+    def test_retry_rate_uses_the_share_when_it_is_non_zero(self):
+        state = _state(shard_count=2, sched=BUSINESS)
+        assert state.retry_refill_amount_milli(TUE_1400) == 250_000
 ```
 
-- [ ] **Step 2: Run it and watch it fail** — `TypeError: 'int' object is not callable`
+- [ ] **Step 2: Run the test and watch it fail**
 
-- [ ] **Step 3: Implement.** Add `sched: tuple[ScheduleEntry, ...] = ()` to `BucketState`. Convert the three properties to methods:
+Run: `uv run pytest tests/unit/test_bucket.py -k ScheduledEffectiveParams -v`
+Expected: FAIL with `TypeError: BucketState.__init__() got an unexpected keyword argument 'sched'`
+
+- [ ] **Step 3: Convert the properties to methods**
+
+Add to `BucketState` after `shard_count` at :492:
+
+```python
+    # Compact-encoded schedule decoded from the bucket item (§4.1). Empty for
+    # an unscheduled bucket, which is the overwhelming majority — the effective
+    # methods below then return the stored values unchanged.
+    sched: tuple[ScheduleEntry, ...] = ()
+```
+
+Replace the three properties at :504-527:
 
 ```python
     def effective_capacity_milli(self, now_ms: int) -> int:
         """This shard's share of the capacity in force at ``now_ms``.
 
-        Scale first, divide second: the schedule applies to the whole limit
-        and shards split the result (2.1).
+        Scale first, divide second (§2.1): the schedule applies to the whole
+        limit and the shards split the result.
         """
         cp, _ra, _rp = effective_params(
-            self.capacity_milli, self.refill_amount_milli, self.refill_period_ms,
-            self.sched, now_ms,
+            self.capacity_milli,
+            self.refill_amount_milli,
+            self.refill_period_ms,
+            self.sched,
+            now_ms,
         )
         return cp // self.shard_count
+
+    def effective_refill_amount_milli(self, now_ms: int) -> int:
+        """This shard's share of the refill in force at ``now_ms``."""
+        _cp, ra, _rp = effective_params(
+            self.capacity_milli,
+            self.refill_amount_milli,
+            self.refill_period_ms,
+            self.sched,
+            now_ms,
+        )
+        return ra // self.shard_count
+
+    def retry_refill_amount_milli(self, now_ms: int) -> int:
+        """Refill rate for a "seconds until available" estimate at ``now_ms``.
+
+        ``effective_refill_amount_milli`` floors to 0 for a slow refill on a
+        heavily sharded bucket, and a rate of 0 has no finite wait. Fall back
+        to the *scheduled but undivided* rate — not the base rate, which
+        during a ``scale`` window is a speed nothing refills at.
+        """
+        share = self.effective_refill_amount_milli(now_ms)
+        if share:
+            return share
+        _cp, ra, _rp = effective_params(
+            self.capacity_milli,
+            self.refill_amount_milli,
+            self.refill_period_ms,
+            self.sched,
+            now_ms,
+        )
+        return ra
 ```
 
-`effective_refill_amount_milli` mirrors it on `ra`. `retry_refill_amount_milli(now_ms)` returns `self.effective_refill_amount_milli(now_ms) or <the undivided scheduled ra>` — note it must fall back to the **scheduled** undivided rate, not `self.refill_amount_milli`, or the estimate quotes a rate no shard refills at.
+`models.py` must now import `effective_params` and `ScheduleEntry` from `.schedule`. That direction is safe: `schedule.py` imports nothing from `models` (Task 1).
 
-Thread `now_ms` through all 9 `bucket.py` call sites (every enclosing function already takes it) and through `lease.py`'s `_build_retry_failure_statuses`, which needs `now_ms` added to its signature and supplied by its caller.
+- [ ] **Step 4: Thread `now_ms` through every caller**
 
-- [ ] **Step 4: Run `uv run pytest tests/unit/ -q`**, fix fallout, `hatch run generate-sync`
+In `bucket.py`, all ten attribute references become calls. Each enclosing function already has `now_ms` in scope:
 
-- [ ] **Step 5: Commit** — `♻️ refactor(models): make effective bucket params a function of time`
+| Line | Function | Change |
+|---|---|---|
+| 124, 125 | `try_consume` | `state.effective_capacity_milli(now_ms)`, `…refill_amount_milli(now_ms)` |
+| 147 | `try_consume` | `state.retry_refill_amount_milli(now_ms)` |
+| 210, 211 | `calculate_available` | same two |
+| 237, 238 | `calculate_time_until_available` | same two |
+| 249 | `calculate_time_until_available` | `retry_refill_amount_milli(now_ms)` |
+| 277, 278 | `force_consume` | same two |
+
+In `lease.py`, `_build_retry_failure_statuses` (:673) has no clock. Add one:
+
+```python
+def _build_retry_failure_statuses(
+    entries: list[LeaseEntry], now_ms: int
+) -> list[LimitStatus]:
+```
+
+and change :688 to `entry.state.retry_refill_amount_milli(now_ms)`. Its caller must pass the slow path's single reading — the same one Task 12 threads — not a fresh `self.repository._now_ms()`, or the status quotes a different instant than the rejection it describes.
+
+- [ ] **Step 5: Run the test and watch it pass, then the whole suite**
+
+```bash
+uv run pytest tests/unit/test_bucket.py -k ScheduledEffectiveParams -v
+uv run pytest tests/unit/ -q
+uv run pytest tests/unit/ -m gevent -n 0 -q
+```
+
+Expect fallout anywhere a test constructs a `BucketState` and reads the old properties. Those call sites become calls; the values are unchanged for an unscheduled bucket, so any test whose expectation *changes* is a signal to stop and look rather than to edit the number.
+
+- [ ] **Step 6: Regenerate sync, lint, type check, commit**
+
+```bash
+hatch run generate-sync
+uv run ruff check --fix . && uv run ruff format . && uv run mypy
+git add -A
+git commit -m "$(cat <<'EOF'
+♻️ refactor(models): make effective bucket params a function of time
+
+effective_capacity_milli, effective_refill_amount_milli and
+retry_refill_amount_milli become methods taking now_ms, because with a
+schedule the effective value depends on when you ask.
+
+Order is scale-then-shard-divide: the schedule applies to the whole
+limit and the shards split the result.
+
+Refs #222
+EOF
+)"
+```
 
 ---
 
 ### Task 10: Rejections quote the scheduled capacity
 
-**Files:** Modify `src/zae_limiter/models.py` (`Limit.per_shard` 366, `from_bucket_state` 357) · Test `tests/unit/test_models.py`
+**Files:**
+- Modify: `src/zae_limiter/models.py` (`from_bucket_state` :357, `per_shard` :366)
+- Test: `tests/unit/test_models.py`
+
+**Interfaces:**
+- Consumes: `BucketState.effective_*` methods (Task 9)
+- Produces: `Limit.from_bucket_state(state, now_ms) -> Limit`
+
+A rejection during a `0.5x` window must not promise the base capacity (#475).
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-def test_rate_limit_exceeded_quotes_the_scheduled_capacity():
-    """During a 0.5x window, a rejection must not promise the base capacity (#475)."""
-    state = BucketState(
-        limit_name="rpm", tokens_milli=0, capacity_milli=1_000_000,
-        refill_amount_milli=1_000_000, refill_period_ms=60_000, last_refill_ms=0,
-        shard_count=1,
-        sched=(ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.5),),
-    )
-    assert Limit.from_bucket_state(state, now_ms=TUE_1400).capacity == 500
-    assert Limit.from_bucket_state(state, now_ms=TUE_0300).capacity == 1000
+class TestScheduledStatusCapacity:
+    def test_quotes_the_scheduled_capacity_inside_the_window(self):
+        state = _state(shard_count=1, sched=BUSINESS)
+        assert Limit.from_bucket_state(state, now_ms=TUE_1400).capacity == 500
+        assert Limit.from_bucket_state(state, now_ms=TUE_0300).capacity == 1000
+
+    def test_shard_division_is_not_applied_twice(self):
+        """`effective_capacity_milli` already divides by shard_count, so
+        `from_bucket_state` must not also call `per_shard`."""
+        state = _state(shard_count=4, sched=BUSINESS)
+        assert Limit.from_bucket_state(state, now_ms=TUE_1400).capacity == 125
+
+    def test_unscheduled_matches_the_previous_behaviour(self):
+        state = _state(shard_count=4)
+        assert Limit.from_bucket_state(state, now_ms=TUE_1400).capacity == 250
+
+    def test_sub_token_share_clamps_to_one(self):
+        """`Limit` validates capacity > 0, so a share that floors to 0 must
+        clamp rather than raise from inside an error path."""
+        state = _state(capacity_milli=1_000, shard_count=32, sched=BUSINESS)
+        assert Limit.from_bucket_state(state, now_ms=TUE_1400).capacity == 1
 ```
 
-- [ ] **Step 2: Watch it fail** — `TypeError: from_bucket_state() got an unexpected keyword argument 'now_ms'`
+- [ ] **Step 2: Run the test and watch it fail**
 
-- [ ] **Step 3: Implement.** `from_bucket_state(cls, state, now_ms)` builds from `state.effective_capacity_milli(now_ms)` / `effective_refill_amount_milli(now_ms)` — which already include the shard division, so it must **not** also call `per_shard`. Update every call site (grep `from_bucket_state`) to pass `now_ms`.
+Run: `uv run pytest tests/unit/test_models.py -k ScheduledStatusCapacity -v`
+Expected: FAIL with `TypeError: from_bucket_state() got an unexpected keyword argument 'now_ms'`
 
-- [ ] **Step 4: Run, regenerate sync, commit** — `🐛 fix(models): report scheduled capacity in rate-limit errors`
+- [ ] **Step 3: Implement**
+
+```python
+    @classmethod
+    def from_bucket_state(cls, state: "BucketState", now_ms: int) -> "Limit":
+        """Reconstruct a Limit from BucketState as that shard sees it *now*.
+
+        ``effective_*`` already divides by ``shard_count``, so this must NOT
+        also call ``per_shard`` — doing both divides twice. Shares clamp to one
+        whole token because ``Limit`` validates ``capacity > 0`` and this runs
+        on the rejection path, where raising would mask the real error.
+        """
+        return cls.custom(
+            name=state.limit_name,
+            capacity=max(1, state.effective_capacity_milli(now_ms) // 1000),
+            refill_amount=max(1, state.effective_refill_amount_milli(now_ms) // 1000),
+            refill_period_seconds=state.refill_period_ms // 1000,
+        )
+```
+
+`per_shard` stays as it is — it is still used where a `Limit` (not a `BucketState`) is the input, on the slow path and in the lease statuses. Update every `from_bucket_state` call site to pass `now_ms`:
+
+```bash
+rg -n "from_bucket_state" src/ tests/ --glob '!sync_*' --glob '!test_sync_*'
+```
+
+- [ ] **Step 4: Run, regenerate sync, commit**
+
+```bash
+uv run pytest tests/unit/ -q
+hatch run generate-sync
+uv run ruff check --fix . && uv run ruff format . && uv run mypy
+git add -A
+git commit -m "$(cat <<'EOF'
+🐛 fix(models): report the scheduled capacity in rate-limit errors
+
+from_bucket_state now takes now_ms, so a rejection during a scale window
+quotes the capacity that actually rejected it rather than the base.
+
+Refs #222, #475
+EOF
+)"
+```
 
 ---
 
 ### Task 11: `vu` joins the fast-path condition
 
-**Files:** Modify `src/zae_limiter/repository.py` (condition build ~2600-2620, classification ~2660-2715), `src/zae_limiter/repository_protocol.py:28` · Test `tests/unit/test_repository.py`
+**Files:**
+- Modify: `src/zae_limiter/schema.py` (beside `BUCKET_FIELD_*` at :63-68), `src/zae_limiter/repository_protocol.py` (`SpeculativeFailureReason` at :28), `src/zae_limiter/repository.py` (`_speculative_consume_single` condition build :2628-2639, failure classification :2694-2704), `src/zae_limiter/limiter.py` (failure-reason routing)
+- Test: `tests/unit/test_repository.py`
 
-**Interfaces:** Produces `SpeculativeFailureReason.SCHEDULE_BOUNDARY`
+**Interfaces:**
+- Consumes: nothing from earlier tasks — `vu` is written by Tasks 12 and 13
+- Produces: `SpeculativeFailureReason.SCHEDULE_BOUNDARY`; `schema.BUCKET_FIELD_VU`
 
-**Ordering matters.** An expired `vu` must be classified **before** the exhausted reasons, exactly as `DISABLED` is at `repository.py:2672` — otherwise an expired window looks like a rejection and the limiter raises `RateLimitExceeded` instead of re-materialising.
+**Use the bound `now_ms`, never `self._now_ms()`.** Post-#430, `_speculative_consume_single` takes `now_ms: int | None = None` and binds it once (`repository.py:2552`); both existing clock-derived parts — the `ttl` stamp at :2623 and the `#ttl > :now_epoch` guard at :2630 — already derive from it. The `vu` comparison is a third, and calling `self._now_ms()` here would re-introduce exactly the extra reading #430 removed and break `TestClockSeam::test_acquire_reads_the_clock_once`.
+
+**Ordering matters.** An expired `vu` must be classified **before** the exhausted reasons, exactly as `DISABLED` is at :2695 — otherwise an expired window looks like a rejection and the limiter raises `RateLimitExceeded` instead of re-materialising.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
 class TestScheduleBoundaryClassification:
-    async def test_expired_vu_classifies_as_schedule_boundary(self, test_repo):
-        ...  # create a bucket, then set vu into the past directly
-        result = await test_repo.speculative_consume("user-1", "gpt-4", {"rpm": 1})
+    """`vu` gates the fast path; an expired one routes to the slow path (§2.1)."""
+
+    LIMITS = [Limit.per_minute("rpm", 100)]
+
+    async def _make_bucket(self, repo, entity_id="vu-1"):
+        await repo.create_entity(entity_id, parent_id=None, name=entity_id)
+        await repo.set_limits(entity_id, self.LIMITS, resource="gpt-4")
+        await repo.speculative_consume(entity_id, "gpt-4", {"rpm": 1})
+        return entity_id
+
+    async def _set_vu(self, repo, entity_id, vu_ms):
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, "gpt-4", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="SET #vu = :vu",
+            ExpressionAttributeNames={"#vu": schema.BUCKET_FIELD_VU},
+            ExpressionAttributeValues={":vu": {"N": str(vu_ms)}},
+        )
+
+    async def test_expired_vu_classifies_as_schedule_boundary(self, repo):
+        entity_id = await self._make_bucket(repo)
+        await self._set_vu(repo, entity_id, repo._now_ms() - 1)
+
+        result = await repo.speculative_consume(entity_id, "gpt-4", {"rpm": 1})
+        assert result.success is False
         assert result.failure_reason is SpeculativeFailureReason.SCHEDULE_BOUNDARY
 
-    async def test_schedule_boundary_wins_over_exhausted(self, test_repo):
-        """An empty bucket whose vu also expired must re-materialise, not reject."""
-        ...  # drain the bucket AND expire vu
-        result = await test_repo.speculative_consume("user-1", "gpt-4", {"rpm": 1})
+    async def test_schedule_boundary_wins_over_exhausted(self, repo):
+        """An empty bucket whose `vu` also expired must re-materialise, not
+        reject — otherwise the caller sees RateLimitExceeded against a limit
+        that may have just been raised."""
+        entity_id = await self._make_bucket(repo, "vu-drained")
+        await repo.speculative_consume(entity_id, "gpt-4", {"rpm": 99})
+        await self._set_vu(repo, entity_id, repo._now_ms() - 1)
+
+        result = await repo.speculative_consume(entity_id, "gpt-4", {"rpm": 1})
         assert result.failure_reason is SpeculativeFailureReason.SCHEDULE_BOUNDARY
 
-    async def test_future_vu_does_not_affect_the_fast_path(self, test_repo):
-        result = await test_repo.speculative_consume("user-1", "gpt-4", {"rpm": 1})
+    async def test_future_vu_does_not_affect_the_fast_path(self, repo):
+        entity_id = await self._make_bucket(repo, "vu-future")
+        await self._set_vu(repo, entity_id, repo._now_ms() + 3_600_000)
+
+        result = await repo.speculative_consume(entity_id, "gpt-4", {"rpm": 1})
         assert result.success is True
 
-    async def test_absent_vu_does_not_affect_the_fast_path(self, test_repo):
-        """Unscheduled buckets carry no vu at all."""
-        result = await test_repo.speculative_consume("user-1", "gpt-4", {"rpm": 1})
+    async def test_absent_vu_does_not_affect_the_fast_path(self, repo):
+        """Unscheduled buckets carry no `vu` at all — the overwhelming case."""
+        entity_id = await self._make_bucket(repo, "vu-absent")
+        result = await repo.speculative_consume(entity_id, "gpt-4", {"rpm": 1})
         assert result.success is True
+
+
+class TestScheduleBoundaryUsesOneClockReading:
+    """The `vu` comparison must reuse the bound `now_ms` (#430)."""
+
+    async def test_adding_vu_does_not_add_a_clock_reading(self, repo):
+        await repo.create_entity("vu-clock", parent_id=None, name="vu-clock")
+        await repo.set_limits("vu-clock", [Limit.per_minute("rpm", 100)], resource="gpt-4")
+        await repo.speculative_consume("vu-clock", "gpt-4", {"rpm": 1})
+
+        readings: list[int] = []
+        base = repo._now_ms()
+
+        def fake_now_ms() -> int:
+            readings.append(base + 60_000 * len(readings))
+            return readings[-1]
+
+        repo._now_ms = fake_now_ms
+        await repo.speculative_consume("vu-clock", "gpt-4", {"rpm": 1})
+
+        assert len(readings) == 1, (
+            f"speculative_consume read the clock {len(readings)} times: {readings}"
+        )
 ```
 
-- [ ] **Step 2: Watch it fail** — `AttributeError: SCHEDULE_BOUNDARY`
+- [ ] **Step 2: Run the test and watch it fail**
 
-- [ ] **Step 3: Implement.** Add `SCHEDULE_BOUNDARY = "schedule_boundary"` to both `SpeculativeFailureReason` enums (async and generated sync). Beside the existing `disabled` guard:
+Run: `uv run pytest tests/unit/test_repository.py -k ScheduleBoundary -v`
+Expected: FAIL with `AttributeError: BUCKET_FIELD_VU` (the helper touches it first)
+
+- [ ] **Step 3: Add the constant and the enum member**
+
+In `schema.py`, beside the other bucket fields at :63-68:
 
 ```python
-        # Reject a bucket whose schedule window has closed (2.1). The fast
+BUCKET_FIELD_VU = "vu"  # valid-until, epoch ms — schedule materialisation stamp (§2.1)
+```
+
+In `repository_protocol.py`, add to `SpeculativeFailureReason` after `BUCKET_MISSING` (:40) and extend the class docstring:
+
+```python
+    SCHEDULE_BOUNDARY = "schedule_boundary"
+```
+
+> SCHEDULE_BOUNDARY means the item's `vu` has passed, so `tk` was last
+> materialised under schedule parameters that no longer apply. The limiter
+> must take the slow path to re-materialise — not retry on another shard,
+> which cannot help and would create a shard needlessly.
+
+The generated `sync_repository_protocol.py` picks this up from `hatch run generate-sync`.
+
+- [ ] **Step 4: Add the condition and the classification**
+
+In `_speculative_consume_single`, immediately after the `disabled` guard at :2636-2639:
+
+```python
+        # Reject a bucket whose schedule window has closed (§2.1). The fast
         # path cannot evaluate a schedule, so `vu` is a precomputed instant:
-        # past it, tk was materialised under params that no longer apply.
+        # past it, `tk` was materialised under parameters that no longer apply.
+        # Uses the bound `now_ms` — a fresh read here would re-introduce the
+        # second clock reading #430 removed.
         attr_names["#vu"] = schema.BUCKET_FIELD_VU
-        attr_values[":now_ms"] = {"N": str(self._now_ms())}
-        condition_parts.append("(attribute_not_exists(#vu) OR #vu > :now_ms)")
+        attr_values[":vu_now"] = {"N": str(now_ms)}
+        condition_parts.append("(attribute_not_exists(#vu) OR #vu > :vu_now)")
 ```
 
-In the failure branch, immediately after the `DISABLED` check and **before** the exhausted classification:
+In the failure branch, between the `DISABLED` return (ends :2704) and the exhausted classification:
 
 ```python
-                    vu = old_item.get(schema.BUCKET_FIELD_VU, {}).get("N")
-                    if vu is not None and int(vu) <= self._now_ms():
+                    # A closed window outranks exhaustion: the limits that
+                    # rejected this write are stale, and the new window may
+                    # admit it. Must precede the exhausted checks.
+                    vu_raw = old_item.get(schema.BUCKET_FIELD_VU, {}).get("N")
+                    if vu_raw is not None and int(vu_raw) <= now_ms:
                         return SpeculativeResult(
-                            success=False, old_buckets=old_buckets,
-                            cascade=old_cascade, parent_id=old_parent_id,
-                            shard_id=shard_id, shard_count=old_shard_count,
+                            success=False,
+                            old_buckets=old_buckets,
+                            cascade=old_cascade,
+                            parent_id=old_parent_id,
+                            shard_id=shard_id,
+                            shard_count=old_shard_count,
                             failure_reason=SpeculativeFailureReason.SCHEDULE_BOUNDARY,
                         )
 ```
 
-Add `BUCKET_FIELD_VU = "vu"` to `schema.py`. In `limiter.py`, route `SCHEDULE_BOUNDARY` to the slow path — the same branch `BUCKET_MISSING` takes, **not** a shard retry: resharding cannot help and would create a shard needlessly.
+In `limiter.py`, route `SCHEDULE_BOUNDARY` to the slow path — the branch `BUCKET_MISSING` already takes. Find it with `rg -n "BUCKET_MISSING" src/zae_limiter/limiter.py`. Do **not** route it to a shard retry.
 
-- [ ] **Step 4: Run, regenerate sync, commit** — `✨ feat(repository): gate the fast path on the schedule valid-until stamp`
+- [ ] **Step 5: Run the test and watch it pass**
+
+```bash
+uv run pytest tests/unit/test_repository.py -k ScheduleBoundary -v
+uv run pytest tests/unit/test_limiter.py -k ClockSeam -v   # must stay green
+uv run pytest tests/unit/ -q
+```
+
+- [ ] **Step 6: Regenerate sync, lint, commit**
+
+```bash
+hatch run generate-sync
+uv run ruff check --fix . && uv run ruff format . && uv run mypy
+git add -A
+git commit -m "$(cat <<'EOF'
+✨ feat(repository): gate the fast path on the schedule valid-until stamp
+
+The speculative condition gains one comparison against `vu`. It reuses
+the bound now_ms rather than reading the clock again (#430), so a
+scheduled acquire still observes exactly one instant per write.
+
+An expired `vu` classifies as SCHEDULE_BOUNDARY *before* the exhausted
+reasons — otherwise a closed window looks like a rejection and the
+caller sees RateLimitExceeded against limits that no longer apply.
+
+Refs #222
+EOF
+)"
+```
 
 ---
 
 ### Task 12: Slow-path materialisation
 
-**Files:** Modify `src/zae_limiter/repository.py` (`build_composite_normal` 2170), `src/zae_limiter/lease.py` (~377-393) · Test `tests/unit/test_lease.py`
+**Files:**
+- Modify: `src/zae_limiter/repository.py` (`build_composite_normal` :2175, `build_composite_create` :2078), `src/zae_limiter/lease.py` (refill-amount computation :383, `_commit_initial`)
+- Test: `tests/unit/test_repository.py`, `tests/unit/test_lease.py`
 
-**One instant drives the whole slow-path pass — and it is the slow path's own.** #430 makes
-one `acquire()` observe one clock *on the fast path*; `_do_acquire` and `_try_parent_only_acquire`
-still take their own reading, and that is correct rather than an oversight. Inheriting the fast
-path's instant across a `BatchGetItem` and a transaction would stamp `rf` in the past and
-under-refill by the round-trip time. What matters is that the slow path's single reading drives
-**all three** of `effective_params(...)`, `next_boundary(...)` and the `rf` stamp in
-`build_composite_normal`. Splitting them is what issue #430 names as "an inconsistent `(rf, vu)`
-pair the next reader cannot trust" — thread one `now_ms` from `_do_acquire` through `lease.py`
-into the builder, and assert it with a test that patches `_now_ms` to a per-call counter and
-checks `rf` and `vu` derive from the same reading.
+**Interfaces:**
+- Consumes: `next_boundary` (Task 4), `BucketState.effective_*` (Task 9)
+- Produces: `build_composite_normal(..., vu: int | None = None)`, `build_composite_create(..., vu: int | None = None)`
 
-A related non-hazard, recorded so nobody re-derives it: a boundary crossing *between* the fast
-path's rejection and the slow path's read is harmless. The slow path reads later, so it evaluates
-the new window — never the old one.
+**One instant drives the whole slow-path pass — and it is the slow path's own.** #430 makes one `acquire()` observe one clock *per write*; `_do_acquire` and `_try_parent_only_acquire` still take their own reading, and that is correct. Inheriting the fast path's instant across a `BatchGetItem` and a transaction would stamp `rf` in the past and under-refill by the round-trip time. What matters is that the slow path's single reading drives **all three** of `effective_params(...)`, `next_boundary(...)` and the `rf` stamp. Splitting them is what #430 calls "an inconsistent `(rf, vu)` pair the next reader cannot trust".
 
-**The clamp is already handled — do not add a second one.** `lease.py:384` computes `refill_amounts[name] = entry.state.tokens_milli - entry._original_tokens_milli + consumed_milli`, a *delta* from the already-refilled state. Once Task 6 clamps inside `refill_bucket`, that delta goes negative on a surplus and `ADD tk (delta - consumed)` trims correctly. Adding an explicit clamp here would double-apply it.
+A related non-hazard, recorded so nobody re-derives it: a boundary crossed *between* the fast path's rejection and the slow path's read is harmless. The slow path reads later, so it evaluates the new window — never the old one.
+
+**The clamp is already handled — do not add a second one.** `lease.py:383` computes `refill_amounts[name] = entry.state.tokens_milli - entry._original_tokens_milli + consumed_milli`, a *delta* from the already-refilled state. Once Task 6 clamps inside `refill_bucket`, that delta goes negative on a surplus and `ADD tk (delta - consumed)` trims correctly. An explicit clamp here would double-apply it.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-class TestSlowPathMaterialisation:
-    def test_writes_vu_from_the_next_boundary(self):
+class TestSlowPathWritesVu:
+    NOW = 1_789_000_000_000
+
+    def test_writes_vu_when_given_one(self, repo):
         item = repo.build_composite_normal(
-            "user-1", "gpt-4", consumed={"rpm": 1000}, refill_amounts={"rpm": 0},
-            now_ms=NOW, expected_rf=NOW - 1000, vu=NOW + 3_600_000,
+            "user-1", "gpt-4",
+            consumed={"rpm": 1000},
+            refill_amounts={"rpm": 0},
+            now_ms=self.NOW,
+            expected_rf=self.NOW - 1000,
+            vu=self.NOW + 3_600_000,
         )
         upd = item["Update"]
-        assert ":vu" in upd["ExpressionAttributeValues"]
         assert "#vu = :vu" in upd["UpdateExpression"]
+        assert upd["ExpressionAttributeValues"][":vu"] == {"N": str(self.NOW + 3_600_000)}
+        assert upd["ExpressionAttributeNames"]["#vu"] == schema.BUCKET_FIELD_VU
 
     def test_omits_vu_when_there_is_no_schedule(self):
+        """`next_boundary` returns None for an unscheduled limit, and None must
+        omit the attribute rather than write a null."""
         item = repo.build_composite_normal(
-            "user-1", "gpt-4", consumed={"rpm": 1000}, refill_amounts={"rpm": 0},
-            now_ms=NOW, expected_rf=NOW - 1000, vu=None,
+            "user-1", "gpt-4",
+            consumed={"rpm": 1000},
+            refill_amounts={"rpm": 0},
+            now_ms=self.NOW,
+            expected_rf=self.NOW - 1000,
+            vu=None,
         )
         assert "#vu" not in item["Update"]["ExpressionAttributeNames"]
+        assert ":vu" not in item["Update"]["ExpressionAttributeValues"]
 
     def test_negative_refill_delta_trims_the_surplus(self):
-        """Task 6 makes this delta negative; the ADD must carry it through."""
+        """Task 6 makes this delta negative on a shrink; the ADD carries it."""
         item = repo.build_composite_normal(
-            "user-1", "gpt-4", consumed={"rpm": 1000}, refill_amounts={"rpm": -400_000},
-            now_ms=NOW, expected_rf=NOW - 1000, vu=None,
+            "user-1", "gpt-4",
+            consumed={"rpm": 1000},
+            refill_amounts={"rpm": -400_000},
+            now_ms=self.NOW,
+            expected_rf=self.NOW - 1000,
+            vu=None,
         )
-        v = item["Update"]["ExpressionAttributeValues"]
-        assert v[":b_rpm_tk_delta"] == {"N": str(-400_000 - 1000)}
+        values = item["Update"]["ExpressionAttributeValues"]
+        assert values[":b_rpm_tk_delta"] == {"N": str(-400_000 - 1000)}
+
+    def test_create_also_stamps_vu(self):
+        """A bucket created on the slow path needs its first `vu`, or the very
+        next acquire takes the fast path against an unmaterialised item."""
+        item = repo.build_composite_create(
+            "user-1", "gpt-4",
+            states=[],
+            now_ms=self.NOW,
+            vu=self.NOW + 3_600_000,
+        )
+        assert item["Put"]["Item"][schema.BUCKET_FIELD_VU] == {"N": str(self.NOW + 3_600_000)}
+
+
+class TestSlowPathUsesOneInstant:
+    async def test_rf_and_vu_derive_from_the_same_reading(self, repo):
+        """The (rf, vu) pair must be consistent — #430's named failure mode."""
+        readings: list[int] = []
+        base = repo._now_ms()
+
+        def fake_now_ms() -> int:
+            readings.append(base + 60_000 * len(readings))
+            return readings[-1]
+
+        repo._now_ms = fake_now_ms
+
+        sched = (ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.5),)
+        await repo.set_limits(
+            "slow-1", [Limit.per_minute("rpm", 100).with_schedule(sched)], resource="gpt-4"
+        )
+        limiter = RateLimiter(repository=repo, speculative_writes=False)
+        async with limiter.acquire("slow-1", "gpt-4", consume={"rpm": 1}):
+            pass
+
+        item = await _raw_bucket_item(repo, "slow-1", "gpt-4", shard=0)
+        rf = int(item[schema.BUCKET_FIELD_RF]["N"])
+        vu = int(item[schema.BUCKET_FIELD_VU]["N"])
+        assert rf in readings, f"rf {rf} is not one of the readings {readings}"
+        assert vu > rf, "vu must be the next boundary after the instant rf records"
 ```
 
-- [ ] **Step 2: Watch it fail** — `TypeError: unexpected keyword argument 'vu'`
+Add the raw-item helper to the test module if it is not already there:
 
-- [ ] **Step 3: Implement.** Add `vu: int | None = None` to `build_composite_normal`; when not None, append `#vu = :vu` to `set_parts` with `attr_names["#vu"] = schema.BUCKET_FIELD_VU`. Do the same for `build_composite_create` (a new bucket needs its first `vu`).
+```python
+async def _raw_bucket_item(repo, entity_id, resource, shard=0):
+    """Read a bucket item straight from DynamoDB, bypassing deserialisation."""
+    client = await repo._get_client()
+    response = await client.get_item(
+        TableName=repo.table_name,
+        Key={
+            "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, resource, shard)},
+            "SK": {"S": schema.sk_state()},
+        },
+    )
+    return response["Item"]
+```
 
-In `lease.py`, compute `vu = next_boundary(entry.limit.schedule, now_ms)` per bucket group — the **minimum** across the group's limits, since `vu` is item-level — and pass it. In `_do_acquire`'s refill computation, source the capacity and refill from `state.effective_capacity_milli(now_ms)` / `effective_refill_amount_milli(now_ms)`; Task 9 already routed `try_consume` through those.
+- [ ] **Step 2: Run the test and watch it fail**
 
-- [ ] **Step 4: Run, regenerate sync, commit** — `✨ feat(lease): materialise tokens and the next boundary on the slow path`
+Run: `uv run pytest tests/unit/test_repository.py -k SlowPath -v`
+Expected: FAIL with `TypeError: build_composite_normal() got an unexpected keyword argument 'vu'`
+
+- [ ] **Step 3: Accept `vu` in both builders**
+
+In `build_composite_normal`, add `vu: int | None = None` to the signature and, beside the existing `set_parts` handling:
+
+```python
+        if vu is not None:
+            set_parts.append("#vu = :vu")
+            attr_names["#vu"] = schema.BUCKET_FIELD_VU
+            attr_values[":vu"] = {"N": str(vu)}
+```
+
+In `build_composite_create`, add the same parameter and:
+
+```python
+        if vu is not None:
+            item[schema.BUCKET_FIELD_VU] = {"N": str(vu)}
+```
+
+- [ ] **Step 4: Compute `vu` in the lease**
+
+In `lease.py`, where the per-bucket group is assembled around :376-393, compute the item-level boundary as the **minimum** across the group's declared limits — `vu` is one attribute per item, and the earliest change is what must force the next pass:
+
+```python
+                boundaries = [
+                    b
+                    for entry in group_entries
+                    if (b := next_boundary(entry.limit.schedule, now_ms=now_ms)) is not None
+                ]
+                vu = min(boundaries) if boundaries else None
+```
+
+Pass `vu=vu` into `build_composite_normal`. The `now_ms` used here must be the same one already in scope for the refill computation — do not read the clock again.
+
+- [ ] **Step 5: Run the test and watch it pass**
+
+```bash
+uv run pytest tests/unit/test_repository.py -k SlowPath -v
+uv run pytest tests/unit/test_limiter.py -k ClockSeam -v
+uv run pytest tests/unit/ -q
+```
+
+- [ ] **Step 6: Regenerate sync, lint, commit**
+
+```bash
+hatch run generate-sync
+uv run ruff check --fix . && uv run ruff format . && uv run mypy
+git add -A
+git commit -m "$(cat <<'EOF'
+✨ feat(lease): materialise tokens and the next boundary on the slow path
+
+The slow path's single clock reading now drives effective_params, the
+next_boundary that becomes `vu`, and the `rf` stamp — so an item never
+carries an (rf, vu) pair from two different instants.
+
+`vu` is the minimum boundary across the item's limits, because it is one
+item-level attribute and the earliest change has to force the pass.
+
+Refs #222, #430
+EOF
+)"
+```
 
 ---
 
 ### Task 13: The fan-out stamps the schedule and forces one pass
 
-**Files:** Modify `src/zae_limiter/repository.py` (`_sync_bucket_params` 3057) · Test `tests/integration/test_repository_ops.py`
+**Files:**
+- Modify: `src/zae_limiter/repository.py` (`_sync_bucket_params` :3080)
+- Test: `tests/unit/test_repository.py`, `tests/benchmark/test_capacity.py`
 
-**`vu = 0`, not a computed boundary.** Computing it would leave `vu` in the future while `tk` still holds a surplus over the new cap, so the fast path would admit against it until natural refill caught up — the exact burst #469 existed to prevent. `vu = 0` forces one materialising pass that trims. Cost at 10k active buckets is ~$0.014 per admin operation.
+**Interfaces:**
+- Consumes: `encode` (Task 5), `schema.BUCKET_FIELD_VU` (Task 11)
+- Produces: bucket items carrying `sched` / `sched_tz` / `b_{name}_sched`, and `vu = 0` after any limit change
+
+**`vu = 0`, not a computed boundary.** Computing it would leave `vu` in the future while `tk` still holds a surplus over the new cap, so the fast path would admit against it until natural refill caught up — the exact burst #469 existed to prevent. `vu = 0` forces one materialising pass that trims. Cost at 10k active buckets is one failed conditional plus one slow pass each, ≈ $0.014 per admin operation.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
 class TestFanOutStampsSchedule:
-    async def test_set_limits_stamps_sched_and_expires_vu(self, test_repo):
-        ...  # create a bucket, then set_limits with a schedule
-        item = await _raw_bucket_item(test_repo, "user-1", "gpt-4", shard=0)
+    SCHED = (ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.5),)
+
+    async def test_set_limits_stamps_sched_and_expires_vu(self, repo):
+        await repo.create_entity("fan-1", parent_id=None, name="fan-1")
+        await repo.set_limits("fan-1", [Limit.per_minute("rpm", 1000)], resource="gpt-4")
+        await repo.speculative_consume("fan-1", "gpt-4", {"rpm": 1})
+
+        await repo.set_limits(
+            "fan-1",
+            [Limit.per_minute("rpm", 1000).with_schedule(self.SCHED)],
+            resource="gpt-4",
+        )
+
+        item = await _raw_bucket_item(repo, "fan-1", "gpt-4", shard=0)
         assert item["sched"]["S"] == "h9-17w1-5s500"
         assert item["sched_tz"]["S"] == "America/New_York"
-        assert item["vu"]["N"] == "0"
+        assert item[schema.BUCKET_FIELD_VU]["N"] == "0"
 
-    async def test_removing_a_schedule_removes_the_stamps(self, test_repo):
-        ...  # set a schedule, then set_limits again without one
-        item = await _raw_bucket_item(test_repo, "user-1", "gpt-4", shard=0)
-        assert "sched" not in item and "vu" not in item
+    async def test_removing_a_schedule_removes_the_stamps(self, repo):
+        await repo.create_entity("fan-2", parent_id=None, name="fan-2")
+        await repo.set_limits(
+            "fan-2",
+            [Limit.per_minute("rpm", 1000).with_schedule(self.SCHED)],
+            resource="gpt-4",
+        )
+        await repo.speculative_consume("fan-2", "gpt-4", {"rpm": 1})
 
-    async def test_every_shard_is_stamped(self, test_repo):
-        """Keying only shard 0 left the rest enforcing their birth params (#468)."""
-        ...  # force shard_count to 4, create all shards, then set_limits
-        for shard in range(4):
-            item = await _raw_bucket_item(test_repo, "user-1", "gpt-4", shard=shard)
-            assert item["vu"]["N"] == "0"
+        await repo.set_limits("fan-2", [Limit.per_minute("rpm", 1000)], resource="gpt-4")
 
+        item = await _raw_bucket_item(repo, "fan-2", "gpt-4", shard=0)
+        assert "sched" not in item
+        assert "sched_tz" not in item
+        assert schema.BUCKET_FIELD_VU not in item
 
-class TestFastPathReadsNoConfig:
-    async def test_future_vu_costs_zero_rcu(self, test_repo, capacity_counter):
-        """The load-bearing claim of the whole design (2.1)."""
-        ...  # warm the bucket and the config cache, then reset the counter
-        capacity_counter.reset()
-        async with limiter.acquire("user-1", "gpt-4", consume={"rpm": 1}):
-            pass
-        assert capacity_counter.rcu == 0
-        assert capacity_counter.wcu == 1
+    async def test_base_params_stay_undivided_and_unscaled(self, repo):
+        """The schedule never rewrites cp/ra — it applies on top (§2.1)."""
+        await repo.create_entity("fan-3", parent_id=None, name="fan-3")
+        await repo.set_limits("fan-3", [Limit.per_minute("rpm", 1000)], resource="gpt-4")
+        await repo.speculative_consume("fan-3", "gpt-4", {"rpm": 1})
+
+        await repo.set_limits(
+            "fan-3",
+            [Limit.per_minute("rpm", 1000).with_schedule(self.SCHED)],
+            resource="gpt-4",
+        )
+
+        item = await _raw_bucket_item(repo, "fan-3", "gpt-4", shard=0)
+        assert item[schema.bucket_attr("rpm", schema.BUCKET_FIELD_CP)]["N"] == "1000000"
 ```
 
-- [ ] **Step 2: Watch it fail** — `KeyError: 'sched'`
+- [ ] **Step 2: Run the test and watch it fail**
 
-- [ ] **Step 3: Implement.** In `_sync_bucket_params`, after the `cp`/`ra`/`rp` loop: when any limit carries a schedule, `encode` it and SET `sched` (item-level default) plus `sched_tz`, and SET `vu = 0`. Write `b_{name}_sched` only for a limit whose encoding differs from the item-level default (4.1). When no limit carries a schedule, REMOVE `sched`, `sched_tz`, every `b_{name}_sched`, and `vu`.
+Run: `uv run pytest tests/unit/test_repository.py -k FanOutStampsSchedule -v`
+Expected: FAIL with `KeyError: 'sched'`
 
-- [ ] **Step 4: Run integration** — `uv run pytest tests/integration/ -v` with LocalStack up
+- [ ] **Step 3: Implement**
 
-- [ ] **Step 5: Regenerate sync, commit** — `✨ feat(repository): stamp schedules onto buckets and force one pass`
+In `_sync_bucket_params`, after the `cp`/`ra`/`rp` loop and before the TTL handling:
+
+```python
+        scheduled = [limit for limit in limits if limit.schedule]
+        if scheduled:
+            # One item-level default plus per-limit overrides only where a
+            # limit differs (§4.1) — schedules may differ per limit but
+            # sharing one is the normal case.
+            encodings = {limit.name: schedule.encode(limit.schedule) for limit in scheduled}
+            default_compact, default_tz = next(iter(encodings.values()))
+            set_parts.append("#sched = :sched")
+            expr_names["#sched"] = schema.BUCKET_FIELD_SCHED
+            expr_values[":sched"] = {"S": default_compact}
+            set_parts.append("#sched_tz = :sched_tz")
+            expr_names["#sched_tz"] = schema.BUCKET_FIELD_SCHED_TZ
+            expr_values[":sched_tz"] = {"S": default_tz or "UTC"}
+            for i, (name, (compact, _tz)) in enumerate(encodings.items()):
+                if compact == default_compact:
+                    continue
+                alias = f"#lsched{i}"
+                set_parts.append(f"{alias} = :lsched{i}")
+                expr_names[alias] = schema.bucket_attr(name, schema.BUCKET_FIELD_SCHED)
+                expr_values[f":lsched{i}"] = {"S": compact}
+            # Force exactly one materialising pass, which trims any surplus
+            # over a lowered ceiling before the fast path can spend it.
+            set_parts.append("#vu = :vu_zero")
+            expr_names["#vu"] = schema.BUCKET_FIELD_VU
+            expr_values[":vu_zero"] = {"N": "0"}
+        else:
+            for alias, attr in (
+                ("#sched", schema.BUCKET_FIELD_SCHED),
+                ("#sched_tz", schema.BUCKET_FIELD_SCHED_TZ),
+                ("#vu", schema.BUCKET_FIELD_VU),
+            ):
+                expr_names[alias] = attr
+                remove_parts.append(alias)
+            for i, limit in enumerate(limits):
+                alias = f"#lsched{i}"
+                expr_names[alias] = schema.bucket_attr(limit.name, schema.BUCKET_FIELD_SCHED)
+                remove_parts.append(alias)
+```
+
+Add the two bucket-field constants to `schema.py` beside `BUCKET_FIELD_VU`:
+
+```python
+BUCKET_FIELD_SCHED = "sched"      # item-level default schedule (§4.1)
+BUCKET_FIELD_SCHED_TZ = "sched_tz"  # IANA name, hoisted out of every entry
+```
+
+- [ ] **Step 4: Add the capacity assertion — the load-bearing claim**
+
+This belongs in `tests/benchmark/test_capacity.py`, which is **sync and moto-backed**: the `capacity_counter` fixture (`tests/fixtures/capacity.py:158`) counts at the boto3 sync client level and requires `sync_limiter`. It has no `.rcu` / `.wcu` / `.reset()` — the API is `with capacity_counter.counting():` and the per-operation counters.
+
+```python
+    def test_future_vu_costs_no_reads(self, sync_limiter, capacity_counter):
+        """A scheduled bucket on the fast path must read no config (§2.1).
+
+        This is the load-bearing claim of the whole design: `vu` exists so the
+        speculative condition can gate on a schedule without evaluating one.
+        """
+        limits = [
+            Limit.per_minute("rpm", 1_000_000).with_schedule(
+                (ScheduleEntry(cron="* * * * *", tz="UTC", scale=0.5),)
+            )
+        ]
+        # Warm the bucket, the entity cache and the config cache.
+        with sync_limiter.acquire("vu-cap", "api", limits=limits, consume={"rpm": 1}):
+            pass
+
+        with capacity_counter.counting():
+            with sync_limiter.acquire("vu-cap", "api", limits=limits, consume={"rpm": 1}):
+                pass
+
+        assert capacity_counter.get_item == 0, "fast path must not read config"
+        assert capacity_counter.batch_get_item == [], "fast path must not batch-read"
+        assert capacity_counter.query == 0, "fast path must not query"
+        assert capacity_counter.update_item == 1, "one conditional UpdateItem, as unscheduled"
+```
+
+- [ ] **Step 5: Run both, then the suite**
+
+```bash
+uv run pytest tests/unit/test_repository.py -k FanOutStampsSchedule -v
+uv run pytest tests/benchmark/test_capacity.py -k future_vu -o "addopts=" -v
+uv run pytest tests/unit/ -q
+```
+
+Benchmarks disable xdist with `-o "addopts="`; that is safe **here** because `tests/benchmark/` contains no gevent tests. Never do it on `tests/unit/`.
+
+- [ ] **Step 6: Regenerate sync, lint, commit**
+
+```bash
+hatch run generate-sync
+uv run ruff check --fix . && uv run ruff format . && uv run mypy
+git add -A
+git commit -m "$(cat <<'EOF'
+✨ feat(repository): stamp schedules onto buckets and force one pass
+
+The #468 fan-out now carries `sched`/`sched_tz` (plus per-limit
+overrides where a limit differs) to every shard, and sets `vu = 0`.
+
+vu = 0 rather than a computed boundary: a future `vu` would leave the
+fast path admitting against a surplus over a lowered ceiling until
+natural refill caught up, which is the burst #469 existed to prevent.
+
+Refs #222, #468, #469
+EOF
+)"
+```
 
 ---
 
 ### Task 14: Aggregator schedule awareness and Lambda packaging
 
-**Files:** Modify `src/zae_limiter_aggregator/processor.py`, `src/zae_limiter/infra/lambda_builder.py`, `src/zae_limiter/infra/provisioner_builder.py` · Test `tests/unit/test_aggregator_processor.py`, `tests/unit/test_lambda_builder.py`
+**Files:**
+- Modify: `src/zae_limiter_aggregator/processor.py` (`LimitRefillInfo` :100, `BucketRefillState` :111, `ParsedBucketLimit` :283, `ParsedBucketRecord` :294, `_parse_bucket_record` :306, `try_refill_bucket` :547), `src/zae_limiter/infra/lambda_builder.py` (:142-151), `src/zae_limiter/infra/provisioner_builder.py` (:131-139)
+- Test: `tests/unit/test_aggregator_processor.py`, `tests/unit/test_lambda_builder.py`, `tests/unit/test_provisioner_builder.py`
 
-**Packaging detail.** `lambda_builder.py` copies `schema.py`, `bucket.py`, `models.py`, `exceptions.py` (lines 141-151); `provisioner_builder.py` copies `schema.py`, `models.py`, `exceptions.py` (lines 131-139) and **does not vendor `bucket.py`**. `schedule.py` must be added to **both**. `cronsim` and `tzdata` must be in the `[lambda]` extra (Task 1) or the Lambda will `ImportError` at cold start.
+**Interfaces:**
+- Consumes: `effective_params`, `next_boundary`, `decode` (Tasks 3, 4, 5)
+- Produces: `BucketRefillState.sched`; schedule-aware refill; `vu` re-stamping
+
+**`BucketRefillState` requires `namespace_id`** (`processor.py:118`) — it has no default, and `try_refill_bucket` uses it to build the key. `LimitRefillInfo`'s field order is `tc_delta, tk_milli, cp_milli, ra_milli, rp_ms`.
+
+**`table` is a boto3 Table resource, not a client**, so `ExpressionAttributeValues` are plain ints (`processor.py:588`), not `{"N": "..."}`.
+
+**Packaging.** `lambda_builder.py` copies `schema.py` (:142), `bucket.py` (:145), `models.py` (:148), `exceptions.py` (:151). `provisioner_builder.py` copies `schema.py` (:131), `models.py` (:134), `exceptions.py` (:137) and **does not vendor `bucket.py`**. `schedule.py` must be added to **both**, because Task 9 makes `models.py` import it and an unvendored import is an `ImportError` at cold start. `cronsim` and `tzdata` come from the `[lambda]` extra (Task 1).
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
+from datetime import datetime
+from unittest.mock import MagicMock
+from zoneinfo import ZoneInfo
+
+from zae_limiter.schedule import ScheduleEntry
+from zae_limiter_aggregator.processor import (
+    BucketRefillState,
+    LimitRefillInfo,
+    try_refill_bucket,
+)
+
+NY = ZoneInfo("America/New_York")
+TUE_1400 = int(datetime(2026, 9, 15, 14, 0, tzinfo=NY).timestamp() * 1000)
+BUSINESS = (ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.5),)
+
+
+def _state(**kwargs) -> BucketRefillState:
+    base = dict(
+        namespace_id="ns123",
+        entity_id="user-1",
+        resource="gpt-4",
+        rf_ms=TUE_1400 - 60_000,
+        limits={
+            "rpm": LimitRefillInfo(
+                tc_delta=600_000,
+                tk_milli=0,
+                cp_milli=1_000_000,
+                ra_milli=1_000_000,
+                rp_ms=60_000,
+            )
+        },
+    )
+    base.update(kwargs)
+    return BucketRefillState(**base)
+
+
 class TestAggregatorRespectsSchedules:
     def test_refills_at_the_scheduled_rate_not_the_base(self):
-        """During a 0.5x window the aggregator must not top up toward the base."""
-        state = BucketRefillState(
-            entity_id="user-1", resource="gpt-4", shard_count=1, rf_ms=TUE_1400 - 60_000,
-            sched=(ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.5),),
-            limits={"rpm": LimitRefillInfo(tk_milli=0, cp_milli=1_000_000,
-                                           ra_milli=1_000_000, rp_ms=60_000, tc_delta=600_000)},
-        )
+        """During a 0.5x window the aggregator tops up toward the scheduled
+        ceiling. One minute at the halved rate is 500_000 millitokens, and the
+        600_000 consumption estimate keeps it under the skip threshold."""
         table = MagicMock()
-        assert try_refill_bucket(table, state, now_ms=TUE_1400) is True
+        assert try_refill_bucket(table, _state(sched=BUSINESS), now_ms=TUE_1400) is True
         values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
         assert values[":rd_rpm"] == 500_000
 
-    def test_restamps_vu_when_it_has_expired(self):
-        ...  # expired vu -> the refill write also SETs a new vu
+    def test_unscheduled_same_bucket_is_skipped_entirely(self):
+        """Discriminates the test above: at the base rate a full minute yields
+        1_000_000, which already covers the 600_000 estimate, so no write."""
+        table = MagicMock()
+        assert try_refill_bucket(table, _state(), now_ms=TUE_1400) is False
+        table.update_item.assert_not_called()
+
+    def test_scheduled_ceiling_is_per_shard(self):
+        table = MagicMock()
+        state = _state(sched=BUSINESS, shard_count=2)
+        assert try_refill_bucket(table, state, now_ms=TUE_1400) is True
+        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+        assert values[":rd_rpm"] == 250_000   # (1_000_000*0.5)//2
+
+
+class TestAggregatorRestampsVu:
+    def test_expired_vu_is_replaced_with_the_next_boundary(self):
+        table = MagicMock()
+        state = _state(sched=BUSINESS, vu_ms=TUE_1400 - 1)
+        assert try_refill_bucket(table, state, now_ms=TUE_1400) is True
+        expr = table.update_item.call_args.kwargs["UpdateExpression"]
+        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+        assert "vu = :new_vu" in expr
+        assert values[":new_vu"] > TUE_1400
+
+    def test_future_vu_is_left_alone(self):
+        table = MagicMock()
+        state = _state(sched=BUSINESS, vu_ms=TUE_1400 + 3_600_000)
+        try_refill_bucket(table, state, now_ms=TUE_1400)
+        assert ":new_vu" not in table.update_item.call_args.kwargs["ExpressionAttributeValues"]
 
 
 class TestLambdaPackaging:
-    def test_both_builders_vendor_schedule_py(self, tmp_path):
-        assert (build_aggregator(tmp_path) / "zae_limiter" / "schedule.py").exists()
-        assert (build_provisioner(tmp_path) / "zae_limiter" / "schedule.py").exists()
+    def test_aggregator_package_vendors_schedule(self):
+        from zae_limiter.infra.lambda_builder import build_lambda_package
+
+        with patch("aws_lambda_builders.builder.LambdaBuilder") as mock_builder_cls:
+            mock_builder_cls.return_value.build.side_effect = _mock_builder_build
+            zip_bytes = build_lambda_package()
+
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            assert "zae_limiter/schedule.py" in zf.namelist()
+
+    def test_provisioner_package_vendors_schedule(self):
+        from zae_limiter.infra.provisioner_builder import build_provisioner_package
+
+        with patch("aws_lambda_builders.builder.LambdaBuilder") as mock_builder_cls:
+            mock_builder_cls.return_value.build.side_effect = _mock_builder_build
+            zip_bytes = build_provisioner_package()
+
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            assert "zae_limiter/schedule.py" in zf.namelist()
 
     def test_lambda_extra_carries_cronsim_and_tzdata(self):
+        from zae_limiter.infra.lambda_builder import _get_runtime_requirements
+
         reqs = _get_runtime_requirements()
         assert any(r.startswith("cronsim") for r in reqs)
         assert any(r.startswith("tzdata") for r in reqs)
 ```
 
-- [ ] **Step 2: Watch them fail**
+The packaging tests go in the existing builder test modules, which already define `_mock_builder_build` and import `io`, `zipfile` and `patch` — reuse them rather than redefining.
 
-- [ ] **Step 3: Implement.** Parse `sched`/`sched_tz`/`b_{name}_sched` in the stream-record parser into `BucketRefillState.sched` and `ParsedBucketLimit`; in `try_refill_bucket`, replace `info.cp_milli // shard_count` with `effective_params(...)` then `// shard_count`; when the record's `vu` has expired, add `SET vu = :vu` with `next_boundary(...)` to the refill write. Add the `shutil.copy2` line for `schedule.py` to both builders.
+- [ ] **Step 2: Run the tests and watch them fail**
 
-- [ ] **Step 4: Run unit + a LocalStack E2E with the aggregator enabled**
+```bash
+uv run pytest tests/unit/test_aggregator_processor.py -k "Schedules or Restamps" -v
+uv run pytest tests/unit/test_lambda_builder.py tests/unit/test_provisioner_builder.py -k schedule -v
+```
 
-- [ ] **Step 5: Commit** — `✨ feat(aggregator): refill at the scheduled rate and re-stamp vu`
+Expected: `TypeError: BucketRefillState.__init__() got an unexpected keyword argument 'sched'`, and `AssertionError` on the two `namelist()` checks.
+
+- [ ] **Step 3: Carry the schedule through the parser**
+
+Add to `ParsedBucketRecord` and `BucketRefillState`:
+
+```python
+    sched: tuple[ScheduleEntry, ...] = ()
+    vu_ms: int | None = None
+```
+
+In `_parse_bucket_record`, decode the item-level attributes from the NewImage:
+
+```python
+    sched_compact = new_image.get(BUCKET_FIELD_SCHED, {}).get("S")
+    sched_tz = new_image.get(BUCKET_FIELD_SCHED_TZ, {}).get("S", "UTC")
+    sched = decode(sched_compact, sched_tz) if sched_compact else ()
+    vu_raw = new_image.get(BUCKET_FIELD_VU, {}).get("N")
+    vu_ms = int(vu_raw) if vu_raw is not None else None
+```
+
+Carry both through `aggregate_bucket_states` into `BucketRefillState`.
+
+- [ ] **Step 4: Make the refill schedule-aware**
+
+In `try_refill_bucket`, replace the effective-limit computation (currently `info.cp_milli // state.shard_count` and the `ra` equivalent) with:
+
+```python
+        eff_cp, eff_ra, eff_rp = effective_params(
+            info.cp_milli, info.ra_milli, info.rp_ms, state.sched, now_ms
+        )
+        effective_cp = eff_cp // state.shard_count
+        effective_ra = eff_ra // state.shard_count
+```
+
+and pass `effective_cp` / `effective_ra` / `eff_rp` into `refill_bucket`. Then, beside the `SET rf = :new_rf` construction at :599:
+
+```python
+    if state.sched and state.vu_ms is not None and state.vu_ms <= now_ms:
+        boundary = next_boundary(state.sched, now_ms=now_ms)
+        if boundary is not None:
+            update_expr = update_expr.replace("SET rf = :new_rf", "SET rf = :new_rf, vu = :new_vu")
+            expr_values[":new_vu"] = boundary
+```
+
+Prefer building the SET clause from a list rather than string-replacing it if the surrounding code makes that clean — the replace above is shown for clarity about *what* changes, not as a style recommendation.
+
+- [ ] **Step 5: Vendor `schedule.py` into both packages**
+
+In `lambda_builder.py` after :151:
+
+```python
+        # schedule.py — cron evaluation for scheduled limits (#222). Required
+        # because models.py imports effective_params from it.
+        shutil.copy2(zae_limiter_path / "schedule.py", dest_zae_limiter / "schedule.py")
+```
+
+The same line in `provisioner_builder.py` after :137. Update both module docstrings, which enumerate the vendored stub.
+
+- [ ] **Step 6: Run everything**
+
+```bash
+uv run pytest tests/unit/test_aggregator_processor.py -v
+uv run pytest tests/unit/test_lambda_builder.py tests/unit/test_provisioner_builder.py -v
+uv run pytest tests/unit/ -q
+uv run pytest tests/unit/ -m gevent -n 0 -q
+```
+
+- [ ] **Step 7: Lint, type check, commit**
+
+```bash
+uv run ruff check --fix . && uv run ruff format . && uv run mypy
+git add -A
+git commit -m "$(cat <<'EOF'
+✨ feat(aggregator): refill at the scheduled rate and re-stamp vu
+
+The aggregator decodes the bucket's own `sched` — no config read — and
+refills toward the scheduled ceiling at the scheduled rate. An expired
+`vu` is replaced with the next boundary in the same rf-locked write.
+
+schedule.py is vendored into both Lambda packages; models.py imports it,
+so an unvendored copy is an ImportError at cold start.
+
+Refs #222
+EOF
+)"
+```
 
 ---
 
@@ -1579,10 +2479,63 @@ Tasks 8–14 wire scheduling into `repository.py`, `limiter.py` and the aggregat
 
 **Not covered here, by design:** §5 (surface), §6 (failure handling), §7 (`retry_after`), §3.6 (`reset_schedule`) — all in the surface plan. §5.2 (provisioner sync) is its own plan.
 
-**Placeholder scan.** Tasks 1-7 carry complete code. Tasks 8-14 carry complete structure, real signatures and real assertions, but several test bodies use `...` for fixture setup that depends on helpers this repo already has (`_raw_bucket_item`, forcing a shard count, expiring `vu` directly). Those are setup, not logic — the assertions they lead to are exact. Resolve each against `tests/integration/` conventions when the task is picked up.
+**Placeholder scan.** All fourteen tasks now carry complete code. The `...` fixture stubs are
+gone: every test constructs what it needs, and the helpers they lean on (`_state`,
+`_raw_bucket_item`, `_set_vu`) are written out where first used.
 
-**One test body below is knowingly approximate:** Task 14's `test_refills_at_the_scheduled_rate_not_the_base` asserts `:rd_rpm == 500_000`, which assumes the refill threshold lets a half-rate top-up through at `tc_delta=600_000`. Verify the arithmetic against `try_refill_bucket`'s actual threshold when implementing rather than trusting the literal.
+**Verified against the tree, not recalled.** Every file path and line number in Tasks 8-14 was
+checked at `cc1ff1dc` (post-#430 merge). Six things the earlier draft had wrong:
 
-**Type consistency.** `effective_params(cp_milli, ra_milli, rp_ms, sched, now_ms) -> tuple[int, int, int]` is consumed with that exact signature in Tasks 4 and 9. `next_boundary(sched, reset_sched=(), *, now_ms)` returns `None` only when there is no schedule at all, which Task 12 must handle by omitting `vu` rather than writing null. The keyword-only `now_ms` prevents a positional call silently binding a timestamp to `reset_sched` once the surface plan starts passing two tuples. `encode` returns `(compact, tz | None)` and `decode(compact, tz)` takes a non-optional `tz`, so Task 13 must supply `"UTC"` when `encode` returned `None` — or skip writing both attributes, which is what an empty schedule means.
+1. **`BucketState` requires `entity_id`, `resource` and `limit_name`** (`models.py:476-478`).
+   Every `BucketState(...)` in the old Tasks 9 and 10 omitted the first two and would have failed
+   with `TypeError` before reaching an assertion. Tasks 9-10 now build through a `_state()` helper.
+2. **`BucketRefillState` requires `namespace_id`** (`processor.py:118`). Task 7's three
+   constructions omitted it — corrected in place even though Task 7 was nominally complete.
+3. **Task 11 called `self._now_ms()` inside the condition build.** Post-#430 that would
+   re-introduce the second clock reading the merge just removed and break
+   `TestClockSeam::test_acquire_reads_the_clock_once`. It now uses the bound `now_ms` parameter,
+   which `_speculative_consume_single` already takes (`repository.py:2552`).
+4. **`capacity_counter` is a moto/sync fixture** requiring `sync_limiter`
+   (`tests/fixtures/capacity.py:158`), with no `.rcu` / `.wcu` / `.reset()`. Task 13's assertion
+   paired it with an async LocalStack repo and a non-existent API; it now lives in
+   `tests/benchmark/test_capacity.py` using `with capacity_counter.counting():` and the real
+   per-operation counters.
+5. **The Lambda builders return `bytes`, not a path**, and are named `build_lambda_package` /
+   `build_provisioner_package`. Task 14's packaging assertions now go through
+   `zipfile.ZipFile(io.BytesIO(...)).namelist()`, matching `test_provisioner_builder.py:37`.
+6. **Unit tests use the moto-backed `repo` fixture** (`tests/unit/test_repository.py:24`), not
+   `test_repo` — that name is the LocalStack integration fixture.
 
-**One risk not covered by a test.** `parse_cron` is `lru_cache`d on `(cron, tz)`, and `ParsedCron` holds a `ZoneInfo`. `ZoneInfo` instances are themselves cached by the stdlib, so this is safe — but if the cache is ever keyed on a `ScheduleEntry` instead, `scale` being a float makes `ScheduleEntry` hashable-but-imprecise. Key the cache on strings only, as written.
+**The #430 dividend is spent where it matters.** Tasks 11, 12 and 13 control time by patching
+`Repository._now_ms`, reusing the `_counting_clock` shape from `TestClockSeam`
+(`tests/unit/test_limiter.py:307`). No test in this plan sleeps or patches global `time`.
+
+**Task 14's arithmetic is now verified rather than flagged.** The earlier draft warned that
+`:rd_rpm == 500_000` assumed a threshold it had not checked. Traced through
+`try_refill_bucket`: one minute at the halved rate yields exactly 500_000 millitokens, and the
+600_000 `tc_delta` estimate keeps `projected >= consumption_estimate` false so the write
+proceeds. The unscheduled control case yields 1_000_000, which *does* clear the threshold and is
+skipped — so the pair genuinely discriminates rather than both passing for the same reason.
+
+**Spec coverage.** §3.1 → Tasks 1-2. §3.2 → Task 4. §3.3 → Tasks 6-7 (both halves: `bucket.py`
+*and* `processor.py`, which is what makes #469 unnecessary). §3.5 → Task 9. §4 → Tasks 5, 13.
+§2.1 → Tasks 11-13. §1.1 validation → Tasks 1, 8. §1.6 override-not-merge → Task 8.
+§1.4 storage layout → Tasks 8, 13.
+
+**Not covered here, by design:** §5 (surface), §6 (failure handling), §7 (`retry_after`), §3.6
+(`reset_schedule`) — all in the surface plan. §5.2 (provisioner sync) is its own plan, now
+issue #481 / PR #485.
+
+**Type consistency.** `effective_params(cp_milli, ra_milli, rp_ms, sched, now_ms) -> tuple[int,
+int, int]` is consumed with that signature in Tasks 4, 9 and 14. `next_boundary(sched,
+reset_sched=(), *, now_ms)` returns `None` only when there is no schedule, which Task 12 handles
+by omitting `vu` rather than writing a null; the keyword-only `now_ms` stops a positional call
+binding a timestamp to `reset_sched` once the surface plan passes two tuples. `encode` returns
+`(compact, tz | None)` and `decode(compact, tz)` takes a non-optional `tz`, so Tasks 8 and 13
+both supply `"UTC"` when `encode` returned `None`. `from_bucket_state(state, now_ms)` returns a
+`Limit` already divided by `shard_count`, so Task 10 must not also call `per_shard`.
+
+**One risk not covered by a test.** `parse_cron` is `lru_cache`d on `(cron, tz)` and
+`ParsedCron` holds a `ZoneInfo`, which the stdlib caches itself — safe as written. If the cache
+key is ever changed to a `ScheduleEntry`, `scale` being a float makes the key hashable but
+imprecise. Key on strings only.

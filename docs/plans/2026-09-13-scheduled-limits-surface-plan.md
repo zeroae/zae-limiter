@@ -152,6 +152,12 @@ Change `next_boundary(sched, now_ms)` to `next_boundary(sched, reset_sched, now_
 
 ### Task 3: Apply the reset in the materialising pass
 
+> **Expand before picking this up.** The steps below carry real assertions but compress
+> the TDD cycle, and their fixture setup depends on `schedule.py`, which does not exist
+> yet. Write the full failing-test/implement/pass cycle against the real signatures once
+> the core plan has landed — writing it against invented ones now is the mistake this
+> plan's own review calls out.
+
 **Files:** Modify `src/zae_limiter/lease.py`, `src/zae_limiter/repository.py`, `src/zae_limiter_aggregator/processor.py` · Test `tests/unit/test_lease.py`, `tests/unit/test_aggregator_processor.py`
 
 **Ordering:** compute effective params first, then set `tk` to the resulting effective capacity.
@@ -204,6 +210,12 @@ In `processor.py`'s `try_refill_bucket`, apply the same check per limit and use 
 
 ### Task 4: Reset encoding
 
+> **Expand before picking this up.** The steps below carry real assertions but compress
+> the TDD cycle, and their fixture setup depends on `schedule.py`, which does not exist
+> yet. Write the full failing-test/implement/pass cycle against the real signatures once
+> the core plan has landed — writing it against invented ones now is the mistake this
+> plan's own review calls out.
+
 **Files:** Modify `src/zae_limiter/schedule.py`, `src/zae_limiter/repository.py` · Test `tests/unit/test_schedule_encoding.py`
 
 Reset entries encode into their own `rsched` / `b_{name}_rsched` attributes with the same grammar minus the modifier token — `0 0 * * *` is `m0h0`, four bytes. A separate attribute rather than a tag inside `sched` mirrors the separate tuple and keeps the decoder from partitioning one list into two meanings.
@@ -233,6 +245,12 @@ class TestResetEncoding:
 ---
 
 ### Task 5: Boundary-aware `retry_after_seconds`
+
+> **Expand before picking this up.** The steps below carry real assertions but compress
+> the TDD cycle, and their fixture setup depends on `schedule.py`, which does not exist
+> yet. Write the full failing-test/implement/pass cycle against the real signatures once
+> the core plan has landed — writing it against invented ones now is the mistake this
+> plan's own review calls out.
 
 **Files:** Modify `src/zae_limiter/schedule.py`, `src/zae_limiter/bucket.py`, `src/zae_limiter/lease.py` · Test `tests/unit/test_bucket.py`
 
@@ -285,11 +303,33 @@ class TestBoundaryAwareRetryAfter:
 
 ### Task 6: Manifest parsing
 
-**Files:** Modify `src/zae_limiter_provisioner/manifest.py`, `src/zae_limiter_provisioner/differ.py` · Test `tests/unit/test_provisioner_manifest.py`, `tests/unit/test_differ.py`
+**Files:**
+- Modify: `src/zae_limiter_provisioner/manifest.py` (`LimitDecl` at :9, `from_dict` :22, `to_dict` :34)
+- Test: `tests/unit/test_provisioner_manifest.py`, `tests/unit/test_differ.py`
+
+**Interfaces:**
+- Consumes: `ScheduleEntry`, `parse_cron` (core plan Task 1)
+- Produces: `LimitDecl.schedule` / `LimitDecl.reset_schedule`, carried through `to_dict()` into `Change.data`
+
+**`differ.py` does not compare anything — do not write tests that assume it does.** Read
+`compute_diff` (`differ.py:24-101`): it emits a `Change` for **every** manifest item
+unconditionally, choosing only between `"create"` and `"update"` by whether the name appears in
+the previous managed set. The `#PROVISIONER` record tracks *which items are managed*, never their
+values, so there is no field-level comparison to teach about schedules. What a test can and
+should pin is that `schedule` survives into `Change.data` via `to_dict()` — that is the actual
+contract the applier depends on.
+
+**`LimitDecl` is `@dataclass(frozen=True)`** and `to_dict()` is currently annotated
+`-> dict[str, int]`. Adding schedules widens it to `dict[str, Any]`; mypy will catch the
+annotation if you forget.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
+import pytest
+
+from zae_limiter_provisioner.manifest import LimitDecl, LimitsManifest
+
 YAML = """
 namespace: default
 resources:
@@ -302,6 +342,7 @@ resources:
             tz: America/New_York
             scale: 0.5
           - cron: "* 0-6 * * *"
+            tz: America/New_York
             capacity: 2000
       rpd:
         capacity: 10000
@@ -313,135 +354,805 @@ resources:
 
 
 class TestManifestSchedules:
-    def test_parses_both_tuples(self):
-        m = LimitsManifest.from_yaml(YAML)
-        rpm = m.resources["gpt-4"].limits["rpm"]
+    def test_parses_the_param_schedule(self):
+        manifest = LimitsManifest.from_yaml(YAML)
+        rpm = manifest.resources["gpt-4"].limits["rpm"]
         assert len(rpm.schedule) == 2
+        assert rpm.schedule[0].cron == "* 9-17 * * MON-FRI"
+        assert rpm.schedule[0].tz == "America/New_York"
         assert rpm.schedule[0].scale == 0.5
-        assert m.resources["gpt-4"].limits["rpd"].reset_schedule[0].cron == "0 0 * * *"
+        assert rpm.schedule[1].capacity == 2000
+
+    def test_parses_the_reset_schedule(self):
+        manifest = LimitsManifest.from_yaml(YAML)
+        rpd = manifest.resources["gpt-4"].limits["rpd"]
+        assert rpd.reset_schedule[0].cron == "0 0 * * *"
+        assert rpd.schedule == ()
+
+    def test_absent_schedule_is_an_empty_tuple(self):
+        manifest = LimitsManifest.from_yaml(
+            "namespace: default\nresources:\n  gpt-4:\n"
+            "    limits:\n      rpm:\n        capacity: 1000\n"
+        )
+        rpm = manifest.resources["gpt-4"].limits["rpm"]
+        assert rpm.schedule == ()
+        assert rpm.reset_schedule == ()
 
     def test_rejects_an_invalid_cron_at_parse_time(self):
-        """A manifest that applies must be a manifest that evaluates."""
+        """A manifest that applies must be a manifest that evaluates, so
+        `limits plan` surfaces this before anything is written."""
         with pytest.raises(ValueError, match="cron"):
             LimitsManifest.from_yaml(YAML.replace("* 9-17 * * MON-FRI", "* 99 * * *"))
 
-    def test_rejects_extended_tokens(self):
+    def test_rejects_an_unknown_timezone_at_parse_time(self):
+        with pytest.raises(ValueError, match="timezone"):
+            LimitsManifest.from_yaml(YAML.replace("America/New_York", "Mars/Olympus_Mons"))
+
+    def test_rejects_extended_cron_tokens(self):
+        """L/W/# parse without error in cronsim and would silently never
+        fire — core plan Task 1 rejects them, and that must reach YAML."""
         with pytest.raises(ValueError, match="not supported"):
-            LimitsManifest.from_yaml(YAML.replace("0 0 * * *", "0 0 L * *"))
+            LimitsManifest.from_yaml(YAML.replace('"0 0 * * *"', '"0 0 L * *"'))
 
-    def test_absent_schedule_is_an_empty_tuple(self):
-        m = LimitsManifest.from_yaml(YAML.replace("        schedule:\n", "        _x:\n"))
-        ...
+    def test_rejects_a_reset_entry_carrying_a_modifier(self):
+        """A reset changes the balance, not the parameters (§3.6)."""
+        bad = YAML.replace(
+            '          - cron: "0 0 * * *"\n            tz: America/New_York\n',
+            '          - cron: "0 0 * * *"\n            tz: America/New_York\n'
+            "            scale: 0.5\n",
+        )
+        with pytest.raises(ValueError, match="reset"):
+            LimitsManifest.from_yaml(bad)
 
 
-class TestDifferSeesScheduleChanges:
-    def test_a_changed_schedule_is_a_change(self):
-        ...
+class TestScheduleSurvivesToChangeData:
+    """`differ.py` compares nothing — it emits every manifest item every time
+    (`compute_diff`, differ.py:24-101). What matters is that the schedule is
+    carried in `Change.data` so the applier and the bucket fan-out can see it."""
 
-    def test_an_identical_schedule_is_not_spuriously_different(self):
-        """Storage is canonical, so this is a string compare — MON-FRI and 1-5
-        must not read as a change on every apply."""
-        ...
+    def test_to_dict_round_trips_the_schedule(self):
+        decl = LimitDecl.from_dict(
+            {
+                "capacity": 1000,
+                "schedule": [
+                    {"cron": "* 9-17 * * MON-FRI", "tz": "America/New_York", "scale": 0.5}
+                ],
+            }
+        )
+        restored = LimitDecl.from_dict(decl.to_dict())
+        assert restored == decl
+
+    def test_change_data_carries_the_schedule(self):
+        from zae_limiter_provisioner.differ import compute_diff
+
+        manifest = LimitsManifest.from_yaml(YAML)
+        changes = compute_diff(manifest, previous={})
+        resource_change = next(c for c in changes if c.level == "resource")
+        rpm = resource_change.data["limits"]["rpm"]
+        assert rpm["schedule"][0]["cron"] == "* 9-17 * * MON-FRI"
+        assert rpm["schedule"][0]["scale"] == 0.5
+
+    def test_unscheduled_limits_carry_no_schedule_key(self):
+        """Keep the wire shape minimal so an unscheduled manifest is unchanged."""
+        from zae_limiter_provisioner.differ import compute_diff
+
+        manifest = LimitsManifest.from_yaml(
+            "namespace: default\nresources:\n  gpt-4:\n"
+            "    limits:\n      rpm:\n        capacity: 1000\n"
+        )
+        changes = compute_diff(manifest, previous={})
+        rpm = next(c for c in changes if c.level == "resource").data["limits"]["rpm"]
+        assert "schedule" not in rpm
+        assert "reset_schedule" not in rpm
 ```
 
-- [ ] **Step 2–4:** Add `schedule` and `reset_schedule` to `LimitDecl`, parsed into `ScheduleEntry`s via the same validation (so parse-time errors surface in `limits plan`); include both in `differ.py`'s comparison; commit — `✨ feat(provisioner): parse schedules from the limits manifest`
+- [ ] **Step 2: Run the test and watch it fail**
+
+Run: `uv run pytest tests/unit/test_provisioner_manifest.py -k "ManifestSchedules or ScheduleSurvives" -v`
+Expected: FAIL with `AttributeError: 'LimitDecl' object has no attribute 'schedule'`
+
+- [ ] **Step 3: Implement**
+
+```python
+@dataclass(frozen=True)
+class LimitDecl:
+    capacity: int
+    refill_amount: int
+    refill_period: int
+    schedule: tuple[ScheduleEntry, ...] = ()
+    reset_schedule: tuple[ScheduleEntry, ...] = ()
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> LimitDecl:
+        capacity = d["capacity"]
+        if "burst" in d:
+            capacity = d["burst"]
+        refill_amount = d.get("refill_amount", capacity)
+        refill_period = d.get("refill_period", 60)
+        for field_name, value in (
+            ("capacity", capacity),
+            ("refill_amount", refill_amount),
+            ("refill_period", refill_period),
+        ):
+            if value <= 0:
+                raise ValueError(f"{field_name} must be positive, got {value}")
+        return cls(
+            capacity=capacity,
+            refill_amount=refill_amount,
+            refill_period=refill_period,
+            # ScheduleEntry validates cron, timezone and the modifier rules in
+            # __post_init__, so an unusable manifest fails here rather than
+            # inside the Lambda.
+            schedule=tuple(ScheduleEntry(**entry) for entry in d.get("schedule", [])),
+            reset_schedule=tuple(
+                ScheduleEntry.reset(**entry) for entry in d.get("reset_schedule", [])
+            ),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "capacity": self.capacity,
+            "refill_amount": self.refill_amount,
+            "refill_period": self.refill_period,
+        }
+        if self.schedule:
+            result["schedule"] = [_entry_to_dict(e) for e in self.schedule]
+        if self.reset_schedule:
+            result["reset_schedule"] = [
+                {"cron": e.cron, "tz": e.tz} for e in self.reset_schedule
+            ]
+        return result
+```
+
+with a module-level helper that emits only the fields that are set, so `from_dict(to_dict(x)) == x`:
+
+```python
+def _entry_to_dict(entry: ScheduleEntry) -> dict[str, Any]:
+    d: dict[str, Any] = {"cron": entry.cron, "tz": entry.tz}
+    for name in ("scale", "capacity", "refill_amount", "refill_period_seconds"):
+        value = getattr(entry, name)
+        if value is not None:
+            d[name] = value
+    return d
+```
+
+The positivity validation above is the same rule issue #481's Task 6 adds; if that has already
+landed, keep it and add only the two schedule fields.
+
+`differ.py` needs **no change** — it passes `to_dict()` through into `Change.data` already.
+
+- [ ] **Step 4: Run the test and watch it pass**
+
+Run: `uv run pytest tests/unit/test_provisioner_manifest.py tests/unit/test_differ.py -v`
+Expected: PASS
+
+- [ ] **Step 5: Lint, type check, commit**
+
+```bash
+uv run ruff check --fix . && uv run ruff format . && uv run mypy
+git add src/zae_limiter_provisioner/manifest.py tests/unit/test_provisioner_manifest.py
+git commit -m "$(cat <<'EOF'
+✨ feat(provisioner): parse schedules from the limits manifest
+
+LimitDecl gains `schedule` and `reset_schedule`, parsed into
+ScheduleEntry so cron, timezone and the reset-entry rules are validated
+at parse time — `limits plan` now rejects an unusable manifest before
+anything is written, rather than the Lambda raising at apply.
+
+differ.py is unchanged: it compares nothing, emitting every manifest
+item on every apply, so the only contract to pin is that the schedule
+survives into Change.data via to_dict().
+
+Refs #222
+EOF
+)"
+```
 
 ---
 
 ### Task 7: CloudFormation round trip
 
-**Files:** Modify `src/zae_limiter/limits_cli.py` (tri-state emission ~177-195), `src/zae_limiter_provisioner/handler.py` · Test `tests/unit/test_limits_cli.py`
+**Files:**
+- Modify: `src/zae_limiter/limits_cli.py` (`_limits_to_cfn` at :214, the tri-state `Disabled` emission at :177-195), `src/zae_limiter_provisioner/handler.py` (`_cfn_limits_to_manifest` at :299)
+- Test: `tests/unit/test_limits_cli.py`, `tests/unit/test_provisioner_handler.py`
 
-Follows `Disabled` exactly: a `Schedule` and a `ResetSchedule` property on `Custom::ZaeLimiterLimits`, emitted **only when declared**.
+**Interfaces:**
+- Consumes: `LimitDecl` schedule parsing (Task 6)
+- Produces: `Schedule` / `ResetSchedule` properties on `Custom::ZaeLimiterLimits`
+
+**The generator is a Click command over raw dicts, not a function over a manifest.**
+`limits_cfn_template` (`limits_cli.py:153`) calls `_load_yaml(file_path)` and walks the raw
+mapping — it never constructs a `LimitsManifest`. So the per-limit conversion belongs in
+`_limits_to_cfn` (:214), which already emits `Capacity` / `RefillAmount` / `RefillPeriod` and
+skips absent keys. The template is emitted as **YAML** via `click.echo(yaml.dump(...))` (:211),
+so a test parses `result.output` with `yaml.safe_load`. The resource key is `TenantLimits`.
+
+**Standard cron, never the compact form.** CloudFormation is user-facing IaC (§4).
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
+import tempfile
+
+import yaml
+from click.testing import CliRunner
+
+from zae_limiter.cli import cli
+
+
+def _render(yaml_content: dict) -> dict:
+    """Run `limits cfn-template` and parse the emitted template."""
+    with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+        yaml.dump(yaml_content, f)
+        f.flush()
+        result = CliRunner().invoke(
+            cli, ["limits", "cfn-template", "--name", "test-app", "-f", f.name]
+        )
+    assert result.exit_code == 0, result.output
+    return yaml.safe_load(result.output)
+
+
 class TestCfnScheduleRoundTrip:
-    def test_emits_schedule_only_when_declared(self):
-        tpl = generate_cfn_template(LimitsManifest.from_yaml(YAML))
-        props = tpl["Resources"]["..."]["Properties"]
-        assert props["Schedule"] == [
+    MANIFEST = {
+        "namespace": "test-ns",
+        "resources": {
+            "gpt-4": {
+                "limits": {
+                    "rpm": {
+                        "capacity": 1000,
+                        "schedule": [
+                            {
+                                "cron": "* 9-17 * * MON-FRI",
+                                "tz": "America/New_York",
+                                "scale": 0.5,
+                            },
+                            {
+                                "cron": "* 0-6 * * *",
+                                "tz": "America/New_York",
+                                "capacity": 2000,
+                            },
+                        ],
+                    },
+                    "rpd": {
+                        "capacity": 10000,
+                        "refill_period": 86400,
+                        "reset_schedule": [
+                            {"cron": "0 0 * * *", "tz": "America/New_York"}
+                        ],
+                    },
+                }
+            }
+        },
+    }
+
+    def _limits(self, template: dict) -> dict:
+        props = template["Resources"]["TenantLimits"]["Properties"]
+        return props["Resources"]["gpt-4"]["Limits"]
+
+    def test_emits_schedule_in_pascal_case(self):
+        limits = self._limits(_render(self.MANIFEST))
+        assert limits["rpm"]["Schedule"] == [
             {"Cron": "* 9-17 * * MON-FRI", "Tz": "America/New_York", "Scale": 0.5},
             {"Cron": "* 0-6 * * *", "Tz": "America/New_York", "Capacity": 2000},
         ]
 
-    def test_omits_both_properties_when_absent(self):
-        ...
+    def test_emits_reset_schedule(self):
+        limits = self._limits(_render(self.MANIFEST))
+        assert limits["rpd"]["ResetSchedule"] == [
+            {"Cron": "0 0 * * *", "Tz": "America/New_York"}
+        ]
 
-    def test_cron_survives_the_round_trip_as_standard_cron(self):
-        """CloudFormation is user-facing IaC: never the compact form."""
-        ...
+    def test_omits_both_properties_when_absent(self):
+        """Absent means inherit; an emitted empty list would not round-trip."""
+        plain = {
+            "namespace": "test-ns",
+            "resources": {"gpt-4": {"limits": {"rpm": {"capacity": 1000}}}},
+        }
+        limits = self._limits(_render(plain))
+        assert "Schedule" not in limits["rpm"]
+        assert "ResetSchedule" not in limits["rpm"]
+
+    def test_cron_stays_standard_not_compact(self):
+        """CloudFormation is user-facing IaC — the compact form is storage only."""
+        limits = self._limits(_render(self.MANIFEST))
+        assert limits["rpm"]["Schedule"][0]["Cron"] == "* 9-17 * * MON-FRI"
+        assert "h9-17w1-5s500" not in yaml.dump(limits)
+
+
+class TestCfnPropertiesBackToManifest:
+    def test_schedule_survives_the_return_trip(self):
+        from zae_limiter_provisioner.handler import _cfn_limits_to_manifest
+
+        cfn = {
+            "rpm": {
+                "Capacity": 1000,
+                "Schedule": [
+                    {"Cron": "* 9-17 * * MON-FRI", "Tz": "America/New_York", "Scale": 0.5}
+                ],
+            }
+        }
+        assert _cfn_limits_to_manifest(cfn)["rpm"]["schedule"] == [
+            {"cron": "* 9-17 * * MON-FRI", "tz": "America/New_York", "scale": 0.5}
+        ]
+
+    def test_reset_schedule_survives_the_return_trip(self):
+        from zae_limiter_provisioner.handler import _cfn_limits_to_manifest
+
+        cfn = {"rpd": {"Capacity": 10000, "ResetSchedule": [{"Cron": "0 0 * * *", "Tz": "UTC"}]}}
+        assert _cfn_limits_to_manifest(cfn)["rpd"]["reset_schedule"] == [
+            {"cron": "0 0 * * *", "tz": "UTC"}
+        ]
+
+    def test_absent_properties_stay_absent(self):
+        from zae_limiter_provisioner.handler import _cfn_limits_to_manifest
+
+        result = _cfn_limits_to_manifest({"rpm": {"Capacity": 1000}})["rpm"]
+        assert "schedule" not in result
+        assert "reset_schedule" not in result
 ```
 
-- [ ] **Step 2–4:** Implement emission and the handler-side parse; commit — `✨ feat(cli): round-trip schedules through CloudFormation`
+- [ ] **Step 2: Run the tests and watch them fail**
+
+```bash
+uv run pytest tests/unit/test_limits_cli.py -k CfnSchedule -v
+uv run pytest tests/unit/test_provisioner_handler.py -k CfnPropertiesBack -v
+```
+
+Expected: `KeyError: 'Schedule'` and `KeyError: 'schedule'`.
+
+- [ ] **Step 3: Emit the properties**
+
+In `limits_cli.py`, extend `_limits_to_cfn` (:214) — the same only-when-declared discipline the
+`Disabled` tri-state uses at :177-195:
+
+```python
+_SCHEDULE_KEYS = (
+    ("cron", "Cron"),
+    ("tz", "Tz"),
+    ("scale", "Scale"),
+    ("capacity", "Capacity"),
+    ("refill_amount", "RefillAmount"),
+    ("refill_period_seconds", "RefillPeriodSeconds"),
+)
+
+
+def _schedule_to_cfn(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert manifest schedule entries to CFN PascalCase, omitting absent keys."""
+    return [
+        {pascal: entry[snake] for snake, pascal in _SCHEDULE_KEYS if snake in entry}
+        for entry in entries
+    ]
+```
+
+and inside `_limits_to_cfn`'s loop:
+
+```python
+        if "schedule" in limit:
+            cfn_limit["Schedule"] = _schedule_to_cfn(limit["schedule"])
+        if "reset_schedule" in limit:
+            cfn_limit["ResetSchedule"] = _schedule_to_cfn(limit["reset_schedule"])
+```
+
+- [ ] **Step 4: Parse them back**
+
+In `handler.py`, extend `_cfn_limits_to_manifest` (:299) with the inverse:
+
+```python
+        if "Schedule" in cfn_limit:
+            limit["schedule"] = _cfn_schedule_to_manifest(cfn_limit["Schedule"])
+        if "ResetSchedule" in cfn_limit:
+            limit["reset_schedule"] = _cfn_schedule_to_manifest(cfn_limit["ResetSchedule"])
+```
+
+with the mirrored helper. Keep the key tables in one place if you can — a divergence between the
+two directions is silent, and the round-trip tests above are the only thing that would catch it.
+
+- [ ] **Step 5: Run both and watch them pass**
+
+```bash
+uv run pytest tests/unit/test_limits_cli.py tests/unit/test_provisioner_handler.py -v
+```
+
+- [ ] **Step 6: Lint, type check, commit**
+
+```bash
+uv run ruff check --fix . && uv run ruff format . && uv run mypy
+git add -A
+git commit -m "$(cat <<'EOF'
+✨ feat(cli): round-trip schedules through CloudFormation
+
+Schedule and ResetSchedule join Custom::ZaeLimiterLimits, emitted only
+when declared — the same tri-state discipline ADR-125's Disabled uses,
+because an emitted empty list would not round-trip as "inherit".
+
+Standard 5-field cron in both directions: the compact form is a storage
+encoding and never appears in user-facing IaC.
+
+Refs #222
+EOF
+)"
+```
 
 ---
 
 ### Task 8: The provisioner stamps schedules onto buckets
 
-**Files:** Modify `src/zae_limiter_provisioner/bucket_sync.py`, `src/zae_limiter/infra/provisioner_builder.py` · Test `tests/unit/test_provisioner_bucket_sync.py`
+**Files:**
+- Modify: `src/zae_limiter_provisioner/bucket_sync.py` (`build_bucket_param_update` at :67), `src/zae_limiter/infra/provisioner_builder.py` (:131-137)
+- Test: `tests/unit/test_provisioner_bucket_sync.py`, `tests/unit/test_provisioner_builder.py`
 
-**This is where the provisioner plan and the core plan meet.** `build_bucket_param_update` gains the `sched` / `sched_tz` / `rsched` stamp and `vu = 0`, so a manifest-applied schedule reaches live buckets. Without the provisioner plan's Task 4 wiring, this does nothing.
+**Interfaces:**
+- Consumes: `LimitDecl.to_dict()` shape (Task 6), `encode` (core plan Task 5)
+- Produces: `build_bucket_param_update` emitting `sched` / `sched_tz` / `rsched` and `vu = 0`
 
-The provisioner Lambda must now vendor `schedule.py` — and, if the reset path calls into refill math, `bucket.py` too, which it currently does **not** copy (`provisioner_builder.py:131-139`).
+**This is where the provisioner plan and the core plan meet.** `build_bucket_param_update`
+already exists on `fix/481-provisioner-bucket-sync` with the signature
+`(limits, ttl_multiplier, stale_limit_names, now_ms)` returning
+`(update_expr, expr_names, expr_values)` — read it before editing. Without PR #485's handler
+wiring this does nothing, so that must land first.
+
+**Core plan Task 14 already adds `schedule.py` to `provisioner_builder.py`.** If Task 14 has
+landed, the vendoring test here is a regression guard rather than new work; if it has not, add
+the `shutil.copy2` line. `bucket.py` is still not vendored into the provisioner and does not need
+to be — this task encodes a schedule, it does not evaluate one.
+
+**Note the incomplete `_default_` path.** `sync_bucket_params` queries
+`BUCKET#{resource}#`, so an entity change targeting `_default_` matches zero real buckets and is
+a silent no-op. That is tracked as **#487** and is deliberately not fixed here; a schedule set on
+an entity's `_default_` config inherits the same gap until #487 lands.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
 class TestProvisionerStampsSchedules:
-    def test_stamps_sched_and_expires_vu(self):
+    SCHEDULED = {
+        "rpm": {
+            "capacity": 1000,
+            "refill_amount": 1000,
+            "refill_period": 60,
+            "schedule": [
+                {"cron": "* 9-17 * * MON-FRI", "tz": "America/New_York", "scale": 0.5}
+            ],
+        }
+    }
+
+    def _resolve(self, expr, names, values, alias):
+        """Attribute name an alias points at, for asserting on SET/REMOVE."""
+        return names[alias]
+
+    def test_stamps_sched_and_tz_and_expires_vu(self):
         expr, names, values = build_bucket_param_update(
-            {"rpm": {"capacity": 1000, "refill_amount": 1000, "refill_period": 60,
-                     "schedule": "h9-17w1-5s500", "schedule_tz": "America/New_York"}},
-            ttl_multiplier=0, stale_limit_names=None, now_ms=0,
+            self.SCHEDULED, ttl_multiplier=0, stale_limit_names=None, now_ms=0
         )
         assert values[":sched"] == {"S": "h9-17w1-5s500"}
+        assert values[":sched_tz"] == {"S": "America/New_York"}
+        assert values[":vu"] == {"N": "0"}
+        assert "#sched = :sched" in expr
+        assert "#vu = :vu" in expr
+
+    def test_vu_is_zero_not_a_computed_boundary(self):
+        """A future vu would leave the fast path spending a surplus over a
+        lowered ceiling until natural refill caught up (§3.4)."""
+        _expr, _names, values = build_bucket_param_update(
+            self.SCHEDULED, ttl_multiplier=0, stale_limit_names=None, now_ms=1_789_000_000_000
+        )
         assert values[":vu"] == {"N": "0"}
 
-    def test_removes_the_stamps_when_a_schedule_is_dropped(self):
-        ...
+    def test_unscheduled_limits_remove_the_stamps(self):
+        """Override, not merge: dropping a schedule must clear the item."""
+        plain = {"rpm": {"capacity": 1000, "refill_amount": 1000, "refill_period": 60}}
+        expr, names, values = build_bucket_param_update(
+            plain, ttl_multiplier=0, stale_limit_names=None, now_ms=0
+        )
+        removed = {names[a.strip()] for a in expr.split("REMOVE")[1].split(",")}
+        assert {"sched", "sched_tz", "vu"} <= removed
+        assert ":sched" not in values
 
-    def test_provisioner_lambda_vendors_schedule_py(self, tmp_path):
-        assert (build_provisioner(tmp_path) / "zae_limiter" / "schedule.py").exists()
+    def test_reset_schedule_stamps_rsched(self):
+        decl = {
+            "rpd": {
+                "capacity": 10000,
+                "refill_amount": 10000,
+                "refill_period": 86400,
+                "reset_schedule": [{"cron": "0 0 * * *", "tz": "America/New_York"}],
+            }
+        }
+        _expr, _names, values = build_bucket_param_update(
+            decl, ttl_multiplier=0, stale_limit_names=None, now_ms=0
+        )
+        assert values[":rsched"] == {"S": "m0h0"}
+
+    def test_base_params_are_still_undivided_and_unscaled(self):
+        """The schedule applies on top; cp/ra stay the base (§2.1)."""
+        _expr, names, values = build_bucket_param_update(
+            self.SCHEDULED, ttl_multiplier=0, stale_limit_names=None, now_ms=0
+        )
+        cp_alias = next(a for a, attr in names.items() if attr == bucket_attr("rpm", "cp"))
+        assert values[f":{cp_alias[1:]}"] == {"N": "1000000"}
+
+
+class TestProvisionerPackagingCarriesSchedule:
+    def test_provisioner_package_vendors_schedule_py(self):
+        """models.py imports effective_params from schedule.py, so an
+        unvendored copy is an ImportError at cold start."""
+        from zae_limiter.infra.provisioner_builder import build_provisioner_package
+
+        with patch("aws_lambda_builders.builder.LambdaBuilder") as mock_builder_cls:
+            mock_builder_cls.return_value.build.side_effect = _mock_builder_build
+            zip_bytes = build_provisioner_package()
+
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            assert "zae_limiter/schedule.py" in zf.namelist()
 ```
 
-- [ ] **Step 2–4:** Implement; commit — `✨ feat(provisioner): stamp manifest schedules onto live buckets`
+- [ ] **Step 2: Run the tests and watch them fail**
+
+Run: `uv run pytest tests/unit/test_provisioner_bucket_sync.py -k StampsSchedules -v`
+Expected: FAIL with `KeyError: ':sched'`
+
+- [ ] **Step 3: Implement**
+
+In `build_bucket_param_update`, after the existing `cp`/`ra`/`rp` loop:
+
+```python
+    scheduled = {
+        name: decl["schedule"] for name, decl in limits.items() if decl.get("schedule")
+    }
+    reset = {
+        name: decl["reset_schedule"]
+        for name, decl in limits.items()
+        if decl.get("reset_schedule")
+    }
+
+    if scheduled:
+        entries = [ScheduleEntry(**e) for e in next(iter(scheduled.values()))]
+        compact, tz = encode(tuple(entries))
+        set_parts.append("#sched = :sched")
+        expr_names["#sched"] = BUCKET_FIELD_SCHED
+        expr_values[":sched"] = {"S": compact}
+        set_parts.append("#sched_tz = :sched_tz")
+        expr_names["#sched_tz"] = BUCKET_FIELD_SCHED_TZ
+        expr_values[":sched_tz"] = {"S": tz or "UTC"}
+    if reset:
+        entries = [ScheduleEntry.reset(**e) for e in next(iter(reset.values()))]
+        compact, _tz = encode_reset(tuple(entries))
+        set_parts.append("#rsched = :rsched")
+        expr_names["#rsched"] = BUCKET_FIELD_RSCHED
+        expr_values[":rsched"] = {"S": compact}
+
+    if scheduled or reset:
+        # Force exactly one materialising pass, which trims any surplus over a
+        # lowered ceiling before the fast path can spend it (§3.4).
+        set_parts.append("#vu = :vu")
+        expr_names["#vu"] = BUCKET_FIELD_VU
+        expr_values[":vu"] = {"N": "0"}
+    else:
+        for alias, attr in (
+            ("#sched", BUCKET_FIELD_SCHED),
+            ("#sched_tz", BUCKET_FIELD_SCHED_TZ),
+            ("#rsched", BUCKET_FIELD_RSCHED),
+            ("#vu", BUCKET_FIELD_VU),
+        ):
+            expr_names[alias] = attr
+            remove_parts.append(alias)
+```
+
+Per-limit overrides (`b_{name}_sched`) follow the same shape as core plan Task 13 — emit one only
+where a limit's encoding differs from the item-level default. If every scheduled limit shares an
+encoding, which is the normal case, the default alone is correct and smallest.
+
+- [ ] **Step 4: Run the tests and watch them pass**
+
+```bash
+uv run pytest tests/unit/test_provisioner_bucket_sync.py tests/unit/test_provisioner_builder.py -v
+```
+
+- [ ] **Step 5: Lint, type check, commit**
+
+```bash
+uv run ruff check --fix . && uv run ruff format . && uv run mypy
+git add -A
+git commit -m "$(cat <<'EOF'
+✨ feat(provisioner): stamp manifest schedules onto live buckets
+
+build_bucket_param_update now carries sched/sched_tz/rsched and sets
+vu = 0, so a manifest-applied schedule reaches the buckets that enforce
+it rather than sitting in a config item nothing reads on the fast path.
+
+vu = 0 rather than a computed boundary, for the same reason the async
+fan-out uses it: a future vu leaves the fast path spending a surplus
+over a lowered ceiling.
+
+Refs #222, #481
+EOF
+)"
+```
 
 ---
 
 ### Task 9: CLI display
 
-**Files:** Modify `src/zae_limiter/cli.py` · Test `tests/unit/test_cli.py`
+**Files:**
+- Modify: `src/zae_limiter/cli.py` (`_format_limit` at :2200, `resource_get_defaults` at :2339, `entity_get_limits` at :3345)
+- Test: `tests/unit/test_cli.py`
 
-`entity get-limits`, `resource get-defaults` and `system get-defaults` gain a `Schedule:` section showing each entry as canonical cron plus a human gloss, and a `Reset:` line. Setting schedules stays API + manifest (§1.5) — `-l` is **not** extended.
+**Interfaces:**
+- Consumes: `Limit.schedule` / `Limit.reset_schedule` (core plan Task 8, surface Task 1), `to_cron` (core plan Task 5)
+- Produces: a `Schedule:` block and a `Reset:` line under each limit
+
+**Display only.** Setting schedules stays API + manifest (§1.5); `-l` is **not** extended, and
+API/CLI parity is satisfied by `zae-limiter limits apply` being the CLI path.
+
+**Weekday and month render as names.** `to_cron` normalises, so an operator who typed `1-5` sees
+`MON-FRI` back. That is the one visible consequence of canonical storage (§4.3) and the tests
+below pin it deliberately rather than tolerating it.
+
+**The existing tests mock the repository**, not DynamoDB: `@patch("zae_limiter.repository.Repository")`
+with `mock_repo.get_limits = AsyncMock(return_value=[...])` and `Repository.open` as an
+`AsyncMock` (`tests/unit/test_cli.py:4755-4782`). `get_entity_disabled` must also be stubbed or
+the command raises after printing.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
 class TestScheduleDisplay:
-    def test_renders_canonical_cron_with_names(self):
-        out = runner.invoke(cli, ["entity", "get-limits", "user-1", "--resource", "gpt-4"]).output
-        assert "* 9-17 * * MON-FRI" in out
-        assert "America/New_York" in out
-        assert "50%" in out
+    """`get-limits` renders schedules; it does not set them (§5.4)."""
 
-    def test_renders_numeric_input_as_names(self):
-        """The one visible normalisation: 1-5 comes back as MON-FRI."""
-        ...
+    def _scheduled_limit(self):
+        from zae_limiter.models import Limit
+        from zae_limiter.schedule import ScheduleEntry
 
-    def test_renders_a_reset_line(self):
-        assert "Reset:" in out and "refill to capacity" in out
+        return Limit.per_minute("rpm", 1000).with_schedule(
+            (
+                ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.5),
+                ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", capacity=2000),
+            )
+        )
 
-    def test_unscheduled_limits_show_no_schedule_section(self):
-        ...
+    def _invoke(self, mock_repo_class, runner, limits):
+        mock_repo = Mock()
+        mock_repo.get_limits = AsyncMock(return_value=limits)
+        mock_repo.get_entity_disabled = AsyncMock(return_value=None)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        return runner.invoke(cli, ["entity", "get-limits", "user-123", "-r", "gpt-4"])
+
+    @patch("zae_limiter.repository.Repository")
+    def test_renders_each_entry_as_canonical_cron(self, mock_repo_class, runner):
+        result = self._invoke(mock_repo_class, runner, [self._scheduled_limit()])
+        assert result.exit_code == 0
+        assert "Schedule:" in result.output
+        assert "* 9-17 * * MON-FRI" in result.output
+        assert "America/New_York" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_renders_the_modifier_as_a_gloss(self, mock_repo_class, runner):
+        result = self._invoke(mock_repo_class, runner, [self._scheduled_limit()])
+        assert "50%" in result.output
+        assert "capacity 2000" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_numeric_weekday_renders_as_names(self, mock_repo_class, runner):
+        """The one visible normalisation of canonical storage (§4.3)."""
+        from zae_limiter.models import Limit
+        from zae_limiter.schedule import ScheduleEntry
+
+        limit = Limit.per_minute("rpm", 1000).with_schedule(
+            (ScheduleEntry(cron="* 9-17 * * 1-5", tz="America/New_York", scale=0.5),)
+        )
+        result = self._invoke(mock_repo_class, runner, [limit])
+        assert "* 9-17 * * MON-FRI" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_renders_a_reset_line(self, mock_repo_class, runner):
+        from zae_limiter.models import Limit
+        from zae_limiter.schedule import ScheduleEntry
+
+        limit = Limit.per_day("rpd", 10_000).with_reset_schedule(
+            (ScheduleEntry.reset(cron="0 0 * * *", tz="America/New_York"),)
+        )
+        result = self._invoke(mock_repo_class, runner, [limit])
+        assert "Reset:" in result.output
+        assert "0 0 * * *" in result.output
+        assert "refill to capacity" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_unscheduled_limits_show_no_schedule_block(self, mock_repo_class, runner):
+        from zae_limiter.models import Limit
+
+        result = self._invoke(mock_repo_class, runner, [Limit.per_minute("rpm", 1000)])
+        assert "Schedule:" not in result.output
+        assert "Reset:" not in result.output
+        assert "rpm: 1,000/min" in result.output
 ```
 
-- [ ] **Step 2–4:** Implement; commit — `✨ feat(cli): show schedules in get-limits output`
+- [ ] **Step 2: Run the test and watch it fail**
+
+Run: `uv run pytest tests/unit/test_cli.py -k ScheduleDisplay -v`
+Expected: FAIL — `assert 'Schedule:' in ''` (the block is not rendered)
+
+- [ ] **Step 3: Implement**
+
+Add a formatter beside `_format_limit` (:2200), returning the lines to print under a limit:
+
+```python
+def _format_schedule_lines(limit: Limit) -> list[str]:
+    """Render a limit's schedules for display (§4.3, §5.4).
+
+    Cron is rendered canonically, with weekday and month as names — the
+    stored form is compact and normalised, so an operator who typed `1-5`
+    sees `MON-FRI`. The gloss after the arrow states the effect.
+    """
+    lines: list[str] = []
+    if limit.schedule:
+        lines.append("    Schedule:")
+        for entry in limit.schedule:
+            if entry.scale is not None:
+                effect = f"{entry.scale:.0%}"
+            elif entry.capacity is not None:
+                effect = f"capacity {entry.capacity:,}"
+            else:
+                effect = "refill override"
+            lines.append(f"      {to_cron_display(entry)}  {entry.tz}  → {effect}")
+    if limit.reset_schedule:
+        lines.append("    Reset:")
+        for entry in limit.reset_schedule:
+            lines.append(
+                f"      {to_cron_display(entry)}  {entry.tz}  → refill to capacity"
+            )
+    return lines
+```
+
+`to_cron_display(entry)` renders the entry's `cron` through the canonical name-rendering path
+from core plan Task 5 — a stored `1-5` must come back as `MON-FRI`, so do not just echo
+`entry.cron`, which is whatever the caller happened to construct with.
+
+Then print the lines after `_format_limit` in both commands — `entity_get_limits` at :3385 and
+`resource_get_defaults` at the matching loop:
+
+```python
+                for limit in limits:
+                    click.echo(f"  {_format_limit(limit)}")
+                    for line in _format_schedule_lines(limit):
+                        click.echo(line)
+```
+
+- [ ] **Step 4: Run the test and watch it pass**
+
+Run: `uv run pytest tests/unit/test_cli.py -k ScheduleDisplay -v`
+Expected: PASS (5 tests)
+
+- [ ] **Step 5: Lint, type check, commit**
+
+```bash
+uv run ruff check --fix . && uv run ruff format . && uv run mypy
+uv run pytest tests/unit/test_cli.py -q
+git add src/zae_limiter/cli.py tests/unit/test_cli.py
+git commit -m "$(cat <<'EOF'
+✨ feat(cli): show schedules in get-limits output
+
+entity get-limits and resource get-defaults gain a Schedule: block and a
+Reset: line, each entry rendered as canonical cron plus a gloss saying
+what it does.
+
+Display only — `-l` is not extended; `limits apply` is the CLI path for
+setting schedules (§1.5).
+
+Refs #222
+EOF
+)"
+```
 
 ---
 
 ### Task 10: Failure handling
+
+> **Expand before picking this up.** The steps below carry real assertions but compress
+> the TDD cycle, and their fixture setup depends on `schedule.py`, which does not exist
+> yet. Write the full failing-test/implement/pass cycle against the real signatures once
+> the core plan has landed — writing it against invented ones now is the mistake this
+> plan's own review calls out.
 
 **Files:** Modify `src/zae_limiter/schedule.py`, `src/zae_limiter/repository.py` · Test `tests/unit/test_schedule.py`, `tests/integration/`
 
@@ -476,6 +1187,12 @@ class TestCorruptStoredSchedule:
 ---
 
 ### Task 11: E2E
+
+> **Expand before picking this up.** The steps below carry real assertions but compress
+> the TDD cycle, and their fixture setup depends on `schedule.py`, which does not exist
+> yet. Write the full failing-test/implement/pass cycle against the real signatures once
+> the core plan has landed — writing it against invented ones now is the mistake this
+> plan's own review calls out.
 
 **Files:** Modify `tests/e2e/test_localstack.py`
 
@@ -536,8 +1253,52 @@ class TestScheduleBoundaryE2E:
 
 **Spec coverage.** §3.6 → Tasks 1-4. §4.1 reset encoding → Task 4. §5.1 → Task 1 (no signature changes; the schedule rides on `Limit`). §5.2 → Task 8, building on the provisioner plan. §5.3 → Tasks 6-7. §5.4 → Task 9. §6 → Task 10. §7 → Task 5. §8 → Task 11. §9 limitations → documented in Task 12's ADR.
 
-**Placeholder scan — and an honest limit.** Tasks 1, 2 and 5 carry complete test code. Tasks 3, 4, and 6 through 11 carry complete *structure*, exact assertions and real file targets, but several test bodies use `...` for fixture setup, and Tasks 4, 6, 7, 8, 9 compress Steps 2-4 into one line. This is weaker than the core plan's Tasks 1-7 and weaker than the skill asks for. The reason is specific rather than general: these tasks depend on signatures the core plan produces (`encode`, `_sync_bucket_params`'s final shape, `LimitStatus` construction) that do not exist yet, and on CFN/CLI code I have not read line by line. **Before starting any of Tasks 3-11, expand that task against the then-current code.** Writing invented bodies now would be worse than saying so.
+**Expansion status.** Tasks 1, 2, 6, 7, 8 and 9 carry complete code: full TDD cycles, real
+fixture setup, and assertions verified against the tree at `cc1ff1dc`. Tasks 3, 4, 5, 10 and 11
+remain compressed and each now carries an explicit "expand before picking this up" note. That
+split is deliberate and is the same rule applied twice: a task whose target code exists gets
+written against it; a task whose target is `schedule.py` does not get written against a guess.
 
-**Type consistency.** `ScheduleEntry.reset()` is the only constructor for reset entries and sets `_reset=True`, which `__post_init__` branches on — so the "exactly one modifier" rule and the "no modifier" rule never both apply to one entry. `next_boundary` already takes `reset_sched` as a defaulted, unused second tuple in the core plan's Task 4, specifically so Task 2 here is a behaviour change inside one function rather than a signature change rippling through `lease.py` and `processor.py`. `now_ms` is keyword-only there for the same reason — a positional call cannot silently bind a timestamp to `reset_sched` once two tuples are in play.
+**Verified against the tree, not recalled.** Four things the earlier draft of Tasks 6-9 had wrong:
 
-**Cross-plan ordering.** Provisioner plan → core plan → this plan. Task 8 here is inert without the provisioner plan's Task 4; Tasks 1-5 here are inert without the core plan's `schedule.py`.
+1. **`differ.py` compares nothing.** `compute_diff` (`differ.py:24-101`) emits a `Change` for
+   every manifest item on every apply, choosing only `"create"` vs `"update"` by name. The draft
+   had tests asserting change *detection* ("an identical schedule is not spuriously different"),
+   which is false by construction. Task 6 now pins the real contract: the schedule survives into
+   `Change.data` through `to_dict()`, and `differ.py` needs no change at all.
+2. **The CFN generator is a Click command over raw dicts.** `limits_cfn_template`
+   (`limits_cli.py:153`) calls `_load_yaml` and walks the mapping; it never builds a
+   `LimitsManifest`. The draft's `generate_cfn_template(LimitsManifest.from_yaml(...))` does not
+   exist. Task 7 now targets `_limits_to_cfn` (:214) and its inverse `_cfn_limits_to_manifest`
+   (`handler.py:299`), and parses the emitted **YAML** (`click.echo(yaml.dump(...))`, :211) under
+   the `TenantLimits` resource key.
+3. **The Lambda builders return `bytes`.** `build_provisioner_package()` returns a zip, so the
+   draft's `build_provisioner(tmp_path) / "zae_limiter" / "schedule.py"` is not a thing. Task 8
+   now uses `zipfile.ZipFile(io.BytesIO(...)).namelist()` with the `LambdaBuilder` patch that
+   `test_provisioner_builder.py:32` already establishes.
+4. **CLI tests mock the repository, not DynamoDB.** `@patch("zae_limiter.repository.Repository")`
+   with `get_limits` and `get_entity_disabled` as `AsyncMock`s and `Repository.open` stubbed
+   (`test_cli.py:4755-4782`). Task 9 follows that, and stubs `get_entity_disabled` — omitting it
+   makes the command raise after printing, which reads as a formatting bug.
+
+**Spec coverage.** §3.6 → Tasks 1-4. §4.1 reset encoding → Task 4. §5.1 → Task 1 (no signature
+changes; the schedule rides on `Limit`). §5.2 → Task 8, building on PR #485. §5.3 → Tasks 6-7.
+§5.4 → Task 9. §6 → Task 10. §7 → Task 5. §8 → Task 11. §9 limitations → Task 12's ADR.
+
+**Type consistency.** `ScheduleEntry.reset()` is the only constructor for reset entries and sets
+`_reset=True`, so the "exactly one modifier" rule and the "no modifier" rule never both apply to
+one entry. `next_boundary` already takes `reset_sched` as a defaulted second tuple in the core
+plan's Task 4, so Task 2 here is a behaviour change inside one function rather than a signature
+change across `lease.py` and `processor.py`; `now_ms` is keyword-only there for the same reason.
+`LimitDecl.to_dict()` widens from `dict[str, int]` to `dict[str, Any]` in Task 6 — mypy catches
+the annotation if it is missed.
+
+**Known-incomplete, carried deliberately.** Task 8 stamps schedules through
+`sync_bucket_params`, which queries `BUCKET#{resource}#` and therefore no-ops on an entity's
+`_default_` config. That is **#487**, is not fixed here, and means a `_default_`-level schedule
+inherits the same gap until #487 lands. Task 8 says so inline so a reviewer does not read it as
+an oversight.
+
+**Cross-plan ordering.** Provisioner plan (PR #485) → core plan → this plan. Task 8 here is inert
+without PR #485's handler wiring; Tasks 1-5 here are inert without the core plan's
+`schedule.py`.
