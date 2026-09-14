@@ -29,6 +29,38 @@ from zae_limiter.models import BucketState
 from zae_limiter.sync_repository_protocol import SpeculativeResult
 
 
+def freeze_clock(repo) -> int:
+    """Pin ``repo._now_ms()`` to one instant for the rest of the test (#498).
+
+    ``SyncRepository._now_ms()`` is the single injectable token-bucket clock
+    (#430); see :class:`TestClockSeam` for the full contract. Freezing it makes
+    every later write and read observe zero elapsed time, so the lazy refill
+    credits nothing and a read-back assertion cannot drift upward.
+
+    **Why a read-back assertion drifts.** ``Limit.per_minute("rpm", 100)`` is
+    ``capacity=100, refill_amount=100, refill_period_seconds=60`` — one token
+    every 600 ms. ``available()`` refills lazily and read-only:
+    ``SyncRateLimiter.check_availability()`` reads ``_now_ms()`` once and calls
+    ``bucket.calculate_available()``, which runs ``bucket.refill_bucket()`` and
+    clamps at ``capacity``. So after an ``acquire(consume={"rpm": 1})`` leaves
+    the bucket at 99, ``600 ms`` of wall clock between the write that stamped
+    ``rf`` and the read flips ``99`` to ``100`` — exactly the ``assert 100 ==
+    99`` that #498 hit in CI. (599 ms still reads 99:
+    ``599 * 100_000 // 60_000 == 998`` millitokens, short of the 1_000 needed.)
+    600 ms between two moto-backed calls is reachable on a loaded ``-n auto``
+    runner, which is why it was intermittent.
+
+    Call this *before* the ``acquire()``, so the ``rf`` stamp and the later
+    read share one instant.
+
+    Returns:
+        The frozen instant, in epoch milliseconds.
+    """
+    frozen = repo._now_ms()
+    repo._now_ms = lambda: frozen
+    return frozen
+
+
 class TestRateLimiterEntities:
     """Tests for entity management."""
 
@@ -1326,6 +1358,7 @@ class TestRateLimiterCascade:
         """Test that entity with cascade=True consumes from parent too."""
         sync_limiter.create_entity(entity_id="proj-1")
         sync_limiter.create_entity(entity_id="key-1", parent_id="proj-1", cascade=True)
+        freeze_clock(sync_limiter._repository)
         limits = [Limit.per_minute("rpm", 100)]
         with sync_limiter.acquire(
             entity_id="key-1", resource="gpt-4", limits=limits, consume={"rpm": 1}
@@ -1342,6 +1375,7 @@ class TestRateLimiterCascade:
         """Test that entities without cascade=True do NOT cascade."""
         sync_limiter.create_entity(entity_id="proj-1")
         sync_limiter.create_entity(entity_id="key-1", parent_id="proj-1")
+        freeze_clock(sync_limiter._repository)
         limits = [Limit.per_minute("rpm", 100)]
         with sync_limiter.acquire(
             entity_id="key-1", resource="gpt-4", limits=limits, consume={"rpm": 1}
@@ -1376,6 +1410,7 @@ class TestRateLimiterCascade:
     def test_cascade_entity_without_parent(self, sync_limiter):
         """Test that cascade=True on entity without parent is harmless."""
         sync_limiter.create_entity(entity_id="orphan-1", cascade=True)
+        freeze_clock(sync_limiter._repository)
         limits = [Limit.per_minute("rpm", 100)]
         with sync_limiter.acquire(
             entity_id="orphan-1", resource="gpt-4", limits=limits, consume={"rpm": 1}
