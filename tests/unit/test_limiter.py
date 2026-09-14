@@ -4787,8 +4787,13 @@ class TestBucketLimitSync:
     async def test_bucket_sync_reraises_unexpected_client_error(self, limiter):
         """Unexpected ClientError during bucket sync is re-raised.
 
-        Verifies that non-ConditionalCheckFailed errors propagate.
+        Verifies that non-ConditionalCheckFailed errors propagate. They
+        surface wrapped in `FanoutIncomplete`, which reports how many bucket
+        items the fan-out managed to write before stopping — the config item
+        is already committed at that point, so the caller has to be told the
+        change is half-applied (#487, same contract as the ADR-125 fan-out).
         """
+        from zae_limiter.exceptions import FanoutIncomplete
 
         # First create a bucket so the conditional check passes
         await limiter.set_limits("user-6", [Limit.per_minute("rpm", 100)], resource="api")
@@ -4809,10 +4814,14 @@ class TestBucketLimitSync:
 
         limiter._repository._client.update_item = mock_update_item
 
-        with pytest.raises(ClientError) as exc_info:
+        with pytest.raises(FanoutIncomplete) as exc_info:
             await limiter.set_limits("user-6", [Limit.per_minute("rpm", 200)], resource="api")
 
-        assert exc_info.value.response["Error"]["Code"] == "InternalServerError"
+        assert isinstance(exc_info.value.cause, ClientError)
+        assert exc_info.value.cause.response["Error"]["Code"] == "InternalServerError"
+        assert exc_info.value.stamped == 0
+        assert exc_info.value.entity_id == "user-6"
+        assert exc_info.value.resource == "api"
 
 
 class TestBucketReconciliation:
