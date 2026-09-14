@@ -127,24 +127,24 @@ class TestNextBoundarySpansBothTuples:
     def test_a_reset_edge_is_a_boundary(self):
         params = (ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.5),)
         # From 22:00 the next param change is 09:00, but the reset fires at 00:00.
-        assert _iso(next_boundary(params, DAILY, _ms("2026-09-15 22:00"))).startswith(
+        assert _iso(next_boundary(params, DAILY, now_ms=_ms("2026-09-15 22:00"))).startswith(
             "2026-09-16T00:00"
         )
 
     def test_reset_only_schedule_still_produces_boundaries(self):
-        assert _iso(next_boundary((), DAILY, _ms("2026-09-15 09:00"))).startswith(
+        assert _iso(next_boundary((), DAILY, now_ms=_ms("2026-09-15 09:00"))).startswith(
             "2026-09-16T00:00"
         )
 
     def test_neither_tuple_means_no_boundary(self):
-        assert next_boundary((), (), _ms("2026-09-15 09:00")) is None
+        assert next_boundary((), (), now_ms=_ms("2026-09-15 09:00")) is None
 ```
 
 - [ ] **Step 2: Run and watch it fail** — `ImportError: cannot import name 'prev_reset_edge'`
 
 - [ ] **Step 3: Implement.** `prev_reset_edge` scans **backwards** from `now_ms` at the same adaptive granularity and caps as `next_boundary`, looking for the most recent transition from non-matching to matching. No edge within the cap means the expression never matches (`0 0 30 2 *`) — return `None`, which resets nothing.
 
-Change `next_boundary(sched, now_ms)` to `next_boundary(sched, reset_sched, now_ms)`: the forward scan now returns the earliest instant at which *either* the active param entry changes *or* a reset edge fires. Update the core plan's call sites in `lease.py` and `processor.py`.
+`next_boundary` needs **no signature change** — core plan Task 4 already accepts `reset_sched`; it simply ignored it. Make the forward scan return the earliest instant at which *either* the active param entry changes *or* a reset edge fires. The existing `lease.py` and `processor.py` call sites keep working untouched, because they pass `sched` positionally and `now_ms=` by keyword; that is the whole reason Task 4 took the parameter early.
 
 - [ ] **Step 4: Run, commit** — `✨ feat(models): detect reset edges and fold them into vu`
 
