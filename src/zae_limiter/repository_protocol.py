@@ -153,6 +153,25 @@ class RepositoryProtocol(Protocol):
         """Multiplier for bucket TTL calculation (Issue #271)."""
         ...
 
+    # -------------------------------------------------------------------------
+    # Clock
+    # -------------------------------------------------------------------------
+
+    def _now_ms(self) -> int:
+        """Current time in epoch milliseconds — the backend's only clock.
+
+        Every millisecond-resolution clock read on the rate-limiting paths
+        (limiter, lease and backend alike) goes through here, which makes it
+        the one seam a test patches to control time deterministically —
+        no sleeping, and no patching of the global ``time`` module, which
+        would also move moto's and botocore's clocks (issue #430).
+
+        One logical ``acquire()`` must observe exactly one reading: callers
+        that read it thread the value onward (see ``speculative_consume``'s
+        ``now_ms``) rather than reading again.
+        """
+        ...
+
     @property
     def capabilities(self) -> "BackendCapabilities":
         """
@@ -625,6 +644,7 @@ class RepositoryProtocol(Protocol):
         consume: dict[str, int],
         ttl_seconds: int | None = None,
         shard_id: int | None = None,
+        now_ms: int | None = None,
     ) -> SpeculativeResult:
         """Attempt speculative UpdateItem with condition check.
 
@@ -640,6 +660,9 @@ class RepositoryProtocol(Protocol):
             ttl_seconds: TTL in seconds from now, or None for no TTL change
             shard_id: Explicit shard to target (skips random selection and
                 cascade logic). None means auto-select from entity cache.
+            now_ms: The caller's "now" (issue #430), so one logical
+                ``acquire()`` observes one instant. None reads the clock via
+                ``_now_ms()`` once inside.
 
         Returns:
             SpeculativeResult with success flag and either:

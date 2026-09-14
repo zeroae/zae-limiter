@@ -8,7 +8,6 @@ Changes should be made to the source file, then regenerated.
 
 import logging
 import random
-import time
 import warnings
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -635,9 +634,9 @@ class SyncRateLimiter:
             RateLimitExceeded: If the bucket is truly exhausted (refill
                 wouldn't help). Saves 1 RCU vs the slow path.
         """
-        now_ms = int(time.time() * 1000)
+        now_ms = self._repository._now_ms()
         result = self._repository.speculative_consume(
-            entity_id=entity_id, resource=resource, consume=consume
+            entity_id=entity_id, resource=resource, consume=consume, now_ms=now_ms
         )
         if not result.success:
             parent_hint = (
@@ -678,7 +677,7 @@ class SyncRateLimiter:
                     untried = [s for s in range(result.shard_count) if s != result.shard_id]
                     return (None, random.choice(untried), result.shard_count, parent_hint)
                 retry_result, missing_shard = self._retry_on_other_shard(
-                    entity_id, resource, consume, ttl_seconds=None, result=result
+                    entity_id, resource, consume, ttl_seconds=None, result=result, now_ms=now_ms
                 )
                 if retry_result is not None:
                     return (retry_result, result.shard_id, result.shard_count, parent_hint)
@@ -734,7 +733,7 @@ class SyncRateLimiter:
         elif result.cascade and result.parent_id:
             parent_id = result.parent_id
             parent_result = self._repository.speculative_consume(
-                entity_id=parent_id, resource=resource, consume=consume
+                entity_id=parent_id, resource=resource, consume=consume, now_ms=now_ms
             )
             if parent_result.success:
                 for state in parent_result.buckets:
@@ -930,6 +929,7 @@ class SyncRateLimiter:
         consume: dict[str, int],
         ttl_seconds: int | None,
         result: "SpeculativeResult",
+        now_ms: int,
     ) -> "tuple[SyncLease | None, int | None]":
         """Retry speculative consume on untried shards (GHSA-76rv shard retry).
 
@@ -943,6 +943,9 @@ class SyncRateLimiter:
             consume: Amount per limit (tokens, not milli)
             ttl_seconds: TTL in seconds from now, or None for no TTL change
             result: The failed SpeculativeResult from the initial shard
+            now_ms: The acquire's single clock reading (issue #430), carried
+                on so a retry does not observe a different instant than the
+                attempt that sent it here
 
         Returns:
             ``(lease, missing_shard)``. ``lease`` is set if a retry on another
@@ -962,7 +965,7 @@ class SyncRateLimiter:
             new_shard = random.choice(untried)
             tried_shards.add(new_shard)
             retry = self._repository.speculative_consume(
-                entity_id, resource, consume, ttl_seconds, shard_id=new_shard
+                entity_id, resource, consume, ttl_seconds, shard_id=new_shard, now_ms=now_ms
             )
             if retry.success:
                 return (
@@ -1173,7 +1176,7 @@ class SyncRateLimiter:
 
         Returns None if parent acquire fails (caller should compensate child).
         """
-        now_ms = int(time.time() * 1000)
+        now_ms = self._repository._now_ms()
         parent_limits, parent_config_source = self._resolve_limits(parent_id, resource, None)
         parent_buckets = self._fetch_buckets([parent_id], resource, parent_shard)
         parent_entries: list[LeaseEntry] = []
@@ -1259,7 +1262,7 @@ class SyncRateLimiter:
         """
         validate_identifier(entity_id, "entity_id")
         validate_resource(resource)
-        now_ms = int(time.time() * 1000)
+        now_ms = self._repository._now_ms()
         child_shard, child_shard_count = self._repository.select_shard(
             entity_id, resource, shard_id, shard_count
         )
@@ -1518,7 +1521,7 @@ class SyncRateLimiter:
             ValidationError: If no limits found at any level and no override provided
         """
         self._ensure_initialized()
-        now_ms = int(time.time() * 1000)
+        now_ms = self._repository._now_ms()
         if use_stored_limits:
             warnings.warn(
                 "use_stored_limits is deprecated and will be removed in v1.0. Limits are now always resolved from stored config (Entity > Resource > System). Pass limits parameter as override if needed.",
@@ -1570,7 +1573,7 @@ class SyncRateLimiter:
             ValidationError: If no limits found at any level and no override provided
         """
         self._ensure_initialized()
-        now_ms = int(time.time() * 1000)
+        now_ms = self._repository._now_ms()
         if use_stored_limits:
             warnings.warn(
                 "use_stored_limits is deprecated and will be removed in v1.0. Limits are now always resolved from stored config (Entity > Resource > System). Pass limits parameter as override if needed.",
@@ -1811,7 +1814,7 @@ class SyncRateLimiter:
             ResourceCapacity with aggregated data
         """
         self._ensure_initialized()
-        now_ms = int(time.time() * 1000)
+        now_ms = self._repository._now_ms()
         buckets = self._repository.get_resource_buckets(resource, limit_name)
         if parents_only:
             parent_ids = set()

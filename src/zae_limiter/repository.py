@@ -572,14 +572,14 @@ class Repository:
         return self._caller_identity_arn
 
     def _now_ms(self) -> int:
-        """Current time in milliseconds."""
-        # TODO(clock-seam): _now_ms() is not the single source of truth for time.
-        # limiter.py and lease.py compute now via inline `int(time.time() * 1000)`
-        # instead of routing through here, so a single acquire() reads the clock
-        # from multiple places and `_now_ms` cannot be monkeypatched to control
-        # time in tests. Make `_now_ms()` the injectable clock seam: add it to
-        # RepositoryProtocol and route limiter.py/lease.py through
-        # `self._repository._now_ms()` (regenerating all sync twins).
+        """Current time in epoch milliseconds — the single clock seam (#430).
+
+        Declared on ``RepositoryProtocol`` so ``limiter.py`` and ``lease.py``
+        read the clock through here too. Patching this one method controls
+        time across a whole ``acquire()`` without sleeping and without
+        touching the global ``time`` module (which moto and botocore also
+        read).
+        """
         return int(time.time() * 1000)
 
     # -------------------------------------------------------------------------
@@ -2423,6 +2423,7 @@ class Repository:
         consume: dict[str, int],
         ttl_seconds: int | None = None,
         shard_id: int | None = None,
+        now_ms: int | None = None,
     ) -> SpeculativeResult:
         """Attempt speculative UpdateItem with condition check.
 
@@ -2440,6 +2441,11 @@ class Repository:
             ttl_seconds: TTL in seconds from now, or None for no TTL change
             shard_id: Explicit shard to target (skips random selection and
                 cascade logic). None means auto-select from entity cache.
+            now_ms: The caller's "now" (issue #430). The limiter passes the
+                same reading it used for its own refill math, so one logical
+                ``acquire()`` observes one instant: the ``ttl`` stamp, the
+                TTL-expiry guard and the caller's decision all agree. None
+                reads the clock once here, for callers outside an acquire.
 
         Returns:
             SpeculativeResult with:
@@ -2447,10 +2453,13 @@ class Repository:
             - On cache miss or non-cascade: parent_result is None
             - On failure: old_buckets from ALL_OLD (or None if bucket missing)
         """
+        if now_ms is None:
+            now_ms = self._now_ms()
+
         # Explicit shard_id: direct single-shard consume (shard retry path)
         if shard_id is not None:
             return await self._speculative_consume_single(
-                entity_id, resource, consume, ttl_seconds, shard_id=shard_id
+                entity_id, resource, consume, ttl_seconds, shard_id=shard_id, now_ms=now_ms
             )
 
         # Check entity cache for parallel cascade opportunity (issue #318)
@@ -2478,6 +2487,7 @@ class Repository:
                         consume,
                         ttl_seconds,
                         shard_id=effective_shard_id,
+                        now_ms=now_ms,
                     ),
                     self._speculative_consume_single(
                         parent_id_cached,
@@ -2485,6 +2495,7 @@ class Repository:
                         consume,
                         ttl_seconds,
                         shard_id=parent_shard_id,
+                        now_ms=now_ms,
                     ),
                 )
                 if parent_result.success:
@@ -2519,7 +2530,7 @@ class Repository:
 
         # Cache miss or non-cascade: single UpdateItem
         result = await self._speculative_consume_single(
-            entity_id, resource, consume, ttl_seconds, shard_id=effective_shard_id
+            entity_id, resource, consume, ttl_seconds, shard_id=effective_shard_id, now_ms=now_ms
         )
         if result.success:
             self._learn_shard_count(
@@ -2534,6 +2545,7 @@ class Repository:
         consume: dict[str, int],
         ttl_seconds: int | None = None,
         shard_id: int = 0,
+        now_ms: int | None = None,
     ) -> SpeculativeResult:
         """Issue a single speculative UpdateItem on a bucket shard.
 
@@ -2547,10 +2559,17 @@ class Repository:
             consume: Amount per limit (tokens, not milli).
             ttl_seconds: TTL in seconds, or None for no TTL change.
             shard_id: Target shard index (default 0).
+            now_ms: The caller's "now" (issue #430). Both clock-derived parts
+                of the write — the ``ttl`` stamp and the ``#ttl > :now_epoch``
+                expiry guard — are derived from this one value. None reads
+                the clock once here.
 
         Returns:
             SpeculativeResult with shard_id and shard_count populated.
         """
+        if now_ms is None:
+            now_ms = self._now_ms()
+
         client = await self._get_client()
 
         # Build ADD expression for each limit
@@ -2596,14 +2615,13 @@ class Repository:
 
         # Handle TTL
         if ttl_seconds is not None:
-            now_ms = self._now_ms()
             ttl_epoch = schema.calculate_ttl(now_ms, ttl_seconds)
             update_expr = f"SET #ttl = :ttl {update_expr}"
             attr_names["#ttl"] = "ttl"
             attr_values[":ttl"] = {"N": str(ttl_epoch)}
 
         # Reject expired-but-not-yet-deleted buckets (DynamoDB TTL is eventual)
-        now_epoch = self._now_ms() // 1000
+        now_epoch = now_ms // 1000
         attr_names["#ttl"] = "ttl"
         attr_values[":now_epoch"] = {"N": str(now_epoch)}
         condition_parts.append("(attribute_not_exists(#ttl) OR #ttl > :now_epoch)")

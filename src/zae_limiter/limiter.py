@@ -3,7 +3,6 @@
 import asyncio
 import logging
 import random
-import time
 import warnings
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -752,13 +751,14 @@ class RateLimiter:
             RateLimitExceeded: If the bucket is truly exhausted (refill
                 wouldn't help). Saves 1 RCU vs the slow path.
         """
-        now_ms = int(time.time() * 1000)
+        now_ms = self._repository._now_ms()
 
         # Repository handles cache check and parallel writes (issue #318)
         result = await self._repository.speculative_consume(
             entity_id=entity_id,
             resource=resource,
             consume=consume,
+            now_ms=now_ms,
         )
 
         if not result.success:
@@ -829,7 +829,7 @@ class RateLimiter:
                     untried = [s for s in range(result.shard_count) if s != result.shard_id]
                     return None, random.choice(untried), result.shard_count, parent_hint
                 retry_result, missing_shard = await self._retry_on_other_shard(
-                    entity_id, resource, consume, ttl_seconds=None, result=result
+                    entity_id, resource, consume, ttl_seconds=None, result=result, now_ms=now_ms
                 )
                 if retry_result is not None:
                     return retry_result, result.shard_id, result.shard_count, parent_hint
@@ -909,6 +909,7 @@ class RateLimiter:
                 entity_id=parent_id,
                 resource=resource,
                 consume=consume,
+                now_ms=now_ms,
             )
 
             if parent_result.success:
@@ -1185,6 +1186,7 @@ class RateLimiter:
         consume: dict[str, int],
         ttl_seconds: int | None,
         result: "SpeculativeResult",
+        now_ms: int,
     ) -> "tuple[Lease | None, int | None]":
         """Retry speculative consume on untried shards (GHSA-76rv shard retry).
 
@@ -1198,6 +1200,9 @@ class RateLimiter:
             consume: Amount per limit (tokens, not milli)
             ttl_seconds: TTL in seconds from now, or None for no TTL change
             result: The failed SpeculativeResult from the initial shard
+            now_ms: The acquire's single clock reading (issue #430), carried
+                on so a retry does not observe a different instant than the
+                attempt that sent it here
 
         Returns:
             ``(lease, missing_shard)``. ``lease`` is set if a retry on another
@@ -1219,7 +1224,7 @@ class RateLimiter:
             tried_shards.add(new_shard)
 
             retry = await self._repository.speculative_consume(
-                entity_id, resource, consume, ttl_seconds, shard_id=new_shard
+                entity_id, resource, consume, ttl_seconds, shard_id=new_shard, now_ms=now_ms
             )
             if retry.success:
                 return (
@@ -1467,7 +1472,7 @@ class RateLimiter:
 
         Returns None if parent acquire fails (caller should compensate child).
         """
-        now_ms = int(time.time() * 1000)
+        now_ms = self._repository._now_ms()
 
         # Resolve parent limits
         parent_limits, parent_config_source = await self._resolve_limits(parent_id, resource, None)
@@ -1585,7 +1590,7 @@ class RateLimiter:
         validate_identifier(entity_id, "entity_id")
         validate_resource(resource)
 
-        now_ms = int(time.time() * 1000)
+        now_ms = self._repository._now_ms()
 
         # The shard is part of a bucket's identity (GHSA-76rv). Resolve it
         # once here and carry it through the read, the LeaseEntry and the
@@ -1945,7 +1950,7 @@ class RateLimiter:
             ValidationError: If no limits found at any level and no override provided
         """
         await self._ensure_initialized()
-        now_ms = int(time.time() * 1000)
+        now_ms = self._repository._now_ms()
 
         # Deprecation warning for use_stored_limits
         if use_stored_limits:
@@ -2008,7 +2013,7 @@ class RateLimiter:
             ValidationError: If no limits found at any level and no override provided
         """
         await self._ensure_initialized()
-        now_ms = int(time.time() * 1000)
+        now_ms = self._repository._now_ms()
 
         # Deprecation warning for use_stored_limits
         if use_stored_limits:
@@ -2314,7 +2319,7 @@ class RateLimiter:
             ResourceCapacity with aggregated data
         """
         await self._ensure_initialized()
-        now_ms = int(time.time() * 1000)
+        now_ms = self._repository._now_ms()
 
         buckets = await self._repository.get_resource_buckets(resource, limit_name)
 
