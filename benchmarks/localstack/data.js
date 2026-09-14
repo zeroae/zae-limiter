@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789414211691,
+  "lastUpdate": 1789418304189,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -17984,6 +17984,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.022721012582556065",
             "extra": "mean: 1.0862338566000176 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e65c8db09f5e5f37c5f6bc8eba86d2cf4725f430",
+          "message": "✨ feat(models): resolve effective limit params from a schedule (#499)\n\n## Summary\n\nTask 3 of 14 in the scheduled-limits core plan. Adds\n`effective_params(cp_milli, ra_milli, rp_ms, sched, now_ms) ->\ntuple[int, int, int]` to `schedule.py`: the capacity, refill amount and\nrefill period in force at a given instant.\n\n- **Pure by construction** — plain ints in and out, no `models` import,\nno clock injection, no config read. Every test calls it directly with an\nexplicit `now_ms`.\n- **An empty schedule returns the base unchanged**, so the unscheduled\npath costs one tuple check.\n- **First matching entry wins**; no match returns the base.\n- **`scale` multiplies capacity AND refill amount together**, so\ntime-to-fill is preserved. Scaling only the ceiling would silently\ndouble refill speed relative to bucket size.\n- Truncates rather than rounds (rounding a limit *up* admits more than\nthe window allows), with a floor of 1 milli-unit since a zero capacity\nis unadmittable.\n- Fixes a plan omission: Step 3 never added `effective_params` to\n`__all__`.\n\nNo generated code is involved — the generated-sync hook reported no\nfiles to check, confirming `schedule.py` is outside the transformed set.\n\n## Test strengthening (the substance of this change)\n\nA mutation harness was run against the new function: **9 mutants, all\ncaught**. Getting there exposed four places where the plan's own tests\nwould have passed under a broken implementation.\n\n**1. `test_first_matching_entry_wins` was satisfied by \"pick the LARGEST\nmatch.\"** The plan pairs scale `0.5` first with `0.1` second and asserts\n`500_000` — which `max()` also returns. Added the same pair **reversed**\n(expecting `100_000`), and mutation-verified that a max-wins\nimplementation fails *only* that added test. Without it, max-wins ships\ngreen. Task 4's `next_boundary` scan assumes first-match semantics, so\nthis would have surfaced as an inexplicable boundary bug two tasks\nlater.\n\n**2. The `scale` fixture used a base where capacity equalled refill\namount**, so the ratio check could not distinguish \"scaled capacity\nonly\" from \"scaled neither\". Changed to `(1_000_000, 200_000, 60_000)`\nwith an exact-tuple assertion; each broken variant now fails 8 tests.\n\n**3. The floor test asserted `cp >= 1 and ra >= 1`**, which returning\nthe base untouched also satisfies — i.e. not applying `scale` at all.\nNow an exact `== (1, 1, 60_000)` on base `(1000, 500, 60_000)`.\n\n**4. `test_absolute_refill_fields_override_individually` set all three\nfields at once**, so nothing was individual. Split into capacity-only,\nrefill_amount-only, refill_period-only, and all-three. Mutation-verified\nthat wiring the `refill_amount` override to `entry.capacity` is caught,\nas is dropping the `x1000` on `refill_period`.\n\nAlso added: per-entry timezone coverage (parametrised NY/UTC over one\ninstant that is 14:00 in one and 18:00 in the other, pinning that\n`entry.tz` actually reaches `parse_cron`); `scale > 1` as a multiplier\nrather than a discount; and truncation-not-rounding.\n\n## The config-cache trap did not apply here — and is not gone\n\nRecording this because it matters for later tasks. `effective_params` is\npure and no `Repository` is touched, so the trap is simply out of reach\nat Task 3.\n\nThe trap: `config_cache.py:99` and `:103` still use `time.time()`, so\nadvancing the injectable `_now_ms` across a window boundary returns\npre-boundary limits until the 60s cache TTL expires. It first becomes\nreachable at **Task 9 or Task 12**, whichever first resolves limits\nthrough a `Repository` across a boundary. \"Task 3 didn't need it\" must\nnot be read as \"the trap is gone.\"\n\n## Cherry-picked commit a54c7008\n\nFolded in at the owner's request rather than getting its own PR. It is a\nplanning-doc correction to **Task 13** of the same plan file: `vu = 0`\nmust be written on **every** fan-out, rather than nested inside `if\nscheduled:`.\n\nAs originally written, an entity with no schedule got no forced\nmaterialising pass, so a `set_limits` capacity shrink left a surplus the\nspeculative fast path could spend — parked **PR #469**'s gap surviving\n#222 intact. Since most entities have no schedule, that was the common\ncase rather than an edge.\n\nIt also removes `vu` from the `else` branch's REMOVE list, because `SET`\nand `REMOVE` on one attribute in a single `UpdateExpression` is the\n`ValidationException` that #488 hit.\n\nThis is what lets #222 subsume #469 **completely** rather than\npartially. **#469 should not be closed until Task 13 lands.**\n\n## Third commit fac8ccc1 — the cherry-picked correction was itself\nbroken\n\nThe PR now carries three commits: **a54c7008** (the cherry-picked\nplanning-doc correction above), **9c858cbd** (the Task 3 code,\nunchanged), and **fac8ccc1**, which repairs a54c7008.\n\na54c7008 removed the `vu = 0` write that was nested inside `if\nscheduled:` and added prose saying the write belongs *outside* the block\n— but never added the code back. `rg -c vu_zero` across the plan file\nreturned **zero**: Task 13's sample wrote `vu` on **no** path at all,\nstrictly worse than the nesting it was correcting. It also left Task\n13's own test asserting `BUCKET_FIELD_VU not in item` after an\n*unscheduled* `set_limits`, which contradicts the new rule, since that\nitem now carries `vu = 0` — self-clearing happens on the next\nmaterialising pass, not during the fan-out.\n\nfac8ccc1 fixes both, plus several things the sweep turned up:\n\n| Fix | Why |\n|-----|-----|\n| Restores the `vu = 0` write after **both** branches | The rule the\ncorrection stated but never implemented. The #488 SET-and-REMOVE hazard\nis noted **inline**, where someone editing the `else` branch will see\nit, rather than only in prose eighty lines up |\n| Renames `test_removing_a_schedule_removes_the_stamps` →\n`test_removing_a_schedule_removes_sched_but_still_expires_vu` |\nCorrecting the assertion alone would have left the name arguing the\nopposite. `sched`/`sched_tz` removal and `vu = 0` are different events |\n| Corrects Step 2's expected-failure line | It named only `KeyError:\n'sched'`; it now also names `KeyError: 'vu'` on the unscheduled test —\ndeliberately, since that is the assertion that reappears if the write is\never moved back inside the conditional |\n| Qualifies Task 11's `test_absent_vu_does_not_affect_the_fast_path`\ndocstring | Its claim that unscheduled buckets carry no `vu` is still\ntrue *for that test* but no longer universal; added as a parenthetical |\n| Adds `test_a_never_scheduled_fan_out_still_expires_vu` | Covers a gap\nthat **predates** the edit: every existing test in that class either\ncarries a schedule or is removing one. Nothing covered a bucket that\nnever had one and is simply shrinking a capacity — #469's literal\nscenario, and the shape most `set_limits` calls take |\n\nAll 48 `vu` references in the plan were swept for other collateral;\nnothing else was broken.\n\n**For reviewers:** Task 3's code commit (9c858cbd) is untouched by all\nof this and remains green — 3418 unit, 26 gevent, 100% patch coverage.\n\n## Test plan\n\n- [x] `tests/unit/test_schedule.py` — 48 passed (35 pre-existing + 13\nnew), after first failing with `cannot import name 'effective_params'`\n- [x] Full unit suite — 3418 passed\n- [x] Gevent — 26 passed with `-n 0`\n- [x] `mypy` clean on 58 files\n- [x] `ruff` and `pre-commit` clean\n- [x] Pre-push patch coverage 100% — 11 new lines, 0 missing\n- [x] Mutation harness — 9 mutants, all caught\n\n## Deferred\n\n- No `parse_cron` memoisation. Task 4 owns that; recorded as a deferred\nminor.\n\nRefs #222\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01QdVj8nPhUwTz2aNJzMFqt5",
+          "timestamp": "2026-09-14T16:33:19-04:00",
+          "tree_id": "b0d2977c9fa55836875c028dec36a06988aab639",
+          "url": "https://github.com/zeroae/zae-limiter/commit/e65c8db09f5e5f37c5f6bc8eba86d2cf4725f430"
+        },
+        "date": 1789418303150,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 25.61181451284765,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008510623987774366",
+            "extra": "mean: 39.04448079999838 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 17.463581403680696,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009444730692845273",
+            "extra": "mean: 57.26202300000365 msec\nrounds: 13"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 41.29367888602925,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0028915260328331634",
+            "extra": "mean: 24.216781526296185 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 36.495823972680704,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005085819710286865",
+            "extra": "mean: 27.400395199970262 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 22.46492519844138,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0062875029048747024",
+            "extra": "mean: 44.513836176466775 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 90.79055898978746,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0014375428005465399",
+            "extra": "mean: 11.014361086954917 msec\nrounds: 23"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 26.872250214038054,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0049849829680127565",
+            "extra": "mean: 37.21310988231273 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 26.469935916226156,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006997455652173682",
+            "extra": "mean: 37.778708764723405 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 26.908193745116517,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00643175237128729",
+            "extra": "mean: 37.16340121051369 msec\nrounds: 38"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 24.690287604204055,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007956900831649865",
+            "extra": "mean: 40.50175583332324 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 28.70371438405093,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00465929260541926",
+            "extra": "mean: 34.83869671430555 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 24.088281638895833,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00992494797545966",
+            "extra": "mean: 41.513961642879494 msec\nrounds: 28"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 31.75072736903887,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005515435556467154",
+            "extra": "mean: 31.495341457126152 msec\nrounds: 35"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9327497371020395,
+            "unit": "iter/sec",
+            "range": "stddev: 0.002169273391112816",
+            "extra": "mean: 517.397561000007 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9323822354094946,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0031249652139384667",
+            "extra": "mean: 517.4959599999056 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9450423468221247,
+            "unit": "iter/sec",
+            "range": "stddev: 0.011509430818314612",
+            "extra": "mean: 1.058153640799992 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9250246815732975,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006007842177267182",
+            "extra": "mean: 1.0810522356000092 sec\nrounds: 5"
           }
         ]
       }
