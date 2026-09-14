@@ -4472,34 +4472,44 @@ class TestLeaseCommitTTL:
 
         ADR-136 / issue #489. `_try_parent_only_acquire` returns None when the
         parent bucket is missing, so this path can only ever *update* a bucket —
-        a "created via the parent-only path" test is not constructible. The
-        parent's bucket is therefore born under system defaults (with a TTL),
-        the parent is then given an entity-wide `_default_` config, and the next
-        cascade acquire that routes through the parent-only path must remove it.
+        a "created via the parent-only path" test is not constructible.
+
+        The arrangement writes the `ttl` attribute onto the parent's bucket
+        directly rather than getting some API to stamp it. That is the state
+        under test — a bucket that predates the entity's configuration, or was
+        created by a pre-ADR-136 client — and stamping it by hand keeps the
+        precondition from depending on which writer happens to set TTLs today.
+        Deriving it from `set_limits(..., resource="_default_")` was the
+        original arrangement and it silently stopped working when #487/#488
+        made that call reach real-resource buckets and clear their TTL itself,
+        which would have left the final assertion passing vacuously.
         """
         from zae_limiter.schema import pk_bucket, sk_state
 
         await limiter.create_entity("parent-1")
         await limiter.create_entity("child-1", parent_id="parent-1", cascade=True)
+        # The parent carries an entity-wide `_default_` config; the child has
+        # none, so it resolves from system. Configured before any bucket
+        # exists, so the fan-out has nothing to find and writes nothing.
         await limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
+        await limiter.set_limits("parent-1", [Limit.per_minute("rpm", 1000)])
 
-        # Prime both buckets from system defaults -> parent bucket carries a TTL
+        # Prime both buckets
         async with limiter.acquire("child-1", "gpt-4", {"rpm": 1}):
             pass
 
         parent_pk = pk_bucket(limiter._repository.namespace_id, "parent-1", "gpt-4", 0)
+        client = await limiter._repository._get_client()
+        await client.update_item(
+            TableName=limiter._repository.table_name,
+            Key={"PK": {"S": parent_pk}, "SK": {"S": sk_state()}},
+            UpdateExpression="SET #ttl = :ttl",
+            ExpressionAttributeNames={"#ttl": "ttl"},
+            ExpressionAttributeValues={":ttl": {"N": str(int(time.time()) + 3600)}},
+        )
         item = await limiter._repository._get_item(parent_pk, sk_state())
         assert item is not None
-        assert "ttl" in item, "precondition: system-derived parent bucket starts with a TTL"
-
-        # Give the parent an entity-wide default. _sync_bucket_params keys the
-        # named resource (`_default_`), so it does not touch the gpt-4 bucket —
-        # the TTL below can only have been removed by the parent-only path.
-        await limiter.set_limits("parent-1", [Limit.per_minute("rpm", 1000)])
-        await limiter._repository.invalidate_config_cache()
-        item = await limiter._repository._get_item(parent_pk, sk_state())
-        assert item is not None
-        assert "ttl" in item, "precondition: set_limits(_default_) must not touch gpt-4"
+        assert "ttl" in item, "precondition: the parent bucket under test carries a TTL"
 
         limiter._speculative_writes = True
         now_ms = int(time.time() * 1000)

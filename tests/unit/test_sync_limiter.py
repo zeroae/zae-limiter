@@ -3419,27 +3419,38 @@ class TestLeaseCommitTTL:
 
         ADR-136 / issue #489. `_try_parent_only_acquire` returns None when the
         parent bucket is missing, so this path can only ever *update* a bucket —
-        a "created via the parent-only path" test is not constructible. The
-        parent's bucket is therefore born under system defaults (with a TTL),
-        the parent is then given an entity-wide `_default_` config, and the next
-        cascade acquire that routes through the parent-only path must remove it.
+        a "created via the parent-only path" test is not constructible.
+
+        The arrangement writes the `ttl` attribute onto the parent's bucket
+        directly rather than getting some API to stamp it. That is the state
+        under test — a bucket that predates the entity's configuration, or was
+        created by a pre-ADR-136 client — and stamping it by hand keeps the
+        precondition from depending on which writer happens to set TTLs today.
+        Deriving it from `set_limits(..., resource="_default_")` was the
+        original arrangement and it silently stopped working when #487/#488
+        made that call reach real-resource buckets and clear their TTL itself,
+        which would have left the final assertion passing vacuously.
         """
         from zae_limiter.schema import pk_bucket, sk_state
 
         sync_limiter.create_entity("parent-1")
         sync_limiter.create_entity("child-1", parent_id="parent-1", cascade=True)
         sync_limiter.set_system_defaults([Limit.per_minute("rpm", 1000)])
+        sync_limiter.set_limits("parent-1", [Limit.per_minute("rpm", 1000)])
         with sync_limiter.acquire("child-1", "gpt-4", {"rpm": 1}):
             pass
         parent_pk = pk_bucket(sync_limiter._repository.namespace_id, "parent-1", "gpt-4", 0)
+        client = sync_limiter._repository._get_client()
+        client.update_item(
+            TableName=sync_limiter._repository.table_name,
+            Key={"PK": {"S": parent_pk}, "SK": {"S": sk_state()}},
+            UpdateExpression="SET #ttl = :ttl",
+            ExpressionAttributeNames={"#ttl": "ttl"},
+            ExpressionAttributeValues={":ttl": {"N": str(int(time.time()) + 3600)}},
+        )
         item = sync_limiter._repository._get_item(parent_pk, sk_state())
         assert item is not None
-        assert "ttl" in item, "precondition: system-derived parent bucket starts with a TTL"
-        sync_limiter.set_limits("parent-1", [Limit.per_minute("rpm", 1000)])
-        sync_limiter._repository.invalidate_config_cache()
-        item = sync_limiter._repository._get_item(parent_pk, sk_state())
-        assert item is not None
-        assert "ttl" in item, "precondition: set_limits(_default_) must not touch gpt-4"
+        assert "ttl" in item, "precondition: the parent bucket under test carries a TTL"
         sync_limiter._speculative_writes = True
         now_ms = int(time.time() * 1000)
         child_bucket = BucketState(
