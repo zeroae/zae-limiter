@@ -115,6 +115,7 @@ nav:
       - Token Bucket Algorithm: guide/token-bucket.md
       - Basic Usage: guide/basic-usage.md
       - Configuration Hierarchy: guide/config-hierarchy.md
+      - Scheduled (Cron) Limits: guide/scheduled-limits.md
       - Hierarchical Limits: guide/hierarchical.md
       - LLM Integration: guide/llm-integration.md
       - Usage Snapshots: guide/usage-snapshots.md
