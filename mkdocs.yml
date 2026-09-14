@@ -43,6 +43,14 @@ extra_css:
 extra_javascript:
   - https://unpkg.com/mermaid@10/dist/mermaid.min.js
 
+# Internal planning artefacts: design docs and implementation plans live under
+# docs/ so they sit beside the code they describe and travel in the same PRs, but
+# they are working documents, not user documentation. MkDocs builds every markdown
+# file under docs_dir whether or not it appears in `nav`, so without this they are
+# published and search-indexed on the public site.
+exclude_docs: |
+  plans/
+
 plugins:
   - search
   - mkdocstrings:
