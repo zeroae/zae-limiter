@@ -18,7 +18,9 @@ from zae_limiter.schema import (
     sk_state,
 )
 from zae_limiter_provisioner.bucket_sync import (
+    DEFAULT_TTL_MULTIPLIER,
     build_bucket_param_update,
+    resolve_bucket_limits,
     resolve_effective_limits,
     sync_bucket_params,
 )
@@ -326,3 +328,254 @@ class TestResolveEffectiveLimits:
         item = {limit_attr("rpm", "cp"): {"N": "10"}}
         client.get_item.side_effect = _levels({(pk_resource("ns123", "gpt-4"), sk_config()): item})
         assert resolve_effective_limits(client, "tbl", "ns123", "user-1", "gpt-4") == {}
+
+
+class TestResolveBucketLimits:
+    """The full ADR-100 walk, including the entity(resource) level (#487)."""
+
+    def test_entity_resource_level_outranks_entity_default(self):
+        client = _make_client()
+        client.get_item.side_effect = _levels(
+            {
+                (pk_entity("ns123", "user-1"), sk_config("gpt-4")): _limits_item(
+                    rpm=(900, 900, 60)
+                ),
+                (pk_entity("ns123", "user-1"), sk_config("_default_")): _limits_item(
+                    rpm=(100, 100, 60)
+                ),
+            }
+        )
+        limits, level = resolve_bucket_limits(client, "tbl", "ns123", "user-1", "gpt-4")
+        assert limits == {"rpm": {"capacity": 900, "refill_amount": 900, "refill_period": 60}}
+        assert level == "entity"
+
+    def test_reports_the_level_that_answered(self):
+        """The level decides the bucket's TTL, so it has to come back."""
+        client = _make_client()
+        client.get_item.side_effect = _levels(
+            {(pk_resource("ns123", "gpt-4"), sk_config()): _limits_item(rpm=(200, 200, 60))}
+        )
+        limits, level = resolve_bucket_limits(client, "tbl", "ns123", "user-1", "gpt-4")
+        assert limits == {"rpm": {"capacity": 200, "refill_amount": 200, "refill_period": 60}}
+        assert level == "resource"
+
+    def test_nothing_configured_anywhere(self):
+        client = _make_client()
+        client.get_item.side_effect = _levels({})
+        assert resolve_bucket_limits(client, "tbl", "ns123", "user-1", "gpt-4") == ({}, None)
+
+
+class TestEntityWideScopeWidensDiscovery:
+    """An entity-wide `_default_` manifest entry must reach the buckets (#487).
+
+    `_default_` is a config scope, not a resource: the prefix
+    `BUCKET#_default_#` matches no bucket item, so forwarding the sentinel made
+    the sync a silent no-op. Widening alone would be worse — precedence is
+    Entity(resource) > Entity(`_default_`) > Resource > System, so each
+    discovered bucket is re-resolved for its OWN resource, exactly as
+    `fanout.fanout_entity` re-resolves `disabled`.
+    """
+
+    ENTITY_DEFAULT = {"rpm": {"capacity": 500, "refill_amount": 500, "refill_period": 60}}
+
+    @staticmethod
+    def _client_with(buckets, config):
+        client = _make_client()
+        client.query.side_effect = _query_pages({"Items": [{"PK": {"S": pk}} for pk in buckets]})
+        client.get_item.side_effect = _levels(config)
+        return client
+
+    @staticmethod
+    def _written(client):
+        """{resource: {bucket_attr: value}} for every bucket written."""
+        out = {}
+        for call in client.update_item.call_args_list:
+            resource = call.kwargs["Key"]["PK"]["S"].split("#")[2]
+            names = call.kwargs["ExpressionAttributeNames"]
+            values = call.kwargs["ExpressionAttributeValues"]
+            out[resource] = {
+                names[alias]: values[alias.replace("#", ":", 1)]["N"]
+                for alias in names
+                if alias.replace("#", ":", 1) in values
+            }
+        return out
+
+    def test_default_scope_queries_unscoped(self):
+        client = self._client_with(
+            [],
+            {
+                (pk_entity("ns123", "user-1"), sk_config("_default_")): _limits_item(
+                    rpm=(500, 500, 60)
+                )
+            },
+        )
+        sync_bucket_params(
+            client,
+            "tbl",
+            "ns123",
+            "user-1",
+            "_default_",
+            self.ENTITY_DEFAULT,
+            ttl_multiplier=0,
+            stale_limit_names=None,
+            now_ms=0,
+        )
+        assert client.query.call_args.kwargs["ExpressionAttributeValues"][":sk"] == {"S": "BUCKET#"}
+
+    def test_a_resource_specific_entity_config_is_not_clobbered(self):
+        """The guard against a naive widen: gpt-4 keeps its own 900."""
+        client = self._client_with(
+            [_pk(resource="gpt-4"), _pk(resource="claude-3")],
+            {
+                (pk_entity("ns123", "user-1"), sk_config("gpt-4")): _limits_item(
+                    rpm=(900, 900, 60)
+                ),
+                (pk_entity("ns123", "user-1"), sk_config("_default_")): _limits_item(
+                    rpm=(500, 500, 60)
+                ),
+            },
+        )
+        written = sync_bucket_params(
+            client,
+            "tbl",
+            "ns123",
+            "user-1",
+            "_default_",
+            self.ENTITY_DEFAULT,
+            ttl_multiplier=0,
+            stale_limit_names=None,
+            now_ms=0,
+        )
+        assert written == 2
+        by_resource = self._written(client)
+        cp = bucket_attr("rpm", "cp")
+        assert by_resource["gpt-4"][cp] == "900000", "gpt-4's own entity config outranks _default_"
+        assert by_resource["claude-3"][cp] == "500000"
+
+    def test_ttl_follows_the_level_that_resolved_each_bucket(self):
+        """Entity level persists; resource/system expires (#271, #296)."""
+        client = self._client_with(
+            [_pk(resource="gpt-4"), _pk(resource="claude-3")],
+            {
+                (pk_entity("ns123", "user-1"), sk_config("gpt-4")): _limits_item(
+                    rpm=(900, 900, 60)
+                ),
+                (pk_resource("ns123", "claude-3"), sk_config()): _limits_item(rpm=(200, 200, 60)),
+            },
+        )
+        sync_bucket_params(
+            client,
+            "tbl",
+            "ns123",
+            "user-1",
+            "_default_",
+            self.ENTITY_DEFAULT,
+            ttl_multiplier=DEFAULT_TTL_MULTIPLIER,
+            stale_limit_names=None,
+            now_ms=1_789_000_000_000,
+        )
+        exprs = {
+            call.kwargs["Key"]["PK"]["S"].split("#")[2]: call.kwargs["UpdateExpression"]
+            for call in client.update_item.call_args_list
+        }
+        assert "REMOVE #ttl" in exprs["gpt-4"], "entity limits: the bucket must persist"
+        assert "#ttl = :ttl_val" in exprs["claude-3"], "resource defaults: the bucket must expire"
+
+    def test_stale_names_are_intersected_with_each_resolution(self):
+        """A name the bucket's own level still declares must not be removed.
+
+        SET and REMOVE on one attribute in a single expression is a DynamoDB
+        ValidationException, and if it landed it would strip a configured limit.
+        """
+        client = self._client_with(
+            [_pk(resource="gpt-4"), _pk(resource="claude-3")],
+            {
+                (pk_entity("ns123", "user-1"), sk_config("gpt-4")): _limits_item(
+                    rpm=(900, 900, 60), tpm=(90, 90, 60)
+                ),
+                (pk_system("ns123"), sk_config()): _limits_item(rpm=(50, 50, 60)),
+            },
+        )
+        sync_bucket_params(
+            client,
+            "tbl",
+            "ns123",
+            "user-1",
+            "_default_",
+            {"rpm": {"capacity": 50, "refill_amount": 50, "refill_period": 60}},
+            ttl_multiplier=DEFAULT_TTL_MULTIPLIER,
+            stale_limit_names={"tpm"},
+            now_ms=0,
+        )
+        exprs = {
+            call.kwargs["Key"]["PK"]["S"].split("#")[2]: call.kwargs["UpdateExpression"]
+            for call in client.update_item.call_args_list
+        }
+        names = {
+            call.kwargs["Key"]["PK"]["S"].split("#")[2]: call.kwargs["ExpressionAttributeNames"]
+            for call in client.update_item.call_args_list
+        }
+        tpm_cp = bucket_attr("tpm", "cp")
+        assert tpm_cp in names["gpt-4"].values(), "gpt-4's entity config still declares tpm"
+        assert "REMOVE" not in exprs["gpt-4"].replace("REMOVE #ttl", ""), (
+            "nothing is stale for gpt-4"
+        )
+        assert tpm_cp in names["claude-3"].values(), "tpm is stale on claude-3 (system has no tpm)"
+
+    def test_a_resource_that_resolves_to_nothing_is_left_alone(self):
+        """No configured level means no correct value to write."""
+        client = self._client_with([_pk(resource="ghost")], {})
+        written = sync_bucket_params(
+            client,
+            "tbl",
+            "ns123",
+            "user-1",
+            "_default_",
+            self.ENTITY_DEFAULT,
+            ttl_multiplier=0,
+            stale_limit_names=None,
+            now_ms=0,
+        )
+        assert written == 0
+        client.update_item.assert_not_called()
+
+    def test_resolution_is_memoized_per_resource(self):
+        """A 500-bucket entity must not re-resolve once per shard."""
+        client = self._client_with(
+            [_pk(resource="gpt-4", shard=n) for n in range(4)],
+            {(pk_system("ns123"), sk_config()): _limits_item(rpm=(50, 50, 60))},
+        )
+        sync_bucket_params(
+            client,
+            "tbl",
+            "ns123",
+            "user-1",
+            "_default_",
+            self.ENTITY_DEFAULT,
+            ttl_multiplier=0,
+            stale_limit_names=None,
+            now_ms=0,
+        )
+        assert client.update_item.call_count == 4
+        # One walk for gpt-4: entity(gpt-4), entity(_default_), resource, system.
+        assert client.get_item.call_count == 4
+
+    def test_a_real_resource_is_still_scoped_and_uses_the_caller_directive(self):
+        """The scoped path is untouched: no resolution, caller's limits verbatim."""
+        client = self._client_with([_pk(resource="gpt-4")], {})
+        written = sync_bucket_params(
+            client,
+            "tbl",
+            "ns123",
+            "user-1",
+            "gpt-4",
+            LIMITS,
+            ttl_multiplier=0,
+            stale_limit_names=None,
+            now_ms=0,
+        )
+        assert written == 1
+        client.get_item.assert_not_called()
+        assert client.query.call_args.kwargs["ExpressionAttributeValues"][":sk"] == {
+            "S": "BUCKET#gpt-4#"
+        }

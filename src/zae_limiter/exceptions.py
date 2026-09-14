@@ -411,24 +411,28 @@ class InvalidNameError(ValidationError):
 
 class FanoutIncomplete(ZAELimiterError):  # noqa: N818
     """
-    Raised when a disable/enable fan-out fails partway through (ADR-125).
+    Raised when a config fan-out to bucket items fails partway through.
+
+    Two fan-outs raise this: the disable/enable stamp (ADR-125) and the
+    limit-param sync that follows ``set_limits``/``delete_limits`` (#468,
+    #487). Both share the same hazard.
 
     The config write lands before the fan-out begins, so a failure here
     leaves the table half-applied: the config item carries the new value,
-    some bucket items are stamped to match and the rest still hold the old
-    one. Unstamped buckets keep passing the speculative fast path, which
-    tests ``attribute_not_exists(#disabled)`` on the bucket and never
-    re-reads config.
+    some bucket items match and the rest still hold the old one. Stale
+    buckets keep passing the speculative fast path, which tests
+    ``attribute_not_exists(#disabled)`` and the bucket's own stored
+    ``cp``/``ra`` and never re-reads config.
 
     Nothing reconciles this on its own. Buckets backed by entity-level
-    custom limits carry no TTL, so a stale stamp persists until the same
+    custom limits carry no TTL, so the drift persists until the same
     command is run again — which is safe to do, since both the config write
-    and each stamp are idempotent.
+    and each bucket write are idempotent.
 
     Attributes:
         stamped: Bucket items successfully written before the failure
-        resource: Resource being disabled or enabled, if scoped to one
-        entity_id: Entity being disabled or enabled, if scoped to one
+        resource: Resource being changed, if scoped to one
+        entity_id: Entity being changed, if scoped to one
         cause: The underlying exception that stopped the fan-out
     """
 
@@ -439,6 +443,7 @@ class FanoutIncomplete(ZAELimiterError):  # noqa: N818
         *,
         resource: str | None = None,
         entity_id: str | None = None,
+        action: str = "stamping",
     ) -> None:
         self.stamped = stamped
         self.resource = resource
@@ -453,7 +458,7 @@ class FanoutIncomplete(ZAELimiterError):  # noqa: N818
             else f"resource '{resource}'"
         )
         super().__init__(
-            f"Fan-out for {target} stopped after stamping {stamped} bucket(s): {cause}. "
+            f"Fan-out for {target} stopped after {action} {stamped} bucket(s): {cause}. "
             f"Config was written, so the change is partially applied — re-run the same "
             f"command to reconcile the remaining buckets."
         )

@@ -3124,8 +3124,13 @@ class TestSyncBucketParamsFansOutToAllShards:
             assert self._params(repo, "user-4", "gpt-4", shard_id)[0] == self.NEW * 1000
 
     def test_other_client_errors_propagate(self, repo):
-        """A non-conditional failure is not swallowed by the fan-out."""
+        """A non-conditional failure is not swallowed by the fan-out.
+
+        It surfaces as `FanoutIncomplete` carrying the underlying error, the
+        same contract the ADR-125 disable fan-out uses on this same method.
+        """
         from zae_limiter import schema
+        from zae_limiter.exceptions import FanoutIncomplete
 
         pk = schema.pk_bucket(repo._namespace_id, "user-5", "gpt-4", 0)
         with patch.object(repo, "_get_client") as mock_get_client:
@@ -3135,5 +3140,330 @@ class TestSyncBucketParamsFansOutToAllShards:
                 {"Error": {"Code": "ProvisionedThroughputExceededException"}}, "UpdateItem"
             )
             mock_get_client.return_value = mock_client
-            with pytest.raises(ClientError):
+            with pytest.raises(FanoutIncomplete) as exc_info:
                 repo.reconcile_bucket_to_defaults("user-5", "gpt-4", [Limit.per_minute("rpm", 10)])
+            assert isinstance(exc_info.value.cause, ClientError)
+            assert exc_info.value.stamped == 0
+
+
+class TestSyncBucketParamsBoundsConcurrencyAndReportsProgress:
+    """The fan-out is serial and reports partial progress on failure.
+
+    Unscoped, the write set is O(resources x shards), not the <=32 shards of
+    one resource, so a single unbounded `asyncio.gather` could issue thousands
+    of concurrent `UpdateItem`s. It is now serial, exactly like the ADR-125
+    `_fanout_entity` whose shape the docstring claims — which also makes an
+    exact partial-progress count possible, on a path that has ALREADY
+    committed the config item.
+    """
+
+    @staticmethod
+    def _pks(repo, entity_id, count):
+        from zae_limiter import schema
+
+        return [
+            {"PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, "gpt-4", shard)}}
+            for shard in range(count)
+        ]
+
+    def test_stops_at_the_failing_write_rather_than_issuing_the_rest(self, repo):
+        """A gather would have issued all 5; serial stops after the third."""
+        from zae_limiter.exceptions import FanoutIncomplete
+
+        throttle = ClientError(
+            {"Error": {"Code": "ProvisionedThroughputExceededException"}}, "UpdateItem"
+        )
+        with patch.object(repo, "_get_client") as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.query.return_value = {"Items": self._pks(repo, "user-p1", 5)}
+            mock_client.update_item.side_effect = [None, None, throttle]
+            mock_get_client.return_value = mock_client
+            with pytest.raises(FanoutIncomplete) as exc_info:
+                repo.reconcile_bucket_to_defaults("user-p1", "gpt-4", [Limit.per_minute("rpm", 10)])
+        assert mock_client.update_item.call_count == 3, (
+            "a concurrent gather would have issued all five writes"
+        )
+        assert exc_info.value.stamped == 2, "two writes landed before the failure"
+        assert exc_info.value.entity_id == "user-p1"
+        assert exc_info.value.resource == "gpt-4"
+
+    def test_unscoped_failure_reports_no_resource(self, repo):
+        """The entity-wide scope is not one resource, so none is named."""
+        from zae_limiter.exceptions import FanoutIncomplete
+
+        repo.create_entity("user-p2")
+        repo.set_limits("user-p2", [Limit.per_minute("rpm", 100)])
+        now_ms = int(time.time() * 1000)
+        for resource in ("gpt-4", "claude-3"):
+            states = [
+                BucketState.from_limit("user-p2", resource, Limit.per_minute("rpm", 100), now_ms)
+            ]
+            repo.transact_write([repo.build_composite_create("user-p2", resource, states, now_ms)])
+        throttle = ClientError(
+            {"Error": {"Code": "ProvisionedThroughputExceededException"}}, "UpdateItem"
+        )
+        with (
+            patch.object(repo, "_sync_one_bucket_shard", MagicMock(side_effect=throttle)),
+            pytest.raises(FanoutIncomplete) as exc_info,
+        ):
+            repo.set_limits("user-p2", [Limit.per_minute("rpm", 500)])
+        assert exc_info.value.entity_id == "user-p2"
+        assert exc_info.value.resource is None
+        assert exc_info.value.stamped == 0
+
+    def test_a_vanished_shard_does_not_count_as_written(self, repo):
+        """A TTL-expired shard is tolerated, but it is not progress."""
+        from zae_limiter.exceptions import FanoutIncomplete
+
+        conditional = ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem"
+        )
+        throttle = ClientError(
+            {"Error": {"Code": "ProvisionedThroughputExceededException"}}, "UpdateItem"
+        )
+        with patch.object(repo, "_get_client") as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.query.return_value = {"Items": self._pks(repo, "user-p3", 3)}
+            mock_client.update_item.side_effect = [None, conditional, throttle]
+            mock_get_client.return_value = mock_client
+            with pytest.raises(FanoutIncomplete) as exc_info:
+                repo.reconcile_bucket_to_defaults("user-p3", "gpt-4", [Limit.per_minute("rpm", 10)])
+        assert exc_info.value.stamped == 1, "the vanished shard wrote nothing"
+
+
+class TestDefaultResourceSyncReachesEveryResource:
+    """An entity-wide `_default_` limit change must reach existing buckets (#487).
+
+    `_default_` is a config scope, not a resource: no bucket item ever carries
+    the GSI3SK `BUCKET#_default_#`, so passing it straight through to the GSI3
+    discovery query matched zero items and the sync was a silent no-op that
+    wrote nothing and raised nothing. Entity configs carry no TTL, so the
+    affected buckets enforced the params they were born with forever.
+
+    Widening discovery is necessary but not sufficient: precedence is
+    Entity(resource) > Entity(`_default_`) > Resource > System, so an unscoped
+    sync that stamped the caller's `_default_` limits onto every discovered
+    bucket would clobber a resource that has its own, higher-precedence entity
+    config. Each bucket is therefore re-stamped from the limits resolved for
+    its OWN resource, exactly as `_fanout_entity` re-resolves `disabled`.
+    """
+
+    @staticmethod
+    def _seed(repo, entity_id, resource, *limits):
+        """Create a bucket item for one (entity, resource) on the given limits."""
+        now_ms = int(time.time() * 1000)
+        states = [BucketState.from_limit(entity_id, resource, lim, now_ms) for lim in limits]
+        repo.transact_write([repo.build_composite_create(entity_id, resource, states, now_ms)])
+
+    @staticmethod
+    def _raw(repo, entity_id, resource):
+        from zae_limiter import schema
+
+        client = repo._get_client()
+        response = client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, resource, 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+        )
+        return response.get("Item") or {}
+
+    @classmethod
+    def _cap(cls, repo, entity_id, resource, limit_name="rpm"):
+        from zae_limiter.schema import BUCKET_FIELD_CP, bucket_attr
+
+        item = cls._raw(repo, entity_id, resource)
+        attr = bucket_attr(limit_name, BUCKET_FIELD_CP)
+        assert attr in item, f"{limit_name} missing from {entity_id}/{resource}"
+        return int(item[attr]["N"])
+
+    def test_entity_wide_change_reaches_an_existing_bucket(self, repo):
+        """The regression: `set_limits` with no resource must reach the bucket."""
+        repo.create_entity("user-1")
+        repo.set_limits("user-1", [Limit.per_minute("rpm", 100)])
+        self._seed(repo, "user-1", "gpt-4", Limit.per_minute("rpm", 100))
+        repo.set_limits("user-1", [Limit.per_minute("rpm", 500)])
+        assert self._cap(repo, "user-1", "gpt-4") == 500000
+
+    def test_entity_wide_change_does_not_clobber_a_resource_specific_config(self, repo):
+        """The guard against the naive `resource=None` fix.
+
+        `gpt-4` has its own entity config, which outranks the entity-wide
+        `_default_` one. An unscoped sync that stamped the caller's limits on
+        every discovered bucket would overwrite the more specific config with
+        the less specific one.
+        """
+        repo.create_entity("user-2")
+        repo.set_limits("user-2", [Limit.per_minute("rpm", 100)])
+        repo.set_limits("user-2", [Limit.per_minute("rpm", 900)], resource="gpt-4")
+        self._seed(repo, "user-2", "gpt-4", Limit.per_minute("rpm", 900))
+        self._seed(repo, "user-2", "claude-3", Limit.per_minute("rpm", 100))
+        repo.set_limits("user-2", [Limit.per_minute("rpm", 500)])
+        assert self._cap(repo, "user-2", "gpt-4") == 900000, (
+            "the resource-specific entity config outranks `_default_`"
+        )
+        assert self._cap(repo, "user-2", "claude-3") == 500000
+
+    def test_entity_wide_change_keeps_no_ttl_on_any_bucket(self, repo):
+        """Every bucket still resolves at an entity level, so none gets a TTL."""
+        repo.create_entity("user-3")
+        repo.set_limits("user-3", [Limit.per_minute("rpm", 100)])
+        repo.set_limits("user-3", [Limit.per_minute("rpm", 900)], resource="gpt-4")
+        self._seed(repo, "user-3", "gpt-4", Limit.per_minute("rpm", 900))
+        self._seed(repo, "user-3", "claude-3", Limit.per_minute("rpm", 100))
+        repo.set_limits("user-3", [Limit.per_minute("rpm", 500)])
+        for resource in ("gpt-4", "claude-3"):
+            assert "ttl" not in self._raw(repo, "user-3", resource)
+
+    def test_reconcile_resolves_and_ttls_each_bucket_at_its_own_level(self, repo):
+        """The `delete_limits('_default_')` path, and per-bucket TTL (#271, #296).
+
+        The caller hands `reconcile_bucket_to_defaults` the limits that
+        `_default_` itself falls back to (system). Those are right for a bucket
+        with nothing more specific and wrong for every other bucket, so the
+        unscoped path ignores them and re-resolves per resource. TTL follows
+        whichever level answered: entity means persist, resource or system
+        means expire.
+        """
+        repo.create_entity("user-4")
+        repo.set_system_defaults([Limit.per_minute("rpm", 50)])
+        repo.set_resource_defaults("claude-3", [Limit.per_minute("rpm", 200)])
+        repo.set_limits("user-4", [Limit.per_minute("rpm", 100)])
+        repo.set_limits("user-4", [Limit.per_minute("rpm", 900)], resource="gpt-4")
+        for resource in ("gpt-4", "claude-3", "llama3"):
+            self._seed(repo, "user-4", resource, Limit.per_minute("rpm", 100))
+        repo.delete_limits("user-4")
+        repo.reconcile_bucket_to_defaults("user-4", "_default_", [Limit.per_minute("rpm", 50)])
+        assert self._cap(repo, "user-4", "gpt-4") == 900000, "entity config still wins"
+        assert self._cap(repo, "user-4", "claude-3") == 200000, "resource default applies"
+        assert self._cap(repo, "user-4", "llama3") == 50000, "system default applies"
+        assert "ttl" not in self._raw(repo, "user-4", "gpt-4")
+        assert "ttl" in self._raw(repo, "user-4", "claude-3")
+        assert "ttl" in self._raw(repo, "user-4", "llama3")
+
+    def test_stale_names_are_intersected_against_each_bucket_resolution(self, repo):
+        """A caller's stale name that the bucket's own level still defines is kept.
+
+        `delete_limits` computes stale names against the `_default_` fallback
+        (system). Applying that set verbatim to a bucket whose own entity
+        config still declares the limit would SET and REMOVE the same attribute
+        in one expression — a DynamoDB ValidationException — and, if it landed,
+        would strip a configured limit.
+        """
+        rpm, tpm = (Limit.per_minute("rpm", 100), Limit.per_minute("tpm", 10000))
+        repo.create_entity("user-5")
+        repo.set_system_defaults([Limit.per_minute("rpm", 50)])
+        repo.set_limits("user-5", [rpm, tpm])
+        repo.set_limits("user-5", [rpm, tpm], resource="gpt-4")
+        self._seed(repo, "user-5", "gpt-4", rpm, tpm)
+        self._seed(repo, "user-5", "llama3", rpm, tpm)
+        repo.delete_limits("user-5")
+        repo.reconcile_bucket_to_defaults(
+            "user-5", "_default_", [Limit.per_minute("rpm", 50)], stale_limit_names={"tpm"}
+        )
+        assert self._cap(repo, "user-5", "gpt-4", "tpm") == 10000000, (
+            "gpt-4's own entity config still declares tpm"
+        )
+        assert repo.get_bucket("user-5", "llama3", "tpm") is None, (
+            "llama3 falls back to system, which has no tpm"
+        )
+
+    def test_a_resource_that_resolves_to_nothing_is_left_alone(self, repo):
+        """No configured level means no correct value to write.
+
+        The same choice the delete path already makes when no fallback config
+        exists at all — better a bucket on stale params than one stamped with
+        limits nothing actually configures.
+        """
+        repo.create_entity("user-7")
+        self._seed(repo, "user-7", "ghost", Limit.per_minute("rpm", 100))
+        repo.reconcile_bucket_to_defaults("user-7", "_default_", [Limit.per_minute("rpm", 50)])
+        assert self._cap(repo, "user-7", "ghost") == 100000
+        assert "ttl" in self._raw(repo, "user-7", "ghost"), (
+            "the seeded TTL is untouched, not recomputed from limits that do not apply"
+        )
+
+    def test_a_real_resource_is_still_scoped_to_that_resource(self, repo):
+        """The scoped path is untouched: a sibling resource is not rewritten."""
+        repo.create_entity("user-6")
+        repo.set_limits("user-6", [Limit.per_minute("rpm", 100)], resource="gpt-4")
+        self._seed(repo, "user-6", "gpt-4", Limit.per_minute("rpm", 100))
+        self._seed(repo, "user-6", "claude-3", Limit.per_minute("rpm", 100))
+        repo.set_limits("user-6", [Limit.per_minute("rpm", 700)], resource="gpt-4")
+        assert self._cap(repo, "user-6", "gpt-4") == 700000
+        assert self._cap(repo, "user-6", "claude-3") == 100000
+
+
+class TestStaleLimitAliasesAreExpressionSafe:
+    """Stale-limit REMOVE aliases must be legal expression attribute names.
+
+    `NAME_PATTERN` (models.py) allows `-` and `.` in a limit name. Neither is
+    legal in an `ExpressionAttributeNames` alias, and `.` is parsed as a
+    document-path separator, so interpolating the limit name into the alias
+    builds an expression DynamoDB rejects with a `ValidationException` —
+    raised out of `set_limits()`/`delete_limits()` *after* the config item has
+    already been written, leaving half-applied state.
+
+    The provisioner mirror (`bucket_sync.build_bucket_param_update`) already
+    used a monotonic counter for exactly this reason; the two halves of #487
+    disagreed until now.
+    """
+
+    ILLEGAL_IN_ALIAS = ("-", ".", " ")
+
+    @staticmethod
+    def _aliases(expr: str, names: dict[str, str]) -> list[str]:
+        assert "REMOVE" in expr, expr
+        return [part.strip() for part in expr.split("REMOVE", 1)[1].split(",")]
+
+    def test_hyphenated_and_dotted_stale_names_build_legal_aliases(self, repo):
+        from zae_limiter.schema import bucket_attr
+
+        expr, names, _values = repo._build_bucket_param_update(
+            [Limit.per_minute("rpm", 100)], None, {"req-min", "tok.sec"}
+        )
+        aliases = self._aliases(expr, names)
+        assert aliases, "expected REMOVE clauses for the stale limits"
+        for alias in aliases:
+            assert alias.startswith("#")
+            for bad in self.ILLEGAL_IN_ALIAS:
+                assert bad not in alias, f"{alias!r} is not a legal expression alias"
+        removed = {names[alias] for alias in aliases}
+        assert removed == {
+            bucket_attr(name, field)
+            for name in ("req-min", "tok.sec")
+            for field in ("tk", "cp", "ra", "rp", "tc")
+        }
+
+    def test_scoped_reconcile_with_a_hyphenated_stale_name(self, repo):
+        """The pre-existing #327 reach: `delete_limits` computes stale names."""
+        repo.create_entity("user-h1")
+        self._seed(repo, "user-h1", "gpt-4")
+        repo.reconcile_bucket_to_defaults(
+            "user-h1", "gpt-4", [Limit.per_minute("rpm", 50)], stale_limit_names={"req-min"}
+        )
+        assert repo.get_bucket("user-h1", "gpt-4", "req-min") is None
+        assert repo.get_bucket("user-h1", "gpt-4", "rpm") is not None
+
+    def test_entity_wide_set_limits_with_a_hyphenated_stale_name(self, repo):
+        """The reach #487 added: the entity-wide scope derives stale names too.
+
+        `gpt-4` has its own entity config declaring only `rpm`, so the
+        entity-wide directive's `req-min` is stale for that bucket — a stale
+        name `set_limits()` never produced before this PR.
+        """
+        repo.create_entity("user-h2")
+        repo.set_limits("user-h2", [Limit.per_minute("rpm", 100)], resource="gpt-4")
+        self._seed(repo, "user-h2", "gpt-4")
+        repo.set_limits("user-h2", [Limit.per_minute("req-min", 900)])
+        assert repo.get_bucket("user-h2", "gpt-4", "req-min") is None
+        assert repo.get_bucket("user-h2", "gpt-4", "rpm") is not None
+
+    @staticmethod
+    def _seed(repo, entity_id, resource):
+        """A bucket carrying both a plain and a hyphenated limit."""
+        now_ms = int(time.time() * 1000)
+        limits = [Limit.per_minute("rpm", 100), Limit.per_minute("req-min", 100)]
+        states = [BucketState.from_limit(entity_id, resource, lim, now_ms) for lim in limits]
+        repo.transact_write([repo.build_composite_create(entity_id, resource, states, now_ms)])
