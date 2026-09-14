@@ -26,7 +26,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from cronsim import CronSim, CronSimError
 
-__all__ = ["ParsedCron", "ScheduleEntry", "matches", "parse_cron"]
+__all__ = ["ParsedCron", "ScheduleEntry", "effective_params", "matches", "parse_cron"]
 
 # cronsim's sentinels for the extended tokens we do not support.
 _SENTINELS = {CronSim.LAST, CronSim.LAST_WEEKDAY}
@@ -153,3 +153,44 @@ def matches(parsed: ParsedCron, now_ms: int) -> bool:
     dow_ok = d.isoweekday() in parsed.weekdays
     # When BOTH day fields are constrained, cron means OR, not AND.
     return (dom_ok and dow_ok) if parsed.day_and else (dom_ok or dow_ok)
+
+
+def effective_params(
+    cp_milli: int,
+    ra_milli: int,
+    rp_ms: int,
+    sched: tuple[ScheduleEntry, ...],
+    now_ms: int,
+) -> tuple[int, int, int]:
+    """The (capacity, refill_amount, refill_period) in force at ``now_ms``.
+
+    All values are milli-units, matching ``bucket.py``. Returns the base
+    unchanged when no entry matches, so the unscheduled path costs one tuple
+    check. **First matching entry wins** (§1.2). Never mutates or persists
+    anything: the caller uses the result and discards it (§2.1 — ``tk`` is the
+    only materialised quantity).
+    """
+    if not sched:
+        return cp_milli, ra_milli, rp_ms
+
+    for entry in sched:
+        if not matches(parse_cron(entry.cron, entry.tz), now_ms):
+            continue
+        if entry.scale is not None:
+            # Scale capacity and refill together so time-to-fill is preserved
+            # (§1.1). Truncate rather than round, so a scaled limit is never
+            # larger than asked for; floor at 1 milli-unit, since a zero
+            # capacity is unadmittable.
+            return (
+                max(1, int(cp_milli * entry.scale)),
+                max(1, int(ra_milli * entry.scale)),
+                rp_ms,
+            )
+        return (
+            entry.capacity * 1000 if entry.capacity is not None else cp_milli,
+            entry.refill_amount * 1000 if entry.refill_amount is not None else ra_milli,
+            entry.refill_period_seconds * 1000
+            if entry.refill_period_seconds is not None
+            else rp_ms,
+        )
+    return cp_milli, ra_milli, rp_ms
