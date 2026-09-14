@@ -315,3 +315,44 @@ class TestLambdaHandlerUnit:
 
         assert result["statusCode"] == 200
         assert result["body"]["processed"] == 0
+
+
+class TestVendoredSchedule:
+    """`schedule.py` must be packaged, or the aggregator dies at cold start (#222)."""
+
+    def _build(self) -> bytes:
+        from zae_limiter.infra.lambda_builder import build_lambda_package
+
+        with patch("aws_lambda_builders.builder.LambdaBuilder") as mock_builder_cls:
+            mock_builder_cls.return_value.build.side_effect = _mock_builder_build
+            return build_lambda_package()
+
+    def test_aggregator_package_vendors_schedule(self) -> None:
+        with zipfile.ZipFile(io.BytesIO(self._build())) as zf:
+            assert "zae_limiter/schedule.py" in zf.namelist()
+
+    def test_every_import_in_the_package_resolves(self) -> None:
+        """The general form of the test above, and the one that keeps working.
+
+        Nothing in the unit suite notices a missing vendored module: every test
+        imports the installed package, where it is present. This reads the zip.
+        """
+        from tests.fixtures.lambda_packages import assert_package_imports_resolve
+        from zae_limiter.infra.lambda_builder import _get_runtime_requirements
+
+        assert_package_imports_resolve(self._build(), _get_runtime_requirements())
+
+    def test_lambda_extra_carries_cronsim_and_tzdata(self) -> None:
+        """`schedule.py` needs cronsim, and zoneinfo needs tzdata because the
+        Lambda image may ship no /usr/share/zoneinfo."""
+        from zae_limiter.infra.lambda_builder import _get_runtime_requirements
+
+        reqs = _get_runtime_requirements()
+        assert any(r.startswith("cronsim") for r in reqs), reqs
+        assert any(r.startswith("tzdata") for r in reqs), reqs
+
+    def test_croniter_never_reaches_the_lambda(self) -> None:
+        """croniter is the dev-only schedule oracle and must stay dev-only."""
+        from zae_limiter.infra.lambda_builder import _get_runtime_requirements
+
+        assert not any("croniter" in r for r in _get_runtime_requirements())

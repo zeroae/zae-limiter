@@ -3,8 +3,8 @@
 Uses aws-lambda-builders to install the ``[lambda]`` extra pip dependencies
 (aws-lambda-powertools) for the Lambda target platform (Linux x86_64), then
 copies the ``zae_limiter_aggregator`` package and a minimal ``zae_limiter``
-stub (``schema.py``, ``bucket.py``, ``models.py``, ``exceptions.py``) into the
-artifact.  This ensures:
+stub (``schema.py``, ``bucket.py``, ``models.py``, ``exceptions.py``,
+``schedule.py``) into the artifact.  This ensures:
 
 1. Cross-platform builds work (macOS/Windows host → Linux Lambda)
 2. The deployed code matches what's installed locally (dev versions work)
@@ -55,6 +55,7 @@ def build_lambda_package() -> bytes:
     - ``zae_limiter/bucket.py`` (refill math for aggregator refill)
     - ``zae_limiter/models.py`` (dataclasses used by bucket.py)
     - ``zae_limiter/exceptions.py`` (exceptions used by models.py)
+    - ``zae_limiter/schedule.py`` (cron evaluation for scheduled limits, #222)
 
     The full ``zae_limiter`` package is *not* included (it depends on
     aiobotocore which is not needed by the aggregator).
@@ -149,6 +150,12 @@ def build_lambda_package() -> bytes:
 
         # exceptions.py — exceptions used by models.py (pure stdlib deps)
         shutil.copy2(zae_limiter_path / "exceptions.py", dest_zae_limiter / "exceptions.py")
+
+        # schedule.py — cron evaluation for scheduled limits (#222). Needed by
+        # processor.py directly and by models.py, which imports ScheduleEntry
+        # from it; an unvendored copy is an ImportError at cold start. Its only
+        # non-stdlib dependency is cronsim, which the [lambda] extra installs.
+        shutil.copy2(zae_limiter_path / "schedule.py", dest_zae_limiter / "schedule.py")
 
         # Create zip from artifacts
         zip_buffer = io.BytesIO()
