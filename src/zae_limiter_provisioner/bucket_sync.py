@@ -36,6 +36,7 @@ from zae_limiter.schema import (
     calculate_bucket_ttl_seconds,
     calculate_ttl,
     gsi3_pk_entity,
+    parse_bucket_pk,
     parse_limit_attr,
     pk_entity,
     pk_resource,
@@ -45,6 +46,14 @@ from zae_limiter.schema import (
 )
 
 logger = logging.getLogger(__name__)
+
+# `Repository._bucket_ttl_refill_multiplier`'s default. A bucket running on
+# resource/system defaults expires after max_time_to_fill * this (#271, #296).
+# The provisioner has no Repository to read it from and no knob of its own.
+DEFAULT_TTL_MULTIPLIER = 7
+
+# Levels that mean "this entity has custom limits", so its bucket must persist.
+_ENTITY_LEVELS = ("entity", "entity_default")
 
 _MANIFEST_KEY = {
     LIMIT_FIELD_CP: "capacity",
@@ -162,6 +171,43 @@ def _update_one_shard(
         return False
 
 
+def _resolved_plan(
+    client: Any,
+    table_name: str,
+    namespace_id: str,
+    entity_id: str,
+    bucket_resource: str,
+    directive_limits: dict[str, dict[str, int]],
+    stale_limit_names: set[str] | None,
+    now_ms: int,
+) -> tuple[str, dict[str, str], dict[str, dict[str, str]]] | None:
+    """Build one bucket's update from the limits resolved for ITS resource.
+
+    Used only under the entity-wide (``_default_``) scope, and mirroring
+    ``Repository._resolved_bucket_param_update``. The caller's limits are a
+    directive for the level the manifest wrote, and a resource with its own
+    entity config outranks that level; writing the caller's limits everywhere
+    would clobber the more specific config with the less specific one (#487).
+
+    TTL follows the level that answered (entity persists, resource/system
+    expires), and the caller's stale names are intersected with the
+    resolution: a name the bucket's own level still declares must not be SET
+    and REMOVEd in one expression, and a directive limit absent from this
+    resource's resolution is stale here even though the caller did not name it.
+
+    Returns None when nothing resolves — there is no correct value to write,
+    so the bucket is left alone.
+    """
+    resolved, level = resolve_bucket_limits(
+        client, table_name, namespace_id, entity_id, bucket_resource
+    )
+    if not resolved:
+        return None
+    stale = (set(stale_limit_names or ()) | set(directive_limits)) - set(resolved)
+    multiplier = 0 if level in _ENTITY_LEVELS else DEFAULT_TTL_MULTIPLIER
+    return build_bucket_param_update(resolved, multiplier, stale or None, now_ms)
+
+
 def sync_bucket_params(
     client: Any,
     table_name: str,
@@ -173,21 +219,32 @@ def sync_bucket_params(
     stale_limit_names: set[str] | None,
     now_ms: int,
 ) -> int:
-    """Push changed limit params to every shard of one entity+resource bucket.
+    """Push changed limit params to every shard of one entity's buckets.
 
     Two discovery passes, exactly like the ADR-125 disable fan-out in
     ``fanout.py``: the second catches a bucket created by an ``acquire()``
     already in flight when the first pass's query ran. Mitigates, but does not
     eliminate, that race.
 
+    ``_default_`` is the entity-WIDE config scope, not a resource, so it is
+    translated to an unscoped discovery exactly as ``handler.py`` translates it
+    for ``fanout_entity``. Forwarding it built the prefix ``BUCKET#_default_#``,
+    which no bucket item can ever carry, so the query matched zero items and
+    the whole sync was a silent no-op (#487). Under that scope each discovered
+    bucket is written from the limits resolved for its OWN resource — see
+    ``_resolved_plan`` — memoized per distinct resource.
+
     Returns the number of shards actually written.
     """
     if not limits:
         return 0
 
-    update_expr, expr_names, expr_values = build_bucket_param_update(
-        limits, ttl_multiplier, stale_limit_names, now_ms
-    )
+    unscoped = resource == DEFAULT_RESOURCE
+    plans: dict[str, tuple[str, dict[str, str], dict[str, dict[str, str]]] | None] = {}
+    if not unscoped:
+        plans[resource] = build_bucket_param_update(
+            limits, ttl_multiplier, stale_limit_names, now_ms
+        )
 
     synced: set[str] = set()
     written = 0
@@ -200,7 +257,7 @@ def sync_bucket_params(
                 "KeyConditionExpression": "GSI3PK = :pk AND begins_with(GSI3SK, :sk)",
                 "ExpressionAttributeValues": {
                     ":pk": {"S": gsi3_pk_entity(namespace_id, entity_id)},
-                    ":sk": {"S": f"BUCKET#{resource}#"},
+                    ":sk": {"S": "BUCKET#" if unscoped else f"BUCKET#{resource}#"},
                 },
             }
             if start_key:
@@ -208,12 +265,26 @@ def sync_bucket_params(
             response = client.query(**params)
             for item in response.get("Items", []):
                 pk = item.get("PK", {}).get("S", "")
-                if pk and pk not in synced:
-                    synced.add(pk)
-                    if _update_one_shard(
-                        client, table_name, pk, update_expr, expr_names, expr_values
-                    ):
-                        written += 1
+                if not pk or pk in synced:
+                    continue
+                synced.add(pk)
+                _ns, _eid, bucket_resource, _shard = parse_bucket_pk(pk)
+                if bucket_resource not in plans:
+                    plans[bucket_resource] = _resolved_plan(
+                        client,
+                        table_name,
+                        namespace_id,
+                        entity_id,
+                        bucket_resource,
+                        limits,
+                        stale_limit_names,
+                        now_ms,
+                    )
+                plan = plans[bucket_resource]
+                if plan is None:
+                    continue
+                if _update_one_shard(client, table_name, pk, *plan):
+                    written += 1
             start_key = response.get("LastEvaluatedKey")
             if not start_key:
                 break
@@ -243,6 +314,41 @@ def _decode_limits(item: dict[str, Any]) -> dict[str, dict[str, int]]:
     }
 
 
+def _walk(
+    client: Any,
+    table_name: str,
+    levels: list[tuple[str, str, str]],
+) -> tuple[dict[str, dict[str, int]], str | None]:
+    """Return the first level that defines any limits, and which one it was."""
+    for level, pk, sk in levels:
+        response = client.get_item(TableName=table_name, Key={"PK": {"S": pk}, "SK": {"S": sk}})
+        item = response.get("Item")
+        if not item:
+            continue
+        limits = _decode_limits(item)
+        if limits:
+            return limits, level
+    return {}, None
+
+
+def _fallback_levels(
+    namespace_id: str, entity_id: str, resource: str
+) -> list[tuple[str, str, str]]:
+    """entity(`_default_`) -> resource -> system, in precedence order.
+
+    The entity(`_default_`) level is skipped when `resource` already IS
+    `_default_`, exactly as ``fanout.resolve_disabled`` does.
+    """
+    levels: list[tuple[str, str, str]] = []
+    if resource != DEFAULT_RESOURCE:
+        levels.append(
+            ("entity_default", pk_entity(namespace_id, entity_id), sk_config(DEFAULT_RESOURCE))
+        )
+    levels.append(("resource", pk_resource(namespace_id, resource), sk_config()))
+    levels.append(("system", pk_system(namespace_id), sk_config()))
+    return levels
+
+
 def resolve_effective_limits(
     client: Any,
     table_name: str,
@@ -254,22 +360,30 @@ def resolve_effective_limits(
 
     Walks entity(`_default_`) -> resource -> system and returns the first
     level that defines any limits, mirroring the precedence in ADR-100 minus
-    the entity(resource) level the caller has just removed. The
-    entity(`_default_`) level is skipped when `resource` already IS
-    `_default_`, exactly as ``fanout.resolve_disabled`` does.
+    the entity(resource) level the caller has just removed.
     """
-    levels: list[tuple[str, str]] = []
-    if resource != DEFAULT_RESOURCE:
-        levels.append((pk_entity(namespace_id, entity_id), sk_config(DEFAULT_RESOURCE)))
-    levels.append((pk_resource(namespace_id, resource), sk_config()))
-    levels.append((pk_system(namespace_id), sk_config()))
+    limits, _level = _walk(client, table_name, _fallback_levels(namespace_id, entity_id, resource))
+    return limits
 
-    for pk, sk in levels:
-        response = client.get_item(TableName=table_name, Key={"PK": {"S": pk}, "SK": {"S": sk}})
-        item = response.get("Item")
-        if not item:
-            continue
-        limits = _decode_limits(item)
-        if limits:
-            return limits
-    return {}
+
+def resolve_bucket_limits(
+    client: Any,
+    table_name: str,
+    namespace_id: str,
+    entity_id: str,
+    resource: str,
+) -> tuple[dict[str, dict[str, int]], str | None]:
+    """Full-precedence walk for one existing bucket, and the level that won.
+
+    entity(resource) -> entity(`_default_`) -> resource -> system, the whole
+    ADR-100 hierarchy. Unlike ``resolve_effective_limits`` this keeps the
+    entity(resource) level, because the entity-wide fan-out is asking "what
+    applies to this bucket right now", not "what applies now that the caller's
+    own level is gone". The level is returned because it decides the bucket's
+    TTL (#271, #296).
+    """
+    levels: list[tuple[str, str, str]] = [
+        ("entity", pk_entity(namespace_id, entity_id), sk_config(resource))
+    ]
+    levels.extend(_fallback_levels(namespace_id, entity_id, resource))
+    return _walk(client, table_name, levels)

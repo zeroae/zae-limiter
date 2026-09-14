@@ -27,7 +27,7 @@ from zae_limiter.schema import (
 )
 
 from .applier import apply_changes
-from .bucket_sync import resolve_effective_limits, sync_bucket_params
+from .bucket_sync import DEFAULT_TTL_MULTIPLIER, resolve_effective_limits, sync_bucket_params
 from .differ import Change, compute_diff
 from .fanout import fanout_entity, fanout_resource, resolve_disabled
 from .manifest import LimitsManifest
@@ -287,7 +287,7 @@ def _sync_bucket_param_changes(
             if not effective:
                 continue
             stale = set(declared) - set(effective)
-            limits, ttl_multiplier = effective, 7
+            limits, ttl_multiplier = effective, DEFAULT_TTL_MULTIPLIER
             stale_limit_names = stale or None
         else:
             if not declared:
