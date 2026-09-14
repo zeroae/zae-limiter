@@ -4187,3 +4187,178 @@ class TestSyncBucketParamsFansOutToAllShards:
                 await repo.reconcile_bucket_to_defaults(
                     "user-5", "gpt-4", [Limit.per_minute("rpm", 10)]
                 )
+
+
+class TestDefaultResourceSyncReachesEveryResource:
+    """An entity-wide `_default_` limit change must reach existing buckets (#487).
+
+    `_default_` is a config scope, not a resource: no bucket item ever carries
+    the GSI3SK `BUCKET#_default_#`, so passing it straight through to the GSI3
+    discovery query matched zero items and the sync was a silent no-op that
+    wrote nothing and raised nothing. Entity configs carry no TTL, so the
+    affected buckets enforced the params they were born with forever.
+
+    Widening discovery is necessary but not sufficient: precedence is
+    Entity(resource) > Entity(`_default_`) > Resource > System, so an unscoped
+    sync that stamped the caller's `_default_` limits onto every discovered
+    bucket would clobber a resource that has its own, higher-precedence entity
+    config. Each bucket is therefore re-stamped from the limits resolved for
+    its OWN resource, exactly as `_fanout_entity` re-resolves `disabled`.
+    """
+
+    @staticmethod
+    async def _seed(repo, entity_id, resource, *limits):
+        """Create a bucket item for one (entity, resource) on the given limits."""
+        now_ms = int(time.time() * 1000)
+        states = [BucketState.from_limit(entity_id, resource, lim, now_ms) for lim in limits]
+        await repo.transact_write(
+            [repo.build_composite_create(entity_id, resource, states, now_ms)]
+        )
+
+    @staticmethod
+    async def _raw(repo, entity_id, resource):
+        from zae_limiter import schema
+
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, resource, 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+        )
+        return response.get("Item") or {}
+
+    @classmethod
+    async def _cap(cls, repo, entity_id, resource, limit_name="rpm"):
+        from zae_limiter.schema import BUCKET_FIELD_CP, bucket_attr
+
+        item = await cls._raw(repo, entity_id, resource)
+        attr = bucket_attr(limit_name, BUCKET_FIELD_CP)
+        assert attr in item, f"{limit_name} missing from {entity_id}/{resource}"
+        return int(item[attr]["N"])
+
+    @pytest.mark.asyncio
+    async def test_entity_wide_change_reaches_an_existing_bucket(self, repo):
+        """The regression: `set_limits` with no resource must reach the bucket."""
+        await repo.create_entity("user-1")
+        await repo.set_limits("user-1", [Limit.per_minute("rpm", 100)])
+        await self._seed(repo, "user-1", "gpt-4", Limit.per_minute("rpm", 100))
+
+        await repo.set_limits("user-1", [Limit.per_minute("rpm", 500)])
+
+        assert await self._cap(repo, "user-1", "gpt-4") == 500_000
+
+    @pytest.mark.asyncio
+    async def test_entity_wide_change_does_not_clobber_a_resource_specific_config(self, repo):
+        """The guard against the naive `resource=None` fix.
+
+        `gpt-4` has its own entity config, which outranks the entity-wide
+        `_default_` one. An unscoped sync that stamped the caller's limits on
+        every discovered bucket would overwrite the more specific config with
+        the less specific one.
+        """
+        await repo.create_entity("user-2")
+        await repo.set_limits("user-2", [Limit.per_minute("rpm", 100)])
+        await repo.set_limits("user-2", [Limit.per_minute("rpm", 900)], resource="gpt-4")
+        await self._seed(repo, "user-2", "gpt-4", Limit.per_minute("rpm", 900))
+        await self._seed(repo, "user-2", "claude-3", Limit.per_minute("rpm", 100))
+
+        await repo.set_limits("user-2", [Limit.per_minute("rpm", 500)])
+
+        assert await self._cap(repo, "user-2", "gpt-4") == 900_000, (
+            "the resource-specific entity config outranks `_default_`"
+        )
+        assert await self._cap(repo, "user-2", "claude-3") == 500_000
+
+    @pytest.mark.asyncio
+    async def test_entity_wide_change_keeps_no_ttl_on_any_bucket(self, repo):
+        """Every bucket still resolves at an entity level, so none gets a TTL."""
+        await repo.create_entity("user-3")
+        await repo.set_limits("user-3", [Limit.per_minute("rpm", 100)])
+        await repo.set_limits("user-3", [Limit.per_minute("rpm", 900)], resource="gpt-4")
+        await self._seed(repo, "user-3", "gpt-4", Limit.per_minute("rpm", 900))
+        await self._seed(repo, "user-3", "claude-3", Limit.per_minute("rpm", 100))
+
+        await repo.set_limits("user-3", [Limit.per_minute("rpm", 500)])
+
+        for resource in ("gpt-4", "claude-3"):
+            assert "ttl" not in await self._raw(repo, "user-3", resource)
+
+    @pytest.mark.asyncio
+    async def test_reconcile_resolves_and_ttls_each_bucket_at_its_own_level(self, repo):
+        """The `delete_limits('_default_')` path, and per-bucket TTL (#271, #296).
+
+        The caller hands `reconcile_bucket_to_defaults` the limits that
+        `_default_` itself falls back to (system). Those are right for a bucket
+        with nothing more specific and wrong for every other bucket, so the
+        unscoped path ignores them and re-resolves per resource. TTL follows
+        whichever level answered: entity means persist, resource or system
+        means expire.
+        """
+        await repo.create_entity("user-4")
+        await repo.set_system_defaults([Limit.per_minute("rpm", 50)])
+        await repo.set_resource_defaults("claude-3", [Limit.per_minute("rpm", 200)])
+        await repo.set_limits("user-4", [Limit.per_minute("rpm", 100)])
+        await repo.set_limits("user-4", [Limit.per_minute("rpm", 900)], resource="gpt-4")
+        for resource in ("gpt-4", "claude-3", "llama3"):
+            await self._seed(repo, "user-4", resource, Limit.per_minute("rpm", 100))
+
+        await repo.delete_limits("user-4")
+        await repo.reconcile_bucket_to_defaults(
+            "user-4", "_default_", [Limit.per_minute("rpm", 50)]
+        )
+
+        assert await self._cap(repo, "user-4", "gpt-4") == 900_000, "entity config still wins"
+        assert await self._cap(repo, "user-4", "claude-3") == 200_000, "resource default applies"
+        assert await self._cap(repo, "user-4", "llama3") == 50_000, "system default applies"
+
+        assert "ttl" not in await self._raw(repo, "user-4", "gpt-4")
+        assert "ttl" in await self._raw(repo, "user-4", "claude-3")
+        assert "ttl" in await self._raw(repo, "user-4", "llama3")
+
+    @pytest.mark.asyncio
+    async def test_stale_names_are_intersected_against_each_bucket_resolution(self, repo):
+        """A caller's stale name that the bucket's own level still defines is kept.
+
+        `delete_limits` computes stale names against the `_default_` fallback
+        (system). Applying that set verbatim to a bucket whose own entity
+        config still declares the limit would SET and REMOVE the same attribute
+        in one expression — a DynamoDB ValidationException — and, if it landed,
+        would strip a configured limit.
+        """
+        rpm, tpm = Limit.per_minute("rpm", 100), Limit.per_minute("tpm", 10_000)
+        await repo.create_entity("user-5")
+        await repo.set_system_defaults([Limit.per_minute("rpm", 50)])
+        await repo.set_limits("user-5", [rpm, tpm])
+        await repo.set_limits("user-5", [rpm, tpm], resource="gpt-4")
+        await self._seed(repo, "user-5", "gpt-4", rpm, tpm)
+        await self._seed(repo, "user-5", "llama3", rpm, tpm)
+
+        await repo.delete_limits("user-5")
+        await repo.reconcile_bucket_to_defaults(
+            "user-5",
+            "_default_",
+            [Limit.per_minute("rpm", 50)],
+            stale_limit_names={"tpm"},
+        )
+
+        assert await self._cap(repo, "user-5", "gpt-4", "tpm") == 10_000_000, (
+            "gpt-4's own entity config still declares tpm"
+        )
+        assert await repo.get_bucket("user-5", "llama3", "tpm") is None, (
+            "llama3 falls back to system, which has no tpm"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_real_resource_is_still_scoped_to_that_resource(self, repo):
+        """The scoped path is untouched: a sibling resource is not rewritten."""
+        await repo.create_entity("user-6")
+        await repo.set_limits("user-6", [Limit.per_minute("rpm", 100)], resource="gpt-4")
+        await self._seed(repo, "user-6", "gpt-4", Limit.per_minute("rpm", 100))
+        await self._seed(repo, "user-6", "claude-3", Limit.per_minute("rpm", 100))
+
+        await repo.set_limits("user-6", [Limit.per_minute("rpm", 700)], resource="gpt-4")
+
+        assert await self._cap(repo, "user-6", "gpt-4") == 700_000
+        assert await self._cap(repo, "user-6", "claude-3") == 100_000

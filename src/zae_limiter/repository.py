@@ -3052,12 +3052,16 @@ class Repository:
             else:
                 raise
 
+        # Auto-evict from config cache so next resolve reads fresh config
+        # (ADR-122). Strictly BEFORE the bucket sync: under the entity-wide
+        # `_default_` scope that sync re-resolves per bucket resource, and a
+        # stale cached `_default_` level would make it write the limits this
+        # call just replaced (#487).
+        self._config_cache.evict_entity(entity_id, resource)
+
         # Sync bucket static params if bucket exists (issue #294, #327)
         # Entity config = no TTL (bucket_ttl_refill_multiplier=0 → REMOVE ttl)
         await self._sync_bucket_params(entity_id, resource, limits, bucket_ttl_refill_multiplier=0)
-
-        # Auto-evict from config cache so next resolve reads fresh config (ADR-122)
-        self._config_cache.evict_entity(entity_id, resource)
 
         # An explicit `disabled` changes what resolve_disabled() answers, so the
         # denormalized bucket stamp has to follow it eagerly — same contract as
@@ -3105,14 +3109,32 @@ class Repository:
         an acquire already in flight can be missed (mitigated, not eliminated,
         by the second discovery pass).
 
+        ``_default_`` is the entity-WIDE config scope, not a resource, and a
+        caller passing it means "every resource this entity has a bucket for".
+        No bucket item can ever carry the GSI3SK ``BUCKET#_default_#``, so
+        forwarding it to discovery matched zero items and the whole sync was a
+        silent no-op — the exact ``_default_`` -> unscoped translation the
+        ADR-125 disable fan-out performs a few lines below (issue #487).
+        Discovery therefore widens, and because Entity(resource) outranks
+        Entity(``_default_``), each discovered bucket is stamped from the
+        limits resolved for its OWN resource rather than from the caller's,
+        exactly as `_fanout_entity` re-resolves `disabled` per bucket. See
+        `_resolved_bucket_param_update` for what that implies for TTL and for
+        the caller's stale-name set.
+
         Args:
             entity_id: ID of the entity
-            resource: Resource name
-            limits: New limit configurations
+            resource: Resource name, or `schema.DEFAULT_RESOURCE` for the
+                entity-wide scope (every resource the entity has a bucket for)
+            limits: New limit configurations. Under the entity-wide scope these
+                are the caller's *directive*, not what gets written: each
+                bucket is written from its own resolved limits.
             bucket_ttl_refill_multiplier: TTL behavior (issue #327):
                 - None: Don't change TTL
                 - 0: REMOVE ttl (entity has custom limits)
                 - >0: SET ttl to (now + calculated_seconds)
+                Ignored under the entity-wide scope, where the resolved level
+                decides per bucket.
             stale_limit_names: Limit names to REMOVE from bucket (issue #327).
                 Used when downgrading from entity config to defaults where
                 the old config had limits not present in the new defaults.
@@ -3120,6 +3142,109 @@ class Repository:
         if not limits:
             return
 
+        # `_default_` names no bucket: widen discovery and re-resolve per
+        # bucket resource (#487). A real resource is an unambiguous directive.
+        unscoped = resource == schema.DEFAULT_RESOURCE
+        plans: dict[str, tuple[str, dict[str, str], dict[str, dict[str, str]]]] = {}
+        if not unscoped:
+            plans[resource] = self._build_bucket_param_update(
+                limits, bucket_ttl_refill_multiplier, stale_limit_names
+            )
+
+        # Two discovery passes, exactly like the ADR-125 disable fan-out: the
+        # second catches a bucket created by an acquire that was already in
+        # flight during the first. Writes are independent single-item updates
+        # (no cross-shard atomicity to preserve), so they are issued
+        # concurrently. A list comprehension — not a generator — is required
+        # for the sync transformer.
+        synced: set[str] = set()
+        for _pass in range(2):
+            pks = [
+                pk
+                for pk in await self._discover_entity_bucket_pks(
+                    entity_id, None if unscoped else resource
+                )
+                if pk not in synced
+            ]
+            if not pks:
+                continue
+            if unscoped:
+                # Serial and memoized per distinct resource, like
+                # `_fanout_entity`'s `effective_by_resource`: a 500-bucket
+                # entity spread over three resources resolves three times.
+                for pk in pks:
+                    _ns, _eid, bucket_resource, _shard = schema.parse_bucket_pk(pk)
+                    if bucket_resource not in plans:
+                        plans[bucket_resource] = await self._resolved_bucket_param_update(
+                            entity_id, bucket_resource, limits, stale_limit_names
+                        )
+            await asyncio.gather(*[self._sync_one_bucket_shard_from_plans(pk, plans) for pk in pks])
+            synced.update(pks)
+
+    async def _resolved_bucket_param_update(
+        self,
+        entity_id: str,
+        bucket_resource: str,
+        directive_limits: list[Limit],
+        stale_limit_names: set[str] | None,
+    ) -> tuple[str, dict[str, str], dict[str, dict[str, str]]]:
+        """Build one bucket's update from the limits resolved for ITS resource.
+
+        Used only under the entity-wide (`_default_`) scope. The caller's
+        limits are a directive for the level it wrote, and a resource with its
+        own entity config outranks that level; writing the caller's limits
+        everywhere would clobber the more specific config with the less
+        specific one (issue #487).
+
+        Two things follow from resolving per bucket:
+
+        * **TTL follows the level that answered.** Entity-level limits mean the
+          bucket persists, resource/system defaults mean it expires and is
+          recreated with current params (#271, #296). One `set_limits` call can
+          touch buckets resolving at different levels, so the multiplier cannot
+          be fixed at the call site.
+        * **The caller's stale names are intersected with the resolution.**
+          `delete_limits` computes them against `_default_`'s own fallback, so
+          a limit the *deleted* config declared may still be declared by a
+          resource's own entity config. Removing it there would strip a
+          configured limit — and SET and REMOVE on one attribute in a single
+          expression is a DynamoDB ValidationException. Conversely a directive
+          limit absent from this resource's resolution is stale *here* even
+          though the caller did not name it.
+        """
+        resolved, _on_unavailable, source = await self.resolve_limits(entity_id, bucket_resource)
+        if not resolved:
+            # Nothing applies anywhere any more. There is no correct value to
+            # write, so leave the bucket alone — the same choice the delete
+            # path makes when no fallback config exists at all.
+            return "", {}, {}
+
+        resolved_names = {limit.name for limit in resolved}
+        stale = (set(stale_limit_names or ()) | {limit.name for limit in directive_limits}) - (
+            resolved_names
+        )
+        entity_level = source in ("entity", "entity_default")
+        multiplier = 0 if entity_level else self._bucket_ttl_refill_multiplier
+        return self._build_bucket_param_update(resolved, multiplier, stale or None)
+
+    def _build_bucket_param_update(
+        self,
+        limits: list[Limit],
+        bucket_ttl_refill_multiplier: int | None,
+        stale_limit_names: set[str] | None,
+    ) -> tuple[str, dict[str, str], dict[str, dict[str, str]]]:
+        """Build the SET/REMOVE UpdateExpression for one bucket item.
+
+        Args:
+            limits: Limits to stamp (stored undivided; the per-shard share is
+                derived at read time by `BucketState.effective_*`)
+            bucket_ttl_refill_multiplier: None leaves `ttl` alone, 0 REMOVEs it,
+                >0 SETs it from the limits' max time-to-fill
+            stale_limit_names: Limit names to strip from the bucket entirely
+
+        Returns:
+            `(update_expr, expr_names, expr_values)`
+        """
         # Build SET expression for static bucket params
         # Use numeric index for expression names since limit names can contain hyphens
         set_parts: list[str] = []
@@ -3182,29 +3307,27 @@ class Repository:
         update_expr = f"SET {', '.join(set_parts)}"
         if remove_parts:
             update_expr += f" REMOVE {', '.join(remove_parts)}"
+        return update_expr, expr_names, expr_values
 
-        # Two discovery passes, exactly like the ADR-125 disable fan-out: the
-        # second catches a bucket created by an acquire that was already in
-        # flight during the first. Writes are independent single-item updates
-        # (no cross-shard atomicity to preserve), so they are issued
-        # concurrently. A list comprehension — not a generator — is required
-        # for the sync transformer.
-        synced: set[str] = set()
-        for _pass in range(2):
-            pks = [
-                pk
-                for pk in await self._discover_entity_bucket_pks(entity_id, resource)
-                if pk not in synced
-            ]
-            if not pks:
-                continue
-            await asyncio.gather(
-                *[
-                    self._sync_one_bucket_shard(pk, update_expr, expr_names, expr_values)
-                    for pk in pks
-                ]
-            )
-            synced.update(pks)
+    async def _sync_one_bucket_shard_from_plans(
+        self,
+        pk: str,
+        plans: dict[str, tuple[str, dict[str, str], dict[str, dict[str, str]]]],
+    ) -> None:
+        """Apply the plan built for this bucket's own resource.
+
+        Args:
+            pk: Full bucket partition key (namespace- and shard-qualified)
+            plans: Prepared updates keyed by resource. A resource with no plan,
+                or one whose expression is empty, is skipped: nothing resolved
+                for it, so there is no correct value to write.
+        """
+        _ns, _eid, bucket_resource, _shard = schema.parse_bucket_pk(pk)
+        plan = plans.get(bucket_resource)
+        if plan is None or not plan[0]:
+            return
+        update_expr, expr_names, expr_values = plan
+        await self._sync_one_bucket_shard(pk, update_expr, expr_names, expr_values)
 
     async def _sync_one_bucket_shard(
         self,
