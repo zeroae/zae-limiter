@@ -27,15 +27,30 @@ from zae_limiter.schema import (
     BUCKET_FIELD_RP,
     BUCKET_FIELD_TC,
     BUCKET_FIELD_TK,
+    DEFAULT_RESOURCE,
     GSI3_NAME,
+    LIMIT_FIELD_CP,
+    LIMIT_FIELD_RA,
+    LIMIT_FIELD_RP,
     bucket_attr,
     calculate_bucket_ttl_seconds,
     calculate_ttl,
     gsi3_pk_entity,
+    parse_limit_attr,
+    pk_entity,
+    pk_resource,
+    pk_system,
+    sk_config,
     sk_state,
 )
 
 logger = logging.getLogger(__name__)
+
+_MANIFEST_KEY = {
+    LIMIT_FIELD_CP: "capacity",
+    LIMIT_FIELD_RA: "refill_amount",
+    LIMIT_FIELD_RP: "refill_period",
+}
 
 # Fields removed for a limit that no longer exists in the effective config.
 # BUCKET_FIELD_RF is deliberately absent: it is shared across every limit in a
@@ -203,3 +218,58 @@ def sync_bucket_params(
             if not start_key:
                 break
     return written
+
+
+def _decode_limits(item: dict[str, Any]) -> dict[str, dict[str, int]]:
+    """Decode composite ``l_{name}_{field}`` attributes into manifest shape.
+
+    A limit missing any of cp/ra/rp is malformed and is skipped rather than
+    given a synthesised default, which would silently invent a limit.
+    """
+    partial: dict[str, dict[str, int]] = {}
+    for attr, value in item.items():
+        parsed = parse_limit_attr(attr)
+        if parsed is None:
+            continue
+        name, field = parsed
+        key = _MANIFEST_KEY.get(field)
+        if key is None:
+            continue
+        partial.setdefault(name, {})[key] = int(value["N"])
+    return {
+        name: decl
+        for name, decl in partial.items()
+        if decl.keys() == {"capacity", "refill_amount", "refill_period"}
+    }
+
+
+def resolve_effective_limits(
+    client: Any,
+    table_name: str,
+    namespace_id: str,
+    entity_id: str,
+    resource: str,
+) -> dict[str, dict[str, int]]:
+    """Effective limits after an entity's per-resource config is deleted.
+
+    Walks entity(`_default_`) -> resource -> system and returns the first
+    level that defines any limits, mirroring the precedence in ADR-100 minus
+    the entity(resource) level the caller has just removed. The
+    entity(`_default_`) level is skipped when `resource` already IS
+    `_default_`, exactly as ``fanout.resolve_disabled`` does.
+    """
+    levels: list[tuple[str, str]] = []
+    if resource != DEFAULT_RESOURCE:
+        levels.append((pk_entity(namespace_id, entity_id), sk_config(DEFAULT_RESOURCE)))
+    levels.append((pk_resource(namespace_id, resource), sk_config()))
+    levels.append((pk_system(namespace_id), sk_config()))
+
+    for pk, sk in levels:
+        response = client.get_item(TableName=table_name, Key={"PK": {"S": pk}, "SK": {"S": sk}})
+        item = response.get("Item")
+        if not item:
+            continue
+        limits = _decode_limits(item)
+        if limits:
+            return limits
+    return {}

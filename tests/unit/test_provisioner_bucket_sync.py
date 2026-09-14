@@ -7,8 +7,21 @@ classes so `except client.exceptions.X` matches as it would against real boto3.
 
 from unittest.mock import MagicMock
 
-from zae_limiter.schema import bucket_attr, gsi3_pk_entity, sk_state
-from zae_limiter_provisioner.bucket_sync import build_bucket_param_update, sync_bucket_params
+from zae_limiter.schema import (
+    bucket_attr,
+    gsi3_pk_entity,
+    limit_attr,
+    pk_entity,
+    pk_resource,
+    pk_system,
+    sk_config,
+    sk_state,
+)
+from zae_limiter_provisioner.bucket_sync import (
+    build_bucket_param_update,
+    resolve_effective_limits,
+    sync_bucket_params,
+)
 
 ConditionalCheckFailedException = type("ConditionalCheckFailedException", (Exception,), {})
 
@@ -224,3 +237,77 @@ class TestSyncBucketParams:
             now_ms=0,
         )
         assert written == 2
+
+
+def _limits_item(**limits):
+    """A config item carrying composite limit attributes (whole tokens)."""
+    item = {}
+    for name, (cp, ra, rp) in limits.items():
+        item[limit_attr(name, "cp")] = {"N": str(cp)}
+        item[limit_attr(name, "ra")] = {"N": str(ra)}
+        item[limit_attr(name, "rp")] = {"N": str(rp)}
+    return item
+
+
+def _levels(mapping):
+    def _get_item(**kwargs):
+        key = (kwargs["Key"]["PK"]["S"], kwargs["Key"]["SK"]["S"])
+        return {"Item": mapping[key]} if key in mapping else {}
+
+    return _get_item
+
+
+class TestResolveEffectiveLimits:
+    def test_entity_default_wins_over_resource(self):
+        client = _make_client()
+        client.get_item.side_effect = _levels(
+            {
+                (pk_entity("ns123", "user-1"), sk_config("_default_")): _limits_item(
+                    rpm=(50, 50, 60)
+                ),
+                (pk_resource("ns123", "gpt-4"), sk_config()): _limits_item(rpm=(999, 999, 60)),
+            }
+        )
+        assert resolve_effective_limits(client, "tbl", "ns123", "user-1", "gpt-4") == {
+            "rpm": {"capacity": 50, "refill_amount": 50, "refill_period": 60}
+        }
+
+    def test_falls_through_to_resource_then_system(self):
+        client = _make_client()
+        client.get_item.side_effect = _levels(
+            {
+                (pk_system("ns123"), sk_config()): _limits_item(rpm=(10, 10, 60)),
+            }
+        )
+        assert resolve_effective_limits(client, "tbl", "ns123", "user-1", "gpt-4") == {
+            "rpm": {"capacity": 10, "refill_amount": 10, "refill_period": 60}
+        }
+
+    def test_no_level_defines_limits(self):
+        client = _make_client()
+        client.get_item.side_effect = _levels({})
+        assert resolve_effective_limits(client, "tbl", "ns123", "user-1", "gpt-4") == {}
+
+    def test_skips_entity_default_level_when_resource_is_default(self):
+        """Mirrors resolve_disabled: no point reading _default_ twice."""
+        client = _make_client()
+        client.get_item.side_effect = _levels({})
+        resolve_effective_limits(client, "tbl", "ns123", "user-1", "_default_")
+        read = [c.kwargs["Key"]["SK"]["S"] for c in client.get_item.call_args_list]
+        assert read.count(sk_config("_default_")) == 0
+
+    def test_ignores_non_limit_attributes(self):
+        """`disabled`, `config_version` and friends must not become limits."""
+        client = _make_client()
+        item = _limits_item(rpm=(10, 10, 60))
+        item["disabled"] = {"BOOL": True}
+        item["config_version"] = {"N": "3"}
+        client.get_item.side_effect = _levels({(pk_resource("ns123", "gpt-4"), sk_config()): item})
+        assert set(resolve_effective_limits(client, "tbl", "ns123", "user-1", "gpt-4")) == {"rpm"}
+
+    def test_partial_limit_attributes_are_skipped(self):
+        """A limit missing cp/ra/rp is malformed; do not synthesise defaults."""
+        client = _make_client()
+        item = {limit_attr("rpm", "cp"): {"N": "10"}}
+        client.get_item.side_effect = _levels({(pk_resource("ns123", "gpt-4"), sk_config()): item})
+        assert resolve_effective_limits(client, "tbl", "ns123", "user-1", "gpt-4") == {}
