@@ -1401,6 +1401,21 @@ Add `BUCKET_FIELD_VU = "vu"` to `schema.py`. In `limiter.py`, route `SCHEDULE_BO
 
 **Files:** Modify `src/zae_limiter/repository.py` (`build_composite_normal` 2170), `src/zae_limiter/lease.py` (~377-393) · Test `tests/unit/test_lease.py`
 
+**One instant drives the whole slow-path pass — and it is the slow path's own.** #430 makes
+one `acquire()` observe one clock *on the fast path*; `_do_acquire` and `_try_parent_only_acquire`
+still take their own reading, and that is correct rather than an oversight. Inheriting the fast
+path's instant across a `BatchGetItem` and a transaction would stamp `rf` in the past and
+under-refill by the round-trip time. What matters is that the slow path's single reading drives
+**all three** of `effective_params(...)`, `next_boundary(...)` and the `rf` stamp in
+`build_composite_normal`. Splitting them is what issue #430 names as "an inconsistent `(rf, vu)`
+pair the next reader cannot trust" — thread one `now_ms` from `_do_acquire` through `lease.py`
+into the builder, and assert it with a test that patches `_now_ms` to a per-call counter and
+checks `rf` and `vu` derive from the same reading.
+
+A related non-hazard, recorded so nobody re-derives it: a boundary crossing *between* the fast
+path's rejection and the slow path's read is harmless. The slow path reads later, so it evaluates
+the new window — never the old one.
+
 **The clamp is already handled — do not add a second one.** `lease.py:384` computes `refill_amounts[name] = entry.state.tokens_milli - entry._original_tokens_milli + consumed_milli`, a *delta* from the already-refilled state. Once Task 6 clamps inside `refill_bucket`, that delta goes negative on a surplus and `ADD tk (delta - consumed)` trims correctly. Adding an explicit clamp here would double-apply it.
 
 - [ ] **Step 1: Write the failing test**
