@@ -4351,6 +4351,26 @@ class TestDefaultResourceSyncReachesEveryResource:
         )
 
     @pytest.mark.asyncio
+    async def test_a_resource_that_resolves_to_nothing_is_left_alone(self, repo):
+        """No configured level means no correct value to write.
+
+        The same choice the delete path already makes when no fallback config
+        exists at all — better a bucket on stale params than one stamped with
+        limits nothing actually configures.
+        """
+        await repo.create_entity("user-7")
+        await self._seed(repo, "user-7", "ghost", Limit.per_minute("rpm", 100))
+
+        await repo.reconcile_bucket_to_defaults(
+            "user-7", "_default_", [Limit.per_minute("rpm", 50)]
+        )
+
+        assert await self._cap(repo, "user-7", "ghost") == 100_000
+        assert "ttl" in await self._raw(repo, "user-7", "ghost"), (
+            "the seeded TTL is untouched, not recomputed from limits that do not apply"
+        )
+
+    @pytest.mark.asyncio
     async def test_a_real_resource_is_still_scoped_to_that_resource(self, repo):
         """The scoped path is untouched: a sibling resource is not rewritten."""
         await repo.create_entity("user-6")

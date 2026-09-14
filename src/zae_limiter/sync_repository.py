@@ -2741,15 +2741,15 @@ class SyncRepository:
 
         Args:
             pk: Full bucket partition key (namespace- and shard-qualified)
-            plans: Prepared updates keyed by resource. A resource with no plan,
-                or one whose expression is empty, is skipped: nothing resolved
-                for it, so there is no correct value to write.
+            plans: Prepared updates keyed by resource; every discovered bucket's
+                resource has an entry. An entry with an empty expression is
+                skipped — nothing resolved for that resource, so there is no
+                correct value to write.
         """
         _ns, _eid, bucket_resource, _shard = schema.parse_bucket_pk(pk)
-        plan = plans.get(bucket_resource)
-        if plan is None or not plan[0]:
+        update_expr, expr_names, expr_values = plans[bucket_resource]
+        if not update_expr:
             return
-        update_expr, expr_names, expr_values = plan
         self._sync_one_bucket_shard(pk, update_expr, expr_names, expr_values)
 
     def _sync_one_bucket_shard(
