@@ -67,6 +67,21 @@ BUCKET_FIELD_RP = "rp"  # refill period (ms)
 BUCKET_FIELD_TC = "tc"  # total consumed counter (millitokens)
 BUCKET_FIELD_RF = "rf"  # shared refill timestamp (ms) — optimistic lock
 
+# Scheduled limits (#222, ADR-135). The compact encoding lives in
+# ``zae_limiter.schedule``; these are the attribute names it is stored under.
+#
+# ``sched`` is the item-level *default* schedule and ``b_{name}_sched`` the
+# per-limit override written only where a limit's schedule differs from it
+# (§4.1). ``sched_tz`` is hoisted to one item-level attribute, so every entry
+# on one bucket item shares a timezone.
+#
+# ``vu`` ("valid until", epoch ms) is the materialisation stamp: the fast path
+# gates on ``vu > now`` so it can honour a schedule without ever evaluating
+# one. ``vu = 0`` forces exactly one materialising pass.
+BUCKET_FIELD_SCHED = "sched"  # item-level default schedule, compact-encoded
+BUCKET_FIELD_SCHED_TZ = "sched_tz"  # IANA name, hoisted out of every entry
+BUCKET_FIELD_VU = "vu"  # valid-until, epoch ms — schedule materialisation stamp
+
 # Disable flag (ADR-125). Tri-state on config items: absent = inherit,
 # True/False = explicit. On bucket items the attribute is present only
 # when the bucket is effectively disabled, so the speculative guard can

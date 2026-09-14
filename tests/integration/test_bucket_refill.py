@@ -14,12 +14,16 @@ import uuid
 import boto3
 import pytest
 
+from zae_limiter.schedule import ScheduleEntry, decode, encode
 from zae_limiter.schema import (
     BUCKET_FIELD_CP,
     BUCKET_FIELD_RA,
     BUCKET_FIELD_RP,
+    BUCKET_FIELD_SCHED,
+    BUCKET_FIELD_SCHED_TZ,
     BUCKET_FIELD_TC,
     BUCKET_FIELD_TK,
+    BUCKET_FIELD_VU,
     bucket_attr,
     get_table_definition,
     pk_bucket,
@@ -520,3 +524,151 @@ class TestAggregateAndRefillIntegration:
         item = _get_bucket(dynamodb_table, entity_id, resource)
         assert int(item["b_tpm_tk"]) > 0, "Tokens should be refilled after pipeline"
         assert item["rf"] == now_ms
+
+
+# Always active, so the assertions below do not depend on the wall clock.
+ALWAYS_HALF = (ScheduleEntry(cron="* * * * *", tz="UTC", scale=0.5),)
+ALWAYS_HALF_COMPACT, _ALWAYS_HALF_TZ = encode(ALWAYS_HALF)
+ALWAYS_QUARTER_COMPACT = encode((ScheduleEntry(cron="* * * * *", tz="UTC", scale=0.25),))[0]
+
+
+@pytest.mark.integration
+class TestScheduledRefillIntegration:
+    """Scheduled refill and `vu` re-stamping against real DynamoDB (#222).
+
+    The unit tests assert what is *passed* to update_item. These assert that
+    DynamoDB accepts it: the combined ``SET rf, #vu ADD ...`` expression and the
+    two-clause condition are the parts a MagicMock cannot validate.
+    """
+
+    def _seed(self, table, entity_id, resource, rf_ms, *, sched, vu_ms):
+        _seed_bucket(
+            table,
+            entity_id,
+            resource,
+            limits={
+                "tpm": {
+                    "tk": 0,
+                    "cp": 10_000_000,
+                    "ra": 10_000_000,
+                    "rp": 60_000,
+                    "tc": 10_000_000,
+                },
+            },
+            rf_ms=rf_ms,
+        )
+        table.update_item(
+            Key={"PK": pk_bucket("default", entity_id, resource, 0), "SK": sk_state()},
+            UpdateExpression="SET #sched = :s, #tz = :tz, #vu = :vu",
+            ExpressionAttributeNames={
+                "#sched": BUCKET_FIELD_SCHED,
+                "#tz": BUCKET_FIELD_SCHED_TZ,
+                "#vu": BUCKET_FIELD_VU,
+            },
+            ExpressionAttributeValues={":s": sched, ":tz": "UTC", ":vu": vu_ms},
+        )
+
+    def _state(self, entity_id, resource, rf_ms, *, sched_compact, vu_ms):
+        return BucketRefillState(
+            namespace_id="default",
+            entity_id=entity_id,
+            resource=resource,
+            rf_ms=rf_ms,
+            limits={
+                "tpm": LimitRefillInfo(
+                    tc_delta=10_000_000,
+                    tk_milli=0,
+                    cp_milli=10_000_000,
+                    ra_milli=10_000_000,
+                    rp_ms=60_000,
+                    sched=decode(sched_compact, "UTC"),
+                ),
+            },
+            sched=decode(sched_compact, "UTC"),
+            sched_compact=sched_compact,
+            vu_ms=vu_ms,
+        )
+
+    def test_refills_to_the_scheduled_share_and_advances_vu(self, dynamodb_table) -> None:
+        entity_id = f"entity-{uuid.uuid4().hex[:8]}"
+        resource = "gpt-4"
+        now_ms = int(time.time() * 1000)
+        old_rf_ms = now_ms - 60_000
+
+        self._seed(
+            dynamodb_table,
+            entity_id,
+            resource,
+            old_rf_ms,
+            sched=ALWAYS_HALF_COMPACT,
+            vu_ms=now_ms - 1,
+        )
+        state = self._state(
+            entity_id,
+            resource,
+            old_rf_ms,
+            sched_compact=ALWAYS_HALF_COMPACT,
+            vu_ms=now_ms - 1,
+        )
+
+        assert try_refill_bucket(dynamodb_table, state, now_ms) is True
+
+        item = _get_bucket(dynamodb_table, entity_id, resource)
+        assert item["b_tpm_tk"] == 5_000_000, "one minute at the halved rate"
+        assert item["rf"] == now_ms
+        assert item[BUCKET_FIELD_VU] > now_ms, "vu must advance past now"
+
+    def test_a_schedule_changed_underneath_blocks_the_whole_write(self, dynamodb_table) -> None:
+        """The #468 fan-out rewrites `sched` and sets `vu = 0` without touching
+        `rf`, so the rf lock alone cannot tell a pre-fan-out stream image from a
+        current one. Re-stamping `vu` off the stale image would push it back
+        into the future and cancel the materialising pass `vu = 0` forced."""
+        entity_id = f"entity-{uuid.uuid4().hex[:8]}"
+        resource = "gpt-4"
+        now_ms = int(time.time() * 1000)
+        old_rf_ms = now_ms - 60_000
+
+        # The item is on the 0.25x schedule; the stream image the aggregator
+        # is working from still says 0.5x.
+        self._seed(
+            dynamodb_table,
+            entity_id,
+            resource,
+            old_rf_ms,
+            sched=ALWAYS_QUARTER_COMPACT,
+            vu_ms=0,
+        )
+        state = self._state(
+            entity_id, resource, old_rf_ms, sched_compact=ALWAYS_HALF_COMPACT, vu_ms=0
+        )
+
+        assert try_refill_bucket(dynamodb_table, state, now_ms) is False
+
+        item = _get_bucket(dynamodb_table, entity_id, resource)
+        assert item["rf"] == old_rf_ms, "nothing was written"
+        assert item[BUCKET_FIELD_VU] == 0, "the forced pass is still pending"
+
+    def test_the_same_write_lands_when_the_schedule_still_matches(self, dynamodb_table) -> None:
+        """Discriminates the test above: identical setup, current image."""
+        entity_id = f"entity-{uuid.uuid4().hex[:8]}"
+        resource = "gpt-4"
+        now_ms = int(time.time() * 1000)
+        old_rf_ms = now_ms - 60_000
+
+        self._seed(
+            dynamodb_table,
+            entity_id,
+            resource,
+            old_rf_ms,
+            sched=ALWAYS_QUARTER_COMPACT,
+            vu_ms=0,
+        )
+        state = self._state(
+            entity_id, resource, old_rf_ms, sched_compact=ALWAYS_QUARTER_COMPACT, vu_ms=0
+        )
+
+        assert try_refill_bucket(dynamodb_table, state, now_ms) is True
+
+        item = _get_bucket(dynamodb_table, entity_id, resource)
+        assert item["b_tpm_tk"] == 2_500_000
+        assert item[BUCKET_FIELD_VU] > now_ms

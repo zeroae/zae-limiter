@@ -4,10 +4,12 @@ import json
 import time
 from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 from botocore.exceptions import ClientError
 
+from zae_limiter.schedule import ScheduleEntry, decode
 from zae_limiter_aggregator.processor import (
     BucketRefillState,
     ConsumptionDelta,
@@ -2296,3 +2298,437 @@ class TestPropagateShardsCount:
         assert item["b_wcu_tk"] == 1000000
         # wcu tc reset to 0
         assert item["b_wcu_tc"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Scheduled limits (#222 §3.3, §5) — the aggregator evaluates the bucket item's
+# own schedule, never config, and re-stamps `vu` on the same rf-locked write.
+# ---------------------------------------------------------------------------
+
+NY = ZoneInfo("America/New_York")
+TUE_1400 = int(datetime(2026, 9, 15, 14, 0, tzinfo=NY).timestamp() * 1000)
+# Business hours at half rate. The window closes at 18:00 local.
+BUSINESS = (ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.5),)
+BUSINESS_COMPACT = "h9-17w1-5s500"
+# The 14:00 hour at a quarter rate. Its window closes at 15:00 local — three
+# hours *before* BUSINESS does, which is what makes it useful as an override.
+HOUR_14 = (ScheduleEntry(cron="* 14 * * *", tz="America/New_York", scale=0.25),)
+HOUR_14_COMPACT = "h14s250"
+# What comes back off the wire. `decode` normalises weekday names to numbers
+# (Task 5), so `MON-FRI` round-trips as `1-5` — the same schedule, spelled
+# canonically. Comparing against the literal above would be asserting that
+# normalisation does not happen.
+BUSINESS_DECODED = decode(BUSINESS_COMPACT, "America/New_York")
+HOUR_14_DECODED = decode(HOUR_14_COMPACT, "America/New_York")
+
+
+def _sched_state(**kwargs) -> BucketRefillState:
+    """A one-limit bucket, one minute stale, that has consumed 600 tokens."""
+    base = dict(
+        namespace_id="ns123",
+        entity_id="user-1",
+        resource="gpt-4",
+        rf_ms=TUE_1400 - 60_000,
+        limits={
+            "rpm": LimitRefillInfo(
+                tc_delta=600_000,
+                tk_milli=0,
+                cp_milli=1_000_000,
+                ra_milli=1_000_000,
+                rp_ms=60_000,
+            )
+        },
+    )
+    limit_sched = kwargs.pop("limit_sched", None)
+    base.update(kwargs)
+    state = BucketRefillState(**base)
+    if limit_sched is not None:
+        for name, sched in limit_sched.items():
+            state.limits[name].sched = sched
+    return state
+
+
+def _sched_record(
+    *,
+    limits: dict[str, dict[str, int]],
+    rf_ms: int = TUE_1400 - 60_000,
+    sched: str | None = None,
+    sched_tz: str = "America/New_York",
+    limit_sched: dict[str, str] | None = None,
+    vu_ms: int | None = None,
+    shard_count: int = 1,
+    entity_id: str = "user-1",
+    resource: str = "gpt-4",
+    namespace_id: str = "ns123",
+) -> dict:
+    """A MODIFY stream record for a composite bucket item."""
+    pk = f"{namespace_id}/BUCKET#{entity_id}#{resource}#0"
+    new_image: dict = {
+        "PK": {"S": pk},
+        "SK": {"S": "#STATE"},
+        "entity_id": {"S": entity_id},
+        "resource": {"S": resource},
+        "rf": {"N": str(rf_ms)},
+        "shard_count": {"N": str(shard_count)},
+    }
+    old_image: dict = {"PK": {"S": pk}, "SK": {"S": "#STATE"}}
+    for name, fields in limits.items():
+        for field, value in fields.items():
+            if field == "old_tc":
+                continue
+            new_image[f"b_{name}_{field}"] = {"N": str(value)}
+        old_image[f"b_{name}_tc"] = {"N": str(fields.get("old_tc", 0))}
+    if sched is not None:
+        new_image["sched"] = {"S": sched}
+        new_image["sched_tz"] = {"S": sched_tz}
+    for name, compact in (limit_sched or {}).items():
+        new_image[f"b_{name}_sched"] = {"S": compact}
+    if vu_ms is not None:
+        new_image["vu"] = {"N": str(vu_ms)}
+    return {"eventName": "MODIFY", "dynamodb": {"NewImage": new_image, "OldImage": old_image}}
+
+
+class TestAggregatorRespectsSchedules:
+    """Refill targets the scheduled ceiling at the scheduled rate."""
+
+    def test_refills_at_the_scheduled_rate_not_the_base(self) -> None:
+        """During a 0.5x window one minute yields 500_000 millitokens, which
+        does not cover the 600_000 consumption estimate, so the top-up runs."""
+        table = MagicMock()
+        assert try_refill_bucket(table, _sched_state(sched=BUSINESS), now_ms=TUE_1400) is True
+        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+        assert values[":rd_rpm"] == 500_000
+
+    def test_unscheduled_same_bucket_is_skipped_entirely(self) -> None:
+        """Discriminates the test above: at the base rate the same minute
+        yields 1_000_000, which already covers 600_000, so nothing is written."""
+        table = MagicMock()
+        assert try_refill_bucket(table, _sched_state(), now_ms=TUE_1400) is False
+        table.update_item.assert_not_called()
+
+    def test_outside_the_window_the_base_rate_applies(self) -> None:
+        """The schedule is a window, not a permanent scale: an instant no entry
+        matches falls back to the base, and is then skipped like the control."""
+        table = MagicMock()
+        sunday = int(datetime(2026, 9, 13, 14, 0, tzinfo=NY).timestamp() * 1000)
+        state = _sched_state(sched=BUSINESS, rf_ms=sunday - 60_000)
+        assert try_refill_bucket(table, state, now_ms=sunday) is False
+
+    def test_scheduled_ceiling_is_per_shard(self) -> None:
+        """Scale first, then divide by shard_count."""
+        table = MagicMock()
+        state = _sched_state(sched=BUSINESS, shard_count=2)
+        assert try_refill_bucket(table, state, now_ms=TUE_1400) is True
+        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+        assert values[":rd_rpm"] == 250_000  # (1_000_000 * 0.5) // 2
+
+    def test_a_scale_down_trims_a_surplus(self) -> None:
+        """Entering a 0.5x window with a full bucket must clamp, not sit on
+        twice the scheduled ceiling (§3.3 — this is what replaces #469)."""
+        table = MagicMock()
+        state = _sched_state(sched=BUSINESS, rf_ms=TUE_1400)
+        state.limits["rpm"].tk_milli = 1_000_000
+        assert try_refill_bucket(table, state, now_ms=TUE_1400) is True
+        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+        assert values[":rd_rpm"] == -500_000
+
+    def test_absolute_entries_override_capacity_and_rate(self) -> None:
+        """A `capacity`/`refill_amount` entry replaces the base outright."""
+        table = MagicMock()
+        sched = (
+            ScheduleEntry(
+                cron="* 9-17 * * MON-FRI",
+                tz="America/New_York",
+                capacity=200,
+                refill_amount=200,
+            ),
+        )
+        assert try_refill_bucket(table, _sched_state(sched=sched), now_ms=TUE_1400) is True
+        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+        assert values[":rd_rpm"] == 200_000
+
+
+class TestPerLimitScheduleOverride:
+    """`b_{name}_sched` overrides the item-level default for that limit only."""
+
+    LIMITS = {
+        "rpm": {"tk": 0, "cp": 1_000_000, "ra": 1_000_000, "rp": 60_000, "tc": 600_000},
+        "tpm": {"tk": 0, "cp": 1_000_000, "ra": 1_000_000, "rp": 60_000, "tc": 600_000},
+    }
+
+    def _state(self) -> BucketRefillState:
+        record = _sched_record(
+            limits=self.LIMITS,
+            sched=BUSINESS_COMPACT,
+            limit_sched={"rpm": HOUR_14_COMPACT},
+        )
+        states = aggregate_bucket_states([record])
+        return next(iter(states.values()))
+
+    def test_overridden_limit_uses_its_own_schedule(self) -> None:
+        """rpm is on the 0.25x override, tpm on the 0.5x item default.
+
+        Refilling rpm at the item default would hand it twice the tokens its
+        own schedule allows — over-refill is the unsafe direction.
+        """
+        table = MagicMock()
+        assert try_refill_bucket(table, self._state(), now_ms=TUE_1400) is True
+        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+        assert values[":rd_rpm"] == 250_000
+        assert values[":rd_tpm"] == 500_000
+
+    def test_vu_is_the_earliest_boundary_on_the_item(self) -> None:
+        """`vu` is one item-level attribute, so the earliest change anywhere on
+        the item has to force the pass. The override's window closes at 15:00,
+        three hours before the item default's 18:00."""
+        table = MagicMock()
+        state = self._state()
+        state.vu_ms = TUE_1400 - 1
+        assert try_refill_bucket(table, state, now_ms=TUE_1400) is True
+        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+        expected = int(datetime(2026, 9, 15, 15, 0, tzinfo=NY).timestamp() * 1000)
+        assert values[":new_vu"] == expected
+
+
+class TestWcuIsNeverScheduledOrSharded:
+    """`wcu` is the per-partition write ceiling, not a user limit."""
+
+    def _wcu_state(self, **kwargs) -> BucketRefillState:
+        return BucketRefillState(
+            namespace_id="ns123",
+            entity_id="user-1",
+            resource="gpt-4",
+            rf_ms=TUE_1400 - 60_000,
+            limits={
+                "wcu": LimitRefillInfo(
+                    tc_delta=2_000_000,
+                    tk_milli=0,
+                    cp_milli=1_000_000,
+                    ra_milli=1_000_000,
+                    rp_ms=1_000,
+                )
+            },
+            **kwargs,
+        )
+
+    def test_wcu_is_refilled_undivided_and_unscaled(self) -> None:
+        """A user's 0.5x schedule must not halve the partition write ceiling,
+        and every shard is its own partition so the ceiling is not divided."""
+        table = MagicMock()
+        state = self._wcu_state(shard_count=4, sched=BUSINESS)
+        state.limits["wcu"].sched = BUSINESS
+        assert try_refill_bucket(table, state, now_ms=TUE_1400) is True
+        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+        assert values[":rd_wcu"] == 1_000_000
+
+    def test_user_limits_on_the_same_item_are_still_divided(self) -> None:
+        """Discriminates the test above: the exemption is `wcu`-specific, not
+        a blanket "stop dividing"."""
+        table = MagicMock()
+        state = self._wcu_state(shard_count=4, sched=BUSINESS)
+        state.limits["wcu"].sched = BUSINESS
+        state.limits["rpm"] = LimitRefillInfo(
+            tc_delta=600_000,
+            tk_milli=0,
+            cp_milli=1_000_000,
+            ra_milli=1_000_000,
+            rp_ms=60_000,
+            sched=BUSINESS,
+        )
+        assert try_refill_bucket(table, state, now_ms=TUE_1400) is True
+        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+        assert values[":rd_wcu"] == 1_000_000
+        assert values[":rd_rpm"] == 125_000  # (1_000_000 * 0.5) // 4
+
+
+class TestAggregatorRestampsVu:
+    """An expired `vu` is replaced in the same rf-locked write."""
+
+    def test_expired_vu_is_replaced_with_the_next_boundary(self) -> None:
+        table = MagicMock()
+        state = _sched_state(sched=BUSINESS, vu_ms=TUE_1400 - 1)
+        assert try_refill_bucket(table, state, now_ms=TUE_1400) is True
+        expr = table.update_item.call_args.kwargs["UpdateExpression"]
+        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+        names = table.update_item.call_args.kwargs["ExpressionAttributeNames"]
+        assert "#vu = :new_vu" in expr
+        assert names["#vu"] == "vu"
+        assert values[":new_vu"] == int(datetime(2026, 9, 15, 18, 0, tzinfo=NY).timestamp() * 1000)
+
+    def test_future_vu_is_left_alone(self) -> None:
+        table = MagicMock()
+        state = _sched_state(sched=BUSINESS, vu_ms=TUE_1400 + 3_600_000)
+        try_refill_bucket(table, state, now_ms=TUE_1400)
+        assert ":new_vu" not in table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+
+    def test_unscheduled_bucket_never_stamps_vu(self) -> None:
+        """`vu = 0` on an unscheduled bucket (the #468 fan-out writes one on
+        every call) has no boundary to advance to, so this pass must not
+        invent one. Task 13 removes it instead."""
+        table = MagicMock()
+        state = _sched_state(vu_ms=0)
+        state.limits["rpm"].tc_delta = 10_000_000  # force a write
+        assert try_refill_bucket(table, state, now_ms=TUE_1400) is True
+        assert ":new_vu" not in table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+
+    def test_restamp_is_conditioned_on_the_schedule_it_read(self) -> None:
+        """The stream image can predate a fan-out that rewrote `sched` and set
+        `vu = 0` *without touching rf*, so the rf lock alone does not catch it.
+        Without this guard a stale image pushes `vu` back into the future and
+        cancels the materialising pass `vu = 0` exists to force."""
+        table = MagicMock()
+        state = _sched_state(sched=BUSINESS, sched_compact=BUSINESS_COMPACT, vu_ms=TUE_1400 - 1)
+        assert try_refill_bucket(table, state, now_ms=TUE_1400) is True
+        kwargs = table.update_item.call_args.kwargs
+        assert kwargs["ConditionExpression"] == "rf = :expected_rf AND #sched = :expected_sched"
+        assert kwargs["ExpressionAttributeValues"][":expected_sched"] == BUSINESS_COMPACT
+        assert kwargs["ExpressionAttributeNames"]["#sched"] == "sched"
+
+    def test_a_plain_refill_keeps_the_bare_rf_condition(self) -> None:
+        """Discriminates the test above: the extra guard rides with the `vu`
+        re-stamp only, so it cannot cost skipped refills on every other write."""
+        table = MagicMock()
+        state = _sched_state(sched=BUSINESS)
+        assert try_refill_bucket(table, state, now_ms=TUE_1400) is True
+        kwargs = table.update_item.call_args.kwargs
+        assert kwargs["ConditionExpression"] == "rf = :expected_rf"
+        assert "ExpressionAttributeNames" not in kwargs
+
+
+class TestScheduleIsCarriedFromTheStreamImage:
+    """`sched`, `sched_tz`, `b_{name}_sched` and `vu` survive parsing."""
+
+    LIMITS = {"rpm": {"tk": 0, "cp": 1_000_000, "ra": 1_000_000, "rp": 60_000, "tc": 1}}
+
+    def test_parse_decodes_item_and_limit_schedules(self) -> None:
+        parsed = _parse_bucket_record(
+            _sched_record(
+                limits=self.LIMITS,
+                sched=BUSINESS_COMPACT,
+                limit_sched={"rpm": HOUR_14_COMPACT},
+                vu_ms=TUE_1400 + 5,
+            )
+        )
+        assert parsed is not None
+        assert parsed.sched == BUSINESS_DECODED
+        assert parsed.sched_compact == BUSINESS_COMPACT
+        assert parsed.limits["rpm"].sched == HOUR_14_DECODED
+        assert parsed.vu_ms == TUE_1400 + 5
+        assert parsed.sched_error is None
+
+    def test_limits_without_an_override_inherit_the_item_schedule(self) -> None:
+        parsed = _parse_bucket_record(_sched_record(limits=self.LIMITS, sched=BUSINESS_COMPACT))
+        assert parsed is not None
+        assert parsed.limits["rpm"].sched == BUSINESS_DECODED
+
+    def test_unscheduled_item_parses_to_empty(self) -> None:
+        parsed = _parse_bucket_record(_sched_record(limits=self.LIMITS))
+        assert parsed is not None
+        assert parsed.sched == ()
+        assert parsed.sched_compact is None
+        assert parsed.vu_ms is None
+
+    def test_aggregate_carries_the_schedule_through(self) -> None:
+        states = aggregate_bucket_states(
+            [
+                _sched_record(
+                    limits=self.LIMITS,
+                    sched=BUSINESS_COMPACT,
+                    limit_sched={"rpm": HOUR_14_COMPACT},
+                    vu_ms=TUE_1400 - 1,
+                )
+            ]
+        )
+        state = next(iter(states.values()))
+        assert state.sched == BUSINESS_DECODED
+        assert state.sched_compact == BUSINESS_COMPACT
+        assert state.vu_ms == TUE_1400 - 1
+        assert state.limits["rpm"].sched == HOUR_14_DECODED
+
+
+class TestUndecodableSchedule:
+    """§6 — an unreadable schedule must not be silently treated as "no schedule"."""
+
+    # A hot bucket: at the *base* rate one minute yields 1_000_000, far short of
+    # the 10_000_000 consumption estimate, so an aggregator that ignored the
+    # unreadable schedule would definitely write. That is what makes the skip
+    # below observable rather than indistinguishable from the usual threshold.
+    LIMITS = {"rpm": {"tk": 0, "cp": 1_000_000, "ra": 1_000_000, "rp": 60_000, "tc": 10_000_000}}
+
+    def test_parse_reports_rather_than_raises(self) -> None:
+        """Raising here would abort the whole stream batch, snapshots included,
+        and the record would retry until the stream stalled."""
+        parsed = _parse_bucket_record(
+            _sched_record(limits=self.LIMITS, sched="this-is-not-a-schedule")
+        )
+        assert parsed is not None
+        assert parsed.sched_error is not None
+        assert parsed.limits["rpm"].tc_delta == 10_000_000  # usage data still usable
+
+    def test_usage_deltas_are_still_extracted(self) -> None:
+        deltas = extract_deltas(_sched_record(limits=self.LIMITS, sched="h99-nope"))
+        assert [d.tokens_delta for d in deltas] == [10_000_000]
+
+    def test_refill_is_skipped_entirely(self) -> None:
+        """Refilling at the *base* rate would silently undo a scale-down."""
+        table = MagicMock()
+        states = aggregate_bucket_states(
+            [_sched_record(limits=self.LIMITS, sched="this-is-not-a-schedule")]
+        )
+        state = next(iter(states.values()))
+        assert try_refill_bucket(table, state, now_ms=TUE_1400) is False
+        table.update_item.assert_not_called()
+
+    def test_a_readable_schedule_on_the_same_shape_does_refill(self) -> None:
+        """Discriminates the test above."""
+        table = MagicMock()
+        states = aggregate_bucket_states(
+            [_sched_record(limits=self.LIMITS, sched=BUSINESS_COMPACT)]
+        )
+        assert try_refill_bucket(table, next(iter(states.values())), now_ms=TUE_1400) is True
+
+
+class TestShardCloneRespectsSchedule:
+    """Path 2 creates a shard *full*, so it must fill to the scheduled ceiling."""
+
+    def _record(self, *, sched: str | None, limit_sched: dict | None = None) -> dict:
+        record = _sched_record(
+            limits={
+                "rpm": {"tk": 500_000, "cp": 1_000_000, "ra": 1_000_000, "rp": 60_000, "tc": 0},
+                "wcu": {"tk": 900_000, "cp": 1_000_000, "ra": 1_000_000, "rp": 1_000, "tc": 0},
+            },
+            sched=sched,
+            limit_sched=limit_sched,
+            shard_count=2,
+        )
+        record["dynamodb"]["OldImage"]["shard_count"] = {"N": "1"}
+        return record
+
+    def test_new_shard_starts_at_the_scheduled_share(self) -> None:
+        """Cloning the base capacity during a 0.5x window would hand the new
+        shard twice what the schedule allows — and the clone carries shard 0's
+        `vu`, which is in the future, so the fast path would spend it."""
+        table = MagicMock()
+        assert propagate_shard_count(table, self._record(sched=BUSINESS_COMPACT), TUE_1400) == 1
+        item = table.put_item.call_args.kwargs["Item"]
+        assert item["b_rpm_tk"] == 250_000  # (1_000_000 * 0.5) // 2
+        assert item["b_wcu_tk"] == 1_000_000  # per-partition, never divided or scaled
+
+    def test_unscheduled_clone_starts_at_the_base_share(self) -> None:
+        """Discriminates the test above."""
+        table = MagicMock()
+        assert propagate_shard_count(table, self._record(sched=None), TUE_1400) == 1
+        assert table.put_item.call_args.kwargs["Item"]["b_rpm_tk"] == 500_000
+
+    def test_per_limit_override_is_honoured(self) -> None:
+        table = MagicMock()
+        record = self._record(sched=BUSINESS_COMPACT, limit_sched={"rpm": HOUR_14_COMPACT})
+        assert propagate_shard_count(table, record, TUE_1400) == 1
+        assert table.put_item.call_args.kwargs["Item"]["b_rpm_tk"] == 125_000
+
+    def test_undecodable_schedule_creates_no_shard(self) -> None:
+        """A shard created at the wrong ceiling is worse than no shard: the
+        client creates it on its slow path, where §6 applies."""
+        table = MagicMock()
+        assert propagate_shard_count(table, self._record(sched="not-a-schedule"), TUE_1400) == 0
+        table.put_item.assert_not_called()
