@@ -1045,6 +1045,26 @@ toml = [
 ]
 
 [[package]]
+name = "croniter"
+version = "6.2.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "python-dateutil" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/37/57/2e2a65aee2a70483cb28e2b7e15a072d00a523207593b44400d4717bb100/croniter-6.2.4.tar.gz", hash = "sha256:fc124f751b1b04805c2a04b061898b436b45ab2320b045e1e052ea895de65189", size = 166267, upload-time = "2026-07-10T09:52:59.955Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cd/ba/d678e5bd329646ca51d3c92addbc77804e86d21f4b6b6a027218e6abb010/croniter-6.2.4-py3-none-any.whl", hash = "sha256:8ef3d544107a5c05a150a2d78f8bf5a8eb9c5c4d93405a736b824109574e3f4d", size = 46677, upload-time = "2026-07-10T09:52:58.425Z" },
+]
+
+[[package]]
+name = "cronsim"
+version = "2.7"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fb/1a/02f105147f7f2e06ed4f734ff5a6439590bb275a53dd91fc73df6312298a/cronsim-2.7-py3-none-any.whl", hash = "sha256:1e1431fa08c51dc7f72e67e571c7c7a09af26420169b607badd4ca9677ffad1e", size = 14213, upload-time = "2025-10-21T16:38:20.431Z" },
+]
+
+[[package]]
 name = "cryptography"
 version = "50.0.1"
 source = { registry = "https://pypi.org/simple" }
@@ -3890,6 +3910,15 @@ wheels = [
 ]
 
 [[package]]
+name = "tzdata"
+version = "2026.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e4/31/3d74fa778a63b98b7374323befcc0be5ab3bd94afd4096a0124e7379152c/tzdata-2026.4.tar.gz", hash = "sha256:f1b8bd365d8d210c55353f4d7f8d6d8561c0ba50d704b700d195a9424bba0d79", size = 199350, upload-time = "2026-09-12T12:56:03.251Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f9/bc/8737e8d54cf51106118039b83f485a4783112fab49ea9d044b234978a46e/tzdata-2026.4-py2.py3-none-any.whl", hash = "sha256:c2169a8b0a7a5e9674da5a135ccdfb2b3e671b333ed9fed17b41f73c34476e81", size = 347494, upload-time = "2026-09-12T12:56:01.67Z" },
+]
+
+[[package]]
 name = "urllib3"
 version = "2.7.0"
 source = { registry = "https://pypi.org/simple" }
@@ -4205,10 +4234,12 @@ dependencies = [
     { name = "aws-lambda-builders" },
     { name = "boto3" },
     { name = "click" },
+    { name = "cronsim" },
     { name = "pip" },
     { name = "python-ulid" },
     { name = "pyyaml" },
     { name = "questionary" },
+    { name = "tzdata" },
 ]
 
 [package.optional-dependencies]
@@ -4224,6 +4255,7 @@ cdk = [
 dev = [
     { name = "boto3-stubs", extra = ["cloudformation", "dynamodb", "lambda", "s3", "sts"] },
     { name = "cfn-lint" },
+    { name = "croniter" },
     { name = "diff-cover" },
     { name = "moto", extra = ["dynamodb"] },
     { name = "mypy" },
@@ -4251,6 +4283,8 @@ docs = [
 ]
 lambda = [
     { name = "aws-lambda-powertools" },
+    { name = "cronsim" },
+    { name = "tzdata" },
 ]
 local = [
     { name = "docker" },
@@ -4271,6 +4305,9 @@ requires-dist = [
     { name = "cfn-lint", marker = "extra == 'dev'", specifier = ">=1.43.3" },
     { name = "click", specifier = ">=8.0.0" },
     { name = "constructs", marker = "extra == 'cdk'", specifier = ">=10.0.0" },
+    { name = "croniter", marker = "extra == 'dev'", specifier = ">=6.0" },
+    { name = "cronsim", specifier = ">=2.7" },
+    { name = "cronsim", marker = "extra == 'lambda'", specifier = ">=2.7" },
     { name = "diff-cover", marker = "extra == 'dev'", specifier = ">=9.0.0" },
     { name = "docker", marker = "extra == 'bench'", specifier = ">=7.0.0" },
     { name = "docker", marker = "extra == 'local'", specifier = ">=7.0.0" },
@@ -4301,6 +4338,8 @@ requires-dist = [
     { name = "types-docker", marker = "extra == 'dev'", specifier = ">=7.0.0" },
     { name = "types-gevent", marker = "extra == 'dev'", specifier = ">=24.0.0" },
     { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
+    { name = "tzdata" },
+    { name = "tzdata", marker = "extra == 'lambda'" },
 ]
 provides-extras = ["bench", "cdk", "dev", "docs", "lambda", "local", "plot"]
 
