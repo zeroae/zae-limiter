@@ -252,11 +252,11 @@ class TestResetEncoding:
 > the core plan has landed — writing it against invented ones now is the mistake this
 > plan's own review calls out.
 
-**Files:** Modify `src/zae_limiter/schedule.py`, `src/zae_limiter/bucket.py`, `src/zae_limiter/lease.py` · Test `tests/unit/test_bucket.py`
+**Files:** Modify `src/zae_limiter/schedule.py`, `src/zae_limiter/bucket.py`, `src/zae_limiter/lease.py`, `src/zae_limiter/limiter.py` · Test `tests/unit/test_bucket.py`, `tests/unit/test_limiter.py`
 
 **The flat estimate is wrong in the direction that matters.** It over-reports when a boundary raises the limit and **under**-reports when one lowers it — and lowering is the headline use case. Worked example from the spec: empty bucket, 500 tokens needed, 1000/min now, boundary in 10 s dropping to 500/min. Flat estimate **30 s**; real wait **50 s** (10 s yielding 167 tokens, then 333 remaining at half rate).
 
-**A reset edge dominates.** If a reset boundary falls before the deficit clears by refill, that instant *is* the answer. For a daily quota this is the difference between reporting hours of drip-refill and reporting "at midnight" — the only useful answer, and the clearest demonstration that #473's `check_availability()` is subsumed rather than dropped.
+**A reset edge dominates.** If a reset boundary falls before the deficit clears by refill, that instant *is* the answer. For a daily quota this is the difference between reporting hours of drip-refill and reporting "at midnight" — the only useful answer. It is also the sharpest case for converting the **query** surface along with the rejection path: with only the latter converted, `acquire()` would say "at midnight" while `check_availability()` said "in eleven hours" about the same bucket at the same instant. (#473 was adopted and landed, not closed — see the design's §0.)
 
 - [ ] **Step 1: Write the failing test**
 
@@ -295,7 +295,9 @@ class TestBoundaryAwareRetryAfter:
 
 - [ ] **Step 2: Run and watch it fail**
 
-- [ ] **Step 3: Implement** `retry_after_with_schedule(...)` in `schedule.py`: walk forward window by window using `next_boundary`, accumulating tokens at each window's effective rate until the deficit clears; if a reset edge falls inside the walk, return that instant directly; cap at 8 windows and fall back to the flat `calculate_retry_after`. Call it from the two places that build `LimitStatus` — `lease.py`'s `_build_retry_failure_statuses` and `RateLimiter._admit_limit`.
+- [ ] **Step 3: Implement** `retry_after_with_schedule(...)` in `schedule.py`: walk forward window by window using `next_boundary`, accumulating tokens at each window's effective rate until the deficit clears; if a reset edge falls inside the walk, return that instant directly; cap at 8 windows and fall back to the flat `calculate_retry_after`. Call it from **three** places: `lease.py`'s `_build_retry_failure_statuses` and `RateLimiter._admit_limit` (the two that build a `LimitStatus` on the rejection path), and `RateLimiter.check_availability()` — the non-consuming query, which builds `LimitStatus` too and which `available()` and `time_until_available()` are thin wrappers over. Miss the third and the number a user *sees* keeps the flat estimate.
+
+  **`check_availability()` needs the effective capacity as well as the effective rate.** Two sites in it use the **base** `limit.capacity`: the clamp `min(total_across_shards, limit.capacity)` and the missing-bucket branch that reports `limit.capacity` outright. Inside a `scale: 0.5` window both over-report by 2x. Core plan Task 9 makes `calculate_available` schedule-aware inside `bucket.py`, and Task 10 fixes `Limit.from_bucket_state` on the rejection path — neither reaches these two, because they work from the `Limit` resolved out of *config*, not from a `BucketState`.
 
 - [ ] **Step 4: Run, regenerate sync, commit** — `✨ feat(bucket): compute retry_after across schedule boundaries`
 

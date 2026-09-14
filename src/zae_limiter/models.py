@@ -460,6 +460,86 @@ class LimitStatus:
         return max(0, self.requested - self.available)
 
 
+@dataclass(frozen=True)
+class Availability:
+    """
+    Combined result of a non-consuming capacity check (issue #472).
+
+    Answers both "how much is left?" and "how long until I can proceed?" for
+    **every** resolved limit, from a single config resolution and a single
+    bucket read taken at one instant. Returned by
+    :meth:`RateLimiter.check_availability`.
+
+    The per-limit detail lives in :attr:`statuses`, reusing the same
+    :class:`LimitStatus` that :class:`~zae_limiter.exceptions.RateLimitExceeded`
+    carries, so a caller that renders a rejection and a caller that renders a
+    dashboard read the same shape. Everything else on this class is derived
+    from those statuses, which is what makes the numbers consistent: they all
+    come from one snapshot rather than from separate reads at separate
+    instants.
+
+    One difference from the statuses in ``RateLimitExceeded``: those report a
+    single shard's **share** of the limit (``Limit.per_shard()``, #475),
+    because a rejection happened on one shard. These report the entity-wide
+    total summed across every shard, against the undivided configured
+    :class:`Limit` — which is the number a user's "N remaining" display means.
+
+    Note: This is an internal model created by the limiter from validated
+    inputs. No validation is performed here to avoid performance overhead.
+    """
+
+    entity_id: str
+    resource: str
+    # Epoch milliseconds the snapshot was taken at. Every number below is
+    # relative to this instant, so a client can tick a countdown locally.
+    checked_at_ms: int
+    # One entry per resolved limit, in resolution order
+    statuses: list[LimitStatus]
+
+    def status(self, limit_name: str) -> LimitStatus | None:
+        """The status for one limit, or None if it was not resolved."""
+        return next((s for s in self.statuses if s.limit_name == limit_name), None)
+
+    @property
+    def limits(self) -> list[Limit]:
+        """The resolved limits this snapshot was taken against."""
+        return [status.limit for status in self.statuses]
+
+    @property
+    def available(self) -> dict[str, int]:
+        """limit_name -> currently available tokens (negative if in debt)."""
+        return {status.limit_name: status.available for status in self.statuses}
+
+    @property
+    def needed(self) -> dict[str, int]:
+        """limit_name -> amount the caller asked about.
+
+        Empty when none was given. Keys that named no resolved limit are not
+        echoed back, since nothing was evaluated for them.
+        """
+        return {s.limit_name: s.requested for s in self.statuses if s.requested > 0}
+
+    @property
+    def retry_after_seconds(self) -> float:
+        """Seconds until every needed amount is available (0.0 if already so)."""
+        return max((status.retry_after_seconds for status in self.statuses), default=0.0)
+
+    @property
+    def allowed(self) -> bool:
+        """True if every needed amount is currently available."""
+        return not self.exceeded
+
+    @property
+    def exceeded(self) -> list[str]:
+        """Names of the limits that are short of the needed amount."""
+        return [status.limit_name for status in self.statuses if status.exceeded]
+
+    @property
+    def deficit(self) -> dict[str, int]:
+        """How many tokens short each exceeded limit is (exceeded limits only)."""
+        return {s.limit_name: s.deficit for s in self.statuses if s.exceeded}
+
+
 @dataclass
 class BucketState:
     """

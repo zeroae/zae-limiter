@@ -159,6 +159,61 @@ if wait_seconds > 0:
     print(f"Need to wait {wait_seconds}s for capacity")
 ```
 
+### Check Both in One Call
+
+Calling `available()` and `time_until_available()` back to back is two reads at
+two *instants*. They can disagree — tokens refill in between, and each one
+discovers the entity's shards separately — so a display built from the pair can
+render "0 remaining, available now". `check_availability()` answers both from a
+single snapshot:
+
+```python
+check = await limiter.check_availability(
+    entity_id="key-123",
+    resource="gpt-4",
+    needed={"tpm": 5_000},
+)
+
+if check.allowed:
+    print(f"Ready — {check.available['tpm']} tokens available")
+else:
+    print(f"Short {check.deficit} — retry in {check.retry_after_seconds}s")
+
+# Per-limit detail: each limit gets its own count and its own countdown
+for status in check.statuses:
+    print(f"{status.limit_name}: {status.available} left, "
+          f"resets in {status.retry_after_seconds:.0f}s")
+```
+
+The returned [`Availability`](../api/models.md#availability) carries one
+[`LimitStatus`](../api/models.md#limitstatus) per resolved limit, which is what
+a per-limit display needs.
+
+`available`, `retry_after_seconds` (the slowest limit), `allowed`, `exceeded`
+and `deficit` are all derived from those statuses, so the numbers cannot
+contradict each other; `checked_at_ms` is the instant they were taken at, so a
+client can tick a countdown locally. `available()` and `time_until_available()`
+are thin wrappers over this method.
+
+The `needed` argument is optional — omit it to ask only about current
+availability, or pass `{"tpm": 1}` for "when may I spend one more token".
+
+!!! warning "This is for display, not for gating"
+    Checking here and then calling `acquire()` is a time-of-check/time-of-use
+    race, and it costs an extra read. `acquire()` already answers "may I
+    proceed, and if not when" — in 1 WCU, or 0 RCU + 0 WCU on a fast rejection —
+    via `RateLimitExceeded.retry_after_seconds`. Use `check_availability()` when
+    the answer is shown to a user, and `acquire()` when it is acted on.
+
+!!! note "Sharded entities"
+    A sharded entity's balance is spread across its shards
+    ([GHSA-76rv](../performance.md#write-sharding-automatic-pre-shard-buckets)), and
+    this call sums all of them, reporting totals against the undivided
+    configured limit. One consequence, inherited from #475: a *single* request
+    larger than `capacity // shard_count` cannot be admitted on any shard even
+    while the entity is under its configured limit, so `acquire()` may reject an
+    amount reported here as available.
+
 ## Automatic Limit Resolution
 
 zae-limiter automatically resolves limits from stored configurations using a four-level hierarchy. See [Configuration Hierarchy](config-hierarchy.md) for full details.

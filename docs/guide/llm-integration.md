@@ -207,27 +207,30 @@ async def call_with_capacity_check(
 ):
     limits = MODEL_LIMITS[model]
 
-    # Check available capacity
-    available = await limiter.available(
+    # Check capacity and wait time in a single read
+    check = await limiter.check_availability(
         entity_id=entity_id,
         resource=model,
+        needed={"tpm": estimated_tokens},
         limits=limits,
     )
 
-    if available["tpm"] < estimated_tokens:
-        # Not enough capacity - check when it will be available
-        wait_time = await limiter.time_until_available(
-            entity_id=entity_id,
-            resource=model,
-            limits=limits,
-            needed={"tpm": estimated_tokens},
-        )
-        raise RetryAfter(seconds=wait_time)
+    if not check.allowed:
+        raise RetryAfter(seconds=check.retry_after_seconds)
 
     # Proceed with rate-limited call
     async with limiter.acquire(...):
         ...
 ```
+
+!!! note "Prefer letting `acquire()` decide"
+    The check above and the `acquire()` below it are two separate moments, so
+    the decision can be stale by the time it is used, and the check costs a read
+    that `acquire()` does not need. `acquire()` raises `RateLimitExceeded` with
+    the same `retry_after_seconds` — in 1 WCU, or 0 RCU + 0 WCU when it can
+    reject from the failure image — so catching that is both cheaper and
+    race-free. Reach for `check_availability()` when the number is *shown* to
+    someone, not when it gates the call.
 
 ## Integration with Retry Libraries
 

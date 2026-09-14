@@ -381,6 +381,38 @@ class TestTimeUntilAvailable:
         assert mock_event.fire.call_args.kwargs["exception"] is err
 
 
+class TestCheckAvailability:
+    def test_returns_result_and_fires_event(self, session, mock_limiter, mock_event):
+        sentinel = object()
+        mock_limiter.check_availability.return_value = sentinel
+
+        result = session.check_availability("user-1", "gpt-4", {"rpm": 1})
+
+        assert result is sentinel
+        mock_limiter.check_availability.assert_called_once_with(
+            entity_id="user-1", resource="gpt-4", needed={"rpm": 1}
+        )
+        assert mock_event.fire.call_args.kwargs["request_type"] == "CHECK_AVAILABILITY"
+        assert mock_event.fire.call_args.kwargs["name"] == "gpt-4"
+
+    def test_needed_is_optional(self, session, mock_limiter):
+        session.check_availability("user-1", "gpt-4")
+        mock_limiter.check_availability.assert_called_once_with(
+            entity_id="user-1", resource="gpt-4", needed=None
+        )
+
+    def test_custom_name(self, session, mock_limiter, mock_event):
+        session.check_availability("user-1", "gpt-4", {"rpm": 1}, name="custom")
+        assert mock_event.fire.call_args.kwargs["name"] == "custom"
+
+    def test_exception_fires_with_error(self, session, mock_limiter, mock_event):
+        err = RuntimeError("boom")
+        mock_limiter.check_availability.side_effect = err
+        with pytest.raises(RuntimeError):
+            session.check_availability("user-1", "gpt-4", {"rpm": 1})
+        assert mock_event.fire.call_args.kwargs["exception"] is err
+
+
 class TestIsAvailable:
     def test_returns_true_and_fires_event(self, session, mock_limiter, mock_event):
         mock_limiter.is_available.return_value = True

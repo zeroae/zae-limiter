@@ -2263,6 +2263,386 @@ class TestRateLimiterCapacity:
         assert 29 < wait < 31
 
 
+class TestRateLimiterCheckAvailability:
+    """Tests for check_availability() (issue #472)."""
+
+    async def test_returns_full_capacity_for_fresh_entity(self, limiter):
+        """A never-seen entity reports full capacity and no wait."""
+        limits = [Limit.per_minute("rpm", 100), Limit.per_minute("tpm", 10_000)]
+
+        check = await limiter.check_availability(
+            entity_id="key-1",
+            resource="gpt-4",
+            needed={"rpm": 1, "tpm": 500},
+            limits=limits,
+        )
+
+        assert check.entity_id == "key-1"
+        assert check.resource == "gpt-4"
+        assert check.available == {"rpm": 100, "tpm": 10_000}
+        assert check.needed == {"rpm": 1, "tpm": 500}
+        assert check.retry_after_seconds == 0.0
+        assert check.allowed is True
+        assert check.exceeded == []
+        assert check.deficit == {}
+
+    async def test_needed_is_optional(self, limiter):
+        """Omitting needed answers availability only, with no wait."""
+        limits = [Limit.per_minute("rpm", 100)]
+
+        async with limiter.acquire(
+            entity_id="key-1",
+            resource="gpt-4",
+            limits=limits,
+            consume={"rpm": 100},
+        ):
+            pass
+
+        check = await limiter.check_availability(
+            entity_id="key-1",
+            resource="gpt-4",
+            limits=limits,
+        )
+
+        assert check.available == {"rpm": 0}
+        assert check.needed == {}
+        assert check.retry_after_seconds == 0.0
+        # Nothing was asked for, so nothing is exceeded
+        assert check.allowed is True
+
+    async def test_reports_availability_and_wait_together(self, limiter):
+        """One call answers both questions for an exhausted bucket."""
+        limits = [Limit.per_minute("rpm", 100)]
+
+        async with limiter.acquire(
+            entity_id="key-1",
+            resource="gpt-4",
+            limits=limits,
+            consume={"rpm": 100},
+        ):
+            pass
+
+        check = await limiter.check_availability(
+            entity_id="key-1",
+            resource="gpt-4",
+            needed={"rpm": 50},
+            limits=limits,
+        )
+
+        assert check.available["rpm"] == 0
+        # 50 tokens at 100/min = 30 seconds
+        assert 29 < check.retry_after_seconds < 31
+        assert check.allowed is False
+        assert check.exceeded == ["rpm"]
+        assert check.deficit == {"rpm": 50}
+
+    async def test_wait_is_max_across_limits(self, limiter):
+        """retry_after_seconds is the slowest limit, and zero amounts are skipped."""
+        limits = [
+            Limit.per_minute("rpm", 100),
+            Limit.per_minute("tpm", 10_000),
+        ]
+
+        async with limiter.acquire(
+            entity_id="key-1",
+            resource="gpt-4",
+            limits=limits,
+            consume={"rpm": 100, "tpm": 10_000},
+        ):
+            pass
+
+        check = await limiter.check_availability(
+            entity_id="key-1",
+            resource="gpt-4",
+            needed={"rpm": 50, "tpm": 0},
+            limits=limits,
+        )
+
+        # tpm is requested as 0, so only rpm drives the wait (30s) and the verdict
+        assert 29 < check.retry_after_seconds < 31
+        assert check.exceeded == ["rpm"]
+
+    async def test_reports_debt_as_negative_available(self, limiter):
+        """A bucket pushed into debt by adjust() reports negative availability."""
+        limits = [Limit.per_minute("rpm", 100)]
+
+        async with limiter.acquire(
+            entity_id="key-1",
+            resource="gpt-4",
+            limits=limits,
+            consume={"rpm": 90},
+        ) as lease:
+            await lease.adjust(rpm=30)
+
+        check = await limiter.check_availability(
+            entity_id="key-1",
+            resource="gpt-4",
+            needed={"rpm": 10},
+            limits=limits,
+        )
+
+        assert check.available["rpm"] < 0
+        assert check.allowed is False
+        assert check.deficit["rpm"] > 10
+
+    async def test_uses_four_tier_resolution(self, limiter):
+        """Without a limits override, stored config is resolved."""
+        await limiter.set_system_defaults(limits=[Limit.per_minute("rpm", 50)])
+
+        check = await limiter.check_availability(entity_id="key-1", resource="gpt-4")
+
+        assert check.available == {"rpm": 50}
+        assert [limit.name for limit in check.limits] == ["rpm"]
+
+    async def test_raises_when_no_limits_configured(self, limiter):
+        """No stored config and no override is a ValidationError."""
+        with pytest.raises(ValidationError):
+            await limiter.check_availability(entity_id="key-1", resource="gpt-4")
+
+    async def test_issues_one_bucket_read_for_all_limits(self, limiter):
+        """Both answers come from a single bucket read, whatever the limit count."""
+        limits = [
+            Limit.per_minute("rpm", 100),
+            Limit.per_minute("tpm", 10_000),
+            Limit.per_minute("ipm", 500),
+        ]
+
+        repo = limiter._repository
+        with (
+            patch.object(repo, "get_buckets", wraps=repo.get_buckets) as get_buckets,
+            patch.object(repo, "get_bucket", wraps=repo.get_bucket) as get_bucket,
+        ):
+            await limiter.check_availability(
+                entity_id="key-1",
+                resource="gpt-4",
+                needed={"rpm": 1, "tpm": 1, "ipm": 1},
+                limits=limits,
+            )
+
+        assert get_buckets.call_count == 1
+        # ADR-114 puts every limit in one composite item, so the per-limit
+        # GetItem loop the two older methods ran was a pure N+1.
+        get_bucket.assert_not_called()
+
+    async def test_carries_a_status_per_limit(self, limiter):
+        """The UI renders each limit on its own line, so each needs its own
+        availability and its own countdown from the same snapshot."""
+        # Refill once an hour keeps every assertion below independent of how
+        # long the test takes to run.
+        limits = [
+            Limit.custom("rpm", 100, refill_amount=100, refill_period_seconds=3600),
+            Limit.custom("tpm", 10_000, refill_amount=10_000, refill_period_seconds=3600),
+        ]
+
+        async with limiter.acquire(
+            entity_id="key-1",
+            resource="gpt-4",
+            limits=limits,
+            consume={"rpm": 100, "tpm": 5_000},
+        ):
+            pass
+
+        check = await limiter.check_availability(
+            entity_id="key-1",
+            resource="gpt-4",
+            needed={"rpm": 50, "tpm": 1_000},
+            limits=limits,
+        )
+
+        assert [s.limit_name for s in check.statuses] == ["rpm", "tpm"]
+        rpm = check.status("rpm")
+        tpm = check.status("tpm")
+        assert rpm.available == 0
+        assert rpm.requested == 50
+        assert rpm.exceeded is True
+        # 50 tokens at 100/hour = half an hour
+        assert 1799 < rpm.retry_after_seconds < 1801
+        assert tpm.available == 5_000
+        assert tpm.requested == 1_000
+        assert tpm.exceeded is False
+        assert tpm.retry_after_seconds == 0.0
+        # The aggregate countdown is the slowest limit, not a per-limit answer
+        assert check.retry_after_seconds == rpm.retry_after_seconds
+        assert check.status("nope") is None
+
+    async def test_pins_one_instant_for_every_number(self, limiter):
+        """Availability and wait must come from one clock read, so a client
+        can tick the countdown locally from `checked_at_ms`."""
+        await limiter.set_system_defaults(limits=[Limit.per_minute("rpm", 50)])
+
+        with patch.object(limiter._repository, "_now_ms", return_value=1_700_000_000_000) as clock:
+            check = await limiter.check_availability(entity_id="key-1", resource="gpt-4")
+
+        assert clock.call_count == 1
+        assert check.checked_at_ms == 1_700_000_000_000
+
+    async def test_available_matches_check_availability(self, limiter):
+        """available() delegates, so the two can never disagree."""
+        limits = [Limit.per_minute("rpm", 100)]
+
+        async with limiter.acquire(
+            entity_id="key-1",
+            resource="gpt-4",
+            limits=limits,
+            consume={"rpm": 30},
+        ):
+            pass
+
+        available = await limiter.available(
+            entity_id="key-1",
+            resource="gpt-4",
+            limits=limits,
+        )
+        check = await limiter.check_availability(
+            entity_id="key-1",
+            resource="gpt-4",
+            limits=limits,
+        )
+
+        assert available == check.available
+
+    async def test_time_until_available_matches_check_availability(self, limiter):
+        """time_until_available() delegates, so the two can never disagree."""
+        limits = [Limit.per_minute("rpm", 100)]
+
+        async with limiter.acquire(
+            entity_id="key-1",
+            resource="gpt-4",
+            limits=limits,
+            consume={"rpm": 100},
+        ):
+            pass
+
+        wait = await limiter.time_until_available(
+            entity_id="key-1",
+            resource="gpt-4",
+            needed={"rpm": 50},
+            limits=limits,
+        )
+        check = await limiter.check_availability(
+            entity_id="key-1",
+            resource="gpt-4",
+            needed={"rpm": 50},
+            limits=limits,
+        )
+
+        assert wait == pytest.approx(check.retry_after_seconds, abs=0.5)
+
+
+class TestAvailabilityAcrossShards:
+    """The non-consuming query must read every shard (GHSA-76rv, #466).
+
+    ``available()`` already sums across shards. ``time_until_available()`` did
+    not: it called ``get_bucket()``, which defaults to ``shard_id=0``, so its
+    estimate was computed from one shard's balance and one shard's *share* of
+    the refill rate. The two public methods therefore disagreed about the same
+    entity, and the UI they exist to serve could render "40 remaining" beside a
+    countdown derived from 20.
+    """
+
+    @staticmethod
+    async def _seed_shards(limiter, limit, balances_milli: list[int], rf_ms: int):
+        """Create shards 0..N-1, each at its own balance, all at the same rf."""
+        repo = limiter._repository
+        shard_count = len(balances_milli)
+        await limiter.create_entity("user-1")
+        await limiter.set_system_defaults([limit])
+        for shard_id, tokens_milli in enumerate(balances_milli):
+            state = BucketState.from_limit("user-1", "gpt-4", limit, rf_ms)
+            state.tokens_milli = tokens_milli
+            await repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        "user-1",
+                        "gpt-4",
+                        [state],
+                        rf_ms,
+                        shard_id=shard_id,
+                        shard_count=shard_count,
+                    )
+                ]
+            )
+        repo._entity_cache[(repo._namespace_id, "user-1")] = (
+            False,
+            None,
+            {"gpt-4": shard_count},
+        )
+        return repo
+
+    async def test_wait_is_computed_across_every_shard(self, limiter):
+        """Two shards at 20 tokens each: the entity holds 40 and refills at the
+        full 100/min, so 60 tokens are 12s away. Reading shard 0 alone sees 20
+        tokens refilling at its 50/min share and says 48s — four times too
+        long, for an entity that is not even at its limit."""
+        limit = Limit.custom("rpm", 100, refill_amount=100, refill_period_seconds=60)
+        now_ms = int(time.time() * 1000)
+        repo = await self._seed_shards(limiter, limit, [20_000, 20_000], now_ms)
+
+        # Pin the clock to the seeded rf so refill cannot move the numbers
+        with patch.object(repo, "_now_ms", return_value=now_ms):
+            check = await limiter.check_availability(
+                entity_id="user-1", resource="gpt-4", needed={"rpm": 60}
+            )
+
+        assert check.available == {"rpm": 40}
+        assert check.deficit == {"rpm": 20}
+        assert 11 < check.retry_after_seconds < 13
+
+    async def test_time_until_available_is_shard_aware(self, limiter):
+        """The public wrapper inherits the shard-aware estimate."""
+        limit = Limit.custom("rpm", 100, refill_amount=100, refill_period_seconds=60)
+        now_ms = int(time.time() * 1000)
+        repo = await self._seed_shards(limiter, limit, [20_000, 20_000], now_ms)
+
+        with patch.object(repo, "_now_ms", return_value=now_ms):
+            wait = await limiter.time_until_available(
+                entity_id="user-1", resource="gpt-4", needed={"rpm": 60}
+            )
+
+        assert 11 < wait < 13
+
+    async def test_available_still_sums_every_shard(self, limiter):
+        """The #466 fix survives the rewrite: shard 0's balance alone is 20."""
+        limit = Limit.custom("rpm", 100, refill_amount=1, refill_period_seconds=3600)
+        now_ms = int(time.time() * 1000)
+        await self._seed_shards(limiter, limit, [20_000, 20_000], now_ms)
+
+        assert await limiter.available("user-1", "gpt-4") == {"rpm": 40}
+
+    async def test_the_two_methods_agree_on_a_sharded_entity(self, limiter):
+        """The bug this replaces: available() summed, time_until_available()
+        did not, so a caller asking both got a contradiction."""
+        limit = Limit.custom("rpm", 100, refill_amount=100, refill_period_seconds=60)
+        now_ms = int(time.time() * 1000)
+        repo = await self._seed_shards(limiter, limit, [30_000, 30_000], now_ms)
+
+        with patch.object(repo, "_now_ms", return_value=now_ms):
+            available = await limiter.available("user-1", "gpt-4")
+            wait = await limiter.time_until_available(
+                entity_id="user-1", resource="gpt-4", needed={"rpm": 60}
+            )
+
+        # 60 are available entity-wide, so there is nothing to wait for
+        assert available == {"rpm": 60}
+        assert wait == 0.0
+
+    async def test_wait_survives_a_share_that_floors_to_zero(self, limiter):
+        """A slow limit split many ways has an effective per-shard refill of 0.
+        Summing the shares would divide by zero; fall back to the undivided
+        rate, as BucketState.retry_refill_amount_milli does."""
+        limit = Limit.custom("rpm", 32, refill_amount=1, refill_period_seconds=60)
+        now_ms = int(time.time() * 1000)
+        # 1 // 32 == 0 per shard
+        await self._seed_shards(limiter, limit, [0] * 32, now_ms)
+
+        check = await limiter.check_availability(
+            entity_id="user-1", resource="gpt-4", needed={"rpm": 1}
+        )
+
+        assert check.available == {"rpm": 0}
+        assert check.retry_after_seconds > 0
+
+
 class TestRateLimitExceededException:
     """Tests for RateLimitExceeded exception."""
 
