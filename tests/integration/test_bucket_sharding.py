@@ -716,9 +716,9 @@ class TestClientShardCreation:
         )
 
         # The shares are what the count actually buys: sum(cp // count) over the
-        # shards that exist must not exceed the configured limit. Token balances
-        # may transiently exceed their share for one refill window (shard 0 keeps
-        # its balance across a doubling), but the shares themselves must not.
+        # shards that exist must not exceed the configured limit. A shard whose
+        # balance is left above its share by a doubling is trimmed on its next
+        # refill pass (refill_bucket clamps unconditionally, #222 §3.3).
         assert sum(cp * 1000 // c for c in existing.values()) <= cp * 1000
         assert sum(ra * 1000 // c for c in existing.values()) <= ra * 1000
 
