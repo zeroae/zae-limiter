@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789459966017,
+  "lastUpdate": 1789463567201,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -20558,6 +20558,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.01154460180700894",
             "extra": "mean: 1.0942031136000026 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2592f5953b8379d3bb876982415d51bde5531533",
+          "message": "🐛 fix(bucket): report the reset instant as a quota's retry after (#533)\n\n## Summary\n\nADR-137 (Accepted) makes `refill_amount = 0` the required state for any\nlimit carrying a `reset_schedule`. `calculate_retry_after()`\n(`src/zae_limiter/bucket.py`) returned `0.0` for any non-positive rate,\nso every user-facing wait estimate would tell a caller who had just\nexhausted a daily quota to retry immediately — indefinitely, until the\nreset actually fired. That fails in the direction that generates load.\n\n- **`calculate_retry_after()` now takes `next_reset_ms`** (an absolute\nepoch-ms instant) plus the `now_ms` it is measured against. Three cases:\n`rate > 0` is unchanged arithmetic and ignores the instant; `rate == 0`\nwith a known reset returns the wait until it; `rate == 0` with no reset\nstill returns `0.0`.\n- **That last branch is now unreachable** for any constructible limit\nunder ADR-137, so it once again means what its comment always claimed —\na corrupt stored item. The misleading comment (\"this only guards a\nbucket item whose stored rate is itself 0\") is corrected.\n- **Doing the subtraction inside `calculate_retry_after` rather than at\neach caller is the point.** The four call sites have no notion of a\nreset edge, and teaching each of them would duplicate the logic four\ntimes, doubled again by the generated sync twins. Rejected alternatives:\nreturning `None` (breaks the public `retry_after_seconds: float`),\nreturning infinity (clients `sleep()` on it forever), raising from\ninside an error path.\n- **All four call sites pass `None` for now** — `bucket.py`\n`try_consume` rejection, `bucket.py` `calculate_time_until_available`,\n`limiter.py` `check_availability`, `lease.py`\n`_build_retry_failure_statuses` — each behind a `TODO(#222 surface-plan\nTask 5)`. The real value needs `BucketState.reset_sched`, which\nsurface-plan Task 5 adds. Behaviour is byte-identical today; Task 5\nbecomes a matter of supplying a value rather than redesigning four call\nsites.\n\n### Second commit (docs)\n\nSurface-plan Task 5's `retry_after_with_schedule` sketch gated on the\nrefill rate before consulting `next_reset_edge`, so a quota exited on\niteration 1 and never reached the reset edge that is the correct answer.\nThe sketch is corrected, and the three Task 5 tests that paired a\npositive `ra_milli` with a `reset_sched` (unconstructible under ADR-137)\nare rewritten to the quota shape. Task 11's\n`test_check_availability_agrees_with_acquire_at_one_instant` needed no\nshape change (#529 already converted it), but its agreement assertion\ndoes not discriminate on its own — while both sides report `0.0`,\n`approx(0.0, rel=0.01)` passes.\n\n## Test plan\n\n- [x] `uv run pytest tests/unit/ -q` → **3875 passed in 356.92s**\n(baseline on main was 3867; +8 new tests)\n- [x] `uv run pytest tests/unit/ -m gevent -n 0 -q` → **26 passed, 3875\ndeselected, in 9.63s**\n- [x] `hatch run generate-sync` regenerated `sync_lease.py` and\n`sync_limiter.py`; re-running is idempotent and `git diff --exit-code`\nis clean\n- [x] `pre-commit run --files <changed>` → ruff, ruff-format, mypy,\ngenerated-sync-check all Passed\n- [x] 7 mutation checks confirm the 8 new tests discriminate: reset\nbranch deleted, constant return, past-edge clamp removed,\nreset-before-rate ordering, rounding millisecond dropped, `now_ms`\nrequirement dropped, deficit guard removed — each caught by the intended\ntest\n\nFixes #530\nRefs #222\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01QdVj8nPhUwTz2aNJzMFqt5",
+          "timestamp": "2026-09-15T05:07:15-04:00",
+          "tree_id": "01817e348f7a25d2a513d28099b681e3f4488c82",
+          "url": "https://github.com/zeroae/zae-limiter/commit/2592f5953b8379d3bb876982415d51bde5531533"
+        },
+        "date": 1789463565765,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 24.68588958204964,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010708371632717461",
+            "extra": "mean: 40.50897160000062 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 18.056877828952093,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0102472143071247",
+            "extra": "mean: 55.38055966666712 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 35.960927071838995,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005736016131317829",
+            "extra": "mean: 27.80795939999834 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 39.293261342422504,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008679148503864814",
+            "extra": "mean: 25.449656399998588 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 22.375282613617877,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006934564912273889",
+            "extra": "mean: 44.692172933332586 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 75.49831732417832,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0020592982137046067",
+            "extra": "mean: 13.24532831249936 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 25.83301795523969,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0050694314597540405",
+            "extra": "mean: 38.71014999999917 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 24.80317516942435,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007333640067768763",
+            "extra": "mean: 40.31741876470442 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 27.088415966682803,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004333798843273318",
+            "extra": "mean: 36.91614899999848 msec\nrounds: 31"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 26.848523317871475,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007012135191674714",
+            "extra": "mean: 37.245996294118676 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 23.229834851474834,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007592969239746389",
+            "extra": "mean: 43.04808908000098 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 25.23382894680029,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006247648805031024",
+            "extra": "mean: 39.629340521736495 msec\nrounds: 23"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 29.9843485198855,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00588681157513302",
+            "extra": "mean: 33.35073294444947 msec\nrounds: 36"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9225298191536557,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0065675483362679764",
+            "extra": "mean: 520.1479789999951 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9251693844977662,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007216050762092169",
+            "extra": "mean: 519.4348134000052 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9504594223258661,
+            "unit": "iter/sec",
+            "range": "stddev: 0.002444503945859644",
+            "extra": "mean: 1.0521227698000017 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9227449571461209,
+            "unit": "iter/sec",
+            "range": "stddev: 0.012605955836091741",
+            "extra": "mean: 1.0837230723999993 sec\nrounds: 5"
           }
         ]
       }
