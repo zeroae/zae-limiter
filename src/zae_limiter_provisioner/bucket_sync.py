@@ -18,23 +18,29 @@ millitokens and milliseconds. Everything crossing over is multiplied by 1000.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from zae_limiter.models import Limit
+from zae_limiter.schedule import ScheduleEntry, decode, decode_reset, encode, encode_reset
 from zae_limiter.schema import (
     BUCKET_FIELD_CP,
     BUCKET_FIELD_RA,
     BUCKET_FIELD_RP,
     BUCKET_FIELD_RSCHED,
     BUCKET_FIELD_SCHED,
+    BUCKET_FIELD_SCHED_TZ,
     BUCKET_FIELD_TC,
     BUCKET_FIELD_TK,
     BUCKET_FIELD_VU,
+    CONFIG_FIELD_SCHED_TZ,
     DEFAULT_RESOURCE,
     GSI3_NAME,
     LIMIT_FIELD_CP,
     LIMIT_FIELD_RA,
     LIMIT_FIELD_RP,
+    LIMIT_FIELD_RSCHED,
+    LIMIT_FIELD_SCHED,
     bucket_attr,
     calculate_bucket_ttl_seconds,
     calculate_ttl,
@@ -48,6 +54,8 @@ from zae_limiter.schema import (
     sk_state,
 )
 
+from .manifest import entries_from_manifest
+
 logger = logging.getLogger(__name__)
 
 # `Repository._bucket_ttl_refill_multiplier`'s default. A bucket running on
@@ -58,11 +66,27 @@ DEFAULT_TTL_MULTIPLIER = 7
 # Levels that mean "this entity has custom limits", so its bucket must persist.
 _ENTITY_LEVELS = ("entity", "entity_default")
 
-_MANIFEST_KEY = {
+# Config attribute -> manifest key. The numeric trio and the two compact
+# schedule strings decode differently, so the split is kept explicit rather
+# than inferred from the DynamoDB type tag.
+_MANIFEST_NUMERIC_KEY = {
     LIMIT_FIELD_CP: "capacity",
     LIMIT_FIELD_RA: "refill_amount",
     LIMIT_FIELD_RP: "refill_period",
 }
+_MANIFEST_SCHEDULE_KEY = {
+    LIMIT_FIELD_SCHED: "schedule",
+    LIMIT_FIELD_RSCHED: "reset_schedule",
+}
+
+# A limit missing any of these is malformed and is dropped rather than given a
+# synthesised default. Deliberately a REQUIRED-keys test (`<=`) and not the
+# exact-set equality it replaced: the decoded shape gained `schedule` and
+# `reset_schedule` in #222, and an equality check turns every future widening
+# into a silent, exception-free disappearance of the widened limit — which is
+# indistinguishable from the operator having deleted it by the time
+# `_resolved_plan` acts on it.
+_REQUIRED_MANIFEST_KEYS = frozenset(_MANIFEST_NUMERIC_KEY.values())
 
 # Fields removed for a limit that no longer exists in the effective config.
 # BUCKET_FIELD_RF is deliberately absent: it is shared across every limit in a
@@ -84,8 +108,64 @@ _STALE_FIELDS = (
 )
 
 
+def _encode_one_tuple(
+    named_schedules: list[tuple[str, tuple[ScheduleEntry, ...]]],
+    encoder: Callable[[tuple[ScheduleEntry, ...]], tuple[str, str | None]],
+) -> tuple[str, dict[str, str]] | None:
+    """§4.1's item-level default plus per-limit overrides, for one tuple.
+
+    Sync mirror of ``Repository._encode_one_tuple``. The two must not diverge:
+    a manifest apply and a ``set_limits()`` call write the same attributes on
+    the same items, and a different choice of item-level default here would
+    silently re-scale whichever limits inherit it.
+
+    Note the inheritance rule this mirrors deliberately: a limit with *no*
+    schedule gets no override, and absence means "inherit the item default", so
+    it is read as sharing the default (#541). Diverging here would give one
+    item two inheritance rules depending on which writer touched it last.
+    """
+    scheduled = [(name, sched) for name, sched in named_schedules if sched]
+    if not scheduled:
+        return None
+    encodings = [(name, encoder(sched)[0]) for name, sched in scheduled]
+    default_compact = encodings[0][1]
+    overrides = {name: compact for name, compact in encodings if compact != default_compact}
+    return default_compact, overrides
+
+
+def _encode_item_schedules(
+    named: list[tuple[str, tuple[ScheduleEntry, ...], tuple[ScheduleEntry, ...]]],
+) -> tuple[str, tuple[str, dict[str, str]] | None, tuple[str, dict[str, str]] | None] | None:
+    """Both tuples and the one timezone they share, for a whole bucket item.
+
+    Sync mirror of ``Repository._encode_item_schedules``. Resolved together,
+    not by two independent calls, because ``sched_tz`` is a single item-level
+    attribute: one call would SET it while the other REMOVEd it in the same
+    expression, which is the #488 ``ValidationException``.
+
+    Returns ``None`` when nothing on the item is scheduled at all.
+
+    Raises:
+        ValueError: the scheduled limits disagree on a timezone. Silently
+            keeping the first limit's zone would reinterpret the second
+            limit's cron in the wrong one.
+    """
+    zones = {entry.tz for _name, sched, reset in named for entry in (*sched, *reset)}
+    if len(zones) > 1:
+        raise ValueError(
+            f"all scheduled limits on one bucket item must share a timezone, got "
+            f"{sorted(zones)}. The timezone is stored once per item as `sched_tz`, "
+            f"not per limit."
+        )
+    if not zones:
+        return None
+    param = _encode_one_tuple([(name, sched) for name, sched, _reset in named], encode)
+    reset_part = _encode_one_tuple([(name, reset) for name, _sched, reset in named], encode_reset)
+    return zones.pop(), param, reset_part
+
+
 def build_bucket_param_update(
-    limits: dict[str, dict[str, int]],
+    limits: dict[str, dict[str, Any]],
     ttl_multiplier: int | None,
     stale_limit_names: set[str] | None,
     now_ms: int,
@@ -94,7 +174,8 @@ def build_bucket_param_update(
 
     Args:
         limits: Manifest-shaped limits, ``{name: {capacity, refill_amount,
-            refill_period}}``, in whole tokens and seconds.
+            refill_period}}``, in whole tokens and seconds, optionally with
+            ``schedule`` / ``reset_schedule`` entries (#222).
         ttl_multiplier: None leaves ``ttl`` alone; 0 REMOVEs it (entity has
             custom limits, so the bucket must persist); >0 SETs it.
         stale_limit_names: Limit names to strip from the bucket entirely.
@@ -102,6 +183,9 @@ def build_bucket_param_update(
 
     Returns:
         ``(update_expr, expr_names, expr_values)``.
+
+    Raises:
+        ValueError: two scheduled limits disagree on a timezone.
     """
     set_parts: list[str] = []
     remove_parts: list[str] = []
@@ -110,6 +194,7 @@ def build_bucket_param_update(
 
     # Numeric indices for expression names: limit names may contain hyphens,
     # dots, slashes and colons, none of which are legal in an alias.
+    names = list(limits)
     for i, (name, decl) in enumerate(limits.items()):
         for alias, field, value in (
             (f"#cp{i}", BUCKET_FIELD_CP, decl["capacity"] * 1000),
@@ -120,16 +205,73 @@ def build_bucket_param_update(
             expr_names[alias] = bucket_attr(name, field)
             expr_values[f":{alias[1:]}"] = {"N": str(value)}
 
+    # Re-stamp both schedules (#222 §2.2, §3.6). Manifests learned to express
+    # schedules in #543, which is what lifts this mirror's old exemption: a
+    # bucket left holding a superseded `sched` is refilled toward a ceiling the
+    # operator has already changed, and one left holding a superseded `rsched`
+    # keeps resetting on a calendar nobody asked for any more. Override, not
+    # merge — including when the manifest carries no schedule at all, since
+    # that is how a schedule is *removed*.
+    parsed = [
+        (
+            name,
+            entries_from_manifest(d.get("schedule"), reset=False),
+            entries_from_manifest(d.get("reset_schedule"), reset=True),
+        )
+        for name, d in limits.items()
+    ]
+    encoded = _encode_item_schedules(parsed)
+    # `sched_tz` is shared by both tuples, so it is decided once, from whether
+    # *anything* on the item is scheduled. Deciding it inside the parameter
+    # branch would REMOVE it for a quota carrying only a reset — and the stored
+    # `rsched` would then decode as UTC forever — or SET and REMOVE it in one
+    # expression (#488).
+    expr_names["#sched_tz"] = BUCKET_FIELD_SCHED_TZ
+    if encoded is None:
+        param, reset_part = None, None
+        remove_parts.append("#sched_tz")
+    else:
+        tz, param, reset_part = encoded
+        set_parts.append("#sched_tz = :sched_tz")
+        expr_values[":sched_tz"] = {"S": tz}
+
+    # Per-limit overrides are SET where a limit differs from the item default
+    # and REMOVEd everywhere else — including on the scheduled branch. Absence
+    # means "inherit the item default", so a limit that used to carry its own
+    # schedule and now shares the default (or has none at all) keeps enforcing
+    # the superseded one forever unless its override is stripped. Each alias
+    # lands in exactly one of the two lists, never both (#488).
+    for prefix, field, part in (
+        ("sched", BUCKET_FIELD_SCHED, param),
+        ("rsched", BUCKET_FIELD_RSCHED, reset_part),
+    ):
+        item_alias = f"#{prefix}"
+        expr_names[item_alias] = field
+        if part is None:
+            overrides: dict[str, str] = {}
+            remove_parts.append(item_alias)
+        else:
+            default_compact, overrides = part
+            set_parts.append(f"{item_alias} = :{prefix}")
+            expr_values[f":{prefix}"] = {"S": default_compact}
+        for i, name in enumerate(names):
+            alias = f"#l{prefix}{i}"
+            expr_names[alias] = bucket_attr(name, field)
+            compact = overrides.get(name)
+            if compact is None:
+                remove_parts.append(alias)
+            else:
+                set_parts.append(f"{alias} = :l{prefix}{i}")
+                expr_values[f":l{prefix}{i}"] = {"S": compact}
+
     # Mirrors `Repository._build_bucket_param_update`: `vu = 0` on EVERY
     # fan-out, scheduled or not, forcing exactly one materialising pass that
     # clamps a surplus over a lowered ceiling before the fast path (a pure ADD
     # with no cap maths) can spend it. A manifest apply that shrinks a
     # capacity has precisely #469's exposure, and `differ.py` re-asserts every
     # manifest resource on every apply, so the mirror needs this as much as
-    # the async path does. Schedules themselves are not manifest-expressible
-    # yet, so `sched`/`sched_tz` are deliberately left alone here — this write
-    # must not strip a schedule set through the Python API. `#vu` is SET, so
-    # it must never join `remove_parts` (#488).
+    # the async path does. `#vu` is SET, so it must never join `remove_parts`
+    # (#488).
     set_parts.append("#vu = :vu_zero")
     expr_names["#vu"] = BUCKET_FIELD_VU
     expr_values[":vu_zero"] = {"N": "0"}
@@ -137,15 +279,23 @@ def build_bucket_param_update(
     if ttl_multiplier is not None:
         expr_names["#ttl"] = "ttl"
         if ttl_multiplier > 0:
+            # The schedules are carried into the rebuilt `Limit` because
+            # ADR-137 rejects a zero `refill_amount` that has no
+            # `reset_schedule` — a manifest quota round-trips to exactly that,
+            # so dropping the reset here raises before the TTL is ever
+            # computed. (The resource/system case then divides by the zero
+            # rate, which is #532 and is fixed in `schema`, not here.)
             ttl_seconds = calculate_bucket_ttl_seconds(
                 [
                     Limit(
                         name=n,
-                        capacity=d["capacity"],
-                        refill_amount=d["refill_amount"],
-                        refill_period_seconds=d["refill_period"],
+                        capacity=limits[n]["capacity"],
+                        refill_amount=limits[n]["refill_amount"],
+                        refill_period_seconds=limits[n]["refill_period"],
+                        schedule=sched,
+                        reset_schedule=reset_sched,
                     )
-                    for n, d in limits.items()
+                    for n, sched, reset_sched in parsed
                 ],
                 ttl_multiplier,
             )
@@ -202,7 +352,7 @@ def _resolved_plan(
     namespace_id: str,
     entity_id: str,
     bucket_resource: str,
-    directive_limits: dict[str, dict[str, int]],
+    directive_limits: dict[str, dict[str, Any]],
     stale_limit_names: set[str] | None,
     now_ms: int,
 ) -> tuple[str, dict[str, str], dict[str, dict[str, str]]] | None:
@@ -239,7 +389,7 @@ def sync_bucket_params(
     namespace_id: str,
     entity_id: str,
     resource: str,
-    limits: dict[str, dict[str, int]],
+    limits: dict[str, dict[str, Any]],
     ttl_multiplier: int | None,
     stale_limit_names: set[str] | None,
     now_ms: int,
@@ -316,34 +466,44 @@ def sync_bucket_params(
     return written
 
 
-def _decode_limits(item: dict[str, Any]) -> dict[str, dict[str, int]]:
+def _decode_limits(item: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Decode composite ``l_{name}_{field}`` attributes into manifest shape.
 
     A limit missing any of cp/ra/rp is malformed and is skipped rather than
-    given a synthesised default, which would silently invent a limit.
+    given a synthesised default, which would silently invent a limit. A limit
+    carrying *more* than those — a schedule, a reset schedule, or a field a
+    newer writer added — is kept: the filter tests for the required keys, not
+    for an exact set, because a limit dropped here is indistinguishable
+    downstream from one the operator deleted and `_resolved_plan` would unstamp
+    it from the bucket enforcing it.
+
+    The timezone is hoisted to one item-level ``sched_tz`` (#222 §4.1), so it
+    is read once here and applied to every entry. A corrupt compact string
+    raises out of ``decode`` rather than being skipped, for the same reason:
+    silence here removes a limit.
     """
-    partial: dict[str, dict[str, int]] = {}
+    sched_tz = item.get(CONFIG_FIELD_SCHED_TZ, {}).get("S") or "UTC"
+    partial: dict[str, dict[str, Any]] = {}
     for attr, value in item.items():
         parsed = parse_limit_attr(attr)
         if parsed is None:
             continue
         name, field = parsed
-        key = _MANIFEST_KEY.get(field)
-        if key is None:
-            continue
-        partial.setdefault(name, {})[key] = int(value["N"])
-    return {
-        name: decl
-        for name, decl in partial.items()
-        if decl.keys() == {"capacity", "refill_amount", "refill_period"}
-    }
+        if field in _MANIFEST_NUMERIC_KEY:
+            partial.setdefault(name, {})[_MANIFEST_NUMERIC_KEY[field]] = int(value["N"])
+        elif field in _MANIFEST_SCHEDULE_KEY:
+            decoder = decode_reset if field == LIMIT_FIELD_RSCHED else decode
+            partial.setdefault(name, {})[_MANIFEST_SCHEDULE_KEY[field]] = decoder(
+                value["S"], sched_tz
+            )
+    return {name: decl for name, decl in partial.items() if _REQUIRED_MANIFEST_KEYS <= decl.keys()}
 
 
 def _walk(
     client: Any,
     table_name: str,
     levels: list[tuple[str, str, str]],
-) -> tuple[dict[str, dict[str, int]], str | None]:
+) -> tuple[dict[str, dict[str, Any]], str | None]:
     """Return the first level that defines any limits, and which one it was."""
     for level, pk, sk in levels:
         response = client.get_item(TableName=table_name, Key={"PK": {"S": pk}, "SK": {"S": sk}})
@@ -380,7 +540,7 @@ def resolve_effective_limits(
     namespace_id: str,
     entity_id: str,
     resource: str,
-) -> dict[str, dict[str, int]]:
+) -> dict[str, dict[str, Any]]:
     """Effective limits after an entity's per-resource config is deleted.
 
     Walks entity(`_default_`) -> resource -> system and returns the first
@@ -397,7 +557,7 @@ def resolve_bucket_limits(
     namespace_id: str,
     entity_id: str,
     resource: str,
-) -> tuple[dict[str, dict[str, int]], str | None]:
+) -> tuple[dict[str, dict[str, Any]], str | None]:
     """Full-precedence walk for one existing bucket, and the level that won.
 
     entity(resource) -> entity(`_default_`) -> resource -> system, the whole

@@ -82,6 +82,29 @@ def _parse_entries(raw: Any, *, key: str, reset: bool) -> tuple[ScheduleEntry, .
     return tuple(entries)
 
 
+def entries_from_manifest(raw: Any, *, reset: bool) -> tuple[ScheduleEntry, ...]:
+    """Normalise one manifest limit's schedule list into ``ScheduleEntry``.
+
+    Two shapes are legitimate and both reach the applier and the bucket sync.
+    A ``Change`` forwards ``LimitDecl.to_dict()``, whose entries are plain
+    dicts because they crossed a Lambda payload boundary as JSON;
+    ``bucket_sync._decode_limits`` yields entries it has already parsed out of
+    a stored compact string. Re-serialising the latter just to re-parse it
+    would put a second validation pass, and a second ``scale`` quantisation,
+    in the middle of an admin path.
+
+    Unlike :func:`_parse_entries` this does not produce manifest-author error
+    messages: by the time it runs the manifest has already been validated, and
+    its callers are writing DynamoDB attributes rather than reading YAML.
+    """
+    return tuple(
+        entry
+        if isinstance(entry, ScheduleEntry)
+        else (ScheduleEntry.reset(**entry) if reset else ScheduleEntry(**entry))
+        for entry in (raw or ())
+    )
+
+
 @dataclass(frozen=True)
 class LimitDecl:
     """A single limit declaration with shorthand defaults.
