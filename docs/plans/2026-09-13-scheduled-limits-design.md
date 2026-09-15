@@ -510,8 +510,22 @@ grammar minus the modifier token, so they are very small — `0 0 * * *` is `m0h
 Keeping them in a separate attribute rather than tagging them inside `sched` mirrors the
 separate tuple and keeps the decoder from having to partition one list into two meanings.
 
-A version marker is carried in the encoding (~6 B) so §6 can distinguish "written by a newer
-client" from "corrupt".
+**No version marker is carried.** An earlier draft of this section promised one (~6 B) so §6
+could distinguish "written by a newer client" from "corrupt". It was not built: core plan
+Task 5 (PR #504) shipped the encoding without it, and surface plan Task 10 (PR #514) decided
+against adding it. The decisive argument is that a marker cannot classify anything *already*
+written — an unmarked string stays ambiguous between "an older client wrote this" and "this is
+corrupt" — so the distinction only works forward from the day it ships, against 6 B on every
+scheduled bucket item forever and the 1 KB boundary §4.2 exists to defend.
+
+What is lost is a log line, not behaviour: both readings produce the identical action
+(`RateLimiterUnavailable` on the client, skip-the-bucket in the aggregator), so nothing
+downstream branches on it. `_tokenise` already discriminates *structurally* — an unknown tag
+raises `malformed compact schedule entry ...: cannot parse from offset N` where a cronsim
+rejection reads `invalid cron expression ...` — which is a heuristic, not a proof, since
+corruption can also fail at an offset. Adding a marker later is not a break provided the reader
+treats its absence as v1, which it must do regardless for every item written before one exists.
+Tracked as #515.
 
 ### 4.2 Why — measured
 
