@@ -286,9 +286,10 @@ that is two such requests per bucket per day.
 
 Idle buckets do nothing at a boundary, correctly — they update on their next request.
 
-`RateLimitExceeded.retry_after_seconds` accounts for boundaries on a limit that drips: if the
-limit rises in ten minutes, the wait reflects that rather than assuming the current, lower rate
-holds forever. A **quota** is the exception — see the limitation below.
+`RateLimitExceeded.retry_after_seconds` walks boundaries rather than assuming the rate in force
+right now holds forever: if the limit rises in ten minutes, the wait reflects that. For a quota,
+which has no rate to divide by, the wait is the time to the next reset edge — exhaust a
+`0 0 * * *` quota at 18:00 in New York and it reports six hours.
 
 ## Limitations
 
@@ -298,11 +299,6 @@ holds forever. A **quota** is the exception — see the limitation below.
   caller's own activity is not supported; it may arrive in a later release
   ([ADR-138](../adr/138-fixed-reset-windows-only.md)). Note also that resetting every entity at
   the same instant concentrates load at the boundary.
-- **A quota reports no `retry_after_seconds`.** The wait estimate is computed from a refill
-  rate, and a quota has none, so an exhausted quota reports a wait of zero rather than the time
-  until its reset. Do not build a client backoff on it for a quota — compute the next reset
-  instant yourself. Tracked in
-  [#530](https://github.com/zeroae/zae-limiter/issues/530); limits that drip are unaffected.
 - **One time-varying mechanism per bucket.** A bucket uses cron scheduling or another dynamic
   mechanism, not both. This keeps "why is my limit this number" answerable.
 - **Extended cron syntax is not supported.** `L` (last), `W` (weekday) and `#` (nth weekday) are
