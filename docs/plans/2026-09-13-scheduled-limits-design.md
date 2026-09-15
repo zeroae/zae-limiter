@@ -528,8 +528,12 @@ using DynamoDB's own sizing rules:
 | 6 limits × 4 entries | **2129 B — over** | **805 B** |
 | *6 limits, no schedule at all* | 721 B | 721 B |
 
-The compact form is **4.9x smaller** per schedule. The JSON proposal crossed 1 KB at 3 limits
-× 2 entries — not an exotic configuration.
+The compact form is **4.9x smaller** per schedule. The JSON proposal crossed 1 KB at 4 limits
+× 3 entries — not an exotic configuration.
+
+(An earlier draft of this sentence said "3 limits × 2 entries", contradicting the table two
+lines above it: 917 B is under 1024. The table itself was always right — it marks only the
+4 × 3 and 6 × 4 rows as over. Corrected per #507.)
 
 Note the last row: at 6 limits the item is **721 B before any schedule exists**. The limits
 themselves dominate, and an item can already cross 1 KB from limit count alone with no
