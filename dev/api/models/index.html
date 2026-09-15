@@ -6309,19 +6309,27 @@ result divides and scales exactly once.</p>
 <code>LeaseEntry.limit</code> carries, and the slow path already puts the
 undivided config limit there; a pre-divided one would be narrowed a
 second time when the lease builds a status from it.</p>
-<p>No <code>reset_schedule</code>, for two reasons that both have to clear before
-it can be carried. Bucket items now <em>do</em> carry one (<code>rsched</code> /
-<code>b_{name}_rsched</code>, #222 §4.1), but nothing populates
-<code>BucketState.reset_sched</code> on the way <strong>back in</strong>:
-<code>_deserialize_composite_bucket</code> reads the base params and neither
-schedule tuple, so <code>state.reset_sched</code> here is always <code>()</code> and
-adding it would be a no-op that merely looked like a fix. And once it
-is populated, the two fields have to move <strong>together</strong> — the
-<code>max(1, ...)</code> floor below turns a quota's zero rate into one token,
-which alongside a reset is precisely what ADR-137 rejects, so
-<code>reset_schedule=state.reset_sched</code> on its own would start <em>raising</em>
-rather than round-tripping. Until both land, a fast-path rejection on a
-quota quotes a phantom one-token drip (surface plan Tasks 5 and 10).</p>
+<p><code>reset_schedule</code> and the <code>max(1, ...)</code> rate floor move <strong>together</strong>,
+because neither is correct without the other: the floor turns a quota's
+zero rate into one token, and a positive rate alongside a reset is
+precisely what ADR-137 rejects, so carrying the tuple on its own would
+start <em>raising</em> from inside a rejection path rather than round-tripping.
+Carried together, a quota bucket reconstructs as the quota it is —
+<code>refill_amount=0</code>, reset intact — instead of advertising a phantom
+one-token drip beside a <code>retry_after_seconds</code> computed from the
+calendar edge.</p>
+<p>The pairing is decided by the <strong>stored</strong> shape, <code>refill_amount_milli
+== 0 and reset_sched</code>, not by either half alone. A bucket item
+carrying a reset beside a positive rate is unconstructible under
+ADR-137 and so means corruption; it keeps the floor and loses the
+tuple, preserving the pre-#222 reading rather than raising where a
+rejection is already being reported — the same call
+<code>bucket.calculate_retry_after</code>'s last branch makes.</p>
+<p>Note that <code>state.reset_sched</code> is populated by the slow path (from the
+resolved config) and by <code>BucketState.from_limit</code>, but <strong>not yet</strong> by
+<code>_deserialize_composite_bucket</code> — so for a bucket read back off the
+item this is still the old behaviour exactly, and becomes live with no
+further edit once that deserialiser decodes <code>rsched</code>.</p>
 
 
     </div>
@@ -7079,6 +7087,12 @@ at all, and <code>bucket.calculate_retry_after</code> answers it from the next
 reset edge instead (#530). That is why the guard here is
 :func:<code>is_accrual_rate</code> and not :attr:<code>Limit.is_quota</code>: it has to catch
 the floored share, which is not a quota and must not be treated as one.</p>
+<p>Since #222 §7 the retry estimate is computed by
+<code>schedule.retry_after_with_schedule</code>, which re-derives this rule per
+window from the undivided base rather than calling this — it has to,
+because <code>schedule</code> may not import <code>models</code> (that one-way dependency
+is what lets both Lambdas vendor it). This stays the definition of the
+rule, and the walk's <code>_rate</code> helper names it.</p>
 
 
     </div>

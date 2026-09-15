@@ -7134,9 +7134,21 @@ a rejection happened on. Known limitation, inherited from #475: a
 unadmittable on every shard even while the entity is under its
 configured limit, so <code>acquire()</code> can reject an amount this call
 reports as available.</p>
+<p><strong>Schedules.</strong> Everything reported is the value in force at
+<code>checked_at_ms</code>, not the stored base (#222 §7): the ceiling comes
+from <code>effective_params</code>, so a <code>scale: 0.5</code> window reports 500 and
+not 1000, and the wait walks forward across boundaries instead of
+dividing by the rate that happens to apply right now. A limit with a
+<code>reset_schedule</code> reports the wait to its next edge — for a daily
+quota, whose <code>refill_amount</code> is 0 by ADR-137, that is the only finite
+answer there is. A bucket that crossed a reset edge and has not been
+written to since reports the balance the next <code>acquire()</code> will
+restore, per shard, rather than the burnt one still on disk.</p>
 <p>Cost: 1 GSI3 query (KEYS_ONLY) + 1 <code>BatchGetItem</code>, plus config
 resolution (free on a cache hit), regardless of limit count or shard
-count.</p>
+count. A limit carrying a <code>reset_schedule</code> adds one backwards cron
+scan per shard and the forward walk adds up to eight per exceeded
+limit; an unscheduled limit adds neither.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -10392,9 +10404,21 @@ a rejection happened on. Known limitation, inherited from #475: a
 unadmittable on every shard even while the entity is under its
 configured limit, so <code>acquire()</code> can reject an amount this call
 reports as available.</p>
+<p><strong>Schedules.</strong> Everything reported is the value in force at
+<code>checked_at_ms</code>, not the stored base (#222 §7): the ceiling comes
+from <code>effective_params</code>, so a <code>scale: 0.5</code> window reports 500 and
+not 1000, and the wait walks forward across boundaries instead of
+dividing by the rate that happens to apply right now. A limit with a
+<code>reset_schedule</code> reports the wait to its next edge — for a daily
+quota, whose <code>refill_amount</code> is 0 by ADR-137, that is the only finite
+answer there is. A bucket that crossed a reset edge and has not been
+written to since reports the balance the next <code>acquire()</code> will
+restore, per shard, rather than the burnt one still on disk.</p>
 <p>Cost: 1 GSI3 query (KEYS_ONLY) + 1 <code>BatchGetItem</code>, plus config
 resolution (free on a cache hit), regardless of limit count or shard
-count.</p>
+count. A limit carrying a <code>reset_schedule</code> adds one backwards cron
+scan per shard and the forward walk adds up to eight per exceeded
+limit; an unscheduled limit adds neither.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
