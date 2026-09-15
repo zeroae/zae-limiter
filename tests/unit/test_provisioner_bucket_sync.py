@@ -7,6 +7,8 @@ classes so `except client.exceptions.X` matches as it would against real boto3.
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from zae_limiter.schema import (
     bucket_attr,
     gsi3_pk_entity,
@@ -57,9 +59,8 @@ class TestBuildBucketParamUpdate:
         expr, names, _values = build_bucket_param_update(
             LIMITS, ttl_multiplier=0, stale_limit_names=None, now_ms=1_789_000_000_000
         )
-        assert "REMOVE" in expr
         assert names["#ttl"] == "ttl"
-        assert expr.split("REMOVE")[1].strip().startswith("#ttl")
+        assert "#ttl" in expr.split("REMOVE")[1].split(",")[-1]
 
     def test_ttl_multiplier_positive_sets_ttl(self):
         """Back on defaults: TTL = now + max_time_to_fill * multiplier."""
@@ -69,7 +70,7 @@ class TestBuildBucketParamUpdate:
         assert ":ttl_val" in values
         # time_to_fill = (1000/1000)*60 = 60s; TTL = 1789000000 + 420
         assert values[":ttl_val"] == {"N": str(1_789_000_000 + 420)}
-        assert "REMOVE" not in expr
+        assert "#ttl" not in expr.split("REMOVE")[1]
 
     def test_ttl_multiplier_none_leaves_ttl_alone(self):
         expr, names, values = build_bucket_param_update(
@@ -77,7 +78,6 @@ class TestBuildBucketParamUpdate:
         )
         assert "#ttl" not in names
         assert ":ttl_val" not in values
-        assert "REMOVE" not in expr
 
     def test_stale_limits_removed_but_never_rf(self):
         """Stale limit attrs go; the shared `rf` optimistic lock must not."""
@@ -85,7 +85,7 @@ class TestBuildBucketParamUpdate:
             LIMITS, ttl_multiplier=None, stale_limit_names={"tpm"}, now_ms=1_789_000_000_000
         )
         removed = {names[a.strip()] for a in expr.split("REMOVE")[1].split(",")}
-        assert removed == {
+        assert removed >= {
             bucket_attr("tpm", f) for f in ("tk", "cp", "ra", "rp", "tc", "sched", "rsched")
         }
         assert bucket_attr("tpm", "rf") not in removed
@@ -114,17 +114,17 @@ class TestBuildBucketParamUpdate:
         assert "#vu" in set_clause
         assert "#vu" not in remove_clause
 
-    def test_the_mirror_does_not_touch_sched(self):
-        """Schedules are not manifest-expressible, so a manifest apply must
-        not strip one set through the Python API. Only the per-limit override
-        of a limit the manifest *deleted* goes, with the rest of that limit."""
+    def test_an_unscheduled_manifest_clears_the_stamps(self):
+        """Schedules became manifest-expressible in #543, so this write is now
+        authoritative over them: override, not merge. A limit re-applied
+        without a schedule must lose the one it had, exactly as the async
+        fan-out does — leaving it behind would keep the aggregator refilling
+        toward a ceiling the operator has already changed."""
         expr, names, _values = build_bucket_param_update(
             LIMITS, ttl_multiplier=None, stale_limit_names=None, now_ms=1_789_000_000_000
         )
-        assert "sched" not in names.values()
-        assert "rsched" not in names.values()
-        assert "sched_tz" not in names.values()
-        assert "REMOVE" not in expr
+        removed = {names[a.strip()] for a in expr.split("REMOVE")[1].split(",")}
+        assert {"sched", "sched_tz", "rsched"} <= removed
 
     def test_hyphenated_limit_names_use_indexed_aliases(self):
         """Limit names may contain hyphens, which are illegal in expression names."""
@@ -515,7 +515,9 @@ class TestEntityWideScopeWidensDiscovery:
             call.kwargs["Key"]["PK"]["S"].split("#")[2]: call.kwargs["UpdateExpression"]
             for call in client.update_item.call_args_list
         }
-        assert "REMOVE #ttl" in exprs["gpt-4"], "entity limits: the bucket must persist"
+        assert exprs["gpt-4"].split("REMOVE")[1].split(",")[-1].strip() == "#ttl", (
+            "entity limits: the bucket must persist"
+        )
         assert "#ttl = :ttl_val" in exprs["claude-3"], "resource defaults: the bucket must expire"
 
     def test_stale_names_are_intersected_with_each_resolution(self):
@@ -554,10 +556,10 @@ class TestEntityWideScopeWidensDiscovery:
         }
         tpm_cp = bucket_attr("tpm", "cp")
         assert tpm_cp in names["gpt-4"].values(), "gpt-4's entity config still declares tpm"
-        assert "REMOVE" not in exprs["gpt-4"].replace("REMOVE #ttl", ""), (
-            "nothing is stale for gpt-4"
+        assert tpm_cp not in _removed(exprs["gpt-4"], names["gpt-4"]), "nothing is stale for gpt-4"
+        assert tpm_cp in _removed(exprs["claude-3"], names["claude-3"]), (
+            "tpm is stale on claude-3 (system has no tpm)"
         )
-        assert tpm_cp in names["claude-3"].values(), "tpm is stale on claude-3 (system has no tpm)"
 
     def test_a_resource_that_resolves_to_nothing_is_left_alone(self):
         """No configured level means no correct value to write."""
@@ -616,3 +618,349 @@ class TestEntityWideScopeWidensDiscovery:
         assert client.query.call_args.kwargs["ExpressionAttributeValues"][":sk"] == {
             "S": "BUCKET#gpt-4#"
         }
+
+
+# --- #222: schedules become manifest-expressible -----------------------------
+
+BIZ = [{"cron": "* 9-17 * * MON-FRI", "tz": "America/New_York", "scale": 0.5}]
+BIZ_COMPACT = "h9-17w1-5s500"
+WEEKEND = [{"cron": "* * * * SAT,SUN", "tz": "America/New_York", "scale": 0.25}]
+WEEKEND_COMPACT = "w6,7s250"
+MIDNIGHT = [{"cron": "0 0 * * *", "tz": "America/New_York"}]
+MIDNIGHT_COMPACT = "m0h0"
+
+SCHEDULED = {"rpm": {"capacity": 1000, "refill_amount": 1000, "refill_period": 60, "schedule": BIZ}}
+QUOTA = {
+    "rpd": {
+        "capacity": 10000,
+        # ADR-137: a reset flips the manifest shorthand default to 0, and
+        # `to_dict()` always emits the field, so 0 is what a round trip yields.
+        "refill_amount": 0,
+        "refill_period": 86400,
+        "reset_schedule": MIDNIGHT,
+    }
+}
+
+
+def _clauses(expr):
+    """`(set_attrs, removed_attrs)` for an expression, resolved through aliases."""
+    set_clause, _, remove_clause = expr.partition(" REMOVE ")
+    return set_clause.removeprefix("SET "), remove_clause
+
+
+def _removed(expr, names):
+    _set_clause, remove_clause = _clauses(expr)
+    return {names[a.strip()] for a in remove_clause.split(",") if a.strip()}
+
+
+def _set_attrs(expr, names):
+    set_clause, _remove = _clauses(expr)
+    return {names[part.split(" = ")[0].strip()] for part in set_clause.split(",")}
+
+
+class TestProvisionerStampsSchedules:
+    """Task 8: a manifest-applied schedule must reach the buckets (#222)."""
+
+    def test_stamps_the_item_level_default_and_the_hoisted_timezone(self):
+        expr, names, values = build_bucket_param_update(
+            SCHEDULED, ttl_multiplier=None, stale_limit_names=None, now_ms=0
+        )
+        assert values[":sched"] == {"S": BIZ_COMPACT}
+        assert values[":sched_tz"] == {"S": "America/New_York"}
+        assert names["#sched"] == "sched"
+        assert names["#sched_tz"] == "sched_tz"
+        assert "#sched = :sched" in expr
+        assert "#sched_tz = :sched_tz" in expr
+        # Nothing to reset, so `rsched` is cleared rather than left stale.
+        assert "rsched" in _removed(expr, names)
+
+    def test_vu_is_zero_not_a_computed_boundary(self):
+        """A future `vu` leaves the fast path spending a surplus over a lowered
+        ceiling until natural refill catches up (§3.4)."""
+        _expr, _names, values = build_bucket_param_update(
+            SCHEDULED, ttl_multiplier=None, stale_limit_names=None, now_ms=1_789_000_000_000
+        )
+        assert values[":vu_zero"] == {"N": "0"}
+
+    def test_base_params_stay_undivided_and_unscaled(self):
+        """The schedule applies on top; cp/ra stay the base (§2.1)."""
+        _expr, names, values = build_bucket_param_update(
+            SCHEDULED, ttl_multiplier=None, stale_limit_names=None, now_ms=0
+        )
+        cp_alias = next(a for a, attr in names.items() if attr == bucket_attr("rpm", "cp"))
+        assert values[cp_alias.replace("#", ":")] == {"N": "1000000"}
+
+    def test_a_second_limit_with_a_different_schedule_gets_its_own_override(self):
+        """The N-limit case: one item-level default plus per-limit overrides.
+
+        Hoisting only the first scheduled limit's encoding and stopping there
+        would silently apply `rpm`'s business-hours halving to `tpm`.
+        """
+        expr, names, values = build_bucket_param_update(
+            {
+                "rpm": {
+                    "capacity": 1000,
+                    "refill_amount": 1000,
+                    "refill_period": 60,
+                    "schedule": BIZ,
+                },
+                "tpm": {
+                    "capacity": 50,
+                    "refill_amount": 50,
+                    "refill_period": 60,
+                    "schedule": WEEKEND,
+                },
+            },
+            ttl_multiplier=None,
+            stale_limit_names=None,
+            now_ms=0,
+        )
+        assert values[":sched"] == {"S": BIZ_COMPACT}
+        override = next(
+            a for a, attr in names.items() if attr == bucket_attr("tpm", "sched") and a != "#sched"
+        )
+        assert values[f":{override[1:]}"] == {"S": WEEKEND_COMPACT}
+        assert f"{override} = :{override[1:]}" in expr
+        # The limit that *is* the default carries no override of its own.
+        assert bucket_attr("rpm", "sched") in _removed(expr, names)
+
+    def test_a_limit_sharing_the_default_encoding_has_its_override_cleared(self):
+        """Absence means "inherit the item default", so a stale override left
+        behind keeps enforcing a superseded schedule forever."""
+        expr, names, values = build_bucket_param_update(
+            {
+                "rpm": {
+                    "capacity": 1000,
+                    "refill_amount": 1000,
+                    "refill_period": 60,
+                    "schedule": BIZ,
+                },
+                "tpm": {
+                    "capacity": 50,
+                    "refill_amount": 50,
+                    "refill_period": 60,
+                    "schedule": BIZ,
+                },
+            },
+            ttl_multiplier=None,
+            stale_limit_names=None,
+            now_ms=0,
+        )
+        assert values[":sched"] == {"S": BIZ_COMPACT}
+        removed = _removed(expr, names)
+        assert bucket_attr("rpm", "sched") in removed
+        assert bucket_attr("tpm", "sched") in removed
+        assert WEEKEND_COMPACT not in str(values)
+
+    def test_reset_schedule_stamps_rsched(self):
+        expr, names, values = build_bucket_param_update(
+            QUOTA, ttl_multiplier=None, stale_limit_names=None, now_ms=0
+        )
+        assert values[":rsched"] == {"S": MIDNIGHT_COMPACT}
+        assert values[":sched_tz"] == {"S": "America/New_York"}
+        assert names["#rsched"] == "rsched"
+
+    def test_a_quota_clears_sched_while_keeping_sched_tz(self):
+        """`sched_tz` is shared by both tuples, so it is decided from whether
+        ANYTHING on the item is scheduled. Deciding it inside the parameter
+        branch would REMOVE it for a quota carrying only a reset, and the
+        stored `rsched` would then decode as UTC forever."""
+        expr, names, values = build_bucket_param_update(
+            QUOTA, ttl_multiplier=None, stale_limit_names=None, now_ms=0
+        )
+        removed = _removed(expr, names)
+        assert "sched" in removed
+        assert "sched_tz" not in removed
+        assert values[":sched_tz"] == {"S": "America/New_York"}
+        assert ":sched" not in values
+
+    def test_unscheduled_limits_clear_every_stamp_except_vu(self):
+        """Override, not merge: dropping a schedule must clear the item.
+
+        `vu` is deliberately NOT in the removed set — it is SET to 0 on every
+        fan-out, and SET + REMOVE on one attribute is a ValidationException
+        (#488).
+        """
+        expr, names, values = build_bucket_param_update(
+            LIMITS, ttl_multiplier=None, stale_limit_names=None, now_ms=0
+        )
+        removed = _removed(expr, names)
+        assert {"sched", "sched_tz", "rsched"} <= removed
+        assert bucket_attr("rpm", "sched") in removed
+        assert bucket_attr("rpm", "rsched") in removed
+        assert "vu" not in removed
+        assert values[":vu_zero"] == {"N": "0"}
+        assert ":sched" not in values
+        assert ":sched_tz" not in values
+
+    def test_no_attribute_is_both_set_and_removed(self):
+        """#488, over every branch this task adds."""
+        for limits in (LIMITS, SCHEDULED, QUOTA):
+            expr, names, _values = build_bucket_param_update(
+                limits, ttl_multiplier=0, stale_limit_names={"tpm"}, now_ms=0
+            )
+            assert not (_set_attrs(expr, names) & _removed(expr, names)), limits
+
+    def test_limits_disagreeing_on_a_timezone_are_rejected(self):
+        """One item, one `sched_tz`: silently keeping the first limit's zone
+        would reinterpret the second limit's cron in the wrong one."""
+        with pytest.raises(ValueError, match="timezone"):
+            build_bucket_param_update(
+                {
+                    "rpm": {
+                        "capacity": 1,
+                        "refill_amount": 1,
+                        "refill_period": 60,
+                        "schedule": BIZ,
+                    },
+                    "tpm": {
+                        "capacity": 1,
+                        "refill_amount": 1,
+                        "refill_period": 60,
+                        "schedule": [{"cron": "* 9-17 * * *", "tz": "Europe/London", "scale": 0.5}],
+                    },
+                },
+                ttl_multiplier=None,
+                stale_limit_names=None,
+                now_ms=0,
+            )
+
+    def test_a_quota_keeps_its_reset_when_the_bucket_ttl_is_computed(self):
+        """The TTL leg rebuilds a `Limit`, and ADR-137 rejects a zero refill
+        that carries no reset — so the reset has to be carried across.
+
+        `ttl_multiplier=0` is the ADR-136 entity-level case, which is the one
+        reachable for a manifest-declared entity quota. The resource/system
+        case divides by the zero rate and is #532.
+        """
+        expr, names, values = build_bucket_param_update(
+            QUOTA, ttl_multiplier=0, stale_limit_names=None, now_ms=0
+        )
+        assert "#ttl" in _clauses(expr)[1]
+        assert values[":rsched"] == {"S": MIDNIGHT_COMPACT}
+        assert names["#ttl"] == "ttl"
+
+    def test_schedule_entries_are_accepted_as_objects_too(self):
+        """`_decode_limits` yields parsed entries; the handler yields wire dicts."""
+        from zae_limiter.schedule import ScheduleEntry
+
+        entry = ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.5)
+        _expr, _names, values = build_bucket_param_update(
+            {
+                "rpm": {
+                    "capacity": 1000,
+                    "refill_amount": 1000,
+                    "refill_period": 60,
+                    "schedule": (entry,),
+                }
+            },
+            ttl_multiplier=None,
+            stale_limit_names=None,
+            now_ms=0,
+        )
+        assert values[":sched"] == {"S": BIZ_COMPACT}
+
+
+class TestDecodeAdmitsScheduledLimits:
+    """The exact-set filter in `_decode_limits` drops any widened shape.
+
+    A scheduled limit that fails to decode does not raise — the comprehension
+    simply stops yielding it — and `_resolved_plan` then unstamps the very
+    limit the apply was asked to schedule.
+    """
+
+    @staticmethod
+    def _scheduled_config(compact, *, reset=False, tz="America/New_York"):
+        item = _limits_item(rpm=(1000, 1000, 60))
+        item[limit_attr("rpm", "rsched" if reset else "sched")] = {"S": compact}
+        item["sched_tz"] = {"S": tz}
+        return item
+
+    def test_a_scheduled_limit_survives_the_precedence_walk(self):
+        client = _make_client()
+        client.get_item.side_effect = _levels(
+            {(pk_resource("ns123", "gpt-4"), sk_config()): self._scheduled_config(BIZ_COMPACT)}
+        )
+        limits, level = resolve_bucket_limits(client, "tbl", "ns123", "user-1", "gpt-4")
+        assert level == "resource"
+        assert set(limits) == {"rpm"}
+        assert limits["rpm"]["capacity"] == 1000
+
+    def test_the_decoded_schedule_round_trips_to_the_same_compact_form(self):
+        client = _make_client()
+        client.get_item.side_effect = _levels(
+            {(pk_resource("ns123", "gpt-4"), sk_config()): self._scheduled_config(BIZ_COMPACT)}
+        )
+        limits, _level = resolve_bucket_limits(client, "tbl", "ns123", "user-1", "gpt-4")
+        _expr, _names, values = build_bucket_param_update(
+            limits, ttl_multiplier=None, stale_limit_names=None, now_ms=0
+        )
+        assert values[":sched"] == {"S": BIZ_COMPACT}
+        assert values[":sched_tz"] == {"S": "America/New_York"}
+
+    def test_the_hoisted_timezone_reaches_the_decoded_entries(self):
+        """A config item stores one `sched_tz`, not one per entry; decoding
+        without it silently reinterprets every cron in UTC."""
+        client = _make_client()
+        client.get_item.side_effect = _levels(
+            {
+                (pk_resource("ns123", "gpt-4"), sk_config()): self._scheduled_config(
+                    BIZ_COMPACT, tz="Asia/Tokyo"
+                )
+            }
+        )
+        limits, _level = resolve_bucket_limits(client, "tbl", "ns123", "user-1", "gpt-4")
+        _expr, _names, values = build_bucket_param_update(
+            limits, ttl_multiplier=None, stale_limit_names=None, now_ms=0
+        )
+        assert values[":sched_tz"] == {"S": "Asia/Tokyo"}
+
+    def test_a_reset_schedule_survives_the_walk(self):
+        client = _make_client()
+        item = _limits_item(rpd=(10000, 0, 86400))
+        item[limit_attr("rpd", "rsched")] = {"S": MIDNIGHT_COMPACT}
+        item["sched_tz"] = {"S": "America/New_York"}
+        client.get_item.side_effect = _levels({(pk_resource("ns123", "gpt-4"), sk_config()): item})
+        limits, _level = resolve_bucket_limits(client, "tbl", "ns123", "user-1", "gpt-4")
+        _expr, _names, values = build_bucket_param_update(
+            limits, ttl_multiplier=None, stale_limit_names=None, now_ms=0
+        )
+        assert values[":rsched"] == {"S": MIDNIGHT_COMPACT}
+
+    def test_a_limit_missing_a_required_field_is_still_dropped(self):
+        """Widening the filter must not turn it off: cp/ra/rp stay required."""
+        client = _make_client()
+        item = {
+            limit_attr("rpm", "cp"): {"N": "10"},
+            limit_attr("rpm", "sched"): {"S": BIZ_COMPACT},
+            "sched_tz": {"S": "America/New_York"},
+        }
+        client.get_item.side_effect = _levels({(pk_resource("ns123", "gpt-4"), sk_config()): item})
+        assert resolve_effective_limits(client, "tbl", "ns123", "user-1", "gpt-4") == {}
+
+    def test_entity_wide_fanout_stamps_the_resolved_schedule(self):
+        """The landmine's real blast radius (#487): under `_default_` every
+        bucket is re-resolved from config, so a dropped schedule is not merely
+        unread — it is actively stripped off the bucket enforcing it."""
+        client = _make_client()
+        client.query.side_effect = _query_pages({"Items": [{"PK": {"S": _pk(resource="gpt-4")}}]})
+        entity_default = _limits_item(rpm=(500, 500, 60))
+        entity_default[limit_attr("rpm", "sched")] = {"S": BIZ_COMPACT}
+        entity_default["sched_tz"] = {"S": "America/New_York"}
+        client.get_item.side_effect = _levels(
+            {(pk_entity("ns123", "user-1"), sk_config("_default_")): entity_default}
+        )
+        written = sync_bucket_params(
+            client,
+            "tbl",
+            "ns123",
+            "user-1",
+            "_default_",
+            {"rpm": {"capacity": 500, "refill_amount": 500, "refill_period": 60}},
+            ttl_multiplier=0,
+            stale_limit_names=None,
+            now_ms=0,
+        )
+        assert written == 1
+        values = client.update_item.call_args.kwargs["ExpressionAttributeValues"]
+        assert values[":sched"] == {"S": BIZ_COMPACT}
