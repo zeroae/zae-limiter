@@ -19,7 +19,10 @@
 - **Reset is edge-triggered; `schedule` is level-triggered.** A `schedule` entry is active *while* it matches; a reset fires on the transition *into* matching. Conflating them makes a `0 0 * * *` reset depend on a request arriving inside that one minute.
 - **Reset is to the shard's share**, `tk = effective_capacity_milli(now_ms)`. Resetting every shard to the undivided capacity multiplies the entity's quota by `shard_count`.
 - **Never touch `tc`.** The total-consumed counter must stay monotonic; `.claude/rules/design-validation.md` exists because usage aggregation derives consumption from its deltas. This is what makes the native reset strictly safer than #471's `reset_bucket()`, which deleted the item and cleared `tc` with it.
-- Sync codegen, lint rules, and the `pytest tests/unit/` gevent hazard are all as stated in the core plan's Global Constraints — they apply here unchanged.
+- Sync codegen, lint rules, and the `pytest tests/unit/` gevent hazard are all as stated in the core plan's Global Constraints — they apply here unchanged. Three of them bite repeatedly below and are worth restating:
+  - **`Repository._now_ms()` does not cover the config cache.** `config_cache.py:99` and `:103` still call `time.time()`, so a test that jumps the injected clock across a boundary resolves the **pre**-jump `Limit` — schedule and all — for 60 real seconds. Call `invalidate_config_cache()` after every jump, or build with `config_cache_ttl=0`. This bites Tasks 3, 5 and 11 specifically.
+  - **Never `pytest tests/unit/ -o "addopts="`.** It un-skips the gevent tests into the same process as the asyncio ones and hangs with no output. Run `uv run pytest tests/unit/ -q` and `uv run pytest tests/unit/ -m gevent -n 0 -q` separately.
+  - **Never bare `uv run ruff format .`.** The local ruff is newer than pre-commit's pinned 0.9.2 and reformats 34 unrelated files, including the Python blocks inside these plan documents. Scope the formatter to the directories you touched.
 - Feature branch off `main`; PRs via the `/pr` skill.
 
 ---
@@ -152,154 +155,2017 @@ class TestNextBoundarySpansBothTuples:
 
 ### Task 3: Apply the reset in the materialising pass
 
-> **Expand before picking this up.** The steps below carry real assertions but compress
-> the TDD cycle, and their fixture setup depends on `schedule.py`, which does not exist
-> yet. Write the full failing-test/implement/pass cycle against the real signatures once
-> the core plan has landed — writing it against invented ones now is the mistake this
-> plan's own review calls out.
+**Files:**
+- Modify: `src/zae_limiter/limiter.py` (`_do_acquire`'s entry loop at :1716-1766, `_try_parent_only_acquire`'s at :1509-1544), `src/zae_limiter/lease.py` (the `vu` computation core plan Task 12 adds around :376-393), `src/zae_limiter_aggregator/processor.py` (`LimitRefillInfo` :109, `BucketRefillState` :123, `ParsedBucketLimit` :307, `ParsedBucketRecord` :319, `_parse_bucket_record` :353, `_item_next_boundary` :621, `try_refill_bucket` :638)
+- Test: `tests/unit/test_limiter.py`, `tests/unit/test_processor.py`
 
-**Files:** Modify `src/zae_limiter/lease.py`, `src/zae_limiter/repository.py`, `src/zae_limiter_aggregator/processor.py` · Test `tests/unit/test_lease.py`, `tests/unit/test_aggregator_processor.py`
+**Interfaces:**
+- Consumes: `prev_reset_edge(reset_sched, now_ms) -> int | None` (Task 2); `next_boundary(sched, reset_sched=(), *, now_ms)` honouring both tuples (Task 2); `Limit.reset_schedule` (Task 1); `BucketState.effective_capacity_milli(now_ms)` (core plan Task 9); `decode_reset` and the `rsched` / `b_{name}_rsched` bucket attributes (**Task 4**)
+- Produces: `RateLimiter._apply_reset_edge(limit, state, now_ms) -> bool`; `ParsedBucketLimit.reset_sched`, `ParsedBucketRecord.reset_sched`, `LimitRefillInfo.reset_sched`, `BucketRefillState.reset_sched`
 
-**Ordering:** compute effective params first, then set `tk` to the resulting effective capacity.
+**Do Task 4 before this task's aggregator half.** The numbering here follows the design's
+section order (§3.6 reset before §4.1 encoding), not the dependency order. The client half
+(`limiter.py`) reads `limit.reset_schedule` off the config-resolved `Limit` and depends on
+nothing in Task 4. The aggregator half reads the schedule off the **item**, so it needs
+`decode_reset` and it needs something to have written `rsched` — both of which are Task 4.
+Either run 4 → 3, or run 3's client half, then 4, then 3's aggregator half. Do not write
+`_parse_bucket_record`'s `rsched` branch against a `decode_reset` you have not read.
 
-- [ ] **Step 1: Write the failing test**
+**The seam is *before* admission, not in `_commit_initial`.** This is the one correction that
+matters and the compressed version of this task had it wrong. It said "in `lease.py`'s
+slow-path refill, before computing `refill_amounts`" — that is `Lease._commit_initial()`
+(`lease.py:376-393`), which runs **after** `RateLimiter._admit_limit()` has already called
+`try_consume()` and decided whether to admit. A reset applied there restores the balance in
+DynamoDB but not in the decision: a request arriving at 00:00:01 against a quota burnt at
+23:59 would still raise `RateLimitExceeded`, and only the *next* request would see the
+restored tokens. The reset has to land on `state.tokens_milli` between the capture of
+`_original_tokens_milli` and the call to `_admit_limit` — `limiter.py:1734-1737` and
+`limiter.py:1517-1521`.
+
+**`lease.py` needs no reset code at all, and adding some would double-apply it.**
+`_commit_initial` already computes
 
 ```python
-class TestResetMaterialisation:
-    def test_reset_sets_tokens_to_the_effective_capacity(self):
-        """Burn the quota, cross midnight, get the whole thing back at once."""
-        ...  # state with tk=0, cp=10_000_000, rf just before midnight; now just after
-        assert new_tokens_milli == 10_000_000
-
-    def test_reset_uses_the_shards_share(self):
-        """Resetting to the undivided capacity multiplies the quota by shard_count."""
-        ...  # shard_count=4, cp=10_000_000
-        assert new_tokens_milli == 2_500_000
-
-    def test_reset_respects_a_concurrent_param_schedule(self):
-        """A reset landing inside a 0.5x window restores half — the current limit,
-        not the base. This is the intended reading; see 9."""
-        ...
-        assert new_tokens_milli == 5_000_000
-
-    def test_reset_does_not_touch_tc(self):
-        """The total-consumed counter must stay monotonic (design-validation.md)."""
-        ...
-        assert "tc" not in _written_attributes()
-
-    def test_no_edge_means_an_ordinary_refill(self):
-        ...
-
-
-class TestAggregatorReset:
-    def test_expresses_the_reset_as_a_negative_or_positive_add(self):
-        """ADD (eff_cp - tk_observed) — the same delta shape as the clamp."""
-        ...
-        assert values[":rd_rpd"] == 10_000_000 - 2_000_000
+refill_amounts[name] = entry.state.tokens_milli - entry._original_tokens_milli + consumed_milli
 ```
 
-- [ ] **Step 2: Run and watch them fail**
+and `build_composite_normal` turns that into `ADD tk (refill - consumed)`. Put
+`state.tokens_milli = effective_capacity` before admission and the algebra falls out exactly:
+after `try_consume` the state holds `eff_cp - consumed`, `_original_tokens_milli` is still the
+**stored** `tk`, so `refill_amounts = eff_cp - stored_tk` and the ADD delta is
+`eff_cp - stored_tk - consumed`. That is the identical `ADD (eff_cp - tk_observed)` shape the
+aggregator uses — the two writers agree by construction rather than by coincidence.
+`lease.py` is touched in this task for one unrelated line: the `vu` fix below.
 
-- [ ] **Step 3: Implement.** In `lease.py`'s slow-path refill, before computing `refill_amounts`: if `prev_reset_edge(limit.reset_schedule, now_ms)` is not `None` and is `> entry._original_rf_ms`, set the target token count to `state.effective_capacity_milli(now_ms)` instead of the incremental refill result. Because `refill_amounts` is a *delta* (`lease.py:384`), this flows through the existing `ADD` untouched — do not add a separate write.
+**`tc` is untouched by construction — and there is a test for it.** `build_composite_normal`
+writes `tc_delta = c`, the consumption, from a code path the reset never reaches
+(`repository.py:2234`). The counter therefore stays monotonic
+(`.claude/rules/design-validation.md`), which is the whole reason the native reset is safer
+than parked #471's `reset_bucket()`, which deleted the item and cleared `tc` with it.
 
-In `processor.py`'s `try_refill_bucket`, apply the same check per limit and use `eff_cp - info.tk_milli` as the delta. It is safe as an `ADD` for the identical commutativity reason the clamp is.
+**`wcu` never resets.** The reserved write-capacity limit is the per-partition DynamoDB write
+ceiling, not a user limit: `try_refill_bucket` already exempts it from `effective_params`
+(`processor.py:684-692`) and `_deserialize_composite_bucket` gives it `shard_count=1`. An
+item-level `rsched` applies to every limit on the item by default, exactly as `sched` does, so
+without an explicit exemption a user's daily reset would also bypass the aggregator's
+consumption threshold for `wcu` and write a delta on every batch. On the client side `wcu`
+rides as a carrier built by `Limit._carrier()` (`limiter.py:1456`), which never sets
+`reset_schedule`, so it is exempt for free — assert that rather than assume it.
 
-- [ ] **Step 4: Run, regenerate sync, commit** — `✨ feat(limiter): reset the balance at a calendar edge`
+**A brand-new bucket never resets.** `BucketState.from_limit` starts it at its full share, so
+there is nothing to restore and no stored `rf` to compare an edge against. Skip when
+`is_new`.
+
+**`vu` must include reset edges, or a reset-only limit never fires on the fast path.** Two
+call sites compute the materialisation stamp and both pass the parameter tuple alone:
+
+- `processor.py:621` `_item_next_boundary` — `next_boundary(s, now_ms=now_ms)` over the
+  param schedules only.
+- `lease.py`, the `vu` computation core plan Task 12 adds —
+  `next_boundary(entry.limit.schedule, now_ms=now_ms)`.
+
+For a limit carrying `reset_schedule` and **no** `schedule`, both return `None`, `vu` is
+omitted, the speculative condition never fails, the slow path never runs, and the reset fires
+only when something unrelated forces a materialising pass. The daily-quota case — the entire
+motivation for §3.6 — is exactly that shape. Both sites must pass the reset tuple as
+`next_boundary`'s second positional argument. `now_ms` stays keyword (#500).
+
+**The config cache does not follow `Repository._now_ms()`.** The Global Constraints name this
+task specifically. `config_cache.py:99` and `:103` use `time.time()`, so a test that jumps the
+injected clock across midnight gets the **pre-jump** `Limit` back — including its
+`reset_schedule` — for 60 real seconds. Every test below that moves the clock calls
+`await repo.invalidate_config_cache()` immediately afterwards, and says so in a comment. The
+alternative, `Repository.open(config_cache_ttl=0)`, is fine too; what is not fine is assuming
+the seam covers it.
+
+**The test module is `tests/unit/test_processor.py`.** The core plan calls it
+`test_aggregator_processor.py` throughout; that file does not exist and never did (core plan
+Task 14 ledger entry).
+
+- [ ] **Step 1: Write the failing client-side test**
+
+In `tests/unit/test_limiter.py`. The first class tests the decision in isolation; the second
+drives it through a real `acquire()` against moto, because the isolated one cannot show that
+the reset lands *before* admission.
+
+```python
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from zae_limiter.models import BucketState, Limit
+from zae_limiter.schedule import ScheduleEntry
+
+NY = ZoneInfo("America/New_York")
+
+
+def _ny(s: str) -> int:
+    """An ISO local time in America/New_York, as epoch milliseconds."""
+    return int(datetime.fromisoformat(s).replace(tzinfo=NY).timestamp() * 1000)
+
+
+DAILY = (ScheduleEntry.reset(cron="0 0 * * *", tz="America/New_York"),)
+RPD = Limit.per_day("rpd", 10_000).with_reset_schedule(DAILY)
+
+
+class TestApplyResetEdge:
+    """The reset decision, isolated from DynamoDB (§3.6).
+
+    `_apply_reset_edge` answers one question — "has a rising reset edge been
+    crossed since this item was last refilled?" — and, when it has, sets the
+    balance to the shard's share of the capacity in force *at that instant*.
+    """
+
+    def _state(self, **kwargs) -> BucketState:
+        base = dict(
+            entity_id="user-1",
+            resource="gpt-4",
+            limit_name="rpd",
+            tokens_milli=0,
+            last_refill_ms=_ny("2026-09-15 18:00"),
+            capacity_milli=10_000_000,
+            refill_amount_milli=10_000_000,
+            refill_period_ms=86_400_000,
+        )
+        base.update(kwargs)
+        return BucketState(**base)
+
+    def test_sets_tokens_to_the_effective_capacity(self):
+        state = self._state()
+        assert RateLimiter._apply_reset_edge(RPD, state, _ny("2026-09-16 09:00")) is True
+        assert state.tokens_milli == 10_000_000
+
+    def test_uses_the_shards_share(self):
+        """Resetting every shard to the undivided capacity multiplies the
+        entity's quota by shard_count (§3.6)."""
+        state = self._state(shard_count=4)
+        assert RateLimiter._apply_reset_edge(RPD, state, _ny("2026-09-16 09:00")) is True
+        assert state.tokens_milli == 2_500_000
+
+    def test_respects_a_concurrent_param_schedule(self):
+        """A reset landing inside a 0.5x window restores half — the limit in
+        force, not the base. Design §9 records the other reading and why it
+        was not chosen."""
+        limit = RPD.with_schedule(
+            (ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", scale=0.5),)
+        )
+        state = self._state(sched=limit.schedule)
+        assert RateLimiter._apply_reset_edge(limit, state, _ny("2026-09-16 03:00")) is True
+        assert state.tokens_milli == 5_000_000
+
+    def test_no_edge_since_the_last_refill_changes_nothing(self):
+        state = self._state(tokens_milli=42, last_refill_ms=_ny("2026-09-16 01:00"))
+        assert RateLimiter._apply_reset_edge(RPD, state, _ny("2026-09-16 09:00")) is False
+        assert state.tokens_milli == 42
+
+    def test_an_edge_exactly_at_the_last_refill_does_not_re_fire(self):
+        """`> rf`, not `>= rf`. The pass that applies a reset stamps `rf` at or
+        after the edge, so `>=` would re-apply it on every subsequent request
+        and refund everything spent since — an unbounded quota, not a daily one."""
+        state = self._state(tokens_milli=42, last_refill_ms=_ny("2026-09-16 00:00"))
+        assert RateLimiter._apply_reset_edge(RPD, state, _ny("2026-09-16 09:00")) is False
+        assert state.tokens_milli == 42
+
+    def test_two_missed_edges_apply_once(self):
+        """Setting the balance to capacity is idempotent, so one edge is enough
+        and `prev_reset_edge` reporting only the latest is sufficient."""
+        state = self._state(last_refill_ms=_ny("2026-09-14 18:00"))
+        assert RateLimiter._apply_reset_edge(RPD, state, _ny("2026-09-16 09:00")) is True
+        assert state.tokens_milli == 10_000_000
+
+    def test_a_limit_without_a_reset_schedule_is_untouched(self):
+        state = self._state(tokens_milli=7)
+        plain = Limit.per_day("rpd", 10_000)
+        assert RateLimiter._apply_reset_edge(plain, state, _ny("2026-09-16 09:00")) is False
+        assert state.tokens_milli == 7
+
+    def test_a_never_matching_expression_resets_nothing(self):
+        """February 30th. `prev_reset_edge` returns None and nothing happens —
+        the same contract Task 2 pins from the other side."""
+        limit = Limit.per_day("rpd", 10_000).with_reset_schedule(
+            (ScheduleEntry.reset(cron="0 0 30 2 *", tz="America/New_York"),)
+        )
+        state = self._state(tokens_milli=7)
+        assert RateLimiter._apply_reset_edge(limit, state, _ny("2026-09-16 09:00")) is False
+        assert state.tokens_milli == 7
+
+    def test_debt_is_cleared_rather_than_carried(self):
+        """A reset *sets* the balance; it does not add to it. An entity that
+        overdrew via adjust() starts the new day whole. This is what makes the
+        aggregator's `ADD (eff_cp - tk_observed)` the same operation."""
+        state = self._state(tokens_milli=-3_000_000)
+        assert RateLimiter._apply_reset_edge(RPD, state, _ny("2026-09-16 09:00")) is True
+        assert state.tokens_milli == 10_000_000
+
+
+class TestResetMaterialisationThroughAcquire:
+    """The reset must gate admission, not just the write that follows it."""
+
+    @pytest.fixture
+    def slow_path_limiter(self, limiter):
+        """The same moto repository, forced onto the slow path.
+
+        The speculative fast path is a conditional UpdateItem that never
+        evaluates a schedule (§2.1); in production it reaches the slow path
+        because `vu` expires at the reset edge (core plan Tasks 11-12). Here we
+        go straight there, so this task can be tested before Task 11 lands.
+        """
+        return RateLimiter(repository=limiter._repository, speculative_writes=False)
+
+    async def test_the_quota_comes_back_in_one_lump(self, limiter, slow_path_limiter):
+        """Burn 10,000 at 23:00, cross midnight, spend 9,000 at 00:30.
+
+        Without the reset the second acquire raises: 90 minutes of a
+        10,000/day drip is 625 tokens, nowhere near 9,000. That is what makes
+        this test discriminating rather than a restatement of the balance.
+        """
+        repo = limiter._repository
+        await repo.set_limits("reset-1", [RPD], resource="gpt-4")
+
+        repo._now_ms = lambda: _ny("2026-09-15 23:00")
+        async with slow_path_limiter.acquire("reset-1", "gpt-4", consume={"rpd": 10_000}):
+            pass
+
+        repo._now_ms = lambda: _ny("2026-09-16 00:30")
+        # The clock seam does not reach config_cache.py (:99, :103 still call
+        # time.time()), so without this the resolved Limit — and its
+        # reset_schedule — is the one cached before the jump.
+        await repo.invalidate_config_cache()
+
+        async with slow_path_limiter.acquire("reset-1", "gpt-4", consume={"rpd": 9_000}):
+            pass
+
+        bucket = next(
+            b
+            for b in await repo.get_buckets("reset-1", resource="gpt-4")
+            if b.limit_name == "rpd"
+        )
+        assert bucket.tokens_milli == 1_000_000
+
+    async def test_the_reset_never_touches_tc(self, limiter, slow_path_limiter):
+        """The total-consumed counter must stay monotonic across the edge.
+
+        19,000 tokens were consumed across the two calls and `tc` must say so.
+        An implementation that expressed the reset by rewriting the item, or by
+        crediting `tc`, fails here — which is the failure mode #471's
+        `reset_bucket()` had and `.claude/rules/design-validation.md` exists for.
+        """
+        repo = limiter._repository
+        await repo.set_limits("reset-2", [RPD], resource="gpt-4")
+
+        repo._now_ms = lambda: _ny("2026-09-15 23:00")
+        async with slow_path_limiter.acquire("reset-2", "gpt-4", consume={"rpd": 10_000}):
+            pass
+
+        repo._now_ms = lambda: _ny("2026-09-16 00:30")
+        await repo.invalidate_config_cache()
+        async with slow_path_limiter.acquire("reset-2", "gpt-4", consume={"rpd": 9_000}):
+            pass
+
+        bucket = next(
+            b
+            for b in await repo.get_buckets("reset-2", resource="gpt-4")
+            if b.limit_name == "rpd"
+        )
+        assert bucket.total_consumed_milli == 19_000_000
+
+    async def test_an_idle_bucket_resets_on_wake_not_at_the_edge(
+        self, limiter, slow_path_limiter
+    ):
+        """Idle 18:00 -> 09:00 the next morning: the missed midnight is found
+        by the backwards scan and applied by the 09:00 pass (§3.6, §9)."""
+        repo = limiter._repository
+        await repo.set_limits("reset-3", [RPD], resource="gpt-4")
+
+        repo._now_ms = lambda: _ny("2026-09-15 18:00")
+        async with slow_path_limiter.acquire("reset-3", "gpt-4", consume={"rpd": 10_000}):
+            pass
+
+        repo._now_ms = lambda: _ny("2026-09-16 09:00")
+        await repo.invalidate_config_cache()
+        async with slow_path_limiter.acquire("reset-3", "gpt-4", consume={"rpd": 10_000}):
+            pass
+
+        bucket = next(
+            b
+            for b in await repo.get_buckets("reset-3", resource="gpt-4")
+            if b.limit_name == "rpd"
+        )
+        assert bucket.tokens_milli == 0
+
+    async def test_a_parent_only_cascade_acquire_also_resets(self, limiter, slow_path_limiter):
+        """`_try_parent_only_acquire` builds its own LeaseEntry list
+        (limiter.py:1509-1544) and is a second, easily-missed seam.
+
+        Without the reset there, a cascading child whose own bucket is fine
+        but whose parent crossed the edge is rejected on the parent.
+        """
+        repo = limiter._repository
+        await slow_path_limiter.create_entity("org-1")
+        await slow_path_limiter.create_entity("key-1", parent_id="org-1", cascade=True)
+        await repo.set_limits("org-1", [RPD], resource="gpt-4")
+        await repo.set_limits("key-1", [RPD], resource="gpt-4")
+
+        repo._now_ms = lambda: _ny("2026-09-15 23:00")
+        async with slow_path_limiter.acquire("key-1", "gpt-4", consume={"rpd": 10_000}):
+            pass
+
+        repo._now_ms = lambda: _ny("2026-09-16 00:30")
+        await repo.invalidate_config_cache()
+        async with slow_path_limiter.acquire("key-1", "gpt-4", consume={"rpd": 9_000}):
+            pass
+
+        parent = next(
+            b for b in await repo.get_buckets("org-1", resource="gpt-4") if b.limit_name == "rpd"
+        )
+        assert parent.tokens_milli == 1_000_000
+
+    async def test_vu_is_stamped_for_a_reset_only_limit(self, limiter, slow_path_limiter):
+        """A limit with a reset schedule and no parameter schedule still needs
+        `vu`, or the fast path never yields and the reset never fires.
+
+        This is the whole daily-quota shape, and the compressed version of this
+        task did not cover it.
+        """
+        repo = limiter._repository
+        await repo.set_limits("reset-4", [RPD], resource="gpt-4")
+
+        repo._now_ms = lambda: _ny("2026-09-15 23:00")
+        async with slow_path_limiter.acquire("reset-4", "gpt-4", consume={"rpd": 1}):
+            pass
+
+        item = await _raw_bucket_item(repo, "reset-4", "gpt-4", shard=0)
+        assert int(item[schema.BUCKET_FIELD_VU]["N"]) == _ny("2026-09-16 00:00")
+```
+
+`_raw_bucket_item` is the helper core plan Task 12 adds to the test module; if you are running
+this task first, copy it from there verbatim.
+
+- [ ] **Step 2: Run the client tests and watch them fail**
+
+```bash
+uv run pytest tests/unit/test_limiter.py -k "ApplyResetEdge or ResetMaterialisationThroughAcquire" -v
+```
+
+Expected: every `TestApplyResetEdge` case fails with
+`AttributeError: type object 'RateLimiter' has no attribute '_apply_reset_edge'`, and the
+`ThroughAcquire` cases fail with `zae_limiter.exceptions.RateLimitExceeded` — the request the
+reset was supposed to admit. `test_vu_is_stamped_for_a_reset_only_limit` fails with
+`KeyError: 'vu'`.
+
+- [ ] **Step 3: Implement the client half**
+
+Add the helper beside `_admit_limit` in `limiter.py` (:1384):
+
+```python
+    @staticmethod
+    def _apply_reset_edge(limit: Limit, state: BucketState, now_ms: int) -> bool:
+        """Restore the balance if a calendar reset edge was crossed (§3.6).
+
+        Detection is **backwards**: "was there a rising edge since this item was
+        last refilled?", not "is a reset due?". That makes idle buckets correct
+        for free — a bucket idle from 18:00 to 09:00 has its `vu` sitting at
+        midnight, and the 09:00 pass sees the missed edge and applies it then.
+        Two missed midnights apply once, because setting the balance to capacity
+        is idempotent.
+
+        The comparison is strictly `>`: the pass that applies a reset stamps
+        `rf` at or after the edge, so `>=` would re-fire on every later request
+        and refund everything spent since.
+
+        The target is the **shard's share** of the capacity *in force at
+        `now_ms`* — `effective_capacity_milli` already applies the parameter
+        schedule and then divides by `shard_count`. Resetting every shard to the
+        undivided capacity would multiply the entity's quota by `shard_count`.
+
+        Must be called **before** `_admit_limit`, so the restored balance gates
+        the request that crossed the edge rather than the one after it. Mutates
+        `state` in place and returns whether it did; `_original_tokens_milli`
+        and `_original_rf_ms` must already have been captured, because they are
+        the *stored* values the ADD delta and the `rf` lock are built from.
+        """
+        if not limit.reset_schedule:
+            return False
+        edge = prev_reset_edge(limit.reset_schedule, now_ms)
+        if edge is None or edge <= state.last_refill_ms:
+            return False
+        state.tokens_milli = state.effective_capacity_milli(now_ms)
+        return True
+```
+
+Call it at both slow-path entry-building sites, immediately after the originals are captured
+and before `_admit_limit`. In `_do_acquire` (:1734):
+
+```python
+                # Capture original values before try_consume modifies them (ADR-115)
+                original_tk = state.tokens_milli
+                original_rf = state.last_refill_ms
+
+                # A calendar reset edge crossed since this item was last
+                # refilled restores the balance *before* admission, so a
+                # request arriving just after midnight is gated against the
+                # restored quota rather than the burnt one (§3.6). A brand-new
+                # bucket starts at its full share and has no stored `rf` to
+                # compare an edge against.
+                if not is_new:
+                    self._apply_reset_edge(limit, state, now_ms)
+
+                status, consumed = self._admit_limit(eid, resource, limit, state, consume, now_ms)
+```
+
+and in `_try_parent_only_acquire` (:1517), where every bucket exists by construction (the
+method returns `None` if one is missing), so no `is_new` guard is needed:
+
+```python
+            original_tk = existing.tokens_milli
+            original_rf = existing.last_refill_ms
+
+            self._apply_reset_edge(limit, existing, now_ms)
+
+            status, consumed = self._admit_limit(
+                parent_id, resource, limit, existing, consume, now_ms
+            )
+```
+
+Then fix `vu` in `lease.py`, in the computation core plan Task 12 adds — pass the reset tuple
+as the second positional argument, keeping `now_ms` keyword-only (#500):
+
+```python
+                boundaries = [
+                    b
+                    for entry in group_entries
+                    if (
+                        b := next_boundary(
+                            entry.limit.schedule, entry.limit.reset_schedule, now_ms=now_ms
+                        )
+                    )
+                    is not None
+                ]
+                vu = min(boundaries) if boundaries else None
+```
+
+`_wcu_carrier` needs no change: `Limit._carrier()` (:1456) never sets `reset_schedule`, so the
+guard's first line exempts it. Add an assertion for that rather than relying on it silently —
+it goes in the aggregator class below, where the same exemption is *not* free.
+
+- [ ] **Step 4: Run the client tests and watch them pass**
+
+```bash
+uv run pytest tests/unit/test_limiter.py -k "ApplyResetEdge or ResetMaterialisationThroughAcquire" -v
+```
+
+- [ ] **Step 5: Write the failing aggregator test**
+
+In `tests/unit/test_processor.py`, reusing the `_sched_state` / `_sched_record` helpers core
+plan Task 14 already established (:2325, :2351).
+
+```python
+DAILY_RESET = (ScheduleEntry.reset(cron="0 0 * * *", tz="America/New_York"),)
+DAILY_RESET_COMPACT = "m0h0"
+
+WED_0030 = int(datetime(2026, 9, 16, 0, 30, tzinfo=NY).timestamp() * 1000)
+TUE_2300 = int(datetime(2026, 9, 15, 23, 0, tzinfo=NY).timestamp() * 1000)
+
+
+def _quota_state(**kwargs) -> BucketRefillState:
+    """A 10,000/day quota bucket, 2,000 tokens left, last refilled at 23:00.
+
+    `tc_delta=0` is load-bearing: at the base rate 90 minutes of a 10,000/day
+    drip is 625 millitokens x 1000 = 625_000, and the consumption threshold in
+    `try_refill_bucket` suppresses any positive delta once projected tokens
+    cover the estimate. So an unreset bucket writes *nothing*, and a reset one
+    must write anyway.
+    """
+    base = dict(
+        namespace_id="ns123",
+        entity_id="user-1",
+        resource="gpt-4",
+        rf_ms=TUE_2300,
+        limits={
+            "rpd": LimitRefillInfo(
+                tc_delta=0,
+                tk_milli=2_000_000,
+                cp_milli=10_000_000,
+                ra_milli=10_000_000,
+                rp_ms=86_400_000,
+            )
+        },
+    )
+    limit_reset = kwargs.pop("limit_reset", None)
+    base.update(kwargs)
+    state = BucketRefillState(**base)
+    if limit_reset is not None:
+        for name, reset in limit_reset.items():
+            state.limits[name].reset_sched = reset
+    return state
+
+
+class TestAggregatorAppliesResets:
+    """The aggregator expresses a reset as the same delta the client writes."""
+
+    def test_expresses_the_reset_as_an_add_to_the_effective_capacity(self) -> None:
+        table = MagicMock()
+        state = _quota_state(reset_sched=DAILY_RESET)
+        assert try_refill_bucket(table, state, now_ms=WED_0030) is True
+        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+        assert values[":rd_rpd"] == 10_000_000 - 2_000_000
+
+    def test_the_same_bucket_without_a_reset_writes_nothing(self) -> None:
+        """Discriminates the test above. 90 minutes of drip is 625_000
+        millitokens, which already covers a tc_delta of 0, so the consumption
+        threshold suppresses it."""
+        table = MagicMock()
+        assert try_refill_bucket(table, _quota_state(), now_ms=WED_0030) is False
+        table.update_item.assert_not_called()
+
+    def test_the_reset_bypasses_the_consumption_threshold(self) -> None:
+        """Explicitly pinned, because the threshold is a `continue` on the
+        positive branch and a reset is usually positive. A hot bucket has the
+        largest tc_delta and is exactly where the aggregator, not the client,
+        is the refiller — gating the reset behind the threshold would turn it
+        off on the buckets it matters most for, the same defect §3.3 records
+        for the negative clamp."""
+        table = MagicMock()
+        state = _quota_state(reset_sched=DAILY_RESET)
+        state.limits["rpd"].tc_delta = 9_000_000  # far above anything refill yields
+        assert try_refill_bucket(table, state, now_ms=WED_0030) is True
+
+    def test_no_edge_since_rf_writes_nothing(self) -> None:
+        """rf is already past midnight, so the edge is not new."""
+        table = MagicMock()
+        state = _quota_state(reset_sched=DAILY_RESET, rf_ms=WED_0030 - 60_000)
+        assert try_refill_bucket(table, state, now_ms=WED_0030) is False
+
+    def test_the_reset_is_per_shard(self) -> None:
+        table = MagicMock()
+        state = _quota_state(reset_sched=DAILY_RESET, shard_count=4)
+        assert try_refill_bucket(table, state, now_ms=WED_0030) is True
+        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+        assert values[":rd_rpd"] == (10_000_000 // 4) - 2_000_000
+
+    def test_the_reset_respects_a_concurrent_param_schedule(self) -> None:
+        """Compute effective params first, then set the balance to the result."""
+        table = MagicMock()
+        night = (ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", scale=0.5),)
+        state = _quota_state(reset_sched=DAILY_RESET, sched=night)
+        assert try_refill_bucket(table, state, now_ms=WED_0030) is True
+        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+        assert values[":rd_rpd"] == 5_000_000 - 2_000_000
+
+    def test_the_reset_never_writes_tc(self) -> None:
+        """`try_refill_bucket` writes only `tk` deltas and `rf`/`vu`. Pinned
+        because a reset is the one refill big enough to tempt an implementer
+        into 'fixing up' the counter."""
+        table = MagicMock()
+        assert try_refill_bucket(table, _quota_state(reset_sched=DAILY_RESET), WED_0030) is True
+        expr = table.update_item.call_args.kwargs["UpdateExpression"]
+        assert "_tc" not in expr
+
+    def test_wcu_is_exempt_from_the_item_level_reset(self) -> None:
+        """`rsched` is item-level and applies to every limit by default, but
+        `wcu` is the per-partition write ceiling, not a user limit — the same
+        exemption `effective_params` already has (processor.py:684-692).
+
+        Discriminating: at the base rate this bucket's positive delta is
+        suppressed by the threshold, so anything written here came from the
+        reset.
+        """
+        table = MagicMock()
+        state = _quota_state(
+            reset_sched=DAILY_RESET,
+            limits={
+                "wcu": LimitRefillInfo(
+                    tc_delta=0,
+                    tk_milli=0,
+                    cp_milli=1_000_000,
+                    ra_milli=1_000_000,
+                    rp_ms=60_000,
+                )
+            },
+        )
+        assert try_refill_bucket(table, state, now_ms=WED_0030) is False
+
+    def test_a_per_limit_reset_override_beats_the_item_default(self) -> None:
+        """`b_{name}_rsched` mirrors `b_{name}_sched` (Task 4). The item-level
+        default is Sunday-only and does not fire; the per-limit override is
+        daily and does."""
+        table = MagicMock()
+        state = _quota_state(
+            reset_sched=(ScheduleEntry.reset(cron="0 0 * * SUN", tz="America/New_York"),),
+            limit_reset={"rpd": DAILY_RESET},
+        )
+        assert try_refill_bucket(table, state, now_ms=WED_0030) is True
+
+    def test_an_undecodable_schedule_still_skips_the_whole_bucket(self) -> None:
+        """`sched_error` short-circuits before any reset logic runs. Refilling
+        — or resetting — at the base would silently undo a scale-down (§6)."""
+        table = MagicMock()
+        state = _quota_state(reset_sched=DAILY_RESET, sched_error="rsched 'zzz': bad")
+        assert try_refill_bucket(table, state, now_ms=WED_0030) is False
+
+
+class TestResetSchedIsCarriedFromTheStreamImage:
+    """`rsched` / `b_{name}_rsched` reach the refill state (needs Task 4)."""
+
+    def test_item_level_rsched_is_decoded(self) -> None:
+        record = _sched_record(
+            limits={"rpd": {"tk": 2_000_000, "cp": 10_000_000, "ra": 10_000_000, "rp": 86_400_000}},
+            rf_ms=TUE_2300,
+            rsched=DAILY_RESET_COMPACT,
+            sched_tz="America/New_York",
+        )
+        parsed = _parse_bucket_record(record)
+        assert parsed is not None
+        assert parsed.reset_sched == decode_reset(DAILY_RESET_COMPACT, "America/New_York")
+
+    def test_an_undecodable_rsched_is_reported_not_raised(self) -> None:
+        """Same rule as `sched`: raising inside the stream handler aborts the
+        whole batch, snapshots included, and the record retries until the
+        stream stalls (core plan Task 14)."""
+        record = _sched_record(
+            limits={"rpd": {"tk": 0, "cp": 10_000_000, "ra": 10_000_000, "rp": 86_400_000}},
+            rsched="not-a-schedule",
+        )
+        parsed = _parse_bucket_record(record)
+        assert parsed is not None
+        assert parsed.sched_error is not None
+        assert parsed.reset_sched == ()
+```
+
+`_sched_record` needs `rsched` and `limit_rsched` keyword arguments, mirroring its existing
+`sched` / `limit_sched` pair; add them in the same commit.
+
+- [ ] **Step 6: Run the aggregator tests and watch them fail**
+
+```bash
+uv run pytest tests/unit/test_processor.py -k "AggregatorAppliesResets or ResetSchedIsCarried" -v
+```
+
+Expected: `TypeError: LimitRefillInfo.__init__() got an unexpected keyword argument
+'reset_sched'` from the state helper, and
+`TypeError: _sched_record() got an unexpected keyword argument 'rsched'` from the parse class.
+
+- [ ] **Step 7: Implement the aggregator half**
+
+Add `reset_sched: tuple[ScheduleEntry, ...] = ()` to `ParsedBucketLimit` (:307),
+`ParsedBucketRecord` (:319), `LimitRefillInfo` (:109) and `BucketRefillState` (:123), populate
+them in `_parse_bucket_record` through `_decode_schedule`'s sibling — reuse `_decode_schedule`'s
+`(value, error)` shape so an undecodable `rsched` folds into the same `sched_error` channel:
+
+```python
+def _decode_reset_schedule(
+    compact: str | None, tz: str
+) -> tuple[tuple[ScheduleEntry, ...], str | None]:
+    """Decode a stored compact reset schedule into ``(schedule, error)``.
+
+    Reported rather than raised, for the identical reason ``_decode_schedule``
+    is: ``aggregate_bucket_states`` runs outside any try block
+    (``processor.py:216``), so a raise here is a poison pill for the whole
+    batch. §6 puts the decision about an unreadable schedule on the client,
+    where the operator's ``on_unavailable`` setting lives.
+    """
+    if not compact:
+        return (), None
+    try:
+        return decode_reset(compact, tz), None
+    except ValueError as e:
+        return (), f"{compact!r} ({tz}): {e}"
+```
+
+In `_item_next_boundary` (:621), fold the reset tuples into the candidate set so a reset-only
+item still gets a `vu`:
+
+```python
+def _item_next_boundary(state: BucketRefillState, now_ms: int) -> int | None:
+    pairs = {(state.sched, state.reset_sched)} | {
+        (info.sched or state.sched, info.reset_sched or state.reset_sched)
+        for info in state.limits.values()
+    }
+    boundaries = [
+        b
+        for sched, reset in pairs
+        if (sched or reset) and (b := next_boundary(sched, reset, now_ms=now_ms)) is not None
+    ]
+    return min(boundaries) if boundaries else None
+```
+
+In `try_refill_bucket` (:638), inside the per-limit loop, after the effective params are
+computed and before `refill_bucket` runs:
+
+```python
+        reset_sched = () if limit_name == WCU_LIMIT_NAME else (
+            info.reset_sched or state.reset_sched
+        )
+        reset_edge = prev_reset_edge(reset_sched, now_ms) if reset_sched else None
+        if reset_edge is not None and reset_edge > state.rf_ms:
+            # A reset is "set the balance to the effective capacity", and as an
+            # ADD that is `eff_cp - tk_observed` — the identical delta shape the
+            # unconditional clamp uses, and safe for the identical commutativity
+            # reason: it removes exactly the surplus (or adds exactly the
+            # shortfall) while concurrent consumption subtracts independently.
+            # It bypasses the consumption threshold below for the same reason
+            # the negative clamp does: a hot bucket is where the aggregator is
+            # the only refiller, so gating the reset there turns it off exactly
+            # where it matters (§3.3, §3.6).
+            refill_delta = effective_cp - info.tk_milli
+            if refill_delta != 0:
+                any_needs_refill = True
+                add_parts.append(f"{bucket_attr(limit_name, BUCKET_FIELD_TK)} :rd_{limit_name}")
+                expr_values[f":rd_{limit_name}"] = refill_delta
+            continue
+```
+
+`wcu` is exempted by the `reset_sched` expression above; `tc` is never in this expression at
+all, so it stays monotonic for free.
+
+- [ ] **Step 8: Run the aggregator tests and watch them pass**
+
+```bash
+uv run pytest tests/unit/test_processor.py -k "AggregatorAppliesResets or ResetSchedIsCarried" -v
+uv run pytest tests/unit/ -q
+uv run pytest tests/unit/ -m gevent -n 0 -q
+```
+
+Never add `-o "addopts="` to the `tests/unit/` runs — it un-skips the gevent tests into the
+same process as the asyncio ones and hangs with no output.
+
+- [ ] **Step 9: Regenerate sync, lint, type check, commit**
+
+`limiter.py` and `lease.py` are sync-codegen sources; `processor.py` is not.
+
+```bash
+hatch run generate-sync
+uv run ruff check --fix .
+uv run ruff format src/zae_limiter src/zae_limiter_aggregator tests/unit
+uv run mypy
+git add -A
+git commit -m "$(cat <<'EOF'
+✨ feat(limiter): reset the balance at a calendar edge
+
+A crossed reset edge sets the balance to the shard's share of the
+capacity in force at that instant, *before* admission — so the request
+that crosses midnight is gated against the restored quota, not the one
+after it. Detection is backwards (`prev_reset_edge > rf`), which makes
+an idle bucket correct for free and two missed edges idempotent.
+
+lease.py needs no reset code: its existing refill delta
+(tokens - original + consumed) already resolves to `eff_cp - stored_tk`,
+the same ADD shape the aggregator writes. `tc` is never in that
+expression, so the counter stays monotonic — the reason this is safer
+than the reset_bucket() #471 proposed.
+
+`vu` now folds the reset tuple into next_boundary on both the client and
+the aggregator: a limit with a reset schedule and no parameter schedule
+would otherwise never expire `vu`, and the daily quota is exactly that
+shape.
+
+Refs #222
+EOF
+)"
+```
 
 ---
 
 ### Task 4: Reset encoding
 
-> **Expand before picking this up.** The steps below carry real assertions but compress
-> the TDD cycle, and their fixture setup depends on `schedule.py`, which does not exist
-> yet. Write the full failing-test/implement/pass cycle against the real signatures once
-> the core plan has landed — writing it against invented ones now is the mistake this
-> plan's own review calls out.
+**Files:**
+- Modify: `src/zae_limiter/schedule.py` (`__all__` :31, `_encode_cron` :438, `_tokenise` :494, `_cron_from_tokens` :514, beside `encode` :470 / `decode` :518), `src/zae_limiter/schema.py` (`BUCKET_FIELD_SCHED` :81, `LIMIT_FIELD_SCHED` :114), `src/zae_limiter/models.py` (`Limit.__post_init__` :255, `to_dict` :403, `from_dict` :419), `src/zae_limiter/repository.py` (`_serialize_composite_limits` :4971, `_deserialize_limits` :5010, `_build_bucket_param_update` :3256, `build_composite_create` :2079)
+- Test: `tests/unit/test_schedule_encoding.py`, `tests/unit/test_models.py`, `tests/unit/test_repository.py`
 
-**Files:** Modify `src/zae_limiter/schedule.py`, `src/zae_limiter/repository.py` · Test `tests/unit/test_schedule_encoding.py`
+**Interfaces:**
+- Consumes: `ScheduleEntry.reset(cron, tz)` (**Task 1** — it does not exist in merged
+  `schedule.py`; `__post_init__` there requires exactly one modifier, which a reset entry has
+  none of). The merged field encoder (`_encode_cron`, `_encode_field`, `_tokenise`,
+  `_cron_from_tokens`) is reused unchanged.
+- Produces: `encode_reset(sched) -> tuple[str, str | None]`, `decode_reset(compact, tz) ->
+  tuple[ScheduleEntry, ...]`; `schema.BUCKET_FIELD_RSCHED`, `schema.LIMIT_FIELD_RSCHED`;
+  `l_{name}_rsched` on config items and `rsched` / `b_{name}_rsched` on bucket items
 
-Reset entries encode into their own `rsched` / `b_{name}_rsched` attributes with the same grammar minus the modifier token — `0 0 * * *` is `m0h0`, four bytes. A separate attribute rather than a tag inside `sched` mirrors the separate tuple and keeps the decoder from partitioning one list into two meanings.
+Reset entries encode into their own attributes with the same grammar **minus the modifier
+tokens** — `0 0 * * *` is `m0h0`, four bytes. A separate attribute rather than a tag inside
+`sched` mirrors the separate tuple and keeps the decoder from partitioning one list into two
+meanings (§4.1).
 
-- [ ] **Step 1: Write the failing test**
+**No version marker.** Design §4.1 promises one; core plan Task 5 shipped without it and said
+so in its ledger entry. Task 10 owns that decision and takes it — see Task 10's first ruling.
+Do **not** add a marker here on the strength of §4.1's sentence; it would break
+`test_compact_shape` and every pinned fixture string in Tasks 8, 12, 13, 14 and surface Task 8,
+for a distinction Task 10 concludes is not worth buying.
+
+**`ScheduleEntry.reset()` is the only constructor `decode_reset` may use.** Building entries
+with plain `ScheduleEntry(cron=...)` raises — `__post_init__` requires exactly one modifier
+when `_reset` is False. Core plan Task 5's ledger flags this explicitly for whoever writes
+this function.
+
+**One hoisted timezone per item, across *both* tuples.** `sched_tz` is a single item-level
+attribute (§4.1) and `encode`/`encode_reset` each return their own `tz`. Merged
+`Limit.__post_init__` (`models.py:255-264`) validates only that `self.schedule`'s entries agree.
+A limit whose `schedule` is `America/New_York` and whose `reset_schedule` is `UTC` therefore
+constructs, serialises, and then comes back with one of the two silently reinterpreted in the
+other's zone — forever, with no error anywhere. That is the same class of defect core plan
+Task 8 found when `sched_tz` was written inside the per-limit loop. Widen the guard to the
+union of both tuples, here rather than in Task 1, because the reason is storage and storage is
+this task's subject.
+
+**Three write paths carry a schedule, and only one of them is in the compressed text.**
+
+| Item | Attribute | Written by | Read by |
+|------|-----------|------------|---------|
+| Config (system / resource / entity) | `l_{name}_rsched` | `_serialize_composite_limits` :4971 | `_deserialize_limits` :5010 |
+| Bucket, on a limit change | `rsched`, `b_{name}_rsched` | `_build_bucket_param_update` :3256 | the aggregator |
+| Bucket, on creation | `rsched`, `b_{name}_rsched` | `build_composite_create` :2079 | the aggregator |
+
+The compressed text named only `_sync_bucket_params` and `build_composite_create`, and both
+namings were wrong in a way worth stating:
+
+1. **The config-item leg was missing entirely.** Surface Task 1 adds `Limit.reset_schedule` as
+   an in-memory field and touches `schedule.py` and `models.py` only. Nothing persists it, so
+   `resolve_limits()` returns limits whose `reset_schedule` is always `()` and Task 3's
+   client-side reset never fires for stored config — which is every real deployment. This task
+   adds `l_{name}_rsched` beside the `l_{name}_sched` core plan Task 8 merged, reusing the same
+   hoisted `sched_tz`.
+2. **The bucket fan-out lives in `_build_bucket_param_update` (:3256), not
+   `_sync_bucket_params` (:3085).** `_sync_bucket_params` discovers shards and issues writes;
+   the expression is built by `_build_bucket_param_update`, which is also what
+   `_resolved_bucket_param_update` (:3209) calls per resource under the entity-wide
+   `_default_` scope (#487). Editing the wrong one of the two leaves the `_default_` path
+   unstamped.
+
+**Check `build_composite_create` for `sched` before you add `rsched` to it.** As the core plan
+stands, nothing stamps the *parameter* schedule on a newly created bucket: Task 12 adds only
+`vu` to that builder and Task 13 touches only the fan-out. A bucket created with `vu` and no
+`sched` re-materialises at its first boundary and then refills at the **base** rate forever,
+because both the aggregator and the slow path read the schedule off the item. If that is still
+the state when you get here, add `sched`/`sched_tz` alongside `rsched` in this task and say so
+in the commit body — a reset stamp without the parameter stamp is incoherent on its own.
+
+**`Limit.to_dict()` feeds the audit event `details`.** Core plan Task 8 found that a
+`to_dict()` which drops the schedule makes the audit record for "attached a business-hours
+schedule" byte-identical to one that attached nothing, and fixed it for `schedule`.
+`reset_schedule` inherits the same requirement, emitted as **standard 5-field cron** — §4 lists
+audit events explicitly among the boundaries where the compact form must not appear.
+
+- [ ] **Step 1: Write the failing encoding test**
+
+In `tests/unit/test_schedule_encoding.py`, beside the merged `encode`/`decode` classes.
 
 ```python
 class TestResetEncoding:
+    """Reset entries share the field grammar and drop the modifier tokens."""
+
     def test_encodes_without_a_modifier_token(self):
-        compact, tz = encode_reset((ScheduleEntry.reset("0 0 * * *", "America/New_York"),))
+        compact, tz = encode_reset(
+            (ScheduleEntry.reset("0 0 * * *", "America/New_York"),)
+        )
         assert compact == "m0h0"
         assert tz == "America/New_York"
 
-    def test_round_trips(self):
-        entries = (ScheduleEntry.reset("0 0 * * *", "America/New_York"),
-                   ScheduleEntry.reset("0 12 * * SUN", "America/New_York"))
-        compact, tz = encode_reset(entries)
-        assert encode_reset(decode_reset(compact, tz)) == (compact, tz)
-
-    def test_is_tiny(self):
+    def test_a_daily_reset_is_four_bytes(self):
+        """The size claim in §4.1, asserted exactly rather than as `<= 8` —
+        an encoder that returned the empty string would satisfy a bound."""
         compact, _ = encode_reset((ScheduleEntry.reset("0 0 * * *"),))
-        assert len(compact) <= 8
+        assert len(compact) == 4
+
+    def test_joins_entries_with_a_semicolon(self):
+        compact, tz = encode_reset(
+            (
+                ScheduleEntry.reset("0 0 * * *", "America/New_York"),
+                ScheduleEntry.reset("0 12 * * SUN", "America/New_York"),
+            )
+        )
+        assert compact == "m0h0;m0h12w7"
+        assert tz == "America/New_York"
+
+    def test_weekday_names_normalise_exactly_as_the_param_encoder(self):
+        """Storage is canonical (§4.3) so `differ.py` does not read SUN against
+        7 as a change on every apply. Sunday's spelling is the case core plan
+        Task 5 got wrong first time round, so it is pinned here too."""
+        compact, _ = encode_reset((ScheduleEntry.reset("0 0 * * SUN-THU"),))
+        assert compact == "m0h0w0-4"
+
+    def test_empty_schedule_encodes_to_nothing(self):
+        assert encode_reset(()) == ("", None)
+
+    def test_rejects_entries_that_disagree_on_timezone(self):
+        with pytest.raises(ValueError, match="one timezone"):
+            encode_reset(
+                (
+                    ScheduleEntry.reset("0 0 * * *", "America/New_York"),
+                    ScheduleEntry.reset("0 0 * * *", "UTC"),
+                )
+            )
+
+
+class TestResetDecoding:
+    def test_decodes_through_the_reset_constructor(self):
+        """A reset entry carries no modifier, so `ScheduleEntry(...)` would
+        raise its "exactly one" rule. `decode_reset` must use the classmethod."""
+        (entry,) = decode_reset("m0h0", "America/New_York")
+        assert entry.cron == "0 0 * * *"
+        assert entry.tz == "America/New_York"
+        assert entry.scale is None
+        assert entry.capacity is None
+        assert entry.refill_amount is None
+        assert entry.refill_period_seconds is None
+
+    def test_empty_compact_decodes_to_an_empty_tuple(self):
+        assert decode_reset("", "UTC") == ()
+
+    def test_rejects_a_modifier_token(self):
+        """A reset overrides no parameters, so a stored `s500` is either
+        corruption or a param schedule read out of the wrong attribute. Either
+        way it must not decode into something that silently resets."""
+        with pytest.raises(ValueError, match="modifier"):
+            decode_reset("m0h0s500", "UTC")
+
+    def test_rejects_junk(self):
+        with pytest.raises(ValueError):
+            decode_reset("this is not a schedule", "UTC")
+
+    def test_round_trip_is_byte_identical_and_semantically_equal(self):
+        """Three assertions, because `encode_reset(decode_reset(x)) == x` alone
+        is satisfied by an encoder that throws information away — the exact
+        criticism core plan Task 5's ledger makes of its own plan text."""
+        entries = (
+            ScheduleEntry.reset("0 0 * * *", "America/New_York"),
+            ScheduleEntry.reset("30 2 1 JAN,JUL *", "America/New_York"),
+        )
+        compact, tz = encode_reset(entries)
+        restored = decode_reset(compact, tz)
+
+        assert len(restored) == len(entries)
+        for original, back in zip(entries, restored, strict=True):
+            assert parse_cron(back.cron, back.tz) == parse_cron(original.cron, original.tz)
+        assert encode_reset(restored) == (compact, tz)
+        assert decode_reset(*encode_reset(restored)) == restored
+
+    def test_the_display_form_re_encodes_unchanged(self):
+        """`to_cron` renders names back; feeding that to a fresh reset entry
+        must produce the same bytes, or the CLI's output is not round-trippable
+        (§4.3)."""
+        compact, tz = encode_reset((ScheduleEntry.reset("0 0 * * 1-5", "UTC"),))
+        rendered = to_cron(compact)
+        assert rendered == "0 0 * * MON-FRI"
+        assert encode_reset((ScheduleEntry.reset(rendered, tz),)) == (compact, tz)
 ```
 
-- [ ] **Step 2–4:** Implement `encode_reset` / `decode_reset` reusing the field encoder; stamp `rsched`/`rsched` overrides in `_sync_bucket_params` and `build_composite_create` beside `sched`; commit — `✨ feat(schema): encode reset schedules onto bucket items`
+- [ ] **Step 2: Run the encoding tests and watch them fail**
+
+Run: `uv run pytest tests/unit/test_schedule_encoding.py -k "ResetEncoding or ResetDecoding" -v`
+Expected: `NameError: name 'encode_reset' is not defined` at collection — the test module
+imports it from `zae_limiter.schedule` and the import fails first, so the actual line is
+`ImportError: cannot import name 'encode_reset' from 'zae_limiter.schedule'`.
+
+- [ ] **Step 3: Implement the codec**
+
+In `schedule.py`, below `decode` (:541). Both functions reuse the merged field helpers; the
+only new logic is rejecting modifier tags on the way back in.
+
+```python
+def encode_reset(sched: tuple[ScheduleEntry, ...]) -> tuple[str, str | None]:
+    """Encode a reset schedule into its compact storage form and shared timezone.
+
+    The same grammar as ``encode`` minus the modifier tokens, because a reset
+    entry overrides no parameters (§1.1). ``0 0 * * *`` is ``m0h0``, four bytes.
+    Returns ``("", None)`` for an empty schedule, and raises if the entries
+    disagree on ``tz`` — it is hoisted to one item-level attribute shared with
+    the parameter schedule, so a limit cannot carry two.
+    """
+    if not sched:
+        return "", None
+    timezones = {entry.tz for entry in sched}
+    if len(timezones) > 1:
+        raise ValueError(
+            f"every entry in a reset schedule must share one timezone, since it is "
+            f"hoisted to a single item-level attribute; got {sorted(timezones)}"
+        )
+    return ";".join(_encode_cron(entry.cron) for entry in sched), sched[0].tz
+
+
+def decode_reset(compact: str, tz: str) -> tuple[ScheduleEntry, ...]:
+    """Decode the compact reset form back into schedule entries.
+
+    Built through ``ScheduleEntry.reset``, never ``ScheduleEntry(...)``: a reset
+    entry carries no modifier and the ordinary constructor requires exactly one.
+
+    A modifier tag in this attribute is rejected rather than ignored. It means
+    either corruption or a parameter schedule stored under the wrong key, and
+    an entry that silently reset the balance on a schedule meant to scale it
+    would be the worst possible reading.
+    """
+    if not compact:
+        return ()
+    entries = []
+    for part in compact.split(";"):
+        tokens = _tokenise(part)
+        modifiers = sorted(set(tokens) & set(_MODIFIER_TAGS))
+        if modifiers:
+            raise ValueError(
+                f"reset schedule entry {part!r} carries the modifier token(s) "
+                f"{modifiers}; a reset overrides no parameters"
+            )
+        entries.append(ScheduleEntry.reset(cron=_cron_from_tokens(tokens), tz=tz))
+    return tuple(entries)
+```
+
+Add both names to `__all__` (:31).
+
+- [ ] **Step 4: Run the encoding tests and watch them pass**
+
+Run: `uv run pytest tests/unit/test_schedule_encoding.py -v`
+
+- [ ] **Step 5: Write the failing model and storage tests**
+
+In `tests/unit/test_models.py`:
+
+```python
+class TestResetScheduleSerialisation:
+    RESET = (ScheduleEntry.reset(cron="0 0 * * *", tz="America/New_York"),)
+
+    def test_to_dict_emits_standard_cron(self):
+        """Audit events are one of §4's standard-cron boundaries, and
+        `to_dict()` is what all three setters put in the event `details`."""
+        limit = Limit.per_day("rpd", 10_000).with_reset_schedule(self.RESET)
+        assert limit.to_dict()["reset_schedule"] == [
+            {"cron": "0 0 * * *", "tz": "America/New_York"}
+        ]
+
+    def test_to_dict_omits_an_absent_reset_schedule(self):
+        """Existing audit payloads and their tests stay byte-identical."""
+        assert "reset_schedule" not in Limit.per_day("rpd", 10_000).to_dict()
+
+    def test_from_dict_restores_it(self):
+        limit = Limit.per_day("rpd", 10_000).with_reset_schedule(self.RESET)
+        assert Limit.from_dict(limit.to_dict()) == limit
+
+    def test_rejects_a_timezone_disagreement_across_the_two_tuples(self):
+        """One hoisted `sched_tz` per item covers both tuples (§4.1). Without
+        this guard one of the two is silently reinterpreted in the other's
+        zone on the way back out of storage."""
+        with pytest.raises(ValueError, match="timezone"):
+            Limit.per_day("rpd", 10_000).with_schedule(
+                (ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", scale=0.5),)
+            ).with_reset_schedule((ScheduleEntry.reset(cron="0 0 * * *", tz="UTC"),))
+```
+
+In `tests/unit/test_repository.py`:
+
+```python
+class TestResetScheduleReachesStorage:
+    RESET = (ScheduleEntry.reset(cron="0 0 * * *", tz="America/New_York"),)
+
+    async def test_config_round_trips_the_reset_schedule(self, repo):
+        """Without this leg `resolve_limits()` returns reset_schedule=() for
+        every stored limit and Task 3's client reset never fires."""
+        limit = Limit.per_day("rpd", 10_000).with_reset_schedule(self.RESET)
+        await repo.set_limits("rs-1", [limit], resource="gpt-4")
+
+        (stored,) = await repo.get_limits("rs-1", resource="gpt-4")
+        assert stored.reset_schedule == self.RESET
+
+    async def test_config_stores_the_compact_form_under_its_own_attribute(self, repo):
+        """`rsched`, not a tag inside `sched` (§4.1)."""
+        limit = Limit.per_day("rpd", 10_000).with_reset_schedule(self.RESET)
+        await repo.set_limits("rs-2", [limit], resource="gpt-4")
+
+        item = await _raw_config_item(repo, "rs-2", "gpt-4")
+        assert item[schema.limit_attr("rpd", schema.LIMIT_FIELD_RSCHED)]["S"] == "m0h0"
+        assert schema.limit_attr("rpd", schema.LIMIT_FIELD_SCHED) not in item
+        assert item[schema.CONFIG_FIELD_SCHED_TZ]["S"] == "America/New_York"
+
+    async def test_replacing_a_limit_without_one_removes_it(self, repo):
+        """All three setters are full-replace PutItems (core plan Task 8), so
+        an omitted attribute disappears — confirmed, not assumed."""
+        await repo.set_limits(
+            "rs-3",
+            [Limit.per_day("rpd", 10_000).with_reset_schedule(self.RESET)],
+            resource="gpt-4",
+        )
+        await repo.set_limits("rs-3", [Limit.per_day("rpd", 10_000)], resource="gpt-4")
+
+        (stored,) = await repo.get_limits("rs-3", resource="gpt-4")
+        assert stored.reset_schedule == ()
+
+    async def test_the_fan_out_stamps_rsched_on_an_existing_bucket(self, repo):
+        await repo.create_entity("rs-4", parent_id=None, name="rs-4")
+        await repo.set_limits("rs-4", [Limit.per_day("rpd", 10_000)], resource="gpt-4")
+        await repo.speculative_consume("rs-4", "gpt-4", {"rpd": 1})
+
+        await repo.set_limits(
+            "rs-4",
+            [Limit.per_day("rpd", 10_000).with_reset_schedule(self.RESET)],
+            resource="gpt-4",
+        )
+
+        item = await _raw_bucket_item(repo, "rs-4", "gpt-4", shard=0)
+        assert item[schema.BUCKET_FIELD_RSCHED]["S"] == "m0h0"
+        assert item[schema.BUCKET_FIELD_SCHED_TZ]["S"] == "America/New_York"
+
+    async def test_removing_a_reset_schedule_removes_the_stamp(self, repo):
+        """Override, not merge (§1.6): dropping a reset must clear the item, or
+        the bucket keeps resetting after the operator stopped asking it to."""
+        await repo.create_entity("rs-5", parent_id=None, name="rs-5")
+        await repo.set_limits(
+            "rs-5",
+            [Limit.per_day("rpd", 10_000).with_reset_schedule(self.RESET)],
+            resource="gpt-4",
+        )
+        await repo.speculative_consume("rs-5", "gpt-4", {"rpd": 1})
+
+        await repo.set_limits("rs-5", [Limit.per_day("rpd", 10_000)], resource="gpt-4")
+
+        item = await _raw_bucket_item(repo, "rs-5", "gpt-4", shard=0)
+        assert schema.BUCKET_FIELD_RSCHED not in item
+
+    async def test_a_created_bucket_carries_the_stamp(self, repo):
+        """A bucket created on the slow path must be born with its schedules.
+        Both refillers read them off the item, so a bucket carrying `vu` and no
+        schedule re-materialises at its first boundary and then refills at the
+        base rate forever."""
+        limiter = RateLimiter(repository=repo, speculative_writes=False)
+        await repo.set_limits(
+            "rs-6",
+            [Limit.per_day("rpd", 10_000).with_reset_schedule(self.RESET)],
+            resource="gpt-4",
+        )
+        async with limiter.acquire("rs-6", "gpt-4", consume={"rpd": 1}):
+            pass
+
+        item = await _raw_bucket_item(repo, "rs-6", "gpt-4", shard=0)
+        assert item[schema.BUCKET_FIELD_RSCHED]["S"] == "m0h0"
+```
+
+`_raw_config_item` mirrors the `_raw_bucket_item` helper core plan Task 12 adds:
+
+```python
+async def _raw_config_item(repo, entity_id, resource):
+    """Read an entity config item straight from DynamoDB, undeserialised."""
+    client = await repo._get_client()
+    response = await client.get_item(
+        TableName=repo.table_name,
+        Key={
+            "PK": {"S": schema.pk_entity(repo._namespace_id, entity_id)},
+            "SK": {"S": schema.sk_config(resource)},
+        },
+    )
+    return response["Item"]
+```
+
+- [ ] **Step 6: Run the model and storage tests and watch them fail**
+
+```bash
+uv run pytest tests/unit/test_models.py -k ResetScheduleSerialisation -v
+uv run pytest tests/unit/test_repository.py -k ResetScheduleReachesStorage -v
+```
+
+Expected: `KeyError: 'reset_schedule'` from `to_dict`, and
+`AttributeError: module 'zae_limiter.schema' has no attribute 'LIMIT_FIELD_RSCHED'` from the
+storage class.
+
+- [ ] **Step 7: Implement the storage legs**
+
+Two constants in `schema.py`, in the blocks their siblings already occupy — deliberately two
+names with the same value, exactly as `LIMIT_FIELD_SCHED` / `BUCKET_FIELD_SCHED` are (core
+plan Task 8's ruling):
+
+```python
+# in the BUCKET_FIELD_* block, beside BUCKET_FIELD_SCHED (:81)
+BUCKET_FIELD_RSCHED = "rsched"  # item-level default reset schedule (§3.6, §4.1)
+
+# in the LIMIT_FIELD_* block, beside LIMIT_FIELD_SCHED (:114)
+LIMIT_FIELD_RSCHED = "rsched"  # compact-encoded reset schedule (#222 §4.1)
+```
+
+`models.py` — widen the timezone guard in `Limit.__post_init__` (:258) to the union, and carry
+the tuple through `to_dict`/`from_dict`:
+
+```python
+        if self.schedule or self.reset_schedule:
+            zones = {entry.tz for entry in (*self.schedule, *self.reset_schedule)}
+            if len(zones) > 1:
+                raise ValueError(
+                    f"all schedule entries on one limit must share a timezone, got "
+                    f"{sorted(zones)}. The timezone is stored once per item as "
+                    f"`sched_tz` and covers the parameter schedule and the reset "
+                    f"schedule together, not per entry and not per tuple."
+                )
+```
+
+```python
+        if self.reset_schedule:
+            result["reset_schedule"] = [
+                {"cron": e.cron, "tz": e.tz} for e in self.reset_schedule
+            ]
+```
+
+`repository.py` — in `_serialize_composite_limits` (:4971), beside the `LIMIT_FIELD_SCHED`
+write, reusing the `hoisted_schedule_timezone(limits)` call that already runs once before the
+loop (core plan Task 8). Widen that helper's input to both tuples in the same edit; it is the
+function that stops two limits in different zones sharing one `sched_tz`, and it must now also
+stop a limit's two tuples doing it:
+
+```python
+            if limit.reset_schedule:
+                compact, _tz = schedule.encode_reset(limit.reset_schedule)
+                base_item[schema.limit_attr(name, schema.LIMIT_FIELD_RSCHED)] = {"S": compact}
+```
+
+and in `_deserialize_limits` (:5010), beside the `sched_attr` read:
+
+```python
+            rsched_attr = item.get(
+                schema.limit_attr(name, schema.LIMIT_FIELD_RSCHED), {}
+            ).get("S")
+            limits.append(
+                Limit(
+                    name=name,
+                    capacity=_get(schema.LIMIT_FIELD_CP),
+                    refill_amount=_get(schema.LIMIT_FIELD_RA),
+                    refill_period_seconds=_get(schema.LIMIT_FIELD_RP),
+                    schedule=schedule.decode(sched_attr, sched_tz) if sched_attr else (),
+                    reset_schedule=(
+                        schedule.decode_reset(rsched_attr, sched_tz) if rsched_attr else ()
+                    ),
+                )
+            )
+```
+
+In `_build_bucket_param_update` (:3256), mirror the `sched` handling core plan Task 13 adds —
+an item-level default plus a per-limit override only where a limit differs, and a REMOVE in the
+`else` branch. `vu = 0` is already written unconditionally outside both branches by Task 13 and
+must **not** be duplicated or moved (#488: `SET` and `REMOVE` on one attribute in one
+expression is a `ValidationException`):
+
+```python
+        reset_scheduled = [limit for limit in limits if limit.reset_schedule]
+        if reset_scheduled:
+            encodings = {
+                limit.name: schedule.encode_reset(limit.reset_schedule)
+                for limit in reset_scheduled
+            }
+            default_compact, default_tz = next(iter(encodings.values()))
+            set_parts.append("#rsched = :rsched")
+            expr_names["#rsched"] = schema.BUCKET_FIELD_RSCHED
+            expr_values[":rsched"] = {"S": default_compact}
+            # `sched_tz` is shared with the parameter schedule and the limit's
+            # own validation guarantees they agree, so write it only if the
+            # parameter branch did not.
+            if "#sched_tz" not in expr_names:
+                set_parts.append("#sched_tz = :sched_tz")
+                expr_names["#sched_tz"] = schema.BUCKET_FIELD_SCHED_TZ
+                expr_values[":sched_tz"] = {"S": default_tz or "UTC"}
+            for i, (name, (compact, _tz)) in enumerate(encodings.items()):
+                if compact == default_compact:
+                    continue
+                alias = f"#lrsched{i}"
+                set_parts.append(f"{alias} = :lrsched{i}")
+                expr_names[alias] = schema.bucket_attr(name, schema.BUCKET_FIELD_RSCHED)
+                expr_values[f":lrsched{i}"] = {"S": compact}
+        else:
+            expr_names["#rsched"] = schema.BUCKET_FIELD_RSCHED
+            remove_parts.append("#rsched")
+            for i, limit in enumerate(limits):
+                alias = f"#lrsched{i}"
+                expr_names[alias] = schema.bucket_attr(limit.name, schema.BUCKET_FIELD_RSCHED)
+                remove_parts.append(alias)
+```
+
+In `build_composite_create` (:2079), stamp both schedules onto the new item. The states handed
+to this builder carry no `Limit`, so take the schedules from the `BucketState.sched` /
+`BucketState.reset_sched` fields (core plan Task 9 and surface Task 5 add them) or add an
+explicit parameter — whichever the builder's existing call sites make cleanest. Whatever you
+choose, `test_a_created_bucket_carries_the_stamp` is the assertion that it worked.
+
+- [ ] **Step 8: Run everything and watch it pass**
+
+```bash
+uv run pytest tests/unit/test_schedule_encoding.py tests/unit/test_models.py -v
+uv run pytest tests/unit/test_repository.py -k ResetSchedule -v
+uv run pytest tests/unit/ -q
+uv run pytest tests/unit/ -m gevent -n 0 -q
+```
+
+- [ ] **Step 9: Regenerate sync, lint, type check, commit**
+
+`repository.py` is a sync-codegen source; `schedule.py`, `models.py` and `schema.py` are not.
+
+```bash
+hatch run generate-sync
+uv run ruff check --fix .
+uv run ruff format src/zae_limiter tests/unit
+uv run mypy
+git add -A
+git commit -m "$(cat <<'EOF'
+✨ feat(schema): encode and persist reset schedules
+
+encode_reset/decode_reset share the field grammar with the parameter
+encoder and drop the modifier tokens, so `0 0 * * *` stores as `m0h0` —
+four bytes. Reset entries live in their own `rsched` / `b_{name}_rsched`
+attributes rather than tagged inside `sched`, mirroring the separate
+tuple and keeping the decoder from partitioning one list into two
+meanings.
+
+Three write paths carry it, not the one the plan named: the config item
+(`l_{name}_rsched`, without which resolve_limits() always returns an
+empty reset schedule and nothing ever fires), the #468 bucket fan-out,
+and bucket creation. Limit.to_dict() carries it too, as standard cron,
+so the audit record for attaching a daily reset is not byte-identical to
+attaching nothing.
+
+The one hoisted `sched_tz` now covers both tuples, so a limit cannot
+carry a business-hours schedule in New York and a reset in UTC and have
+one of them silently reinterpreted.
+
+No version marker: see Task 10 for that decision and its cost.
+
+Refs #222
+EOF
+)"
+```
 
 ---
 
 ### Task 5: Boundary-aware `retry_after_seconds`
 
-> **Expand before picking this up.** The steps below carry real assertions but compress
-> the TDD cycle, and their fixture setup depends on `schedule.py`, which does not exist
-> yet. Write the full failing-test/implement/pass cycle against the real signatures once
-> the core plan has landed — writing it against invented ones now is the mistake this
-> plan's own review calls out.
+**Files:**
+- Modify: `src/zae_limiter/schedule.py` (beside `next_boundary` :260 and `prev_reset_edge`, Task 2), `src/zae_limiter/models.py` (`BucketState` :622), `src/zae_limiter/bucket.py` (`try_consume`'s failure branch :152-166), `src/zae_limiter/lease.py` (`_build_retry_failure_statuses` :673), `src/zae_limiter/limiter.py` (`check_availability` :1941, specifically :2047-2070), `src/zae_limiter/repository.py` (`_deserialize_composite_bucket` :4878)
+- Test: `tests/unit/test_schedule_boundary.py`, `tests/unit/test_bucket.py`, `tests/unit/test_limiter.py`
 
-**Files:** Modify `src/zae_limiter/schedule.py`, `src/zae_limiter/bucket.py`, `src/zae_limiter/lease.py`, `src/zae_limiter/limiter.py` · Test `tests/unit/test_bucket.py`, `tests/unit/test_limiter.py`
+**Interfaces:**
+- Consumes: `next_boundary(sched, reset_sched=(), *, now_ms)` honouring both tuples (Task 2);
+  `prev_reset_edge` (Task 2); `effective_params` (core plan Task 3); `BucketState.sched` and
+  the `effective_*(now_ms)` methods (core plan Task 9); `decode_reset` and the `rsched`
+  attribute (Task 4)
+- Produces: `retry_after_with_schedule(deficit_milli, cp_milli, ra_milli, rp_ms, sched,
+  reset_sched=(), *, now_ms, shard_count=1, max_windows=8) -> float`;
+  `next_reset_edge(reset_sched, *, now_ms) -> int | None`; `BucketState.reset_sched`
 
-**The flat estimate is wrong in the direction that matters.** It over-reports when a boundary raises the limit and **under**-reports when one lowers it — and lowering is the headline use case. Worked example from the spec: empty bucket, 500 tokens needed, 1000/min now, boundary in 10 s dropping to 500/min. Flat estimate **30 s**; real wait **50 s** (10 s yielding 167 tokens, then 333 remaining at half rate).
+**The flat estimate is wrong in the direction that matters.** It over-reports when a boundary
+raises the limit and **under**-reports when one lowers it — and lowering is the headline use
+case. The spec's worked example, re-derived against merged `bucket.py` rather than quoted:
 
-**A reset edge dominates.** If a reset boundary falls before the deficit clears by refill, that instant *is* the answer. For a daily quota this is the difference between reporting hours of drip-refill and reporting "at midnight" — the only useful answer. It is also the sharpest case for converting the **query** surface along with the rejection path: with only the latter converted, `acquire()` would say "at midnight" while `check_availability()` said "in eleven hours" about the same bucket at the same instant. (#473 was adopted and landed, not closed — see the design's §0.)
+> Empty bucket, 500 tokens needed, 1000/min now, boundary in 10 s dropping to 500/min.
+>
+> Flat: `calculate_retry_after(500_000, 1_000_000, 60_000)` is
+> `(500_000 * 60_000) // 1_000_000 = 30_000 ms`, plus the rounding millisecond — **30.001 s**.
+>
+> Real: the first 10 s yield `(10_000 * 1_000_000) // 60_000 = 166_666` millitokens, leaving
+> 333_334; at half rate that is `(333_334 * 60_000) // 500_000 = 40_000 ms`. Total **50.001 s**.
 
-- [ ] **Step 1: Write the failing test**
+**The example holds exactly.** It is quoted in the design (§7) and in the compressed version of
+this task, and both numbers survive the arithmetic in merged `refill_bucket` and
+`calculate_retry_after`. Keep them.
+
+**But that example does not exercise the thing core plan Task 4 fixed.** Its boundary is 09:00
+in `America/New_York`, whose UTC offset is a whole number of hours, so the coarse hourly probe
+lands exactly on the edge and the two-phase refinement never runs. Task 4 measured the original
+single-phase scan returning a *late* boundary on 112 of 400 random schedules (worst case 21.5
+hours) precisely because window edges fall on local minutes while the probe grid is aligned to
+the UTC epoch. Any arithmetic in this task that was written against the old behaviour is
+suspect. Add `Asia/Kolkata` (+05:30) to the cases below, where a 09:00 local edge falls at
+03:30Z — half a step off an hourly grid — so this task's walk is pinned against the corrected
+`next_boundary` rather than against a zone that cannot tell the two apart.
+
+**A reset edge dominates.** If a `reset_schedule` edge falls before the deficit clears by
+refill, that instant *is* the answer. For a daily quota this is the difference between
+reporting eleven hours of drip-refill and reporting "at midnight", and midnight is the only
+useful answer.
+
+**There are four sites that build a `LimitStatus`, not the three the compressed text names.**
+Enumerated against the merged tree rather than recalled:
+
+| # | Site | Reached when | Source of `retry_after_seconds` |
+|---|------|--------------|---------------------------------|
+| 1 | `bucket.build_limit_status` via `declared_statuses` / `would_refill_satisfy` (:355, :388) | **speculative fast rejection** — the common case | `try_consume` → `calculate_retry_after` |
+| 2 | `limiter._admit_limit` (:1410-1419) | slow-path admission | `try_consume` → `calculate_retry_after` |
+| 3 | `lease._build_retry_failure_statuses` (:673) | slow-path optimistic-lock retry | `calculate_retry_after` directly |
+| 4 | `limiter.check_availability` (:2060) | the non-consuming query | `calculate_retry_after` directly |
+
+1 and 2 share one seam — `bucket.try_consume`'s failure branch — so converting `try_consume`
+covers both. 3 and 4 compute directly and are converted individually. The compressed text
+named 2, 3 and 4 and missed 1, which is the path most rejections actually take.
+
+**`try_consume` needs both schedules on the `BucketState`, and as the core plan stands nothing
+puts them there.** Core plan Task 9 adds the `sched` **field**; Tasks 12/13 write the `sched`
+**attribute**; no task reads the attribute back in `_deserialize_composite_bucket` (:4878),
+which is what builds every `BucketState` the client sees — including the ALL_OLD states behind
+site 1. Verify that before writing Step 5. If it is still unpopulated, this task adds both
+`sched` and `reset_sched` there, because a schedule-aware retry estimate computed from an empty
+`sched` is the flat estimate with extra steps and a green test suite.
+
+**`check_availability` also reports the wrong *capacity*, not just the wrong wait.** Two sites
+in it use the **base** `limit.capacity`: the clamp `min(totals[limit.name], limit.capacity)`
+(:2049) and the missing-bucket branch that reports `limit.capacity` outright (:2052). Inside a
+`scale: 0.5` window both over-report by 2x. Core plan Task 9 makes `calculate_available`
+schedule-aware inside `bucket.py`, and Task 10 fixes `Limit.from_bucket_state` on the rejection
+path — neither reaches these two, because they work from the `Limit` resolved out of *config*,
+not from a `BucketState`. Core plan Task 9's ledger entry confirms this is still true after its
+own conversion: "I converted only the three `BucketState` accesses there."
+
+**`check_availability` must also apply a *pending* reset.** It reads buckets and writes
+nothing, so a bucket that crossed a reset edge and has not yet been touched by a request still
+holds the burnt balance on disk. Without an adjustment the display says "0 remaining" and, once
+the walk lands, "resets at midnight tomorrow" — while the very next `acquire()` restores the
+quota immediately. The fix is the same read-time computation the slow path does, and costs
+nothing: if `prev_reset_edge(limit.reset_schedule, now_ms) > bucket.last_refill_ms`, that
+bucket's contribution is its effective share rather than `calculate_available(...)`.
+
+**#473 landed; write against the real API.** `RateLimiter.check_availability(entity_id,
+resource, needed=None, limits=None) -> Availability` (`limiter.py:1941`), with `available()`
+(:2088) and `time_until_available()` (:2135) as thin wrappers over it. Converting
+`check_availability` converts all three. Missing it would leave `acquire()` saying "at
+midnight" while `check_availability()` said "in eleven hours" about the same bucket at the same
+instant — the design's own reason (§7) for wiring the query surface.
+
+- [ ] **Step 1: Write the failing walk test**
+
+In `tests/unit/test_schedule_boundary.py`, reusing its `_ms` / `_iso` helpers (`_ms` already
+defaults to `America/New_York`).
 
 ```python
-class TestBoundaryAwareRetryAfter:
-    def test_under_reports_without_the_walk(self):
-        """The spec's worked example: flat says 30s, the truth is 50s."""
-        got = retry_after_with_schedule(
-            deficit_milli=500_000, cp_milli=1_000_000, ra_milli=1_000_000, rp_ms=60_000,
-            sched=(ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.5),),
-            reset_sched=(), now_ms=_ms("2026-09-15 08:59:50"),
-        )
-        assert 49 <= got <= 51
+IST_BUSINESS = (ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="Asia/Kolkata", scale=0.5),)
+DAILY = (ScheduleEntry.reset(cron="0 0 * * *", tz="America/New_York"),)
 
-    def test_over_reporting_case_shortens(self):
-        """When a boundary raises the limit the real wait is shorter."""
-        ...
+
+class TestNextResetEdge:
+    def test_finds_the_next_midnight(self):
+        assert _iso(next_reset_edge(DAILY, now_ms=_ms("2026-09-15 09:00"))).startswith(
+            "2026-09-16T00:00"
+        )
+
+    def test_standing_on_an_edge_returns_the_following_one(self):
+        """Strictly after `now`, for the same reason `next_boundary` is: an
+        answer at `now` makes a wait of zero look like a wait until a reset."""
+        assert _iso(next_reset_edge(DAILY, now_ms=_ms("2026-09-16 00:00"))).startswith(
+            "2026-09-17T00:00"
+        )
+
+    def test_a_never_matching_expression_has_no_edge(self):
+        never = (ScheduleEntry.reset(cron="0 0 30 2 *"),)  # February 30th
+        assert next_reset_edge(never, now_ms=_ms("2026-09-15 09:00")) is None
+
+    def test_empty_reset_schedule(self):
+        assert next_reset_edge((), now_ms=_ms("2026-09-15 09:00")) is None
+
+
+class TestBoundaryAwareRetryAfter:
+    BASE = dict(cp_milli=1_000_000, ra_milli=1_000_000, rp_ms=60_000)
+
+    def test_the_specs_worked_example(self):
+        """Flat says 30.001 s; the truth is 50.001 s — 10 s yielding 166_666
+        millitokens, then 333_334 remaining at half rate."""
+        got = retry_after_with_schedule(
+            deficit_milli=500_000,
+            **self.BASE,
+            sched=BUSINESS,
+            now_ms=_ms("2026-09-15 08:59:50"),
+        )
+        assert got == pytest.approx(50.001, abs=0.002)
+
+    def test_the_flat_estimate_is_the_wrong_answer(self):
+        """Discriminates the test above against an implementation that walks
+        but never applies the window's effective rate."""
+        flat = calculate_retry_after(500_000, 1_000_000, 60_000)
+        assert flat == pytest.approx(30.001, abs=0.002)
+
+    def test_a_non_whole_hour_offset_is_handled(self):
+        """Asia/Kolkata is +05:30, so a 09:00 local edge is 03:30Z — half a
+        step off the hourly probe grid. This is the case core plan Task 4's
+        two-phase refinement exists for; America/New_York cannot tell a correct
+        scan from a late one, because its offset is a whole number of hours."""
+        got = retry_after_with_schedule(
+            deficit_milli=500_000,
+            **self.BASE,
+            sched=IST_BUSINESS,
+            now_ms=_ms("2026-09-15 08:59:50", IST),
+        )
+        assert got == pytest.approx(50.001, abs=0.002)
+
+    def test_a_boundary_that_raises_the_limit_shortens_the_wait(self):
+        """The over-reporting direction. From 08:59:50 the base 1000/min needs
+        30 s; the 09:00 window doubles the rate, so 10 s of base refill leaves
+        333_334 to clear at 2000/min = 10.000 s. Total 20.001 s."""
+        doubling = (
+            ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=2.0),
+        )
+        got = retry_after_with_schedule(
+            deficit_milli=500_000,
+            **self.BASE,
+            sched=doubling,
+            now_ms=_ms("2026-09-15 08:59:50"),
+        )
+        assert got == pytest.approx(20.001, abs=0.002)
 
     def test_a_reset_edge_dominates(self):
-        """A daily quota's answer is 'at midnight', not hours of drip."""
+        """A daily quota's answer is 'at midnight', not eleven hours of drip.
+
+        Flat here is (5_000_000 * 86_400_000) // 10_000_000 = 43_200_000 ms,
+        twelve hours. The reset is one hour away and wins.
+        """
         got = retry_after_with_schedule(
-            deficit_milli=5_000_000, cp_milli=10_000_000, ra_milli=10_000_000,
-            rp_ms=86_400_000, sched=(),
-            reset_sched=(ScheduleEntry.reset("0 0 * * *", "America/New_York"),),
+            deficit_milli=5_000_000,
+            cp_milli=10_000_000,
+            ra_milli=10_000_000,
+            rp_ms=86_400_000,
+            sched=(),
+            reset_sched=DAILY,
             now_ms=_ms("2026-09-15 23:00"),
         )
-        assert 3500 <= got <= 3700     # ~1 hour, not ~12
+        assert got == pytest.approx(3600.001, abs=0.002)
+
+    def test_a_reset_edge_after_the_deficit_clears_does_not_win(self):
+        """Discriminates the test above against "always return the next reset".
+        Here refill clears the deficit in 30 s and the reset is an hour off."""
+        got = retry_after_with_schedule(
+            deficit_milli=500_000,
+            **self.BASE,
+            sched=(),
+            reset_sched=DAILY,
+            now_ms=_ms("2026-09-15 23:00"),
+        )
+        assert got == pytest.approx(30.001, abs=0.002)
+
+    def test_unscheduled_matches_calculate_retry_after_exactly(self):
+        """Not 'approximately' — the unscheduled path must be the identical
+        integer arithmetic, or every existing retry assertion in the suite
+        drifts by a millisecond."""
+        got = retry_after_with_schedule(
+            deficit_milli=500_000, **self.BASE, sched=(), now_ms=_ms("2026-09-15 10:00")
+        )
+        assert got == calculate_retry_after(500_000, 1_000_000, 60_000)
+
+    def test_a_cleared_deficit_is_no_wait(self):
+        got = retry_after_with_schedule(
+            deficit_milli=0, **self.BASE, sched=BUSINESS, now_ms=_ms("2026-09-15 10:00")
+        )
+        assert got == 0.0
+
+    def test_the_shard_share_is_applied_inside_each_window(self):
+        """Scale first, then divide (Global Constraints). Half of 1000/min
+        across 2 shards is 250/min, so 500 tokens take 120 s, not 60."""
+        got = retry_after_with_schedule(
+            deficit_milli=500_000,
+            **self.BASE,
+            sched=BUSINESS,
+            now_ms=_ms("2026-09-15 10:00"),
+            shard_count=2,
+        )
+        assert got == pytest.approx(120.001, abs=0.002)
+
+    def test_a_share_that_floors_to_zero_falls_back_to_the_undivided_rate(self):
+        """Same rule as `BucketState.retry_refill_amount_milli` (#475): a share
+        of zero has no finite wait, so report the undivided *scheduled* rate
+        rather than dividing by zero or returning 0.0."""
+        got = retry_after_with_schedule(
+            deficit_milli=500,
+            cp_milli=1_000,
+            ra_milli=1_000,
+            rp_ms=60_000,
+            sched=BUSINESS,
+            now_ms=_ms("2026-09-15 10:00"),
+            shard_count=1024,
+        )
+        assert got == pytest.approx(calculate_retry_after(500, 500, 60_000), abs=0.002)
 
     def test_falls_back_to_the_flat_estimate_past_the_walk_cap(self):
-        ...
+        """A schedule that alternates every minute against a deficit that takes
+        an hour exhausts the 8-window budget. The fallback must be the flat
+        estimate, not a partial walk reported as if it were complete."""
+        alternating = (ScheduleEntry(cron="*/2 * * * *", tz="UTC", scale=0.001),)
+        got = retry_after_with_schedule(
+            deficit_milli=10_000_000,
+            **self.BASE,
+            sched=alternating,
+            now_ms=_ms("2026-09-15 10:00:00"),
+        )
+        assert got == calculate_retry_after(10_000_000, 1_000_000, 60_000)
 
-    def test_unscheduled_matches_the_existing_behaviour(self):
-        """No schedule must produce exactly calculate_retry_after's answer."""
-        ...
+    def test_the_walk_cap_is_honoured_rather_than_looping(self):
+        """Pins the budget itself: nine windows must not be walked. Verified by
+        counting boundary lookups rather than by timing."""
+        alternating = (ScheduleEntry(cron="*/2 * * * *", tz="UTC", scale=0.001),)
+        with patch("zae_limiter.schedule.next_boundary", wraps=next_boundary) as spy:
+            retry_after_with_schedule(
+                deficit_milli=10_000_000,
+                **self.BASE,
+                sched=alternating,
+                now_ms=_ms("2026-09-15 10:00:00"),
+            )
+        assert spy.call_count == 8
 ```
 
-- [ ] **Step 2: Run and watch it fail**
+- [ ] **Step 2: Run the walk tests and watch them fail**
 
-- [ ] **Step 3: Implement** `retry_after_with_schedule(...)` in `schedule.py`: walk forward window by window using `next_boundary`, accumulating tokens at each window's effective rate until the deficit clears; if a reset edge falls inside the walk, return that instant directly; cap at 8 windows and fall back to the flat `calculate_retry_after`. Call it from **three** places: `lease.py`'s `_build_retry_failure_statuses` and `RateLimiter._admit_limit` (the two that build a `LimitStatus` on the rejection path), and `RateLimiter.check_availability()` — the non-consuming query, which builds `LimitStatus` too and which `available()` and `time_until_available()` are thin wrappers over. Miss the third and the number a user *sees* keeps the flat estimate.
+Run: `uv run pytest tests/unit/test_schedule_boundary.py -k "NextResetEdge or BoundaryAwareRetryAfter" -v`
+Expected: `ImportError: cannot import name 'retry_after_with_schedule' from
+'zae_limiter.schedule'` at collection.
 
-  **`check_availability()` needs the effective capacity as well as the effective rate.** Two sites in it use the **base** `limit.capacity`: the clamp `min(total_across_shards, limit.capacity)` and the missing-bucket branch that reports `limit.capacity` outright. Inside a `scale: 0.5` window both over-report by 2x. Core plan Task 9 makes `calculate_available` schedule-aware inside `bucket.py`, and Task 10 fixes `Limit.from_bucket_state` on the rejection path — neither reaches these two, because they work from the `Limit` resolved out of *config*, not from a `BucketState`.
+- [ ] **Step 3: Implement the walk**
 
-- [ ] **Step 4: Run, regenerate sync, commit** — `✨ feat(bucket): compute retry_after across schedule boundaries`
+In `schedule.py`. `next_reset_edge` is the forward twin of Task 2's `prev_reset_edge`; if Task 2
+implemented `next_boundary`'s reset handling through an internal helper, promote that helper
+rather than writing a second scanner — two scans of the same expression that can disagree is a
+worse outcome than either.
+
+```python
+def next_reset_edge(reset_sched: tuple[ScheduleEntry, ...], *, now_ms: int) -> int | None:
+    """The first reset edge strictly after ``now_ms``, or None within the cap.
+
+    The forward twin of ``prev_reset_edge``: same adaptive granularity, same
+    horizon, same "no edge within the cap means the expression never matches"
+    reading (``0 0 30 2 *``). ``now_ms`` is keyword-only for the same reason
+    ``next_boundary``'s is (#500).
+    """
+
+
+def retry_after_with_schedule(
+    deficit_milli: int,
+    cp_milli: int,
+    ra_milli: int,
+    rp_ms: int,
+    sched: tuple[ScheduleEntry, ...],
+    reset_sched: tuple[ScheduleEntry, ...] = (),
+    *,
+    now_ms: int,
+    shard_count: int = 1,
+    max_windows: int = 8,
+) -> float:
+    """Seconds until ``deficit_milli`` clears, walking across boundaries (§7).
+
+    ``cp_milli``/``ra_milli``/``rp_ms`` are the **undivided base** — the values
+    stored on the item, which scheduling never rewrites (§2.1) — and the shard
+    share is taken *after* ``effective_params``, per the scale-then-divide rule.
+
+    The walk steps window by window: at each one it asks how long the current
+    effective rate needs, and whether a boundary or a reset edge arrives first.
+    A reset edge inside the window is the answer outright, because it restores
+    the whole balance in one lump. Capped at ``max_windows``, after which it
+    falls back to the flat estimate rather than reporting a partial walk as a
+    complete one.
+
+    Returns the identical value ``calculate_retry_after`` does when neither
+    tuple is set, so the unscheduled path is unchanged to the millisecond.
+    """
+    if deficit_milli <= 0:
+        return 0.0
+
+    def _rate(ra: int) -> int:
+        # A share that floors to zero has no finite wait; fall back to the
+        # undivided *scheduled* rate, exactly as retry_refill_amount_milli does
+        # (#475). Falling back to the base rate would quote a speed nothing in
+        # the system refills at during the window.
+        return (ra // shard_count) or ra
+
+    remaining = deficit_milli
+    cursor = now_ms
+    for _ in range(max_windows):
+        _eff_cp, eff_ra, eff_rp = effective_params(cp_milli, ra_milli, rp_ms, sched, cursor)
+        rate = _rate(eff_ra)
+        if rate <= 0:
+            break
+        need_ms = (remaining * eff_rp) // rate
+        edge = next_reset_edge(reset_sched, now_ms=cursor)
+        boundary = next_boundary(sched, reset_sched, now_ms=cursor)
+        window_end = boundary if boundary is not None else cursor + need_ms
+
+        if edge is not None and edge <= min(window_end, cursor + need_ms):
+            return (edge - now_ms + 1) / 1000.0
+        if cursor + need_ms <= window_end:
+            return (cursor + need_ms - now_ms + 1) / 1000.0
+
+        remaining -= ((window_end - cursor) * rate) // eff_rp
+        cursor = window_end
+
+    return calculate_retry_after(deficit_milli, _rate(ra_milli), rp_ms)
+```
+
+`calculate_retry_after` lives in `bucket.py`, which imports `models`, which imports
+`schedule` — so importing it here is a cycle. Inline the same three lines instead, with a
+comment naming `bucket.calculate_retry_after` as the definition this must stay identical to;
+`test_unscheduled_matches_calculate_retry_after_exactly` is what keeps them so.
+
+- [ ] **Step 4: Run the walk tests and watch them pass**
+
+Run: `uv run pytest tests/unit/test_schedule_boundary.py -v`
+
+- [ ] **Step 5: Write the failing call-site tests**
+
+In `tests/unit/test_bucket.py` (sites 1 and 2, through `try_consume`) and
+`tests/unit/test_limiter.py` (site 4).
+
+```python
+class TestTryConsumeWalksBoundaries:
+    """`try_consume` feeds both the fast-rejection statuses (via
+    `declared_statuses`) and slow-path admission (via `_admit_limit`), so
+    converting it converts two of the four LimitStatus sites at once."""
+
+    def _state(self, **kwargs) -> BucketState:
+        base = dict(
+            entity_id="user-1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=0,
+            last_refill_ms=_ny("2026-09-15 08:59:50"),
+            capacity_milli=1_000_000,
+            refill_amount_milli=1_000_000,
+            refill_period_ms=60_000,
+        )
+        base.update(kwargs)
+        return BucketState(**base)
+
+    def test_a_lowering_boundary_lengthens_the_estimate(self):
+        result = try_consume(self._state(sched=BUSINESS), 500, _ny("2026-09-15 08:59:50"))
+        assert result.success is False
+        assert result.retry_after_seconds == pytest.approx(50.001, abs=0.002)
+
+    def test_the_same_bucket_unscheduled_reports_the_flat_estimate(self):
+        """Discriminates the test above."""
+        result = try_consume(self._state(), 500, _ny("2026-09-15 08:59:50"))
+        assert result.retry_after_seconds == pytest.approx(30.001, abs=0.002)
+
+    def test_a_reset_edge_dominates_the_estimate(self):
+        state = self._state(
+            limit_name="rpd",
+            capacity_milli=10_000_000,
+            refill_amount_milli=10_000_000,
+            refill_period_ms=86_400_000,
+            last_refill_ms=_ny("2026-09-15 23:00"),
+            reset_sched=DAILY,
+        )
+        result = try_consume(state, 5_000, _ny("2026-09-15 23:00"))
+        assert result.retry_after_seconds == pytest.approx(3600.001, abs=0.002)
+
+    def test_a_successful_consume_still_reports_no_wait(self):
+        result = try_consume(
+            self._state(tokens_milli=1_000_000, sched=BUSINESS), 500, _ny("2026-09-15 10:00")
+        )
+        assert result.success is True
+        assert result.retry_after_seconds == 0.0
+
+
+class TestDeserialisedBucketsCarryBothSchedules:
+    """The ALL_OLD states behind the fast-rejection path come from
+    `_deserialize_composite_bucket`; an empty `sched` there makes every
+    schedule-aware estimate above silently flat in production."""
+
+    async def test_sched_and_rsched_reach_bucket_state(self, repo):
+        limit = (
+            Limit.per_day("rpd", 10_000)
+            .with_schedule(
+                (ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", scale=0.5),)
+            )
+            .with_reset_schedule(DAILY)
+        )
+        await repo.create_entity("bs-1", parent_id=None, name="bs-1")
+        await repo.set_limits("bs-1", [limit], resource="gpt-4")
+        await repo.speculative_consume("bs-1", "gpt-4", {"rpd": 1})
+
+        bucket = next(
+            b for b in await repo.get_buckets("bs-1", resource="gpt-4") if b.limit_name == "rpd"
+        )
+        assert bucket.sched == limit.schedule
+        assert bucket.reset_sched == limit.reset_schedule
+```
+
+```python
+class TestCheckAvailabilityIsScheduleAware:
+    """The query surface must agree with the rejection path at one instant."""
+
+    NIGHT = (ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", scale=0.5),)
+
+    async def test_reports_the_scheduled_capacity_for_a_missing_bucket(self, limiter):
+        """The no-bucket branch reports `limit.capacity` outright; inside a
+        0.5x window that is twice what the first acquire would admit."""
+        repo = limiter._repository
+        repo._now_ms = lambda: _ny("2026-09-16 03:00")
+        await repo.invalidate_config_cache()
+        await repo.set_limits(
+            "ca-1", [Limit.per_minute("rpm", 1000).with_schedule(self.NIGHT)], resource="gpt-4"
+        )
+
+        check = await limiter.check_availability("ca-1", "gpt-4")
+        assert check.status("rpm").available == 500
+
+    async def test_clamps_a_live_balance_to_the_scheduled_capacity(self, limiter):
+        """The other base-capacity site: `min(total_across_shards,
+        limit.capacity)`. A bucket full at 1000 entering a 0.5x window reports
+        500, not 1000 — the surplus is unspendable (§3.3)."""
+        repo = limiter._repository
+        await repo.set_limits(
+            "ca-2", [Limit.per_minute("rpm", 1000).with_schedule(self.NIGHT)], resource="gpt-4"
+        )
+        repo._now_ms = lambda: _ny("2026-09-15 14:00")  # outside the window
+        await repo.invalidate_config_cache()
+        async with limiter.acquire("ca-2", "gpt-4", consume={"rpm": 1}):
+            pass
+
+        repo._now_ms = lambda: _ny("2026-09-16 03:00")  # inside it
+        await repo.invalidate_config_cache()
+        check = await limiter.check_availability("ca-2", "gpt-4")
+        assert check.status("rpm").available == 500
+
+    async def test_the_wait_walks_boundaries(self, limiter):
+        """`available()` and `time_until_available()` are thin wrappers over
+        this, so all three surfaces convert together."""
+        repo = limiter._repository
+        await repo.set_limits("ca-3", [RPD], resource="gpt-4")
+        repo._now_ms = lambda: _ny("2026-09-15 23:00")
+        await repo.invalidate_config_cache()
+        async with limiter.acquire("ca-3", "gpt-4", consume={"rpd": 10_000}):
+            pass
+
+        check = await limiter.check_availability("ca-3", "gpt-4", needed={"rpd": 5_000})
+        assert check.status("rpd").retry_after_seconds == pytest.approx(3600.001, abs=0.5)
+
+    async def test_a_pending_reset_is_reflected_in_the_balance(self, limiter):
+        """The bucket crossed midnight and nothing has touched it since, so
+        disk still holds the burnt balance. Without this the display says
+        "0 remaining, resets tomorrow" while the very next acquire restores the
+        quota immediately."""
+        repo = limiter._repository
+        await repo.set_limits("ca-4", [RPD], resource="gpt-4")
+        repo._now_ms = lambda: _ny("2026-09-15 23:00")
+        await repo.invalidate_config_cache()
+        async with limiter.acquire("ca-4", "gpt-4", consume={"rpd": 10_000}):
+            pass
+
+        repo._now_ms = lambda: _ny("2026-09-16 00:30")
+        await repo.invalidate_config_cache()
+        check = await limiter.check_availability("ca-4", "gpt-4", needed={"rpd": 5_000})
+        assert check.status("rpd").available == 10_000
+        assert check.status("rpd").retry_after_seconds == 0.0
+
+    async def test_an_unscheduled_entity_is_unchanged(self, limiter):
+        """Every existing check_availability assertion in the suite must still
+        hold; this is the regression guard for the two capacity sites."""
+        repo = limiter._repository
+        await repo.set_limits("ca-5", [Limit.per_minute("rpm", 1000)], resource="gpt-4")
+        check = await limiter.check_availability("ca-5", "gpt-4", needed={"rpm": 1})
+        assert check.status("rpm").available == 1000
+        assert check.status("rpm").retry_after_seconds == 0.0
+```
+
+- [ ] **Step 6: Run the call-site tests and watch them fail**
+
+```bash
+uv run pytest tests/unit/test_bucket.py -k "TryConsumeWalksBoundaries or DeserialisedBuckets" -v
+uv run pytest tests/unit/test_limiter.py -k CheckAvailabilityIsScheduleAware -v
+```
+
+Expected: `TypeError: BucketState.__init__() got an unexpected keyword argument 'reset_sched'`
+from the bucket class, and from the limiter class `assert 1000 == 500` on the two capacity
+tests — the base capacity reported inside a 0.5x window, which is the defect.
+
+- [ ] **Step 7: Implement the four sites**
+
+Add `reset_sched: tuple[ScheduleEntry, ...] = ()` to `BucketState` (`models.py:622`), beside
+the `sched` field core plan Task 9 adds, and populate both in
+`_deserialize_composite_bucket` (`repository.py:4878`) from the item's `sched` / `rsched` and
+the hoisted `sched_tz`, honouring a `b_{name}_sched` / `b_{name}_rsched` override where one is
+present — the same default-plus-override rule the aggregator applies (core plan Task 14).
+
+Site 1+2 — `bucket.py`'s `try_consume` failure branch (:152-166):
+
+```python
+        deficit_milli = requested_milli - current_tokens_milli
+        retry_after = retry_after_with_schedule(
+            deficit_milli=deficit_milli,
+            cp_milli=state.capacity_milli,
+            ra_milli=state.refill_amount_milli,
+            rp_ms=state.refill_period_ms,
+            sched=state.sched,
+            reset_sched=state.reset_sched,
+            now_ms=now_ms,
+            shard_count=state.shard_count,
+        )
+```
+
+The undivided base and `shard_count` go in, not the effective values: the walk re-evaluates
+`effective_params` per window and divides afterwards, so handing it pre-divided numbers would
+apply the shard split twice. `calculate_time_until_available` (:227) takes the same change;
+`calculate_retry_after` itself is unchanged and stays the definition the walk falls back to.
+
+Site 3 — `lease.py`'s `_build_retry_failure_statuses` (:673):
+
+```python
+        retry_after = retry_after_with_schedule(
+            deficit_milli=deficit_milli,
+            cp_milli=entry.state.capacity_milli,
+            ra_milli=entry.state.refill_amount_milli,
+            rp_ms=entry.state.refill_period_ms,
+            sched=entry.limit.schedule,
+            reset_sched=entry.limit.reset_schedule,
+            now_ms=now_ms,
+            shard_count=entry.state.shard_count,
+        )
+```
+
+`now_ms` is already threaded into this function by core plan Task 9.
+
+Site 4 — `limiter.py`'s `check_availability` (:2047-2070). Four edits in one loop:
+
+```python
+        for limit in resolved_limits:
+            eff_cp, eff_ra, eff_rp = effective_params(
+                limit.capacity * 1000,
+                limit.refill_amount * 1000,
+                limit.refill_period_seconds * 1000,
+                limit.schedule,
+                now_ms,
+            )
+            ceiling = max(1, eff_cp // 1000)
+            if limit.name in totals:
+                available = min(totals[limit.name], ceiling)
+            else:
+                # No bucket yet: the first acquire creates it at the capacity
+                # in force now, not at the base.
+                available = ceiling
+            if limit.name in pending_reset:
+                # The bucket crossed a reset edge and nothing has written to it
+                # since, so disk still holds the burnt balance. The next
+                # acquire restores it; say so rather than reporting a wait the
+                # caller will never actually serve.
+                available = ceiling
+            requested = needed.get(limit.name, 0)
+            exceeded = requested > 0 and available < requested
+
+            wait = 0.0
+            if exceeded:
+                # Shards are summed above, so the walk is handed the undivided
+                # base with shard_count=1 — the sum of the shares *is* the
+                # undivided rate, modulo flooring.
+                wait = retry_after_with_schedule(
+                    deficit_milli=(requested - available) * 1000,
+                    cp_milli=limit.capacity * 1000,
+                    ra_milli=limit.refill_amount * 1000,
+                    rp_ms=limit.refill_period_seconds * 1000,
+                    sched=limit.schedule,
+                    reset_sched=limit.reset_schedule,
+                    now_ms=now_ms,
+                )
+```
+
+`pending_reset` is collected in the bucket loop above, where `last_refill_ms` is in scope:
+
+```python
+        pending_reset: set[str] = set()
+        for bucket in await self._repository.get_buckets(entity_id):
+            # ... the existing totals / refill_milli / period_ms accumulation ...
+            if bucket.reset_sched:
+                edge = prev_reset_edge(bucket.reset_sched, now_ms)
+                if edge is not None and edge > bucket.last_refill_ms:
+                    pending_reset.add(name)
+```
+
+The reported `limit` on the `LimitStatus` stays the **undivided configured** limit, unlike the
+per-shard statuses in `RateLimitExceeded` (`Limit.per_shard()`, #475) — that asymmetry is
+already documented in `check_availability`'s docstring and is unchanged here.
+
+- [ ] **Step 8: Run the call-site tests, then the suite**
+
+```bash
+uv run pytest tests/unit/test_bucket.py tests/unit/test_limiter.py -v
+uv run pytest tests/unit/ -q
+uv run pytest tests/unit/ -m gevent -n 0 -q
+```
+
+- [ ] **Step 9: Regenerate sync, lint, type check, commit**
+
+`bucket.py`, `schedule.py` and `models.py` are not codegen sources; `lease.py`, `limiter.py`
+and `repository.py` are.
+
+```bash
+hatch run generate-sync
+uv run ruff check --fix .
+uv run ruff format src/zae_limiter tests/unit
+uv run mypy
+git add -A
+git commit -m "$(cat <<'EOF'
+✨ feat(bucket): compute retry_after across schedule boundaries
+
+The flat estimate divides a deficit by the rate in force *now*, which
+over-reports when a boundary raises the limit and under-reports when one
+lowers it — and lowering is the headline case. retry_after_with_schedule
+walks window by window at each window's effective rate, capped at eight
+windows with a fall back to the flat estimate, and returns a reset edge
+outright when one lands first: for a daily quota the only useful answer
+is "at midnight", not eleven hours of drip.
+
+Wired into all FOUR LimitStatus sites, not the three the plan listed.
+bucket.try_consume covers the speculative fast rejection and slow-path
+admission at once; lease._build_retry_failure_statuses and
+RateLimiter.check_availability convert individually. Missing
+check_availability would have left acquire() saying "at midnight" while
+the display said "in eleven hours" about the same bucket.
+
+check_availability also stopped reporting the base capacity inside a
+scale window — both the clamp and the missing-bucket branch worked from
+the config-resolved Limit, out of reach of the BucketState conversions —
+and now reflects a reset that has fired but not yet been materialised.
+
+Refs #222, #472, #475
+EOF
+)"
+```
 
 ---
 
@@ -1150,93 +3016,1235 @@ EOF
 
 ### Task 10: Failure handling
 
-> **Expand before picking this up.** The steps below carry real assertions but compress
-> the TDD cycle, and their fixture setup depends on `schedule.py`, which does not exist
-> yet. Write the full failing-test/implement/pass cycle against the real signatures once
-> the core plan has landed — writing it against invented ones now is the mistake this
-> plan's own review calls out.
+**Files:**
+- Modify: `src/zae_limiter/repository.py` (`_deserialize_limits` :5010, `_deserialize_composite_bucket` :4878), `docs/plans/2026-09-13-scheduled-limits-design.md` (§6)
+- Test: `tests/unit/test_repository.py`, `tests/unit/test_limiter.py`, `tests/unit/test_schedule_encoding.py`, `tests/integration/test_schedule_failure.py`
 
-**Files:** Modify `src/zae_limiter/schedule.py`, `src/zae_limiter/repository.py` · Test `tests/unit/test_schedule.py`, `tests/integration/`
+**Interfaces:**
+- Consumes: `decode` / `decode_reset` raising `ValueError` (core plan Task 5, surface Task 4);
+  `RateLimiterUnavailable` (`exceptions.py:158`)
+- Produces: no new public names. `Repository.get_limits()`, `Repository.resolve_limits()` and
+  the bucket deserialiser raise `RateLimiterUnavailable` instead of `ValueError` on a stored
+  schedule that will not decode.
 
-An unparseable **stored** schedule raises `RateLimiterUnavailable`, honouring the operator's existing `on_unavailable` setting. Treating it as "no schedule" would silently run at the **base** limit — so a parse error doubles a customer's limit when the schedule said `0.5x` — and, with `vu` left expired, would pin the bucket to the slow path permanently.
+**This task is writing design §6, not implementing it.** §6 exists as four paragraphs of intent
+and has never been reconciled with what the two sides actually do. Part of the work here is
+amending the design document — §6 is a design doc, not an accepted ADR, so
+`.claude/rules/adr-rules.md`'s immutability rule does not apply; ADR-135 (Task 12) then records
+the amended version. Say in the commit body that §6 was written by this task.
 
-A **version marker** in the encoding (~6 B) lets the log distinguish "written by a newer client", which is the realistic trigger, from genuine corruption.
+#### Decision 1: no version marker, and the "newer client" distinction is dropped
+
+Design §4.1 says "A version marker is carried in the encoding (~6 B) so §6 can distinguish
+'written by a newer client' from 'corrupt'." **It is not.** Core plan Task 5 shipped the
+encoding without one and recorded why: the grammar, its pinned fixture strings, and every
+downstream call site (core plan Tasks 8, 12, 13, 14 and surface Task 8) have no marker, and
+adding one breaks `test_compact_shape` along with every literal like `"h9-17w1-5s500"` in those
+tasks. The compressed version of *this* task then leaned on the marker as if it existed.
+
+**Decision: do not add it. Drop the distinction and amend §4.1.** The costs, both ways:
+
+*Cost of adding it.* Six bytes on every scheduled bucket item forever, against a 1 KB WCU
+boundary the design spends all of §4.2 staying under. A fixture rewrite across five landed or
+in-flight tasks, each of which pins the compact form byte-for-byte on purpose. And — the part
+that decides it — the marker cannot help with anything already written: an unmarked string
+would still be ambiguous between "an older client wrote this" and "this is corrupt", so the
+distinction only works forward from the day it ships.
+
+*Cost of dropping it.* The log line for an undecodable schedule says what failed and where, but
+not *why*, and an operator debugging a mixed-version fleet has to infer it. That is the whole
+loss. It is a log message, not behaviour: both readings produce the identical action —
+`RateLimiterUnavailable` on the client, skip-the-bucket in the aggregator — so nothing
+downstream branches on it.
+
+Two things make this cheap to reverse, and both should be stated in the amended §4.1 so the
+option stays open:
+
+- The **tokeniser already discriminates structurally**. `_tokenise` (`schedule.py:494`) matches
+  only the known tags `m h D M w s c a p` and raises `malformed compact schedule entry ...:
+  cannot parse from offset N` on anything else. A newer client's new tag lands there with a
+  precise offset, while a cronsim rejection reads `invalid cron expression ...`. That is a
+  heuristic, not a proof — corruption can also fail at an offset — and the amended §4.1 must
+  say so rather than overselling it.
+- **Adding a marker later is not itself a break**, provided the reader treats its absence as
+  v1. The reader has to be tolerant of absence anyway, for every item written before the marker
+  existed. So deferring costs nothing structurally.
+
+File a follow-up issue against the v1.x milestone for "versioned schedule encoding", referencing
+this decision, so the option is tracked rather than forgotten.
+
+#### Decision 2: `decode` raises `ValueError`; the *boundary* decides what that means
+
+Three positions currently exist in the tree and they are not in conflict once the rule is
+stated properly — but two of the three are merged, so this task must fit around them rather
+than legislate over them.
+
+| Where | Behaviour | Status |
+|-------|-----------|--------|
+| `schedule.decode` / `decode_reset` | raises `ValueError` | merged (core plan Task 5) |
+| `zae_limiter_aggregator.processor._decode_schedule` (:335) | catches `ValueError`, reports it on `sched_error`, `try_refill_bucket` skips the bucket | merged (core plan Task 14) |
+| `Repository._deserialize_limits` (:5010) | lets `ValueError` propagate out of `get_limits()` / `resolve_limits()` | merged (core plan Task 8), flagged in its ledger as "an asymmetry, and §6 is still unwritten" |
+
+**The rule: the parser raises, and each boundary converts.**
+
+1. **`schedule.py` is not modified by this task.** Two reasons, and both are hard constraints
+   rather than preferences. It is pure stdlib plus `cronsim` with no `zae_limiter` imports so
+   that `models.py` can import from it without a cycle and both Lambdas can vendor it — pulling
+   in `exceptions.py` would end that. And `processor._decode_schedule` catches `ValueError`
+   specifically; `RateLimiterUnavailable` is an `InfrastructureError`, not a `ValueError`, so
+   raising it from `decode` would slip straight through that catch and re-arm the poison-pill
+   failure core plan Task 14 fixed — a raise inside `aggregate_bucket_states` (`processor.py:216`)
+   aborts the whole stream batch, snapshots included, and the record retries until the stream
+   stalls. The compressed version of this task said "Modify `src/zae_limiter/schedule.py`" and
+   asserted `pytest.raises(RateLimiterUnavailable)` on `decode(...)` directly; that would have
+   broken merged code.
+2. **The aggregator boundary is already correct and is left alone.** Skip the bucket, do not
+   refill at the base rate (which would silently undo a scale-down), let usage extraction
+   continue.
+3. **The client boundary converts.** `Repository._deserialize_limits` and
+   `_deserialize_composite_bucket` wrap the decode and raise `RateLimiterUnavailable`. That is
+   the only change in `src/`.
+
+**`acquire()` then honours `on_unavailable` with no new code, and that is the point.** Its
+`except Exception` (`limiter.py:717`) yields a degraded lease under `ALLOW` and re-wraps under
+`BLOCK`; the re-raise tuple is `(RateLimitExceeded, ValidationError, ResourceDisabled, Warning)`
+and `RateLimiterUnavailable` is deliberately not in it. So the operator's existing knob applies
+as §6 asks, without a fourth behaviour being invented. Treating an unreadable schedule as "no
+schedule" instead would silently run at the **base** limit — a parse error doubling a
+customer's limit when the schedule said `0.5x` — and, with `vu` left expired, would pin the
+bucket to the slow path permanently.
+
+**Known limitation, to be stated in §6 rather than fixed here.** `RateLimiter.acquire()`
+resolves the mode *before* the try block (`limiter.py:674`), and `resolve_on_unavailable()`
+(`repository.py:5116-5144`) swallows every exception and falls back to its cached value or
+`"block"`. So a corrupt schedule on the **system config item specifically** makes the mode
+itself unresolvable, and an operator who configured `allow` gets `block` unless the value was
+already cached from an earlier successful read. Entity- and resource-level corruption is
+unaffected. Fixing it means teaching `resolve_on_unavailable` to distinguish "cannot reach
+DynamoDB" from "read a config item I cannot parse", which is a wider change than §6 needs.
 
 - [ ] **Step 1: Write the failing test**
 
+Three modules. First, a regression guard in `tests/unit/test_schedule_encoding.py` that the
+parser's exception type has **not** changed — this is the test that would have caught the
+compressed version's plan:
+
 ```python
-class TestCorruptStoredSchedule:
-    def test_unparseable_schedule_raises_unavailable(self):
-        with pytest.raises(RateLimiterUnavailable):
+class TestDecodeRaisesValueErrorForTheAggregatorsSake:
+    """`processor._decode_schedule` catches `ValueError` specifically.
+
+    Raising anything else from the parser slips through that catch and aborts
+    the whole stream batch (processor.py:216 is outside any try), which is the
+    poison pill core plan Task 14 fixed. The client-side conversion to
+    RateLimiterUnavailable belongs at the Repository boundary, not here.
+    """
+
+    @pytest.mark.parametrize(
+        "compact", ["this is not a schedule", "Xh9-17s500", "h9-17s500s600", "v9:h9-17"]
+    )
+    def test_decode_raises_value_error(self, compact):
+        with pytest.raises(ValueError):
+            decode(compact, "UTC")
+
+    def test_decode_does_not_raise_rate_limiter_unavailable(self):
+        """Explicit, because `RateLimiterUnavailable` is not a ValueError and
+        the failure would be silent until a stream stalled in production."""
+        with pytest.raises(ValueError) as excinfo:
             decode("this is not a schedule", "UTC")
+        assert not isinstance(excinfo.value, RateLimiterUnavailable)
 
-    def test_newer_version_marker_is_distinguishable(self):
-        with pytest.raises(RateLimiterUnavailable, match="newer"):
-            decode("v9:h9-17w1-5s500", "UTC")
-
-    async def test_on_unavailable_allow_degrades(self, test_repo_allow):
-        """The operator already chose what happens when the limiter cannot decide."""
-        ...  # write a corrupt sched directly, then acquire
-        async with limiter.acquire("user-1", "gpt-4", consume={"rpm": 1}) as lease:
-            assert lease.degraded is True
-
-    async def test_on_unavailable_block_raises(self, test_repo_block):
-        ...
+    def test_an_unknown_tag_is_distinguishable_from_a_bad_cron(self):
+        """The heuristic that replaces the version marker §4.1 promised. A
+        newer client's new tag fails in the tokeniser with an offset; a bad
+        field spec fails in cronsim. Not a proof — corruption can also fail at
+        an offset — but it is what the log has to work with."""
+        with pytest.raises(ValueError, match="cannot parse from offset"):
+            decode("h9-17q42", "UTC")
+        with pytest.raises(ValueError, match="invalid cron expression"):
+            decode("h99", "UTC")
 ```
 
-- [ ] **Step 2–4:** Implement; commit — `✨ feat(limiter): fail safe on an unreadable stored schedule`
+Second, the conversion, in `tests/unit/test_repository.py`:
+
+```python
+class TestUnreadableStoredSchedule:
+    """A schedule the client cannot read makes the limiter unavailable (§6).
+
+    Not "no schedule": that runs at the *base* limit, so a parse error would
+    double a customer's limit when the schedule said 0.5x, and with `vu` left
+    expired it would pin the bucket to the slow path forever.
+    """
+
+    async def test_get_limits_raises_unavailable(self, repo):
+        await repo.set_limits(
+            "corrupt-1",
+            [Limit.per_minute("rpm", 1000).with_schedule(BUSINESS)],
+            resource="gpt-4",
+        )
+        await _corrupt_config_sched(repo, "corrupt-1", "gpt-4", "rpm", "not-a-schedule")
+        await repo.invalidate_config_cache()
+
+        with pytest.raises(RateLimiterUnavailable, match="schedule"):
+            await repo.get_limits("corrupt-1", resource="gpt-4")
+
+    async def test_the_message_names_the_attribute_and_the_value(self, repo):
+        """An operator debugging a mixed-version fleet has only this line, now
+        that the version marker is not being added (Decision 1)."""
+        await repo.set_limits(
+            "corrupt-2",
+            [Limit.per_minute("rpm", 1000).with_schedule(BUSINESS)],
+            resource="gpt-4",
+        )
+        await _corrupt_config_sched(repo, "corrupt-2", "gpt-4", "rpm", "h9-17q42")
+        await repo.invalidate_config_cache()
+
+        with pytest.raises(RateLimiterUnavailable) as excinfo:
+            await repo.get_limits("corrupt-2", resource="gpt-4")
+        message = str(excinfo.value)
+        assert "l_rpm_sched" in message
+        assert "h9-17q42" in message
+        assert isinstance(excinfo.value.cause, ValueError)
+
+    async def test_resolve_limits_raises_too(self, repo):
+        """`resolve_limits` is what `acquire()`'s slow path calls; if only
+        `get_limits` converted, the path that matters would still surface a
+        bare ValueError."""
+        await repo.set_limits(
+            "corrupt-3",
+            [Limit.per_minute("rpm", 1000).with_schedule(BUSINESS)],
+            resource="gpt-4",
+        )
+        await _corrupt_config_sched(repo, "corrupt-3", "gpt-4", "rpm", "not-a-schedule")
+        await repo.invalidate_config_cache()
+
+        with pytest.raises(RateLimiterUnavailable):
+            await repo.resolve_limits("corrupt-3", "gpt-4")
+
+    async def test_an_unreadable_reset_schedule_raises_the_same_way(self, repo):
+        await repo.set_limits(
+            "corrupt-4",
+            [Limit.per_day("rpd", 10_000).with_reset_schedule(DAILY)],
+            resource="gpt-4",
+        )
+        await _corrupt_config_sched(repo, "corrupt-4", "gpt-4", "rpd", "zzz", field="rsched")
+        await repo.invalidate_config_cache()
+
+        with pytest.raises(RateLimiterUnavailable, match="schedule"):
+            await repo.get_limits("corrupt-4", resource="gpt-4")
+
+    async def test_an_unreadable_bucket_schedule_raises(self, repo):
+        """`_deserialize_composite_bucket` is the other decode site, and it is
+        the one behind the speculative fast rejection's ALL_OLD states."""
+        await repo.create_entity("corrupt-5", parent_id=None, name="corrupt-5")
+        await repo.set_limits(
+            "corrupt-5",
+            [Limit.per_minute("rpm", 1000).with_schedule(BUSINESS)],
+            resource="gpt-4",
+        )
+        await repo.speculative_consume("corrupt-5", "gpt-4", {"rpm": 1})
+        await _corrupt_bucket_sched(repo, "corrupt-5", "gpt-4", "not-a-schedule")
+
+        with pytest.raises(RateLimiterUnavailable):
+            await repo.get_buckets("corrupt-5", resource="gpt-4")
+
+    async def test_an_unscheduled_limit_still_reads_normally(self, repo):
+        """The guard must not turn every ValueError in the read path into an
+        infrastructure error — only the schedule decode is wrapped."""
+        await repo.set_limits("plain-1", [Limit.per_minute("rpm", 1000)], resource="gpt-4")
+        (stored,) = await repo.get_limits("plain-1", resource="gpt-4")
+        assert stored.capacity == 1000
+```
+
+with two helpers that write a bad attribute straight to the item, since no public API can
+produce one:
+
+```python
+async def _corrupt_config_sched(repo, entity_id, resource, limit_name, value, field="sched"):
+    """Overwrite one stored schedule attribute with an undecodable string."""
+    attr = schema.limit_attr(limit_name, getattr(schema, f"LIMIT_FIELD_{field.upper()}"))
+    client = await repo._get_client()
+    await client.update_item(
+        TableName=repo.table_name,
+        Key={
+            "PK": {"S": schema.pk_entity(repo._namespace_id, entity_id)},
+            "SK": {"S": schema.sk_config(resource)},
+        },
+        UpdateExpression="SET #a = :v",
+        ExpressionAttributeNames={"#a": attr},
+        ExpressionAttributeValues={":v": {"S": value}},
+    )
+
+
+async def _corrupt_bucket_sched(repo, entity_id, resource, value, shard=0):
+    client = await repo._get_client()
+    await client.update_item(
+        TableName=repo.table_name,
+        Key={
+            "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, resource, shard)},
+            "SK": {"S": schema.sk_state()},
+        },
+        UpdateExpression="SET #a = :v",
+        ExpressionAttributeNames={"#a": schema.BUCKET_FIELD_SCHED},
+        ExpressionAttributeValues={":v": {"S": value}},
+    )
+```
+
+Third, the `on_unavailable` behaviour, in `tests/unit/test_limiter.py`:
+
+```python
+class TestUnreadableScheduleHonoursOnUnavailable:
+    """The operator already chose what happens when the limiter cannot decide.
+
+    No new code makes this work — `acquire()`'s `except Exception` handler
+    (limiter.py:717) does it, because RateLimiterUnavailable is not in the
+    re-raise tuple. These tests pin that it stays that way.
+    """
+
+    async def _corrupt(self, limiter, entity_id):
+        repo = limiter._repository
+        await repo.set_limits(
+            entity_id,
+            [Limit.per_minute("rpm", 1000).with_schedule(BUSINESS)],
+            resource="gpt-4",
+        )
+        await _corrupt_config_sched(repo, entity_id, "gpt-4", "rpm", "not-a-schedule")
+        await repo.invalidate_config_cache()
+
+    async def test_block_raises_rate_limiter_unavailable(self, limiter):
+        await self._corrupt(limiter, "ou-1")
+        slow = RateLimiter(repository=limiter._repository, speculative_writes=False)
+        with pytest.raises(RateLimiterUnavailable):
+            async with slow.acquire(
+                "ou-1", "gpt-4", consume={"rpm": 1}, on_unavailable=OnUnavailable.BLOCK
+            ):
+                pass
+
+    async def test_allow_degrades(self, limiter):
+        await self._corrupt(limiter, "ou-2")
+        slow = RateLimiter(repository=limiter._repository, speculative_writes=False)
+        async with slow.acquire(
+            "ou-2", "gpt-4", consume={"rpm": 1}, on_unavailable=OnUnavailable.ALLOW
+        ) as lease:
+            assert lease.degraded is True
+
+    async def test_a_degraded_lease_is_not_inferred_from_empty_entries(self, limiter):
+        """Invariant 2 in CLAUDE.md: never infer degradation from entries == [].
+        Pinned here because this is the second producer of such a lease."""
+        await self._corrupt(limiter, "ou-3")
+        slow = RateLimiter(repository=limiter._repository, speculative_writes=False)
+        async with slow.acquire(
+            "ou-3", "gpt-4", consume={"rpm": 1}, on_unavailable=OnUnavailable.ALLOW
+        ) as lease:
+            lease.adjust({"rpm": 5})  # must not raise the declared-scope error
+
+    async def test_a_readable_schedule_is_unaffected(self, limiter):
+        """Discriminates the two above against "always degrade when scheduled"."""
+        repo = limiter._repository
+        await repo.set_limits(
+            "ou-4",
+            [Limit.per_minute("rpm", 1000).with_schedule(BUSINESS)],
+            resource="gpt-4",
+        )
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        async with slow.acquire("ou-4", "gpt-4", consume={"rpm": 1}) as lease:
+            assert lease.degraded is False
+```
+
+- [ ] **Step 2: Run the tests and watch them fail**
+
+```bash
+uv run pytest tests/unit/test_schedule_encoding.py -k DecodeRaisesValueError -v
+uv run pytest tests/unit/test_repository.py -k UnreadableStoredSchedule -v
+uv run pytest tests/unit/test_limiter.py -k UnreadableScheduleHonoursOnUnavailable -v
+```
+
+Expected: the `test_schedule_encoding.py` class **passes** already — it is a regression guard,
+and a guard that fails on day one is describing a change nobody asked for. The
+`test_repository.py` class fails with
+`ValueError: malformed compact schedule entry 'not-a-schedule'` where
+`RateLimiterUnavailable` was expected. `test_block_raises_rate_limiter_unavailable` passes
+(`except Exception` already wraps it), `test_allow_degrades` passes, and
+`test_a_degraded_lease_is_not_inferred_from_empty_entries` passes — which is the finding, not a
+gap: **the `on_unavailable` half of §6 is already satisfied by existing machinery** and only
+the exception type at the Repository boundary is missing. Say so in the commit body rather than
+inventing work to make a red phase.
+
+- [ ] **Step 3: Implement**
+
+One helper in `repository.py`, used at both decode sites:
+
+```python
+    def _decode_stored_schedule(
+        self, attr_name: str, compact: str, tz: str, *, reset: bool = False
+    ) -> tuple[schedule.ScheduleEntry, ...]:
+        """Decode a stored schedule, or declare the limiter unavailable (§6).
+
+        A limiter that cannot determine the limit is definitionally
+        unavailable, and ``on_unavailable`` is the knob that already exists for
+        that — in ``allow`` mode it degrades exactly the way the operator asked.
+        The alternative, treating an unreadable schedule as *no* schedule, runs
+        at the **base** limit: a parse error would then double a customer's
+        limit when the schedule said ``0.5x``, and with ``vu`` left expired the
+        bucket would be pinned to the slow path permanently.
+
+        The parser keeps raising ``ValueError`` and is not touched: it is pure
+        stdlib plus cronsim so that ``models`` can import it without a cycle and
+        both Lambdas can vendor it, and the aggregator's ``_decode_schedule``
+        catches ``ValueError`` specifically — raising an ``InfrastructureError``
+        there would slip through that catch and poison a whole stream batch.
+
+        The message carries the attribute name and the stored value because
+        there is no version marker to say whether a newer client wrote this;
+        see Task 10's Decision 1.
+        """
+        decoder = schedule.decode_reset if reset else schedule.decode
+        try:
+            return decoder(compact, tz)
+        except ValueError as exc:
+            raise RateLimiterUnavailable(
+                f"stored schedule in {attr_name} could not be decoded: "
+                f"{compact!r} ({tz}): {exc}",
+                cause=exc,
+                stack_name=self.stack_name,
+            ) from exc
+```
+
+Route `_deserialize_limits` (:5010) and `_deserialize_composite_bucket` (:4878) through it.
+Nothing else changes: `acquire()` already does the rest.
+
+- [ ] **Step 4: Run the tests and watch them pass**
+
+```bash
+uv run pytest tests/unit/test_repository.py -k UnreadableStoredSchedule -v
+uv run pytest tests/unit/test_limiter.py -k UnreadableScheduleHonoursOnUnavailable -v
+uv run pytest tests/unit/ -q
+uv run pytest tests/unit/ -m gevent -n 0 -q
+```
+
+- [ ] **Step 5: Add the integration test**
+
+A unit test with moto cannot show the fast path's behaviour against a real conditional write,
+and the interesting question — what an in-flight `acquire()` does when the item it is about to
+read carries an unreadable schedule — needs LocalStack. New file
+`tests/integration/test_schedule_failure.py`, following `.claude/rules/testing.md`'s
+`make_test_repo(stack, namespace)` pattern:
+
+```python
+@pytest.mark.integration
+class TestUnreadableScheduleIntegration:
+    async def test_the_fast_path_is_unaffected_until_vu_expires(self, test_repo):
+        """`vu` in the future keeps the request on the speculative path, which
+        reads no config and decodes nothing — so a corrupt *config* schedule is
+        invisible until the bucket next materialises. This is the load-bearing
+        claim of §2.1 seen from the failure side."""
+
+    async def test_an_expired_vu_surfaces_the_error(self, test_repo):
+        """Once `vu` expires the slow path resolves config, hits the corrupt
+        attribute, and `on_unavailable` applies."""
+
+    async def test_the_aggregator_skips_rather_than_stalling(self, test_repo):
+        """The other half of the reconciliation: a corrupt *bucket* schedule
+        must leave usage snapshots flowing. Assert the snapshot for the same
+        entity still appears while the bucket is never refilled."""
+```
+
+Fill each body out following `tests/integration/test_provisioner.py`'s style; they are the same
+shape as the repository tests above with a real table underneath.
+
+- [ ] **Step 6: Amend design §6 and §4.1**
+
+In `docs/plans/2026-09-13-scheduled-limits-design.md`:
+
+- §6 gains the boundary table from Decision 2, the statement that the parser raises
+  `ValueError` and each boundary converts, and the `resolve_on_unavailable` known limitation.
+- §4.1's last line changes from "A version marker is carried in the encoding (~6 B) so §6 can
+  distinguish 'written by a newer client' from 'corrupt'" to a statement that no marker is
+  carried, why, the tokeniser heuristic that replaces it, and that adding one later is
+  non-breaking for a reader tolerant of its absence.
+- §9 gains the `resolve_on_unavailable` limitation.
+
+- [ ] **Step 7: Lint, type check, commit**
+
+`repository.py` is a sync-codegen source.
+
+```bash
+hatch run generate-sync
+uv run ruff check --fix .
+uv run ruff format src/zae_limiter tests/unit tests/integration
+uv run mypy
+git add -A
+git commit -m "$(cat <<'EOF'
+✨ feat(limiter): fail safe on an unreadable stored schedule
+
+A stored schedule that will not decode now raises RateLimiterUnavailable
+out of the config and bucket read paths, so acquire()'s existing handler
+applies the operator's on_unavailable setting to it — degrading in allow
+mode and raising in block mode. Treating it as "no schedule" would run
+at the base limit, doubling a customer's limit when the schedule said
+0.5x, and would pin the bucket to the slow path with `vu` expired.
+
+The parser is deliberately unchanged: schedule.py stays free of any
+zae_limiter import so models.py can use it without a cycle and both
+Lambdas can vendor it, and the aggregator catches ValueError
+specifically — an InfrastructureError raised there would slip through
+and poison a whole stream batch. The conversion belongs at the client
+boundary, and the aggregator's skip-the-bucket handling is already
+correct and untouched.
+
+Design §6 was unwritten; this commit writes it, and amends §4.1 to say
+that no version marker is carried. The marker would have cost six bytes
+per item forever plus a fixture rewrite across five tasks, to distinguish
+two cases that produce identical behaviour — and could not have
+classified anything already written. The tokeniser's offset message is
+the heuristic that replaces it; adding a real marker later stays
+non-breaking.
+
+Refs #222
+EOF
+)"
+```
 
 ---
 
 ### Task 11: E2E
 
-> **Expand before picking this up.** The steps below carry real assertions but compress
-> the TDD cycle, and their fixture setup depends on `schedule.py`, which does not exist
-> yet. Write the full failing-test/implement/pass cycle against the real signatures once
-> the core plan has landed — writing it against invented ones now is the mistake this
-> plan's own review calls out.
+**Files:**
+- Modify: `tests/e2e/test_localstack.py`
+- Test: the same file — this task is tests only
 
-**Files:** Modify `tests/e2e/test_localstack.py`
+**Interfaces:**
+- Consumes: everything. This is the task that proves the schedule survives a real
+  CloudFormation stack, a real DynamoDB table, a real stream and a real Lambda.
+- Produces: nothing importable.
 
-Boundary crossings use a `*/2` schedule and real waiting, marked `slow` — the Lambda's clock cannot be injected the way `Repository._now_ms()` can.
+**Two groups, and the split is deliberate.** Design §8 says boundary crossings "use a `*/2`
+schedule and real waiting, marked `slow`, because the Lambda's clock cannot be injected the way
+`Repository._now_ms()` can". The second half of that sentence is true; the first half follows
+from it only for the cases that actually involve the Lambda.
 
-- [ ] **Step 1: Write the tests** — every case from spec §8:
+- **Group A — clock-injected, no `slow` marker.** Everything enforced by the client:
+  materialisation, trimming, the fast-path `vu` gate, cascade, sharding, leases, the reset, the
+  provisioner, and the failure modes. `Repository._now_ms()` (#430) drives the `rf` stamp, the
+  `vu` comparison in the speculative condition, the `ttl` stamp and its guard, and every refill
+  computation, so a jumped clock is *self-consistent* across all of them. Eleven crossings at
+  two real minutes each is twenty-two minutes of CI for no additional coverage.
+- **Group B — real `*/2` waiting, marked `slow` and `monitoring`.** Only the cases that require
+  the aggregator to observe the boundary itself, because it reads `time.time()` inside a Lambda
+  container this test cannot reach.
+
+Use dates within a day or two of real time (`2026-09-15` / `2026-09-16`). DynamoDB's own TTL
+reaper runs on real time and does not care about the injected clock, so a bucket stamped with a
+`ttl` computed from an instant years in the past could be swept mid-test.
+
+**Two traps that will cost a day each if rediscovered.**
+
+- **The config cache does not follow the clock seam.** `config_cache.py:99` and `:103` call
+  `time.time()`. Every clock jump below is followed by `await repo.invalidate_config_cache()`.
+  Without it the post-jump `acquire()` resolves the **pre**-jump `Limit`, the schedule appears
+  not to apply, and the obvious "fix" is to weaken an assertion.
+- **`vu` is what routes a request to the slow path, and the fan-out sets it to 0.** A test that
+  calls `set_limits` and then asserts on the *first* subsequent acquire is observing the
+  `vu = 0` forced pass (core plan Task 13), not the boundary. Where the boundary is the subject,
+  warm the bucket first and let `vu` settle to a real boundary.
+
+**Sync counterparts.** `tests/e2e/test_localstack.py` has no generated twin; §8's "plus the
+generated sync counterparts throughout" is discharged by the generated unit twins of Tasks 3
+and 5 (`test_sync_limiter.py`, `test_sync_repository.py`). One sync smoke test goes here anyway,
+because `SyncRepository` reaches DynamoDB through boto3 rather than aioboto3 and nothing else in
+this file crosses a boundary on that client.
+
+- [ ] **Step 1: Write the Group A tests**
+
+Append to `tests/e2e/test_localstack.py`. `BUSINESS` halves the limit from 09:00 to 17:59 local
+on weekdays; 2026-09-15 is a Tuesday.
 
 ```python
-@pytest.mark.e2e
-@pytest.mark.slow
-class TestScheduleBoundaryE2E:
-    async def test_shrink_boundary_trims_a_full_bucket(self):
-        """The surplus must be unspendable, not a free burst."""
+NY = ZoneInfo("America/New_York")
 
-    async def test_grow_boundary_makes_capacity_available(self): ...
 
-    async def test_boundary_while_a_lease_is_open(self):
-        """adjust/release still land against the declared consume scope (#455)."""
+def _ny(s: str) -> int:
+    return int(datetime.fromisoformat(s).replace(tzinfo=NY).timestamp() * 1000)
 
-    async def test_concurrent_traffic_at_the_boundary_never_over_admits(self):
-        """Exactly one materialisation wins; total admitted <= the new ceiling."""
 
-    async def test_cascade_with_different_schedules_on_child_and_parent(self): ...
+BUSINESS = (ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.5),)
+NIGHT_DOUBLE = (ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", capacity=2000),)
+DAILY_RESET = (ScheduleEntry.reset(cron="0 0 * * *", tz="America/New_York"),)
 
-    async def test_every_shard_converges_on_its_share(self): ...
+BEFORE = _ny("2026-09-15 08:00")   # outside every window above
+INSIDE = _ny("2026-09-15 10:00")   # inside BUSINESS
+NIGHT = _ny("2026-09-16 03:00")    # inside NIGHT_DOUBLE
+LATE = _ny("2026-09-15 23:00")     # before the daily reset
+AFTER_RESET = _ny("2026-09-16 00:30")
 
-    @pytest.mark.parametrize("aggregator", [True, False])
-    async def test_crossing_works_with_and_without_the_aggregator(self, aggregator):
-        """ADR-133: sharding and refill must work either way."""
 
-    async def test_daily_quota_reset(self):
-        """Burn it, cross the edge, get it back in one lump; tc keeps climbing."""
+class TestE2EScheduleBoundaries:
+    """Schedule enforcement against a real table, with an injected clock."""
 
-    async def test_idle_bucket_resets_on_wake_not_at_the_edge(self): ...
+    @pytest_asyncio.fixture(scope="class", loop_scope="class")
+    async def sched_repo(self, shared_minimal_stack, unique_name_class):
+        """Namespace-scoped Repository on the shared *minimal* stack.
 
-    async def test_manifest_applied_schedule_reaches_live_buckets(self): ...
+        Minimal on purpose: the aggregator writes to the same bucket items and
+        would make every token assertion below racy. The aggregator's own
+        behaviour at a boundary is Group B.
+        """
+        ns = f"sched-{unique_name_class}"
+        repo = await Repository.open(
+            stack=shared_minimal_stack.name,
+            region=shared_minimal_stack.region,
+            endpoint_url=shared_minimal_stack.endpoint_url,
+            config_cache_ttl=0,
+        )
+        await repo.register_namespace(ns)
+        scoped = await repo.namespace(ns)
+        yield scoped
+        await repo.close()
 
-    async def test_corrupt_stored_schedule_honours_on_unavailable(self): ...
+    @staticmethod
+    async def _at(repo, instant: int) -> None:
+        """Move the injected clock and drop the config cache.
+
+        The seam (#430) does not cover config_cache.py, which still reads
+        time.time() — so without the second line every call after a jump
+        resolves the limits cached before it.
+        """
+        repo._now_ms = lambda: instant
+        await repo.invalidate_config_cache()
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_a_shrink_boundary_trims_a_full_bucket(self, sched_repo):
+        """§8: the surplus must be unspendable, not a free burst.
+
+        Fill to 1000 outside the window, cross into a 0.5x window, and the
+        bucket must not admit 1000 — it holds at most 500. This is what
+        replaces #469, seen end to end.
+        """
+        limiter = RateLimiter(repository=sched_repo)
+        await self._at(sched_repo, BEFORE)
+        await sched_repo.set_limits(
+            "shrink-1",
+            [Limit.per_minute("rpm", 1000).with_schedule(BUSINESS)],
+            resource="gpt-4",
+        )
+        async with limiter.acquire("shrink-1", "gpt-4", consume={"rpm": 1}):
+            pass
+
+        await self._at(sched_repo, INSIDE)
+        async with limiter.acquire("shrink-1", "gpt-4", consume={"rpm": 500}):
+            pass
+        with pytest.raises(RateLimitExceeded) as excinfo:
+            async with limiter.acquire("shrink-1", "gpt-4", consume={"rpm": 1}):
+                pass
+
+        # #475: the status quotes the shard's share of the *scheduled* capacity.
+        (violation,) = excinfo.value.violations
+        assert violation.limit.capacity == 500
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_a_grow_boundary_makes_capacity_available(self, sched_repo):
+        """§8. An absolute entry raising the ceiling to 2000 must be spendable
+        promptly — one materialising pass, not a refill window's wait."""
+        limiter = RateLimiter(repository=sched_repo)
+        await self._at(sched_repo, BEFORE)
+        await sched_repo.set_limits(
+            "grow-1",
+            [Limit.per_minute("rpm", 1000).with_schedule(NIGHT_DOUBLE)],
+            resource="gpt-4",
+        )
+        async with limiter.acquire("grow-1", "gpt-4", consume={"rpm": 1000}):
+            pass
+
+        await self._at(sched_repo, NIGHT)
+        async with limiter.acquire("grow-1", "gpt-4", consume={"rpm": 2000}) as lease:
+            assert lease.consumed["rpm"] == 2000
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_a_future_vu_keeps_the_fast_path_and_reads_no_config(self, sched_repo):
+        """§2.1's load-bearing claim, from the e2e side: inside a window and
+        with `vu` still ahead, a request is one conditional UpdateItem.
+
+        Asserted through the bucket item rather than a capacity counter (which
+        is moto-only): `rf` must not move, because only a materialising pass
+        stamps it.
+        """
+        limiter = RateLimiter(repository=sched_repo)
+        await self._at(sched_repo, INSIDE)
+        await sched_repo.set_limits(
+            "fast-1",
+            [Limit.per_minute("rpm", 1000).with_schedule(BUSINESS)],
+            resource="gpt-4",
+        )
+        async with limiter.acquire("fast-1", "gpt-4", consume={"rpm": 1}):
+            pass
+        before = await _raw_bucket_item(sched_repo, "fast-1", "gpt-4", shard=0)
+
+        async with limiter.acquire("fast-1", "gpt-4", consume={"rpm": 1}):
+            pass
+        after = await _raw_bucket_item(sched_repo, "fast-1", "gpt-4", shard=0)
+
+        assert after[schema.BUCKET_FIELD_RF] == before[schema.BUCKET_FIELD_RF]
+        assert int(after[schema.BUCKET_FIELD_VU]["N"]) == _ny("2026-09-15 18:00")
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_a_boundary_crossed_while_a_lease_is_open(self, sched_repo):
+        """§8, with #455: `adjust` still lands against the declared scope, and
+        a limit the caller did not declare is still not adjustable — crossing a
+        boundary mid-lease must not widen or narrow that."""
+        limiter = RateLimiter(repository=sched_repo)
+        await self._at(sched_repo, BEFORE)
+        await sched_repo.set_limits(
+            "lease-1",
+            [
+                Limit.per_minute("rpm", 1000).with_schedule(BUSINESS),
+                Limit.per_minute("tpm", 100_000),
+            ],
+            resource="gpt-4",
+        )
+
+        async with limiter.acquire("lease-1", "gpt-4", consume={"rpm": 10}) as lease:
+            await self._at(sched_repo, INSIDE)
+            lease.adjust({"rpm": 5})
+            with pytest.warns(FutureWarning):
+                lease.adjust({"tpm": 50})
+
+        buckets = {
+            b.limit_name: b for b in await sched_repo.get_buckets("lease-1", resource="gpt-4")
+        }
+        assert buckets["rpm"].tokens_milli == (1000 - 15) * 1000
+        assert buckets["tpm"].tokens_milli == 100_000 * 1000
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_concurrent_traffic_at_the_boundary_never_over_admits(self, sched_repo):
+        """§8: exactly one materialisation wins, the losers take the retry path
+        (`tk >= consumed`, which sees the winner's clamp), and the total
+        admitted never exceeds the new ceiling.
+
+        Twenty concurrent requests for 50 each against a 500 ceiling: at most
+        ten may succeed.
+        """
+        limiter = RateLimiter(repository=sched_repo)
+        await self._at(sched_repo, BEFORE)
+        await sched_repo.set_limits(
+            "race-1",
+            [Limit.per_minute("rpm", 1000).with_schedule(BUSINESS)],
+            resource="gpt-4",
+        )
+        async with limiter.acquire("race-1", "gpt-4", consume={"rpm": 1}):
+            pass
+
+        await self._at(sched_repo, INSIDE)
+
+        async def one() -> bool:
+            try:
+                async with limiter.acquire("race-1", "gpt-4", consume={"rpm": 50}):
+                    return True
+            except RateLimitExceeded:
+                return False
+
+        results = await asyncio.gather(*[one() for _ in range(20)])
+        assert sum(results) <= 10
+
+        bucket = next(
+            b for b in await sched_repo.get_buckets("race-1", resource="gpt-4")
+            if b.limit_name == "rpm"
+        )
+        assert bucket.tokens_milli >= 0
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_cascade_with_different_schedules_on_child_and_parent(self, sched_repo):
+        """§8: only the parent's boundary fires. The child keeps its full
+        1000 and is admitted by its own bucket; the parent's 0.5x window is
+        what rejects, and the status names the *parent*."""
+        limiter = RateLimiter(repository=sched_repo)
+        await self._at(sched_repo, BEFORE)
+        await limiter.create_entity("casc-org")
+        await limiter.create_entity("casc-key", parent_id="casc-org", cascade=True)
+        await sched_repo.set_limits(
+            "casc-org",
+            [Limit.per_minute("rpm", 1000).with_schedule(BUSINESS)],
+            resource="gpt-4",
+        )
+        await sched_repo.set_limits(
+            "casc-key", [Limit.per_minute("rpm", 1000)], resource="gpt-4"
+        )
+        async with limiter.acquire("casc-key", "gpt-4", consume={"rpm": 1}):
+            pass
+
+        await self._at(sched_repo, INSIDE)
+        with pytest.raises(RateLimitExceeded) as excinfo:
+            async with limiter.acquire("casc-key", "gpt-4", consume={"rpm": 900}):
+                pass
+        assert {v.entity_id for v in excinfo.value.violations} == {"casc-org"}
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_every_shard_converges_on_its_share(self, sched_repo):
+        """§8. Shares must sum to the scheduled ceiling, not to a multiple of
+        it — scale first, then divide (Global Constraints).
+
+        `speculative_consume` takes an explicit `shard_id` precisely so a test
+        can target a shard; assuming an `acquire()` lands on one is flaky by
+        construction (ADR-134).
+        """
+        limiter = RateLimiter(repository=sched_repo)
+        await self._at(sched_repo, BEFORE)
+        await sched_repo.set_limits(
+            "shard-1",
+            [Limit.per_minute("rpm", 1000).with_schedule(BUSINESS)],
+            resource="gpt-4",
+        )
+        async with limiter.acquire("shard-1", "gpt-4", consume={"rpm": 1}):
+            pass
+        await sched_repo.bump_shard_count("shard-1", "gpt-4", 1)
+        for shard in (0, 1):
+            await sched_repo.speculative_consume(
+                "shard-1", "gpt-4", {"rpm": 1}, shard_id=shard
+            )
+
+        await self._at(sched_repo, INSIDE)
+        for shard in (0, 1):
+            await sched_repo.speculative_consume(
+                "shard-1", "gpt-4", {"rpm": 1}, shard_id=shard
+            )
+
+        buckets = [
+            b for b in await sched_repo.get_buckets("shard-1", resource="gpt-4")
+            if b.limit_name == "rpm"
+        ]
+        assert len(buckets) == 2
+        for b in buckets:
+            assert b.effective_capacity_milli(INSIDE) == 250_000  # (1_000_000 * 0.5) // 2
+            assert b.tokens_milli <= 250_000
+        assert sum(b.tokens_milli for b in buckets) <= 500_000
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_a_daily_quota_resets_in_one_lump(self, sched_repo):
+        """§8: burn it, cross the edge, get it back at once, and `tc` keeps
+        climbing across the boundary — the property #471's reset_bucket()
+        destroyed and `.claude/rules/design-validation.md` exists to protect."""
+        limiter = RateLimiter(repository=sched_repo)
+        await self._at(sched_repo, LATE)
+        await sched_repo.set_limits(
+            "quota-1",
+            [Limit.per_day("rpd", 10_000).with_reset_schedule(DAILY_RESET)],
+            resource="gpt-4",
+        )
+        async with limiter.acquire("quota-1", "gpt-4", consume={"rpd": 10_000}):
+            pass
+        with pytest.raises(RateLimitExceeded):
+            async with limiter.acquire("quota-1", "gpt-4", consume={"rpd": 1}):
+                pass
+
+        await self._at(sched_repo, AFTER_RESET)
+        async with limiter.acquire("quota-1", "gpt-4", consume={"rpd": 9_000}):
+            pass
+
+        bucket = next(
+            b for b in await sched_repo.get_buckets("quota-1", resource="gpt-4")
+            if b.limit_name == "rpd"
+        )
+        assert bucket.tokens_milli == 1_000_000
+        assert bucket.total_consumed_milli == 19_000_000
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_an_idle_bucket_resets_on_wake_not_at_the_edge(self, sched_repo):
+        """§8 and §9: nothing observes a bucket no one is using, so the reset
+        lands on the first request after the edge. Asserted from both sides —
+        the item is untouched at 00:30, and restored after the 09:00 request."""
+        limiter = RateLimiter(repository=sched_repo)
+        await self._at(sched_repo, LATE)
+        await sched_repo.set_limits(
+            "idle-1",
+            [Limit.per_day("rpd", 10_000).with_reset_schedule(DAILY_RESET)],
+            resource="gpt-4",
+        )
+        async with limiter.acquire("idle-1", "gpt-4", consume={"rpd": 10_000}):
+            pass
+
+        await self._at(sched_repo, AFTER_RESET)
+        idle = next(
+            b for b in await sched_repo.get_buckets("idle-1", resource="gpt-4")
+            if b.limit_name == "rpd"
+        )
+        assert idle.tokens_milli == 0  # the edge passed; nothing applied it
+
+        await self._at(sched_repo, _ny("2026-09-16 09:00"))
+        async with limiter.acquire("idle-1", "gpt-4", consume={"rpd": 1}):
+            pass
+        woken = next(
+            b for b in await sched_repo.get_buckets("idle-1", resource="gpt-4")
+            if b.limit_name == "rpd"
+        )
+        assert woken.tokens_milli == 9_999_000
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_check_availability_agrees_with_acquire_at_one_instant(self, sched_repo):
+        """§7's reason for wiring the query surface: the display and the
+        rejection must not describe the same bucket differently."""
+        limiter = RateLimiter(repository=sched_repo)
+        await self._at(sched_repo, LATE)
+        await sched_repo.set_limits(
+            "agree-1",
+            [Limit.per_day("rpd", 10_000).with_reset_schedule(DAILY_RESET)],
+            resource="gpt-4",
+        )
+        async with limiter.acquire("agree-1", "gpt-4", consume={"rpd": 10_000}):
+            pass
+
+        check = await limiter.check_availability("agree-1", "gpt-4", needed={"rpd": 5_000})
+        with pytest.raises(RateLimitExceeded) as excinfo:
+            async with limiter.acquire("agree-1", "gpt-4", consume={"rpd": 5_000}):
+                pass
+
+        displayed = check.status("rpd").retry_after_seconds
+        rejected = excinfo.value.retry_after_seconds
+        assert displayed == pytest.approx(rejected, rel=0.01)
+        assert displayed == pytest.approx(3600, abs=5)  # at midnight, not 12 hours
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_a_corrupt_stored_schedule_honours_on_unavailable(self, sched_repo):
+        """§8 and §6, both modes against a real table."""
+        limiter = RateLimiter(repository=sched_repo)
+        await self._at(sched_repo, INSIDE)
+        await sched_repo.set_limits(
+            "corrupt-e2e",
+            [Limit.per_minute("rpm", 1000).with_schedule(BUSINESS)],
+            resource="gpt-4",
+        )
+        await _corrupt_config_sched(sched_repo, "corrupt-e2e", "gpt-4", "rpm", "not-a-schedule")
+        await sched_repo.invalidate_config_cache()
+
+        slow = RateLimiter(repository=sched_repo, speculative_writes=False)
+        with pytest.raises(RateLimiterUnavailable):
+            async with slow.acquire(
+                "corrupt-e2e", "gpt-4", consume={"rpm": 1}, on_unavailable=OnUnavailable.BLOCK
+            ):
+                pass
+
+        async with slow.acquire(
+            "corrupt-e2e", "gpt-4", consume={"rpm": 1}, on_unavailable=OnUnavailable.ALLOW
+        ) as lease:
+            assert lease.degraded is True
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_the_sync_client_enforces_the_same_boundary(self, sched_repo):
+        """§8's "plus the generated sync counterparts". SyncRepository reaches
+        DynamoDB through boto3, not aioboto3, and nothing else in this file
+        crosses a boundary on that client."""
+        sync_repo = SyncRepository.open(
+            stack=sched_repo.stack_name,
+            region=sched_repo.region,
+            endpoint_url=sched_repo.endpoint_url,
+            config_cache_ttl=0,
+        )
+        try:
+            sync_repo = sync_repo.namespace(sched_repo.namespace)
+            sync_repo._now_ms = lambda: BEFORE
+            sync_repo.set_limits(
+                "sync-1",
+                [Limit.per_minute("rpm", 1000).with_schedule(BUSINESS)],
+                resource="gpt-4",
+            )
+            limiter = SyncRateLimiter(repository=sync_repo)
+            with limiter.acquire("sync-1", "gpt-4", consume={"rpm": 1}):
+                pass
+
+            sync_repo._now_ms = lambda: INSIDE
+            sync_repo.invalidate_config_cache()
+            with limiter.acquire("sync-1", "gpt-4", consume={"rpm": 499}):
+                pass
+            with pytest.raises(RateLimitExceeded):
+                with limiter.acquire("sync-1", "gpt-4", consume={"rpm": 100}):
+                    pass
+        finally:
+            sync_repo.close()
+
+
+class TestE2EScheduleThroughTheProvisioner:
+    """§8: a schedule applied through the manifest must reach live buckets.
+
+    Modelled on TestE2EProvisionerReachesLiveBuckets (:1228): `_handle_cli` is
+    invoked in-process, because the provisioner is sync boto3 and needs no
+    deployed Lambda to exercise this path.
+    """
+
+    @pytest_asyncio.fixture(scope="class", loop_scope="class")
+    async def prov_repo(self, shared_minimal_stack, unique_name_class):
+        ns = f"schedprov-{unique_name_class}"
+        repo = await Repository.open(
+            stack=shared_minimal_stack.name,
+            region=shared_minimal_stack.region,
+            endpoint_url=shared_minimal_stack.endpoint_url,
+            config_cache_ttl=0,
+        )
+        await repo.register_namespace(ns)
+        scoped = await repo.namespace(ns)
+        yield scoped
+        await repo.close()
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_an_applied_schedule_reaches_an_existing_bucket(self, prov_repo):
+        from zae_limiter_provisioner.handler import _handle_cli
+
+        limiter = RateLimiter(repository=prov_repo)
+        prov_repo._now_ms = lambda: _ny("2026-09-15 08:00")
+        await prov_repo.set_limits(
+            "prov-1", [Limit.per_minute("rpm", 1000)], resource="gpt-4"
+        )
+        async with limiter.acquire("prov-1", "gpt-4", consume={"rpm": 1}):
+            pass
+
+        result = _handle_cli(
+            {
+                "action": "apply",
+                "table_name": prov_repo.table_name,
+                "namespace_id": prov_repo._namespace_id,
+                "manifest": {
+                    "namespace": "default",
+                    "entities": {
+                        "prov-1": {
+                            "resources": {
+                                "gpt-4": {
+                                    "limits": {
+                                        "rpm": {
+                                            "capacity": 1000,
+                                            "schedule": [
+                                                {
+                                                    "cron": "* 9-17 * * MON-FRI",
+                                                    "tz": "America/New_York",
+                                                    "scale": 0.5,
+                                                }
+                                            ],
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                },
+            },
+            None,
+        )
+        assert result["status"] == "applied"
+        assert result["errors"] == []
+
+        item = await _raw_bucket_item(prov_repo, "prov-1", "gpt-4", shard=0)
+        assert item[schema.BUCKET_FIELD_SCHED]["S"] == "h9-17w1-5s500"
+        assert item[schema.BUCKET_FIELD_SCHED_TZ]["S"] == "America/New_York"
+        assert item[schema.BUCKET_FIELD_VU]["N"] == "0"
+
+        # And it is enforced, not merely stored.
+        prov_repo._now_ms = lambda: _ny("2026-09-15 10:00")
+        await prov_repo.invalidate_config_cache()
+        async with limiter.acquire("prov-1", "gpt-4", consume={"rpm": 499}):
+            pass
+        with pytest.raises(RateLimitExceeded):
+            async with limiter.acquire("prov-1", "gpt-4", consume={"rpm": 100}):
+                pass
 ```
 
-- [ ] **Step 2:** Run against LocalStack; `zae-limiter local up` first, env vars per `.claude/rules/testing.md`
-- [ ] **Step 3:** Commit — `✅ test(limiter): end-to-end schedule boundary coverage`
+- [ ] **Step 2: Run Group A**
+
+```bash
+zae-limiter local up
+export AWS_ENDPOINT_URL=http://localhost:4566 AWS_ACCESS_KEY_ID=test \
+       AWS_SECRET_ACCESS_KEY=test AWS_DEFAULT_REGION=us-east-1
+uv run pytest tests/e2e/test_localstack.py -k "E2ESchedule" -v
+```
+
+Expected on a tree without the implementation: `test_a_shrink_boundary_trims_a_full_bucket`
+admits 1000 inside the 0.5x window and the `pytest.raises` block fails with
+`Failed: DID NOT RAISE`; the reset tests fail with `RateLimitExceeded` on the post-midnight
+acquire.
+
+- [ ] **Step 3: Write the Group B tests**
+
+The only cases that need the Lambda's own clock. `*/2 * * * *` matches even minutes, so a window
+is one minute long and a boundary arrives at most sixty seconds away — compute the wait rather
+than sleeping a flat 120 s.
+
+```python
+@pytest.mark.slow
+class TestE2EScheduleWithTheAggregator:
+    """§8: the same crossing with the aggregator running.
+
+    Real waiting, because the Lambda reads its own clock inside a container
+    this test cannot reach — which is also why these are the only cases that
+    wait. Everything client-enforced is in TestE2EScheduleBoundaries with an
+    injected clock.
+    """
+
+    ALTERNATING = (ScheduleEntry(cron="*/2 * * * *", tz="UTC", scale=0.5),)
+
+    @pytest_asyncio.fixture(scope="class", loop_scope="class")
+    async def aggr_repo(self, shared_aggregator_stack, unique_name_class):
+        ns = f"schedaggr-{unique_name_class}"
+        repo = await Repository.open(
+            stack=shared_aggregator_stack.name,
+            region=shared_aggregator_stack.region,
+            endpoint_url=shared_aggregator_stack.endpoint_url,
+            config_cache_ttl=0,
+        )
+        await repo.register_namespace(ns)
+        scoped = await repo.namespace(ns)
+        yield scoped
+        await repo.close()
+
+    @staticmethod
+    async def _sleep_to_the_next_even_minute() -> None:
+        """Wait until `*/2` next changes state, plus a second of slack."""
+        now = time.time()
+        await asyncio.sleep(60 - (now % 60) + 1)
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_the_aggregator_trims_to_the_scheduled_ceiling(self, aggr_repo):
+        """The aggregator's whole job is keeping hot buckets off the slow path,
+        so a shrink it does not apply is a shrink that never lands on the
+        buckets that matter (§3.3). Drive traffic across a boundary and assert
+        the stored balance never exceeds the scheduled share."""
+        limiter = RateLimiter(repository=aggr_repo)
+        await aggr_repo.set_limits(
+            "aggr-sched",
+            [Limit.per_minute("rpm", 1000).with_schedule(self.ALTERNATING)],
+            resource="gpt-4",
+        )
+        async with limiter.acquire("aggr-sched", "gpt-4", consume={"rpm": 1}):
+            pass
+
+        await self._sleep_to_the_next_even_minute()
+        for _ in range(20):
+            try:
+                async with limiter.acquire("aggr-sched", "gpt-4", consume={"rpm": 1}):
+                    pass
+            except RateLimitExceeded:
+                pass
+        await asyncio.sleep(15)  # stream + Lambda
+
+        bucket = next(
+            b for b in await aggr_repo.get_buckets("aggr-sched", resource="gpt-4")
+            if b.limit_name == "rpm"
+        )
+        now_ms = aggr_repo._now_ms()
+        assert bucket.tokens_milli <= bucket.effective_capacity_milli(now_ms)
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_the_aggregator_restamps_an_expired_vu(self, aggr_repo):
+        """`vu = 0` after a fan-out must be replaced by a real boundary by
+        whichever refiller gets there first, or the bucket is pinned to the
+        slow path. Here that is the aggregator."""
+        limiter = RateLimiter(repository=aggr_repo)
+        await aggr_repo.set_limits(
+            "aggr-vu",
+            [Limit.per_minute("rpm", 1000).with_schedule(self.ALTERNATING)],
+            resource="gpt-4",
+        )
+        async with limiter.acquire("aggr-vu", "gpt-4", consume={"rpm": 1}):
+            pass
+        # Force vu = 0 through the fan-out, then let the aggregator see it.
+        await aggr_repo.set_limits(
+            "aggr-vu",
+            [Limit.per_minute("rpm", 900).with_schedule(self.ALTERNATING)],
+            resource="gpt-4",
+        )
+        async with limiter.acquire("aggr-vu", "gpt-4", consume={"rpm": 1}):
+            pass
+        await asyncio.sleep(15)
+
+        item = await _raw_bucket_item(aggr_repo, "aggr-vu", "gpt-4", shard=0)
+        assert int(item[schema.BUCKET_FIELD_VU]["N"]) > aggr_repo._now_ms()
+
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_the_same_crossing_without_the_aggregator(
+        self, aggr_repo, shared_minimal_stack, unique_name_class
+    ):
+        """ADR-133: sharding and refill must work either way, so the assertion
+        above must hold on a stack with no Lambda at all. The minimal-stack
+        half of §8's with-and-without pair; the client-enforced cases in
+        TestE2EScheduleBoundaries are the rest of it."""
+        repo = await Repository.open(
+            stack=shared_minimal_stack.name,
+            region=shared_minimal_stack.region,
+            endpoint_url=shared_minimal_stack.endpoint_url,
+            config_cache_ttl=0,
+        )
+        try:
+            ns = f"schednoaggr-{unique_name_class}"
+            await repo.register_namespace(ns)
+            scoped = await repo.namespace(ns)
+            limiter = RateLimiter(repository=scoped)
+            await scoped.set_limits(
+                "noaggr-sched",
+                [Limit.per_minute("rpm", 1000).with_schedule(self.ALTERNATING)],
+                resource="gpt-4",
+            )
+            async with limiter.acquire("noaggr-sched", "gpt-4", consume={"rpm": 1}):
+                pass
+
+            await self._sleep_to_the_next_even_minute()
+            for _ in range(20):
+                try:
+                    async with limiter.acquire("noaggr-sched", "gpt-4", consume={"rpm": 1}):
+                        pass
+                except RateLimitExceeded:
+                    pass
+
+            bucket = next(
+                b for b in await scoped.get_buckets("noaggr-sched", resource="gpt-4")
+                if b.limit_name == "rpm"
+            )
+            assert bucket.tokens_milli <= bucket.effective_capacity_milli(scoped._now_ms())
+        finally:
+            await repo.close()
+```
+
+- [ ] **Step 4: Run Group B**
+
+```bash
+uv run pytest tests/e2e/test_localstack.py -k "E2EScheduleWithTheAggregator" -v
+```
+
+Budget roughly three minutes. If a crossing assertion is flaky, raise the post-traffic sleep
+before weakening the assertion — LocalStack's stream-to-Lambda latency is the usual cause and
+the existing `test_usage_snapshot_generation` (:763) already sleeps 10 s for the same reason.
+
+- [ ] **Step 5: Run the whole e2e suite and stop LocalStack**
+
+```bash
+uv run pytest tests/e2e/test_localstack.py -v
+uv run pytest tests/e2e/test_localstack.py -m "not slow" -v   # what CI runs by default
+zae-limiter local down
+```
+
+- [ ] **Step 6: Lint and commit**
+
+No `src/` change, so no sync codegen.
+
+```bash
+uv run ruff check --fix .
+uv run ruff format tests/e2e
+git add tests/e2e/test_localstack.py
+git commit -m "$(cat <<'EOF'
+✅ test(limiter): end-to-end schedule boundary coverage
+
+Every case design §8 requires, against a real CloudFormation stack: the
+shrink that must not leave a spendable surplus, the grow, a boundary
+crossed mid-lease with the #455 declared scope intact, concurrent
+traffic at the instant of the boundary, cascade with only the parent
+scheduled, per-shard convergence, the daily reset with tc still
+climbing, an idle bucket waking after its edge, a manifest-applied
+schedule reaching a live bucket, a corrupt schedule in both
+on_unavailable modes, and the sync client.
+
+Split into two groups rather than waiting everywhere. Everything the
+client enforces uses the #430 clock seam, which drives the rf stamp, the
+vu comparison, the ttl guard and every refill computation consistently —
+so a jumped clock is a real crossing, not a simulated one. Only the
+cases that need the Lambda to observe the boundary itself use a `*/2`
+schedule and real waiting, and only those are marked slow.
+
+Refs #222
+EOF
+)"
+```
 
 ---
 
@@ -1255,11 +4263,15 @@ class TestScheduleBoundaryE2E:
 
 **Spec coverage.** §3.6 → Tasks 1-4. §4.1 reset encoding → Task 4. §5.1 → Task 1 (no signature changes; the schedule rides on `Limit`). §5.2 → Task 8, building on the provisioner plan. §5.3 → Tasks 6-7. §5.4 → Task 9. §6 → Task 10. §7 → Task 5. §8 → Task 11. §9 limitations → documented in Task 12's ADR.
 
-**Expansion status.** Tasks 1, 2, 6, 7, 8 and 9 carry complete code: full TDD cycles, real
-fixture setup, and assertions verified against the tree at `cc1ff1dc`. Tasks 3, 4, 5, 10 and 11
-remain compressed and each now carries an explicit "expand before picking this up" note. That
-split is deliberate and is the same rule applied twice: a task whose target code exists gets
-written against it; a task whose target is `schedule.py` does not get written against a guess.
+**Expansion status: complete.** Every task now carries a full TDD cycle with real code. Tasks
+1, 2, 6, 7, 8 and 9 were written against the tree at `cc1ff1dc`. Tasks 3, 4, 5, 10 and 11 were
+expanded later, against `main` at `3601df0a`, once `schedule.py` had merged (core plan Tasks
+1-5) along with Task 8 (`Limit.schedule` and config serialisation) and Task 14 (the aggregator).
+Their "expand before picking this up" banners are gone because the precondition they named —
+"`schedule.py` does not exist yet" — is discharged: every signature in them was read, not
+inferred. What the later pass found is recorded under **Corrected during expansion** below;
+several of those findings are corrections to the *earlier* tasks and to the core plan, not just
+to the five that were compressed.
 
 **Verified against the tree, not recalled.** Four things the earlier draft of Tasks 6-9 had wrong:
 
@@ -1303,4 +4315,126 @@ an oversight.
 
 **Cross-plan ordering.** Provisioner plan (PR #485) → core plan → this plan. Task 8 here is inert
 without PR #485's handler wiring; Tasks 1-5 here are inert without the core plan's
-`schedule.py`.
+`schedule.py`. **Within this plan, Task 4 precedes Task 3's aggregator half** — the numbering
+follows the design's section order (§3.6 before §4.1), not the dependency order, and Task 3
+cannot parse `rsched` off a bucket item before Task 4 defines `decode_reset` and stamps it.
+Both tasks say so inline.
+
+---
+
+## Corrected during expansion
+
+Found by reading merged `schedule.py`, `models.py`, `bucket.py`, `lease.py`, `limiter.py`,
+`repository.py` and `zae_limiter_aggregator/processor.py` against the compressed task text, plus
+the core plan's SDD ledger. Each is fixed in the task named, not papered over.
+
+1. **The version marker §4.1 promises does not exist, and Task 10 depended on it.** Core plan
+   Task 5 shipped the encoding without one and said so; Task 10's compressed text asserted
+   `pytest.raises(RateLimiterUnavailable, match="newer")` against a marker nothing writes.
+   **Resolved in Task 10 (Decision 1): not added, distinction dropped, §4.1 amended.** Costs
+   stated both ways there; the short version is that the marker buys a log-message distinction,
+   not behaviour, cannot classify anything already written, and can be added later without a
+   break as long as the reader treats its absence as v1. A follow-up issue tracks it.
+
+2. **Three sides disagreed on an undecodable stored schedule, and two of the three are merged.**
+   `processor._decode_schedule` reports it (`sched_error`) because a raise there poisons a whole
+   stream batch; `Repository._deserialize_limits` lets `ValueError` propagate; Task 10 demanded
+   `RateLimiterUnavailable`. **Resolved in Task 10 (Decision 2): the parser raises `ValueError`
+   and each boundary converts.** `schedule.py` is *not* modified — raising an
+   `InfrastructureError` from `decode` would slip through the aggregator's `except ValueError`
+   and re-arm the poison pill core plan Task 14 fixed, and would end `schedule.py`'s
+   import-freedom. Task 10 also records that it is *writing* §6, which was never written, and
+   that `acquire()`'s existing `except Exception` already satisfies the `on_unavailable` half
+   with no new code.
+
+3. **`encode_reset`, `decode_reset` and `ScheduleEntry.reset` do not exist.** `ScheduleEntry`'s
+   `__post_init__` requires exactly one modifier, which a reset entry has none of.
+   **`ScheduleEntry.reset` is created by Task 1** (its Step 3 already says so); `encode_reset` /
+   `decode_reset` by **Task 4**, which must build through the classmethod and never through
+   `ScheduleEntry(...)`.
+
+4. **Task 5's worked example holds exactly** — 30.001 s flat against 50.001 s real, re-derived
+   against merged `refill_bucket` and `calculate_retry_after` rather than quoted. **But it does
+   not exercise core plan Task 4's two-phase fix**: `America/New_York`'s offset is a whole number
+   of hours, so the coarse hourly probe lands on the edge and the refinement never runs. Task 5
+   adds an `Asia/Kolkata` (+05:30) case, where a 09:00 local edge is 03:30Z.
+
+5. **`check_availability()` is real and is written against.** `RateLimiter.check_availability(
+   entity_id, resource, needed=None, limits=None) -> Availability` at `limiter.py:1941`, with
+   `available()` and `time_until_available()` as wrappers.
+
+6. **`next_boundary` is called `next_boundary(sched, reset_sched=(), *, now_ms=...)` everywhere**
+   in the expanded text (#500). No positional `now_ms` was reintroduced.
+
+7. **There are four `LimitStatus` sites, not three.** The compressed Task 5 named
+   `_build_retry_failure_statuses`, `_admit_limit` and `check_availability` and missed
+   `bucket.build_limit_status` via `declared_statuses` / `would_refill_satisfy` — the
+   **speculative fast rejection**, which is the path most rejections actually take. Task 5
+   converts `bucket.try_consume`, which covers that site and `_admit_limit` together.
+
+8. **`Limit.reset_schedule` was never persisted anywhere.** Task 1 adds the field and touches
+   only `schedule.py` and `models.py`; no task wrote `l_{name}_rsched` on the config item. So
+   `resolve_limits()` would have returned `reset_schedule=()` for every stored limit and Task 3's
+   client-side reset would never have fired in any real deployment. **Task 4 adds the config-item
+   leg**, plus `Limit.to_dict()`/`from_dict()` (which feed the audit event `details` — the exact
+   defect core plan Task 8 found for `schedule`).
+
+9. **The bucket fan-out lives in `_build_bucket_param_update` (:3256), not `_sync_bucket_params`
+   (:3085).** Editing the latter misses `_resolved_bucket_param_update` (:3209), the per-resource
+   path used under the entity-wide `_default_` scope (#487). Corrected in Task 4.
+
+10. **A limit's two tuples can disagree on timezone, and one hoisted `sched_tz` cannot hold
+    both.** Merged `Limit.__post_init__` validates only `self.schedule`. Task 4 widens the guard
+    to the union — same class of defect as core plan Task 8's last-one-wins `sched_tz`.
+
+11. **`vu` ignored the reset tuple on both sides.** `processor._item_next_boundary` (:621) and
+    the `vu` computation core plan Task 12 adds to `lease.py` both pass the parameter schedule
+    alone, so a limit with a reset schedule and *no* parameter schedule gets `vu = None`, never
+    expires, never reaches the slow path, and never resets — which is precisely the daily-quota
+    shape §3.6 exists for. Fixed in Task 3, with a test.
+
+12. **The reset seam is before admission, not in `_commit_initial`.** The compressed Task 3 put
+    it in `lease.py`'s slow-path refill, which runs *after* `try_consume` has already gated the
+    request: the acquire that crosses midnight would still be rejected and only the next one
+    would see the restored quota. Task 3 moves it between the capture of
+    `_original_tokens_milli` and the call to `_admit_limit`, where the existing delta formula
+    resolves to exactly the aggregator's `ADD (eff_cp - tk_observed)`.
+
+13. **A reset must bypass the aggregator's consumption threshold, and `wcu` must be exempt from
+    resets.** `try_refill_bucket` `continue`s on a positive delta once projected tokens cover the
+    estimate — which would turn the reset off on hot buckets, the same defect §3.3 records for
+    the negative clamp. And `rsched` is item-level, so without an exemption a user's daily reset
+    would also apply to the per-partition write ceiling. Both fixed in Task 3.
+
+14. **Nothing populates `BucketState.sched` from the item.** Core plan Task 9 adds the field,
+    Tasks 12/13 write the attribute, no task reads it back in `_deserialize_composite_bucket`
+    (:4878) — which builds every `BucketState` the client sees, including the ALL_OLD states
+    behind the fast-rejection path. Flagged as a precondition check in Task 5, which adds it
+    alongside `reset_sched` if it is still missing, because a schedule-aware estimate computed
+    from an empty `sched` is the flat estimate with a green suite.
+
+15. **`build_composite_create` stamps no `sched`.** Core plan Task 12 adds only `vu` to it and
+    Task 13 touches only the fan-out, so a bucket created on the slow path carries `vu` and no
+    schedule — it re-materialises at its first boundary and then refills at the **base** rate
+    forever. Flagged in Task 4, which adds both stamps there if the core plan has not.
+
+16. **`check_availability` reports a *pending* reset as unavailable.** It reads and writes
+    nothing, so a bucket that crossed an edge still holds the burnt balance on disk; without an
+    adjustment the display says "0 remaining, resets tomorrow" while the very next `acquire()`
+    restores the quota. Fixed in Task 5.
+
+17. **A corrupt schedule on the *system* config item escapes `on_unavailable`.** `acquire()`
+    resolves the mode before its try block, and `resolve_on_unavailable()` swallows every
+    exception and falls back to its cache or `"block"` — so an operator who configured `allow`
+    gets `block`. Recorded as a known limitation in Task 10 and added to design §9 rather than
+    fixed; the fix means teaching that method to distinguish "cannot reach DynamoDB" from "read
+    a config item I cannot parse".
+
+18. **`Limit.per_day` already exists** (`models.py:340`), so Task 1's "add it if it does not
+    exist" is discharged. Left as written; it is harmless and self-checking.
+
+19. **Two stale names from the core plan, carried over.** The aggregator test module is
+    `tests/unit/test_processor.py`, not `test_aggregator_processor.py`; and `uv run ruff format .`
+    must never be run bare in this repo (local ruff reformats 34 unrelated files including these
+    plan documents — core plan Task 4's ledger). Every expanded step scopes the formatter to the
+    directories it touched.
