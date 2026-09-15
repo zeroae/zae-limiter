@@ -593,6 +593,8 @@ Deliberately not exported, and why:
 | `effective_params` | The evaluation engine, in milli-units. Its result is what `acquire()` enforces; callers read limits through `LimitStatus`, not by re-running it. |
 | `next_boundary` | Computes a bucket's `vu` (valid-until) as the earlier of the next parameter change and the next reset edge. Purely a materialisation concern. |
 | `prev_reset_edge` | The reset half of the same concern, scanning *backwards*: "was an edge missed since `rf`?" (§3.6). Only the materialising pass asks. |
+| `next_reset_edge` | The forward twin, used to answer "when does this quota come back?" in a `retry_after_seconds`. Shares one scanner with the internal `_next_reset_edge` (`_forward_reset_scan`); they differ only in how they report "nothing in reach" — `None` for a wait, `now + cap` for a `vu` stamp. Callers read the answer off `LimitStatus`, not by re-scanning. |
+| `retry_after_with_schedule` | The boundary-aware retry estimate (§7). Takes milli-units and a raw `shard_count`; every user-facing consumer reaches it through `LimitStatus.retry_after_seconds`. |
 | `encode`, `decode` | The compact storage encoding (§4.1). Repository-internal; exporting it would freeze the on-item format as public API. |
 | `to_cron` | Renders a *compact entry string* back to cron — and that string only comes from `encode()` or a raw DynamoDB attribute, neither of which is public. A user holding a `ScheduleEntry` reads `entry.cron`. Display helper for tooling that reads stored items. |
 
@@ -809,6 +811,20 @@ same `available` it reports. Shares that floor to 0 fall back to the undivided r
 #475). Known limitation inherited from #475: a single request above `capacity // shard_count`
 is unadmittable on every shard, so `acquire()` can reject an amount this reports as available.
 
+**Schedule-aware (#222 §7).** Everything reported is the value in force at `checked_at_ms`,
+not the stored base. The ceiling comes from `effective_params`, so a `scale: 0.5` window reports
+500 rather than 1000 — this covers *both* base-capacity sites, the `min(total, capacity)` clamp
+and the missing-bucket branch, neither of which any `BucketState` conversion reaches because
+both work from the config-resolved `Limit`. The wait walks forward across boundaries
+(`schedule.retry_after_with_schedule`) instead of dividing by the rate that happens to apply
+right now, and a limit with a `reset_schedule` reports the wait to its next edge — for a daily
+quota, whose `refill_amount` is 0 by ADR-137, the only finite answer there is. A bucket that
+crossed a reset edge and has not been written to since reports the balance the next `acquire()`
+will restore (`RateLimiter._readable_balance`), decided **per shard** rather than per limit
+name, so one stale shard cannot report the whole entity restored. Without that, the display
+reads "0 remaining, resets at midnight tomorrow" while the very next `acquire()` restores the
+quota immediately.
+
 Non-consuming and write-free, and **not** a pre-flight gate for `acquire()`: check-then-acquire
 is TOCTOU and costs an extra read, where `acquire()` answers the same question in 1 WCU (0 RCU +
 0 WCU on a fast rejection) via `RateLimitExceeded.retry_after_seconds`. It is for *display*.
@@ -819,6 +835,9 @@ count or shard count. A missing bucket means full capacity and no wait.
 ### Exception Design
 - `RateLimitExceeded` includes a status for **every limit declared in `consume`** — both the ones that were exceeded and the ones that passed. Limits the caller did not name (and the reserved `wcu`) never appear (Issue #455), on the fast path, the slow path, and the consumption-only retry path alike
 - Each status reports the **effective per-shard, in-window** capacity and refill, not the undivided config (`Limit.per_shard(shard_count, now_ms)`, #475 / #222 §3.5) — see [Pre-Shard Buckets](#pre-shard-buckets-ghsa-76rv-2r9v-c5m6-v090)
+- `retry_after_seconds` **walks schedule boundaries** rather than dividing by the rate in force now (`schedule.retry_after_with_schedule`, #222 §7). The flat estimate over-reports when a boundary raises the limit and under-reports when one lowers it, which is the headline use case: empty bucket, 500 needed, 1000/min now, a boundary in 10 s dropping to 500/min is **50 s**, not 30. A `reset_schedule` edge landing before the deficit clears **is** the answer — a quota has no drip at all under ADR-137, so "at midnight" is the only finite answer. Capped at eight windows, then the flat estimate (which still carries #530's reset branch). Wired at all **four** `LimitStatus` sites, not the three the plan named: `bucket.try_consume` covers the speculative fast rejection (`declared_statuses` / `would_refill_satisfy`) and slow-path admission (`_admit_limit`) at once, and `lease._build_retry_failure_statuses` and `RateLimiter.check_availability` convert individually
+- `Limit.from_bucket_state()` reconstructs a **quota** as a quota: the `max(1, …)` rate floor and `reset_schedule` move together (a floored `refill_amount=1` beside a reset is what ADR-137 rejects), keyed on the stored shape `refill_amount_milli == 0 and reset_sched`. A corrupt item carrying a reset beside a positive rate keeps the floor and drops the tuple rather than raising from inside a rejection path
+- `bucket.calculate_retry_after` and `BucketState.retry_refill_amount_milli` have **no production callers** since #222 §7; both remain as the definitions the walk is pinned against. The walk cannot call either — `bucket` imports `models` imports `schedule`, and `schedule` may import neither (that one-way dependency is what lets both Lambdas vendor it), so the arithmetic and the #475 floored-share rule are re-derived there and held identical by test
 - Both `violations` (exceeded) and `passed` (ok) are available
 - `retry_after_seconds` calculated from primary bottleneck
 

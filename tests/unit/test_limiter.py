@@ -19,6 +19,7 @@ from zae_limiter import (
     RateLimitExceeded,
     ValidationError,
 )
+from zae_limiter.bucket import calculate_available
 from zae_limiter.exceptions import (
     InvalidIdentifierError,
     InvalidNameError,
@@ -27,7 +28,7 @@ from zae_limiter.exceptions import (
 from zae_limiter.infra.discovery import InfrastructureDiscovery
 from zae_limiter.models import BucketState
 from zae_limiter.repository_protocol import SpeculativeResult
-from zae_limiter.schedule import ScheduleEntry
+from zae_limiter.schedule import ScheduleEntry, retry_after_with_schedule
 from zae_limiter.schema import (
     BUCKET_FIELD_TK,
     BUCKET_FIELD_VU,
@@ -761,7 +762,14 @@ class TestLeaseRetryPath:
         state.tokens_milli = 50_000
         state.retry_refill_amount_milli.return_value = 100_000
         state.effective_refill_period_ms.return_value = 60_000
+        # The boundary walk reads the undivided base and both schedule tuples
+        # off the state and narrows them itself (#222 §7), so a mock has to
+        # supply real integers here rather than MagicMocks.
+        state.capacity_milli = 100_000
+        state.refill_amount_milli = 100_000
         state.refill_period_ms = 60_000
+        state.sched = ()
+        state.reset_sched = ()
         state.shard_count = 1
         entry = LeaseEntry(
             entity_id="e1",
@@ -10212,3 +10220,226 @@ class TestResetMaterialisationThroughAcquire:
         bucket = await self._bucket(repo, "reset-race")
         assert bucket.tokens_milli == 10_000_000, "the edge crossed mid-pass still applies"
         assert bucket.total_consumed_milli == 10_000_000, "and `tc` is still monotonic"
+
+
+# ---------------------------------------------------------------------------
+# Boundary-aware retry estimates on the query surface (#222 §7, surface Task 5)
+# ---------------------------------------------------------------------------
+
+NIGHT_HALF = (ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", scale=0.5),)
+
+
+class TestCheckAvailabilityIsScheduleAware:
+    """The query surface must agree with the rejection path at one instant.
+
+    `available()` and `time_until_available()` are thin wrappers over
+    `check_availability()` (#473), so converting it converts all three. Missing
+    it would leave `acquire()` saying "at midnight" while the display said "in
+    eleven hours" about the same bucket at the same instant.
+
+    These run against a real (moto-backed) repository: the schedules reach the
+    walk through `_deserialize_limits`, which decodes `l_{name}_sched` and
+    `l_{name}_rsched` off the config item, so this half of Task 5 is verified
+    end to end rather than through a constructed `BucketState`.
+    """
+
+    async def test_reports_the_scheduled_capacity_for_a_missing_bucket(self, limiter):
+        """The no-bucket branch reported `limit.capacity` outright; inside a
+        0.5x window that is twice what the first acquire would admit."""
+        repo = limiter._repository
+        await repo.set_limits(
+            "ca-1", [Limit.per_minute("rpm", 1000).with_schedule(NIGHT_HALF)], resource="gpt-4"
+        )
+        repo._now_ms = lambda: _ny("2026-09-16 03:00")
+        await repo.invalidate_config_cache()
+
+        check = await limiter.check_availability("ca-1", "gpt-4")
+        assert check.status("rpm").available == 500
+
+    async def test_the_same_limit_outside_the_window_reports_the_base(self, limiter):
+        """Discriminates the test above against a hardcoded halving."""
+        repo = limiter._repository
+        await repo.set_limits(
+            "ca-1b", [Limit.per_minute("rpm", 1000).with_schedule(NIGHT_HALF)], resource="gpt-4"
+        )
+        repo._now_ms = lambda: _ny("2026-09-15 14:00")
+        await repo.invalidate_config_cache()
+
+        check = await limiter.check_availability("ca-1b", "gpt-4")
+        assert check.status("rpm").available == 1000
+
+    async def test_clamps_a_live_balance_to_the_scheduled_capacity(self, limiter):
+        """The other base-capacity site: `min(total_across_shards,
+        limit.capacity)`. A bucket full at 1000 entering a 0.5x window reports
+        500, not 1000 — the surplus is unspendable (#222 §3.3)."""
+        repo = limiter._repository
+        await repo.set_limits(
+            "ca-2", [Limit.per_minute("rpm", 1000).with_schedule(NIGHT_HALF)], resource="gpt-4"
+        )
+        repo._now_ms = lambda: _ny("2026-09-15 14:00")  # outside the window
+        await repo.invalidate_config_cache()
+        async with limiter.acquire("ca-2", "gpt-4", consume={"rpm": 1}):
+            pass
+
+        repo._now_ms = lambda: _ny("2026-09-16 03:00")  # inside it
+        await repo.invalidate_config_cache()
+        check = await limiter.check_availability("ca-2", "gpt-4")
+        assert check.status("rpm").available == 500
+
+    async def test_the_wait_walks_boundaries(self, limiter):
+        """A daily quota's honest answer is "at midnight". Before this it was
+        0.0 — "retry now", an hour early and repeatedly (#530)."""
+        repo = limiter._repository
+        await repo.set_limits("ca-3", [RPD], resource="gpt-4")
+        repo._now_ms = lambda: _ny("2026-09-15 23:00")
+        await repo.invalidate_config_cache()
+        async with limiter.acquire("ca-3", "gpt-4", consume={"rpd": 10_000}):
+            pass
+
+        check = await limiter.check_availability("ca-3", "gpt-4", needed={"rpd": 5_000})
+        assert check.status("rpd").available == 0
+        assert check.status("rpd").retry_after_seconds == pytest.approx(3600.001, abs=0.5)
+
+    async def test_a_pending_reset_is_reflected_in_the_balance(self, limiter):
+        """The bucket crossed midnight and nothing has touched it since, so
+        disk still holds the burnt balance. Without this the display says
+        "0 remaining, resets tomorrow" while the very next acquire restores the
+        quota immediately."""
+        repo = limiter._repository
+        await repo.set_limits("ca-4", [RPD], resource="gpt-4")
+        repo._now_ms = lambda: _ny("2026-09-15 23:00")
+        await repo.invalidate_config_cache()
+        async with limiter.acquire("ca-4", "gpt-4", consume={"rpd": 10_000}):
+            pass
+
+        repo._now_ms = lambda: _ny("2026-09-16 00:30")
+        await repo.invalidate_config_cache()
+        check = await limiter.check_availability("ca-4", "gpt-4", needed={"rpd": 5_000})
+        assert check.status("rpd").available == 10_000
+        assert check.status("rpd").retry_after_seconds == 0.0
+
+    async def test_a_lowering_boundary_lengthens_the_displayed_wait(self):
+        """The spec's worked example through the query surface. Verified
+        against the walk directly, since `check_availability` sums shards and
+        so hands it `shard_count=1`."""
+        business = (ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.5),)
+        got = retry_after_with_schedule(
+            deficit_milli=500_000,
+            cp_milli=1_000_000,
+            ra_milli=1_000_000,
+            rp_ms=60_000,
+            sched=business,
+            now_ms=_ny("2026-09-15 08:59:50"),
+        )
+        assert got == pytest.approx(50.001, abs=0.002)
+
+    def test_a_pending_reset_is_decided_per_shard(self):
+        """Two shards of one quota, only one of them past the edge. Deciding
+        per *limit name* instead would report the whole entity restored on the
+        strength of a single stale shard."""
+
+        def _shard(rf: str) -> BucketState:
+            return BucketState(
+                entity_id="ca-7",
+                resource="gpt-4",
+                limit_name="rpd",
+                tokens_milli=0,
+                last_refill_ms=_ny(rf),
+                capacity_milli=10_000_000,
+                refill_amount_milli=0,
+                refill_period_ms=86_400_000,
+                shard_count=2,
+                reset_sched=RPD.reset_schedule,
+            )
+
+        now = _ny("2026-09-16 00:30")
+        stale = RateLimiter._readable_balance(_shard("2026-09-15 23:00"), RPD, now)
+        fresh = RateLimiter._readable_balance(_shard("2026-09-16 00:15"), RPD, now)
+        assert stale == 5_000, "the shard that missed the edge reports its restored share"
+        assert fresh == 0, "the shard that already applied it keeps its spent balance"
+
+    def test_a_limit_without_a_reset_is_never_pending(self):
+        """Discriminates the test above: the edge, not the staleness, is what
+        restores the balance."""
+        plain = Limit.per_day("rpd", 10_000)
+        state = BucketState(
+            entity_id="ca-8",
+            resource="gpt-4",
+            limit_name="rpd",
+            tokens_milli=0,
+            last_refill_ms=_ny("2026-09-15 23:00"),
+            capacity_milli=10_000_000,
+            refill_amount_milli=10_000_000,
+            refill_period_ms=86_400_000,
+        )
+        got = RateLimiter._readable_balance(state, plain, _ny("2026-09-16 00:30"))
+        assert got == calculate_available(state, _ny("2026-09-16 00:30"))
+
+    async def test_an_unscheduled_entity_is_unchanged(self, limiter):
+        """Every existing check_availability assertion in the suite must still
+        hold; this is the regression guard for the two capacity sites."""
+        repo = limiter._repository
+        await repo.set_limits("ca-5", [Limit.per_minute("rpm", 1000)], resource="gpt-4")
+        check = await limiter.check_availability("ca-5", "gpt-4", needed={"rpm": 1})
+        assert check.status("rpm").available == 1000
+        assert check.status("rpm").retry_after_seconds == 0.0
+
+    async def test_time_until_available_agrees_with_check_availability(self, limiter):
+        """`time_until_available()` is a wrapper, so it converts with it —
+        and this is what would catch it drifting back to a flat estimate."""
+        repo = limiter._repository
+        await repo.set_limits("ca-6", [RPD], resource="gpt-4")
+        repo._now_ms = lambda: _ny("2026-09-15 23:00")
+        await repo.invalidate_config_cache()
+        async with limiter.acquire("ca-6", "gpt-4", consume={"rpd": 10_000}):
+            pass
+
+        wait = await limiter.time_until_available("ca-6", "gpt-4", needed={"rpd": 5_000})
+        assert wait == pytest.approx(3600.001, abs=0.5)
+
+
+class TestSlowPathRejectionWalksBoundaries:
+    """Site 2: slow-path admission, reached through `_admit_limit`.
+
+    The slow path attaches the resolved config's schedules to each
+    `BucketState` before admission — `sched` was already attached, and the
+    reset schedule now travels with it. Without that pairing a quota's
+    rejection here quotes the drip ADR-137 says it does not have.
+    """
+
+    @staticmethod
+    def _slow(limiter):
+        return RateLimiter(repository=limiter._repository, speculative_writes=False)
+
+    async def test_an_exhausted_quota_reports_its_reset_edge(self, limiter):
+        repo = limiter._repository
+        slow = self._slow(limiter)
+        await repo.set_limits("slow-q", [RPD], resource="gpt-4")
+        repo._now_ms = lambda: _ny("2026-09-15 23:00")
+        await repo.invalidate_config_cache()
+
+        async with slow.acquire("slow-q", "gpt-4", consume={"rpd": 10_000}):
+            pass
+
+        with pytest.raises(RateLimitExceeded) as exc:
+            async with slow.acquire("slow-q", "gpt-4", consume={"rpd": 5_000}):
+                pass
+        assert exc.value.retry_after_seconds == pytest.approx(3600.001, abs=0.5)
+
+    async def test_a_dripping_limit_is_unchanged(self, limiter):
+        """Discriminates the test above: an ordinary limit still reports the
+        rate arithmetic, not a calendar instant."""
+        repo = limiter._repository
+        slow = self._slow(limiter)
+        await repo.set_limits("slow-d", [Limit.per_minute("rpm", 100)], resource="gpt-4")
+        repo._now_ms = lambda: _ny("2026-09-15 23:00")
+        await repo.invalidate_config_cache()
+
+        async with slow.acquire("slow-d", "gpt-4", consume={"rpm": 100}):
+            pass
+
+        with pytest.raises(RateLimitExceeded) as exc:
+            async with slow.acquire("slow-d", "gpt-4", consume={"rpm": 50}):
+                pass
+        # 50 tokens at 100/min = 30 s
+        assert exc.value.retry_after_seconds == pytest.approx(30.001, abs=0.5)

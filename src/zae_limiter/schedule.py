@@ -38,8 +38,10 @@ __all__ = [
     "encode_reset",
     "matches",
     "next_boundary",
+    "next_reset_edge",
     "parse_cron",
     "prev_reset_edge",
+    "retry_after_with_schedule",
     "to_cron",
 ]
 
@@ -558,6 +560,55 @@ def prev_reset_edge(reset_sched: tuple[ScheduleEntry, ...], now_ms: int) -> int 
     return max(edges) if edges else None
 
 
+def _forward_reset_scan(
+    reset_sched: tuple[ScheduleEntry, ...], now_ms: int
+) -> list[tuple[int | None, int]]:
+    """``(edge or None, cap)`` per entry, scanned forward from ``now_ms``.
+
+    One scanner, two readings. :func:`next_reset_edge` wants the honest "there
+    is no edge in reach" and :func:`_next_reset_edge` wants the cap instead, and
+    those are two ways of *reporting* the same scan — running it twice invites
+    the two answers to disagree about the same expression.
+
+    Each entry is scanned at its own granularity and cap, for the same reason
+    :func:`prev_reset_edge` does: a ``0 0 * * *`` neighbour must not shorten a
+    ``* 0 1 * *``'s horizon from 31 days to 7 and hide its edge.
+    """
+    out: list[tuple[int | None, int]] = []
+    for entry in reset_sched:
+        parsed = parse_cron(entry.cron, entry.tz)
+        unit, cap = _granularity((parsed,))
+        out.append((_next_rising_edge(parsed, now_ms, unit, cap), cap))
+    return out
+
+
+def next_reset_edge(reset_sched: tuple[ScheduleEntry, ...], *, now_ms: int) -> int | None:
+    """The first reset edge strictly after ``now_ms``, or None within the cap.
+
+    The forward twin of :func:`prev_reset_edge`: same adaptive granularity, same
+    horizon, same "no edge within the cap means the expression never matches"
+    reading (§3.6 names ``0 0 30 2 *``; cronsim rejects February 30th outright,
+    so the constructible equivalent is ``0 0 29 2 *``).
+
+    The **minimum** across entries, where ``prev_reset_edge`` takes the maximum,
+    and both for the same reason: reset entries are independent instants, so
+    looking backwards the latest one subsumes every earlier one, and looking
+    forwards the earliest one is the first that will fire.
+
+    Unlike :func:`_next_reset_edge` this reports None rather than ``now_ms +
+    cap`` when nothing is in reach. The cap is the right answer for a ``vu``
+    stamp, which must force a re-materialisation per horizon; it is the wrong
+    answer for a *wait*, which would then quote a 7-day countdown to an instant
+    at which nothing happens.
+
+    ``now_ms`` is keyword-only for the same reason :func:`next_boundary`'s is
+    (#500): the second positional slot is a schedule tuple everywhere else in
+    this module, and a positional timestamp would bind to it silently.
+    """
+    edges = [edge for edge, _cap in _forward_reset_scan(reset_sched, now_ms) if edge is not None]
+    return min(edges) if edges else None
+
+
 def _next_reset_edge(reset_sched: tuple[ScheduleEntry, ...], now_ms: int) -> int:
     """The earliest reset edge after ``now_ms``, or ``now_ms + cap`` if none is in reach.
 
@@ -569,13 +620,10 @@ def _next_reset_edge(reset_sched: tuple[ScheduleEntry, ...], now_ms: int) -> int
     Capping forces one materialisation per horizon, and the backwards scan then
     finds the edge from the far side.
     """
-    candidates = []
-    for entry in reset_sched:
-        parsed = parse_cron(entry.cron, entry.tz)
-        unit, cap = _granularity((parsed,))
-        edge = _next_rising_edge(parsed, now_ms, unit, cap)
-        candidates.append(now_ms + cap if edge is None else edge)
-    return min(candidates)
+    return min(
+        now_ms + cap if edge is None else edge
+        for edge, cap in _forward_reset_scan(reset_sched, now_ms)
+    )
 
 
 def next_boundary(
@@ -606,6 +654,139 @@ def next_boundary(
     if reset_sched:
         candidates.append(_next_reset_edge(reset_sched, now_ms))
     return min(candidates) if candidates else None
+
+
+def retry_after_with_schedule(
+    deficit_milli: int,
+    cp_milli: int,
+    ra_milli: int,
+    rp_ms: int,
+    sched: tuple[ScheduleEntry, ...],
+    reset_sched: tuple[ScheduleEntry, ...] = (),
+    *,
+    now_ms: int,
+    shard_count: int = 1,
+    max_windows: int = 8,
+) -> float:
+    """Seconds until ``deficit_milli`` clears, walking across boundaries (§7).
+
+    The flat estimate divides the deficit by the rate in force *now*. That is
+    wrong in both directions, and worse in the one that matters: it
+    over-reports when a boundary raises the limit and **under**-reports when one
+    lowers it, which is the headline use case. The spec's worked example — empty
+    bucket, 500 tokens needed, 1000/min now, a boundary in 10 s dropping to
+    500/min — is 30.001 s flat against 50.001 s real (10 s yielding 166_666
+    millitokens, then 333_334 remaining at half rate).
+
+    ``cp_milli``/``ra_milli``/``rp_ms`` are the **undivided base** — the values
+    stored on the item, which scheduling never rewrites (§2.1) — and the shard
+    share is taken *after* ``effective_params``, per the scale-then-divide rule.
+    Handing in pre-divided numbers would apply the split twice.
+
+    The walk steps window by window: at each one it asks how long the current
+    effective rate needs, and whether a boundary or a reset edge arrives first.
+    **A reset edge inside the window is the answer outright**, because it
+    restores the whole balance in one lump. Under ADR-137 that is not a variant
+    case — a limit drips *or* resets, so every limit carrying a
+    ``reset_schedule`` has ``refill_amount == 0`` and the edge is the only
+    finite answer there is. For a daily quota the choice is between reporting
+    "retry now", wrong and repeatedly for as long as the quota stays exhausted,
+    and reporting "at midnight".
+
+    Capped at ``max_windows``, after which it falls back to the flat estimate
+    rather than reporting a partial walk as a complete one. The fallback quotes
+    the **base** rate rather than the window's: past the cap the walk has no
+    view of the schedule at all, and the momentary rate of whichever window the
+    caller happened to ask in is a worse guess than the nominal one — a 0.001x
+    window would quote a seven-day countdown that the next minute contradicts.
+
+    Returns the identical value ``bucket.calculate_retry_after`` does when
+    neither tuple is set, so the unscheduled path is unchanged to the
+    millisecond.
+
+    Args:
+        deficit_milli: How many millitokens the request is short.
+        cp_milli: Undivided base capacity, in millitokens.
+        ra_milli: Undivided base refill amount, in millitokens.
+        rp_ms: Base refill period, in milliseconds.
+        sched: The parameter schedule, applied by ``effective_params``.
+        reset_sched: The reset schedule, whose next edge dominates.
+        now_ms: The clock reading the returned wait is measured from.
+        shard_count: Shares the effective rate, after scaling (GHSA-76rv).
+        max_windows: Walk budget; beyond it, the flat estimate.
+
+    Returns:
+        Seconds until the deficit clears, or 0.0 when there is no deficit and
+        when neither a rate nor an edge can produce a finite wait.
+    """
+    if deficit_milli <= 0:
+        return 0.0
+
+    divisor = max(1, shard_count)
+
+    def _rate(ra: int) -> int:
+        # A share that floors to zero has no finite wait; fall back to the
+        # undivided *scheduled* rate, exactly as
+        # `BucketState.retry_refill_amount_milli` does (#475). Falling back to
+        # the base rate would quote a speed nothing in the system refills at
+        # during the window.
+        return (ra // divisor) or ra
+
+    remaining = deficit_milli
+    cursor = now_ms
+    for _ in range(max_windows):
+        _eff_cp, eff_ra, eff_rp = effective_params(cp_milli, ra_milli, rp_ms, sched, cursor)
+        rate = _rate(eff_ra)
+        edge = next_reset_edge(reset_sched, now_ms=cursor)
+        boundary = next_boundary(sched, reset_sched, now_ms=cursor)
+
+        if rate <= 0:
+            # The edge is consulted BEFORE the rate gate (#530). Under ADR-137
+            # a quota's rate is zero in *every* window, so gating on the rate
+            # first exits on iteration 1 and falls back to a flat estimate of
+            # 0.0 — "retry immediately", forever, which is the precise opposite
+            # of this function's headline and silent with it. Nothing accrues
+            # in this window, so the edge wins if it lands inside it; otherwise
+            # step to the boundary, where the rate may resume.
+            if edge is not None and (boundary is None or edge <= boundary):
+                return (edge - now_ms + 1) / 1000.0
+            if boundary is None:
+                break  # no rate, no edge, no boundary — no finite wait
+            cursor = boundary  # strictly after `cursor`, so this advances
+            continue
+
+        need_ms = (remaining * eff_rp) // rate
+        window_end = boundary if boundary is not None else cursor + need_ms
+
+        # The edge still wins over a positive rate when it lands first. That is
+        # not defensive: `effective_params` floors a scaled rate at 1 milli-unit
+        # (#556), so a quota inside a `scale` window arrives here with a phantom
+        # 1-millitoken drip rather than a zero. The walk must not depend on that
+        # floor being either present or absent.
+        if edge is not None and edge <= min(window_end, cursor + need_ms):
+            return (edge - now_ms + 1) / 1000.0
+        if cursor + need_ms <= window_end:
+            return (cursor + need_ms - now_ms + 1) / 1000.0
+
+        remaining -= ((window_end - cursor) * rate) // eff_rp
+        cursor = window_end
+
+    # Identical arithmetic to `bucket.calculate_retry_after`, inlined because
+    # importing it here is a cycle (`bucket` -> `models` -> `schedule`);
+    # `test_unscheduled_matches_calculate_retry_after_exactly` is what keeps the
+    # two the same to the millisecond. The zero-rate branch is carried across
+    # too (#530): the cap is exactly where a quota that outran the walk lands,
+    # and a copy that stopped at the rate arithmetic would reintroduce the 0.0
+    # this function exists to remove. The edge is recomputed from `now_ms`, not
+    # from the walk's `cursor`, because the value returned is a wait measured
+    # from the caller's instant.
+    flat_rate = _rate(ra_milli)
+    if flat_rate <= 0:
+        fallback_edge = next_reset_edge(reset_sched, now_ms=now_ms)
+        if fallback_edge is None:
+            return 0.0
+        return (fallback_edge - now_ms + 1) / 1000.0
+    return ((deficit_milli * rp_ms) // flat_rate + 1) / 1000.0
 
 
 # ---------------------------------------------------------------------------

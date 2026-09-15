@@ -12,9 +12,10 @@ import warnings
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from .bucket import calculate_available, calculate_retry_after, force_consume, try_consume
+from .bucket import calculate_available, force_consume, try_consume
 from .exceptions import LeaseExpiredError, RateLimitExceeded
 from .models import BucketState, Limit, LimitStatus
+from .schedule import retry_after_with_schedule
 from .schema import calculate_bucket_ttl_seconds
 
 _CONFLICT_MAX_RETRIES = 3
@@ -563,12 +564,15 @@ def _build_retry_failure_statuses(entries: list[LeaseEntry], now_ms: int) -> lis
         if not entry._declared:
             continue
         deficit_milli = max(0, entry.consumed * 1000 - entry.state.tokens_milli)
-        retry_after = calculate_retry_after(
+        retry_after = retry_after_with_schedule(
             deficit_milli=deficit_milli,
-            refill_amount_milli=entry.state.retry_refill_amount_milli(now_ms),
-            refill_period_ms=entry.state.effective_refill_period_ms(now_ms),
-            next_reset_ms=None,
+            cp_milli=entry.state.capacity_milli,
+            ra_milli=entry.state.refill_amount_milli,
+            rp_ms=entry.state.refill_period_ms,
+            sched=entry.state.sched,
+            reset_sched=entry.state.reset_sched,
             now_ms=now_ms,
+            shard_count=entry.state.shard_count,
         )
         statuses.append(
             LimitStatus(
