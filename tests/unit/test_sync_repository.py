@@ -7,7 +7,9 @@ Changes should be made to the source file, then regenerated.
 """
 
 import time
+from datetime import datetime
 from unittest.mock import MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 from botocore.exceptions import ClientError
@@ -3964,3 +3966,202 @@ class TestScheduleValidation:
         assert limit.to_dict()["schedule"] == [
             {"cron": "* 9-17 * * MON-FRI", "tz": "America/New_York", "scale": 0.5}
         ]
+
+
+class TestSlowPathWritesVu:
+    """Both composite builders carry the ``vu`` stamp (#222 §2.1, Task 12).
+
+    ``vu`` is what the fast path's condition gates on (Task 11). Task 11 taught
+    it to *read* the stamp; these pin the writes that produce one, on the only
+    two shapes the slow path emits — an update to an existing item and the
+    create of a new one.
+    """
+
+    NOW = 1789000000000
+    HORIZON = NOW + 3600000
+
+    @staticmethod
+    def _state(limit, now_ms, entity_id="user-1", resource="gpt-4"):
+        return BucketState.from_limit(entity_id, resource, limit, now_ms)
+
+    def test_normal_writes_vu_when_given_one(self, repo):
+        item = repo.build_composite_normal(
+            "user-1",
+            "gpt-4",
+            consumed={"rpm": 1000},
+            refill_amounts={"rpm": 0},
+            now_ms=self.NOW,
+            expected_rf=self.NOW - 1000,
+            vu=self.HORIZON,
+        )
+        upd = item["Update"]
+        assert "#vu = :vu" in upd["UpdateExpression"]
+        assert upd["ExpressionAttributeValues"][":vu"] == {"N": str(self.HORIZON)}
+        assert upd["ExpressionAttributeNames"]["#vu"] == BUCKET_FIELD_VU
+
+    def test_normal_omits_vu_when_there_is_no_schedule(self, repo):
+        """``None`` must omit the attribute, never write a null or a zero."""
+        item = repo.build_composite_normal(
+            "user-1",
+            "gpt-4",
+            consumed={"rpm": 1000},
+            refill_amounts={"rpm": 0},
+            now_ms=self.NOW,
+            expected_rf=self.NOW - 1000,
+            vu=None,
+        )
+        upd = item["Update"]
+        assert "#vu" not in upd["ExpressionAttributeNames"]
+        assert ":vu" not in upd["ExpressionAttributeValues"]
+        assert "vu" not in upd["UpdateExpression"]
+
+    def test_normal_never_sets_and_removes_vu_together(self, repo):
+        """``ttl`` can be REMOVEd in the same expression; ``vu`` must not join
+        it. SET and REMOVE on one attribute is the ValidationException #488
+        hit, and the TTL branch is the only REMOVE this builder emits."""
+        item = repo.build_composite_normal(
+            "user-1",
+            "gpt-4",
+            consumed={"rpm": 1000},
+            refill_amounts={"rpm": 0},
+            now_ms=self.NOW,
+            expected_rf=self.NOW - 1000,
+            ttl_seconds=0,
+            vu=self.HORIZON,
+        )
+        expr = item["Update"]["UpdateExpression"]
+        set_clause, remove_clause = expr.split(" REMOVE ")
+        assert "#vu" in set_clause
+        assert "#vu" not in remove_clause
+
+    def test_negative_refill_delta_trims_the_surplus(self, repo):
+        """#496 clamps inside ``refill_bucket``, so the lease's delta goes
+        negative on a shrink and the unconditional ADD carries the trim. A
+        second clamp in the builder would double-apply it."""
+        item = repo.build_composite_normal(
+            "user-1",
+            "gpt-4",
+            consumed={"rpm": 1000},
+            refill_amounts={"rpm": -400000},
+            now_ms=self.NOW,
+            expected_rf=self.NOW - 1000,
+            vu=None,
+        )
+        values = item["Update"]["ExpressionAttributeValues"]
+        assert values[":b_rpm_tk_delta"] == {"N": str(-400000 - 1000)}
+
+    def test_create_stamps_vu(self, repo):
+        """A bucket created on the slow path needs its first ``vu``, or the
+        very next acquire takes the fast path against an unmaterialised item."""
+        state = self._state(Limit.per_minute("rpm", 100), self.NOW)
+        item = repo.build_composite_create("user-1", "gpt-4", [state], self.NOW, vu=self.HORIZON)
+        assert item["Put"]["Item"][BUCKET_FIELD_VU] == {"N": str(self.HORIZON)}
+
+    def test_create_omits_vu_when_there_is_no_schedule(self, repo):
+        state = self._state(Limit.per_minute("rpm", 100), self.NOW)
+        item = repo.build_composite_create("user-1", "gpt-4", [state], self.NOW)
+        assert BUCKET_FIELD_VU not in item["Put"]["Item"]
+
+
+class TestCreateStampsSchedule:
+    """A created bucket carries its schedule (#222 §2.2, design line 89).
+
+    The aggregator reads the item and nothing else. Without ``sched`` on it, a
+    bucket born inside a ``0.5x`` window is refilled toward the *base* ceiling
+    and the fast path spends the surplus — the schedule silently unenforced
+    until the next admin fan-out. The plan assigns the fan-out's stamp to Task
+    13 and leaves creation unassigned; §2.2 says "stamped at bucket creation,
+    re-stamped by the set_limits fan-out".
+    """
+
+    NOW = 1789000000000
+    BUSINESS = (ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.5),)
+    NIGHTLY = (ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", scale=0.25),)
+
+    def _state(self, limit):
+        return BucketState.from_limit("sched-1", "gpt-4", limit, self.NOW)
+
+    def _item(self, repo, limits):
+        states = [self._state(limit) for limit in limits]
+        return repo.build_composite_create("sched-1", "gpt-4", states, self.NOW)["Put"]["Item"]
+
+    def test_stamps_the_item_level_schedule_and_timezone(self, repo):
+        item = self._item(repo, [Limit.per_minute("rpm", 1000).with_schedule(self.BUSINESS)])
+        assert item["sched"]["S"] == "h9-17w1-5s500"
+        assert item["sched_tz"]["S"] == "America/New_York"
+
+    def test_omits_sched_when_nothing_is_scheduled(self, repo):
+        """The overwhelming majority of buckets; they must not grow attributes."""
+        item = self._item(repo, [Limit.per_minute("rpm", 1000)])
+        assert "sched" not in item
+        assert "sched_tz" not in item
+
+    def test_writes_a_per_limit_override_only_where_a_limit_differs(self, repo):
+        """§4.1: one item-level default plus overrides where they diverge. A
+        limit sharing the default must not get a redundant copy."""
+        item = self._item(
+            repo,
+            [
+                Limit.per_minute("rpm", 1000).with_schedule(self.BUSINESS),
+                Limit.per_minute("tpm", 5000).with_schedule(self.BUSINESS),
+                Limit.per_minute("cpm", 20).with_schedule(self.NIGHTLY),
+            ],
+        )
+        assert item["sched"]["S"] == "h9-17w1-5s500"
+        assert bucket_attr("rpm", "sched") not in item
+        assert bucket_attr("tpm", "sched") not in item
+        assert item[bucket_attr("cpm", "sched")]["S"] == "h0-6s250"
+
+    def test_an_unscheduled_limit_beside_a_scheduled_one_gets_no_override(self, repo):
+        """Absence means "use the item default", so an unscheduled limit on a
+        scheduled item would silently inherit the schedule. Recorded rather
+        than fixed here: §4.1 has no encoding for "explicitly unscheduled",
+        and the config hierarchy makes the mix unreachable through
+        ``set_limits``."""
+        item = self._item(
+            repo,
+            [
+                Limit.per_minute("rpm", 1000).with_schedule(self.BUSINESS),
+                Limit.per_minute("tpm", 5000),
+            ],
+        )
+        assert bucket_attr("tpm", "sched") not in item
+
+    def test_rejects_limits_that_disagree_on_timezone(self, repo):
+        """``sched_tz`` is one attribute per item, so keeping the first limit's
+        zone would reinterpret the second limit's cron in the wrong one — the
+        last-one-wins shape #222's config writer already rejects."""
+        other_zone = (ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="Europe/Berlin", scale=0.5),)
+        with pytest.raises(ValueError, match="share a timezone"):
+            self._item(
+                repo,
+                [
+                    Limit.per_minute("rpm", 1000).with_schedule(self.BUSINESS),
+                    Limit.per_minute("tpm", 5000).with_schedule(other_zone),
+                ],
+            )
+
+    def test_stored_params_stay_the_undivided_base(self, repo):
+        """The schedule never rewrites cp/ra — it applies on top (§2.1). The
+        base is the only copy from which the *next* window can be computed."""
+        inside = int(
+            datetime(2026, 9, 15, 14, 0, tzinfo=ZoneInfo("America/New_York")).timestamp() * 1000
+        )
+        state = BucketState.from_limit(
+            "sched-1", "gpt-4", Limit.per_minute("rpm", 1000).with_schedule(self.BUSINESS), inside
+        )
+        item = repo.build_composite_create("sched-1", "gpt-4", [state], inside)["Put"]["Item"]
+        assert item[bucket_attr("rpm", "cp")]["N"] == "1000000"
+        assert item[bucket_attr("rpm", "ra")]["N"] == "1000000"
+        assert item[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"] == "500000"
+
+    def test_a_new_bucket_outside_the_window_starts_at_the_base_balance(self, repo):
+        """The contrast case: same limit, instant outside the window."""
+        outside = int(
+            datetime(2026, 9, 15, 3, 0, tzinfo=ZoneInfo("America/New_York")).timestamp() * 1000
+        )
+        state = BucketState.from_limit(
+            "sched-1", "gpt-4", Limit.per_minute("rpm", 1000).with_schedule(self.BUSINESS), outside
+        )
+        item = repo.build_composite_create("sched-1", "gpt-4", [state], outside)["Put"]["Item"]
+        assert item[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"] == "1000000"

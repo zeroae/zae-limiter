@@ -43,6 +43,7 @@ class LeaseEntry:
     _cascade: bool = False
     _parent_id: str | None = None
     _declared: bool = True
+    _boundary_ms: int | None = None
 
 
 @dataclass
@@ -277,6 +278,8 @@ class SyncLease:
                 ttl_seconds = None
             else:
                 ttl_seconds = calculate_bucket_ttl_seconds(limits, multiplier)
+            boundaries = [e._boundary_ms for e in group_entries if e._boundary_ms is not None]
+            vu = min(boundaries) if boundaries else None
             if is_new:
                 first_entry = group_entries[0]
                 items.append(
@@ -290,6 +293,7 @@ class SyncLease:
                         parent_id=first_entry._parent_id,
                         shard_id=shard_id,
                         shard_count=first_entry._shard_count,
+                        vu=vu,
                     )
                 )
             else:
@@ -313,6 +317,7 @@ class SyncLease:
                         expected_rf=expected_rf,
                         ttl_seconds=ttl_seconds,
                         shard_id=shard_id,
+                        vu=vu,
                     )
                 )
         if not items:
