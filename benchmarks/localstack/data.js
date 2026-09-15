@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789467648171,
+  "lastUpdate": 1789468140000,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -20987,6 +20987,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.09807200733325186",
             "extra": "mean: 1.159584038999992 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "eac48a0ec3e1a16b02c1eea669822b1983557a57",
+          "message": "🐛 fix(limiter): export ScheduleEntry from the package root (#537)\n\n## Summary\n\n`ScheduleEntry` was listed in `src/zae_limiter/schedule.py`'s own\n`__all__` but never re-exported from `src/zae_limiter/__init__.py`, so\nthe import every scheduled-limits example opens with — `from zae_limiter\nimport Limit, ScheduleEntry` — raised `ImportError`. The public surface\nthe whole #222 feature is documented against did not exist.\n\n## The public-surface decision\n\nA module's `__all__` governs `from .module import *`; `__init__.py`'s\n`__all__` is the contract frozen at v1.0.0. The test applied to each\nname: **would a user writing application code ever type it?**\n\n**Exported: `ScheduleEntry` only.** It is the argument to\n`Limit.with_schedule()` and `Limit.reset_schedule`, so every documented\nexample needs it.\n\n**Not exported**, and why — each stays reachable as\n`zae_limiter.schedule.*` for tests and internal callers:\n\n| Name | Reason |\n|------|--------|\n| `parse_cron`, `ParsedCron` | Parse artifact.\n`ScheduleEntry.__post_init__` already parses and raises `ValueError`, so\na user never needs to validate a cron string separately. |\n| `matches` | Takes a `ParsedCron`, so it is unusable without exporting\nthe parse artifact too. Evaluation internal. |\n| `effective_params` | The evaluation engine, in milli-units. Its result\nis what `acquire()` enforces; callers read limits through `LimitStatus`.\n|\n| `next_boundary` | Computes a bucket's `vu` (valid-until). Purely a\nmaterialisation concern. |\n| `encode`, `decode` | The compact storage encoding (§4.1). Exporting it\nwould freeze the on-item format as public API. |\n| `to_cron` | The near miss. It renders a stored schedule back as cron,\nwhich sounds like a legitimate display concern — but its input is a\n*compact entry string*, obtainable only from `encode()` or a raw\nDynamoDB attribute, neither of which is public. A user holding a\n`ScheduleEntry` reads `entry.cron`. It is a helper for tooling that\nreads stored items, not for application code. |\n\nRecorded in a new **Public API** section in `CLAUDE.md` (none existed\nbefore).\n\n`schedule.py` still imports nothing from `models.py` — the one-way\ndependency that lets it be vendored into both Lambda packages is\nuntouched.\n\n## Second half of the bug\n\nExporting `ScheduleEntry` is necessary but not sufficient. Four of the\nseven Python blocks in `docs/guide/scheduled-limits.md` are\ncontinuations that carry no import line and take their names from\n`doctest_globals`, so with the `.lint-only` tags removed they still\nraised `NameError`. `tests/doctest/conftest.py` now supplies\n`ScheduleEntry` alongside `Limit`.\n\nVerified against the held guide (PR #483) with all seven `.lint-only`\ntags stripped: **7 passed, 0 skipped**.\n\n## `.lint-only` removal deferred to #483\n\nThe tags live in `docs/guide/scheduled-limits.md`, which is only on PR\n#483's branch, not on `main`. This repo squash-merges, so stacking #483\non top of this branch would leave it carrying a duplicate of this commit\nto untangle after the squash. The removal is a two-line change on #483\nonce this merges; the verification above proves it will be green then.\n\n## Test plan\n\n- `uv run pytest tests/unit/ -q` → **3996 passed**\n- `uv run pytest tests/unit/ -m gevent -n 0 -q` → **26 passed**, 3996\ndeselected\n- `uv run pytest tests/doctest/ -q` → **346 passed, 224 skipped**\n- `uv run pytest tests/unit/test_public_api.py -q` → 59 passed\n- Guide blocks with tags stripped: `pytest\ntests/doctest/test_docs_run.py -k scheduled-limits` → 7 passed, 0\nskipped\n- pre-push 100% patch-coverage gate passed\n\nNew `tests/unit/test_public_api.py` pins both directions: every name in\n`__all__` resolves from the root, and no excluded `schedule` name leaks\nonto it.\n\nFixes #534\nRefs #222\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01QdVj8nPhUwTz2aNJzMFqt5",
+          "timestamp": "2026-09-15T06:23:28-04:00",
+          "tree_id": "ad2009fa713e33861fb1c935e3fc391378d80d50",
+          "url": "https://github.com/zeroae/zae-limiter/commit/eac48a0ec3e1a16b02c1eea669822b1983557a57"
+        },
+        "date": 1789468138931,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 22.426148729946238,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008626622743018864",
+            "extra": "mean: 44.590803888885 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 15.892773663741654,
+            "unit": "iter/sec",
+            "range": "stddev: 0.013351214527213166",
+            "extra": "mean: 62.92167881818113 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 36.40851639708036,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006169412674764297",
+            "extra": "mean: 27.46610131249927 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 34.45399112219517,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005389123893762486",
+            "extra": "mean: 29.024213666665823 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 21.95764328047123,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004778608039849061",
+            "extra": "mean: 45.54222815384671 msec\nrounds: 13"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 53.367433974187875,
+            "unit": "iter/sec",
+            "range": "stddev: 0.001690240398101696",
+            "extra": "mean: 18.738019153847045 msec\nrounds: 13"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 22.57962649236782,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007544139876858493",
+            "extra": "mean: 44.28771221428361 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 24.258478062142686,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0047346254309008655",
+            "extra": "mean: 41.22270149999974 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 19.75113319361498,
+            "unit": "iter/sec",
+            "range": "stddev: 0.043513016929812826",
+            "extra": "mean: 50.63000640000107 msec\nrounds: 30"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 24.993776966100228,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004527859714998154",
+            "extra": "mean: 40.00995933333039 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 21.668304346117335,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010419838289904611",
+            "extra": "mean: 46.15035786956659 msec\nrounds: 23"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 23.059768892670906,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004801135488940393",
+            "extra": "mean: 43.365569041666774 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 26.141859848140005,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005747354738469056",
+            "extra": "mean: 38.25282538461586 msec\nrounds: 26"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.927452747139894,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0024759120714373107",
+            "extra": "mean: 518.8194634000126 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.912211448587914,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008882648839961097",
+            "extra": "mean: 522.9547186000048 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9443744591932279,
+            "unit": "iter/sec",
+            "range": "stddev: 0.01220604112971253",
+            "extra": "mean: 1.0589019961999953 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9163503941927452,
+            "unit": "iter/sec",
+            "range": "stddev: 0.016312463615449403",
+            "extra": "mean: 1.09128561120001 sec\nrounds: 5"
           }
         ]
       }
