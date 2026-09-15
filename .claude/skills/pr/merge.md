@@ -8,6 +8,14 @@ Merge a pull request that is genuinely green, then clean up after it.
 gh pr merge <number> --merge --delete-branch
 ```
 
+**A non-zero exit does not mean the merge failed.** `--delete-branch` also deletes the *local*
+branch, and that step fails when another worktree still holds the ref — so the command exits 1
+having merged successfully. Check the state before retrying anything:
+
+```bash
+gh pr view <number> --json state,mergeCommit
+```
+
 **Never `--squash`, never `--rebase`.** The repository has `allow_squash_merge: false` and
 `allow_rebase_merge: false`; either flag is rejected outright, and a reflexive `--squash` attempt
 wastes a call and prints an error that reads like the merge failed. Confirm if unsure:
@@ -75,9 +83,14 @@ Then clean up:
 ```bash
 git fetch --prune origin
 git worktree remove .claude/worktrees/<name>     # if one exists
-git merge --ff-only origin/main                  # so -d can see the merge
-git branch -d <branch>
+git -C <path-to-main-checkout> merge --ff-only origin/main   # so -d can see the merge
+git -C <path-to-main-checkout> branch -d <branch>
 ```
+
+**Run those last two from the checkout that is on `main`, not from wherever you happen to be.**
+A bare `git merge --ff-only origin/main` inside a worktree sitting on another PR's branch
+silently fast-forwards *that* branch onto `main` — quietly rewriting an open PR you were not
+touching.
 
 **Never `git branch -D`.** If `-d` refuses, it is usually because local `main` has not been
 fast-forwarded yet — do that and retry. If it still refuses, stop and report; do not force.
