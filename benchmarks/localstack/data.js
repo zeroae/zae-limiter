@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789504967708,
+  "lastUpdate": 1789507822465,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -24419,6 +24419,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.01405461905878741",
             "extra": "mean: 1.0952988551999965 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "12283270f7e006c9371dcd5f093474eb03b1e290",
+          "message": "🐛 fix(test): name shared stacks per pytest session (#584)\n\n## Summary\n\nTwo concurrent `pytest` invocations against one LocalStack destroyed\neach other's data. The shared CloudFormation stacks were named by fixed\nglobal literals — `shared-minimal`, `shared-aggregator`, `shared-full` —\npassed straight through as the stack name, while the `FileLock` and\nmetadata JSON that coordinate them lived under the *session's own*\nbasetemp. `ensure_infrastructure()` is idempotent, so a second\ninvocation did not error on the create branch: it silently **adopted**\nthe first one's live stack, then deleted it by that fixed name from\n`pytest_sessionfinish` with no ownership check, while the first was\nstill writing to the table. The victim saw `ResourceNotFoundException\n... non-existent table` surfacing as `RateLimiterUnavailable`, with no\nassertion ever executed. CI structurally cannot reproduce this — one\nsession per runner — but under this repo's worktree workflow concurrent\nlocal sessions are the normal case.\n\n- **Stack names carry an 8-hex session key** derived from the controller\nbasetemp. Every xdist worker resolves to the same value (verified: 8\nworkers, one key) and no two live sessions share one. 26 characters at\nthe longest base, well inside the 55-char limit. The lock and metadata\nfiles keep their plain names — they already live in a directory private\nto the session.\n- **`session_root()` replaces the unconditional `.parent`.** That was\nright inside an xdist worker and wrong in a single-process run, where it\nresolved to the machine-global `pytest-of-<user>` — a directory\n`pytest_sessionfinish` never looked in, so a non-xdist run leaked its\nstack and left a metadata file for the next non-xdist run to adopt.\n- **Deletion is ownership-checked at the point of deletion.**\n`_delete_recorded_stack()` refuses any record whose stack name lacks the\nsession key of the directory holding it, which also keeps this revision\nsafe beside a peer still running the old one.\n- **Orphans are reclaimed by pid liveness, never by age.**\n`pytest_sessionstart` stamps the session root with the controller pid\nand reaps peer roots whose process is gone. An age sweep would\nreintroduce this same failure with a longer fuse. Reaping is gated on\n`AWS_ENDPOINT_URL`, so a plain unit run never reaches for\nCloudFormation.\n- **The intended stack name is recorded before the stack is created.**\nVerifying the reaper turned up a window it could not cover:\n`builder().build()` does several things after `CREATE_COMPLETE` —\nnamespace registration, the version record, the Lambda update — and only\nthen writes the metadata file, so a run killed inside that window leaves\na live stack that no record on disk names. The name is deterministic, so\nit is now written to `<base>.pending` up front and removed once\n`<base>.json` lands; cleanup and the reaper honour both. Only the\n`.json` still means \"ready\", so a surviving worker falls through to the\nidempotent create rather than adopting a half-built stack.\n- `pytest-current` is skipped when scanning for peer session roots — it\nis pytest's own symlink to the newest basetemp, and through it every\npath (and so every session key) reads differently, which would make a\nsession's own records look like another's.\n- `.claude/rules/testing.md` documents the two invariants, since neither\nis discoverable from the fixture code alone.\n\n## Test plan\n\n- [x] Reproduced the data loss before the fix and confirmed it absent\nafter, with two concurrent sessions against one LocalStack\n- [x] SIGKILL mid-`build()` leaks a stack with a `.pending` record\nbeside it; the next session's `pytest_sessionstart` reaps it, leaving no\nstacks behind\n- [x] Session key is identical across all 8 xdist workers of one run,\nand differs between runs\n- [ ] `uv run pytest tests/unit/test_shared_stack_session.py -q` (new,\n320 lines covering key derivation, `session_root()`, ownership refusal,\npid reaping, and the pending record)\n- [ ] `uv run pytest tests/integration/ -q` green with LocalStack\n- [ ] CI: lint, type check, unit, integration\n\nFixes #577\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01QdVj8nPhUwTz2aNJzMFqt5",
+          "timestamp": "2026-09-15T17:25:20-04:00",
+          "tree_id": "b27a7af45edea9faf4d8439c2e0b0ec8e82712fd",
+          "url": "https://github.com/zeroae/zae-limiter/commit/12283270f7e006c9371dcd5f093474eb03b1e290"
+        },
+        "date": 1789507821411,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 23.587283442127823,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005974489919396727",
+            "extra": "mean: 42.39572575000139 msec\nrounds: 8"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 17.27611878032408,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009185823450686534",
+            "extra": "mean: 57.883371416669625 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 40.44129712541341,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0032131190490314065",
+            "extra": "mean: 24.727198954545834 msec\nrounds: 22"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 37.012275179846576,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0058034583518620534",
+            "extra": "mean: 27.01806347058898 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 23.023856947581933,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007861739009837011",
+            "extra": "mean: 43.43320940000126 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 83.23999475890474,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0022191532551235965",
+            "extra": "mean: 12.013455826089215 msec\nrounds: 23"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 25.08929912711969,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007381670243208174",
+            "extra": "mean: 39.85762993750086 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 25.79740040542126,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007791578876761221",
+            "extra": "mean: 38.76359572222062 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 24.88796524303567,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004659405459654219",
+            "extra": "mean: 40.18006254166669 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 26.909627823377562,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004775027947755013",
+            "extra": "mean: 37.161420684207926 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 28.20241481114962,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005814648945012625",
+            "extra": "mean: 35.45795658620897 msec\nrounds: 29"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 24.181066154875865,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009926268577461405",
+            "extra": "mean: 41.354669541663704 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 30.29137641498845,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005008768266625732",
+            "extra": "mean: 33.012695966670925 msec\nrounds: 30"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9139662816253815,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006494656590804755",
+            "extra": "mean: 522.4752440000032 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9319717111753132,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005506050534448018",
+            "extra": "mean: 517.6059226000007 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9467550312042604,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00689586277868411",
+            "extra": "mean: 1.0562394358000007 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.925160914306394,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00339386763842899",
+            "extra": "mean: 1.0808930473999907 sec\nrounds: 5"
           }
         ]
       }
