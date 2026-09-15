@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789458225647,
+  "lastUpdate": 1789458517121,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -20272,6 +20272,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.00702751859510775",
             "extra": "mean: 1.0773290148000059 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "cccb616904ab805e77bd6a06ef7b431c8e08a1c0",
+          "message": "📝 docs(models): correct ADR-138's reason for excluding rolling windows (#528)\n\n## Summary\n\n**What was wrong.** ADR-138 rejected per-entity reset windows on the\ngrounds that they \"make the valid-until stamp depend on per-entity\nstate, which removes the property that any writer can compute it from\nthe item alone.\" That is false, and it was my error when drafting the\nADR.\n\n**Why it is false.** A per-entity window expressed as a *duration* — set\nthe balance to the effective capacity and stamp `vu = now + interval` —\nneeds no anchor field, because `vu` **is** the anchor. It is in fact\ncheaper than the calendar form it was rejected in favour of: no cron\nparsing, no timezone database, no DST handling, no boundary scan. The\nrejected reasoning described a different design — one storing a fixed\nstart instant and projecting multiples of the interval from it — and the\ndraft did not distinguish the two.\n\n**What survives.** The conclusion stands, on different grounds.\nDeferring rolling windows is a **scope** decision (a second refill\nmechanism with its own configuration surface, storage and documentation,\nagainst a release that is already long), not a feasibility one. The\nDecision and Alternatives now say so, and the alternative is recorded as\n*deferred* rather than *rejected*.\n\n**What it sharpens.** The thundering herd already noted in Consequences\nis a property of calendar alignment specifically; the deferred duration\nform does not have it at all. That is now stated as the strongest\nargument for taking the duration form up, rather than sitting as an\nunattributed cost.\n\n## Process note\n\nADR-138 was Accepted, and `.claude/rules/adr-rules.md` says accepted\nADRs are immutable and must be superseded rather than edited. This was\nedited **in place at the repository owner's explicit direction**,\nbecause the ADR was accepted under an hour earlier, is referenced by no\ncode, and superseding would have left the incorrect reasoning standing\nin a document that enforcement then ignores. This is a deliberate\none-off exception, **not a precedent**.\n\nWhy it matters beyond tidiness: this project treats ADRs as the source\nof truth over code (\"if there is a conflict between an ADR and the code,\nthe code is wrong\"), so an immutable document carrying a reason that\ndoes not hold would mislead whoever next weighs rolling windows — and\nthe reason it gave would have made a cheap feature look expensive.\n\n## Test plan\n\nNone runnable — a single documentation file, no code touched.\n\n- [x] Re-read the corrected Decision and Alternatives against the\nsliding `vu = now + interval` form; the feasibility claim no longer\nappears\n- [x] File is still within the 100-line ADR format limit (76 lines)\n\nRefs #222\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01QdVj8nPhUwTz2aNJzMFqt5",
+          "timestamp": "2026-09-15T03:44:15-04:00",
+          "tree_id": "f772753617d9e4ebcb44381ddfccc3e1e074f63d",
+          "url": "https://github.com/zeroae/zae-limiter/commit/cccb616904ab805e77bd6a06ef7b431c8e08a1c0"
+        },
+        "date": 1789458515784,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 22.74198730992641,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006533121630591723",
+            "extra": "mean: 43.97153099999843 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 16.076967517368587,
+            "unit": "iter/sec",
+            "range": "stddev: 0.013711522279902586",
+            "extra": "mean: 62.20078500001074 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 37.83642247577143,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0033440209957039117",
+            "extra": "mean: 26.429560052627874 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 37.78544184091197,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003244095948005837",
+            "extra": "mean: 26.465219176483355 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 21.228552639360068,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006913800690934184",
+            "extra": "mean: 47.10636740000306 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 77.50298092473521,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0027744983331667605",
+            "extra": "mean: 12.902729521734411 msec\nrounds: 23"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 23.731642562178536,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006608110044166937",
+            "extra": "mean: 42.137833374994216 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 23.701978480577733,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005989456391898215",
+            "extra": "mean: 42.19057075000876 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 23.548487320745974,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0072666408027560496",
+            "extra": "mean: 42.46557268750806 msec\nrounds: 32"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 26.108988702021247,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006246330926395669",
+            "extra": "mean: 38.300985588253916 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 25.084992922852194,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008124058581506775",
+            "extra": "mean: 39.86447207999845 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 25.748618343477347,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003246565906061024",
+            "extra": "mean: 38.83703531818128 msec\nrounds: 22"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 29.506238897359047,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004830056715106147",
+            "extra": "mean: 33.891137514293796 msec\nrounds: 35"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9248466315118244,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004347531125611527",
+            "extra": "mean: 519.5219108000174 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9182731487812126,
+            "unit": "iter/sec",
+            "range": "stddev: 0.011149263462712562",
+            "extra": "mean: 521.3021934000153 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9479020800255762,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0028449687382275843",
+            "extra": "mean: 1.0549612888000184 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.923257828090682,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0058591504017520965",
+            "extra": "mean: 1.0831210628000008 sec\nrounds: 5"
           }
         ]
       }
