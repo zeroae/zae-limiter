@@ -1302,7 +1302,7 @@ class LimitName:
 
 # IAM role component suffixes (ADR-116)
 # Invariant: all components must be <= 8 characters
-ROLE_COMPONENTS = ("aggr", "app", "admin", "read")
+ROLE_COMPONENTS = ("aggr", "app", "admin", "read", "prov")
 
 # Valid CloudWatch Logs retention periods (in days)
 # See: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_PutRetentionPolicy.html
