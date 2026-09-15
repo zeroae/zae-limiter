@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789450579896,
+  "lastUpdate": 1789452746813,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -19843,6 +19843,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.07062669035345519",
             "extra": "mean: 1.1463690262 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "bc00118cbd401b0a821ce96bd1584b5623358e5a",
+          "message": "✨ feat(lease): materialise tokens and the next boundary on the slow path (#522)\n\n## Summary\n\nTask 12 of the #222 scheduled-limits core plan: **slow-path\nmaterialisation**. Task 11 (PR #513) taught the speculative condition to\n*read* `vu`; nothing wrote one, so a scheduled bucket fell through to\nthe slow path on every acquire and could never clear its own boundary.\nThis is the write.\n\n`build_composite_normal(..., vu=None)` and `build_composite_create(...,\nvu=None)` take the stamp; `_commit_initial()` computes it per bucket\nitem as the **minimum** `next_boundary()` across every limit sharing\nthat item.\n\n## Changes\n\n- `repository.py` — `vu` on both composite builders. `None` omits the\nattribute on a create and leaves an existing stamp untouched on an\nupdate. `vu` is only ever `SET`, never `REMOVE`d in the same expression\n(#488). New `_stamp_schedule()` puts `sched` / `sched_tz` /\n`b_{name}_sched` on a created item.\n- `lease.py` — `LeaseEntry._boundary_ms`; `_commit_initial()` takes the\nper-group minimum and passes `vu=` to both builders.\n- `limiter.py` — `_do_acquire` and `_try_parent_only_acquire` attach the\nresolved config's schedule to each `BucketState` and compute\n`_boundary_ms` at the acquire instant.\n- `models.py` — `BucketState.from_limit()` carries `limit.schedule` and\nstarts a new bucket at the *scheduled* per-shard share.\n- `repository_protocol.py` + regenerated `sync_*` twins; CLAUDE.md\nwriter table and speculative-write section.\n\n## The N-surfaces\n\n| Surface | Behaviour |\n|---|---|\n| Many limits per item | `vu` = `min` across them all. One item-level\nattribute, so the earliest change has to force the pass |\n| Undeclared limits | Counted. The same write materialises them (Issue\n#455 makes them write-only, not invisible) |\n| Many shards | Every shard computes the same boundary from the same\nschedule, whatever instant it is touched at. Shards the pass does not\ntouch keep their expired `vu` and materialise on their own next attempt\n|\n| Cascade | Child and parent are separate groups, so each is stamped\nfrom its own limits |\n| create vs normal | Both. A created bucket that skipped the stamp would\nbe fast-pathed against an unmaterialised item on the very next acquire |\n\n## Three defects found beyond the plan's text\n\n1. **`BucketState.sched` was never populated on the client.** Task 9\nbuilt `effective_params` into `BucketState`;\n`_deserialize_composite_bucket()` reads the base params only and\n`from_limit()` dropped `limit.schedule`. The slow path therefore\nrefilled and capped at the **base** parameters while stamping a `vu`\nasserting the window had been honoured — `vu` would have been a lie on\nevery scheduled bucket. Fixed by attaching the resolved config's\nschedule (fresher than the item, which may predate the last\n`set_limits`).\n2. **Nothing stamped `sched` at bucket creation.** Design §2.2 says\n\"stamped at bucket creation, re-stamped by the `set_limits` fan-out\";\nTask 13 covers only the fan-out, and creation is assigned to no task.\nThe aggregator reads the item and nothing else, so a bucket born inside\na `0.5x` window would be refilled toward the **base** ceiling and the\nfast path would spend the surplus — the schedule silently unenforced\nuntil the next admin fan-out. Creation now writes the item-level default\nplus per-limit overrides where they differ, and **rejects** limits that\ndisagree on a timezone (`sched_tz` is one attribute per item; keeping\nthe first limit's zone is the last-one-wins shape the config writer\nalready rejects).\n3. **The plan's Step 4 prose says \"the minimum across the group's\n*declared* limits\"; its own code snippet iterates every entry.**\nDeclared-only leaves an undeclared limit's boundary unenforced for the\nwhole of its window. The code follows the snippet;\n`test_vu_covers_a_limit_the_caller_did_not_declare` pins it and fails\nunder the prose.\n\n## One deliberate deviation\n\nThe plan says to compute `vu` inside `_commit_initial()` from \"the same\n`now_ms` already in scope for the refill computation\". There is no such\nreading there: `_do_acquire()` refills at **its own** instant and\n`_commit_initial()` takes a **second** reading a round trip later, which\nis what stamps `rf`. Computing `vu` from the commit instant skips a\nboundary crossed in between and points at the one *after* it — the fast\npath then spends pre-boundary tokens for a whole window (fails\n**open**). Computing it from the refill instant lands `vu` at or before\n`rf`, so the next acquire simply re-materialises: one extra pass (fails\n**closed**). `_boundary_ms` is therefore computed by the acquire path.\n`test_vu_comes_from_the_refill_instant_not_the_commit_instant`\ndiscriminates the two.\n\n`rf` itself is still stamped at the later instant — pre-existing, #430's\nterritory, untouched here.\n\n## Notes\n\n- **No clamp added at `lease.py`'s refill computation.** Since #496\n`refill_bucket` clamps internally, so the delta goes negative on a\nsurplus and `ADD tk (delta - consumed)` trims correctly.\n`test_the_slow_path_trims_a_surplus_left_by_a_closing_window` covers it\nend to end.\n- The `vu` convention matches the aggregator's exactly: `processor.py`\nre-materialises on `vu_ms <= now_ms` and Task 11's classifier is its\ncomplement. `test_vu_exactly_now_is_expired` still passes.\n\n## Test plan\n\n- 46 new tests (23 async + 23 generated sync twins) across\n`TestSlowPathWritesVu`, `TestCreateStampsSchedule`\n(`test_repository.py`) and `TestSlowPathMaterialisesVu`\n(`test_limiter.py`)\n- **13 mutations, all killed** — vu dropped from each builder,\n`min`→`max`, declared-only, recomputed at commit time, schedule dropped\nfrom `from_limit`, schedule dropped from an existing state, override\nalways written, timezone check disabled, `None`→`0`, one lease-wide\n`vu`, fixed horizon, base starting balance\n- `uv run pytest tests/unit/ -q` → **3813 passed** (baseline 3767 + 46)\n- `uv run pytest tests/unit/ -m gevent -n 0 -q` → **26 passed**\n- `pre-commit run --all-files` green (ruff, ruff-format, mypy 58 files,\ncfn-lint, aws-partition, Verify Generated Sync Code)\n- `diff-cover` on push: **100%**, 31 lines, 0 missing\n\nRefs #222\n\n---\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01QdVj8nPhUwTz2aNJzMFqt5",
+          "timestamp": "2026-09-15T02:07:53-04:00",
+          "tree_id": "955e3413113ee3e52f0272b2e00231f7356da358",
+          "url": "https://github.com/zeroae/zae-limiter/commit/bc00118cbd401b0a821ce96bd1584b5623358e5a"
+        },
+        "date": 1789452745542,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 21.287540484509204,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005461119568499773",
+            "extra": "mean: 46.97583550000495 msec\nrounds: 8"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 16.076610133340083,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00739584164777285",
+            "extra": "mean: 62.202167727273206 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 35.559580963336806,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0020306145096269062",
+            "extra": "mean: 28.121816200000655 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 32.19745628009042,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005701529011410163",
+            "extra": "mean: 31.05835415384534 msec\nrounds: 13"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 22.30183470997372,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007395432709729655",
+            "extra": "mean: 44.83936021428698 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 64.81177373509708,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0017429971372723081",
+            "extra": "mean: 15.429295363636635 msec\nrounds: 22"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 21.847390155872358,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007680332678361835",
+            "extra": "mean: 45.77205757142622 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 26.856029605658097,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006040634335610922",
+            "extra": "mean: 37.23558599999895 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 20.831666322635165,
+            "unit": "iter/sec",
+            "range": "stddev: 0.048377017381005985",
+            "extra": "mean: 48.00384110000001 msec\nrounds: 30"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 26.975733944810354,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0070908588401838064",
+            "extra": "mean: 37.070353749999896 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 28.66306520984981,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005450180717189763",
+            "extra": "mean: 34.888103999999224 msec\nrounds: 22"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 25.9756018771844,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009463742171272277",
+            "extra": "mean: 38.49766425925812 msec\nrounds: 27"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 31.43690982007604,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005035493898007897",
+            "extra": "mean: 31.8097422972975 msec\nrounds: 37"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9300470661007656,
+            "unit": "iter/sec",
+            "range": "stddev: 0.002714237173561623",
+            "extra": "mean: 518.1220797999913 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9378610002984415,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0014618732704166017",
+            "extra": "mean: 516.0328836000076 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9522624002467058,
+            "unit": "iter/sec",
+            "range": "stddev: 0.002414190628387199",
+            "extra": "mean: 1.0501307199999985 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9291817104995247,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0031656139904972847",
+            "extra": "mean: 1.0762157591999995 sec\nrounds: 5"
           }
         ]
       }
