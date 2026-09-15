@@ -1,12 +1,20 @@
 """Tests for the provisioner Lambda handler."""
 
+import json
 from unittest.mock import MagicMock, patch
 
 from tests.fixtures.cfn_payloads import (
     RECORDED_CFN_RESOURCE_PROPERTIES,
     RECORDED_CFN_RESOURCE_PROPERTIES_VALID,
 )
-from zae_limiter.schema import DEFAULT_RESOURCE, pk_entity, pk_resource, sk_config
+from zae_limiter.schema import (
+    DEFAULT_RESOURCE,
+    pk_entity,
+    pk_resource,
+    pk_system,
+    sk_config,
+    sk_provisioner,
+)
 from zae_limiter_provisioner.differ import Change
 from zae_limiter_provisioner.handler import (
     _cfn_limits_to_manifest,
@@ -1571,3 +1579,197 @@ class TestCfnScalarCoercionEndToEnd:
             MagicMock(),
         )
         assert without_old["changes"] == with_old["changes"]
+
+
+# ---------------------------------------------------------------------------
+# #563 — a post-commit fan-out failure must not lose the #PROVISIONER record
+# ---------------------------------------------------------------------------
+
+# A compact schedule string this provisioner cannot decode. The realistic
+# source is an item written by a NEWER client carrying an encoding this one
+# does not understand — design §4.1 ships no version marker (#515), so a
+# forward-compatible read is not available and `decode` raises.
+_UNDECODABLE_SCHED = "zz!!garbage"
+
+_CORRUPT_SYSTEM_CONFIG = {
+    "Item": {
+        "PK": {"S": pk_system("ns123")},
+        "SK": {"S": sk_config()},
+        "l_rpm_cp": {"N": "1000"},
+        "l_rpm_ra": {"N": "1000"},
+        "l_rpm_rp": {"N": "60"},
+        "l_rpm_sched": {"S": _UNDECODABLE_SCHED},
+    }
+}
+
+_PREVIOUS_STATE = {
+    "Item": {
+        "managed_system": {"BOOL": False},
+        "managed_resources": {"L": []},
+        "managed_entities": {"M": {"user-1": {"L": [{"S": "gpt-4"}]}}},
+    }
+}
+
+
+def _corrupt_system_schedule_client(mock_handler_boto3, mock_applier_boto3):
+    """A client whose SYSTEM config item carries an undecodable schedule.
+
+    System is chosen deliberately: an apply that drops an entity's config does
+    not rewrite the system level, so the corrupt item is still there when
+    `_sync_bucket_param_changes` reconciles the deleted entity down to it. Put
+    the same string on a level the manifest DOES declare and `apply_changes`
+    overwrites it before the sync ever reads it, and the whole scenario passes
+    for the wrong reason.
+    """
+    mock_client = MagicMock()
+
+    def _get_item(*_args, **kwargs):
+        key = (kwargs["Key"]["PK"]["S"], kwargs["Key"]["SK"]["S"])
+        if key == (pk_system("ns123"), sk_provisioner()):
+            return _PREVIOUS_STATE
+        if key == (pk_system("ns123"), sk_config()):
+            return _CORRUPT_SYSTEM_CONFIG
+        return {}
+
+    mock_client.get_item.side_effect = _get_item
+    mock_client.query.return_value = {"Items": []}
+    mock_handler_boto3.client.return_value = mock_client
+    mock_applier_boto3.client.return_value = mock_client
+    return mock_client
+
+
+def _provisioner_writes(mock_client):
+    """The `#PROVISIONER` state records written through a mock client."""
+    return [
+        c
+        for c in mock_client.put_item.call_args_list
+        if c.kwargs["Item"]["SK"]["S"] == sk_provisioner()
+    ]
+
+
+@patch("zae_limiter_provisioner.handler.urllib.request.urlopen")
+@patch("zae_limiter_provisioner.applier.boto3")
+@patch("zae_limiter_provisioner.handler.boto3")
+class TestPostCommitFanoutFailure:
+    """#563: `apply_changes` commits before the fan-outs run, so a fan-out
+    failure must report partial progress — never abandon the state record."""
+
+    def test_cfn_records_state_and_reports_success_with_errors(
+        self, mock_handler_boto3, mock_applier_boto3, mock_urlopen
+    ):
+        mock_client = _corrupt_system_schedule_client(mock_handler_boto3, mock_applier_boto3)
+
+        event = {
+            "RequestType": "Update",
+            "ResourceProperties": {
+                "ServiceToken": "arn:aws:lambda:us-east-1:123:function:test",
+                "TableName": "test-table",
+                "Namespace": "test-ns",
+                "NamespaceId": "ns123",
+                "Resources": {"gpt-4": {"Limits": {"rpm": {"Capacity": "2000"}}}},
+            },
+            "ResponseURL": "https://cfn-response.example.com",
+            "StackId": "arn:aws:cloudformation:us-east-1:123:stack/test/guid",
+            "RequestId": "test-request-id",
+            "LogicalResourceId": "TenantLimits",
+        }
+
+        result = on_event(event, MagicMock())
+
+        # The record must describe what was committed, not be lost with the
+        # exception that stopped the fan-out.
+        writes = _provisioner_writes(mock_client)
+        assert len(writes) == 1
+        assert writes[0].kwargs["Item"]["managed_resources"] == {"L": [{"S": "gpt-4"}]}
+
+        # A rollback of a stack whose config is already applied is the worst
+        # available outcome (#563): SUCCESS carrying the error, not FAILED.
+        body = json.loads(mock_urlopen.call_args.args[0].data)
+        assert body["Status"] == "SUCCESS"
+
+        assert result["status"] == "applied"
+        assert any("user-1/gpt-4" in e for e in result["errors"])
+
+    def test_cli_records_state_and_reports_errors(
+        self, mock_handler_boto3, mock_applier_boto3, mock_urlopen
+    ):
+        """`_handle_cli` shares the three-step ordering, so it loses the record
+        the same way — it just lacks the rollback-vs-reality contradiction."""
+        mock_client = _corrupt_system_schedule_client(mock_handler_boto3, mock_applier_boto3)
+
+        event = {
+            "action": "apply",
+            "table_name": "test-table",
+            "namespace_id": "ns123",
+            "manifest": {
+                "namespace": "test-ns",
+                "resources": {"gpt-4": {"limits": {"rpm": {"capacity": 2000}}}},
+            },
+        }
+
+        result = on_event(event, MagicMock())
+
+        assert len(_provisioner_writes(mock_client)) == 1
+        assert result["status"] == "applied"
+        assert any("user-1/gpt-4" in e for e in result["errors"])
+
+    def test_one_bad_change_does_not_abandon_the_others(
+        self, mock_handler_boto3, mock_applier_boto3, mock_urlopen
+    ):
+        """Per-change guarding, the analogue of `FanoutIncomplete.stamped`:
+        the corrupt entity is reported and every other entity still syncs."""
+        mock_client = MagicMock()
+
+        def _get_item(*_args, **kwargs):
+            key = (kwargs["Key"]["PK"]["S"], kwargs["Key"]["SK"]["S"])
+            if key == (pk_system("ns123"), sk_provisioner()):
+                return {
+                    "Item": {
+                        "managed_system": {"BOOL": False},
+                        "managed_resources": {"L": []},
+                        "managed_entities": {
+                            "M": {
+                                "user-1": {"L": [{"S": "gpt-4"}]},
+                                "user-2": {"L": [{"S": "claude-3"}]},
+                            }
+                        },
+                    }
+                }
+            if key == (pk_system("ns123"), sk_config()):
+                return _CORRUPT_SYSTEM_CONFIG
+            if key == (pk_resource("ns123", "claude-3"), sk_config()):
+                return {
+                    "Item": {
+                        "l_tpm_cp": {"N": "500"},
+                        "l_tpm_ra": {"N": "500"},
+                        "l_tpm_rp": {"N": "60"},
+                    }
+                }
+            return {}
+
+        mock_client.get_item.side_effect = _get_item
+        mock_client.query.return_value = {
+            "Items": [{"PK": {"S": "ns123/BUCKET#user-2#claude-3#0"}}]
+        }
+        mock_handler_boto3.client.return_value = mock_client
+        mock_applier_boto3.client.return_value = mock_client
+
+        result = on_event(
+            {
+                "action": "apply",
+                "table_name": "test-table",
+                "namespace_id": "ns123",
+                "manifest": {"namespace": "test-ns"},
+            },
+            MagicMock(),
+        )
+
+        assert [e for e in result["errors"] if "user-1/gpt-4" in e]
+        assert not [e for e in result["errors"] if "user-2/claude-3" in e]
+        # user-2's bucket was still reconciled down to the resource default.
+        assert [
+            c
+            for c in mock_client.update_item.call_args_list
+            if c.kwargs["Key"]["PK"]["S"] == "ns123/BUCKET#user-2#claude-3#0"
+        ]
+        assert len(_provisioner_writes(mock_client)) == 1
