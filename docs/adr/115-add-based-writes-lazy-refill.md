@@ -1,6 +1,6 @@
 # ADR-115: ADD-Based Writes with Lazy Refill
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-01-28
 **Issue:** [#248](https://github.com/zeroae/zae-limiter/issues/248)
 **Depends on:** [ADR-114](114-composite-bucket-items.md)
@@ -25,8 +25,9 @@ limits simultaneously.
 ## Decision
 
 Writers must use DynamoDB ADD to atomically decrement token balances and increment
-consumption counters. Refill must not be stored in `tk`; instead, effective tokens
-must be computed at read time as `min(stored_tk + elapsed * rate, capacity)`. A single
+consumption counters. Stored `tk` must not be kept continuously refilled; every reader
+must compute effective tokens at read time as `min(stored_tk + elapsed * rate, capacity)`,
+and only a writer holding the `rf` lock may materialize that refill into `tk`. A single
 shared `rf` attribute must serve as both the refill baseline and the optimistic
 lock. The repository must implement four write paths: Create (PutItem with
 `attribute_not_exists`), Normal (ADD with refill+consumption, condition `rf =
