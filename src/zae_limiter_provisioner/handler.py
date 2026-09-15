@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import time
 import urllib.request
@@ -308,10 +309,158 @@ def _sync_bucket_param_changes(
         )
 
 
+# ---------------------------------------------------------------------------
+# CloudFormation scalar coercion (#554)
+# ---------------------------------------------------------------------------
+#
+# CloudFormation stringifies EVERY scalar in a custom resource's
+# `ResourceProperties` before delivering them to the Lambda. Measured against a
+# real `aws cloudformation deploy` (see #554): `Disabled: false` arrives as
+# `'false'`, `Capacity: 1000` as `'1000'`, `Scale: 0.5` as `'0.5'`, and
+# `!Ref` of a `Type: Number` parameter as `'1000'`. Structure survives — lists
+# stay lists and maps stay maps — only the leaves are stringified. Quoting in
+# the template changes nothing: `false` and `"false"` are byte-identical on
+# arrival, so quoting cannot be used as a signal.
+#
+# Untreated, that broke two ways:
+#   * `bool('false')` is `True`, so an ADR-125 carve-out (`Disabled: false`)
+#     SILENTLY disabled the entity it was meant to re-admit — but only for an
+#     entry carrying no numeric fields, which is exactly what a carve-out looks
+#     like (`{Disabled: false}` with no limits of its own).
+#   * `'1000' <= 0` is a `TypeError`, so any entry with numeric fields aborted
+#     the whole apply loudly.
+#
+# Coercion is **type-directed**, dispatching on the target field, never on what
+# the value looks like: `Cron` and `Tz` are legitimately strings while `Scale`
+# and `Capacity` are not, so a generic "looks numeric => int" pass would corrupt
+# cron expressions. AWS's own RPDK `recast.py` dispatches on declared type hints
+# for the same reason (and exists at all because a registry resource type does
+# not escape this — aws-cloudformation/cloudformation-cli#435).
+#
+# Every coercer is **idempotent**: an already-native value passes through
+# unchanged. Re-invokes can hand back values another pass already converted, and
+# should AWS ever deliver real types, this boundary keeps working rather than
+# breaking on the fix.
+#
+# `OldResourceProperties` (present on Update, and stringified the same way) is
+# deliberately NOT read anywhere in this package. If drift/diff logic is ever
+# added, it MUST run the old properties through this same coercion — comparing
+# coerced-new against stringified-old would report a change in every field on
+# every re-apply.
+
+# Returned by a numeric coercer for the empty string, meaning "treat the
+# property as absent". This mirrors the RPDK's rule for numeric targets and the
+# CloudFormation `Parameter: {Default: ""}` + optional-property idiom. It is
+# deliberately NOT extended to `Disabled`: that field is tri-state and
+# safety-critical, so an unrecognised spelling must fail loudly rather than be
+# guessed into "inherit".
+_ABSENT: Any = object()
+
+
+def _coerce_bool(value: Any, where: str) -> bool:
+    """Coerce a CloudFormation-delivered `Disabled` value to a real ``bool``.
+
+    A case-insensitive allowlist that **raises** on anything else, rather than
+    falling through to ``bool(value)``. Case matters concretely: an author
+    writing ``Disabled: "True"`` (quoted, so YAML keeps it a string) would
+    otherwise arrive as ``'True'`` and be truthy by accident rather than by
+    the allowlist. ``'1'``, ``'yes'``, ``''`` and every other spelling are
+    rejected: this is the ADR-125 kill switch, and guessing wrong either
+    disables a tenant or re-admits one that was meant to stay out.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.lower() in ("true", "false"):
+        return value.lower() == "true"
+    raise ValueError(
+        f"{where} must be true or false, got {value!r}. CloudFormation delivers "
+        f"every property as a string, so this boundary accepts only 'true'/'false' "
+        f"(any case) or a real boolean — anything else is rejected rather than "
+        f"guessed, because `disabled` is tri-state and a wrong guess silently "
+        f"disables or re-admits a tenant (ADR-125)."
+    )
+
+
+def _coerce_int(value: Any, where: str) -> Any:
+    """Coerce a CloudFormation-delivered numeric property to ``int``.
+
+    ``bool`` is rejected even though it is an ``int`` subclass in Python: a
+    ``Capacity`` of ``true`` is a mistake, not the number 1. The empty string
+    yields :data:`_ABSENT` so the caller can drop an optional property, which
+    is how a CloudFormation ``Default: ""`` parameter spells "not set".
+    """
+    if isinstance(value, bool):
+        raise ValueError(f"{where} must be a whole number, got boolean {value!r}.")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        if value == "":
+            return _ABSENT
+        try:
+            return int(value)
+        except ValueError:
+            pass
+    raise ValueError(
+        f"{where} must be a whole number, got {value!r}. CloudFormation delivers "
+        f"every property as a string; this boundary parses it back, but only for a "
+        f"value that is actually an integer."
+    )
+
+
+def _coerce_float(value: Any, where: str) -> Any:
+    """Coerce a CloudFormation-delivered ``Scale`` to ``float``.
+
+    Non-finite values are rejected here rather than downstream:
+    ``ScheduleEntry.__post_init__`` validates ``scale`` with ``scale <= 0``,
+    and every comparison against NaN is ``False``, so a ``Scale: NaN`` would
+    pass validation and then poison the effective-parameter arithmetic.
+    """
+    if isinstance(value, bool):
+        raise ValueError(f"{where} must be a number, got boolean {value!r}.")
+    if isinstance(value, int | float):
+        parsed = float(value)
+    elif isinstance(value, str):
+        if value == "":
+            return _ABSENT
+        try:
+            parsed = float(value)
+        except ValueError:
+            raise ValueError(
+                f"{where} must be a number, got {value!r}. CloudFormation delivers "
+                f"every property as a string; this boundary parses it back, but only "
+                f"for a value that is actually a number."
+            ) from None
+    else:
+        raise ValueError(f"{where} must be a number, got {value!r}.")
+    if not math.isfinite(parsed):
+        raise ValueError(
+            f"{where} must be a finite number, got {value!r}. NaN and infinity are "
+            f"rejected here because `scale <= 0` — the downstream validation — is "
+            f"False for NaN, so one would pass validation and then poison every "
+            f"effective-parameter calculation."
+        )
+    return parsed
+
+
+def _coerce_str(value: Any, where: str) -> str:
+    """Pass through a CloudFormation-delivered string property.
+
+    CloudFormation already delivers these as ``str``, so this is normally the
+    identity. It exists so the dispatch table names a type for *every* field
+    (the point of a type-directed boundary), and so a non-string reaching it —
+    only possible from a direct Lambda invoke — fails with a message naming the
+    property rather than as an ``AttributeError`` inside ``parse_cron``.
+    """
+    if isinstance(value, str):
+        return value
+    raise ValueError(f"{where} must be a string, got {value!r}.")
+
+
 def _cfn_properties_to_manifest(properties: dict[str, Any]) -> dict[str, Any]:
     """Convert CloudFormation ResourceProperties to manifest dict format.
 
-    CFN uses PascalCase keys; manifest uses snake_case.
+    CFN uses PascalCase keys; manifest uses snake_case. Scalars arrive as
+    strings and are coerced back per-field on the way through (#554).
     """
     manifest: dict[str, Any] = {"namespace": properties.get("Namespace", "default")}
 
@@ -319,23 +468,32 @@ def _cfn_properties_to_manifest(properties: dict[str, Any]) -> dict[str, Any]:
         system: dict[str, Any] = {}
         cfn_system = properties["System"]
         if "OnUnavailable" in cfn_system:
-            system["on_unavailable"] = cfn_system["OnUnavailable"]
+            system["on_unavailable"] = _coerce_str(
+                cfn_system["OnUnavailable"], "System.OnUnavailable"
+            )
         if "Limits" in cfn_system:
-            system["limits"] = _cfn_limits_to_manifest(cfn_system["Limits"])
+            system["limits"] = _cfn_limits_to_manifest(cfn_system["Limits"], where="System.Limits")
         manifest["system"] = system
 
     if "Resources" in properties:
         resources = {}
         for resource_name, cfn_resource in properties["Resources"].items():
             resource_entry: dict[str, Any] = {
-                "limits": _cfn_limits_to_manifest(cfn_resource.get("Limits", {}))
+                "limits": _cfn_limits_to_manifest(
+                    cfn_resource.get("Limits", {}),
+                    where=f"Resources.{resource_name}.Limits",
+                )
             }
             # Tri-state: only set "disabled" when "Disabled" is present in the CFN
             # properties. An explicit False must survive (it's the carve-out value);
             # an absent key must NOT be coerced to False, or every apply would
             # re-enable anything the operator previously disabled out-of-band.
+            # `_coerce_bool` is therefore applied INSIDE this branch: it converts a
+            # present value, it never invents one (#554).
             if "Disabled" in cfn_resource:
-                resource_entry["disabled"] = cfn_resource["Disabled"]
+                resource_entry["disabled"] = _coerce_bool(
+                    cfn_resource["Disabled"], f"Resources.{resource_name}.Disabled"
+                )
             resources[resource_name] = resource_entry
         manifest["resources"] = resources
 
@@ -344,11 +502,16 @@ def _cfn_properties_to_manifest(properties: dict[str, Any]) -> dict[str, Any]:
         for entity_id, cfn_entity in properties["Entities"].items():
             entity_resources = {}
             for resource_name, cfn_res in cfn_entity.get("Resources", {}).items():
+                prefix = f"Entities.{entity_id}.Resources.{resource_name}"
                 entity_resource_entry: dict[str, Any] = {
-                    "limits": _cfn_limits_to_manifest(cfn_res.get("Limits", {}))
+                    "limits": _cfn_limits_to_manifest(
+                        cfn_res.get("Limits", {}), where=f"{prefix}.Limits"
+                    )
                 }
                 if "Disabled" in cfn_res:
-                    entity_resource_entry["disabled"] = cfn_res["Disabled"]
+                    entity_resource_entry["disabled"] = _coerce_bool(
+                        cfn_res["Disabled"], f"{prefix}.Disabled"
+                    )
                 entity_resources[resource_name] = entity_resource_entry
             entities[entity_id] = {"resources": entity_resources}
         manifest["entities"] = entities
@@ -373,8 +536,31 @@ _CFN_SCHEDULE_KEYS: dict[str, str] = {
     "RefillPeriodSeconds": "refill_period_seconds",
 }
 
+# The target type of each schedule property, for the #554 coercion. Keyed
+# identically to `_CFN_SCHEDULE_KEYS` — a unit test pins the two key sets equal,
+# so a seventh schedule property cannot be added without also declaring its
+# type. `Cron` and `Tz` are strings while `Scale` and the three absolutes are
+# not, which is precisely why the coercion dispatches on the field rather than
+# sniffing the value: `"0 9 * * 1-5"` must stay a cron expression.
+_CFN_SCHEDULE_COERCERS: dict[str, Any] = {
+    "Cron": _coerce_str,
+    "Tz": _coerce_str,
+    "Scale": _coerce_float,
+    "Capacity": _coerce_int,
+    "RefillAmount": _coerce_int,
+    "RefillPeriodSeconds": _coerce_int,
+}
 
-def _cfn_schedule_to_manifest(entries: Any) -> Any:
+# Limit-level CFN property -> (manifest key, coercer). Note `RefillPeriod`,
+# which is *not* the schedule entry's `RefillPeriodSeconds`. `Capacity` is
+# handled separately because `LimitDecl` requires it.
+_CFN_LIMIT_OPTIONAL_KEYS: dict[str, tuple[str, Any]] = {
+    "RefillAmount": ("refill_amount", _coerce_int),
+    "RefillPeriod": ("refill_period", _coerce_int),
+}
+
+
+def _cfn_schedule_to_manifest(entries: Any, *, where: str) -> Any:
     """Convert CFN schedule entries back to manifest snake_case.
 
     Table-driven, so an unrecognised *property* is dropped rather than forwarded
@@ -388,33 +574,66 @@ def _cfn_schedule_to_manifest(entries: Any) -> Any:
     fails the custom resource. Swallowing it here would apply the limit with
     its schedule silently missing, which is the one failure nothing downstream
     could detect.
+
+    Each recognised property is coerced to its declared type on the way through
+    (#554): CloudFormation delivers `Scale: 0.5` as `'0.5'`, and `_parse_entries`
+    catches only `ValueError`, so the resulting `'<=' not supported between str
+    and int` `TypeError` would escape unwrapped and fail the stack with a
+    message naming no field at all.
     """
     if not isinstance(entries, list):
         return entries
-    return [
-        {snake: entry[pascal] for pascal, snake in _CFN_SCHEDULE_KEYS.items() if pascal in entry}
-        if isinstance(entry, dict)
-        else entry
-        for entry in entries
-    ]
+    converted: list[Any] = []
+    for i, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            converted.append(entry)
+            continue
+        out: dict[str, Any] = {}
+        for pascal, snake in _CFN_SCHEDULE_KEYS.items():
+            if pascal not in entry:
+                continue
+            value = _CFN_SCHEDULE_COERCERS[pascal](entry[pascal], f"{where}[{i}].{pascal}")
+            if value is not _ABSENT:
+                out[snake] = value
+        converted.append(out)
+    return converted
 
 
-def _cfn_limits_to_manifest(cfn_limits: dict[str, Any]) -> dict[str, Any]:
-    """Convert CFN PascalCase limits to manifest snake_case."""
+def _cfn_limits_to_manifest(cfn_limits: dict[str, Any], *, where: str = "Limits") -> dict[str, Any]:
+    """Convert CFN PascalCase limits to manifest snake_case.
+
+    ``where`` is a dotted path prefix used only to build error messages, so a
+    coercion failure (#554) names the limit an operator has to go and fix
+    rather than just the property that was wrong.
+    """
     result = {}
     for name, cfn_limit in cfn_limits.items():
-        limit: dict[str, Any] = {"capacity": cfn_limit["Capacity"]}
-        if "RefillAmount" in cfn_limit:
-            limit["refill_amount"] = cfn_limit["RefillAmount"]
-        if "RefillPeriod" in cfn_limit:
-            limit["refill_period"] = cfn_limit["RefillPeriod"]
+        limit: dict[str, Any] = {}
+        capacity = _coerce_int(cfn_limit["Capacity"], f"{where}.{name}.Capacity")
+        if capacity is _ABSENT:
+            # Empty means "absent" for an optional property, but `capacity` is
+            # the one field `LimitDecl` requires; dropping it would surface as a
+            # KeyError naming the snake_case key the operator never wrote.
+            raise ValueError(
+                f"{where}.{name}.Capacity is required and must not be empty. "
+                "Every other limit property has a documented default; capacity "
+                "is the allowance itself."
+            )
+        limit["capacity"] = capacity
+        for prop, (key, coerce) in _CFN_LIMIT_OPTIONAL_KEYS.items():
+            if prop in cfn_limit:
+                value = coerce(cfn_limit[prop], f"{where}.{name}.{prop}")
+                if value is not _ABSENT:
+                    limit[key] = value
         # Set only when non-empty, matching both the generator's emission rule
         # and `LimitDecl.to_dict()`: an empty list must not be invented as a
         # key, or the manifest this path builds would differ from the one
         # `limits apply` sends for the same intent.
         for prop, key in (("Schedule", "schedule"), ("ResetSchedule", "reset_schedule")):
             if prop in cfn_limit:
-                converted = _cfn_schedule_to_manifest(cfn_limit[prop])
+                converted = _cfn_schedule_to_manifest(
+                    cfn_limit[prop], where=f"{where}.{name}.{prop}"
+                )
                 if converted:
                     limit[key] = converted
         result[name] = limit
