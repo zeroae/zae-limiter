@@ -591,7 +591,8 @@ Deliberately not exported, and why:
 | `parse_cron`, `ParsedCron` | Parse artifact. `ScheduleEntry.__post_init__` already parses and raises `ValueError`, so a user never needs to validate a cron string separately. |
 | `matches` | Takes a `ParsedCron`, so it is unusable without exporting the parse artifact too. Evaluation internal. |
 | `effective_params` | The evaluation engine, in milli-units. Its result is what `acquire()` enforces; callers read limits through `LimitStatus`, not by re-running it. |
-| `next_boundary` | Computes a bucket's `vu` (valid-until). Purely a materialisation concern. |
+| `next_boundary` | Computes a bucket's `vu` (valid-until) as the earlier of the next parameter change and the next reset edge. Purely a materialisation concern. |
+| `prev_reset_edge` | The reset half of the same concern, scanning *backwards*: "was an edge missed since `rf`?" (§3.6). Only the materialising pass asks. |
 | `encode`, `decode` | The compact storage encoding (§4.1). Repository-internal; exporting it would freeze the on-item format as public API. |
 | `to_cron` | Renders a *compact entry string* back to cron — and that string only comes from `encode()` or a raw DynamoDB attribute, neither of which is public. A user holding a `ScheduleEntry` reads `entry.cron`. Display helper for tooling that reads stored items. |
 

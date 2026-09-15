@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from croniter import croniter
 
-from zae_limiter.schedule import matches, parse_cron
+from zae_limiter.schedule import ScheduleEntry, matches, parse_cron, prev_reset_edge
 
 NY = ZoneInfo("America/New_York")
 
@@ -77,3 +77,64 @@ def test_no_minute_skipped_or_doubled(day, expected_minutes):
     start = int(datetime.fromisoformat(f"{day} 00:00").replace(tzinfo=NY).timestamp())
     end = int(datetime.fromisoformat(f"{day} 23:59").replace(tzinfo=NY).timestamp()) + 60
     assert (end - start) // 60 == expected_minutes
+
+
+# `reset_schedule` entries are edge-triggered, so the previous edge is croniter's
+# previous *fire time* — but only for expressions whose matching minutes are
+# isolated. `* 0 * * *` matches sixty consecutive minutes and croniter's
+# `get_prev` reports the last of them, where the edge is the first; these five
+# are all single-minute patterns, so the two coincide and croniter is an oracle.
+# Each also has a maximum gap under the seven-day minute-granularity cap, so
+# `prev_reset_edge` can always reach the edge.
+#
+# `30 2 * * *` is deliberately absent, though it is in EXPRESSIONS above. croniter
+# agrees with `matches` that no instant on a spring-forward day is 02:30 local —
+# but its `get_prev` is a *scheduler* API and reschedules the skipped fire to
+# 03:00, where a reset edge is a fact about the wall clock and simply does not
+# occur that day. The two disagree by design, so croniter is an oracle for
+# matching and not for edge finding in the skipped hour. Our semantics are pinned
+# directly in test_schedule_boundary.py instead.
+RESET_EXPRESSIONS = [
+    "0 0 * * *",
+    "*/15 * * * *",
+    "0 */6 * * *",
+    "0 0 * * MON,THU",
+]
+
+
+def _reset_sample_instants():
+    """Sixty random instants in 2027 plus a dense walk over both DST switches.
+
+    Far smaller than the matcher sweep above on purpose: each assertion runs a
+    backwards scan of up to four days at minute resolution, where `matches` runs
+    once.
+    """
+    random.seed(11)
+    lo = int(datetime(2027, 1, 1, tzinfo=NY).timestamp())
+    hi = int(datetime(2028, 1, 1, tzinfo=NY).timestamp())
+    samples = [random.randrange(lo, hi, 60) for _ in range(60)]
+    for switch in (datetime(2027, 3, 14, tzinfo=NY), datetime(2027, 11, 7, tzinfo=NY)):
+        base = int(switch.timestamp())
+        samples += list(range(base, base + 86400, 60))[::97]
+    return samples
+
+
+@pytest.mark.parametrize("expr", RESET_EXPRESSIONS)
+def test_prev_reset_edge_agrees_with_croniter(expr):
+    sched = (ScheduleEntry.reset(cron=expr, tz="America/New_York"),)
+    for ts in _reset_sample_instants():
+        dt = datetime.fromtimestamp(ts, NY)
+        if croniter.match(expr, dt):
+            expected = dt.replace(second=0, microsecond=0)
+        else:
+            expected = croniter(expr, dt).get_prev(datetime)
+        got = prev_reset_edge(sched, ts * 1000)
+        assert got is not None, f"{expr} found no edge at {dt.isoformat()}"
+        assert datetime.fromtimestamp(got / 1000, NY) == expected, (
+            f"{expr} disagreed at {dt.isoformat()}"
+        )
+
+
+def test_reset_oracle_comparison_count():
+    """Pin the sample size, as the matcher sweep above does."""
+    assert len(_reset_sample_instants()) * len(RESET_EXPRESSIONS) == 360

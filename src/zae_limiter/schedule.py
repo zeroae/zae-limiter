@@ -22,7 +22,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -39,6 +39,7 @@ __all__ = [
     "matches",
     "next_boundary",
     "parse_cron",
+    "prev_reset_edge",
     "to_cron",
 ]
 
@@ -273,24 +274,96 @@ def effective_params(
     return cp_milli, ra_milli, rp_ms
 
 
-# Step size and scan horizon, chosen by the finest field any entry constrains.
+# Scan granularity and horizon, chosen by the finest field any entry constrains.
 _MINUTE_MS = 60_000
-_HOUR_MS = 3_600_000
 _DAY_MS = 86_400_000
-_GRANULARITY = {
-    "minute": (_MINUTE_MS, 7 * _DAY_MS),
-    "hour": (_HOUR_MS, 31 * _DAY_MS),
-    "day": (_DAY_MS, 366 * _DAY_MS),
+
+# Scan cap per granularity unit. The unit also names the *local calendar* unit the
+# match state is constant over, which is what the probe grid is built from.
+_CAP = {
+    "minute": 7 * _DAY_MS,
+    "hour": 31 * _DAY_MS,
+    "day": 366 * _DAY_MS,
+}
+_ADVANCE = {
+    "minute": timedelta(minutes=1),
+    "hour": timedelta(hours=1),
+    "day": timedelta(days=1),
 }
 
 
-def _granularity(parsed: tuple[ParsedCron, ...]) -> tuple[int, int]:
-    """Step and cap for a scan, from the finest field any entry constrains."""
+def _granularity(parsed: tuple[ParsedCron, ...]) -> tuple[str, int]:
+    """Unit and cap for a scan, from the finest field any entry constrains.
+
+    The unit is not merely a step size: because the coarser units leave every
+    finer cron field unconstrained (``hour`` implies all 60 minutes match,
+    ``day`` implies all 60 minutes *and* all 24 hours), the match state is
+    constant across one local calendar unit of that size. Every transition
+    therefore falls exactly on a local unit start, which is what makes the
+    probe grid below exhaustive.
+    """
     if any(len(p.minutes) < 60 for p in parsed):
-        return _GRANULARITY["minute"]
+        return "minute", _CAP["minute"]
     if any(len(p.hours) < 24 for p in parsed):
-        return _GRANULARITY["hour"]
-    return _GRANULARITY["day"]
+        return "hour", _CAP["hour"]
+    return "day", _CAP["day"]
+
+
+def _truncate(d: datetime, unit: str) -> datetime:
+    """``d`` floored to the start of its local calendar ``unit`` — hour or day.
+
+    The minute unit never arrives here: both probe helpers short-circuit it on
+    integer arithmetic, because the local minute grid *is* the UTC one.
+    """
+    if unit == "day":
+        return d.replace(hour=0, minute=0, second=0, microsecond=0)
+    return d.replace(minute=0, second=0, microsecond=0)
+
+
+def _unit_start(tz: ZoneInfo, t_ms: int, unit: str) -> int:
+    """Epoch-ms at which the local calendar ``unit`` containing ``t_ms`` begins."""
+    return int(_truncate(datetime.fromtimestamp(t_ms / 1000, tz), unit).timestamp() * 1000)
+
+
+def _unit_after(tz: ZoneInfo, t_ms: int, unit: str) -> int:
+    """Epoch-ms at which the local calendar ``unit`` *following* ``t_ms``'s begins."""
+    d = datetime.fromtimestamp(t_ms / 1000, tz) + _ADVANCE[unit]
+    return int(_truncate(d, unit).timestamp() * 1000)
+
+
+def _next_probe(parsed: tuple[ParsedCron, ...], t_ms: int, unit: str) -> int:
+    """The earliest local unit start, in any entry's zone, strictly after ``t_ms``.
+
+    Probing a **UTC**-aligned grid of fixed spacing is what #540 was: a local unit
+    shorter than the step can fall entirely between two probes and be skipped whole,
+    so the scan reports a boundary a full window late. Local unit starts cannot skip
+    a unit, however short the clock made it, because every unit contributes its own
+    start to the grid.
+    """
+    t0 = (t_ms // _MINUTE_MS) * _MINUTE_MS
+    if unit == "minute":
+        # Every timezone offset in use is a whole number of minutes, so the local
+        # minute grid *is* the UTC one. Worth the special case: this is the common
+        # granularity and its cap is 10,080 probes, where the datetime round trip
+        # below would dominate the scan.
+        return t0 + _MINUTE_MS
+    nxt = min(_unit_after(p.tz, t_ms, unit) for p in parsed)
+    return max((nxt // _MINUTE_MS) * _MINUTE_MS, t0 + _MINUTE_MS)
+
+
+def _prev_probe(parsed: tuple[ParsedCron, ...], t_ms: int, unit: str) -> int:
+    """The latest local unit start, in any entry's zone, strictly before ``t_ms``."""
+    t0 = (t_ms // _MINUTE_MS) * _MINUTE_MS
+    if unit == "minute":
+        return t0 - _MINUTE_MS
+    starts = []
+    for p in parsed:
+        s = _unit_start(p.tz, t0, unit)
+        if s >= t0:
+            s = _unit_start(p.tz, t0 - _MINUTE_MS, unit)
+        starts.append(s)
+    prev = max(starts)
+    return min((prev // _MINUTE_MS) * _MINUTE_MS, t0 - _MINUTE_MS)
 
 
 def _active_index(parsed: tuple[ParsedCron, ...], now_ms: int) -> int | None:
@@ -301,68 +374,238 @@ def _active_index(parsed: tuple[ParsedCron, ...], now_ms: int) -> int | None:
     return None
 
 
-def next_boundary(
-    sched: tuple[ScheduleEntry, ...],
-    reset_sched: tuple[ScheduleEntry, ...] = (),
-    *,
-    now_ms: int,
-) -> int | None:
-    """The earliest instant after ``now_ms`` where the active entry changes.
+def _next_param_change(sched: tuple[ScheduleEntry, ...], now_ms: int) -> int:
+    """The earliest instant after ``now_ms`` where the active ``schedule`` entry changes.
 
-    ``reset_sched`` is accepted but unused until the surface plan folds reset
-    edges in as boundary candidates; taking it now keeps that a one-function
-    change rather than a signature change across every caller. ``now_ms`` is
-    **keyword-only on purpose**: the second positional slot belongs to
-    ``reset_sched``, so a positional call would silently bind a timestamp to a
-    schedule tuple (#500). Do not "simplify" it.
+    Returns ``now_ms + cap`` when no transition is found within the horizon, which
+    forces one cheap re-materialisation per active bucket per cap period rather
+    than looping.
 
-    Returns None when there is no schedule. Returns ``now_ms + cap`` when no
-    transition is found within the horizon, which forces one cheap
-    re-materialisation per active bucket per cap period rather than looping.
+    This is a scan, not a library call, because the boundary set includes window
+    *closings* and no cron library computes those (§3.2).
 
-    This is a scan, not a library call, because the boundary set includes
-    window *closings* and no cron library computes those (§3.2).
-
-    The scan is two-phase. The coarse pass steps by the finest field any entry
-    constrains, over a grid aligned to the **UTC** epoch — but window edges fall
-    on *local* minutes, and a timezone offset need not be a whole number of
-    steps, so a coarse probe is only an upper bound on the boundary. Asia/Kolkata
-    (+05:30) puts a 09:00 local edge at 03:30Z, half a step off an hourly grid;
-    a day-granularity edge at New York midnight is twenty hours off a UTC-midnight
-    grid. A returned boundary that is *late* is the unsafe direction — ``vu``
+    The scan is two-phase. The coarse pass probes **local calendar unit starts**
+    (see ``_next_probe``): the match state is constant across one such unit at
+    the chosen granularity, so every transition falls on a probe and none can be
+    skipped. A returned boundary that is *late* is the unsafe direction — ``vu``
     would keep the fast path on the old limits well inside the new window — so
-    the step that straddles the change is re-walked at minute resolution. That
-    costs at most 59 (hourly) or 1439 (daily) extra matches, once, and only on
-    the step where the change actually happens.
+    the step that straddles the change is still re-walked at minute resolution
+    as a bounded backstop for any zone whose unit start we resolve imprecisely.
+    That costs at most 59 (hourly) or 1439 (daily) extra matches, once, and only
+    on the step where the change actually happens.
     """
-    if not sched:
-        return None
-
     parsed = tuple(parse_cron(e.cron, e.tz) for e in sched)
-    step, cap = _granularity(parsed)
+    unit, cap = _granularity(parsed)
     current = _active_index(parsed, now_ms)
     horizon = now_ms + cap
 
-    # Align the coarse probes to the step grid. Cosmetic rather than load-bearing:
-    # any grid of spacing `step` straddles the change (every window is at least one
-    # local hour or one local day long), and the refinement below pins the exact
-    # minute either way. It just keeps the probed instants tidy.
-    lo = now_ms
-    probe = (now_ms // step + 1) * step
+    lo = (now_ms // _MINUTE_MS) * _MINUTE_MS
+    probe = _next_probe(parsed, now_ms, unit)
     while probe <= horizon:
         if _active_index(parsed, probe) != current:
-            # Refine: the true edge lies in (lo, probe]. `probe` itself is a
-            # multiple of `step` and therefore minute-aligned, so this loop is
-            # bounded and `probe` is always a valid answer if nothing earlier is.
-            fine = (lo // _MINUTE_MS + 1) * _MINUTE_MS
+            # Refine: the true edge lies in (lo, probe]. Every probe is
+            # minute-aligned, so this loop is bounded and `probe` is always a
+            # valid answer if nothing earlier is.
+            fine = lo + _MINUTE_MS
             while fine < probe:
                 if _active_index(parsed, fine) != current:
                     return fine
                 fine += _MINUTE_MS
             return probe
         lo = probe
-        probe += step
+        probe = _next_probe(parsed, probe, unit)
     return now_ms + cap
+
+
+# ---------------------------------------------------------------------------
+# Reset edges (§3.6)
+#
+# A `schedule` entry is level-triggered — it is active for every minute it
+# matches. A `reset_schedule` entry is **edge**-triggered: it fires on the
+# transition *into* matching and not for the rest of the window. `0 0 * * *`
+# matches for exactly one minute, and reading it as a level would make the reset
+# depend on a request happening to arrive inside that minute.
+#
+# Detection is therefore backwards. The materialising pass asks
+# `prev_reset_edge(reset_sched, now) > rf` — was there a rising edge since this
+# item was last refilled? — which makes idle buckets correct for free: a bucket
+# idle from 18:00 to 09:00 has `vu` sitting at midnight, and the 09:00 pass sees
+# the missed edge and applies the reset then. Two missed midnights apply once,
+# because setting the balance to the effective capacity is idempotent.
+# ---------------------------------------------------------------------------
+
+
+def _earliest_where(
+    parsed: ParsedCron, want: bool, start_ms: int, horizon_ms: int, unit: str
+) -> int | None:
+    """Earliest minute at or after ``start_ms`` whose match state is ``want``.
+
+    No minute refinement, unlike ``_next_param_change``: probes are local unit
+    starts and the match state is constant across one unit, so the first probe
+    with the wanted state *is* the earliest minute with it. Everything between
+    the previous probe and this one shares the previous probe's state, which is
+    the state we were walking away from.
+
+    The horizon guard rides on the first ``matches`` rather than standing alone,
+    because both call sites below pass a ``start_ms`` already inside the horizon;
+    it is there so an answer can never be returned from beyond it.
+    """
+    t = -(-start_ms // _MINUTE_MS) * _MINUTE_MS
+    if t <= horizon_ms and matches(parsed, t) == want:
+        return t
+
+    single = (parsed,)
+    probe = _next_probe(single, t, unit)
+    while probe <= horizon_ms:
+        if matches(parsed, probe) == want:
+            return probe
+        probe = _next_probe(single, probe, unit)
+    return None
+
+
+def _latest_where(
+    parsed: ParsedCron, want: bool, start_ms: int, floor_ms: int, unit: str
+) -> int | None:
+    """Latest minute at or before ``start_ms`` whose match state is ``want``.
+
+    The mirror image of ``_earliest_where``, and capped the same way: nothing
+    older than ``floor_ms`` is looked at, so an expression with no match in reach
+    costs one horizon's worth of probes and reports nothing.
+
+    Not quite a mirror in one place. Going forwards the answer is the probe
+    itself; going backwards it is the **last minute of that probe's unit**,
+    ``hi - 1``, since the whole unit shares the probe's state and ``hi`` is
+    where that state stopped. `* 0 * * *` looked up from 05:00 must answer 00:59,
+    not 00:00 — the caller turns that into the 00:00 edge, and doing it here
+    would lose the window's length.
+    """
+    t = (start_ms // _MINUTE_MS) * _MINUTE_MS
+    if t < floor_ms:
+        return None
+    if matches(parsed, t) == want:
+        return t
+
+    single = (parsed,)
+    hi = t
+    probe = _prev_probe(single, t, unit)
+    while probe >= floor_ms:
+        if matches(parsed, probe) == want:
+            return hi - _MINUTE_MS
+        hi = probe
+        probe = _prev_probe(single, probe, unit)
+    return None
+
+
+def _next_rising_edge(parsed: ParsedCron, now_ms: int, unit: str, cap: int) -> int | None:
+    """The earliest rising edge strictly after ``now_ms``, or None within the cap.
+
+    Standing *inside* a matching window, the next edge is not the next matching
+    minute — that is this same window — so the window must be left first.
+    """
+    horizon = now_ms + cap
+    start = (now_ms // _MINUTE_MS + 1) * _MINUTE_MS
+    if matches(parsed, now_ms):
+        gap = _earliest_where(parsed, False, start, horizon, unit)
+        if gap is None:
+            return None
+        start = gap
+    return _earliest_where(parsed, True, start, horizon, unit)
+
+
+def _prev_rising_edge(parsed: ParsedCron, now_ms: int, unit: str, cap: int) -> int | None:
+    """The most recent rising edge at or before ``now_ms``, or None within the cap.
+
+    Two backwards searches rather than one: the latest matching minute is only
+    the *inside* of the most recent window, and the edge is where that window
+    opened. Finding a match that runs unbroken back to the cap proves no edge
+    within the horizon, not an edge at the horizon.
+    """
+    floor = now_ms - cap
+    on = _latest_where(parsed, True, now_ms, floor, unit)
+    if on is None:
+        return None
+    off = _latest_where(parsed, False, on - _MINUTE_MS, floor, unit)
+    if off is None:
+        return None
+    return off + _MINUTE_MS
+
+
+def prev_reset_edge(reset_sched: tuple[ScheduleEntry, ...], now_ms: int) -> int | None:
+    """The most recent reset edge at or before ``now_ms``, across every entry.
+
+    The **maximum** across entries, not the first entry that has one: entries in
+    a reset tuple are independent instants, not the priority-ordered overrides of
+    ``schedule`` (§1.2), and the materialising pass only needs to know whether
+    *any* edge has been missed since ``rf``. Applying a reset is idempotent, so
+    the latest one subsumes every earlier one.
+
+    Each entry is scanned at its own granularity and cap, because they are
+    independent: a `0 0 * * *` neighbour must not shorten a `* 0 1 * *`'s horizon
+    from 31 days to 7 and hide its edge.
+
+    Returns None for an empty tuple and for an expression with no edge inside the
+    cap, which resets nothing. (§3.6 names `0 0 30 2 *` for that case; cronsim
+    rejects February 30th outright, so the constructible equivalent is
+    `0 0 29 2 *` — a leap day, out of reach of a seven-day scan almost always.)
+    """
+    edges = []
+    for entry in reset_sched:
+        parsed = parse_cron(entry.cron, entry.tz)
+        unit, cap = _granularity((parsed,))
+        edge = _prev_rising_edge(parsed, now_ms, unit, cap)
+        if edge is not None:
+            edges.append(edge)
+    return max(edges) if edges else None
+
+
+def _next_reset_edge(reset_sched: tuple[ScheduleEntry, ...], now_ms: int) -> int:
+    """The earliest reset edge after ``now_ms``, or ``now_ms + cap`` if none is in reach.
+
+    The cap rather than None, matching ``_next_param_change``, and for a sharper
+    reason here: a yearly `0 0 1 1 *` scans at minute granularity and so cannot
+    see its own edge seven days out. Reporting None would leave ``vu`` unset and
+    the fast path spending pre-reset tokens indefinitely, because nothing else
+    would ever demote the bucket to the pass that runs the *backwards* scan.
+    Capping forces one materialisation per horizon, and the backwards scan then
+    finds the edge from the far side.
+    """
+    candidates = []
+    for entry in reset_sched:
+        parsed = parse_cron(entry.cron, entry.tz)
+        unit, cap = _granularity((parsed,))
+        edge = _next_rising_edge(parsed, now_ms, unit, cap)
+        candidates.append(now_ms + cap if edge is None else edge)
+    return min(candidates)
+
+
+def next_boundary(
+    sched: tuple[ScheduleEntry, ...],
+    reset_sched: tuple[ScheduleEntry, ...] = (),
+    *,
+    now_ms: int,
+) -> int | None:
+    """The earliest instant after ``now_ms`` at which this bucket must re-materialise.
+
+    That is the earlier of two unrelated events: the active ``schedule`` entry
+    changing, which changes the effective parameters (§1.2), and a
+    ``reset_schedule`` edge firing, which sets the balance back to the effective
+    capacity (§3.6). Both invalidate a ``vu`` stamp, so ``vu`` is their minimum.
+
+    ``now_ms`` is **keyword-only on purpose**: the second positional slot belongs
+    to ``reset_sched``, so a positional call would silently bind a timestamp to a
+    schedule tuple (#500). It looks like ceremony now that both tuples are real
+    arguments; it is not. Do not "simplify" it.
+
+    Returns None only when *neither* tuple has entries. A reset-only limit still
+    produces boundaries, which is what makes a quota (ADR-137: no drip, reset
+    only) materialise at all.
+    """
+    candidates = []
+    if sched:
+        candidates.append(_next_param_change(sched, now_ms))
+    if reset_sched:
+        candidates.append(_next_reset_edge(reset_sched, now_ms))
+    return min(candidates) if candidates else None
 
 
 # ---------------------------------------------------------------------------
