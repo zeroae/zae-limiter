@@ -1230,6 +1230,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.models.Limit.is_quota" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;is_quota
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.models.Limit.refill_rate" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1678,6 +1689,17 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;effective_refill_period_ms
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.BucketState.accrues" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;accrues
       
     </span>
   </a>
@@ -4330,6 +4352,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.models.Limit.is_quota" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;is_quota
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.models.Limit.refill_rate" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -4778,6 +4811,17 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;effective_refill_period_ms
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.BucketState.accrues" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;accrues
       
     </span>
   </a>
@@ -5559,6 +5603,46 @@ schedule resets at the same wall-clock instant (ADR-138).</p>
 
 
 
+<h4 id="zae_limiter.models.Limit.is_quota" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-attribute"></code>            <span class="doc doc-object-name doc-attribute-name">is_quota</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#zae_limiter.models.Limit.is_quota" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">is_quota</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Does this limit recover at a reset edge rather than by dripping?</p>
+<p>The <strong>structural</strong> half of ADR-137's "this limit has no refill": a
+property of the configuration and of nothing else. True for a quota at
+every instant, false for a dripping limit at every instant — including
+one whose effective rate happens to be zero right now.</p>
+<p>Derived from <code>reset_schedule</code> rather than from <code>refill_amount == 0</code>
+because the reset is what the limit <em>has</em>; the zero rate is the
+consequence <code>__post_init__</code> pairs with it, and the pairing is what
+makes the two spellings interchangeable for any constructible limit.
+<code>reset_schedule</code> is also the half that survives
+:meth:<code>per_shard</code>, which must return a quota whose rate is still zero.</p>
+<p>Consumers are the ones that must treat a quota as a different <em>kind</em> of
+thing no matter what the clock says: display (<code>10,000 per day</code>, never
+<code>0/sec</code>), validation, documentation. Anything asking "is this
+accruing right now" wants :meth:<code>BucketState.accrues</code> instead — a quota
+is only one of the two ways to get a zero rate, and the other one
+carries no <code>reset_schedule</code> to be found by.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
 <h4 id="zae_limiter.models.Limit.refill_rate" class="doc doc-heading">
 <code class="doc-symbol doc-symbol-heading doc-symbol-attribute"></code>            <span class="doc doc-object-name doc-attribute-name">refill_rate</span>
 
@@ -6285,9 +6369,13 @@ unadmittable request as an event or metric is tracked in #475.</p>
 zero and must stay zero (ADR-137). Flooring it to one would both invent
 a drip the operator never configured and make the result
 unconstructible, since a positive rate alongside the <code>reset_schedule</code>
-this carries through is exactly what validation rejects. The test is on
-the <em>base</em> rate rather than the scheduled one: no drip, scaled by
-anything, is still no drip.</p>
+this carries through is exactly what validation rejects. The carve-out
+asks :attr:<code>is_quota</code>, the <strong>structural</strong> predicate, deliberately: no
+drip, scaled by any window and divided by any shard count, is still no
+drip, so the question must not depend on <code>now_ms</code>. The temporal
+predicate would be the wrong one here — it is also true of a dripping
+limit whose share has floored away, and zeroing <em>that</em> limit's rate
+would report a recovering limit as one that never recovers.</p>
 
 
     </div>
@@ -6915,6 +7003,47 @@ only the numerator is split.</p>
 <div class="doc doc-object doc-function">
 
 
+<h4 id="zae_limiter.models.BucketState.accrues" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">accrues</span>
+
+
+<a href="#zae_limiter.models.BucketState.accrues" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">accrues</span><span class="p">(</span><span class="n">now_ms</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Is this shard gaining tokens at <code>now_ms</code>?</p>
+<p>The <strong>temporal</strong> half of ADR-137's "this limit has no refill", bound to
+a bucket and a clock: :func:<code>is_accrual_rate</code> applied to the rate this
+shard actually refills at right now, schedule and shard split included.</p>
+<p>False for two unrelated reasons, which is the whole point of keeping it
+apart from :attr:<code>Limit.is_quota</code>:</p>
+<ul>
+<li>the limit is a <strong>quota</strong> and never drips (<code>ra</code> is 0 on the item); or</li>
+<li>the limit drips, but <em>this</em> shard's share of the rate in force floors
+  to zero — a slow limit split many ways, or a <code>scale</code> window that
+  shrank the numerator before <code>// shard_count</code> reached it.</li>
+</ul>
+<p>A caller that special-cases only the first gets the second wrong
+silently, because a sharded dripping limit carries nothing that marks
+it. Anything that divides by the refill rate, or computes a wait from
+it, must ask this question; anything that decides how to <em>describe</em> the
+limit — display, validation — wants :attr:<code>Limit.is_quota</code>, which does
+not move with the clock.</p>
+<p>Note what this does <strong>not</strong> say: a bucket that is not accruing may
+still recover, at the next <code>reset_schedule</code> edge for a quota, or on
+the next re-materialisation for a share that a widening window brings
+back above zero.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
 <h4 id="zae_limiter.models.BucketState.retry_refill_amount_milli" class="doc doc-heading">
 <code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">retry_refill_amount_milli</span>
 
@@ -6937,6 +7066,12 @@ bounds how far apart the two can get.</p>
 <p>The fallback is the <em>scheduled</em> undivided rate, not the stored base
 rate: during a <code>scale</code> window the base rate is a speed nothing in
 the system refills at, so quoting it would under-report the wait.</p>
+<p>A <strong>quota</strong> falls through to the same fallback and gets 0 back, because
+the undivided rate is 0 too — the estimate is then not a rate question
+at all, and <code>bucket.calculate_retry_after</code> answers it from the next
+reset edge instead (#530). That is why the guard here is
+:func:<code>is_accrual_rate</code> and not :attr:<code>Limit.is_quota</code>: it has to catch
+the floored share, which is not a quota and must not be treated as one.</p>
 
 
     </div>
