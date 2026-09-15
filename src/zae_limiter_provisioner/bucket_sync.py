@@ -25,6 +25,7 @@ from zae_limiter.schema import (
     BUCKET_FIELD_CP,
     BUCKET_FIELD_RA,
     BUCKET_FIELD_RP,
+    BUCKET_FIELD_RSCHED,
     BUCKET_FIELD_SCHED,
     BUCKET_FIELD_TC,
     BUCKET_FIELD_TK,
@@ -72,11 +73,14 @@ _STALE_FIELDS = (
     BUCKET_FIELD_RA,
     BUCKET_FIELD_RP,
     BUCKET_FIELD_TC,
-    # A dropped limit's own schedule override goes with it, matching the async
+    # A dropped limit's own schedule overrides go with it, matching the async
     # path. Manifests cannot express a schedule, but a limit deleted through a
     # manifest may have been given one through the Python API, and left behind
-    # it re-attaches the moment a limit of that name is configured again.
+    # they re-attach the moment a limit of that name is configured again. That
+    # is worse for `rsched` than for `sched`: an orphan reset restores a
+    # balance on a calendar nobody configured.
     BUCKET_FIELD_SCHED,
+    BUCKET_FIELD_RSCHED,
 )
 
 

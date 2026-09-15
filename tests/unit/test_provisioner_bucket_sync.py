@@ -85,7 +85,9 @@ class TestBuildBucketParamUpdate:
             LIMITS, ttl_multiplier=None, stale_limit_names={"tpm"}, now_ms=1_789_000_000_000
         )
         removed = {names[a.strip()] for a in expr.split("REMOVE")[1].split(",")}
-        assert removed == {bucket_attr("tpm", f) for f in ("tk", "cp", "ra", "rp", "tc", "sched")}
+        assert removed == {
+            bucket_attr("tpm", f) for f in ("tk", "cp", "ra", "rp", "tc", "sched", "rsched")
+        }
         assert bucket_attr("tpm", "rf") not in removed
         assert "rf" not in removed
 
@@ -120,6 +122,7 @@ class TestBuildBucketParamUpdate:
             LIMITS, ttl_multiplier=None, stale_limit_names=None, now_ms=1_789_000_000_000
         )
         assert "sched" not in names.values()
+        assert "rsched" not in names.values()
         assert "sched_tz" not in names.values()
         assert "REMOVE" not in expr
 

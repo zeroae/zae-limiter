@@ -2367,3 +2367,24 @@ class TestResetScheduleAndTimezoneHoisting:
 
     def test_unscheduled_limits_still_do_not_vote(self):
         assert models.hoisted_schedule_timezone([Limit.per_minute("rpm", 1000)]) is None
+
+
+class TestBucketStateCarriesTheResetSchedule:
+    def test_from_limit_carries_it(self):
+        """`build_composite_create` stamps `rsched` off the state, so a state
+        built without it creates a quota bucket that never resets."""
+        state = BucketState.from_limit(
+            "e1", "gpt-4", Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="UTC"), 0
+        )
+        assert state.reset_sched == (ScheduleEntry.reset("0 0 * * *", "UTC"),)
+
+    def test_from_limit_leaves_a_dripping_limit_without_one(self):
+        state = BucketState.from_limit("e1", "gpt-4", Limit.per_minute("rpm", 100), 0)
+        assert state.reset_sched == ()
+
+    def test_the_wcu_carrier_never_resets(self):
+        """`wcu` is the per-partition write ceiling, not a user limit. An
+        item-level `rsched` applies to every limit on the item by default, so
+        the carrier must set the field explicitly rather than inherit."""
+        state = BucketState.from_limit("e1", "gpt-4", Limit.per_minute("rpm", 100), 0)
+        assert Limit._carrier(state).reset_schedule == ()

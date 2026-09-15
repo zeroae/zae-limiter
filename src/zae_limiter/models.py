@@ -664,12 +664,19 @@ class Limit:
         undivided config limit there; a pre-divided one would be narrowed a
         second time when the lease builds a status from it.
 
-        No ``reset_schedule``: bucket items do not carry one yet (surface Task
-        5). When they do, the two fields have to move **together** — the
+        No ``reset_schedule``, for two reasons that both have to clear before
+        it can be carried. Bucket items now *do* carry one (``rsched`` /
+        ``b_{name}_rsched``, #222 §4.1), but nothing populates
+        ``BucketState.reset_sched`` on the way **back in**:
+        ``_deserialize_composite_bucket`` reads the base params and neither
+        schedule tuple, so ``state.reset_sched`` here is always ``()`` and
+        adding it would be a no-op that merely looked like a fix. And once it
+        is populated, the two fields have to move **together** — the
         ``max(1, ...)`` floor below turns a quota's zero rate into one token,
-        which alongside a reset is precisely what ADR-137 rejects, so adding
-        ``reset_schedule=state.reset_sched`` on its own raises rather than
-        round-trips.
+        which alongside a reset is precisely what ADR-137 rejects, so
+        ``reset_schedule=state.reset_sched`` on its own would start *raising*
+        rather than round-tripping. Until both land, a fast-path rejection on a
+        quota quotes a phantom one-token drip (surface plan Tasks 5 and 10).
         """
         return cls(
             name=state.limit_name,
@@ -946,6 +953,13 @@ class BucketState:
     # for an unscheduled bucket, which is the overwhelming majority — the
     # effective methods below then return the stored values unchanged.
     sched: tuple[ScheduleEntry, ...] = ()
+    # The reset schedule the item carries (#222 §3.6), decoded from `rsched` /
+    # `b_{name}_rsched`. Nothing here applies it — the edge detection is the
+    # materialising pass's job — but `build_composite_create` stamps it onto a
+    # newly created bucket from here, exactly as it does `sched`. Like `sched`,
+    # it is populated by `from_limit` only: `_deserialize_composite_bucket`
+    # reads the base params and neither tuple (surface plan Task 5).
+    reset_sched: tuple[ScheduleEntry, ...] = ()
 
     @property
     def tokens(self) -> int:
@@ -1099,6 +1113,10 @@ class BucketState:
             # the schedule rides alongside so every reader can recompute the
             # effective params at its own instant.
             sched=limit.schedule,
+            # Stamped onto the item beside `sched`: both refillers read the
+            # schedules off the item and nothing else, so a bucket born
+            # carrying `vu` but no `rsched` would never reset.
+            reset_sched=limit.reset_schedule,
         )
         # Start at full capacity *as of now* — the scheduled share, not the
         # base one. A bucket born inside a `0.5x` window that started at the

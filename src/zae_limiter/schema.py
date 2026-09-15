@@ -78,7 +78,14 @@ BUCKET_FIELD_RF = "rf"  # shared refill timestamp (ms) — optimistic lock
 # ``vu`` ("valid until", epoch ms) is the materialisation stamp: the fast path
 # gates on ``vu > now`` so it can honour a schedule without ever evaluating
 # one. ``vu = 0`` forces exactly one materialising pass.
+# ``rsched`` / ``b_{name}_rsched`` carry the **reset** schedule (§3.6) under the
+# same item-level-default rule and the same hoisted ``sched_tz``. A separate
+# attribute rather than a tag inside ``sched``: the two tuples mean opposite
+# things (a reset is edge-triggered and overrides no parameters, a parameter
+# entry is level-triggered and overrides nothing else), and one list the reader
+# has to partition into two meanings is exactly what §4.1 rejected.
 BUCKET_FIELD_SCHED = "sched"  # item-level default schedule, compact-encoded
+BUCKET_FIELD_RSCHED = "rsched"  # item-level default reset schedule (§3.6, §4.1)
 BUCKET_FIELD_SCHED_TZ = "sched_tz"  # IANA name, hoisted out of every entry
 BUCKET_FIELD_VU = "vu"  # valid-until, epoch ms — schedule materialisation stamp
 

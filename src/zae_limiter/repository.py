@@ -6,6 +6,7 @@ import logging
 import random
 import time
 import warnings
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 
 from aiobotocore.session import AioSession, get_session
@@ -2077,10 +2078,33 @@ class Repository:
     # -------------------------------------------------------------------------
 
     @staticmethod
-    def _encode_item_schedule(
-        named_schedules: list[tuple[str, tuple[schedule.ScheduleEntry, ...] | None]],
-    ) -> tuple[str, str, dict[str, str]] | None:
-        """Resolve §4.1's item-level default plus per-limit overrides.
+    def _encode_one_tuple(
+        named_schedules: list[tuple[str, tuple[schedule.ScheduleEntry, ...]]],
+        encoder: Callable[[tuple[schedule.ScheduleEntry, ...]], tuple[str, str | None]],
+    ) -> tuple[str, dict[str, str]] | None:
+        """§4.1's item-level default plus per-limit overrides, for one tuple.
+
+        Returns ``(default_compact, overrides)``, where ``overrides`` names
+        only the limits whose encoding differs from the default, or ``None``
+        when no limit on the item carries this kind of schedule. The timezone
+        is resolved once for the whole item by the caller, not here.
+        """
+        scheduled = [(name, sched) for name, sched in named_schedules if sched]
+        if not scheduled:
+            return None
+        encodings = [(name, encoder(sched)[0]) for name, sched in scheduled]
+        default_compact = encodings[0][1]
+        overrides = {name: compact for name, compact in encodings if compact != default_compact}
+        return default_compact, overrides
+
+    @classmethod
+    def _encode_item_schedules(
+        cls,
+        named: list[
+            tuple[str, tuple[schedule.ScheduleEntry, ...], tuple[schedule.ScheduleEntry, ...]]
+        ],
+    ) -> tuple[str, tuple[str, dict[str, str]] | None, tuple[str, dict[str, str]] | None] | None:
+        """Encode **both** schedule tuples for one bucket item, under one zone.
 
         One encoder for both writers of these attributes — the bucket-create
         stamp (`_stamp_schedule`) and the `set_limits` fan-out
@@ -2090,15 +2114,23 @@ class Repository:
         default, which limits get an override, and what counts as a timezone
         conflict.
 
+        The two tuples are resolved **together** rather than by two independent
+        calls, because `sched_tz` is a single item-level attribute they share
+        (§4.1). Two calls would each be internally consistent and jointly
+        wrong — and on the fan-out, one of them would `SET` the attribute while
+        the other `REMOVE`d it in the same expression, which is the #488
+        `ValidationException`.
+
         Args:
-            named_schedules: ``(limit_name, schedule)`` for every limit on the
-                item, scheduled or not. Order decides the item-level default.
+            named: ``(limit_name, schedule, reset_schedule)`` for every limit
+                on the item, scheduled or not. Order decides the item-level
+                default, independently per tuple.
 
         Returns:
-            ``(default_compact, tz, overrides)`` where ``overrides`` maps a
-            limit name to its own compact encoding — present only for limits
-            that differ from the default. ``None`` when nothing on the item is
-            scheduled.
+            ``(tz, param, reset)`` where each of ``param``/``reset`` is
+            ``(default_compact, overrides)`` or ``None`` when no limit carries
+            that kind. ``None`` overall when nothing on the item is scheduled
+            at all — in which case there is no timezone to report either.
 
         Raises:
             ValueError: The scheduled limits disagree on a timezone. It is
@@ -2110,40 +2142,50 @@ class Repository:
                 silently keeping the first limit's zone would reinterpret the
                 second limit's cron in the wrong one.
         """
-        scheduled = [(name, sched) for name, sched in named_schedules if sched]
-        if not scheduled:
-            return None
-
-        zones = {entry.tz for _name, sched in scheduled for entry in sched}
+        zones = {
+            entry.tz for _name, sched, reset in named for entry in (*(sched or ()), *(reset or ()))
+        }
         if len(zones) > 1:
             raise ValueError(
                 f"all scheduled limits on one bucket item must share a timezone, got "
                 f"{sorted(zones)}. The timezone is stored once per item as "
                 f"`sched_tz`, not per limit."
             )
+        if not zones:
+            return None
 
-        encodings = [(name, schedule.encode(sched)) for name, sched in scheduled]
-        default_compact, default_tz = encodings[0][1]
-        overrides = {
-            name: compact for name, (compact, _tz) in encodings if compact != default_compact
-        }
-        return default_compact, default_tz or "UTC", overrides
+        param = cls._encode_one_tuple(
+            [(name, sched or ()) for name, sched, _reset in named], schedule.encode
+        )
+        reset = cls._encode_one_tuple(
+            [(name, reset or ()) for name, _sched, reset in named], schedule.encode_reset
+        )
+        return zones.pop(), param, reset
 
     def _stamp_schedule(self, item: dict[str, Any], states: list[BucketState]) -> None:
-        """Write ``sched`` / ``sched_tz`` / ``b_{name}_sched`` onto a new item.
+        """Write ``sched`` / ``rsched`` / ``sched_tz`` / overrides onto a new item.
 
         A fresh item carries no stale override to strip, so this is the SET
         half of what `_build_bucket_param_update` does; both go through
-        `_encode_item_schedule` so the two cannot drift.
+        `_encode_item_schedules` so the two cannot drift.
         """
-        encoded = self._encode_item_schedule([(s.limit_name, s.sched) for s in states])
+        encoded = self._encode_item_schedules(
+            [(s.limit_name, s.sched, s.reset_sched) for s in states]
+        )
         if encoded is None:
             return
-        default_compact, tz, overrides = encoded
-        item[schema.BUCKET_FIELD_SCHED] = {"S": default_compact}
+        tz, param, reset = encoded
         item[schema.BUCKET_FIELD_SCHED_TZ] = {"S": tz}
-        for name, compact in overrides.items():
-            item[schema.bucket_attr(name, schema.BUCKET_FIELD_SCHED)] = {"S": compact}
+        for field, part in (
+            (schema.BUCKET_FIELD_SCHED, param),
+            (schema.BUCKET_FIELD_RSCHED, reset),
+        ):
+            if part is None:
+                continue
+            default_compact, overrides = part
+            item[field] = {"S": default_compact}
+            for name, compact in overrides.items():
+                item[schema.bucket_attr(name, field)] = {"S": compact}
 
     def build_composite_create(
         self,
@@ -2204,13 +2246,15 @@ class Repository:
         if vu is not None:
             item[schema.BUCKET_FIELD_VU] = {"N": str(vu)}
 
-        # The schedule is stamped at bucket creation and re-stamped by the
+        # Both schedules are stamped at bucket creation and re-stamped by the
         # `set_limits` fan-out (§2.2). Without it here, a bucket first seen by
         # the slow path inside a `0.5x` window would reach the aggregator
         # carrying `vu` but no `sched`: the aggregator reads the item and
         # nothing else, so it would refill toward the *base* ceiling and the
         # fast path would spend the surplus — the scheduled limit silently not
-        # enforced until the next admin fan-out.
+        # enforced until the next admin fan-out. `rsched` is the same argument
+        # one step further: a quota bucket born without it is a bucket whose
+        # `refill_amount` is 0 and which nothing ever refills.
         self._stamp_schedule(item, states)
 
         # Auto-inject wcu infrastructure limit
@@ -3450,43 +3494,57 @@ class Repository:
             expr_names[f"#rp{i}"] = rp_attr
             expr_values[f":rp{i}"] = {"N": str(limit.refill_period_seconds * 1000)}
 
-        # Re-stamp the schedule (#222 §2.2). The aggregator reads the item and
-        # nothing else, so a bucket left holding a superseded `sched` is
-        # refilled toward a ceiling the operator has already changed.
-        encoded = self._encode_item_schedule([(limit.name, limit.schedule) for limit in limits])
-        if encoded is not None:
-            default_compact, default_tz, overrides = encoded
-            set_parts.append("#sched = :sched")
-            expr_names["#sched"] = schema.BUCKET_FIELD_SCHED
-            expr_values[":sched"] = {"S": default_compact}
-            set_parts.append("#sched_tz = :sched_tz")
-            expr_names["#sched_tz"] = schema.BUCKET_FIELD_SCHED_TZ
-            expr_values[":sched_tz"] = {"S": default_tz}
+        # Re-stamp both schedules (#222 §2.2, §3.6). The aggregator reads the
+        # item and nothing else, so a bucket left holding a superseded `sched`
+        # is refilled toward a ceiling the operator has already changed, and
+        # one left holding a superseded `rsched` keeps resetting on a calendar
+        # nobody asked for any more.
+        encoded = self._encode_item_schedules(
+            [(limit.name, limit.schedule, limit.reset_schedule) for limit in limits]
+        )
+        # `sched_tz` is shared by both tuples, so it is decided once, from
+        # whether *anything* on the item is scheduled. Deciding it inside the
+        # parameter branch would REMOVE it for a quota carrying only a reset —
+        # and the stored `rsched` would then decode as UTC forever — or, worse,
+        # SET and REMOVE it in one expression (#488).
+        expr_names["#sched_tz"] = schema.BUCKET_FIELD_SCHED_TZ
+        if encoded is None:
+            tz, param, reset = None, None, None
+            remove_parts.append("#sched_tz")
         else:
-            overrides = {}
-            for alias, attr in (
-                ("#sched", schema.BUCKET_FIELD_SCHED),
-                ("#sched_tz", schema.BUCKET_FIELD_SCHED_TZ),
-            ):
-                expr_names[alias] = attr
-                remove_parts.append(alias)
+            tz, param, reset = encoded
+            set_parts.append("#sched_tz = :sched_tz")
+            expr_values[":sched_tz"] = {"S": tz}
 
         # Per-limit overrides are SET where a limit differs from the item
         # default and REMOVEd everywhere else — including on the scheduled
-        # branch, which is the half the plan's snippet left out. Absence means
-        # "inherit the item default", so a limit that used to carry its own
-        # schedule and now shares the default (or has none at all) keeps
-        # enforcing the superseded one forever unless its override is stripped.
-        # Each alias lands in exactly one of the two lists, never both (#488).
-        for i, limit in enumerate(limits):
-            alias = f"#lsched{i}"
-            expr_names[alias] = schema.bucket_attr(limit.name, schema.BUCKET_FIELD_SCHED)
-            compact = overrides.get(limit.name)
-            if compact is None:
-                remove_parts.append(alias)
+        # branch. Absence means "inherit the item default", so a limit that
+        # used to carry its own schedule and now shares the default (or has
+        # none at all) keeps enforcing the superseded one forever unless its
+        # override is stripped. Each alias lands in exactly one of the two
+        # lists, never both (#488).
+        for prefix, field, part in (
+            ("sched", schema.BUCKET_FIELD_SCHED, param),
+            ("rsched", schema.BUCKET_FIELD_RSCHED, reset),
+        ):
+            item_alias = f"#{prefix}"
+            expr_names[item_alias] = field
+            if part is None:
+                overrides: dict[str, str] = {}
+                remove_parts.append(item_alias)
             else:
-                set_parts.append(f"{alias} = :lsched{i}")
-                expr_values[f":lsched{i}"] = {"S": compact}
+                default_compact, overrides = part
+                set_parts.append(f"{item_alias} = :{prefix}")
+                expr_values[f":{prefix}"] = {"S": default_compact}
+            for i, limit in enumerate(limits):
+                alias = f"#l{prefix}{i}"
+                expr_names[alias] = schema.bucket_attr(limit.name, field)
+                compact = overrides.get(limit.name)
+                if compact is None:
+                    remove_parts.append(alias)
+                else:
+                    set_parts.append(f"{alias} = :l{prefix}{i}")
+                    expr_values[f":l{prefix}{i}"] = {"S": compact}
 
         # Outside both branches, so it runs on EVERY fan-out, scheduled or
         # not: force exactly one materialising pass, which clamps any surplus
@@ -3537,10 +3595,11 @@ class Repository:
                     schema.BUCKET_FIELD_RA,
                     schema.BUCKET_FIELD_RP,
                     schema.BUCKET_FIELD_TC,
-                    # A dropped limit's own schedule override goes with it.
-                    # Left behind it is orphan state that re-attaches the
+                    # A dropped limit's own schedule overrides go with it.
+                    # Left behind they are orphan state that re-attaches the
                     # moment a limit of that name is configured again.
                     schema.BUCKET_FIELD_SCHED,
+                    schema.BUCKET_FIELD_RSCHED,
                 )
             ):
                 alias = f"#stale{i}_{j}"
