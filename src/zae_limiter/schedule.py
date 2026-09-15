@@ -22,7 +22,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -273,24 +273,81 @@ def effective_params(
     return cp_milli, ra_milli, rp_ms
 
 
-# Step size and scan horizon, chosen by the finest field any entry constrains.
+# Scan granularity and horizon, chosen by the finest field any entry constrains.
 _MINUTE_MS = 60_000
-_HOUR_MS = 3_600_000
 _DAY_MS = 86_400_000
-_GRANULARITY = {
-    "minute": (_MINUTE_MS, 7 * _DAY_MS),
-    "hour": (_HOUR_MS, 31 * _DAY_MS),
-    "day": (_DAY_MS, 366 * _DAY_MS),
+
+# Scan cap per granularity unit. The unit also names the *local calendar* unit the
+# match state is constant over, which is what the probe grid is built from.
+_CAP = {
+    "minute": 7 * _DAY_MS,
+    "hour": 31 * _DAY_MS,
+    "day": 366 * _DAY_MS,
+}
+_ADVANCE = {
+    "minute": timedelta(minutes=1),
+    "hour": timedelta(hours=1),
+    "day": timedelta(days=1),
 }
 
 
-def _granularity(parsed: tuple[ParsedCron, ...]) -> tuple[int, int]:
-    """Step and cap for a scan, from the finest field any entry constrains."""
+def _granularity(parsed: tuple[ParsedCron, ...]) -> tuple[str, int]:
+    """Unit and cap for a scan, from the finest field any entry constrains.
+
+    The unit is not merely a step size: because the coarser units leave every
+    finer cron field unconstrained (``hour`` implies all 60 minutes match,
+    ``day`` implies all 60 minutes *and* all 24 hours), the match state is
+    constant across one local calendar unit of that size. Every transition
+    therefore falls exactly on a local unit start, which is what makes the
+    probe grid below exhaustive.
+    """
     if any(len(p.minutes) < 60 for p in parsed):
-        return _GRANULARITY["minute"]
+        return "minute", _CAP["minute"]
     if any(len(p.hours) < 24 for p in parsed):
-        return _GRANULARITY["hour"]
-    return _GRANULARITY["day"]
+        return "hour", _CAP["hour"]
+    return "day", _CAP["day"]
+
+
+def _truncate(d: datetime, unit: str) -> datetime:
+    """``d`` floored to the start of its local calendar ``unit`` — hour or day.
+
+    The minute unit never arrives here: both probe helpers short-circuit it on
+    integer arithmetic, because the local minute grid *is* the UTC one.
+    """
+    if unit == "day":
+        return d.replace(hour=0, minute=0, second=0, microsecond=0)
+    return d.replace(minute=0, second=0, microsecond=0)
+
+
+def _unit_start(tz: ZoneInfo, t_ms: int, unit: str) -> int:
+    """Epoch-ms at which the local calendar ``unit`` containing ``t_ms`` begins."""
+    return int(_truncate(datetime.fromtimestamp(t_ms / 1000, tz), unit).timestamp() * 1000)
+
+
+def _unit_after(tz: ZoneInfo, t_ms: int, unit: str) -> int:
+    """Epoch-ms at which the local calendar ``unit`` *following* ``t_ms``'s begins."""
+    d = datetime.fromtimestamp(t_ms / 1000, tz) + _ADVANCE[unit]
+    return int(_truncate(d, unit).timestamp() * 1000)
+
+
+def _next_probe(parsed: tuple[ParsedCron, ...], t_ms: int, unit: str) -> int:
+    """The earliest local unit start, in any entry's zone, strictly after ``t_ms``.
+
+    Probing a **UTC**-aligned grid of fixed spacing is what #540 was: a local unit
+    shorter than the step can fall entirely between two probes and be skipped whole,
+    so the scan reports a boundary a full window late. Local unit starts cannot skip
+    a unit, however short the clock made it, because every unit contributes its own
+    start to the grid.
+    """
+    t0 = (t_ms // _MINUTE_MS) * _MINUTE_MS
+    if unit == "minute":
+        # Every timezone offset in use is a whole number of minutes, so the local
+        # minute grid *is* the UTC one. Worth the special case: this is the common
+        # granularity and its cap is 10,080 probes, where the datetime round trip
+        # below would dominate the scan.
+        return t0 + _MINUTE_MS
+    nxt = min(_unit_after(p.tz, t_ms, unit) for p in parsed)
+    return max((nxt // _MINUTE_MS) * _MINUTE_MS, t0 + _MINUTE_MS)
 
 
 def _active_index(parsed: tuple[ParsedCron, ...], now_ms: int) -> int | None:
@@ -320,48 +377,42 @@ def next_boundary(
     transition is found within the horizon, which forces one cheap
     re-materialisation per active bucket per cap period rather than looping.
 
-    This is a scan, not a library call, because the boundary set includes
-    window *closings* and no cron library computes those (§3.2).
+    This is a scan, not a library call, because the boundary set includes window
+    *closings* and no cron library computes those (§3.2).
 
-    The scan is two-phase. The coarse pass steps by the finest field any entry
-    constrains, over a grid aligned to the **UTC** epoch — but window edges fall
-    on *local* minutes, and a timezone offset need not be a whole number of
-    steps, so a coarse probe is only an upper bound on the boundary. Asia/Kolkata
-    (+05:30) puts a 09:00 local edge at 03:30Z, half a step off an hourly grid;
-    a day-granularity edge at New York midnight is twenty hours off a UTC-midnight
-    grid. A returned boundary that is *late* is the unsafe direction — ``vu``
+    The scan is two-phase. The coarse pass probes **local calendar unit starts**
+    (see ``_next_probe``): the match state is constant across one such unit at
+    the chosen granularity, so every transition falls on a probe and none can be
+    skipped. A returned boundary that is *late* is the unsafe direction — ``vu``
     would keep the fast path on the old limits well inside the new window — so
-    the step that straddles the change is re-walked at minute resolution. That
-    costs at most 59 (hourly) or 1439 (daily) extra matches, once, and only on
-    the step where the change actually happens.
+    the step that straddles the change is still re-walked at minute resolution
+    as a bounded backstop for any zone whose unit start we resolve imprecisely.
+    That costs at most 59 (hourly) or 1439 (daily) extra matches, once, and only
+    on the step where the change actually happens.
     """
     if not sched:
         return None
 
     parsed = tuple(parse_cron(e.cron, e.tz) for e in sched)
-    step, cap = _granularity(parsed)
+    unit, cap = _granularity(parsed)
     current = _active_index(parsed, now_ms)
     horizon = now_ms + cap
 
-    # Align the coarse probes to the step grid. Cosmetic rather than load-bearing:
-    # any grid of spacing `step` straddles the change (every window is at least one
-    # local hour or one local day long), and the refinement below pins the exact
-    # minute either way. It just keeps the probed instants tidy.
-    lo = now_ms
-    probe = (now_ms // step + 1) * step
+    lo = (now_ms // _MINUTE_MS) * _MINUTE_MS
+    probe = _next_probe(parsed, now_ms, unit)
     while probe <= horizon:
         if _active_index(parsed, probe) != current:
-            # Refine: the true edge lies in (lo, probe]. `probe` itself is a
-            # multiple of `step` and therefore minute-aligned, so this loop is
-            # bounded and `probe` is always a valid answer if nothing earlier is.
-            fine = (lo // _MINUTE_MS + 1) * _MINUTE_MS
+            # Refine: the true edge lies in (lo, probe]. Every probe is
+            # minute-aligned, so this loop is bounded and `probe` is always a
+            # valid answer if nothing earlier is.
+            fine = lo + _MINUTE_MS
             while fine < probe:
                 if _active_index(parsed, fine) != current:
                     return fine
                 fine += _MINUTE_MS
             return probe
         lo = probe
-        probe += step
+        probe = _next_probe(parsed, probe, unit)
     return now_ms + cap
 
 

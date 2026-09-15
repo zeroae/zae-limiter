@@ -131,6 +131,36 @@ class TestNextBoundary:
         friday = _ms("2026-09-11 10:00")
         assert _iso(next_boundary(sched, now_ms=friday)).startswith("2026-09-12T00:00")
 
+    def test_a_short_local_day_is_not_stepped_over(self):
+        """#540: a UTC-aligned day grid can skip a whole 23-hour matching day.
+
+        Atlantic/Azores is UTC-1 and springs forward *at local midnight* on the
+        last Sunday of March, so that Sunday runs 01:00Z -> 00:00Z, 23 hours
+        sitting strictly between two UTC midnights. A 24-hour grid aligned to the
+        UTC epoch has no probe inside it, so the scan walked clean over the day
+        and reported the *following* Sunday — 167 hours late, a whole window of
+        the wrong limits.
+        """
+        sched = (ScheduleEntry(cron="* * * * SUN", tz="Atlantic/Azores", scale=0.5),)
+        now = _ms("2027-03-24 06:23", ZoneInfo("UTC"))
+        assert _iso(next_boundary(sched, now_ms=now), ZoneInfo("UTC")).startswith(
+            "2027-03-28T01:00"
+        )
+
+    def test_a_half_length_local_hour_is_not_stepped_over(self):
+        """The same defect one granularity finer, via a 30-minute DST shift.
+
+        Lord Howe Island moves 02:00 -> 02:30 on the first Sunday of October, so
+        local hour 2 lasts thirty minutes that day. Its zone offset puts local
+        hour starts on the UTC half hour, so an hourly UTC grid brackets that
+        half hour without ever probing inside it.
+        """
+        sched = (ScheduleEntry(cron="* 2 * * *", tz="Australia/Lord_Howe", capacity=2000),)
+        now = _ms("2026-10-03 06:23", ZoneInfo("UTC"))
+        assert _iso(next_boundary(sched, now_ms=now), ZoneInfo("UTC")).startswith(
+            "2026-10-03T15:30"
+        )
+
     def test_is_the_minimum_across_entries(self):
         sched = (
             ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.5),
@@ -190,11 +220,14 @@ def _brute_force_boundary(sched: tuple[ScheduleEntry, ...], now_ms: int, horizon
 
 
 class TestAgainstABruteForceMinuteScan:
-    """The two hand-written timezone cases above sample the failure; this sweeps it.
+    """The hand-written timezone cases above sample the failures; this sweeps them.
 
     A UTC-aligned coarse grid reports a late boundary whenever the zone's offset is
-    not a whole number of steps. These zones cover +05:30, +05:45, -03:30, +10:30
-    and +12:45, plus whole-hour zones as controls.
+    not a whole number of steps, and skips a window outright when the clock makes a
+    local unit shorter than the step (#540). These zones cover +05:30, +05:45,
+    -03:30, +10:30 and +12:45, the -01:00 zone whose DST shift lands at local
+    midnight and the +10:30 zone whose shift is half an hour, plus whole-hour zones
+    as controls.
     """
 
     @pytest.mark.parametrize(
@@ -204,14 +237,18 @@ class TestAgainstABruteForceMinuteScan:
             ("* 9-17 * * *", "Asia/Kolkata"),
             ("* 9-17 * * *", "Asia/Kathmandu"),
             ("* 0-6 * * *", "Australia/Lord_Howe"),
+            ("* 2 * * *", "Australia/Lord_Howe"),
             ("0 0 * * *", "America/St_Johns"),
             ("*/15 * * * *", "UTC"),
             ("* * * * SAT,SUN", "America/New_York"),
             ("* * * * SAT,SUN", "Pacific/Chatham"),
+            ("* * * * SUN", "Atlantic/Azores"),
             ("* * 1-7 * *", "Europe/Berlin"),
         ],
     )
-    @pytest.mark.parametrize("day", ["2026-09-15", "2026-09-19", "2027-03-13"])
+    @pytest.mark.parametrize(
+        "day", ["2026-09-15", "2026-09-19", "2026-10-01", "2027-03-13", "2027-03-22"]
+    )
     def test_matches_ground_truth(self, cron, tz, day):
         sched = (ScheduleEntry(cron=cron, tz=tz, scale=0.5),)
         now = _ms(f"{day} 06:23", ZoneInfo("UTC"))
