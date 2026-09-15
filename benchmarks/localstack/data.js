@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789500552103,
+  "lastUpdate": 1789503138256,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -24133,6 +24133,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.015020284568186161",
             "extra": "mean: 1.0836107853999977 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "34d6a7ce3ea72fbd45d2100258ddf8c26871da7d",
+          "message": "🐛 fix(schedule): scan a reset to its own cycle, not its probe step (#583)\n\n## Summary\n`schedule._granularity` answered two different questions with one\nnumber: the probe *step* (must be fine enough that the match state is\nconstant across it — from the finest constrained cron field) and the\nscan *horizon* (must be long enough to reach the next edge — really the\ncoarsest field's question). Every practical reset pattern pins the\nminute, so monthly, quarterly and annual resets alike were all scanned\nwith the minute step's 7-day cap.\n\nTwo user-visible consequences, both fixed:\n- `next_reset_edge` returned `None` for `0 0 1 * *` for ~24 days out of\nevery 30, so the `resets_at_ms` #545 put in 429 bodies was `null`\nexactly where a client most needs it.\n- An annual quota's `retry_after_seconds` was **0.0** — \"retry\nimmediately\" against a limit that cannot admit anything for months,\ndriving a hot retry loop off the rejection itself. The old reach was 56\ndays (7-day cap x `max_windows=8`).\n\n`_reset_scan` now takes the step from `_granularity` and the horizon\nfrom `cycle_seconds` — the coarsest-field ladder moved out of\n`schema._reset_cycle_seconds` (#532) into `schedule.py` so the two\ncallers cannot drift again, which is what this bug was. The `max` of the\ntwo, never the cycle outright, so the horizon can only grow (`* * * * *`\nkeeps its day-step 366-day cap).\n\n`max_windows` is unchanged and was never the fix: a quota's rate is zero\nin every window, so the zero-rate branch returns the edge on iteration\n*one* once the scan can see it. Raising the budget would have papered\nover the horizon for `retry_after_seconds` and done nothing for\n`next_reset_edge`, which has no walk to rescue it.\n\nThe backwards twin `prev_reset_edge` is widened by the same change —\nwhich is what stops a bucket idle across a monthly edge from never\nresetting at all.\n\n`docs/api/exceptions.md` had been documenting the defect *as the\ncontract*: it told readers `resets_at_ms` is \"null when the reset is\nfurther out than the scheduler's forward scan can see — a monthly or\nannual reset, most of its cycle\". A client reading that would build and\nkeep a fallback path it no longer needs. Corrected here — the key now\ncarries a real instant for every practical quota period (session, daily,\nweekly, monthly, quarterly, annual), and is `null` only for a pattern\nthat skips whole years such as `0 0 29 2 *`. The docs now say what a\nclient actually needs about that case: `null` means \"no scheduled reset\nin reach\", not \"never resets\", and `retry_after_seconds` is the\nfallback. No migration note accompanies it, because there is nothing to\nmigrate from — `Limit.quota` and `reset_schedule` are both absent from\n`v0.13.0`, so quotas have never appeared in a release.\n\n## Cost went down, not up\n`_unreachable_block` lets a search for a match step over whole local\ndays and hours the date/hour fields rule out, bounding a search at (days\nin horizon) + 24 + 60 ~ 450 probes against the 10,080 a flat 7-day\nminute walk cost.\n\nMeasured `matches()` calls and wall-clock, exhausted quota, one\nrejection through `bucket.try_consume`, from 2026-09-15T12:00Z:\n\n| period | cron | `next_reset_edge` before -> after |\n`retry_after_seconds` before -> after | probes before -> after | ms\nbefore -> after |\n|---|---|---|---|---|---|\n| session | `0 */6 * * *` | 18:00 -> 18:00 | 21600.001 -> 21600.001 |\n724 -> 134 | 1.5 -> 0.7 |\n| daily | `0 0 * * *` | 09-16 00:00 -> same | 43200.001 -> 43200.001 |\n1442 -> 30 | 3.0 -> 0.3 |\n| weekly | `0 0 * * 1` | 09-21 00:00 -> same | 475200.001 -> 475200.001\n| 15842 -> 18 | 36.8 -> 0.3 |\n| monthly | `0 0 1 * *` | **None** -> 2026-10-01 | 1339200.001 ->\n1339200.001 | 44646 -> 38 | 94.5 -> 0.6 |\n| quarterly | `0 0 1 1,4,7,10 *` | **None** -> 2026-10-01 | 1339200.001\n-> 1339200.001 | 44646 -> 38 | 103.2 -> 0.4 |\n| annual | `0 0 1 1 *` | **None** -> 2027-01-01 | **0.000** ->\n9288000.001 | 171377 -> 222 | 412.7 -> 1.8 |\n\nWorst case measured over pathological patterns (`59 23 31 12 *`, `* * *\n* *`, `0 0 29 2 *`, `*/5 * 28-31 2 *`, ...): 449 probes / 5.5 ms,\nmatching the 366+24+60 bound.\n\nResidual, unchanged and still the documented reading: a pattern that\nskips whole years (`0 0 29 2 *`) is out of reach three years in four and\nreports `None`.\n\n## Test plan\n- New `tests/unit/test_schedule_reset_horizon.py` (57 tests): both\nsurfaces x six periods (session/daily/weekly/monthly/quarterly/annual),\nan annual quota sampled through all twelve months, and the old 56-day\ncliff pinned at 54/55/56/57/58/120/300 days out.\n- Seven of those pin the skip-ahead itself. `_unreachable_block` is the\none part of this change that could silently jump an edge, and its\ncorrectness — that every instant in a skipped block shares the state\nbeing walked away from — was only an argument in a docstring. The tests\ncompare `_earliest_where` / `_latest_where` against the flat\nminute-by-minute walk they replace, in America/New_York across both 2027\nDST switches, including `30 2 * * *` (a local hour that does not exist\non spring-forward day) and `* * * * *` (constrains nothing, so nothing\nmay be skipped at all).\n- Those 7 are **not** failing-first tests and are not claimed as such:\nthey assert that the skip-ahead added here is behaviour-preserving, so\nunder `main`'s `src/` they fail only with `AttributeError: module\n'zae_limiter.schedule' has no attribute '_reset_scan'` — a setup\nfailure, not a behavioural disagreement. Their value is the opposite of\na regression reproduction: they pin that an optimisation changed no\nanswer. 8,856 comparisons against the flat walk ran clean during\ndevelopment; the committed set is trimmed to 1.9 s.\n- `tests/unit/test_schedule_oracle.py`: coarse periods added to the\ncroniter oracle (they could not be oracle-tested at all while the\nhorizon was 7 days), plus a forward oracle for `next_reset_edge`, which\nhad none.\n- Written failing first: 20 of the original 50 failed on `main`.\nMutation-checked: reverting `src/` reproduces exactly those 20 failures\nplus 8 new oracle failures.\n- `uv run pytest tests/unit/ -q` -> 4755 passed. `-m gevent -n 0` -> 26\npassed. `tests/doctest/` -> 346 passed, 224 skipped. `uv run mypy`\nclean, `uv run ruff check .` clean, `ruff format --check` clean on\nchanged files. `generate_sync.py` -> all files up to date (no generated\ntwins affected).\n\nFixes #574\nRefs #222, #545, #532\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01QdVj8nPhUwTz2aNJzMFqt5",
+          "timestamp": "2026-09-15T16:07:16-04:00",
+          "tree_id": "29c92f6c087dceca14eaf64d2b14ad8324689bb7",
+          "url": "https://github.com/zeroae/zae-limiter/commit/34d6a7ce3ea72fbd45d2100258ddf8c26871da7d"
+        },
+        "date": 1789503137202,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 26.033862082415656,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007679116534013012",
+            "extra": "mean: 38.41151177778733 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 17.455403154775976,
+            "unit": "iter/sec",
+            "range": "stddev: 0.011666609585884793",
+            "extra": "mean: 57.288851545453404 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 38.7894414787628,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0029076867591098666",
+            "extra": "mean: 25.780211363638728 msec\nrounds: 22"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 37.519073356928104,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004666570007523979",
+            "extra": "mean: 26.653110285714035 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 21.916344567631953,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003882506485953553",
+            "extra": "mean: 45.62804699999519 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 76.99366908002686,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003383304002146794",
+            "extra": "mean: 12.988080863643537 msec\nrounds: 22"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 24.736775822950698,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006237567751912563",
+            "extra": "mean: 40.425640235305174 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 24.96472801191439,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006034855717778357",
+            "extra": "mean: 40.05651491667569 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 26.59266389245915,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00411940859433031",
+            "extra": "mean: 37.60435599998573 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 24.164821481168175,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007282005183955405",
+            "extra": "mean: 41.382470000008375 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 25.138449618480465,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005859393028053904",
+            "extra": "mean: 39.77970062500802 msec\nrounds: 32"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 26.226183326401003,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0049641224103180795",
+            "extra": "mean: 38.129833363642135 msec\nrounds: 22"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 30.148907883824123,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004801401355151572",
+            "extra": "mean: 33.16869731578346 msec\nrounds: 38"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9253904959940285,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005918943264974317",
+            "extra": "mean: 519.3751615999986 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9285714505846225,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00598264006297851",
+            "extra": "mean: 518.5185126000192 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9473063412959821,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0041461508299191",
+            "extra": "mean: 1.0556247291999852 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.922757542551972,
+            "unit": "iter/sec",
+            "range": "stddev: 0.002593927230087773",
+            "extra": "mean: 1.0837082915999872 sec\nrounds: 5"
           }
         ]
       }
