@@ -6638,6 +6638,46 @@ class TestDisableCommands:
         assert result.exit_code == 1
         assert "Failed to clear entity disabled flag" in result.output
 
+    # --- entity reset-bucket ---
+
+    def test_entity_reset_bucket_requires_resource(self, runner: CliRunner) -> None:
+        result = runner.invoke(cli, ["entity", "reset-bucket", "user-123"])
+        assert result.exit_code != 0
+        assert "Missing option" in result.output
+
+    def test_entity_reset_bucket_help(self, runner: CliRunner) -> None:
+        result = runner.invoke(cli, ["entity", "reset-bucket", "--help"])
+        assert result.exit_code == 0
+        assert "--resource" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_reset_bucket_success(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        mock_repo = Mock()
+        mock_repo.reset_bucket = AsyncMock(return_value=1)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+
+        result = runner.invoke(cli, ["entity", "reset-bucket", "user-123", "--resource", "gpt-4"])
+
+        assert result.exit_code == 0
+        assert "Reset usage for entity 'user-123' on resource 'gpt-4'" in result.output
+        assert "1 buckets deleted" in result.output
+        mock_repo.reset_bucket.assert_called_once_with("user-123", resource="gpt-4")
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_reset_bucket_handles_exception(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        mock_repo = Mock()
+        mock_repo.reset_bucket = AsyncMock(side_effect=Exception("DynamoDB error"))
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+
+        result = runner.invoke(cli, ["entity", "reset-bucket", "user-123", "--resource", "gpt-4"])
+
+        assert result.exit_code == 1
+        assert "Failed to reset entity bucket" in result.output
+
     # --- surfaced disabled status on read commands ---
 
     @patch("zae_limiter.repository.Repository")

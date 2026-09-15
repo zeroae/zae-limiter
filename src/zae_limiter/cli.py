@@ -3700,6 +3700,80 @@ def entity_clear_disabled(
 
 
 @entity.command(
+    "reset-bucket",
+    epilog="""\b
+Examples:
+    \b
+    # Reset a user's usage after adjusting their limits
+    zae-limiter entity reset-bucket user-123 --resource gpt-4
+""",
+)
+@click.argument("entity_id")
+@click.option(
+    "--resource",
+    "-r",
+    required=True,
+    help="Resource to reset usage for (required).",
+)
+@click.option(
+    "--name",
+    "-n",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Stack identifier used as the CloudFormation stack name.",
+)
+@click.option("--region", help="AWS region (default: use boto3 defaults)")
+@click.option(
+    "--endpoint-url",
+    help="AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)",
+)
+@namespace_option
+def entity_reset_bucket(
+    entity_id: str,
+    resource: str,
+    name: str,
+    region: str | None,
+    endpoint_url: str | None,
+    namespace: str,
+) -> None:
+    """Reset an entity's usage for one resource to a blank slate.
+
+    ENTITY_ID is the entity whose usage should be reset (e.g., 'user-123',
+    'api-key-abc').
+
+    Deletes the bucket item(s) backing this entity/resource pair (every
+    shard under write-sharding), so the next request recreates the bucket
+    at full capacity under whatever limits are configured now. Does not
+    change any stored limits or disabled state — only the consumed token
+    state. Useful right after adjusting an entity's limits, when the old
+    usage should not carry forward.
+
+    \f
+
+    **Examples:**
+        ```bash
+        zae-limiter entity reset-bucket user-123 --resource gpt-4
+        ```
+    """
+
+    async def _run() -> None:
+        repo = await _connect(name, region, endpoint_url, namespace)
+        try:
+            count = await repo.reset_bucket(entity_id, resource=resource)
+            click.echo(
+                f"Reset usage for entity '{entity_id}' on resource '{resource}'"
+                f" ({count} buckets deleted)"
+            )
+        except Exception as e:
+            click.echo(f"Error: Failed to reset entity bucket: {e}", err=True)
+            sys.exit(1)
+        finally:
+            await repo.close()
+
+    asyncio.run(_run())
+
+
+@entity.command(
     "list",
     epilog="""\b
 Examples:

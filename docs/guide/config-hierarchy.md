@@ -322,6 +322,14 @@ current_dict["rpm"] = Limit.per_minute("rpm", 200)
 await limiter.set_system_defaults(list(current_dict.values()))
 ```
 
+!!! tip "Changing limits does not reset accumulated usage"
+    New limits apply from the next request onward, but the entity's existing token bucket
+    carries its consumed state forward — so an entity that exhausted the old limit can stay
+    throttled right after a raise. To start it from a blank slate, reset its usage for that
+    resource with `zae-limiter entity reset-bucket <entity_id> --resource <resource>` (or
+    `Repository.reset_bucket()`), which clears token state without touching stored limits.
+    See [CLI: Resetting Entity Usage](../cli.md#resetting-entity-usage).
+
 !!! note "Disabling is a separate, narrower walk"
     The `disabled` flag (ADR-125) does **not** follow this four-level hierarchy. It resolves
     independently over only three levels — entity (resource-specific) → entity (`_default_`)

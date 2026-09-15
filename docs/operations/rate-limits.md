@@ -255,13 +255,50 @@ aws dynamodb put-item --table-name <name> \
 
 ### Reset Bucket State
 
-Reset a bucket to restore full capacity (will be recreated on next acquire):
+Reset an entity's usage for one resource to restore full capacity (the bucket is recreated on
+the next acquire, under whatever limits are configured at that point). This is the usual
+follow-up to [adjusting limits](#adjust-limits-at-runtime), so usage accrued under the old
+limits does not carry forward.
+
+```bash
+zae-limiter entity reset-bucket <entity_id> --resource <resource>
+```
+
+```
+Reset usage for entity '<entity_id>' on resource '<resource>' (2 buckets deleted)
+```
+
+Or programmatically — this lives on `Repository`, not `RateLimiter`:
+
+```python
+repo = await Repository.open()
+deleted = await repo.reset_bucket("api-key-123", resource="gpt-4")
+```
+
+Both delete **every shard** backing that entity/resource pair, which is why the count can
+exceed one. Resetting something that was never acquired is a no-op returning `0`. The reset
+is recorded in the audit log as `bucket_reset`.
+
+!!! warning "Reset does not re-admit a disabled entity"
+    The recreated bucket re-resolves `disabled` from config on the slow path, so a disabled
+    entity or resource keeps raising `ResourceDisabled`. See
+    [Resource or Entity Disabled](#resource-or-entity-disabled). For a cascading child, the
+    parent keeps its own usage — reset the parent separately if that is also intended.
+
+<details>
+<summary>Direct DynamoDB delete (advanced)</summary>
+
+Only if the CLI is unavailable. You must delete every shard, not just shard 0 — discover them
+with the GSI3 query under [Debug Bucket State](#debug-bucket-state) — and no audit event is
+recorded.
 
 ```bash
 # v0.9.0+ bucket key format: PK={ns}/BUCKET#{entity}#{resource}#{shard}, SK=#STATE
 aws dynamodb delete-item --table-name <name> \
   --key '{"PK": {"S": "{ns}/BUCKET#<entity_id>#<resource>#0"}, "SK": {"S": "#STATE"}}'
 ```
+
+</details>
 
 ### Debug Bucket State
 

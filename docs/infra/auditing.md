@@ -12,6 +12,7 @@ The audit system automatically logs:
 | `entity_deleted` | Deleting an entity | number of records deleted |
 | `limits_set` | Configuring limits | all limit configurations |
 | `limits_deleted` | Removing limits | resource name |
+| `bucket_reset` | Resetting an entity's usage for a resource | number of bucket items deleted |
 
 Each audit event includes:
 
@@ -50,6 +51,7 @@ event = AuditEvent(
 | `ENTITY_DELETED` | `"entity_deleted"` | Entity was deleted |
 | `LIMITS_SET` | `"limits_set"` | Limits were configured |
 | `LIMITS_DELETED` | `"limits_deleted"` | Limits were removed |
+| `BUCKET_RESET` | `"bucket_reset"` | Usage was reset for an entity/resource pair |
 
 ## Principal Tracking
 
