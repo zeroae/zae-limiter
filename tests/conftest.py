@@ -17,7 +17,12 @@ if os.environ.get("GEVENT"):
 
 import pytest  # noqa: E402
 
-from tests.fixtures.stacks import cleanup_shared_stacks  # noqa: E402
+from tests.fixtures.stacks import (  # noqa: E402
+    cleanup_shared_stacks,
+    reap_orphan_stacks,
+    record_session_owner,
+    session_root,
+)
 
 pytest_plugins = [
     "tests.fixtures.aws_clients",
@@ -75,6 +80,29 @@ def pytest_collection_modifyitems(config, items):
                 item.add_marker(skip_aws)
 
 
+def _session_root(config) -> Path:
+    """This session's controller basetemp (see ``tests.fixtures.stacks``)."""
+    return session_root(Path(config._tmp_path_factory.getbasetemp()))
+
+
+def pytest_sessionstart(session):
+    """Claim this session's tmp root and reclaim stacks from dead sessions.
+
+    The pid marker is what lets a later run tell a killed session's leftover
+    stack from a concurrently running session's live one (#577). Reaping is
+    gated on ``AWS_ENDPOINT_URL`` because shared stacks only ever exist on
+    LocalStack — the ``localstack_endpoint`` fixture skips otherwise — so a
+    plain unit run must not try to reach CloudFormation.
+    """
+    if hasattr(session.config, "workerinput"):
+        return
+
+    root = _session_root(session.config)
+    record_session_owner(root)
+    if os.getenv("AWS_ENDPOINT_URL"):
+        reap_orphan_stacks(root)
+
+
 def pytest_sessionfinish(session, exitstatus):
     """Clean up shared CloudFormation stacks after all xdist workers finish.
 
@@ -86,5 +114,4 @@ def pytest_sessionfinish(session, exitstatus):
     if hasattr(session.config, "workerinput"):
         return
 
-    tmp_root = Path(session.config._tmp_path_factory.getbasetemp())  # type: ignore[attr-defined]
-    cleanup_shared_stacks(tmp_root)
+    cleanup_shared_stacks(_session_root(session.config))
