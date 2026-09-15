@@ -428,34 +428,79 @@ class Limit:
 
     @classmethod
     def from_bucket_state(cls, state: "BucketState") -> "Limit":
-        """Reconstruct a Limit from BucketState fields, as that shard sees it."""
-        return cls.custom(
+        """The *base* limit a bucket item encodes, schedule included.
+
+        Bucket items store the undivided, unscaled base parameters forever
+        (#222 §2.1) alongside the schedule that applies on top of them, so
+        what comes back here is the configured limit — not the view one shard
+        has of it right now. Narrowing to a shard and to the window in force
+        is :meth:`per_shard`, which does both together; calling it on this
+        result divides and scales exactly once.
+
+        This deliberately does **not** pre-divide. The result is what
+        ``LeaseEntry.limit`` carries, and the slow path already puts the
+        undivided config limit there; a pre-divided one would be narrowed a
+        second time when the lease builds a status from it.
+        """
+        return cls(
             name=state.limit_name,
-            capacity=state.capacity_milli // 1000,
-            refill_amount=state.refill_amount_milli // 1000,
-            refill_period_seconds=state.refill_period_ms // 1000,
-        ).per_shard(state.shard_count)
+            capacity=max(1, state.capacity_milli // 1000),
+            refill_amount=max(1, state.refill_amount_milli // 1000),
+            refill_period_seconds=max(1, state.refill_period_ms // 1000),
+            schedule=state.sched,
+        )
 
-    def per_shard(self, shard_count: int) -> "Limit":
-        """This limit as a single shard of ``shard_count`` sees it.
+    def per_shard(self, shard_count: int, now_ms: int) -> "Limit":
+        """This limit as a single shard of ``shard_count`` sees it at ``now_ms``.
 
-        A sharded bucket holds and refills only its share — ``capacity //
-        shard_count``, ``refill_amount // shard_count`` (GHSA-76rv) — so a
-        status reported from one shard has to say so. Reporting the undivided
-        config would promise a capacity no shard can serve and, for a request
-        larger than the share, a ``retry_after_seconds`` that never pays off.
+        Two narrowings happen here, and the order matters (#222 §2.1): the
+        schedule in force at ``now_ms`` scales the **undivided** parameters,
+        and only then does the shard take its share — ``capacity //
+        shard_count``, ``refill_amount // shard_count`` (GHSA-76rv). Dividing
+        first and scaling second is a different integer, and it is the wrong
+        one: the bucket itself refills against
+        ``BucketState.effective_capacity_milli``, which scales first.
+
+        Both narrowings belong together because both feed ``LimitStatus`` and
+        neither may be applied twice. A status reported from one shard has to
+        quote the share, or it promises a capacity no shard can serve and, for
+        a request larger than the share, a ``retry_after_seconds`` that never
+        pays off (#475). A status reported inside a ``0.5x`` window has to
+        quote the scaled value for the same reason.
+
+        ``refill_period_seconds`` follows the window — an absolute schedule
+        entry may override it — but is never divided: shards split the
+        numerator and every shard refills on the same clock.
+
+        The result carries no schedule. It is a point-in-time materialisation,
+        and leaving the schedule attached would invite a second application
+        and read to a caller as "500, which halves to 250".
 
         Shares are floored to one whole token because ``Limit`` is whole-token
         and must stay constructible; ``schema.MAX_SHARD_COUNT`` bounds how
-        small a real share can get. Surfacing an unadmittable request as an
-        event or metric is tracked in #475.
+        small a real share can get, and a ``0.5x`` window on a share of one
+        would otherwise raise from inside a rejection path. Surfacing an
+        unadmittable request as an event or metric is tracked in #475.
         """
-        if shard_count <= 1:
+        if shard_count <= 1 and not self.schedule:
             return self
+        # Milli-units, so this floors exactly where `BucketState` does: a
+        # status built from a config `Limit` and one built from the bucket
+        # item must agree to the token.
+        cp_milli, ra_milli, rp_ms = effective_params(
+            self.capacity * 1000,
+            self.refill_amount * 1000,
+            self.refill_period_seconds * 1000,
+            self.schedule,
+            now_ms,
+        )
+        divisor = max(1, shard_count)
         return replace(
             self,
-            capacity=max(1, self.capacity // shard_count),
-            refill_amount=max(1, self.refill_amount // shard_count),
+            capacity=max(1, (cp_milli // divisor) // 1000),
+            refill_amount=max(1, (ra_milli // divisor) // 1000),
+            refill_period_seconds=max(1, rp_ms // 1000),
+            schedule=(),
         )
 
     @classmethod

@@ -385,7 +385,7 @@ def declared_statuses(
             build_limit_status(
                 entity_id=state.entity_id,
                 resource=state.resource,
-                limit=Limit.from_bucket_state(state),
+                limit=Limit.from_bucket_state(state).per_shard(state.shard_count, now_ms),
                 state=state,
                 requested=consume[state.limit_name],
                 now_ms=now_ms,

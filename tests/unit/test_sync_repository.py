@@ -3911,12 +3911,17 @@ class TestScheduleValidation:
             Limit.per_minute("rpm", 1000).with_schedule((entry,)).with_schedule(()).schedule == ()
         )
 
-    def test_per_shard_preserves_the_schedule(self):
-        """Sharding divides the base; the schedule scales it later (§2.3)."""
+    def test_per_shard_materialises_the_schedule(self):
+        """`per_shard` narrows on both axes at once (#222 §3.5): the window in
+        force scales the undivided base, then the shard takes its share. The
+        result is a point-in-time value, so it carries no schedule of its own —
+        leaving one attached would invite a second application."""
         entry = ScheduleEntry(cron="* * * * *", tz="UTC", scale=0.5)
-        shard = Limit.per_minute("rpm", 1000).with_schedule((entry,)).per_shard(4)
-        assert shard.capacity == 250
-        assert shard.schedule == (entry,)
+        limit = Limit.per_minute("rpm", 1000).with_schedule((entry,))
+        shard = limit.per_shard(4, now_ms=0)
+        assert shard.capacity == 125
+        assert shard.schedule == ()
+        assert limit.schedule == (entry,), "must not mutate"
 
     def test_a_scheduled_limit_is_hashable(self):
         """`Limit` is a frozen dataclass; a mutable schedule field would break that."""

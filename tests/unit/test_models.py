@@ -1,5 +1,8 @@
 """Tests for models."""
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 import pytest
 
 from zae_limiter import (
@@ -15,6 +18,40 @@ from zae_limiter import (
     ValidationError,
 )
 from zae_limiter.models import BucketState, LimitStatus
+from zae_limiter.schedule import ScheduleEntry
+
+_NY = ZoneInfo("America/New_York")
+
+#: Halve every parameter during New York business hours (#222 §1.1).
+BUSINESS = (ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.5),)
+
+#: Tuesday 2026-09-15, inside and outside ``BUSINESS``. Local wall clock, not
+#: UTC: the window's edges fall on New York minutes (#222 §3.2).
+TUE_1400 = int(datetime(2026, 9, 15, 14, tzinfo=_NY).timestamp() * 1000)
+TUE_0300 = int(datetime(2026, 9, 15, 3, tzinfo=_NY).timestamp() * 1000)
+
+
+def _state(
+    *,
+    capacity_milli: int = 1_000_000,
+    refill_amount_milli: int = 1_000_000,
+    refill_period_ms: int = 60_000,
+    shard_count: int = 1,
+    sched: tuple[ScheduleEntry, ...] = (),
+) -> BucketState:
+    """A bucket item's stored state: base parameters, never the effective ones."""
+    return BucketState(
+        entity_id="e1",
+        resource="gpt-4",
+        limit_name="rpm",
+        tokens_milli=0,
+        last_refill_ms=1000,
+        capacity_milli=capacity_milli,
+        refill_amount_milli=refill_amount_milli,
+        refill_period_ms=refill_period_ms,
+        shard_count=shard_count,
+        sched=sched,
+    )
 
 
 class TestLimit:
@@ -116,32 +153,37 @@ class TestLimit:
         assert limit.refill_amount == 100
         assert limit.refill_period_seconds == 60
 
-    def test_from_bucket_state_reports_the_shards_share(self):
-        """A sharded bucket holds only ``capacity // shard_count``, so that is
-        what a status built from it must report (#475). Reporting the undivided
-        config promises a capacity no single shard can serve."""
-        state = BucketState(
-            entity_id="e1",
-            resource="gpt-4",
-            limit_name="rpm",
-            tokens_milli=0,
-            last_refill_ms=1000,
-            capacity_milli=100_000,
-            refill_amount_milli=100_000,
-            refill_period_ms=60_000,
-            shard_count=4,
-        )
+    def test_from_bucket_state_returns_the_undivided_base(self):
+        """Bucket items store the undivided base on every shard, and that is
+        what comes back. Narrowing to the shard is ``per_shard``'s job, and
+        doing it here as well narrowed twice: ``LeaseEntry.limit`` built on the
+        fast path was already divided, and the lease divided it again for every
+        status it reported, so a 4-shard bucket quoted ``capacity // 16``."""
+        state = _state(shard_count=4)
         limit = Limit.from_bucket_state(state)
-        assert (limit.capacity, limit.refill_amount) == (25, 25)
+        assert (limit.capacity, limit.refill_amount) == (1000, 1000)
         assert limit.refill_period_seconds == 60
 
-    def test_per_shard_is_identity_for_an_unsharded_bucket(self):
+    def test_from_bucket_state_carries_the_buckets_schedule(self):
+        """The fast path never reads config (#222 §2.1), so the bucket item's
+        own ``sched`` is the only schedule a status built from it can quote."""
+        state = _state(sched=BUSINESS)
+        assert Limit.from_bucket_state(state).schedule == BUSINESS
+
+    def test_from_bucket_state_clamps_a_sub_token_base(self):
+        """``Limit`` validates ``capacity > 0`` and this runs on the rejection
+        path, where raising would mask the real error."""
+        state = _state(capacity_milli=500, refill_amount_milli=400, refill_period_ms=500)
+        limit = Limit.from_bucket_state(state)
+        assert (limit.capacity, limit.refill_amount, limit.refill_period_seconds) == (1, 1, 1)
+
+    def test_per_shard_is_identity_for_an_unscheduled_unsharded_limit(self):
         limit = Limit.per_minute("rpm", 100)
-        assert limit.per_shard(1) is limit
+        assert limit.per_shard(1, TUE_1400) is limit
 
     def test_per_shard_divides_capacity_and_refill(self):
         limit = Limit.per_minute("rpm", 1000, burst=2000)
-        shard = limit.per_shard(4)
+        shard = limit.per_shard(4, TUE_1400)
         assert (shard.capacity, shard.refill_amount) == (500, 250)
         assert (shard.name, shard.refill_period_seconds) == ("rpm", 60)
         assert (limit.capacity, limit.refill_amount) == (2000, 1000), "must not mutate"
@@ -149,8 +191,164 @@ class TestLimit:
     def test_per_shard_floors_a_sub_token_share_to_one(self):
         """``Limit`` is whole-token and validates ``capacity > 0``, so a share
         below one token clamps rather than raising while building a status."""
-        shard = Limit.custom("rpd", 5, refill_amount=1, refill_period_seconds=60).per_shard(32)
+        shard = Limit.custom("rpd", 5, refill_amount=1, refill_period_seconds=60).per_shard(
+            32, TUE_1400
+        )
         assert (shard.capacity, shard.refill_amount) == (1, 1)
+
+    def test_per_shard_tolerates_a_zero_or_negative_shard_count(self):
+        """A scheduled limit skips the ``shard_count <= 1`` early return, so a
+        malformed count reaches the division. Clamp rather than raise
+        ``ZeroDivisionError`` from inside a rejection path."""
+        limit = Limit.per_minute("rpm", 1000).with_schedule(BUSINESS)
+        assert limit.per_shard(0, TUE_1400).capacity == 500
+        assert limit.per_shard(-1, TUE_1400).capacity == 500
+
+
+class TestScheduledStatusCapacity:
+    """A rejection must quote the capacity that actually rejected it (#222 §3.5).
+
+    ``LimitStatus.limit`` is built by ``Limit.per_shard`` on every path that
+    reports one, so that is where both narrowings live: the schedule in force
+    and the shard's share.
+    """
+
+    def test_quotes_the_scheduled_capacity_inside_the_window(self):
+        limit = Limit.per_minute("rpm", 1000).with_schedule(BUSINESS)
+        assert limit.per_shard(1, TUE_1400).capacity == 500
+        assert limit.per_shard(1, TUE_0300).capacity == 1000
+
+    def test_scales_the_refill_with_the_capacity(self):
+        """Scaling both preserves time-to-fill (#222 §1.1); scaling only the
+        capacity would silently make a window's bucket fill twice as fast."""
+        limit = Limit.per_minute("rpm", 1000).with_schedule(BUSINESS)
+        inside = limit.per_shard(1, TUE_1400)
+        assert (inside.capacity, inside.refill_amount) == (500, 500)
+        assert inside.refill_period_seconds == 60
+
+    def test_scales_and_divides_together(self):
+        limit = Limit.per_minute("rpm", 1000).with_schedule(BUSINESS)
+        assert limit.per_shard(4, TUE_1400).capacity == 125
+        assert limit.per_shard(4, TUE_0300).capacity == 250
+
+    def test_scale_applies_before_shard_division(self):
+        """Scale-then-divide, never divide-then-scale (#222 Global Constraints).
+
+        Most ``(capacity, shards, scale)`` triples land both orders on the same
+        integer, so this one is chosen rather than guessed. At 1099 tokens over
+        32 shards at ``0.99x``:
+
+        * scale first: ``int(1_099_000 * .99) = 1_088_010``; ``// 32 = 34_000``;
+          ``// 1000 = 34``
+        * divide first: ``1_099_000 // 32 = 34_343``;
+          ``int(34_343 * .99) = 33_999``; ``// 1000 = 33``
+
+        The bucket itself refills against
+        ``BucketState.effective_capacity_milli``, which scales first, so 33
+        would be a status that disagrees with the gate that produced it.
+        """
+        limit = Limit.per_minute("rpm", 1099).with_schedule(
+            (ScheduleEntry(cron="* * * * *", tz="UTC", scale=0.99),)
+        )
+        shard = limit.per_shard(32, TUE_1400)
+        assert shard.capacity == 34
+        assert shard.refill_amount == 34
+
+    def test_matches_what_the_bucket_enforces(self):
+        """The status and the gate must agree to the token: ``try_consume``
+        admits against ``effective_capacity_milli``, which floors in
+        milli-units, so ``per_shard`` has to floor there too."""
+        limit = Limit.per_minute("rpm", 1099).with_schedule(
+            (ScheduleEntry(cron="* * * * *", tz="UTC", scale=0.99),)
+        )
+        state = _state(
+            capacity_milli=1_099_000,
+            refill_amount_milli=1_099_000,
+            shard_count=32,
+            sched=limit.schedule,
+        )
+        assert limit.per_shard(32, TUE_1400).capacity == (
+            state.effective_capacity_milli(TUE_1400) // 1000
+        )
+        assert limit.per_shard(32, TUE_1400).refill_amount == (
+            state.effective_refill_amount_milli(TUE_1400) // 1000
+        )
+
+    def test_an_unscheduled_limit_is_completely_unaffected(self):
+        """Every bucket in existence today is unscheduled."""
+        limit = Limit.per_minute("rpm", 1000, burst=2000)
+        assert limit.per_shard(1, TUE_1400) is limit
+        assert limit.per_shard(1, TUE_0300) is limit
+        shard = limit.per_shard(4, TUE_1400)
+        assert (shard.capacity, shard.refill_amount, shard.refill_period_seconds) == (500, 250, 60)
+        assert shard == limit.per_shard(4, TUE_0300)
+
+    def test_a_scheduled_limit_scales_even_when_unsharded(self):
+        """The ``shard_count <= 1`` fast return must not skip the schedule."""
+        limit = Limit.per_minute("rpm", 1000).with_schedule(BUSINESS)
+        assert limit.per_shard(1, TUE_1400) is not limit
+        assert limit.per_shard(1, TUE_1400).capacity == 500
+
+    def test_sub_token_share_clamps_to_one(self):
+        """A ``0.5x`` window on a share that is already one token floors to
+        zero, and ``Limit`` validates ``capacity > 0`` — raising here would
+        raise from inside the rejection path."""
+        limit = Limit.custom("rpd", 32, refill_amount=32, refill_period_seconds=60).with_schedule(
+            BUSINESS
+        )
+        assert limit.per_shard(32, TUE_0300).capacity == 1
+        assert limit.per_shard(32, TUE_1400).capacity == 1
+
+    def test_an_absolute_window_overrides_the_period(self):
+        """``ScheduleEntry`` can set ``refill_period_seconds`` outright, so the
+        reported rate must follow the window's denominator, not the base one."""
+        limit = Limit.per_minute("rpm", 1000).with_schedule(
+            (
+                ScheduleEntry(
+                    cron="* * * * *",
+                    tz="UTC",
+                    capacity=2000,
+                    refill_amount=400,
+                    refill_period_seconds=10,
+                ),
+            )
+        )
+        shard = limit.per_shard(4, TUE_1400)
+        assert (shard.capacity, shard.refill_amount) == (500, 100)
+        assert shard.refill_period_seconds == 10
+
+    def test_the_period_is_never_divided_by_shard_count(self):
+        """Shards split the numerator; every shard refills on the same clock."""
+        limit = Limit.per_hour("rph", 1000).with_schedule(BUSINESS)
+        assert limit.per_shard(32, TUE_1400).refill_period_seconds == 3600
+        assert Limit.per_hour("rph", 1000).per_shard(32, TUE_1400).refill_period_seconds == 3600
+
+    def test_the_materialised_limit_carries_no_schedule(self):
+        """It is a point-in-time value. Leaving the schedule attached invites a
+        second application and reads as "500, which halves to 250"."""
+        limit = Limit.per_minute("rpm", 1000).with_schedule(BUSINESS)
+        assert limit.per_shard(4, TUE_1400).schedule == ()
+        assert limit.schedule == BUSINESS, "must not mutate"
+
+    def test_narrowing_is_idempotent_once_materialised(self):
+        """``LeaseEntry.limit`` is narrowed for every status a lease reports, so
+        a second narrowing of an already-materialised limit must not re-scale."""
+        limit = Limit.per_minute("rpm", 1000).with_schedule(BUSINESS)
+        once = limit.per_shard(1, TUE_1400)
+        assert once.per_shard(1, TUE_1400) is once
+
+    def test_a_bucket_state_limit_narrows_exactly_once(self):
+        """``LeaseEntry.limit`` comes from ``from_bucket_state`` on the fast path
+        and from the resolved config on the slow path, and the lease narrows
+        whichever it got. Both provenances must land on the same number."""
+        state = _state(shard_count=4, sched=BUSINESS)
+        config_limit = Limit.per_minute("rpm", 1000).with_schedule(BUSINESS)
+        assert Limit.from_bucket_state(state) == config_limit
+        assert (
+            Limit.from_bucket_state(state).per_shard(state.shard_count, TUE_1400).capacity
+            == config_limit.per_shard(state.shard_count, TUE_1400).capacity
+            == 125
+        )
 
 
 class TestEntity:

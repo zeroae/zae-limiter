@@ -1128,7 +1128,7 @@ class SyncRateLimiter:
             entity_id=entity_id,
             resource=resource,
             limit_name=limit.name,
-            limit=limit.per_shard(state.shard_count),
+            limit=limit.per_shard(state.shard_count, now_ms),
             available=result.available,
             requested=amount,
             exceeded=not result.success,
