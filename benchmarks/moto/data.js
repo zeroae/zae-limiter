@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789491884727,
+  "lastUpdate": 1789492807224,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -41615,6 +41615,240 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.0005941700838181673",
             "extra": "mean: 7.22782383333336 msec\nrounds: 138"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "434883fa83095b0c777cf41b7dae1c837de73789",
+          "message": "🐛 fix(provisioner): keep #PROVISIONER in step with committed config (#571)\n\n## Summary\n\n`apply_changes` commits the config writes before either fan-out runs —\nit has to, since both\n`_fanout_disabled_changes` and `_sync_bucket_param_changes` resolve the\nconfig this apply has\njust written. So a `ValueError` out of `bucket_sync._decode_limits`\n(which raises **by design**\nsince PR #549, on a compact schedule this provisioner cannot read)\nescaped past\n`_write_provisioner_state`:\n\n- the table held **this** apply's configuration while `#PROVISIONER`\nstill described the\n  **previous** one, and\n- on the CloudFormation path, `_handle_cfn_with_response` posted\n**FAILED** to the pre-signed\n`ResponseURL`, so CloudFormation rolled back a stack whose configuration\nhad already been\n  applied.\n\n`_handle_cli` carried an identical three-step ordering and lost the\nrecord the same way — it\njust lacked the rollback-vs-reality contradiction on top.\n\n## The design decision\n\n**The provisioner stays on `ApplyResult.errors`; it does not converge on\nraising\n`FanoutIncomplete`. It adopts `FanoutIncomplete`'s *contract* instead.**\n\nBoth fan-outs now guard **per change** and *return* their failures. A\nnew\n`handler._apply_and_record()` — the single place both entry points run\nan apply, so the ordering\ncannot drift between the CFN and CLI paths again — appends them to\n`ApplyResult.errors` and\nwrites `#PROVISIONER` **unconditionally**. The CFN response is **SUCCESS\ncarrying the errors**,\nnot FAILED.\n\nWhy not raise `FanoutIncomplete`:\n\n1. **Out of a Lambda handler, an exception *is* a CloudFormation\nFAILED** — precisely the\noutcome #563 exists to remove. What is worth carrying over from the\nprecedent is its\nsubstance, not its delivery: config committed first, partial progress\nreported, every write\n   idempotent so re-running the same apply reconciles the rest.\n2. **`apply_changes` already reports a failed *config write*\nnon-fatally** through this same\nlist, and `limits_cli.py` already prints those and `sys.exit(1)`. A\nfailed config write is\nstrictly the more severe failure; a fan-out raising while a config write\ndoes not would be\n   backwards.\n3. **FAILED on an `Update` makes things worse, not better.**\nCloudFormation rolls a custom\nresource back by re-invoking it with the *previous* properties — which\nwould hit the same\nundecodable stored item, fail again, and strand the stack in\n`UPDATE_ROLLBACK_FAILED`.\n4. **Per-change guarding is the direct analogue of\n`FanoutIncomplete.stamped`.** One corrupt\nentity no longer abandons every *other* entity's sync; the caller is\ntold which targets\n   failed.\n\n`_write_provisioner_state` is deliberately left **unguarded**: it is the\nlast step, there is\nnothing after it to salvage, and a DynamoDB failure there is a genuine\ninfrastructure failure\nfor which FAILED and a retry are the right answer.\n\nResidual limitation (unchanged from `FanoutIncomplete`, and now recorded\nin design §9): the\noperator must read the errors. A drifted entity-level bucket carries no\nTTL, so nothing\nreconciles it but re-running the apply.\n\n## Test plan\n\nFailing test written **first**; verified failing before the fix and\npassing after, then\nmutation-checked by reverting `handler.py` and re-running.\n\n### Building the repro correctly\n\nThe undecodable schedule must sit on a config level the apply does\n**not** rewrite. Put it on\nthe resource level the manifest declares and `apply_changes`' own\n`put_item` overwrites it\nbefore the sync ever reads it, and the handler completes cleanly — the\ntest would pin nothing.\nBoth new tests put it on **system**, and drive an entity-config\n**delete**, whose reconciliation\nwalks entity(`_default_`) → resource → system and rewrites none of them.\n\n### Results\n\n| Run | Result |\n|-----|--------|\n| `pytest tests/unit/ -q` | **4518 passed** (359s) |\n| `pytest tests/unit/ -m gevent -n 0 -q` | **26 passed** |\n| `pytest tests/integration/test_provisioner.py` (LocalStack) | **12\npassed** (124s) |\n| `mypy` | Success, 58 source files |\n| `ruff check .` | All checks passed |\n| `ruff format --check` (touched files) | 2 files already formatted |\n\n`ruff format --check .` reports 34 unrelated files — the known\npre-existing version drift\n(#486); none of them are touched here.\n\n### Failing-first / mutation evidence\n\nBefore the fix, all three new unit tests and the new integration test\nfail with\n`ValueError: malformed compact schedule entry 'zz!!garbage'` raised out\nof\n`schedule.decode` ← `bucket_sync._decode_limits` ←\n`resolve_effective_limits`. Reverting\n`src/zae_limiter_provisioner/handler.py` after the fix reproduces\nexactly those four failures.\n\n### New tests\n\n`tests/unit/test_provisioner_handler.py::TestPostCommitFanoutFailure`\n- `test_cfn_records_state_and_reports_success_with_errors` —\n`#PROVISIONER` written once and\ndescribing the committed manifest; the body PUT to `ResponseURL` carries\n`Status: SUCCESS`;\n  the error names the failed target.\n- `test_cli_records_state_and_reports_errors` — same for `_handle_cli`.\n- `test_one_bad_change_does_not_abandon_the_others` — the corrupt entity\nis reported, a second\n  entity's bucket is still reconciled, state still written.\n\n\n`tests/integration/test_provisioner.py::TestHandlerIntegration::test_undecodable_stored_schedule_still_records_state`\n— the same scenario against real DynamoDB on LocalStack: real config\nitem, real walk, real\n`#PROVISIONER` read back through `Repository.get_provisioner_state()`.\n\n## Acceptance criteria\n\n- [x] Decision recorded (this PR body, the `_apply_and_record`\ndocstring, and design §9) on\nwhether the provisioner mirrors converge on `FanoutIncomplete`,\nincluding why not.\n- [x] `_sync_bucket_param_changes` failing no longer skips\n`_write_provisioner_state` in\n      `_handle_cfn`.\n- [x] Same ordering guarantee in `_handle_cli`.\n- [x] Unit test drives a `_decode_limits` failure through `_handle_cfn`\nand asserts\n      `#PROVISIONER` is consistent with what `apply_changes` committed.\n- [x] Test asserts the CFN response status sent to `ResponseURL` matches\nthe chosen semantics\n      (SUCCESS-with-errors).\n- [x] `docs/plans/` design §9 updated to point at the resolution.\n\n## Note on the issue text\n\nThe task brief stated §9 contains nothing about the provisioner. It does\n— the last of its eight\nbullets is exactly this limitation. It has been struck through and\nreplaced with the resolution\nrather than left as an open gap.\n\nFixes #563\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01QdVj8nPhUwTz2aNJzMFqt5",
+          "timestamp": "2026-09-15T13:14:37-04:00",
+          "tree_id": "0f4da3cb62a9361206ca976569d1d03b69513ed6",
+          "url": "https://github.com/zeroae/zae-limiter/commit/434883fa83095b0c777cf41b7dae1c837de73789"
+        },
+        "date": 1789492806142,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_single_limit_latency",
+            "value": 186.11916456322035,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000412662363414197",
+            "extra": "mean: 5.372901830645835 msec\nrounds: 124"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_two_limits_latency",
+            "value": 153.335551178732,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0008643614035908177",
+            "extra": "mean: 6.521644800000577 msec\nrounds: 120"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_cascade_latency",
+            "value": 86.75670501644278,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0005400985680106358",
+            "extra": "mean: 11.526486624987342 msec\nrounds: 8"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_available_check_latency",
+            "value": 138.14409610518854,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0004873452857208997",
+            "extra": "mean: 7.238818220928959 msec\nrounds: 86"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_stored_limits_latency",
+            "value": 161.09668331043153,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009803404353422229",
+            "extra": "mean: 6.207452440675089 msec\nrounds: 118"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_baseline_no_cascade",
+            "value": 189.96889962889554,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00015332327711386066",
+            "extra": "mean: 5.264019541901339 msec\nrounds: 179"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_with_cascade",
+            "value": 92.75345460190005,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00038597232483246057",
+            "extra": "mean: 10.781269595747382 msec\nrounds: 94"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_one_limit",
+            "value": 166.014970722594,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0008794211304082827",
+            "extra": "mean: 6.0235531509442595 msec\nrounds: 106"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_two_limits",
+            "value": 159.65990845373116,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00011506806261720175",
+            "extra": "mean: 6.2633131240319875 msec\nrounds: 129"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_five_limits",
+            "value": 91.99544600392527,
+            "unit": "iter/sec",
+            "range": "stddev: 0.012509018104376142",
+            "extra": "mean: 10.87010328704023 msec\nrounds: 108"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_single_limit",
+            "value": 190.89778247154817,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000137027372214775",
+            "extra": "mean: 5.238405533333224 msec\nrounds: 135"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_multiple_limits",
+            "value": 159.93610748548818,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00010402592914748906",
+            "extra": "mean: 6.252496798390164 msec\nrounds: 124"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_available_check",
+            "value": 142.13839528857528,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00010470481617347675",
+            "extra": "mean: 7.035396720004883 msec\nrounds: 125"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_transactional_acquire",
+            "value": 190.30207780535125,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00027095049886238386",
+            "extra": "mean: 5.254803371210907 msec\nrounds: 132"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_without_cascade",
+            "value": 168.4607702813694,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00796266810878827",
+            "extra": "mean: 5.936100127820637 msec\nrounds: 133"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_with_cascade",
+            "value": 93.45138486092877,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0003761902552146924",
+            "extra": "mean: 10.700750999978936 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_cascade_with_stored_limits",
+            "value": 93.52679712953655,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00037290124060343163",
+            "extra": "mean: 10.69212280000329 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_with_cached_config",
+            "value": 189.74546165260645,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00016615404465590924",
+            "extra": "mean: 5.270218277108729 msec\nrounds: 166"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_cold_config",
+            "value": 130.43117423530398,
+            "unit": "iter/sec",
+            "range": "stddev: 0.001314376487875178",
+            "extra": "mean: 7.666878764703544 msec\nrounds: 68"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_cascade_with_cached_config",
+            "value": 92.75157384200152,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00022525415512796409",
+            "extra": "mean: 10.78148821176295 msec\nrounds: 85"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_sequential_acquisitions",
+            "value": 15.167325510346068,
+            "unit": "iter/sec",
+            "range": "stddev: 0.05034874465598237",
+            "extra": "mean: 65.93120186666206 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_same_entity_sequential",
+            "value": 18.535152465071807,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0024064199724131564",
+            "extra": "mean: 53.95153894117838 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_cache_disabled",
+            "value": 84.6129095500857,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00018530587736871455",
+            "extra": "mean: 11.818527519232283 msec\nrounds: 52"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_cache_enabled",
+            "value": 94.03491814796585,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000218609715884353",
+            "extra": "mean: 10.634347534885707 msec\nrounds: 86"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_config_resolution_sequential",
+            "value": 76.7653465258511,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00030266919160054976",
+            "extra": "mean: 13.026711208334676 msec\nrounds: 72"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_config_resolution_batched",
+            "value": 119.65996520188814,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00016757883451371438",
+            "extra": "mean: 8.357013962964288 msec\nrounds: 108"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_speculative_cache_cold",
+            "value": 93.19526836990384,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0002757555505373955",
+            "extra": "mean: 10.730158488635638 msec\nrounds: 88"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_speculative_cache_warm",
+            "value": 73.05080602727246,
+            "unit": "iter/sec",
+            "range": "stddev: 0.028782193480634915",
+            "extra": "mean: 13.689102891303683 msec\nrounds: 92"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_stored_limits_cache_disabled",
+            "value": 120.78292512507724,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00014591637418625772",
+            "extra": "mean: 8.279315962620098 msec\nrounds: 107"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_stored_limits_cache_enabled",
+            "value": 136.55479383324777,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0006246083987763384",
+            "extra": "mean: 7.323067699996955 msec\nrounds: 140"
           }
         ]
       }
