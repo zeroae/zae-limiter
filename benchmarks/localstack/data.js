@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789481029215,
+  "lastUpdate": 1789482002715,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -22274,6 +22274,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.027552546503592797",
             "extra": "mean: 1.0908750299999952 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d9be9b9cc21fe622754600d2366d1a7a22ca0c5e",
+          "message": "🐛 fix(ci): give /issue a comment mode instead of falling through to edit (#558)\n\n## The hazard\n\n`/issue comment <number>` matched no row in `SKILL.md`'s mode-detection\ntable, and no `comment.md` existed. So it fell through to a branch whose\ndocumented action is `gh issue edit --body` — which **replaces** an\nissue body rather than appending to it.\n\n## What that would have cost\n\nAn agent told to \"post findings as a comment on #554\" and following the\nfallthrough would have silently destroyed the issue's contents and\nsubstituted its own text. #554 carried a verified CloudFormation\nmeasurement that had cost a real AWS deploy to obtain.\n\nNothing was lost only because the agents that hit this stopped and asked\nrather than improvising a body — which happened three separate times\ntoday. That is luck, not a safeguard, and the next agent may be less\ncautious.\n\n## The fix\n\nA new `comment.md` that posts via `gh issue comment --body-file`, plus\nfour wiring changes in `SKILL.md`:\n\n- a mode-detection row,\n- an argument-routing row placed **before** the update-phrases row, so\n`comment` cannot fall through to it again,\n- a reference-list entry,\n- the `argument-hint` frontmatter.\n\n`comment.md` requires three properties, each with its reason stated in\nthe file:\n\n- It states plainly that Update mode is the only mode permitted to touch\nan issue body, and that `gh issue edit` is never correct here.\n- It requires writing the body to a file rather than inlining a heredoc,\nbecause shell quoting mangles backticks, `$` and newlines — and a\nmangled `--body` is posted silently rather than rejected.\n- It requires reporting the comment URL `gh` prints, so \"posted\" cannot\nbe claimed without evidence.\n\nIt also asks the agent to check whether the issue is CLOSED before\ncommenting, since that is usually a mistake and occasionally exactly\nright.\n\n## Credit\n\nFound by the agent verifying #554, which traced the fallthrough after\nbeing asked to post its findings, rather than just working around it.\n\n## Test plan\n\nNone runnable — this is skill documentation. Verification was:\n\n- [x] `comment` appears in all four places in `SKILL.md`:\n`argument-hint` frontmatter, mode-detection table, argument-routing\ntable, reference list\n- [x] the `comment <number>` routing row precedes the update-phrases row\n\nRefs #222\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01QdVj8nPhUwTz2aNJzMFqt5",
+          "timestamp": "2026-09-15T10:14:46-04:00",
+          "tree_id": "b50839411e2712df4e176130ba5d5a8cc8fb3a71",
+          "url": "https://github.com/zeroae/zae-limiter/commit/d9be9b9cc21fe622754600d2366d1a7a22ca0c5e"
+        },
+        "date": 1789482001224,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 24.83549613085849,
+            "unit": "iter/sec",
+            "range": "stddev: 0.011677509857776552",
+            "extra": "mean: 40.26494959999951 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 17.77635727362611,
+            "unit": "iter/sec",
+            "range": "stddev: 0.011974560122069086",
+            "extra": "mean: 56.25449492307684 msec\nrounds: 13"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 39.13055895833432,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004466463294111647",
+            "extra": "mean: 25.55547445833284 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 40.94510918067673,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004891269799195553",
+            "extra": "mean: 24.42294134782601 msec\nrounds: 23"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 20.4188095388395,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008725761225044183",
+            "extra": "mean: 48.9744516250008 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 79.32181372245242,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0034222393198121846",
+            "extra": "mean: 12.606872600001395 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 26.16026157833807,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005640513045646341",
+            "extra": "mean: 38.22591746666812 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 23.567439075341838,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00860983808575073",
+            "extra": "mean: 42.431424000000106 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 27.514650151661346,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005278391010082702",
+            "extra": "mean: 36.344274576924605 msec\nrounds: 26"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 26.218302236461,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007239973978597521",
+            "extra": "mean: 38.14129499999928 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 26.1023167591515,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005117423998823157",
+            "extra": "mean: 38.31077560000106 msec\nrounds: 30"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 24.927498466585256,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008953803174854972",
+            "extra": "mean: 40.11633984615333 msec\nrounds: 26"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 30.744046470559216,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004316029848427899",
+            "extra": "mean: 32.52662270588256 msec\nrounds: 34"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9370424207982109,
+            "unit": "iter/sec",
+            "range": "stddev: 0.001027498611015845",
+            "extra": "mean: 516.2509552000017 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9397250903899208,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0015679627557429483",
+            "extra": "mean: 515.5369722000046 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9469889759075762,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010052647119895113",
+            "extra": "mean: 1.0559785018000014 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9289086954400928,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0034873392545894753",
+            "extra": "mean: 1.0765320692000047 sec\nrounds: 5"
           }
         ]
       }
