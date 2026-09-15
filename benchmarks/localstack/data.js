@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789452746813,
+  "lastUpdate": 1789454934913,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -19986,6 +19986,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.0031656139904972847",
             "extra": "mean: 1.0762157591999995 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c881d16c4c4e4593510da2c6a46d77182148472a",
+          "message": "📝 docs(models): record what a calendar reset means (#523)\n\n## Summary\n\nTwo **Accepted** ADRs recording decisions about `reset_schedule` (the\n#222 surface plan), both settled after the token bucket's continuous\nrefill was found to conflict with a calendar reset in a way that neither\nthe design doc nor the surface plan had stated.\n\n### ADR-137 — a limit drips or resets, never both\n\nDrip and reset are both refill mechanisms, and they were specified\nindependently. A limit carrying both grants roughly **twice** its\nintended allowance in a period: the reset hands over a full balance, the\ncaller spends it, and the drip returns the same allowance again over the\nrest of the period.\n\nThe reset is not at fault. It is a SET, not an ADD, so repeated or\nmissed edges apply once. The surplus is the drip running underneath it.\n\n`refill_amount = 0` now means \"no drip\", and is valid **only** when a\n`reset_schedule` is present. Pairing the two fields in validation also\nmakes a bucket with neither mechanism — one that drains and never\nrecovers — unconstructible.\n\nAn earlier draft of this ADR chose the other option: keep the\npositive-rate rule and silently ignore the stored rate when a reset\nexists. It was changed because a configured number that does nothing is\na trap for whoever reads the limit next. That alternative is recorded in\nthe ADR's Alternatives Considered.\n\n### ADR-138 — reset covers fixed calendar windows only\n\nA cron expression names wall-clock instants, so every entity sharing a\nschedule resets together. A window anchored to an entity's own first use\nwould need a per-entity timestamp on the bucket — a different mechanism,\nand one that would cost the property making the current design cheap:\nthe valid-until stamp being computable from the bucket item alone.\n\nThis ADR matters mostly for **what it excludes**. The nearest widely\ndeployed behaviour — a session window that starts when the caller starts\n— is exactly the case not covered, and anyone reading \"five-hour reset\nwindow\" will assume it. The ADR also records the cost the choice\naccepts: every entity resetting at the same instant is a thundering herd\nthat the design does nothing to spread.\n\n### Consistency\n\nBoth were checked against every Accepted ADR before acceptance. The only\nreal interaction is **ADR-136**, whose TTL rule confines the exposure —\na bucket resolving its limits from entity configuration carries no TTL\nat all, so only resource- and system-level reset limits reach the\ntime-to-fill formula that divides by the refill rate. ADR-137 states\nthis, and ADR-136's claim that the formula is unchanged stays true for\nevery limit that drips.\n\n### Numbering\n\n137 and 138 because 126–132 are reserved by open PR #393 (multi-region\nADRs), and 135 is earmarked by surface-plan Task 12, which is literally\ntitled \"ADR-135 and documentation\".\n\n### Why this lands before surface-plan Group A\n\nGroup A (Tasks 1–5) implements reset, and both decisions change what\nthose tasks do. Task 1 is already written and parked on an unpushed\nlocal branch; it will need updating against ADR-137 before it goes\nanywhere.\n\n## Test plan\n\n- [x] None runnable — documentation only, no code paths touched.\n- [x] Consistency check over every Accepted ADR on the topics these\ntouch (refill, TTL, reset, limit validation).\n- [x] Confirmed ADR numbers 137 and 138 are unused.\n\nRefs #222\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01QdVj8nPhUwTz2aNJzMFqt5",
+          "timestamp": "2026-09-15T02:44:55-04:00",
+          "tree_id": "8fc0fb4dc75413ad55f2ac4272d634d6e0b464fa",
+          "url": "https://github.com/zeroae/zae-limiter/commit/c881d16c4c4e4593510da2c6a46d77182148472a"
+        },
+        "date": 1789454933563,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 23.163557931456523,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008429837048819356",
+            "extra": "mean: 43.171260777774656 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 16.25101882715729,
+            "unit": "iter/sec",
+            "range": "stddev: 0.011726797157261035",
+            "extra": "mean: 61.534603499990226 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 34.61222906505644,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0053039026941387",
+            "extra": "mean: 28.89152264999808 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 36.15687586208722,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005288871508022441",
+            "extra": "mean: 27.65725677777829 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 21.411506749665005,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004873302492598212",
+            "extra": "mean: 46.70385936364079 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 60.450115184676996,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004280126465025867",
+            "extra": "mean: 16.542565666665293 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 20.37710069025398,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010492418362928404",
+            "extra": "mean: 49.074694933331855 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 24.674184873250645,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005648939589607733",
+            "extra": "mean: 40.528187866668 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 26.011669521658987,
+            "unit": "iter/sec",
+            "range": "stddev: 0.002962112094415887",
+            "extra": "mean: 38.44428359999483 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 25.715849881937135,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004928315565954694",
+            "extra": "mean: 38.88652347058543 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 25.098708525443236,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005796671189596838",
+            "extra": "mean: 39.84268748275526 msec\nrounds: 29"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 20.566944248924504,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008301831770545371",
+            "extra": "mean: 48.62171005555638 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 28.34790074123127,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004570784209671469",
+            "extra": "mean: 35.27598071999478 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9264433524568294,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0012881424172118405",
+            "extra": "mean: 519.0913081999952 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.937776450285505,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0014278450336951889",
+            "extra": "mean: 516.0553993999997 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9310011993116705,
+            "unit": "iter/sec",
+            "range": "stddev: 0.021923782207216424",
+            "extra": "mean: 1.0741124723999746 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9189641840943356,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00899708818999473",
+            "extra": "mean: 1.0881816911999977 sec\nrounds: 5"
           }
         ]
       }
