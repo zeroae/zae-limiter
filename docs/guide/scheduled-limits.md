@@ -258,20 +258,19 @@ $ zae-limiter entity get-limits user-123 --resource gpt-4
 Limits for user-123 (gpt-4):
   rpm: 1,000/min
     Schedule:
-      * 9-17 * * MON-FRI  America/New_York  → 50%
-      * 0-6 * * *         America/New_York  → capacity 2000
-  rpd: 0/sec (burst: 10,000)
-    Reset:
-      0 0 * * *           America/New_York  → refill to capacity
+      "* 9-17 * * MON-FRI" America/New_York  → scale 50%
+      "* 0-6 * * *" America/New_York  → capacity 2,000
+  rpd: 10,000 quota (resets "0 0 * * *" America/New_York)
 ```
 
 !!! note "Weekdays and months display as names"
     A schedule written as `1-5` comes back as `MON-FRI`, and `1,7` as `JAN,JUL`. The meaning is
     identical — the stored form is canonical and renders with names for readability.
 
-!!! note "A quota shows a zero rate"
-    A quota has no refill rate, so its first line reads `0/sec` and the burst figure is the
-    allowance. The `Reset:` line underneath says when it comes back.
+!!! note "A quota renders as an allowance, not a rate"
+    A quota has no refill rate, so its line names the whole allowance and the cron that hands it
+    back. The indented `Schedule:` block is for windows that override parameters; a reset
+    overrides nothing, so it stays on the headline.
 
 ## What happens at a boundary
 
