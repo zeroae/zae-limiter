@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789452817550,
+  "lastUpdate": 1789455003324,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -36233,6 +36233,240 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.0001254987321603105",
             "extra": "mean: 7.037076223776698 msec\nrounds: 143"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c881d16c4c4e4593510da2c6a46d77182148472a",
+          "message": "📝 docs(models): record what a calendar reset means (#523)\n\n## Summary\n\nTwo **Accepted** ADRs recording decisions about `reset_schedule` (the\n#222 surface plan), both settled after the token bucket's continuous\nrefill was found to conflict with a calendar reset in a way that neither\nthe design doc nor the surface plan had stated.\n\n### ADR-137 — a limit drips or resets, never both\n\nDrip and reset are both refill mechanisms, and they were specified\nindependently. A limit carrying both grants roughly **twice** its\nintended allowance in a period: the reset hands over a full balance, the\ncaller spends it, and the drip returns the same allowance again over the\nrest of the period.\n\nThe reset is not at fault. It is a SET, not an ADD, so repeated or\nmissed edges apply once. The surplus is the drip running underneath it.\n\n`refill_amount = 0` now means \"no drip\", and is valid **only** when a\n`reset_schedule` is present. Pairing the two fields in validation also\nmakes a bucket with neither mechanism — one that drains and never\nrecovers — unconstructible.\n\nAn earlier draft of this ADR chose the other option: keep the\npositive-rate rule and silently ignore the stored rate when a reset\nexists. It was changed because a configured number that does nothing is\na trap for whoever reads the limit next. That alternative is recorded in\nthe ADR's Alternatives Considered.\n\n### ADR-138 — reset covers fixed calendar windows only\n\nA cron expression names wall-clock instants, so every entity sharing a\nschedule resets together. A window anchored to an entity's own first use\nwould need a per-entity timestamp on the bucket — a different mechanism,\nand one that would cost the property making the current design cheap:\nthe valid-until stamp being computable from the bucket item alone.\n\nThis ADR matters mostly for **what it excludes**. The nearest widely\ndeployed behaviour — a session window that starts when the caller starts\n— is exactly the case not covered, and anyone reading \"five-hour reset\nwindow\" will assume it. The ADR also records the cost the choice\naccepts: every entity resetting at the same instant is a thundering herd\nthat the design does nothing to spread.\n\n### Consistency\n\nBoth were checked against every Accepted ADR before acceptance. The only\nreal interaction is **ADR-136**, whose TTL rule confines the exposure —\na bucket resolving its limits from entity configuration carries no TTL\nat all, so only resource- and system-level reset limits reach the\ntime-to-fill formula that divides by the refill rate. ADR-137 states\nthis, and ADR-136's claim that the formula is unchanged stays true for\nevery limit that drips.\n\n### Numbering\n\n137 and 138 because 126–132 are reserved by open PR #393 (multi-region\nADRs), and 135 is earmarked by surface-plan Task 12, which is literally\ntitled \"ADR-135 and documentation\".\n\n### Why this lands before surface-plan Group A\n\nGroup A (Tasks 1–5) implements reset, and both decisions change what\nthose tasks do. Task 1 is already written and parked on an unpushed\nlocal branch; it will need updating against ADR-137 before it goes\nanywhere.\n\n## Test plan\n\n- [x] None runnable — documentation only, no code paths touched.\n- [x] Consistency check over every Accepted ADR on the topics these\ntouch (refill, TTL, reset, limit validation).\n- [x] Confirmed ADR numbers 137 and 138 are unused.\n\nRefs #222\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01QdVj8nPhUwTz2aNJzMFqt5",
+          "timestamp": "2026-09-15T02:44:55-04:00",
+          "tree_id": "8fc0fb4dc75413ad55f2ac4272d634d6e0b464fa",
+          "url": "https://github.com/zeroae/zae-limiter/commit/c881d16c4c4e4593510da2c6a46d77182148472a"
+        },
+        "date": 1789455002087,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_single_limit_latency",
+            "value": 251.64944574707815,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00011028558001658835",
+            "extra": "mean: 3.9737818497127004 msec\nrounds: 173"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_two_limits_latency",
+            "value": 211.71308255588517,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00008713712021523176",
+            "extra": "mean: 4.723373671232781 msec\nrounds: 146"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_cascade_latency",
+            "value": 121.33106389247065,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00043943240259129354",
+            "extra": "mean: 8.241912399995499 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_available_check_latency",
+            "value": 187.45157132244861,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00007664847991893868",
+            "extra": "mean: 5.334711216049663 msec\nrounds: 162"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_stored_limits_latency",
+            "value": 249.91224395637843,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00011424727316445832",
+            "extra": "mean: 4.001404589742901 msec\nrounds: 156"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_baseline_no_cascade",
+            "value": 250.19876426302403,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00011406789230575228",
+            "extra": "mean: 3.9968222982458044 msec\nrounds: 228"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_with_cascade",
+            "value": 112.64574288233275,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009616537263912508",
+            "extra": "mean: 8.87738830081291 msec\nrounds: 123"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_one_limit",
+            "value": 249.7161480217387,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00013050515263887091",
+            "extra": "mean: 4.004546794118201 msec\nrounds: 170"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_two_limits",
+            "value": 211.08739533302466,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00010736861689595816",
+            "extra": "mean: 4.73737429192462 msec\nrounds: 161"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_five_limits",
+            "value": 138.74914903102376,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00026722781406041764",
+            "extra": "mean: 7.207251410071019 msec\nrounds: 139"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_single_limit",
+            "value": 224.5651824712373,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005688740078168118",
+            "extra": "mean: 4.453050063217533 msec\nrounds: 174"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_multiple_limits",
+            "value": 211.1612771284818,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00009085629159181838",
+            "extra": "mean: 4.735716763976316 msec\nrounds: 161"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_available_check",
+            "value": 187.8947669052605,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00007489435886792301",
+            "extra": "mean: 5.3221280000002125 msec\nrounds: 158"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_transactional_acquire",
+            "value": 249.96249028451552,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00017591955957625867",
+            "extra": "mean: 4.000600245507904 msec\nrounds: 167"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_without_cascade",
+            "value": 219.4624534919908,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007283263551037839",
+            "extra": "mean: 4.556588081872031 msec\nrounds: 171"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_with_cascade",
+            "value": 123.1524879279428,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00029799133649168743",
+            "extra": "mean: 8.1200145999901 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_cascade_with_stored_limits",
+            "value": 111.38510269417041,
+            "unit": "iter/sec",
+            "range": "stddev: 0.011641921689788047",
+            "extra": "mean: 8.977861274192975 msec\nrounds: 124"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_with_cached_config",
+            "value": 211.5343396567816,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010735586857540806",
+            "extra": "mean: 4.727364841200339 msec\nrounds: 233"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_cold_config",
+            "value": 180.59375497267305,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00007146633557114041",
+            "extra": "mean: 5.537290036143926 msec\nrounds: 83"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_cascade_with_cached_config",
+            "value": 102.6493917064365,
+            "unit": "iter/sec",
+            "range": "stddev: 0.018120737303405954",
+            "extra": "mean: 9.741898937500437 msec\nrounds: 112"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_sequential_acquisitions",
+            "value": 24.621742679023395,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0002832238206923845",
+            "extra": "mean: 40.6145094210555 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_same_entity_sequential",
+            "value": 25.048314315826023,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00027914211205898255",
+            "extra": "mean: 39.92284620000078 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_cache_disabled",
+            "value": 111.80188918825945,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0001492975272234695",
+            "extra": "mean: 8.944392686568413 msec\nrounds: 67"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_cache_enabled",
+            "value": 122.64161904906645,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00020058370183127823",
+            "extra": "mean: 8.153838866069764 msec\nrounds: 112"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_config_resolution_sequential",
+            "value": 99.77821066518389,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00010791966371261928",
+            "extra": "mean: 10.022228233332461 msec\nrounds: 90"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_config_resolution_batched",
+            "value": 156.67493997396028,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0001448641181736197",
+            "extra": "mean: 6.382641666664766 msec\nrounds: 138"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_speculative_cache_cold",
+            "value": 123.24265761761916,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00015392762740554526",
+            "extra": "mean: 8.114073644067838 msec\nrounds: 118"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_speculative_cache_warm",
+            "value": 124.01255168237853,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00022063579737240227",
+            "extra": "mean: 8.063699895162259 msec\nrounds: 124"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_stored_limits_cache_disabled",
+            "value": 99.13670697366504,
+            "unit": "iter/sec",
+            "range": "stddev: 0.03469587376433824",
+            "extra": "mean: 10.087081067415752 msec\nrounds: 89"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_stored_limits_cache_enabled",
+            "value": 179.47616711532132,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0001155600536501763",
+            "extra": "mean: 5.571770425415069 msec\nrounds: 181"
           }
         ]
       }
