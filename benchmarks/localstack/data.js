@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789513110720,
+  "lastUpdate": 1789515651902,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -25134,6 +25134,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.006985581791378219",
             "extra": "mean: 1.0865122329999963 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "14d0e4ee0c3678e8cfb4e45c95624d9d3a7f2cfa",
+          "message": "📝 docs(adr): accept ADRs at release time, not design time (#595)\n\n## Summary\n\n`.claude/rules/adr-rules.md` gains **rule 5** and a **\"When to Accept\"**\nsection: an ADR stays\n`Proposed` while the release it describes is in development, and is\naccepted as part of shipping\nthat release. The existing immutability, supersede, and status-handling\nrules are unchanged —\nthis changes only *when* acceptance happens.\n\n**Why.** The immutability rule was overridden by explicit owner\nexception four times in a single\nday (ADR-138 while it was still being drafted, then ADR-136, ADR-137,\nand ADR-138 again). Each\noverride existed to correct a statement that had become false between\nthe moment the ADR was\naccepted and the moment the release it describes actually shipped. An\nADR describes code, and\nwhile that code is unreleased the code is still moving; accepting at\ndesign time freezes a\ndescription of a moving target. The new rule documents the failure mode\nwith worked examples\n(ADR-115, ADR-114, ADR-136, ADR-137) — statements that were all true\nwhen they were written.\n\n**The tension is stated plainly rather than hidden.** A `Proposed` ADR\nis not used for\nenforcement, so during a development cycle the design record is\nadvisory. The mitigation is that\nacceptance becomes a release checklist item rather than an act of\nindividual discretion.\n\n**Explicitly not retroactive.** Every existing ADR keeps its current\nstatus — including ADRs\n135-138, which describe v0.14.0 work that has not shipped yet. This rule\ngoverns ADRs written\nfrom here on.\n\n### Files touched\n\n| File | Change |\n|------|--------|\n| `.claude/rules/adr-rules.md` | The rule itself: rule 5 plus the \"When\nto Accept\" section |\n| `.claude/rules/release-planning.md` | New \"ADR Acceptance\" section —\nthe normative release requirement |\n| `.claude/skills/pr/release.md` | New step 5 in the `/pr release`\nprocess that performs the acceptance; the subsequent step is renumbered\n|\n\n## Test plan\n\n- [x] Docs and rules only — no code, no schema, no public API surface\nchanged\n- [x] Pre-commit hooks ran clean (every check reported \"no files to\ncheck\")\n- [x] Pre-push hooks ran clean (same)\n- [ ] Reviewer confirms the three files agree with each other: the rule\nstates the policy, `release-planning.md` makes it a release requirement,\nand `release.md` is where it is actually carried out\n\nRefs #222\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01QdVj8nPhUwTz2aNJzMFqt5",
+          "timestamp": "2026-09-15T19:34:13-04:00",
+          "tree_id": "44fd5228f9288b0b9a3680b14f320bb3f1761104",
+          "url": "https://github.com/zeroae/zae-limiter/commit/14d0e4ee0c3678e8cfb4e45c95624d9d3a7f2cfa"
+        },
+        "date": 1789515650423,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 23.756661905825545,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009538091289140599",
+            "extra": "mean: 42.09345588888406 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 16.473114189150092,
+            "unit": "iter/sec",
+            "range": "stddev: 0.014499029201675147",
+            "extra": "mean: 60.704975909087274 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 37.95408853316477,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004518199435461541",
+            "extra": "mean: 26.347622578953178 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 36.63157267373208,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0037486813909301535",
+            "extra": "mean: 27.298855249998155 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 19.953916543761583,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010744333389489632",
+            "extra": "mean: 50.11547471429318 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 70.0537503161623,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00332825954289816",
+            "extra": "mean: 14.274753249995342 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 24.20848282753591,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004857788699341635",
+            "extra": "mean: 41.30783441176872 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 24.212284376500783,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007588013235787932",
+            "extra": "mean: 41.30134870588871 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 23.924708909161478,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00580001583589926",
+            "extra": "mean: 41.79779172222532 msec\nrounds: 36"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 26.722183829600223,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004962361567496702",
+            "extra": "mean: 37.42209118748363 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 23.315492151641912,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008034201332031057",
+            "extra": "mean: 42.88993745000482 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 26.174836144214968,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004720878315617855",
+            "extra": "mean: 38.204632666669625 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 28.977532710824665,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005653533311474232",
+            "extra": "mean: 34.50949430302761 msec\nrounds: 33"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.929104621183339,
+            "unit": "iter/sec",
+            "range": "stddev: 0.002571615008971808",
+            "extra": "mean: 518.3752032000143 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9345692173755191,
+            "unit": "iter/sec",
+            "range": "stddev: 0.002104202254614741",
+            "extra": "mean: 516.9109437999964 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9429083211729222,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005751594016407461",
+            "extra": "mean: 1.0605484939999883 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9230037783503071,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0037176018311021676",
+            "extra": "mean: 1.0834191835999945 sec\nrounds: 5"
           }
         ]
       }
