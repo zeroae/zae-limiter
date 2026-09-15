@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789473234664,
+  "lastUpdate": 1789473802304,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -21416,6 +21416,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.004552522631779474",
             "extra": "mean: 1.0855470919999903 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "fcc9ac3e5f5ffb50ac524f8c76e0b52468a4dbf6",
+          "message": "✨ feat(provisioner): parse schedules from the limits manifest (#543)\n\n## Summary\n\nSurface-plan Task 6 for #222. `LimitDecl` in\n`src/zae_limiter_provisioner/manifest.py` gains `schedule` and\n`reset_schedule`, parsed into `ScheduleEntry` so cron, timezone,\nextended-token and reset-entry rules are validated at parse time —\n`limits plan` rejects an unusable manifest before anything reaches the\ntable, rather than the Lambda raising at apply.\n\nA non-empty `reset_schedule` flips the `refill_amount` shorthand default\nfrom `capacity` to `0` (ADR-137). The author never types the zero:\n\n```yaml\nlimits:\n  rpd:\n    capacity: 10000\n    reset_schedule:\n      - cron: \"0 0 * * *\"\n        tz: America/New_York\n```\n\nWithout the flip the shorthand would fill `refill_amount = capacity`,\nproducing a rate **and** a reset — the one configuration ADR-137 rejects\n— so the manifest that reads most naturally would be the one that fails.\n`refill_amount` leaves the shared `value <= 0` loop and gets its own\nrule (zero permitted, but only alongside a reset); `capacity` and\n`refill_period` stay strictly positive.\n\n`differ.py` is unchanged: `compute_diff` compares nothing, emitting a\n`Change` for every manifest item on every apply, so the only contract to\npin is that the schedule survives into `Change.data` via `to_dict()`.\n\n## Defects found beyond the plan's text\n\nThree, all in the plan rather than on `main` (`LimitDecl` had no\nschedule fields at all, so there is no pre-existing behaviour to fix and\nno separate `fix(...)` commit is owed):\n\n1. **The plan's own Step 1 test would fail against its Step 3\nimplementation.** `test_rejects_a_reset_entry_carrying_a_modifier`\nasserts `pytest.raises(ValueError)`, but `ScheduleEntry.reset(**entry)`\n— signature `(cls, cron, tz=\"UTC\")` — raises `TypeError: reset() got an\nunexpected keyword argument 'scale'` for every modifier. Verified\ndirectly. Entry shape is now validated before the constructor call, so\nevery malformed entry is a `ValueError` naming the offending\n`schedule[i]` / `reset_schedule[i]`, which is what `limits plan` can\nreport. Same issue covers a mistyped key on a param entry (`TypeError:\n__init__() got an unexpected keyword argument`) and a non-list /\nnon-mapping / null `schedule:`.\n\n2. **ADR-137 was enforced only at the base, not in every window.** A\n`schedule` entry may override `refill_amount`, so a quota carrying both\ntuples (legal per design §1.7 — they are independent) could be handed a\npositive rate inside a window: the drip-and-reset double allowance by\nthe back door, invisible in the base parameters. A positive\n`refill_amount` on a `schedule` entry is now rejected when a\n`reset_schedule` is present. `scale` and the `capacity` /\n`refill_period_seconds` overrides stay legal — scaling a zero rate\nleaves it zero, so a quota can still be halved at weekends.\n\n3. **`_reset` was injectable from YAML.** `ScheduleEntry(**entry)`\naccepts the private `_reset` field, so `schedule: [{cron: ..., _reset:\ntrue}]` would have put a reset entry in the parameter tuple, where\nfirst-match-wins means it wins its window and then supplies nothing,\nshadowing every entry below it (design §3.6). The field allowlist\nexcludes it.\n\n## Cron validation: at parse time, not deferred\n\n`ScheduleEntry.__post_init__` calls `parse_cron`, so the manifest\ninherits the whole contract: 5-field only (a 6-field seconds expression\nis rejected), `L`/`W`/`#` rejected rather than silently never matching,\nunknown IANA zone rejected, Sunday normalised. This follows the existing\n`from_dict` principle that a bad limit is caught by `limits plan` before\nanything is written — a manifest that applies must be a manifest that\nevaluates.\n\n## Test plan\n\n- [x] `uv run pytest tests/unit/ -q` — **4058 passed** (8:40)\n- [x] `uv run pytest tests/unit/ -m gevent -n 0 -q` — **26 passed**\n- [x] `tests/unit/test_provisioner_manifest.py` grew 14 → 66 tests (52\nadded); `tests/unit/test_differ.py` unchanged and passing\n- [x] `uv run mypy` — clean, 58 source files (`to_dict()` widened to\n`dict[str, Any]`)\n- [x] `pre-commit run --files ...` — ruff, ruff-format, mypy all pass\n- [x] 16 deliberate mutations run against the new suite (branch deleted,\nconstant, identity, no-op on every conditional in the new code); **every\none is caught**\n- [x] No generated sync files changed — `manifest.py` is not a codegen\nsource\n- [x] `tests/unit/test_schedule_oracle.py` verified to collect and pass\nits 13 tests (croniter present)\n\n## Notes for downstream tasks\n\n- **Task 7 (CFN round trip):** the entry field allowlist is strict —\n`_cfn_limits_to_manifest` must convert PascalCase back to exactly\n`cron`/`tz`/`scale`/`capacity`/`refill_amount`/`refill_period_seconds`,\nor parsing raises `ValueError`.\n- **Task 8 (bucket_sync):** `to_dict()` emits `schedule` /\n`reset_schedule` only when non-empty, so an unscheduled manifest's wire\nshape is byte-identical to before. This is the widening that breaks the\nexact-set filter in `_decode_limits`, exactly as Task 8's banner warns.\n- **Task 12 (docs):** `CLAUDE.md:252` still says \"`refill_amount`\ndefaults to `capacity`\" unconditionally. That is now conditional on\n`reset_schedule`. Left for Task 12, which owns `CLAUDE.md` and `docs/`.\n- **`schedule.py` observation, not fixed here** (owned by another\nagent): `effective_params` floors a scaled refill at 1 milli-unit, so a\nscaled quota gets `ra_milli = 1` instead of 0 —\n`effective_params(10_000_000, 0, 60_000, (ScheduleEntry(cron=\"* * * *\n*\", scale=0.5),), 0)` returns `(5000000, 1, 60000)`. Negligible in\nmagnitude (1.44 tokens/day at the default period) but it violates\nADR-137's \"never both\" in letter, and it gives Task 5's boundary-aware\n`retry_after_seconds` a nonzero rate to divide by instead of falling\nback to the next reset instant.\n\nRefs #222\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01QdVj8nPhUwTz2aNJzMFqt5",
+          "timestamp": "2026-09-15T07:59:08-04:00",
+          "tree_id": "607fe3f03a59326b3110806253263dd3df7bab6d",
+          "url": "https://github.com/zeroae/zae-limiter/commit/fcc9ac3e5f5ffb50ac524f8c76e0b52468a4dbf6"
+        },
+        "date": 1789473801215,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 23.873010884692786,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0058351442396446344",
+            "extra": "mean: 41.88830662500109 msec\nrounds: 8"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 16.706397775448647,
+            "unit": "iter/sec",
+            "range": "stddev: 0.012183116145670712",
+            "extra": "mean: 59.85730816667001 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 34.45509549370733,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005215160468772044",
+            "extra": "mean: 29.023283368424675 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 40.03838489969874,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0042338006719896916",
+            "extra": "mean: 24.97603243750035 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 24.526467382754397,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004459243316272779",
+            "extra": "mean: 40.77228018182278 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 62.267538230337685,
+            "unit": "iter/sec",
+            "range": "stddev: 0.002936122855156323",
+            "extra": "mean: 16.05973238095327 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 23.299234786724877,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006701385202439898",
+            "extra": "mean: 42.91986450000351 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 26.249693152669938,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0065758690010480104",
+            "extra": "mean: 38.09568341176159 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 20.69609098696956,
+            "unit": "iter/sec",
+            "range": "stddev: 0.04033343312872962",
+            "extra": "mean: 48.31830323076994 msec\nrounds: 26"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 26.698314314489036,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005609639627723791",
+            "extra": "mean: 37.45554824999964 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 22.480652054909736,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007327752488526915",
+            "extra": "mean: 44.48269550000004 msec\nrounds: 28"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 24.295931343808885,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006335190606896631",
+            "extra": "mean: 41.15915483333884 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 29.59662683298099,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004928231279073226",
+            "extra": "mean: 33.78763416666288 msec\nrounds: 30"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9206229778171673,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008567461137287432",
+            "extra": "mean: 520.6643945999872 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9380404221114675,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0009652563630903532",
+            "extra": "mean: 515.9851097999876 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9368395857662243,
+            "unit": "iter/sec",
+            "range": "stddev: 0.02032671247740382",
+            "extra": "mean: 1.067418600999997 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9218010232238744,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008201690041626521",
+            "extra": "mean: 1.084832816200003 sec\nrounds: 5"
           }
         ]
       }
