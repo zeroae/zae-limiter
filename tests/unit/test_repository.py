@@ -11,6 +11,7 @@ from zae_limiter.exceptions import EntityExistsError, InvalidIdentifierError
 from zae_limiter.models import BucketState
 from zae_limiter.repository import Repository
 from zae_limiter.repository_protocol import SpeculativeFailureReason
+from zae_limiter.schedule import ScheduleEntry
 from zae_limiter.schema import (
     calculate_bucket_ttl,
     limit_attr,
@@ -4578,3 +4579,281 @@ class TestStaleLimitAliasesAreExpressionSafe:
         await repo.transact_write(
             [repo.build_composite_create(entity_id, resource, states, now_ms)]
         )
+
+
+class TestScheduleConfigRoundTrip:
+    """`l_{name}_sched` round-trips through set_limits/get_limits (#222 §1.4, §4.1).
+
+    The cron here is spelled with a numeric weekday because storage is
+    **canonical**: names normalise to numbers on the way in (§4.3), so
+    `MON-FRI` would not come back as `MON-FRI`. That normalisation is pinned
+    on its own below rather than papered over by weakening every assertion.
+    """
+
+    SCHED = (ScheduleEntry(cron="* 9-17 * * 1-5", tz="America/New_York", scale=0.5),)
+
+    async def test_schedule_survives_set_and_get(self, repo):
+        await repo.set_limits(
+            "user-1",
+            [Limit.per_minute("rpm", 1000).with_schedule(self.SCHED)],
+            resource="gpt-4",
+        )
+        (limit,) = await repo.get_limits("user-1", resource="gpt-4")
+        assert limit.schedule == self.SCHED
+
+    async def test_limit_without_schedule_round_trips_as_empty(self, repo):
+        await repo.set_limits("user-1", [Limit.per_minute("rpm", 1000)], resource="gpt-4")
+        (limit,) = await repo.get_limits("user-1", resource="gpt-4")
+        assert limit.schedule == ()
+
+    async def test_replacing_a_limit_without_a_schedule_removes_the_stored_one(self, repo):
+        """Override, not merge: a limit with no schedule has no schedule (§1.6).
+
+        This is the test that catches a write path which merely *skips*
+        `l_{name}_sched` when the schedule is empty instead of REMOVEing it.
+        """
+        await repo.set_limits(
+            "user-1",
+            [Limit.per_minute("rpm", 1000).with_schedule(self.SCHED)],
+            resource="gpt-4",
+        )
+        await repo.set_limits("user-1", [Limit.per_minute("rpm", 1000)], resource="gpt-4")
+        (limit,) = await repo.get_limits("user-1", resource="gpt-4")
+        assert limit.schedule == ()
+
+    async def test_two_limits_with_different_schedules(self, repo):
+        """Schedules are per-limit (§2.2); tz is shared, the crons need not be."""
+        night = (ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", capacity=2000),)
+        await repo.set_limits(
+            "user-1",
+            [
+                Limit.per_minute("rpm", 1000).with_schedule(self.SCHED),
+                Limit.per_minute("tpm", 100_000).with_schedule(night),
+            ],
+            resource="gpt-4",
+        )
+        by_name = {lim.name: lim for lim in await repo.get_limits("user-1", resource="gpt-4")}
+        assert by_name["rpm"].schedule == self.SCHED
+        assert by_name["tpm"].schedule == night
+
+    async def test_a_named_cron_comes_back_canonical(self, repo):
+        """Storage normalises weekday/month names to numbers (§4.3).
+
+        `differ.py` compares manifest against stored state, so keeping the
+        operator's verbatim text would read `MON-FRI` against `1-5` as a change
+        on every apply. The consequence users see is here: what comes back is
+        semantically identical but not textually what went in.
+        """
+        await repo.set_limits(
+            "user-1",
+            [
+                Limit.per_minute("rpm", 1000).with_schedule(
+                    (ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.5),)
+                )
+            ],
+            resource="gpt-4",
+        )
+        (limit,) = await repo.get_limits("user-1", resource="gpt-4")
+        assert limit.schedule == self.SCHED
+        assert limit.schedule[0].cron == "* 9-17 * * 1-5"
+
+    async def test_stored_form_is_compact_with_one_hoisted_timezone(self, repo):
+        """Pins the on-item shape: the compact string, and `sched_tz` written once.
+
+        Without this the round-trip tests would pass against a JSON blob, or
+        against a per-limit `l_{name}_sched_tz` — both of which cost bytes the
+        design measured out (§4.2) and neither of which downstream tasks read.
+        """
+        await repo.set_limits(
+            "user-1",
+            [
+                Limit.per_minute("rpm", 1000).with_schedule(self.SCHED),
+                Limit.per_minute("tpm", 100_000),
+            ],
+            resource="gpt-4",
+        )
+        client = await repo._get_client()
+        item = (
+            await client.get_item(
+                TableName=repo.table_name,
+                Key={
+                    "PK": {"S": f"{repo._namespace_id}/ENTITY#user-1"},
+                    "SK": {"S": sk_config("gpt-4")},
+                },
+            )
+        )["Item"]
+
+        assert item["l_rpm_sched"]["S"] == "h9-17w1-5s500"
+        assert item["sched_tz"]["S"] == "America/New_York"
+        assert "l_tpm_sched" not in item
+        assert "l_rpm_sched_tz" not in item
+
+    async def test_no_schedule_writes_no_timezone_attribute(self, repo):
+        """`sched_tz` is only meaningful next to a schedule; don't write it otherwise."""
+        await repo.set_limits("user-1", [Limit.per_minute("rpm", 1000)], resource="gpt-4")
+        client = await repo._get_client()
+        item = (
+            await client.get_item(
+                TableName=repo.table_name,
+                Key={
+                    "PK": {"S": f"{repo._namespace_id}/ENTITY#user-1"},
+                    "SK": {"S": sk_config("gpt-4")},
+                },
+            )
+        )["Item"]
+        assert "sched_tz" not in item
+
+    async def test_resource_defaults_round_trip(self, repo):
+        await repo.set_resource_defaults(
+            "gpt-4", [Limit.per_minute("rpm", 500).with_schedule(self.SCHED)]
+        )
+        (limit,) = await repo.get_resource_defaults("gpt-4")
+        assert limit.schedule == self.SCHED
+
+    async def test_system_defaults_round_trip(self, repo):
+        await repo.set_system_defaults([Limit.per_minute("rpm", 100).with_schedule(self.SCHED)])
+        limits, _on_unavailable = await repo.get_system_defaults()
+        assert limits[0].schedule == self.SCHED
+
+    async def test_resolve_limits_carries_the_schedule(self, repo):
+        """The batch config read is a second deserialization call site (#222 Task 12)."""
+        await repo.set_limits(
+            "user-1",
+            [Limit.per_minute("rpm", 1000).with_schedule(self.SCHED)],
+            resource="gpt-4",
+        )
+        limits, _on_unavailable, source = await repo.resolve_limits("user-1", "gpt-4")
+        assert source == "entity"
+        assert limits is not None
+        assert limits[0].schedule == self.SCHED
+
+    async def test_read_of_an_item_written_by_an_older_client(self, repo):
+        """No `sched`, no `sched_tz` — the pre-#222 shape must not raise."""
+        item = {
+            "l_rpm_cp": {"N": "1000"},
+            "l_rpm_ra": {"N": "1000"},
+            "l_rpm_rp": {"N": "60"},
+        }
+        (limit,) = repo._deserialize_composite_limits(item)
+        assert limit.schedule == ()
+        assert limit.capacity == 1000
+
+    async def test_schedule_without_a_hoisted_timezone_falls_back_to_utc(self, repo):
+        """Defensive: a `sched` with no `sched_tz` decodes as UTC rather than raising."""
+        item = {
+            "l_rpm_cp": {"N": "1000"},
+            "l_rpm_ra": {"N": "1000"},
+            "l_rpm_rp": {"N": "60"},
+            "l_rpm_sched": {"S": "h9-17s500"},
+        }
+        (limit,) = repo._deserialize_composite_limits(item)
+        assert limit.schedule == (ScheduleEntry(cron="* 9-17 * * *", tz="UTC", scale=0.5),)
+
+    async def test_two_limits_disagreeing_on_timezone_are_rejected_at_the_write(self, repo):
+        """`sched_tz` is one attribute per item, so the whole item must agree (§4.1).
+
+        `Limit.__post_init__` only sees one limit's entries; nothing below it
+        notices that a second limit on the same config item brought a different
+        zone, and the item-level write is last-one-wins — so the first limit's
+        schedule would silently be reinterpreted in the second's timezone.
+        """
+        with pytest.raises(ValueError, match="timezone"):
+            await repo.set_limits(
+                "user-1",
+                [
+                    Limit.per_minute("rpm", 1000).with_schedule(self.SCHED),
+                    Limit.per_minute("tpm", 100_000).with_schedule(
+                        (ScheduleEntry(cron="* 0-6 * * *", tz="Europe/Berlin", capacity=2000),)
+                    ),
+                ],
+                resource="gpt-4",
+            )
+
+    async def test_an_unscheduled_limit_does_not_constrain_the_timezone(self, repo):
+        """Only limits that actually carry a schedule vote on `sched_tz`."""
+        await repo.set_limits(
+            "user-1",
+            [
+                Limit.per_minute("rpm", 1000).with_schedule(self.SCHED),
+                Limit.per_minute("tpm", 100_000),
+            ],
+            resource="gpt-4",
+        )
+        by_name = {lim.name: lim for lim in await repo.get_limits("user-1", resource="gpt-4")}
+        assert by_name["rpm"].schedule == self.SCHED
+        assert by_name["tpm"].schedule == ()
+
+
+class TestScheduleValidation:
+    def test_rejects_entries_disagreeing_on_timezone(self):
+        """`sched_tz` is one item-level attribute, so entries must agree (§4.1)."""
+        with pytest.raises(ValueError, match="timezone"):
+            Limit.per_minute("rpm", 1000).with_schedule(
+                (
+                    ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.5),
+                    ScheduleEntry(cron="* 0-6 * * *", tz="UTC", scale=0.5),
+                )
+            )
+
+    def test_with_schedule_returns_a_new_limit(self):
+        """`Limit` is frozen; `with_schedule` must not mutate."""
+        base = Limit.per_minute("rpm", 1000)
+        scheduled = base.with_schedule((ScheduleEntry(cron="* * * * *", tz="UTC", scale=0.5),))
+        assert base.schedule == ()
+        assert scheduled is not base
+        assert scheduled.capacity == base.capacity
+
+    def test_with_schedule_clears_an_existing_schedule(self):
+        entry = ScheduleEntry(cron="* * * * *", tz="UTC", scale=0.5)
+        assert (
+            Limit.per_minute("rpm", 1000).with_schedule((entry,)).with_schedule(()).schedule == ()
+        )
+
+    def test_per_shard_preserves_the_schedule(self):
+        """Sharding divides the base; the schedule scales it later (§2.3)."""
+        entry = ScheduleEntry(cron="* * * * *", tz="UTC", scale=0.5)
+        shard = Limit.per_minute("rpm", 1000).with_schedule((entry,)).per_shard(4)
+        assert shard.capacity == 250
+        assert shard.schedule == (entry,)
+
+    def test_a_scheduled_limit_is_hashable(self):
+        """`Limit` is a frozen dataclass; a mutable schedule field would break that."""
+        entry = ScheduleEntry(cron="* * * * *", tz="UTC", scale=0.5)
+        assert len({Limit.per_minute("rpm", 1000).with_schedule((entry,))}) == 1
+
+    def test_carrier_limits_have_an_empty_schedule(self):
+        """`_carrier` bypasses `__init__`, so the default has to reach it anyway."""
+        state = BucketState(
+            entity_id="e",
+            resource="r",
+            limit_name="wcu",
+            tokens_milli=1000,
+            last_refill_ms=0,
+            capacity_milli=1_000_000,
+            refill_amount_milli=1_000_000,
+            refill_period_ms=1000,
+        )
+        assert Limit._carrier(state).schedule == ()
+
+    def test_to_dict_round_trips_the_schedule(self):
+        """`from_dict(to_dict(x))` must not silently drop the schedule."""
+        limit = Limit.per_minute("rpm", 1000).with_schedule(
+            (
+                ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.5),
+                ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", capacity=2000),
+            )
+        )
+        assert Limit.from_dict(limit.to_dict()) == limit
+
+    def test_to_dict_omits_an_empty_schedule(self):
+        """Existing payloads (audit details) must not grow a null key."""
+        assert "schedule" not in Limit.per_minute("rpm", 1000).to_dict()
+
+    def test_to_dict_uses_standard_cron_not_the_storage_encoding(self):
+        """Standard 5-field cron at every boundary; compact is storage only (§4)."""
+        limit = Limit.per_minute("rpm", 1000).with_schedule(
+            (ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.5),)
+        )
+        assert limit.to_dict()["schedule"] == [
+            {"cron": "* 9-17 * * MON-FRI", "tz": "America/New_York", "scale": 0.5}
+        ]

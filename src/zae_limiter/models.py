@@ -6,6 +6,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 from .exceptions import InvalidIdentifierError, InvalidNameError
+from .schedule import ScheduleEntry
 
 # ---------------------------------------------------------------------------
 # Validation Constants
@@ -182,6 +183,45 @@ OnUnavailableAction = Literal["allow", "block"]
 # ---------------------------------------------------------------------------
 
 
+def _schedule_entry_to_dict(entry: ScheduleEntry) -> dict[str, Any]:
+    """One schedule entry as a plain dict, emitting only the fields that are set.
+
+    Keeps ``Limit.from_dict(limit.to_dict()) == limit`` — an entry sets exactly
+    one of ``scale`` or the absolute fields, so writing the unset ones as
+    ``None`` would round-trip into a ``ScheduleEntry`` that validates the same
+    but compares unequal on nothing, while writing them all would just be noise.
+    """
+    result: dict[str, Any] = {"cron": entry.cron, "tz": entry.tz}
+    for name in ("scale", "capacity", "refill_amount", "refill_period_seconds"):
+        value = getattr(entry, name)
+        if value is not None:
+            result[name] = value
+    return result
+
+
+def hoisted_schedule_timezone(limits: list["Limit"]) -> str | None:
+    """The one timezone shared by every scheduled limit destined for one item.
+
+    Schedules are stored per limit (``l_{name}_sched``) but the timezone is
+    stored **once per item** (``sched_tz``, #222 §4.1), so a config item cannot
+    represent two. ``Limit.__post_init__`` only ever sees one limit's entries;
+    nothing below it notices that a *second* limit on the same item arrived with
+    a different zone, and the item-level write is last-one-wins — which would
+    silently reinterpret the first limit's schedule in the second's timezone.
+
+    Returns ``None`` when no limit on the item carries a schedule; limits
+    without one do not vote.
+    """
+    zones = {limit.schedule[0].tz for limit in limits if limit.schedule}
+    if len(zones) > 1:
+        raise ValueError(
+            f"all scheduled limits on one config item must share a timezone, got "
+            f"{sorted(zones)}. The timezone is stored once per item as `sched_tz`, "
+            f"not per limit."
+        )
+    return zones.pop() if zones else None
+
+
 @dataclass(frozen=True)
 class Limit:
     """
@@ -195,12 +235,17 @@ class Limit:
         capacity: Max tokens in the bucket (ceiling)
         refill_amount: Numerator of refill rate
         refill_period_seconds: Denominator of refill rate
+        schedule: Time windows in which different parameters apply (#222).
+            The fields above stay the *base* parameters forever; the schedule
+            is applied on top of them at read time by
+            ``schedule.effective_params()``.
     """
 
     name: str
     capacity: int
     refill_amount: int
     refill_period_seconds: int
+    schedule: tuple[ScheduleEntry, ...] = ()
 
     def __post_init__(self) -> None:
         validate_name(self.name, "name")
@@ -210,6 +255,14 @@ class Limit:
             raise ValueError("refill_amount must be positive")
         if self.refill_period_seconds <= 0:
             raise ValueError("refill_period_seconds must be positive")
+        if self.schedule:
+            zones = {entry.tz for entry in self.schedule}
+            if len(zones) > 1:
+                raise ValueError(
+                    f"all schedule entries on one limit must share a timezone, got "
+                    f"{sorted(zones)}. The timezone is stored once per item as "
+                    f"`sched_tz`, not per entry."
+                )
 
     @classmethod
     def per_second(
@@ -334,14 +387,33 @@ class Limit:
         """Tokens per second (for display/debugging)."""
         return self.refill_amount / self.refill_period_seconds
 
-    def to_dict(self) -> dict[str, str | int]:
+    def with_schedule(self, schedule: tuple[ScheduleEntry, ...]) -> "Limit":
+        """This limit with a schedule attached (#222 §1.1).
+
+        Returns a new instance; ``Limit`` is frozen and the factory methods
+        (``per_minute``, ``per_hour``, ...) do not take a schedule. Validation
+        runs through ``__post_init__``, so a schedule whose entries disagree on
+        timezone is rejected here rather than at the DynamoDB write.
+
+        Pass ``()`` to clear a schedule: storage is override-not-merge, so a
+        limit with no schedule has no schedule.
+        """
+        return replace(self, schedule=schedule)
+
+    def to_dict(self) -> dict[str, Any]:
         """Serialize to dictionary for storage."""
-        return {
+        result: dict[str, Any] = {
             "name": self.name,
             "capacity": self.capacity,
             "refill_amount": self.refill_amount,
             "refill_period_seconds": self.refill_period_seconds,
         }
+        # Standard 5-field cron at every boundary of the system, including
+        # audit events — the compact form is purely a storage encoding
+        # (#222 §4). Omitted when empty so existing payloads are unchanged.
+        if self.schedule:
+            result["schedule"] = [_schedule_entry_to_dict(e) for e in self.schedule]
+        return result
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Limit":
@@ -351,6 +423,7 @@ class Limit:
             capacity=data["capacity"],
             refill_amount=data["refill_amount"],
             refill_period_seconds=data["refill_period_seconds"],
+            schedule=tuple(ScheduleEntry(**entry) for entry in data.get("schedule", ())),
         )
 
     @classmethod
@@ -399,6 +472,11 @@ class Limit:
         object.__setattr__(obj, "capacity", max(1, state.capacity_milli // 1000))
         object.__setattr__(obj, "refill_amount", max(1, state.refill_amount_milli // 1000))
         object.__setattr__(obj, "refill_period_seconds", max(1, state.refill_period_ms // 1000))
+        # `wcu` is never scheduled — it tracks partition write pressure, not a
+        # user limit. Set explicitly rather than leaning on the class-level
+        # dataclass default, which a future `field(default_factory=...)` would
+        # remove out from under this constructor.
+        object.__setattr__(obj, "schedule", ())
         return obj
 
 

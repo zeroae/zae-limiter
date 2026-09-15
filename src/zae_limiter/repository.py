@@ -12,7 +12,7 @@ from aiobotocore.session import AioSession, get_session
 from botocore.exceptions import ClientError
 from ulid import ULID
 
-from . import schema
+from . import schedule, schema
 from .config_cache import CacheStats, ConfigCache, ConfigSource
 from .exceptions import (
     EntityExistsError,
@@ -32,6 +32,7 @@ from .models import (
     StackOptions,
     UsageSnapshot,
     UsageSummary,
+    hoisted_schedule_timezone,
     validate_identifier,
     validate_resource,
 )
@@ -4935,13 +4936,27 @@ class Repository:
     ) -> dict[str, Any]:
         """Add l_* attributes to a DynamoDB item for composite limit storage.
 
+        Every config level is written with a full-replace ``PutItem``, so an
+        attribute this method omits (an unscheduled limit's ``l_{name}_sched``,
+        or ``sched_tz`` when nothing is scheduled) disappears from the stored
+        item on its own — storage is override-not-merge and no explicit REMOVE
+        is needed.
+
         Args:
             limits: List of Limit objects to serialize
             base_item: Base DynamoDB item to add attributes to (mutated in place)
 
         Returns:
             The modified base_item with l_{name}_{field} attributes added
+
+        Raises:
+            ValueError: if two scheduled limits disagree on timezone; it is
+                hoisted to one item-level attribute (#222 §4.1).
         """
+        # Raises before anything is written, so a rejected item is never
+        # half-serialized into base_item.
+        hoisted_tz = hoisted_schedule_timezone(limits)
+
         for limit in limits:
             name = limit.name
             base_item[schema.limit_attr(name, schema.LIMIT_FIELD_CP)] = {"N": str(limit.capacity)}
@@ -4951,6 +4966,12 @@ class Repository:
             base_item[schema.limit_attr(name, schema.LIMIT_FIELD_RP)] = {
                 "N": str(limit.refill_period_seconds)
             }
+            if limit.schedule:
+                compact, _tz = schedule.encode(limit.schedule)
+                base_item[schema.limit_attr(name, schema.LIMIT_FIELD_SCHED)] = {"S": compact}
+
+        if hoisted_tz is not None:
+            base_item[schema.CONFIG_FIELD_SCHED_TZ] = {"S": hoisted_tz}
         return base_item
 
     def _deserialize_composite_limits(self, item: dict[str, Any]) -> list[Limit]:
@@ -4973,6 +4994,12 @@ class Repository:
                 if name:
                     limit_names.append(name)
 
+        # One hoisted timezone for the whole item (#222 §4.1). Absent on items
+        # written before schedules existed, and on items where nothing is
+        # scheduled; UTC is then the harmless default, since it is only ever
+        # consulted alongside a `sched` attribute.
+        sched_tz = item.get(schema.CONFIG_FIELD_SCHED_TZ, {}).get("S") or "UTC"
+
         limits: list[Limit] = []
         for name in limit_names:
 
@@ -4980,12 +5007,14 @@ class Repository:
                 attr = schema.limit_attr(name, field)
                 return int(item.get(attr, {}).get("N", "0"))
 
+            sched_attr = item.get(schema.limit_attr(name, schema.LIMIT_FIELD_SCHED), {}).get("S")
             limits.append(
                 Limit(
                     name=name,
                     capacity=_get(schema.LIMIT_FIELD_CP),
                     refill_amount=_get(schema.LIMIT_FIELD_RA),
                     refill_period_seconds=_get(schema.LIMIT_FIELD_RP),
+                    schedule=schedule.decode(sched_attr, sched_tz) if sched_attr else (),
                 )
             )
 
