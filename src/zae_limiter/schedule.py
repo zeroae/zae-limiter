@@ -19,6 +19,7 @@ confirmed by test:
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -204,14 +205,26 @@ class ScheduleEntry:
                 "a schedule entry must set exactly one of `scale` or the absolute "
                 "fields (`capacity`/`refill_amount`/`refill_period_seconds`)"
             )
-        if self.scale is not None and self.scale <= 0:
-            raise ValueError(f"scale must be positive, got {self.scale}")
         for name, value in (
+            ("scale", self.scale),
             ("capacity", self.capacity),
             ("refill_amount", self.refill_amount),
             ("refill_period_seconds", self.refill_period_seconds),
         ):
-            if value is not None and value <= 0:
+            if value is None:
+                continue
+            # Non-finite first, because the positivity test cannot catch it: every
+            # comparison against NaN is False, so `<= 0` *admits* a NaN, and an
+            # infinity is trivially positive. Both then escape into storage and die
+            # far from here — `scale` as "cannot convert float NaN to integer" from
+            # inside `encode`, and an absolute worse still, encoding cleanly as the
+            # byte string `cnan` that no later `decode` can read back. The isinstance
+            # guard is load-bearing: `math.isfinite` converts its argument to a float,
+            # so a bare call would turn an absurd-but-currently-workable integer
+            # capacity of 10**400 into an OverflowError raised from validation.
+            if isinstance(value, float) and not math.isfinite(value):
+                raise ValueError(f"{name} must be a finite number, got {value}")
+            if value <= 0:
                 raise ValueError(f"{name} must be positive, got {value}")
 
 
