@@ -1132,6 +1132,57 @@ class TestCfnScalarCoercion:
         assert parsed.entities["user-premium"].resources["gpt-4"].disabled is False
         assert parsed.entities["user-premium"].resources["gpt-4"].limits["rpm"].capacity == 100
 
+    def test_stringified_payload_equals_the_native_typed_equivalent(self):
+        """The strongest statement of the fix: after coercion, the two inputs
+        are indistinguishable downstream.
+
+        The native side is written out literally rather than derived from the
+        recorded payload, so this compares the boundary's output against an
+        independently-stated expectation instead of against itself.
+        """
+        from zae_limiter_provisioner.manifest import LimitsManifest
+
+        native = {
+            "ServiceToken": "arn:aws:lambda:us-east-1:733153035800:function:probe",
+            "Namespace": "default",
+            "System": {
+                "OnUnavailable": "block",
+                "Limits": {"rpm": {"Capacity": 1000, "RefillAmount": 1000}},
+            },
+            "Resources": {
+                "gpt-4": {
+                    "Disabled": False,
+                    "Limits": {
+                        "rpm": {
+                            "Capacity": 500,
+                            "Schedule": [
+                                {
+                                    "Cron": "0 9 * * 1-5",
+                                    "Tz": "America/New_York",
+                                    "Scale": 0.5,
+                                },
+                                {"Cron": "0 18 * * 1-5", "Scale": 1},
+                            ],
+                        }
+                    },
+                },
+                "quoted-model": {"Disabled": False},
+                "enabled-model": {"Disabled": True},
+            },
+            "Entities": {
+                "user-premium": {
+                    "Resources": {
+                        "gpt-4": {"Disabled": False, "Limits": {"rpm": {"Capacity": 100}}}
+                    }
+                }
+            },
+        }
+        from_strings = LimitsManifest.from_dict(
+            _cfn_properties_to_manifest(RECORDED_CFN_RESOURCE_PROPERTIES_VALID)
+        )
+        from_natives = LimitsManifest.from_dict(_cfn_properties_to_manifest(native))
+        assert from_strings == from_natives
+
     def test_disabled_accepts_any_case(self):
         """`Disabled: "True"` — quoted, so YAML keeps it a string — is truthy by
         accident under `bool()`. The allowlist lowercases before matching so it

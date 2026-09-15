@@ -273,6 +273,65 @@ class TestHandlerIntegration:
         assert r2["deleted"] == 2
 
     @pytest.mark.asyncio
+    async def test_handler_cfn_create_with_stringified_properties(self, test_repo):
+        """The same Create event as delivered by real CloudFormation (#554).
+
+        Every other custom-resource test in this file (and every unit test
+        before #554) builds `ResourceProperties` out of native Python types —
+        `{"Capacity": 1500, "Disabled": False}` — which is a shape CloudFormation
+        cannot produce. It stringifies every scalar leaf, so `'1500' <= 0` raised
+        `TypeError` and `bool('false')` was `True`, silently disabling the
+        resource an operator was explicitly re-admitting (ADR-125 carve-out).
+
+        This drives the stringified payload all the way into DynamoDB and reads
+        the result back through the async `Repository`, so the assertions are
+        against stored state rather than against the converter's return value.
+        """
+        cfn_create = {
+            "RequestType": "Create",
+            "ResourceProperties": {
+                "TableName": test_repo.table_name,
+                "NamespaceId": test_repo._namespace_id,
+                "Namespace": "test",
+                "System": {
+                    "OnUnavailable": "block",
+                    "Limits": {"rpm": {"Capacity": "1500", "RefillPeriod": "60"}},
+                },
+                "Resources": {
+                    # The carve-out shape: an explicit re-admission carrying no
+                    # numeric field of its own, so nothing trips a TypeError and
+                    # the inversion is silent.
+                    "gpt-4": {
+                        "Disabled": "false",
+                        "Limits": {"tpm": {"Capacity": "60000", "RefillAmount": "60000"}},
+                    },
+                    "legacy": {"Disabled": "true"},
+                },
+            },
+        }
+        result = _handle_cfn(cfn_create, None)
+        assert result["errors"] == []
+        assert result["created"] == 3
+
+        system_limits, on_unavailable = await test_repo.get_system_defaults()
+        assert on_unavailable == "block"
+        rpm = next(limit for limit in system_limits if limit.name == "rpm")
+        assert rpm.capacity == 1500
+        assert isinstance(rpm.capacity, int)
+        assert rpm.refill_period_seconds == 60
+
+        tpm = next(
+            limit for limit in await test_repo.get_resource_defaults("gpt-4") if limit.name == "tpm"
+        )
+        assert tpm.capacity == 60000
+        assert isinstance(tpm.capacity, int)
+
+        # The headline assertion: `'false'` resolved to a real False, so the
+        # resource is enabled. Before the fix this stored disabled=True.
+        assert await test_repo.resolve_disabled("anyone", "gpt-4") == (False, "resource")
+        assert await test_repo.resolve_disabled("anyone", "legacy") == (True, "resource")
+
+    @pytest.mark.asyncio
     async def test_handler_on_unavailable_persisted(self, test_repo):
         """System on_unavailable setting is persisted and readable."""
         manifest = {
