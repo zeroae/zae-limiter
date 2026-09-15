@@ -3354,6 +3354,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#bucket-expiry" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bucket Expiry
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#verification-after-changes" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3658,6 +3669,12 @@ and <a href="../../adr/125-resource-disable/">ADR-125</a>.</p>
 </span></code></pre></div>
 <h3 id="reset-bucket-state">Reset Bucket State<a class="headerlink" href="#reset-bucket-state" title="Permanent link">&para;</a></h3>
 <p>Reset a bucket to restore full capacity (will be recreated on next acquire):</p>
+<div class="admonition warning">
+<p class="admonition-title">This is an unscheduled reset for a quota</p>
+<p>For a limit with a <code>reset_schedule</code>, deleting the item grants a fresh full allowance in the
+middle of the current window — a second month's worth for a monthly quota. Harmless for a
+dripping limit; not for a quota.</p>
+</div>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="c1"># v0.9.0+ bucket key format: PK={ns}/BUCKET#{entity}#{resource}#{shard}, SK=#STATE</span>
 </span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>aws<span class="w"> </span>dynamodb<span class="w"> </span>delete-item<span class="w"> </span>--table-name<span class="w"> </span>&lt;name&gt;<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-13-3"><a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="w">  </span>--key<span class="w"> </span><span class="s1">'{"PK": {"S": "{ns}/BUCKET#&lt;entity_id&gt;#&lt;resource&gt;#0"}, "SK": {"S": "#STATE"}}'</span>
@@ -3694,7 +3711,7 @@ use the <code>b_{limit_name}_{field}</code> naming convention:</p>
 <tr>
 <td>Capacity</td>
 <td><code>b_rpm_cp</code></td>
-<td>Maximum bucket size × 1000</td>
+<td><strong>Base</strong> bucket size × 1000, before schedule scaling and shard division</td>
 <td><code>100000</code> = 100 tokens</td>
 </tr>
 <tr>
@@ -3709,8 +3726,90 @@ use the <code>b_{limit_name}_{field}</code> naming convention:</p>
 <td>Number of shards for this bucket</td>
 <td><code>2</code></td>
 </tr>
+<tr>
+<td>Valid until</td>
+<td><code>vu</code></td>
+<td>Next instant the effective parameters change (epoch ms). Absent means nothing here is scheduled. <code>vu</code> at or before now is why a bucket is taking the slow path</td>
+<td><code>1705334400000</code></td>
+</tr>
+<tr>
+<td>Schedule</td>
+<td><code>sched</code></td>
+<td>Item-level schedule, compact encoding</td>
+<td><code>h9-17w1-5s500</code></td>
+</tr>
+<tr>
+<td>Reset schedule</td>
+<td><code>rsched</code></td>
+<td>Item-level reset schedule, compact encoding</td>
+<td><code>m0h0</code></td>
+</tr>
+<tr>
+<td>Timezone</td>
+<td><code>sched_tz</code></td>
+<td>IANA zone shared by every schedule on this item</td>
+<td><code>America/New_York</code></td>
+</tr>
+<tr>
+<td>Per-limit overrides</td>
+<td><code>b_rpm_sched</code>, <code>b_rpm_rsched</code></td>
+<td>That limit's own schedule, when it differs from the item default. A literal <code>-</code> means that limit has <strong>no</strong> schedule; a missing attribute means it inherits the item default</td>
+<td><code>h0-6c2000</code> or <code>-</code></td>
+</tr>
 </tbody>
 </table>
+<p>The ceiling actually enforced is <strong>not</strong> <code>b_rpm_cp</code>. The schedule in force at the current
+instant is applied to the base first, and the result is then divided by <code>shard_count</code>. An
+entity on a <code>scale: 0.5</code> window across 2 shards admits <code>cp × 0.5 / 2</code> per shard. Compare
+observed rejections against that, not against the stored number.</p>
+<h3 id="bucket-expiry">Bucket Expiry<a class="headerlink" href="#bucket-expiry" title="Permanent link">&para;</a></h3>
+<p>Bucket items carry a DynamoDB TTL, and whether they do depends on where their limits came
+from:</p>
+<table>
+<thead>
+<tr>
+<th>Limits resolved from</th>
+<th>TTL</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Entity config, for that resource</td>
+<td>None — the item persists</td>
+</tr>
+<tr>
+<td>Entity config, entity-wide <code>_default_</code></td>
+<td>None — the item persists</td>
+</tr>
+<tr>
+<td>Resource defaults</td>
+<td><code>recovery_horizon × multiplier</code></td>
+</tr>
+<tr>
+<td>System defaults</td>
+<td><code>recovery_horizon × multiplier</code></td>
+</tr>
+<tr>
+<td>A <code>limits=</code> override passed to <code>acquire()</code></td>
+<td><code>recovery_horizon × multiplier</code></td>
+</tr>
+</tbody>
+</table>
+<p>The multiplier is <code>bucket_ttl_refill_multiplier</code>, default 7; set it to 0 to disable expiry
+everywhere.</p>
+<p>For resource- and system-level limits this expiry is also the <strong>propagation mechanism</strong>:
+changing those defaults does not rewrite live buckets, so a bucket picks up the new numbers
+when it expires and is recreated. Entity-level changes fan out immediately and need no expiry.</p>
+<p>The recovery horizon is the longest a limit could need to come back:</p>
+<ul>
+<li>A limit that drips uses time-to-fill, <code>(capacity / refill_amount) × refill_period_seconds</code>,
+  taken at its <strong>slowest</strong> across the base parameters and every schedule window. An entry that
+  overrides <code>refill_amount</code> or <code>refill_period_seconds</code> to something slower therefore lengthens
+  the TTL for the whole item.</li>
+<li>A quota uses its <strong>reset period</strong> — the cycle its reset cron repeats on, rounded up (31 days
+  for a monthly pattern, 366 for an annual one).</li>
+</ul>
+<p>Across limits sharing one item the largest horizon wins.</p>
 <h3 id="verification-after-changes">Verification After Changes<a class="headerlink" href="#verification-after-changes" title="Permanent link">&para;</a></h3>
 <p>After adjusting limits, verify:</p>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a># Check available capacity

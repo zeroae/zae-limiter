@@ -3563,6 +3563,16 @@
 <td>Lazy (calculated on-demand)</td>
 </tr>
 <tr>
+<td>Refill rate</td>
+<td>Fixed</td>
+<td>Fixed, or varied per cron window</td>
+</tr>
+<tr>
+<td>Recovery</td>
+<td>Always a drip</td>
+<td>A drip, or a whole allowance restored at a calendar instant</td>
+</tr>
+<tr>
 <td>Minimum tokens</td>
 <td>0 (never negative)</td>
 <td>Can go negative (debt)</td>
@@ -3582,7 +3592,9 @@
 </ul>
 <h2 id="key-concepts">Key Concepts<a class="headerlink" href="#key-concepts" title="Permanent link">&para;</a></h2>
 <h3 id="capacity-and-burst">Capacity and Burst<a class="headerlink" href="#capacity-and-burst" title="Permanent link">&para;</a></h3>
-<p>Every limit has a <strong>rate</strong> (sustained throughput) and an optional <strong>burst</strong> (the bucket ceiling):</p>
+<p>A dripping limit has a <strong>rate</strong> (sustained throughput) and an optional <strong>burst</strong> (the bucket
+ceiling). A quota has neither: its capacity is the whole allowance for one window, and it does
+not drip at all.</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># 10,000 tokens/minute sustained, bucket holds up to 10k</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">"tpm"</span><span class="p">,</span> <span class="mi">10_000</span><span class="p">)</span>
 </span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
@@ -3626,6 +3638,8 @@
 <div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>tokens_to_add = elapsed_time × refill_rate
 </span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>             = elapsed_ms × refill_amount / refill_period
 </span></code></pre></div>
+<p><code>refill_amount</code> here is the value in force at that instant. With a schedule, that is the
+scheduled value rather than the configured base.</p>
 <h3 id="negative-buckets-debt">Negative Buckets (Debt)<a class="headerlink" href="#negative-buckets-debt" title="Permanent link">&para;</a></h3>
 <p>zae-limiter allows buckets to go negative, creating a "debt" that must be repaid before more tokens are available. This enables the <strong>estimate-then-reconcile</strong> pattern for operations with unknown cost.</p>
 <div class="mermaid">sequenceDiagram
@@ -3754,6 +3768,12 @@
 <td>10 rpm</td>
 <td>50</td>
 <td>Let users explore, then limit</td>
+</tr>
+<tr>
+<td>Plan allowance</td>
+<td>10k/day quota</td>
+<td>--</td>
+<td>One allowance per window; when it is gone the caller waits for the reset</td>
 </tr>
 </tbody>
 </table>

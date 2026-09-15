@@ -1394,6 +1394,51 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#scheduleentry" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ScheduleEntry
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="ScheduleEntry">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.schedule.ScheduleEntry" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;ScheduleEntry
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label=" ScheduleEntry">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.schedule.ScheduleEntry.reset" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;reset
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#entity" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -4516,6 +4561,51 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#scheduleentry" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ScheduleEntry
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="ScheduleEntry">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.schedule.ScheduleEntry" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;ScheduleEntry
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label=" ScheduleEntry">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.schedule.ScheduleEntry.reset" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;reset
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#entity" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -5541,7 +5631,12 @@ drip at all, and is valid <strong>only</strong> alongside a non-empty
           <tr class="doc-section-item">
             <td><code><span title="zae_limiter.models.Limit.schedule">schedule</span></code></td>
             <td>
-                  <code><span title="tuple">tuple</span>[<span title="zae_limiter.schedule.ScheduleEntry">ScheduleEntry</span>, ...]</code>
+                  <code><span title="tuple">tuple</span>[<a class="autorefs autorefs-internal" title="            ScheduleEntry
+
+
+  
+      dataclass
+   (zae_limiter.schedule.ScheduleEntry)" href="#zae_limiter.schedule.ScheduleEntry">ScheduleEntry</a>, ...]</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -5555,7 +5650,12 @@ is applied on top of them at read time by
           <tr class="doc-section-item">
             <td><code><span title="zae_limiter.models.Limit.reset_schedule">reset_schedule</span></code></td>
             <td>
-                  <code><span title="tuple">tuple</span>[<span title="zae_limiter.schedule.ScheduleEntry">ScheduleEntry</span>, ...]</code>
+                  <code><span title="tuple">tuple</span>[<a class="autorefs autorefs-internal" title="            ScheduleEntry
+
+
+  
+      dataclass
+   (zae_limiter.schedule.ScheduleEntry)" href="#zae_limiter.schedule.ScheduleEntry">ScheduleEntry</a>, ...]</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -6391,6 +6491,108 @@ drip, so the question must not depend on <code>now_ms</code>. The temporal
 predicate would be the wrong one here — it is also true of a dripping
 limit whose share has floored away, and zeroing <em>that</em> limit's rate
 would report a recovering limit as one that never recovers.</p>
+
+
+    </div>
+
+</div>
+
+
+
+  </div>
+
+    </div>
+
+</div><h2 id="scheduleentry">ScheduleEntry<a class="headerlink" href="#scheduleentry" title="Permanent link">&para;</a></h2>
+<p>One window of a limit's <code>schedule</code>, or one edge of its <code>reset_schedule</code>. Build reset entries
+with <code>ScheduleEntry.reset()</code>, which takes <code>cron</code> and <code>tz</code> only.</p>
+<p>Everything is validated at construction, so an entry that applies is an entry that evaluates.
+<code>ValueError</code> is raised for a cron expression that will not parse, a <code>tz</code> that is not a
+resolvable IANA name, an entry setting neither <code>scale</code> nor an absolute field or setting both,
+and any modifier that is not positive and finite. The absolute fields — <code>capacity</code>,
+<code>refill_amount</code>, <code>refill_period_seconds</code> — are integers, so a fractional value such as <code>100.5</code>
+is rejected rather than rounded. <code>scale</code> is the field that takes a fraction.</p>
+
+
+<div class="doc doc-object doc-class">
+
+
+
+<h3 id="zae_limiter.schedule.ScheduleEntry" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-class"></code>            <span class="doc doc-object-name doc-class-name">ScheduleEntry</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-dataclass"><code>dataclass</code></small>
+  </span>
+
+<a href="#zae_limiter.schedule.ScheduleEntry" class="headerlink" title="Permanent link">&para;</a></h3>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">ScheduleEntry</span><span class="p">(</span><span class="n">cron</span><span class="p">,</span> <span class="n">tz</span><span class="o">=</span><span class="s1">'UTC'</span><span class="p">,</span> <span class="n">scale</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">capacity</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">refill_amount</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">refill_period_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">_reset</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents first">
+
+
+
+        <p>One window of a schedule: a cron pattern and the limit that applies in it.</p>
+<p>The cron expression is a <strong>match pattern</strong>, not a fire time: the entry is
+active for every minute the pattern matches (§1.2). <code>* 9-17 * * MON-FRI</code>
+is business hours, not "once at the top of each of those hours".</p>
+<p>A <strong>reset</strong> entry (<code>ScheduleEntry.reset</code>) is the one exception to both
+halves of that sentence. It carries <code>cron</code> and <code>tz</code> and nothing else,
+because it overrides no parameters (§3.6), and it is read as an <em>edge</em>
+rather than a window: it fires on the transition into matching, not for
+every minute of it. The two kinds live in separate tuples on <code>Limit</code>
+(<code>schedule</code> and <code>reset_schedule</code>) and are validated by opposite rules,
+so the flag is private and set only by the classmethod.</p>
+
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="zae_limiter.schedule.ScheduleEntry.reset" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">reset</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
+  </span>
+
+<a href="#zae_limiter.schedule.ScheduleEntry.reset" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">reset</span><span class="p">(</span><span class="n">cron</span><span class="p">,</span> <span class="n">tz</span><span class="o">=</span><span class="s1">'UTC'</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>An entry that resets the balance rather than changing the params.</p>
+<p>The instant this expression starts matching, the bucket's <code>tk</code> goes
+back to the effective capacity in force there (§3.6) — the one thing a
+token bucket cannot express, and what makes "10,000 a day, back to
+10,000 at midnight" different from a 24-hour refill period.</p>
+<p>Belongs in <code>Limit.reset_schedule</code>, never in <code>Limit.schedule</code>: the
+parameter tuple is resolved first-match-wins, so an entry that supplies
+no parameters would win its window and then shadow every entry below
+it.</p>
 
 
     </div>

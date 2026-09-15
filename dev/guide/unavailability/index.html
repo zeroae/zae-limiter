@@ -3607,7 +3607,17 @@
 <li>DynamoDB throttling</li>
 <li>Network failures</li>
 <li>Service unavailable errors</li>
+<li>A stored schedule that cannot be decoded</li>
 </ul>
+<div class="admonition note">
+<p class="admonition-title">An unreadable schedule is an unavailable limiter</p>
+<p>A limiter that cannot work out what the limit is does not fall back to the unscheduled
+base — that would run a <code>scale: 0.5</code> window at full capacity, which is the one outcome
+worth avoiding. It raises <code>RateLimiterUnavailable</code> and your <code>on_unavailable</code> mode decides,
+exactly as it does for a timeout. The whole config item is rejected together, so a level
+with one unreadable limit supplies none of its limits rather than silently dropping the
+one.</p>
+</div>
 <h2 id="block-default">BLOCK (Default)<a class="headerlink" href="#block-default" title="Permanent link">&para;</a></h2>
 <p>When DynamoDB is unavailable, reject all rate-limited requests by raising <code>RateLimiterUnavailable</code>.</p>
 <div class="admonition warning">

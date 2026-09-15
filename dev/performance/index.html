@@ -5762,19 +5762,21 @@ Whether you track 2 limits or 10 limits per request, DynamoDB costs are the same
 <p><strong>First acquire (sequential, populates entity cache):</strong></p>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-29-1"><a id="__codelineno-29-1" name="__codelineno-29-1" href="#__codelineno-29-1"></a>acquire(entity_id, resource, consume)
 </span><span id="__span-29-2"><a id="__codelineno-29-2" name="__codelineno-29-2" href="#__codelineno-29-2"></a>|
-</span><span id="__span-29-3"><a id="__codelineno-29-3" name="__codelineno-29-3" href="#__codelineno-29-3"></a>+- Speculative UpdateItem (condition: bucket exists AND has enough tokens)
-</span><span id="__span-29-4"><a id="__codelineno-29-4" name="__codelineno-29-4" href="#__codelineno-29-4"></a>   |
-</span><span id="__span-29-5"><a id="__codelineno-29-5" name="__codelineno-29-5" href="#__codelineno-29-5"></a>   +- SUCCEEDS -&gt; read cascade/parent_id from ALL_NEW, populate entity cache
-</span><span id="__span-29-6"><a id="__codelineno-29-6" name="__codelineno-29-6" href="#__codelineno-29-6"></a>   |  +- cascade=False -&gt; DONE (1 RT, 0 RCU, 1 WCU)
-</span><span id="__span-29-7"><a id="__codelineno-29-7" name="__codelineno-29-7" href="#__codelineno-29-7"></a>   |  +- cascade=True -&gt; Parent speculative UpdateItem (sequential)
-</span><span id="__span-29-8"><a id="__codelineno-29-8" name="__codelineno-29-8" href="#__codelineno-29-8"></a>   |     +- SUCCEEDS -&gt; DONE (2 RT, 0 RCU, 2 WCU)
-</span><span id="__span-29-9"><a id="__codelineno-29-9" name="__codelineno-29-9" href="#__codelineno-29-9"></a>   |     +- FAILS -&gt; [parent failure handling, see below]
-</span><span id="__span-29-10"><a id="__codelineno-29-10" name="__codelineno-29-10" href="#__codelineno-29-10"></a>   |
-</span><span id="__span-29-11"><a id="__codelineno-29-11" name="__codelineno-29-11" href="#__codelineno-29-11"></a>   +- FAILS (ConditionalCheckFailedException)
-</span><span id="__span-29-12"><a id="__codelineno-29-12" name="__codelineno-29-12" href="#__codelineno-29-12"></a>      +- No ALL_OLD (bucket missing) -&gt; SLOW PATH (creates bucket)
-</span><span id="__span-29-13"><a id="__codelineno-29-13" name="__codelineno-29-13" href="#__codelineno-29-13"></a>      +- Missing limit in ALL_OLD -&gt; SLOW PATH
-</span><span id="__span-29-14"><a id="__codelineno-29-14" name="__codelineno-29-14" href="#__codelineno-29-14"></a>      +- Refill would help -&gt; SLOW PATH
-</span><span id="__span-29-15"><a id="__codelineno-29-15" name="__codelineno-29-15" href="#__codelineno-29-15"></a>      +- Refill won't help -&gt; RateLimitExceeded (0 RCU, 0 WCU)
+</span><span id="__span-29-3"><a id="__codelineno-29-3" name="__codelineno-29-3" href="#__codelineno-29-3"></a>+- Speculative UpdateItem (condition: bucket exists, is not disabled, has not
+</span><span id="__span-29-4"><a id="__codelineno-29-4" name="__codelineno-29-4" href="#__codelineno-29-4"></a>|  crossed a schedule boundary, and has enough tokens)
+</span><span id="__span-29-5"><a id="__codelineno-29-5" name="__codelineno-29-5" href="#__codelineno-29-5"></a>   |
+</span><span id="__span-29-6"><a id="__codelineno-29-6" name="__codelineno-29-6" href="#__codelineno-29-6"></a>   +- SUCCEEDS -&gt; read cascade/parent_id from ALL_NEW, populate entity cache
+</span><span id="__span-29-7"><a id="__codelineno-29-7" name="__codelineno-29-7" href="#__codelineno-29-7"></a>   |  +- cascade=False -&gt; DONE (1 RT, 0 RCU, 1 WCU)
+</span><span id="__span-29-8"><a id="__codelineno-29-8" name="__codelineno-29-8" href="#__codelineno-29-8"></a>   |  +- cascade=True -&gt; Parent speculative UpdateItem (sequential)
+</span><span id="__span-29-9"><a id="__codelineno-29-9" name="__codelineno-29-9" href="#__codelineno-29-9"></a>   |     +- SUCCEEDS -&gt; DONE (2 RT, 0 RCU, 2 WCU)
+</span><span id="__span-29-10"><a id="__codelineno-29-10" name="__codelineno-29-10" href="#__codelineno-29-10"></a>   |     +- FAILS -&gt; [parent failure handling, see below]
+</span><span id="__span-29-11"><a id="__codelineno-29-11" name="__codelineno-29-11" href="#__codelineno-29-11"></a>   |
+</span><span id="__span-29-12"><a id="__codelineno-29-12" name="__codelineno-29-12" href="#__codelineno-29-12"></a>   +- FAILS (ConditionalCheckFailedException)
+</span><span id="__span-29-13"><a id="__codelineno-29-13" name="__codelineno-29-13" href="#__codelineno-29-13"></a>      +- No ALL_OLD (bucket missing) -&gt; SLOW PATH (creates bucket)
+</span><span id="__span-29-14"><a id="__codelineno-29-14" name="__codelineno-29-14" href="#__codelineno-29-14"></a>      +- Missing limit in ALL_OLD -&gt; SLOW PATH
+</span><span id="__span-29-15"><a id="__codelineno-29-15" name="__codelineno-29-15" href="#__codelineno-29-15"></a>      +- Schedule boundary crossed (vu passed) -&gt; SLOW PATH (re-materialises)
+</span><span id="__span-29-16"><a id="__codelineno-29-16" name="__codelineno-29-16" href="#__codelineno-29-16"></a>      +- Refill would help -&gt; SLOW PATH
+</span><span id="__span-29-17"><a id="__codelineno-29-17" name="__codelineno-29-17" href="#__codelineno-29-17"></a>      +- Refill won't help -&gt; RateLimitExceeded (0 RCU, 0 WCU)
 </span></code></pre></div>
 <p><strong>Subsequent acquires (parallel, issue #318):</strong></p>
 <p>When the entity cache contains <code>(cascade=True, parent_id)</code> from a prior acquire, child and parent speculative writes are issued concurrently:</p>
@@ -5838,6 +5840,13 @@ Whether you track 2 limits or 10 limits per request, DynamoDB costs are the same
 <td>$1.375</td>
 </tr>
 <tr>
+<td><strong>Speculative fallback</strong> (schedule boundary)</td>
+<td>3</td>
+<td>1</td>
+<td>2</td>
+<td>$1.375</td>
+</tr>
+<tr>
 <td><strong>Normal path</strong> (cascade)</td>
 <td>3</td>
 <td>2</td>
@@ -5874,6 +5883,10 @@ Whether you track 2 limits or 10 limits per request, DynamoDB costs are the same
 </tr>
 </tbody>
 </table>
+<p>A scheduled limit pays the boundary fallback once per bucket per boundary — every request in
+flight at that instant fails the condition together, then serialises on the refill lock — so
+four boundaries a day across 10,000 active buckets is roughly 40,000 extra slow-path passes,
+about $0.05.</p>
 <div class="admonition note">
 <p class="admonition-title">When speculative writes save money</p>
 <p>The speculative path is cheaper than the normal path when most requests succeed without needing refill. If a high percentage of requests fall back to the slow path (new entities, near-capacity buckets, frequent config changes), the extra WCU from the failed speculative write makes it more expensive.</p>

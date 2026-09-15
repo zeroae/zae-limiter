@@ -4071,14 +4071,27 @@ See <a href="../../adr/111-flatten-all-records/">ADR-111</a>.</p>
 </span><span id="__span-3-15"><a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a>    <span class="s2">"b_wcu_cp"</span><span class="p">:</span> <span class="mi">1000000</span><span class="p">,</span>                    <span class="c1"># wcu capacity (1000 WCU/sec)</span>
 </span><span id="__span-3-16"><a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a>    <span class="s2">"b_wcu_tc"</span><span class="p">:</span> <span class="mi">1000</span><span class="p">,</span>                       <span class="c1"># wcu total consumed</span>
 </span><span id="__span-3-17"><a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a>    <span class="s2">"rf"</span><span class="p">:</span> <span class="mi">1704067200000</span><span class="p">,</span>                    <span class="c1"># last_refill_ms (shared across limits)</span>
-</span><span id="__span-3-18"><a id="__codelineno-3-18" name="__codelineno-3-18" href="#__codelineno-3-18"></a>    <span class="s2">"cascade"</span><span class="p">:</span> <span class="kc">False</span><span class="p">,</span>
-</span><span id="__span-3-19"><a id="__codelineno-3-19" name="__codelineno-3-19" href="#__codelineno-3-19"></a>    <span class="s2">"GSI2PK"</span><span class="p">:</span> <span class="s2">"</span><span class="si">{ns}</span><span class="s2">/RESOURCE#gpt-4"</span><span class="p">,</span>
-</span><span id="__span-3-20"><a id="__codelineno-3-20" name="__codelineno-3-20" href="#__codelineno-3-20"></a>    <span class="s2">"GSI2SK"</span><span class="p">:</span> <span class="s2">"BUCKET#user-1#0"</span><span class="p">,</span>
-</span><span id="__span-3-21"><a id="__codelineno-3-21" name="__codelineno-3-21" href="#__codelineno-3-21"></a>    <span class="s2">"GSI3PK"</span><span class="p">:</span> <span class="s2">"</span><span class="si">{ns}</span><span class="s2">/ENTITY#user-1"</span><span class="p">,</span>         <span class="c1"># bucket discovery by entity</span>
-</span><span id="__span-3-22"><a id="__codelineno-3-22" name="__codelineno-3-22" href="#__codelineno-3-22"></a>    <span class="s2">"GSI3SK"</span><span class="p">:</span> <span class="s2">"BUCKET#gpt-4#0"</span><span class="p">,</span>
-</span><span id="__span-3-23"><a id="__codelineno-3-23" name="__codelineno-3-23" href="#__codelineno-3-23"></a>    <span class="s2">"ttl"</span><span class="p">:</span> <span class="mi">1234567890</span>
-</span><span id="__span-3-24"><a id="__codelineno-3-24" name="__codelineno-3-24" href="#__codelineno-3-24"></a><span class="p">}</span>
+</span><span id="__span-3-18"><a id="__codelineno-3-18" name="__codelineno-3-18" href="#__codelineno-3-18"></a>    <span class="s2">"sched"</span><span class="p">:</span> <span class="s2">"h9-17w1-5s500"</span><span class="p">,</span>               <span class="c1"># item-level schedule, compact encoding (#222)</span>
+</span><span id="__span-3-19"><a id="__codelineno-3-19" name="__codelineno-3-19" href="#__codelineno-3-19"></a>    <span class="s2">"sched_tz"</span><span class="p">:</span> <span class="s2">"America/New_York"</span><span class="p">,</span>         <span class="c1"># IANA zone shared by every schedule here</span>
+</span><span id="__span-3-20"><a id="__codelineno-3-20" name="__codelineno-3-20" href="#__codelineno-3-20"></a>    <span class="s2">"vu"</span><span class="p">:</span> <span class="mi">1704088800000</span><span class="p">,</span>                    <span class="c1"># valid_until_ms: next boundary on this item</span>
+</span><span id="__span-3-21"><a id="__codelineno-3-21" name="__codelineno-3-21" href="#__codelineno-3-21"></a>    <span class="s2">"cascade"</span><span class="p">:</span> <span class="kc">False</span><span class="p">,</span>
+</span><span id="__span-3-22"><a id="__codelineno-3-22" name="__codelineno-3-22" href="#__codelineno-3-22"></a>    <span class="s2">"GSI2PK"</span><span class="p">:</span> <span class="s2">"</span><span class="si">{ns}</span><span class="s2">/RESOURCE#gpt-4"</span><span class="p">,</span>
+</span><span id="__span-3-23"><a id="__codelineno-3-23" name="__codelineno-3-23" href="#__codelineno-3-23"></a>    <span class="s2">"GSI2SK"</span><span class="p">:</span> <span class="s2">"BUCKET#user-1#0"</span><span class="p">,</span>
+</span><span id="__span-3-24"><a id="__codelineno-3-24" name="__codelineno-3-24" href="#__codelineno-3-24"></a>    <span class="s2">"GSI3PK"</span><span class="p">:</span> <span class="s2">"</span><span class="si">{ns}</span><span class="s2">/ENTITY#user-1"</span><span class="p">,</span>         <span class="c1"># bucket discovery by entity</span>
+</span><span id="__span-3-25"><a id="__codelineno-3-25" name="__codelineno-3-25" href="#__codelineno-3-25"></a>    <span class="s2">"GSI3SK"</span><span class="p">:</span> <span class="s2">"BUCKET#gpt-4#0"</span><span class="p">,</span>
+</span><span id="__span-3-26"><a id="__codelineno-3-26" name="__codelineno-3-26" href="#__codelineno-3-26"></a>    <span class="s2">"ttl"</span><span class="p">:</span> <span class="mi">1234567890</span>
+</span><span id="__span-3-27"><a id="__codelineno-3-27" name="__codelineno-3-27" href="#__codelineno-3-27"></a><span class="p">}</span>
 </span></code></pre></div>
+<p><code>sched</code> / <code>rsched</code> / <code>sched_tz</code> are the schedule denormalized onto the item (#222, ADR-135).
+They are absent on an unscheduled bucket, and a limit whose schedule differs from the item
+default is stamped with <code>b_{name}_sched</code> / <code>b_{name}_rsched</code>. On an item that carries a default,
+a limit with <strong>no</strong> schedule is stamped with the reserved marker <code>-</code>
+(<code>schema.BUCKET_SCHED_NONE</code>), because a missing override already means "inherit the default" and
+cannot also mean "unscheduled" — that is what keeps a quota and a rate limit sharing one item
+from acquiring each other's windows. <code>cp</code> / <code>ra</code> / <code>rp</code> stay the
+<strong>base</strong> parameters: every refiller applies the schedule on top of them at read time and
+materialises only <code>tk</code>. <code>vu</code> is the earliest instant at which any limit here changes effective
+parameters — the fast path's condition compares against it and nothing else.</p>
 <p>The <code>wcu</code> (write capacity unit) limit is a reserved infrastructure limit auto-injected on every bucket. It tracks per-partition write pressure and is hidden from user-facing output (get_buckets, RateLimitExceeded, usage snapshots). When exhausted, the client doubles <code>shard_count</code> to spread writes across more DynamoDB partitions.</p>
 <p>The <code>total_consumed_milli</code> counter tracks net consumption (increases on consume,
 decreases on release) and is used by the aggregator Lambda to accurately calculate
@@ -4115,8 +4128,11 @@ aggregation, so they use a flat structure to enable single-call atomic updates.<
 </span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>    <span class="s2">"l_tpm_cp"</span><span class="p">:</span> <span class="mi">100000</span><span class="p">,</span>               <span class="c1"># capacity for tpm limit</span>
 </span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>    <span class="s2">"l_tpm_ra"</span><span class="p">:</span> <span class="mi">100000</span><span class="p">,</span>               <span class="c1"># refill_amount for tpm limit</span>
 </span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>    <span class="s2">"l_tpm_rp"</span><span class="p">:</span> <span class="mi">60</span><span class="p">,</span>                   <span class="c1"># refill_period_seconds for tpm limit</span>
-</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>    <span class="s2">"config_version"</span><span class="p">:</span> <span class="mi">1</span>               <span class="c1"># Atomic counter for cache invalidation</span>
-</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a><span class="p">}</span>
+</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>    <span class="s2">"l_tpm_sched"</span><span class="p">:</span> <span class="s2">"h9-17w1-5s500"</span><span class="p">,</span>   <span class="c1"># tpm's schedule, compact encoding (#222)</span>
+</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>    <span class="s2">"l_rpd_rsched"</span><span class="p">:</span> <span class="s2">"m0h0"</span><span class="p">,</span>           <span class="c1"># rpd's reset schedule ("0 0 * * *")</span>
+</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>    <span class="s2">"sched_tz"</span><span class="p">:</span> <span class="s2">"America/New_York"</span><span class="p">,</span>   <span class="c1"># one zone per item, hoisted out of the entries</span>
+</span><span id="__span-5-12"><a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a>    <span class="s2">"config_version"</span><span class="p">:</span> <span class="mi">1</span>               <span class="c1"># Atomic counter for cache invalidation</span>
+</span><span id="__span-5-13"><a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a><span class="p">}</span>
 </span></code></pre></div>
 <p>Config records use four-level precedence: <strong>Entity (resource-specific) &gt; Entity (<em>default</em>) &gt; Resource &gt; System &gt; Constructor defaults</strong>.</p>
 <p><strong>Key builders:</strong></p>
@@ -4165,7 +4181,11 @@ aggregation, so they use a flat structure to enable single-call atomic updates.<
 </tr>
 <tr>
 <td><code>calculate_retry_after()</code></td>
-<td>Calculate wait time for deficit</td>
+<td>Wait time for a deficit at a single fixed rate — the reference definition the boundary walk is pinned against</td>
+</tr>
+<tr>
+<td><code>schedule.retry_after_with_schedule()</code></td>
+<td>Wait time across schedule boundaries and reset edges; what every <code>LimitStatus.retry_after_seconds</code> reports</td>
 </tr>
 <tr>
 <td><code>calculate_available()</code></td>
@@ -4190,10 +4210,14 @@ aggregation, so they use a flat structure to enable single-call atomic updates.<
 </span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>new_last_refill = last_refill_ms + time_used_ms
 </span></code></pre></div>
 <p>The inverse calculation ensures we only "consume" the time that corresponds to whole tokens, preventing drift over many refill cycles.</p>
-<p><strong>Retry-after calculation</strong>:</p>
+<p><strong>Retry-after calculation</strong> (a single fixed rate — an unscheduled limit):</p>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>time_ms = (deficit_milli × refill_period_ms) // refill_amount_milli
 </span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>retry_seconds = (time_ms + 1) / 1000.0  # +1ms rounds up
 </span></code></pre></div>
+<p>With a schedule, the estimate walks forward window by window instead, accumulating tokens at
+each window's own rate until the deficit clears (capped at eight windows, then the formula
+above). A <code>reset_schedule</code> edge landing before the deficit clears is the answer outright: a
+quota has no refill rate at all, so its next reset instant is the only finite wait.</p>
 <h3 id="integer-arithmetic-for-precision">Integer Arithmetic for Precision<a class="headerlink" href="#integer-arithmetic-for-precision" title="Permanent link">&para;</a></h3>
 <p>All token values are stored as <strong>millitokens</strong> (×1000) to avoid floating-point precision issues in distributed systems:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="c1"># User sees: 100 tokens/minute</span>
@@ -4393,40 +4417,47 @@ state including denormalized <code>cascade</code> and <code>parent_id</code> fie
 <div class="language-text highlight"><pre><span></span><code><span id="__span-17-1"><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>Speculative flow (first acquire — sequential, populates entity cache):
 </span><span id="__span-17-2"><a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>1. Pick shard: random.randrange(shard_count) from entity cache (shard 0 if no cache)
 </span><span id="__span-17-3"><a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a>2. UpdateItem on PK={ns}/BUCKET#{id}#{resource}#{shard} with condition:
-</span><span id="__span-17-4"><a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a>   attribute_exists(PK) AND all app limits tk &gt;= consumed AND wcu tk &gt;= 1000
-</span><span id="__span-17-5"><a id="__codelineno-17-5" name="__codelineno-17-5" href="#__codelineno-17-5"></a>   +- SUCCESS -&gt; Populate entity cache (cascade, parent_id, shard_counts), Lease pre-committed
-</span><span id="__span-17-6"><a id="__codelineno-17-6" name="__codelineno-17-6" href="#__codelineno-17-6"></a>   |  +- cascade=False -&gt; DONE
-</span><span id="__span-17-7"><a id="__codelineno-17-7" name="__codelineno-17-7" href="#__codelineno-17-7"></a>   |  +- cascade=True -&gt; Speculative UpdateItem on parent (sequential)
-</span><span id="__span-17-8"><a id="__codelineno-17-8" name="__codelineno-17-8" href="#__codelineno-17-8"></a>   |     +- SUCCESS -&gt; DONE (child + parent both speculative)
-</span><span id="__span-17-9"><a id="__codelineno-17-9" name="__codelineno-17-9" href="#__codelineno-17-9"></a>   |     +- FAIL -&gt; [parent failure handling]
-</span><span id="__span-17-10"><a id="__codelineno-17-10" name="__codelineno-17-10" href="#__codelineno-17-10"></a>   +- FAIL -&gt; Check ALL_OLD
-</span><span id="__span-17-11"><a id="__codelineno-17-11" name="__codelineno-17-11" href="#__codelineno-17-11"></a>      +- No item (bucket missing) -&gt; Fall back to normal path
-</span><span id="__span-17-12"><a id="__codelineno-17-12" name="__codelineno-17-12" href="#__codelineno-17-12"></a>      +- wcu exhausted -&gt; Double shard_count (conditional write on shard 0), fall back
-</span><span id="__span-17-13"><a id="__codelineno-17-13" name="__codelineno-17-13" href="#__codelineno-17-13"></a>      +- App limits: Refill would help -&gt; Fall back to normal path
-</span><span id="__span-17-14"><a id="__codelineno-17-14" name="__codelineno-17-14" href="#__codelineno-17-14"></a>      +- App limits: Refill won't help, multi-shard -&gt; Retry on another shard (up to 2 retries)
-</span><span id="__span-17-15"><a id="__codelineno-17-15" name="__codelineno-17-15" href="#__codelineno-17-15"></a>      +- App limits: Refill won't help, single shard -&gt; RateLimitExceeded (fast rejection)
-</span><span id="__span-17-16"><a id="__codelineno-17-16" name="__codelineno-17-16" href="#__codelineno-17-16"></a>
-</span><span id="__span-17-17"><a id="__codelineno-17-17" name="__codelineno-17-17" href="#__codelineno-17-17"></a>Shard retry flow (when app limits exhausted on multi-shard entity):
-</span><span id="__span-17-18"><a id="__codelineno-17-18" name="__codelineno-17-18" href="#__codelineno-17-18"></a>1. Pick untried shard: random choice from remaining shards
-</span><span id="__span-17-19"><a id="__codelineno-17-19" name="__codelineno-17-19" href="#__codelineno-17-19"></a>2. Speculative UpdateItem on new shard
-</span><span id="__span-17-20"><a id="__codelineno-17-20" name="__codelineno-17-20" href="#__codelineno-17-20"></a>   +- SUCCESS -&gt; Lease pre-committed on new shard, DONE
-</span><span id="__span-17-21"><a id="__codelineno-17-21" name="__codelineno-17-21" href="#__codelineno-17-21"></a>   +- FAIL -&gt; Try next untried shard (up to _MAX_SHARD_RETRIES=2 total retries)
-</span><span id="__span-17-22"><a id="__codelineno-17-22" name="__codelineno-17-22" href="#__codelineno-17-22"></a>   +- All retries exhausted -&gt; RateLimitExceeded
+</span><span id="__span-17-4"><a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a>   attribute_exists(PK)
+</span><span id="__span-17-5"><a id="__codelineno-17-5" name="__codelineno-17-5" href="#__codelineno-17-5"></a>   AND attribute_not_exists(disabled)
+</span><span id="__span-17-6"><a id="__codelineno-17-6" name="__codelineno-17-6" href="#__codelineno-17-6"></a>   AND (attribute_not_exists(vu) OR vu &gt; now_ms)
+</span><span id="__span-17-7"><a id="__codelineno-17-7" name="__codelineno-17-7" href="#__codelineno-17-7"></a>   AND all app limits tk &gt;= consumed AND wcu tk &gt;= 1000
+</span><span id="__span-17-8"><a id="__codelineno-17-8" name="__codelineno-17-8" href="#__codelineno-17-8"></a>   +- SUCCESS -&gt; Populate entity cache (cascade, parent_id, shard_counts), Lease pre-committed
+</span><span id="__span-17-9"><a id="__codelineno-17-9" name="__codelineno-17-9" href="#__codelineno-17-9"></a>   |  +- cascade=False -&gt; DONE
+</span><span id="__span-17-10"><a id="__codelineno-17-10" name="__codelineno-17-10" href="#__codelineno-17-10"></a>   |  +- cascade=True -&gt; Speculative UpdateItem on parent (sequential)
+</span><span id="__span-17-11"><a id="__codelineno-17-11" name="__codelineno-17-11" href="#__codelineno-17-11"></a>   |     +- SUCCESS -&gt; DONE (child + parent both speculative)
+</span><span id="__span-17-12"><a id="__codelineno-17-12" name="__codelineno-17-12" href="#__codelineno-17-12"></a>   |     +- FAIL -&gt; [parent failure handling]
+</span><span id="__span-17-13"><a id="__codelineno-17-13" name="__codelineno-17-13" href="#__codelineno-17-13"></a>   +- FAIL -&gt; Check ALL_OLD
+</span><span id="__span-17-14"><a id="__codelineno-17-14" name="__codelineno-17-14" href="#__codelineno-17-14"></a>      +- disabled stamped -&gt; ResourceDisabled
+</span><span id="__span-17-15"><a id="__codelineno-17-15" name="__codelineno-17-15" href="#__codelineno-17-15"></a>      +- vu passed (schedule boundary) -&gt; Fall back to normal path to re-materialise
+</span><span id="__span-17-16"><a id="__codelineno-17-16" name="__codelineno-17-16" href="#__codelineno-17-16"></a>      |  (never a shard retry — every shard crosses the same boundary — and never a
+</span><span id="__span-17-17"><a id="__codelineno-17-17" name="__codelineno-17-17" href="#__codelineno-17-17"></a>      |   fast rejection, since the new window may have raised the limit)
+</span><span id="__span-17-18"><a id="__codelineno-17-18" name="__codelineno-17-18" href="#__codelineno-17-18"></a>      +- No item (bucket missing) -&gt; Fall back to normal path
+</span><span id="__span-17-19"><a id="__codelineno-17-19" name="__codelineno-17-19" href="#__codelineno-17-19"></a>      +- wcu exhausted -&gt; Double shard_count (conditional write on shard 0), fall back
+</span><span id="__span-17-20"><a id="__codelineno-17-20" name="__codelineno-17-20" href="#__codelineno-17-20"></a>      +- App limits: Refill would help -&gt; Fall back to normal path
+</span><span id="__span-17-21"><a id="__codelineno-17-21" name="__codelineno-17-21" href="#__codelineno-17-21"></a>      +- App limits: Refill won't help, multi-shard -&gt; Retry on another shard (up to 2 retries)
+</span><span id="__span-17-22"><a id="__codelineno-17-22" name="__codelineno-17-22" href="#__codelineno-17-22"></a>      +- App limits: Refill won't help, single shard -&gt; RateLimitExceeded (fast rejection)
 </span><span id="__span-17-23"><a id="__codelineno-17-23" name="__codelineno-17-23" href="#__codelineno-17-23"></a>
-</span><span id="__span-17-24"><a id="__codelineno-17-24" name="__codelineno-17-24" href="#__codelineno-17-24"></a>Speculative flow (subsequent acquire — parallel, issue #318):
-</span><span id="__span-17-25"><a id="__codelineno-17-25" name="__codelineno-17-25" href="#__codelineno-17-25"></a>1. Entity cache hit: cascade=True, parent_id known, shard_counts known
-</span><span id="__span-17-26"><a id="__codelineno-17-26" name="__codelineno-17-26" href="#__codelineno-17-26"></a>2. asyncio.gather(child_speculative, parent_speculative)
-</span><span id="__span-17-27"><a id="__codelineno-17-27" name="__codelineno-17-27" href="#__codelineno-17-27"></a>   +- BOTH SUCCEED -&gt; DONE (1 round trip, 0 RCU, 2 WCU)
-</span><span id="__span-17-28"><a id="__codelineno-17-28" name="__codelineno-17-28" href="#__codelineno-17-28"></a>   +- CHILD FAILS, PARENT SUCCEEDS -&gt; Compensate parent, check child
-</span><span id="__span-17-29"><a id="__codelineno-17-29" name="__codelineno-17-29" href="#__codelineno-17-29"></a>   +- CHILD SUCCEEDS, PARENT FAILS -&gt; [parent failure handling]
-</span><span id="__span-17-30"><a id="__codelineno-17-30" name="__codelineno-17-30" href="#__codelineno-17-30"></a>   +- BOTH FAIL -&gt; Check child ALL_OLD, fall back or fast-reject
-</span><span id="__span-17-31"><a id="__codelineno-17-31" name="__codelineno-17-31" href="#__codelineno-17-31"></a>
-</span><span id="__span-17-32"><a id="__codelineno-17-32" name="__codelineno-17-32" href="#__codelineno-17-32"></a>Parent failure handling (shared by sequential and parallel paths):
-</span><span id="__span-17-33"><a id="__codelineno-17-33" name="__codelineno-17-33" href="#__codelineno-17-33"></a>   +- No ALL_OLD / missing limit -&gt; Compensate child, fall back
-</span><span id="__span-17-34"><a id="__codelineno-17-34" name="__codelineno-17-34" href="#__codelineno-17-34"></a>   +- Refill won't help -&gt; Compensate child, RateLimitExceeded
-</span><span id="__span-17-35"><a id="__codelineno-17-35" name="__codelineno-17-35" href="#__codelineno-17-35"></a>   +- Refill would help -&gt; Parent-only slow path (read + write parent)
-</span><span id="__span-17-36"><a id="__codelineno-17-36" name="__codelineno-17-36" href="#__codelineno-17-36"></a>      +- SUCCESS -&gt; DONE (child speculative + parent slow path)
-</span><span id="__span-17-37"><a id="__codelineno-17-37" name="__codelineno-17-37" href="#__codelineno-17-37"></a>      +- FAIL -&gt; Compensate child, fall back to full slow path
+</span><span id="__span-17-24"><a id="__codelineno-17-24" name="__codelineno-17-24" href="#__codelineno-17-24"></a>Shard retry flow (when app limits exhausted on multi-shard entity):
+</span><span id="__span-17-25"><a id="__codelineno-17-25" name="__codelineno-17-25" href="#__codelineno-17-25"></a>1. Pick untried shard: random choice from remaining shards
+</span><span id="__span-17-26"><a id="__codelineno-17-26" name="__codelineno-17-26" href="#__codelineno-17-26"></a>2. Speculative UpdateItem on new shard
+</span><span id="__span-17-27"><a id="__codelineno-17-27" name="__codelineno-17-27" href="#__codelineno-17-27"></a>   +- SUCCESS -&gt; Lease pre-committed on new shard, DONE
+</span><span id="__span-17-28"><a id="__codelineno-17-28" name="__codelineno-17-28" href="#__codelineno-17-28"></a>   +- FAIL -&gt; Try next untried shard (up to _MAX_SHARD_RETRIES=2 total retries)
+</span><span id="__span-17-29"><a id="__codelineno-17-29" name="__codelineno-17-29" href="#__codelineno-17-29"></a>   +- All retries exhausted -&gt; RateLimitExceeded
+</span><span id="__span-17-30"><a id="__codelineno-17-30" name="__codelineno-17-30" href="#__codelineno-17-30"></a>
+</span><span id="__span-17-31"><a id="__codelineno-17-31" name="__codelineno-17-31" href="#__codelineno-17-31"></a>Speculative flow (subsequent acquire — parallel, issue #318):
+</span><span id="__span-17-32"><a id="__codelineno-17-32" name="__codelineno-17-32" href="#__codelineno-17-32"></a>1. Entity cache hit: cascade=True, parent_id known, shard_counts known
+</span><span id="__span-17-33"><a id="__codelineno-17-33" name="__codelineno-17-33" href="#__codelineno-17-33"></a>2. asyncio.gather(child_speculative, parent_speculative)
+</span><span id="__span-17-34"><a id="__codelineno-17-34" name="__codelineno-17-34" href="#__codelineno-17-34"></a>   +- BOTH SUCCEED -&gt; DONE (1 round trip, 0 RCU, 2 WCU)
+</span><span id="__span-17-35"><a id="__codelineno-17-35" name="__codelineno-17-35" href="#__codelineno-17-35"></a>   +- CHILD FAILS, PARENT SUCCEEDS -&gt; Compensate parent, check child
+</span><span id="__span-17-36"><a id="__codelineno-17-36" name="__codelineno-17-36" href="#__codelineno-17-36"></a>   +- CHILD SUCCEEDS, PARENT FAILS -&gt; [parent failure handling]
+</span><span id="__span-17-37"><a id="__codelineno-17-37" name="__codelineno-17-37" href="#__codelineno-17-37"></a>   +- BOTH FAIL -&gt; Check child ALL_OLD, fall back or fast-reject
+</span><span id="__span-17-38"><a id="__codelineno-17-38" name="__codelineno-17-38" href="#__codelineno-17-38"></a>
+</span><span id="__span-17-39"><a id="__codelineno-17-39" name="__codelineno-17-39" href="#__codelineno-17-39"></a>Parent failure handling (shared by sequential and parallel paths):
+</span><span id="__span-17-40"><a id="__codelineno-17-40" name="__codelineno-17-40" href="#__codelineno-17-40"></a>   +- No ALL_OLD / missing limit -&gt; Compensate child, fall back
+</span><span id="__span-17-41"><a id="__codelineno-17-41" name="__codelineno-17-41" href="#__codelineno-17-41"></a>   +- Refill won't help -&gt; Compensate child, RateLimitExceeded
+</span><span id="__span-17-42"><a id="__codelineno-17-42" name="__codelineno-17-42" href="#__codelineno-17-42"></a>   +- Refill would help -&gt; Parent-only slow path (read + write parent)
+</span><span id="__span-17-43"><a id="__codelineno-17-43" name="__codelineno-17-43" href="#__codelineno-17-43"></a>      +- SUCCESS -&gt; DONE (child speculative + parent slow path)
+</span><span id="__span-17-44"><a id="__codelineno-17-44" name="__codelineno-17-44" href="#__codelineno-17-44"></a>      +- FAIL -&gt; Compensate child, fall back to full slow path
 </span></code></pre></div>
 <p>Cascade and <code>parent_id</code> are denormalized into composite bucket items (via <code>build_composite_create</code>)
 so the speculative path avoids a separate entity metadata lookup.</p>
