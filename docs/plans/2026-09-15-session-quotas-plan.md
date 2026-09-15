@@ -8,10 +8,10 @@ the existing calendar `reset_schedule`, correct under write sharding.
 
 **Architecture:** A rolling window is a quota (ADR-137: `refill_amount = 0`). The window **start**
 `ws` is stored as per-limit bucket state (`b_{name}_ws`) and the window length is denormalised
-beside it (`b_{name}_rafter`, from `reset_after`).
+beside it (`b_{name}_rsa`, from `reset_after`).
 Each shard resets itself when it observes `ws > rf` — `RateLimiter._apply_reset_edge`'s existing
 rule with the backwards cron scan replaced by an attribute read. Whoever first materialises a
-shard past `ws + rafter` anchors a new window at its own clock reading and fans that scalar to the
+shard past `ws + rsa` anchors a new window at its own clock reading and fans that scalar to the
 entity's other shards under a monotonic `ws < :new` condition, exactly the shape
 `Repository._propagate_shard_count()` already uses. **The fan-out moves a scalar and never `tk`**:
 each sibling resets its own balance, under its own `rf` optimistic lock, in the write it was
@@ -23,9 +23,14 @@ that writes `vu`.
 single-table, `pytest` + `pytest-asyncio` + `moto`, LocalStack for integration/E2E, `uv` for the
 venv, `hatch run generate-sync` for the AST-generated sync twins.
 
-**Spec:** `docs/plans/2026-09-15-rolling-session-windows-analysis.md` (branch
-`docs/222-rolling-session-windows`, draft PR #585). Read it alongside this plan; every design
-argument below is its argument and this plan does not re-derive them.
+**Spec:** `docs/plans/2026-09-15-rolling-session-windows-analysis.md`, **merged on `main`** as
+`6ce63053` (PR #585). Read it alongside this plan; every design argument below is its argument
+and this plan does not re-derive them. Where the two once disagreed they have been reconciled:
+the storage spelling is `rsa` at both levels (the analysis's reason — `ra` is already
+`refill_amount` — is the better one and this plan adopts it), and the analysis has taken on the
+plan's corrections to its §3.2 shard-create mechanism, its §3.4 redistribution and its §5.3 TTL
+branch. The public field name `reset_after` and the type decision are the owner's and this
+plan's; the analysis records the name as settled and the type as open.
 
 ## Global Constraints
 
@@ -43,7 +48,12 @@ argument below is its argument and this plan does not re-derive them.
   `repository.py`, `repository_builder.py`, `config_cache.py`, `infra/stack_manager.py` or
   `infra/discovery.py` must finish with `hatch run generate-sync` and commit the regenerated
   files in the same commit.
-- **Milestone v0.14.0.** The analysis header says v1.0.0; the owner has moved it. See "Risks".
+- **Milestone v0.15.0** (milestone 25), tracked by epic **#597** (`🎯 Session quotas:
+  Limit.reset_after`), which points at this plan rather than restating it. The analysis header
+  says v1.0.0 and an earlier draft of this plan said v0.14.0; both are superseded. **The plan
+  *document* ships in v0.14.0 (PR #596) and the *feature* ships in v0.15.0** — that split is
+  deliberate and the v0.14.0 milestone description states it, so nothing here should contradict
+  it.
 - **#587 is a hard prerequisite and is not a task here.** It landed as PR #594 by
   **reclaim-then-grant**, not by the redistribution the analysis proposed. See "Dependency",
   below; confirm it is merged before Task 2.
@@ -65,10 +75,11 @@ argument below is its argument and this plan does not re-derive them.
 | Public name | `Limit.reset_after` | Owner's decision. Reads as an alternative to `reset_schedule` at the call site, which is the relationship ADR-137 requires. |
 | Python type | `datetime.timedelta \| None` | The name carries no unit suffix, so the **type** must supply it: `reset_after=timedelta(hours=5)` is self-documenting where `reset_after=18000` is not. The codebase is inconsistent here (`refill_period_seconds` and `usage_retention_days` name the unit and take `int`; `config_cache_ttl` takes bare seconds), so the precedent does not decide it. The rule adopted: **the unit lives in the name wherever the type cannot carry it** — hence `timedelta` in Python, and `reset_after_seconds` / `ResetAfterSeconds` at the YAML and CloudFormation boundaries, where every value is a bare scalar. |
 | New export from `zae_limiter/__init__.py` | **None** | Apply the stated test in `CLAUDE.md`: *would a user writing application code ever type it?* They type `timedelta`, which is `datetime` stdlib, and `Limit`, already exported. `reset_after` is a keyword, not a name to import. This is the opposite of `ScheduleEntry` (#534), which had to be exported because the user **constructs** it. The frozen-at-v1.0.0 `__all__` is unchanged. |
-| Storage encoding | Two plain numeric attributes, **not** a `sched`/`rsched` token | `schedule.decode_reset` deliberately *rejects* unknown modifier tags rather than ignoring them (#538's argument: a silently-misread reset is the worst available outcome), so a new token makes every entry conditionally-a-cron and grows a branch in `cycle_seconds`, `prev_reset_edge`, `next_reset_edge` and `to_cron`. A versioned encoding (#515) is not required and is deferred to v1.0.0 regardless: a version marker cannot classify anything already written, so it only works forward. Analysis §5.1. |
+| Storage encoding | Two plain numeric attributes, **not** a `sched`/`rsched` token | `schedule.decode_reset` deliberately *rejects* unknown modifier tags rather than ignoring them (#538's argument: a silently-misread reset is the worst available outcome), so a new token makes every entry conditionally-a-cron and grows a branch in `cycle_seconds`, `prev_reset_edge`, `next_reset_edge` and `to_cron`. A versioned encoding (#515) does not change this either way — see the #515 row below. Analysis §5.1. |
+| Relationship to #515 (versioned encoding) | These attributes sit **outside** the versioned string | #515 has moved to **v0.14.0** and will therefore have shipped before this work starts — an earlier draft of this plan wrongly called it deferred to v1.0.0. It adds a version marker inside `encode()` / `encode_reset()`'s compact string; `b_{name}_ws` and `b_{name}_rsa` are plain DynamoDB `N` attributes and are never part of that string, so the marker neither covers them nor needs to. Two real interactions, both in Tasks 3 and 4. |
 | Window semantics | **Idle-restarting**, not tiling | Owner's decision. Window ends at 14:00, entity quiet, calls at 20:00 ⇒ a fresh window starting 20:00. |
 | What anchors a window | Only a **materialising pass that is persisted** | See "The anchoring rule", below — this is the one place this plan disagrees with a brief, and it says so rather than working around it. |
-| Storage spelling | `b_{name}_ws` + `b_{name}_rafter`, `l_{name}_rafter` | Derived from `reset_after`, not from the analysis's provisional `window_seconds`/`rwin`. `ra` is taken (`refill_amount`), so the duration abbreviates to `rafter`. The window **start** keeps `ws` — only the duration's public name changed. |
+| Storage spelling | `b_{name}_ws` + `b_{name}_rsa`, `l_{name}_rsa` | Derived from `reset_after`, not from the analysis's provisional `window_seconds`. The obvious abbreviation `ra` is **taken** — `schema.BUCKET_FIELD_RA` and `schema.LIMIT_FIELD_RA` are `refill_amount` at both levels — so `rsa` is used, which also keeps the `r`-for-reset prefix `rsched` uses. Matches the merged analysis (`6ce63053`). The window **start** keeps `ws`. |
 | Shard creation | `_quota_transfer` / `reclaim_quota_surplus` (PR #594), **never** redistribution | See "Dependency". Conserving the sum of balances is not conserving what can be spent. |
 | Cascade | Parent and child anchor **independently** | Owner's decision, consistent with how cascade already treats limits, shards and `disabled` as per-entity state. Costed: the shard-create inheritance reads the **acquiring** entity's siblings, so a cascade slow path resolves the parent's `ws` separately (Task 8). |
 
@@ -81,7 +92,7 @@ that the implementer must not gloss:
    code and costs nothing. On the fast path an exhausted quota returns
    `SpeculativeFailureReason.APP_LIMIT_EXHAUSTED`, `would_refill_satisfy` is false for a quota
    (rate 0), and the rejection is a 0-RCU/0-WCU fast rejection that writes nothing. On the slow
-   path `_apply_window_roll` (Task 6) does not fire because `now < ws + rafter`, and
+   path `_apply_window_roll` (Task 6) does not fire because `now < ws + rsa`, and
    `RateLimitExceeded` is raised **before** `_commit_initial()` per
    `.claude/rules/write-on-enter.md` invariant 1. `ws` is untouched in both.
 
@@ -114,7 +125,7 @@ Confirmed against `repository.py` and `limiter.py`, not taken on trust:
   `attribute_exists(PK) AND tk >= consumed AND attribute_not_exists(#disabled) AND
   (attribute_not_exists(#vu) OR #vu > :vu_now)`. It contains **no** `SET` of `vu` and no `SET` of
   any schedule attribute. It will contain no `SET` of `ws`.
-- `vu` is the minimum of (next parameter change, next reset edge), and Task 8 adds `ws + rafter` as
+- `vu` is the minimum of (next parameter change, next reset edge), and Task 8 adds `ws + rsa` as
   a third voting member. An elapsed window therefore makes `vu <= now`, the condition fails, and
   `_classify_speculative_failure` returns `SCHEDULE_BOUNDARY`, which `limiter.py` already routes
   to the slow path — never to a fast rejection and never to a shard retry.
@@ -159,14 +170,14 @@ rather than a line item.
 | `docs/adr/139-duration-reset-windows.md` | **new** — the duration-window decision, Proposed (Task 1) |
 | `src/zae_limiter/models.py` | `Limit.reset_after`; widened `__post_init__` / `is_quota` / `quota()` / `to_dict` / `from_dict` / `from_bucket_state` / `per_shard`; `BucketState.window_start_ms` + `reset_after_seconds`; `LimitStatus.resets_at_ms` |
 | `src/zae_limiter/schema.py` | attribute-name constants; `_recovery_seconds` duration branch |
-| `src/zae_limiter/repository.py` | config (de)serialise `l_{n}_rafter`; bucket stamp/read `b_{n}_ws` / `b_{n}_rafter`; `_propagate_window_start()`; `get_shard_window_starts()`; `_sync_bucket_params` stamps `rafter` and never `ws`; quota debit in `bump_shard_count` / `_propagate_shard_count` |
+| `src/zae_limiter/repository.py` | config (de)serialise `l_{n}_rsa`; bucket stamp/read `b_{n}_ws` / `b_{n}_rsa`; `_propagate_window_start()`; `get_shard_window_starts()`; `_sync_bucket_params` stamps `rsa` and never `ws`; quota debit in `bump_shard_count` / `_propagate_shard_count` |
 | `src/zae_limiter/limiter.py` | `_apply_window_roll()`; `_materialisation_stamps()` third member; rollover fan-out call site; shard-create seeding; `_readable_balance`; `check_availability` |
 | `src/zae_limiter/lease.py` | `LeaseEntry._window_start_ms` / `_window_end_ms`; `_commit_initial` re-expression; `_build_retry_failure_statuses` |
 | `src/zae_limiter/exceptions.py` | `_limit_shape` takes a `LimitStatus`, not a `Limit` |
 | `src/zae_limiter/bucket.py` | thread `resets_at_ms` into `declared_statuses` |
 | `src/zae_limiter/cli.py` | `_format_limit` duration branch |
-| `src/zae_limiter_aggregator/processor.py` | parse `ws`/`rafter`; roll branch; `_item_next_boundary`; quota debit in `propagate_shard_count` + proactive Path 1 |
-| `src/zae_limiter_provisioner/{manifest,differ,handler,bucket_sync}.py` | `reset_after_seconds` in the manifest; diff; CFN coercion; the sync mirror of the `rafter` stamp |
+| `src/zae_limiter_aggregator/processor.py` | parse `ws`/`rsa`; roll branch; `_item_next_boundary`; quota debit in `propagate_shard_count` + proactive Path 1 |
+| `src/zae_limiter_provisioner/{manifest,differ,handler,bucket_sync}.py` | `reset_after_seconds` in the manifest; diff; CFN coercion; the sync mirror of the `rsa` stamp |
 | `src/zae_limiter/sync_*.py`, `src/zae_limiter/infra/sync_*.py` | **generated** — `hatch run generate-sync`, never hand-edited |
 
 ---
@@ -336,15 +347,15 @@ quota's rejection is a 0-WCU fast rejection on the speculative path, and on the 
 ### Storage and shard coherence
 
 The window **start** `ws` is stored as per-limit bucket state (`b_{name}_ws`, epoch ms) beside the
-window length `rafter` (`b_{name}_rafter`, seconds), denormalised from config so a materialiser needs
+window length `rsa` (`b_{name}_rsa`, seconds), denormalised from config so a materialiser needs
 no config read. The window *end* is derived, never stored, so the pair cannot disagree after a
-partial write. Config carries `l_{name}_rafter`.
+partial write. Config carries `l_{name}_rsa`.
 
 The anchor is **not** `vu`. Beyond gating the fast path, `vu` carries the marker a limit-change
 fan-out stamps (`vu = 0`, #468/#487) and the staleness pin the aggregator adds to its refill
 condition (#508). A window reading its expiry off `vu` would read every `set_limits()` fan-out as
 an elapsed window and silently restore every caller's balance and restart every caller's clock.
-`vu` gains `ws + rafter` as a third voting member of its minimum, which is all it needs.
+`vu` gains `ws + rsa` as a third voting member of its minimum, which is all it needs.
 
 **Each shard resets itself when it sees `ws > rf`.** This is `_apply_reset_edge`'s existing rule
 with the backwards cron scan replaced by an attribute read, and every property that rule was
@@ -356,7 +367,7 @@ resetting does not multiply the entity's quota by `shard_count`; and `tc` is nev
 consumption counter stays monotonic.
 
 **The rollover fan-out moves a scalar and never `tk`.** Whoever first materialises a shard past
-`ws + rafter` anchors `ws_new = now`, applies its own reset under its own `rf` lock, and fans
+`ws + rsa` anchors `ws_new = now`, applies its own reset under its own `rf` lock, and fans
 `ws_new` to the entity's other shards with concurrent conditional writes under
 `attribute_not_exists(ws) OR ws < :new` — monotonic and idempotent, the shape
 `_propagate_shard_count()` already uses. `ws` is monotonic because window *n+1* opens at a clock
@@ -385,7 +396,7 @@ parent's.
   strongest negative. The spread is a property of the anchor, not of added jitter.
 - Evaluation is cheaper than the calendar form: no cron parse, no timezone database, no
   daylight-saving handling and no boundary scan. `retry_after_seconds` and `resets_at_ms` are
-  `ws + rafter` read off the item, a constant rather than a scan.
+  `ws + rsa` read off the item, a constant rather than a scan.
 - The TTL recovery horizon is the window length **exactly**, with no rounding up and no clock —
   sharper than the calendar branch, which rounds a monthly pattern to 31 days.
 - The per-acquire cost is unchanged. The speculative condition is byte-identical and reads no
@@ -562,7 +573,7 @@ exactly what that reclaimed, capped at one share. A **transfer, never a mint**. 
    limit there would be minted a fresh share and reintroduce #587 for exactly this feature. Task 2
    widens `Limit.is_quota`; Task 8 must additionally widen `processor._is_quota_limit`, which
    reads the **stream image** and therefore tests stored attributes rather than a `Limit` —
-   `b_{name}_rafter` must join whatever it currently checks.
+   `b_{name}_rsa` must join whatever it currently checks.
 
 2. **This plan proposes redistribution nowhere.** Not for shard creation (Task 8 calls
    `_quota_transfer`) and not for rollover.
@@ -692,7 +703,7 @@ def test_reset_after_beside_a_positive_rate_is_rejected():
 )
 def test_reset_after_must_be_a_positive_whole_number_of_seconds(bad):
     # #569's whole-number rule and #564's finiteness rule, restated for a
-    # duration: sub-second windows are not expressible in storage (`rafter` is
+    # duration: sub-second windows are not expressible in storage (`rsa` is
     # seconds) and would truncate silently.
     with pytest.raises(ValueError, match="whole number of seconds"):
         Limit(
@@ -738,7 +749,7 @@ pairing checks:
 
 ```python
         # A duration has to be expressible in the storage unit, which is whole
-        # seconds (`l_{name}_rafter` / `b_{name}_rafter`). Rejecting here rather
+        # seconds (`l_{name}_rsa` / `b_{name}_rsa`). Rejecting here rather
         # than truncating is the same call #569 made for the schedule
         # absolutes: a silently-truncated window is a limit that resets at a
         # time the operator never wrote.
@@ -792,7 +803,7 @@ Add the accessor beside `is_quota`:
     def reset_after_seconds(self) -> int | None:
         """:attr:`reset_after` in the unit everything below the API uses.
 
-        Storage (``l_{name}_rafter``, ``b_{name}_rafter``), the manifest
+        Storage (``l_{name}_rsa``, ``b_{name}_rsa``), the manifest
         (``reset_after_seconds``) and CloudFormation (``ResetAfterSeconds``)
         all carry whole seconds, because a bare scalar cannot carry a type.
         ``__post_init__`` has already rejected anything that is not a positive
@@ -1017,8 +1028,8 @@ EOF
   ```python
   # src/zae_limiter/schema.py
   BUCKET_FIELD_WS = "ws"        # b_{name}_ws   — window start, epoch ms
-  BUCKET_FIELD_RAFTER = "rafter"    # b_{name}_rafter — window length, seconds
-  LIMIT_FIELD_RAFTER = "rafter"     # l_{name}_rafter — window length, seconds
+  BUCKET_FIELD_RSA = "rsa"    # b_{name}_rsa — window length, seconds
+  LIMIT_FIELD_RSA = "rsa"     # l_{name}_rsa — window length, seconds
 
   # src/zae_limiter/models.py, BucketState
   window_start_ms: int | None = None
@@ -1054,7 +1065,7 @@ def test_bucket_state_window_end_is_none_without_a_window():
 
 def test_bucket_state_window_is_divided_by_shard_count_like_any_quota():
     # The window is entity-wide; only the BALANCE is per-shard. `ws` and
-    # `rafter` are replicated verbatim to every shard.
+    # `rsa` are replicated verbatim to every shard.
     limit = Limit.quota("session", 10_000, reset_after=timedelta(hours=5))
     state = BucketState.from_limit("e1", "gpt-4", limit, now_ms=0, shard_count=4)
     assert state.reset_after_seconds == 18_000   # NOT divided
@@ -1066,8 +1077,8 @@ and to `tests/unit/test_schema.py`:
 ```python
 def test_window_attribute_names():
     assert schema.bucket_attr("session", schema.BUCKET_FIELD_WS) == "b_session_ws"
-    assert schema.bucket_attr("session", schema.BUCKET_FIELD_RAFTER) == "b_session_rafter"
-    assert schema.limit_attr("session", schema.LIMIT_FIELD_RAFTER) == "l_session_rafter"
+    assert schema.bucket_attr("session", schema.BUCKET_FIELD_RSA) == "b_session_rsa"
+    assert schema.limit_attr("session", schema.LIMIT_FIELD_RSA) == "l_session_rsa"
 ```
 
 - [ ] **Step 2: Run them and watch them fail**
@@ -1085,21 +1096,27 @@ In `src/zae_limiter/schema.py`, beside the existing schedule constants:
 # token would make every stored entry conditionally-a-cron and grow a branch in
 # `cycle_seconds`, `prev_reset_edge`, `next_reset_edge` and `to_cron`.
 #
+# Deliberately OUTSIDE the versioned compact encoding (#515). That marker lives
+# inside the string `encode()` / `encode_reset()` produce; these are plain `N`
+# attributes and are never part of it, so the marker neither covers them nor
+# needs to — a number has no grammar to version. Staying outside is also what
+# keeps them readable by the aggregator without a decoder.
+#
 # `ws` is the window START, per limit, epoch ms. Absent means the window has
 # not started. It is an ENTITY-WIDE fact replicated verbatim to every shard —
 # only the balance is per-shard — and it is monotonic, which is what lets the
 # rollover fan-out reuse `_propagate_shard_count()`'s `< :new` condition.
 #
-# The window END is derived (`ws + rafter * 1000`) and never stored, so the pair
+# The window END is derived (`ws + rsa * 1000`) and never stored, so the pair
 # cannot disagree after a partial write.
 BUCKET_FIELD_WS = "ws"  # b_{name}_ws — window start, epoch ms
-BUCKET_FIELD_RAFTER = "rafter"  # b_{name}_rafter — window length, seconds
+BUCKET_FIELD_RSA = "rsa"  # b_{name}_rsa — window length, seconds
 ```
 
 and beside the `l_` constants:
 
 ```python
-LIMIT_FIELD_RAFTER = "rafter"  # l_{name}_rafter — duration window length, seconds (ADR-139)
+LIMIT_FIELD_RSA = "rsa"  # l_{name}_rsa — duration window length, seconds (ADR-139)
 ```
 
 - [ ] **Step 4: Add the `BucketState` fields**
@@ -1156,7 +1173,33 @@ In `BucketState.from_limit`'s constructor call, after `reset_sched=limit.reset_s
             window_start_ms=now_ms if limit.reset_after is not None else None,
 ```
 
-- [ ] **Step 6: Run the tests**
+- [ ] **Step 6: Check the item-size budget against #515**
+
+These attributes and #515's version marker land on the **same item** and are charged against the
+**same** 1 KB WCU boundary that design §4.2 exists to stay under — crossing it doubles the write
+cost of every `acquire()` on that bucket. #515's acceptance criteria pin §4.2's worst shared case
+(6 limits × 4 entries) under 1024 B *with the marker present*; this adds roughly 30 B per rolling
+limit on top (~8 B name + 8 B value for `ws`, ~9 B + 3 B for `rsa`).
+
+The two budgets compose and neither owner measured the other. Re-measure the worst case with
+both:
+
+```bash
+uv run python -c "
+import json
+from datetime import timedelta
+from zae_limiter import Limit
+from zae_limiter.repository import Repository
+# Build §4.2's worst shared case, then add one rolling limit, and size the item.
+# Use whatever helper test_item_size / test_compact_shape uses — see tests/unit/.
+"
+```
+
+If the combined worst case exceeds 1024 B, **stop and report it** rather than shaving either
+feature: it is a shared-budget decision for the owner, and the cheapest lever (dropping the
+marker, shortening `rsa`, or accepting the 2× on a rare shape) is not this plan's to pull.
+
+- [ ] **Step 7: Run the tests**
 
 ```bash
 uv run pytest tests/unit/test_models.py tests/unit/test_schema.py -q
@@ -1165,15 +1208,15 @@ uv run mypy src/zae_limiter/models.py src/zae_limiter/schema.py
 
 Expected: green. This also un-breaks Task 2 Step 6's `from_bucket_state`.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add src/zae_limiter/models.py src/zae_limiter/schema.py tests/unit/test_models.py tests/unit/test_schema.py
 git commit -m "$(cat <<'EOF'
 ✨ feat(schema): carry a duration window on the bucket state
 
-`b_{name}_ws` is the window start in epoch ms and `b_{name}_rafter` its length
-in seconds, with `l_{name}_rafter` the config half. The window END is derived
+`b_{name}_ws` is the window start in epoch ms and `b_{name}_rsa` its length
+in seconds, with `l_{name}_rsa` the config half. The window END is derived
 rather than stored, so the two cannot disagree after a partial write.
 
 Two plain numbers rather than a token inside `rsched`: `decode_reset`
@@ -1198,8 +1241,8 @@ EOF
 - Test: `tests/unit/test_repository.py`, `tests/integration/test_config.py`
 
 **Interfaces:**
-- Consumes: `schema.LIMIT_FIELD_RAFTER`, `Limit.reset_after_seconds` (Tasks 2–3).
-- Produces: config items carrying `l_{name}_rafter`; `Repository.resolve_limits()` returning
+- Consumes: `schema.LIMIT_FIELD_RSA`, `Limit.reset_after_seconds` (Tasks 2–3).
+- Produces: config items carrying `l_{name}_rsa`; `Repository.resolve_limits()` returning
   `Limit`s with `reset_after` populated at all four levels.
 
 - [ ] **Step 1: Write the failing round-trip test**
@@ -1260,7 +1303,7 @@ In the serialiser, beside the `LIMIT_FIELD_RSCHED` write:
             # re-written without a window loses the stored one with no explicit
             # REMOVE.
             if limit.reset_after_seconds is not None:
-                base_item[schema.limit_attr(name, schema.LIMIT_FIELD_RAFTER)] = {
+                base_item[schema.limit_attr(name, schema.LIMIT_FIELD_RSA)] = {
                     "N": str(limit.reset_after_seconds)
                 }
 ```
@@ -1270,19 +1313,28 @@ In the serialiser, beside the `LIMIT_FIELD_RSCHED` write:
 In the deserialiser, beside `rsched_name`:
 
 ```python
-            rafter_name = schema.limit_attr(name, schema.LIMIT_FIELD_RAFTER)
-            rafter_raw = item.get(rafter_name, {}).get("N")
-            reset_after = timedelta(seconds=int(rafter_raw)) if rafter_raw is not None else None
+            rsa_name = schema.limit_attr(name, schema.LIMIT_FIELD_RSA)
+            rsa_raw = item.get(rsa_name, {}).get("N")
+            reset_after = timedelta(seconds=int(rsa_raw)) if rsa_raw is not None else None
 ```
 
 and pass `reset_after=reset_after` to the `Limit(...)` construction.
 
-**Failure handling:** a malformed `l_{name}_rafter` must fail the same way a malformed `sched`
+**Failure handling:** a malformed `l_{name}_rsa` must fail the same way a malformed `sched`
 does — #559 established that an unreadable stored schedule fails *safe* rather than poisoning
 the read. Follow whatever `_decode_limit_schedules` does for a decode error at this site; do not
 invent a second policy. A plain `int()` on a DynamoDB `N` cannot realistically fail, so the
 realistic corruption is a **negative or zero** value, which `Limit.__post_init__` rejects — and
 that raise must be caught by the same handler.
+
+**#515 changes what "the same policy" means, and it will have shipped first.** Its acceptance
+criteria give the schedule decoder a **three**-case taxonomy — `cannot parse from offset N`,
+`invalid cron expression`, and a distinct greppable message for *a marker newer than this
+reader* — and require the `RateLimiterUnavailable` raised from `get_limits()` / `resolve_limits()`
+to name the attribute, the stored value, and which case applied. Match that shape: a bad `rsa`
+names `l_{name}_rsa`, its stored value, and "not a positive whole number of seconds". Do **not**
+add a fourth top-level case; `rsa` has no grammar and therefore no version, so it cannot produce
+the newer-marker reading.
 
 - [ ] **Step 5: Run the tests**
 
@@ -1301,7 +1353,7 @@ git add src/zae_limiter/repository.py src/zae_limiter/sync_repository.py tests/u
 git commit -m "$(cat <<'EOF'
 ✨ feat(repository): store a duration window on the config item
 
-`l_{name}_rafter` carries the window length in seconds, written only when the
+`l_{name}_rsa` carries the window length in seconds, written only when the
 limit has one, at all four config levels. Storage is override-not-merge
 (full-replace PutItem), so a limit re-written without a window loses the
 stored one with no explicit REMOVE — the property `sched` already relies on.
@@ -1325,7 +1377,7 @@ EOF
 - Test: `tests/unit/test_repository.py`
 
 **Interfaces:**
-- Consumes: `schema.BUCKET_FIELD_WS`, `schema.BUCKET_FIELD_RAFTER`, `BucketState.window_start_ms`,
+- Consumes: `schema.BUCKET_FIELD_WS`, `schema.BUCKET_FIELD_RSA`, `BucketState.window_start_ms`,
   `BucketState.reset_after_seconds` (Task 3).
 - Produces:
   ```python
@@ -1350,13 +1402,13 @@ def test_create_stamps_the_window(repo):
     item = repo.build_composite_create("e1", "gpt-4", [state], now_ms=now)["Put"]["Item"]
 
     assert item["b_session_ws"] == {"N": str(now)}
-    assert item["b_session_rafter"] == {"N": "18000"}
-    # `rafter` is NEVER divided by shard_count — only the balance is.
+    assert item["b_session_rsa"] == {"N": "18000"}
+    # `rsa` is NEVER divided by shard_count — only the balance is.
     sharded = BucketState.from_limit("e1", "gpt-4", limit, now_ms=now, shard_count=4)
     item4 = repo.build_composite_create(
         "e1", "gpt-4", [sharded], now_ms=now, shard_count=4
     )["Put"]["Item"]
-    assert item4["b_session_rafter"] == {"N": "18000"}
+    assert item4["b_session_rsa"] == {"N": "18000"}
     assert item4["b_session_tk"] == {"N": "2500000"}
 
 
@@ -1416,7 +1468,7 @@ In `build_composite_create`'s per-state loop, after the `tc` write:
             # (processor.py:799-804), because `ws` is per-limit and `rsched`
             # has an item-level default.
             if state.reset_after_seconds is not None:
-                item[schema.bucket_attr(name, schema.BUCKET_FIELD_RAFTER)] = {
+                item[schema.bucket_attr(name, schema.BUCKET_FIELD_RSA)] = {
                     "N": str(state.reset_after_seconds)
                 }
             if state.window_start_ms is not None:
@@ -1452,7 +1504,7 @@ using `enumerate` for `i`, for the reason #487's stale-limit aliases use `#stale
 `NAME_PATTERN` allows `-` and `.`, neither legal in an expression placeholder or an
 `ExpressionAttributeNames` alias (`.` is a document-path separator).
 
-`rafter` is **not** written here. The window's length changes only when the operator changes the
+`rsa` is **not** written here. The window's length changes only when the operator changes the
 config, and that is `_sync_bucket_params`'s job (Task 9) — writing it on every acquire would be
 a wasted attribute and would let a stale in-flight lease revert an operator's change.
 
@@ -1462,11 +1514,11 @@ In `_deserialize_composite_bucket`'s per-limit loop:
 
 ```python
             ws_raw = item.get(schema.bucket_attr(name, schema.BUCKET_FIELD_WS), {}).get("N")
-            rafter_raw = item.get(schema.bucket_attr(name, schema.BUCKET_FIELD_RAFTER), {}).get("N")
+            rsa_raw = item.get(schema.bucket_attr(name, schema.BUCKET_FIELD_RSA), {}).get("N")
 ```
 
 and pass `window_start_ms=int(ws_raw) if ws_raw is not None else None` and
-`reset_after_seconds=int(rafter_raw) if rafter_raw is not None else None` to the `BucketState(...)`
+`reset_after_seconds=int(rsa_raw) if rsa_raw is not None else None` to the `BucketState(...)`
 construction.
 
 This matters for the same reason decoding `sched`/`rsched` here does: the `ALL_OLD` / `ALL_NEW`
@@ -1487,7 +1539,7 @@ git add src/zae_limiter/repository.py src/zae_limiter/sync_repository.py tests/u
 git commit -m "$(cat <<'EOF'
 ✨ feat(repository): stamp and read a duration window on bucket items
 
-`build_composite_create` writes `b_{name}_ws` and `b_{name}_rafter` from the
+`build_composite_create` writes `b_{name}_ws` and `b_{name}_rsa` from the
 states it is handed, `build_composite_normal` gains a `window_starts` map
 that SETs `ws` for the limits whose window rolled on that pass, and the
 deserialiser reads both back.
@@ -1497,7 +1549,7 @@ ALL_NEW images behind the speculative path go through it, so without it
 every fast-path status would report a quota with no window and
 `Limit.from_bucket_state` would raise.
 
-`rafter` is not written on the acquire path — a window's length changes only
+`rsa` is not written on the acquire path — a window's length changes only
 when the operator changes the config, which is the param sync's job.
 `window_starts` is the only client write that moves a window start, and it
 lives on the slow path, so the speculative condition is untouched.
@@ -1653,7 +1705,7 @@ Immediately after `_apply_reset_edge` in `src/zae_limiter/limiter.py`:
         """Anchor a new duration window when the current one has elapsed (ADR-139).
 
         Idle-restarting, not tiling: the new window starts at ``now_ms`` — the
-        first use after expiry — rather than at ``ws_old + rafter``. Anchoring to
+        first use after expiry — rather than at ``ws_old + rsa``. Anchoring to
         the old end would be a fixed grid offset by the first-ever use, which
         cannot express "go idle long enough and your window restarts", the
         thing anchoring to the entity is *for*.
@@ -1664,7 +1716,7 @@ Immediately after `_apply_reset_edge` in `src/zae_limiter/limiter.py`:
         window, so nothing here fires and `_admit_limit` rejects against the
         balance on disk.
 
-        A bucket carrying ``rafter`` but **no** ``ws`` (a shard stamped by the
+        A bucket carrying ``rsa`` but **no** ``ws`` (a shard stamped by the
         param sync before the limit gained its window, Task 11) opens its first
         window here. That is the only way a client-written bucket can lack one,
         since ``BucketState.from_limit`` stamps it at creation.
@@ -1686,7 +1738,7 @@ Immediately after `_apply_reset_edge` in `src/zae_limiter/limiter.py`:
 Run: `uv run pytest tests/unit/test_limiter.py -k "window_roll or open_window" -v`
 Expected: PASS.
 
-- [ ] **Step 5: Fold `ws + rafter` into `vu`**
+- [ ] **Step 5: Fold `ws + rsa` into `vu`**
 
 Change `_materialisation_stamps`'s signature to take the state and add the third voting member:
 
@@ -1928,7 +1980,7 @@ backwards cron scan replaced by an attribute read: idempotent, correct for
 idle buckets for free, strictly `>`, and to the shard's share rather than the
 undivided capacity.
 
-`vu` gains `ws + rafter` as a third voting member of its minimum. That is what
+`vu` gains `ws + rsa` as a third voting member of its minimum. That is what
 keeps the speculative condition byte-identical: an elapsed window makes
 `vu <= now`, the pre-existing guard fails, the failure classifies as
 SCHEDULE_BOUNDARY, and the limiter routes it to the slow path — the only
@@ -1981,7 +2033,7 @@ surface in the plan.
 ```python
 @pytest.mark.asyncio
 async def test_propagate_window_start_writes_every_other_shard(repo):
-    await _create_shards(repo, "e1", "gpt-4", count=4, ws=1_000, rafter=18_000)
+    await _create_shards(repo, "e1", "gpt-4", count=4, ws=1_000, rsa=18_000)
     written = await repo._propagate_window_start(
         "e1", "gpt-4", shard_id=2, shard_count=4, window_starts={"session": 9_000}
     )
@@ -1997,7 +2049,7 @@ async def test_propagate_window_start_is_monotonic(repo):
     after window n closed. A delayed write carrying a stale `ws` must not drag
     every shard back a full window.
     """
-    await _create_shards(repo, "e1", "gpt-4", count=2, ws=9_000, rafter=18_000)
+    await _create_shards(repo, "e1", "gpt-4", count=2, ws=9_000, rsa=18_000)
     written = await repo._propagate_window_start(
         "e1", "gpt-4", shard_id=0, shard_count=2, window_starts={"session": 5_000}
     )
@@ -2007,7 +2059,7 @@ async def test_propagate_window_start_is_monotonic(repo):
 
 @pytest.mark.asyncio
 async def test_propagate_window_start_is_idempotent(repo):
-    await _create_shards(repo, "e1", "gpt-4", count=2, ws=1_000, rafter=18_000)
+    await _create_shards(repo, "e1", "gpt-4", count=2, ws=1_000, rsa=18_000)
     first = await repo._propagate_window_start(
         "e1", "gpt-4", shard_id=0, shard_count=2, window_starts={"session": 9_000}
     )
@@ -2025,7 +2077,7 @@ async def test_propagate_window_start_stamps_vu_zero(repo):
     sibling keeps spending its OLD window's balance on a pure ADD with no
     ceiling arithmetic.
     """
-    await _create_shards(repo, "e1", "gpt-4", count=2, ws=1_000, rafter=18_000)
+    await _create_shards(repo, "e1", "gpt-4", count=2, ws=1_000, rsa=18_000)
     await repo._propagate_window_start(
         "e1", "gpt-4", shard_id=0, shard_count=2, window_starts={"session": 9_000}
     )
@@ -2047,7 +2099,7 @@ async def test_propagate_window_start_never_touches_tk(repo):
     consumption, or landing under its still-held `rf` lock and leaving it at
     twice its share. Each sibling resets ITSELF, under its own lock.
     """
-    await _create_shards(repo, "e1", "gpt-4", count=2, ws=1_000, rafter=18_000)
+    await _create_shards(repo, "e1", "gpt-4", count=2, ws=1_000, rsa=18_000)
     await _spend(repo, "e1", "gpt-4", shard=1, limit="session", amount_milli=400_000)
     before = await _stored_attr(repo, "e1", "gpt-4", shard=1, attr="b_session_tk")
     await repo._propagate_window_start(
@@ -2556,7 +2608,7 @@ EOF
 ```
 
 ---
-### Task 9: The param sync stamps `rafter` and never touches `ws`
+### Task 9: The param sync stamps `rsa` and never touches `ws`
 
 `_sync_bucket_params` is how a `set_limits()` reaches existing buckets (#468/#481/#487). It must
 carry the new window **length** to every shard of every affected resource, and it must **never**
@@ -2571,8 +2623,8 @@ ADR-139 avoids by not reading expiry off `vu`.
 - Test: `tests/unit/test_repository.py`, `tests/unit/test_bucket_sync.py`
 
 **Interfaces:**
-- Consumes: `schema.BUCKET_FIELD_RAFTER`, `Limit.reset_after_seconds` (Tasks 2–3).
-- Produces: no new public signature. `_build_bucket_param_update` SETs `b_{name}_rafter` where a
+- Consumes: `schema.BUCKET_FIELD_RSA`, `Limit.reset_after_seconds` (Tasks 2–3).
+- Produces: no new public signature. `_build_bucket_param_update` SETs `b_{name}_rsa` where a
   resolved limit has one and REMOVEs it where it does not.
 
 - [ ] **Step 1: Write the failing tests**
@@ -2584,12 +2636,12 @@ def test_param_sync_stamps_the_window_length(repo):
         stale_limit_names=frozenset(),
         ttl_seconds=None,
     )
-    assert "b_session_rafter = :" in upd["UpdateExpression"]
+    assert "b_session_rsa = :" in upd["UpdateExpression"]
     assert "b_session_ws" not in upd["UpdateExpression"]
 
 
 def test_param_sync_removes_a_window_a_limit_no_longer_has(repo):
-    """A quota converted to a dripping limit must lose `rafter`, or the item
+    """A quota converted to a dripping limit must lose `rsa`, or the item
     keeps reconstructing as a quota forever. Absence means "no window", so
     this is a REMOVE — unlike `sched`, where absence means "inherit the item
     default" and #541 needs the explicit BUCKET_SCHED_NONE marker.
@@ -2599,9 +2651,9 @@ def test_param_sync_removes_a_window_a_limit_no_longer_has(repo):
         stale_limit_names=frozenset(),
         ttl_seconds=None,
     )
-    assert "b_session_rafter" in upd["UpdateExpression"]
+    assert "b_session_rsa" in upd["UpdateExpression"]
     assert upd["UpdateExpression"].index("REMOVE") < upd["UpdateExpression"].index(
-        "b_session_rafter"
+        "b_session_rsa"
     )
 
 
@@ -2623,10 +2675,10 @@ def test_param_sync_never_writes_ws(repo):
 - [ ] **Step 2: Run them and watch them fail**
 
 Run: `uv run pytest tests/unit/test_repository.py -k "param_sync" -v`
-Expected: the first two fail (`b_session_rafter` never appears); the third passes already and is
+Expected: the first two fail (`b_session_rsa` never appears); the third passes already and is
 a **regression guard** — it must keep passing after Steps 3–4.
 
-- [ ] **Step 3: SET and REMOVE `rafter`**
+- [ ] **Step 3: SET and REMOVE `rsa`**
 
 In `_build_bucket_param_update`, beside where the per-limit `sched`/`rsched` are handled:
 
@@ -2634,16 +2686,16 @@ In `_build_bucket_param_update`, beside where the per-limit `sched`/`rsched` are
             # SET where the resolved limit has a window, REMOVE where it does
             # not. Absence means "this limit has no duration window", full
             # stop — there is no item-level default to inherit, so this needs
-            # no `BUCKET_SCHED_NONE` analogue (#541). A `rafter` left behind on
+            # no `BUCKET_SCHED_NONE` analogue (#541). A `rsa` left behind on
             # a limit converted back to a drip would keep the item
             # reconstructing as a quota forever.
-            rafter_attr = schema.bucket_attr(limit.name, schema.BUCKET_FIELD_RAFTER)
+            rsa_attr = schema.bucket_attr(limit.name, schema.BUCKET_FIELD_RSA)
             if limit.reset_after_seconds is not None:
-                alias = f":raf{i}"
-                set_parts.append(f"{rafter_attr} = {alias}")
+                alias = f":rsa{i}"
+                set_parts.append(f"{rsa_attr} = {alias}")
                 expr_values[alias] = {"N": str(limit.reset_after_seconds)}
             else:
-                remove_parts.append(rafter_attr)
+                remove_parts.append(rsa_attr)
 ```
 
 `i` is the existing monotonic counter over the resolved limits. Do **not** use the limit name in
@@ -2653,7 +2705,7 @@ an alias (#487's `#stale{i}_{j}` rule).
 makes that safe.** The next acquire on each shard takes one materialising pass; if the window has
 elapsed it anchors a new one there, and if it has not, `_open_window_if_elapsed` returns `None`
 and the existing `ws` stands. A shard that gains a window for the first time (the limit was a
-drip before) has `rafter` and no `ws`; `_open_window_if_elapsed`'s `end is None` branch opens its
+drip before) has `rsa` and no `ws`; `_open_window_if_elapsed`'s `end is None` branch opens its
 first one on that same pass.
 
 - [ ] **Step 4: Mirror it in the provisioner**
@@ -2681,7 +2733,7 @@ items are the only thing the aggregator reads.
 
 SET where the resolved limit has a window, REMOVE where it does not. Absence
 means "no window", full stop, so this needs no BUCKET_SCHED_NONE analogue
-(#541) — there is no item-level default to inherit. A `rafter` left behind on
+(#541) — there is no item-level default to inherit. A `rsa` left behind on
 a limit converted back to a drip would keep the item reconstructing as a
 quota forever.
 
@@ -2714,7 +2766,7 @@ shard-create time and mints it a fresh share — #587 again, for this feature.
 - Test: `tests/unit/test_processor.py`
 
 **Interfaces:**
-- Consumes: the stream image's `b_{name}_ws` / `b_{name}_rafter` (Tasks 5, 9).
+- Consumes: the stream image's `b_{name}_ws` / `b_{name}_rsa` (Tasks 5, 9).
 - Produces:
   ```python
   @dataclass(frozen=True)
@@ -2731,7 +2783,7 @@ shard-create time and mints it a fresh share — #587 again, for this feature.
 def test_parse_reads_the_window_off_the_image():
     image = _bucket_image(limits={"session": {"cp": 10_000_000, "ra": 0}},
                           extra={"b_session_ws": {"N": "5000"},
-                                 "b_session_rafter": {"N": "18000"}})
+                                 "b_session_rsa": {"N": "18000"}})
     parsed = _parse_bucket_record(image)
     assert parsed.limits["session"].window_start_ms == 5_000
     assert parsed.limits["session"].reset_after_seconds == 18_000
@@ -2743,7 +2795,7 @@ def test_is_quota_limit_recognises_a_duration_window():
     share at shard-create time — #587 again, for this feature.
     """
     image = _bucket_image(limits={"session": {"cp": 10_000_000, "ra": 0}},
-                          extra={"b_session_rafter": {"N": "18000"}})
+                          extra={"b_session_rsa": {"N": "18000"}})
     assert _is_quota_limit("session", image) is True
 
 
@@ -2791,7 +2843,7 @@ Add `window_start_ms: int | None = None` and `reset_after_seconds: int | None = 
 
 ```python
         ws_raw = image.get(bucket_attr(name, BUCKET_FIELD_WS), {}).get("N")
-        rafter_raw = image.get(bucket_attr(name, BUCKET_FIELD_RAFTER), {}).get("N")
+        rsa_raw = image.get(bucket_attr(name, BUCKET_FIELD_RSA), {}).get("N")
 ```
 
 **No new failure mode.** These are integers, not a compact grammar, so there is no `sched_error`
@@ -2806,14 +2858,14 @@ def _is_quota_limit(limit_name: str, image: dict[str, Any]) -> bool:
 
     The stored twin of `Limit.is_quota`, and since ADR-139 there are **two**
     spellings of the reset half on an item: `b_{name}_rsched` (a calendar
-    cron) and `b_{name}_rafter` (a duration window). Both must be recognised,
+    cron) and `b_{name}_rsa` (a duration window). Both must be recognised,
     because the caller uses this to decide whether a shard coming into
     existence is filled by transfer or minted a fresh share (#587) — and a
     duration quota misread as a dripping limit is #587 reintroduced for
     exactly the limit shape this feature adds.
     """
     ...  # existing rsched test, OR'd with:
-    return existing or bucket_attr(limit_name, BUCKET_FIELD_RAFTER) in image
+    return existing or bucket_attr(limit_name, BUCKET_FIELD_RSA) in image
 ```
 
 Read the landed implementation before editing; the `ra == 0` half of the test may already be
@@ -2854,7 +2906,7 @@ Immediately before the existing `if reset_sched:` branch (so a limit carrying bo
             continue
 ```
 
-- [ ] **Step 6: Add `ws + rafter` to `_item_next_boundary`**
+- [ ] **Step 6: Add `ws + rsa` to `_item_next_boundary`**
 
 ```python
         # The third voting member of `vu`, exactly as on the client
@@ -2874,7 +2926,7 @@ git add src/zae_limiter_aggregator/processor.py tests/unit/test_processor.py
 git commit -m "$(cat <<'EOF'
 ✨ feat(aggregator): roll a duration window it sees on the stream
 
-`_parse_bucket_record` reads `b_{name}_ws` and `b_{name}_rafter` beside the
+`_parse_bucket_record` reads `b_{name}_ws` and `b_{name}_rsa` beside the
 schedules it already parses — integers rather than a compact grammar, so
 there is no sched_error analogue and nothing new can poison a batch.
 
@@ -3227,7 +3279,7 @@ and extend `_readable_balance` so a shard past its window end reports the balanc
         # Same reasoning as the reset branch above, and the same per-shard
         # granularity: a sharded entity can have some shards past the boundary
         # and some not, and collapsing that would report the whole entity
-        # restored on the strength of one stale shard. Reads `ws`/`rafter` off
+        # restored on the strength of one stale shard. Reads `ws`/`rsa` off
         # the item rather than from config, because the `rf` it is compared
         # against lives on the item — the same pairing `_apply_window_roll`
         # uses on the slow path, so the two agree by construction.
@@ -3729,7 +3781,7 @@ Every code block must be doctest-covered — add it to `tests/doctest/` per the 
 | Table | Row to add |
 |---|---|
 | DynamoDB writer table | `Window rollover fan-out` — `SET b_{n}_ws = :new, vu = :zero` / `attribute_exists(PK) AND (attribute_not_exists(b_{n}_ws) OR b_{n}_ws < :new)` / touches `rf`? **No** |
-| Limit attribute format | `rwin`… no — **`rafter`** (number, ADR-139): the duration window's length in seconds. Written only when the limit has one. |
+| Limit attribute format | `rwin`… no — **`rsa`** (number, ADR-139): the duration window's length in seconds. Written only when the limit has one. |
 | Bucket attributes | `b_{name}_ws` (number): window start, epoch ms. Entity-wide, replicated to every shard, monotonic |
 | TTL recovery horizon | a third row: duration quota ⇒ `reset_after`, exactly |
 | Access patterns | `Read one shard's window starts` ⇒ projected `GetItem` on `PK={ns}/BUCKET#{id}#{res}#0` |
@@ -3786,15 +3838,20 @@ EOF
 
 Named in the order most likely to sink it.
 
-**1. The milestone. This is the largest risk and it is not technical.** v0.14.0 is otherwise one
-bug from shipping. This plan is 15 tasks touching 12 source files and both Lambda packages, and
-its central mechanism — a cross-shard fan-out of a monotonic scalar — is a distributed-systems
-surface that does not exist in the codebase today. The analysis's own estimate was *"9–11 PRs,
-~3 weeks"* and *"not next"*. Landing it in v0.14.0 means either holding the release for three
-weeks or shipping it under-soaked beside a feature (#222) that has already produced sixteen
-follow-up bug fixes. **Recommendation: v0.15.0, with Tasks 1–3 (the ADR and the model surface)
-optionally landing in v0.14.0 as inert groundwork.** That recommendation is the owner's to
-overrule; the plan is sequenced so that it can be.
+**1. The milestone — resolved, and recorded because the reasoning still governs the sequencing.**
+The first draft of this plan flagged v0.14.0 as its largest risk: that milestone was one bug from
+shipping, and this is 15 tasks across 12 source files and both Lambda packages whose central
+mechanism — a cross-shard fan-out of a monotonic scalar — does not exist in the codebase today.
+The analysis's own estimate was *"9–11 PRs, ~3 weeks"*.
+
+**The owner accepted the recommendation.** v0.14.0 ships now with scheduled limits complete, and
+this feature is **v0.15.0** (milestone 25), tracked by epic **#597**. The plan document itself
+still lands in v0.14.0, via PR #596 — the document and the feature are deliberately in different
+releases.
+
+What survives is the sequencing consequence: Tasks 1–5 are **inert** (a field nobody reads, an
+attribute nobody writes), so they can land ahead of the rest without changing any behaviour. If
+v0.15.0 needs to be split, that is where the seam is.
 
 **2. A lost fan-out write costs one extra window's share.** Recorded in ADR-139's Consequences
 and above. A sibling that misses the rollover keeps a stale `ws`, later anchors a window of its
@@ -3866,8 +3923,7 @@ allowed for, since it turns out to touch a calendar-quota regression path.
 **Sequencing.** 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 are strictly ordered. From there, 9, 10, 11, 12 and
 13 are independent of each other and can run in parallel; 14 needs all of them; 15 needs 14.
 Tasks 1–5 are inert — they add a field nobody reads and an attribute nobody writes — so they can
-land early without changing any behaviour, which is what makes the v0.15.0 recommendation cheap
-to act on.
+land early without changing any behaviour, which is where the seam is if v0.15.0 has to be split.
 
 ## Self-review
 
@@ -3881,7 +3937,8 @@ the Dependency section.
 
 **Owner decisions not in the analysis**, all covered: `reset_after` as the name (2), idle-
 restarting (6), what anchors a window (6 Steps 7–9), cascade independence (8), ADR-138 edited
-rather than superseded (1), v0.14.0 (Risks).
+rather than superseded (1), and the v0.15.0 milestone with the plan document staying in v0.14.0
+(Global Constraints, Risks §1).
 
 **Placeholders.** None. Every step names exact files and shows the code. Four steps deliberately
 say "read this before editing" rather than showing code — Task 8 Step 5 (`_quota_transfer`, which
@@ -3893,6 +3950,6 @@ what to look for and what to do with either answer.
 **Type consistency.** `reset_after: timedelta | None` on `Limit`; `reset_after_seconds: int | None`
 on `Limit` (property), `BucketState`, `ParsedBucketLimit`, `LimitRefillInfo` and `LimitDecl`;
 `window_start_ms: int | None` on `BucketState` and `LeaseEntry`; `resets_at_ms: int | None` on
-`LimitStatus`. Storage is `b_{name}_ws` / `b_{name}_rafter` / `l_{name}_rafter` throughout;
+`LimitStatus`. Storage is `b_{name}_ws` / `b_{name}_rsa` / `l_{name}_rsa` throughout;
 manifest `reset_after_seconds`; CFN `ResetAfterSeconds`. `window_starts: dict[str, int]` is the
 one map shape, used by `build_composite_normal` and `_propagate_window_start` alike.
