@@ -102,6 +102,28 @@ python scripts/generate_sync.py
 
 Pre-commit hook verifies generated code is up-to-date. CI also verifies before running tests.
 
+### Worktrees need their own venv
+
+`git worktree add` alone produces a checkout that cannot run the tests or the git hooks. `uv run`
+does not rescue it: `pytest-asyncio` and the rest of the test stack live in the `dev` **extra**,
+not a dependency group, so a plain `uv run pytest` installs neither. The failure lands at push
+time as `ModuleNotFoundError: No module named 'pytest_asyncio'` out of the pre-push hook, which
+reads like a broken branch rather than a missing environment.
+
+```bash
+scripts/new-worktree.sh <branch> [base]      # base defaults to origin/main
+```
+
+It creates the worktree under `.claude/worktrees/<branch-with-slashes-as-dashes>` and runs
+`uv sync --all-extras` in it.
+
+**Each worktree gets its own venv — do not share or symlink the main checkout's.** The editable
+install must resolve `zae_limiter` to *that worktree's* `src/`. Share one venv and every
+measurement taken in a worktree silently describes `main` instead of the branch under test: a
+session lost a day to this, reporting a docs page green while its own branch was red, because the
+run resolved `conftest.py` and `src/` from `main`. uv hardlinks from a shared cache, so a
+per-worktree venv costs seconds and little disk.
+
 ### Using conda
 
 ```bash
