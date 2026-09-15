@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789491811821,
+  "lastUpdate": 1789492739196,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -22989,6 +22989,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.008029085461846445",
             "extra": "mean: 1.1088114728000051 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "434883fa83095b0c777cf41b7dae1c837de73789",
+          "message": "🐛 fix(provisioner): keep #PROVISIONER in step with committed config (#571)\n\n## Summary\n\n`apply_changes` commits the config writes before either fan-out runs —\nit has to, since both\n`_fanout_disabled_changes` and `_sync_bucket_param_changes` resolve the\nconfig this apply has\njust written. So a `ValueError` out of `bucket_sync._decode_limits`\n(which raises **by design**\nsince PR #549, on a compact schedule this provisioner cannot read)\nescaped past\n`_write_provisioner_state`:\n\n- the table held **this** apply's configuration while `#PROVISIONER`\nstill described the\n  **previous** one, and\n- on the CloudFormation path, `_handle_cfn_with_response` posted\n**FAILED** to the pre-signed\n`ResponseURL`, so CloudFormation rolled back a stack whose configuration\nhad already been\n  applied.\n\n`_handle_cli` carried an identical three-step ordering and lost the\nrecord the same way — it\njust lacked the rollback-vs-reality contradiction on top.\n\n## The design decision\n\n**The provisioner stays on `ApplyResult.errors`; it does not converge on\nraising\n`FanoutIncomplete`. It adopts `FanoutIncomplete`'s *contract* instead.**\n\nBoth fan-outs now guard **per change** and *return* their failures. A\nnew\n`handler._apply_and_record()` — the single place both entry points run\nan apply, so the ordering\ncannot drift between the CFN and CLI paths again — appends them to\n`ApplyResult.errors` and\nwrites `#PROVISIONER` **unconditionally**. The CFN response is **SUCCESS\ncarrying the errors**,\nnot FAILED.\n\nWhy not raise `FanoutIncomplete`:\n\n1. **Out of a Lambda handler, an exception *is* a CloudFormation\nFAILED** — precisely the\noutcome #563 exists to remove. What is worth carrying over from the\nprecedent is its\nsubstance, not its delivery: config committed first, partial progress\nreported, every write\n   idempotent so re-running the same apply reconciles the rest.\n2. **`apply_changes` already reports a failed *config write*\nnon-fatally** through this same\nlist, and `limits_cli.py` already prints those and `sys.exit(1)`. A\nfailed config write is\nstrictly the more severe failure; a fan-out raising while a config write\ndoes not would be\n   backwards.\n3. **FAILED on an `Update` makes things worse, not better.**\nCloudFormation rolls a custom\nresource back by re-invoking it with the *previous* properties — which\nwould hit the same\nundecodable stored item, fail again, and strand the stack in\n`UPDATE_ROLLBACK_FAILED`.\n4. **Per-change guarding is the direct analogue of\n`FanoutIncomplete.stamped`.** One corrupt\nentity no longer abandons every *other* entity's sync; the caller is\ntold which targets\n   failed.\n\n`_write_provisioner_state` is deliberately left **unguarded**: it is the\nlast step, there is\nnothing after it to salvage, and a DynamoDB failure there is a genuine\ninfrastructure failure\nfor which FAILED and a retry are the right answer.\n\nResidual limitation (unchanged from `FanoutIncomplete`, and now recorded\nin design §9): the\noperator must read the errors. A drifted entity-level bucket carries no\nTTL, so nothing\nreconciles it but re-running the apply.\n\n## Test plan\n\nFailing test written **first**; verified failing before the fix and\npassing after, then\nmutation-checked by reverting `handler.py` and re-running.\n\n### Building the repro correctly\n\nThe undecodable schedule must sit on a config level the apply does\n**not** rewrite. Put it on\nthe resource level the manifest declares and `apply_changes`' own\n`put_item` overwrites it\nbefore the sync ever reads it, and the handler completes cleanly — the\ntest would pin nothing.\nBoth new tests put it on **system**, and drive an entity-config\n**delete**, whose reconciliation\nwalks entity(`_default_`) → resource → system and rewrites none of them.\n\n### Results\n\n| Run | Result |\n|-----|--------|\n| `pytest tests/unit/ -q` | **4518 passed** (359s) |\n| `pytest tests/unit/ -m gevent -n 0 -q` | **26 passed** |\n| `pytest tests/integration/test_provisioner.py` (LocalStack) | **12\npassed** (124s) |\n| `mypy` | Success, 58 source files |\n| `ruff check .` | All checks passed |\n| `ruff format --check` (touched files) | 2 files already formatted |\n\n`ruff format --check .` reports 34 unrelated files — the known\npre-existing version drift\n(#486); none of them are touched here.\n\n### Failing-first / mutation evidence\n\nBefore the fix, all three new unit tests and the new integration test\nfail with\n`ValueError: malformed compact schedule entry 'zz!!garbage'` raised out\nof\n`schedule.decode` ← `bucket_sync._decode_limits` ←\n`resolve_effective_limits`. Reverting\n`src/zae_limiter_provisioner/handler.py` after the fix reproduces\nexactly those four failures.\n\n### New tests\n\n`tests/unit/test_provisioner_handler.py::TestPostCommitFanoutFailure`\n- `test_cfn_records_state_and_reports_success_with_errors` —\n`#PROVISIONER` written once and\ndescribing the committed manifest; the body PUT to `ResponseURL` carries\n`Status: SUCCESS`;\n  the error names the failed target.\n- `test_cli_records_state_and_reports_errors` — same for `_handle_cli`.\n- `test_one_bad_change_does_not_abandon_the_others` — the corrupt entity\nis reported, a second\n  entity's bucket is still reconciled, state still written.\n\n\n`tests/integration/test_provisioner.py::TestHandlerIntegration::test_undecodable_stored_schedule_still_records_state`\n— the same scenario against real DynamoDB on LocalStack: real config\nitem, real walk, real\n`#PROVISIONER` read back through `Repository.get_provisioner_state()`.\n\n## Acceptance criteria\n\n- [x] Decision recorded (this PR body, the `_apply_and_record`\ndocstring, and design §9) on\nwhether the provisioner mirrors converge on `FanoutIncomplete`,\nincluding why not.\n- [x] `_sync_bucket_param_changes` failing no longer skips\n`_write_provisioner_state` in\n      `_handle_cfn`.\n- [x] Same ordering guarantee in `_handle_cli`.\n- [x] Unit test drives a `_decode_limits` failure through `_handle_cfn`\nand asserts\n      `#PROVISIONER` is consistent with what `apply_changes` committed.\n- [x] Test asserts the CFN response status sent to `ResponseURL` matches\nthe chosen semantics\n      (SUCCESS-with-errors).\n- [x] `docs/plans/` design §9 updated to point at the resolution.\n\n## Note on the issue text\n\nThe task brief stated §9 contains nothing about the provisioner. It does\n— the last of its eight\nbullets is exactly this limitation. It has been struck through and\nreplaced with the resolution\nrather than left as an open gap.\n\nFixes #563\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01QdVj8nPhUwTz2aNJzMFqt5",
+          "timestamp": "2026-09-15T13:14:37-04:00",
+          "tree_id": "0f4da3cb62a9361206ca976569d1d03b69513ed6",
+          "url": "https://github.com/zeroae/zae-limiter/commit/434883fa83095b0c777cf41b7dae1c837de73789"
+        },
+        "date": 1789492738034,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 24.293169474521704,
+            "unit": "iter/sec",
+            "range": "stddev: 0.01068061881446074",
+            "extra": "mean: 41.16383418181742 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 16.897213634123748,
+            "unit": "iter/sec",
+            "range": "stddev: 0.011577230853294039",
+            "extra": "mean: 59.18135508333222 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 35.19868754512797,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006109376483118074",
+            "extra": "mean: 28.410150200001283 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 39.745532269010496,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005168696944601497",
+            "extra": "mean: 25.160060588236174 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 22.44100793283068,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008225996205730345",
+            "extra": "mean: 44.56127830769237 msec\nrounds: 13"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 62.87535553117358,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0031053816989976323",
+            "extra": "mean: 15.904482631580514 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 24.267465956104836,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005485867733852557",
+            "extra": "mean: 41.207433928569515 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 23.98567191902176,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006711879160784162",
+            "extra": "mean: 41.69155666666787 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 19.024508364755345,
+            "unit": "iter/sec",
+            "range": "stddev: 0.04059548593118115",
+            "extra": "mean: 52.56377619999853 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 28.171147099467287,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005215906182999419",
+            "extra": "mean: 35.49731207143176 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 23.17900244532988,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0074655210969655625",
+            "extra": "mean: 43.142495124999684 msec\nrounds: 32"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 25.994551541997403,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00357805137356358",
+            "extra": "mean: 38.469599999999105 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 29.159835700655346,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006119254516860565",
+            "extra": "mean: 34.293746037037025 msec\nrounds: 27"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.927752505124492,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0016005908478297832",
+            "extra": "mean: 518.7387890000025 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.931924899110323,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0007674496966438456",
+            "extra": "mean: 517.6184646000024 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9440328153509903,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0010908137701919622",
+            "extra": "mean: 1.0592852110000024 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9123093635183688,
+            "unit": "iter/sec",
+            "range": "stddev: 0.012794281950765237",
+            "extra": "mean: 1.0961194086000035 sec\nrounds: 5"
           }
         ]
       }
