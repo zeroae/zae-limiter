@@ -305,9 +305,13 @@ present on both kinds.
 
 `resets_at_ms` is an **absolute** epoch-millisecond instant, so a client can
 schedule a retry without parsing cron and without a reference clock of its own.
-It is `null` when the reset is further out than the scheduler's forward scan can
-see — a monthly or annual reset, most of its cycle. The key is always present on
-a quota entry.
+The key is always present on a quota entry, and carries a real instant for every
+practical quota period — session, daily, weekly, monthly, quarterly, annual.
+
+It is `null` only when the next reset is further out than the reset pattern's own
+cycle — in practice only a pattern that skips whole years, such as `0 0 29 2 *`
+firing on a leap day. Treat `null` as "no scheduled reset in reach", not as
+"never resets", and fall back to `retry_after_seconds`.
 
 !!! warning "A quota never reports `refill_amount`"
     A quota's stored `refill_amount` is fixed at 0 and its `refill_period_seconds`

@@ -1,21 +1,22 @@
 ---
 name: pr
-description: Use when user says "/pr", "open pr", "create pr", "update pr", "pr comments", "pr reviews", "list comments", asks to create, view, or edit a pull request, or needs to prepare a release.
+description: Use when user says "/pr", "open pr", "create pr", "update pr", "merge pr", "pr comments", "pr reviews", "list comments", asks to create, view, edit, or merge a pull request, or needs to prepare a release.
 allowed-tools: Bash(gh:*), Bash(git:*), Read, Grep, Glob, AskUserQuestion, Task(Explore)
 user-invocable: true
 context: fork
-argument-hint: [view|comments|edit|release|issue-number] [pr-number|version]
+argument-hint: [view|comments|edit|merge|release|issue-number] [pr-number|version]
 ---
 
 # Pull Request Skill
 
-Create, view, and edit PRs following project conventions. Supports four modes:
+Create, view, edit, and merge PRs following project conventions. Supports five modes:
 
 | Mode | Trigger | Purpose |
 |------|---------|---------|
 | **View** | `/pr view [pr-number]` | Display PR details, CI status, comments, and reviews |
 | **Create** | `/pr [issue-number]`, "create pr" | Create PR for features, bugs, tasks |
 | **Edit** | `/pr edit [pr-number]`, "update pr" | Regenerate PR body from current commits |
+| **Merge** | `/pr merge <pr-number>`, "merge pr" | Merge a green PR and clean up after it |
 | **Release** | `/pr release <version>`, "release prep" | Verify release readiness |
 
 ## Mode Detection
@@ -29,6 +30,7 @@ When this skill is invoked, arguments follow the skill name (e.g., `/pr view 218
 | `view [pr-number]` | View | Read `view.md` |
 | `comments [pr-number]`, `reviews [pr-number]` | View + Comments | Read `view.md` (include comments) |
 | `edit [pr-number]` | Edit | Read `edit.md` |
+| `merge [pr-number]` | Merge | Read `merge.md` |
 | `release <version>` | Release | Read `release.md` |
 | `#<number>` or just a number | Create (from issue) | Read `create.md` |
 | (none) on release branch | Release | Read `release.md` |
@@ -37,6 +39,10 @@ When this skill is invoked, arguments follow the skill name (e.g., `/pr view 218
 **Comment keywords:** If the arguments or user message contain `comments`, `reviews`, `feedback`, or `review comments`, always include comments in the output (step 5 in `view.md`).
 
 Pattern for release branches: `^release/v?[0-9]+\.[0-9]+\.[0-9]+$`
+
+**Unrecognised arguments are NOT Create.** If the arguments name an action this table does not
+list, stop and say so rather than falling through to Create — inventing a PR is far worse than
+reporting an unknown mode.
 
 **First action:** Read the appropriate `.md` file for your detected mode, then follow those instructions exactly.
 
@@ -62,5 +68,6 @@ feature-branch → release/0.5.0 → main
 - [view.md](view.md) - View PR mode
 - [create.md](create.md) - Create PR mode
 - [edit.md](edit.md) - Edit PR mode
+- [merge.md](merge.md) - Merge PR mode
 - [release.md](release.md) - Release prep mode
 - [release-template.md](release-template.md) - Full release PR template
