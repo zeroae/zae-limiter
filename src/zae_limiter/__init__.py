@@ -91,6 +91,10 @@ from .models import (
 from .repository import Repository
 from .repository_builder import RepositoryBuilder
 from .repository_protocol import RepositoryProtocol
+
+# Only ScheduleEntry is public; the rest of `schedule.py` is cron/storage
+# machinery reachable as `zae_limiter.schedule.*` (see CLAUDE.md, Public API).
+from .schedule import ScheduleEntry
 from .sync_config_cache import SyncConfigCache
 from .sync_lease import SyncLease
 from .sync_limiter import SyncRateLimiter
@@ -138,6 +142,8 @@ __all__ = [
     "Status",
     "CacheStats",
     "ConfigSource",
+    # Scheduled limits (#222)
+    "ScheduleEntry",
     # Audit
     "AuditEvent",
     "AuditAction",

@@ -567,6 +567,38 @@ limiter = RateLimiter(repository=repo)
 
 See [ADR-108](docs/adr/108-repository-protocol.md) and [ADR-110](docs/adr/110-deprecation-constructor.md) for details.
 
+## Public API
+
+`src/zae_limiter/__init__.py`'s `__all__` **is** the public contract — the set frozen at
+v1.0.0. A module's own `__all__` governs `from .module import *`, not what the package
+promises: a name is public only if `__init__.py` re-exports it.
+
+The test for admitting a name: **would a user writing application code ever type it?** If it
+only appears inside the limiter's own machinery, it stays module-scoped and reachable as
+`zae_limiter.<module>.<name>` for tests and internal callers. `tests/unit/test_public_api.py`
+pins both directions.
+
+### `schedule.py` (#222, #534)
+
+Exported: **`ScheduleEntry`** only — it is the argument to `Limit.with_schedule()` and
+`Limit.reset_schedule`, so every scheduled-limits example begins with
+`from zae_limiter import Limit, ScheduleEntry`.
+
+Deliberately not exported, and why:
+
+| Name | Why it stays in `zae_limiter.schedule` |
+|------|----------------------------------------|
+| `parse_cron`, `ParsedCron` | Parse artifact. `ScheduleEntry.__post_init__` already parses and raises `ValueError`, so a user never needs to validate a cron string separately. |
+| `matches` | Takes a `ParsedCron`, so it is unusable without exporting the parse artifact too. Evaluation internal. |
+| `effective_params` | The evaluation engine, in milli-units. Its result is what `acquire()` enforces; callers read limits through `LimitStatus`, not by re-running it. |
+| `next_boundary` | Computes a bucket's `vu` (valid-until). Purely a materialisation concern. |
+| `encode`, `decode` | The compact storage encoding (§4.1). Repository-internal; exporting it would freeze the on-item format as public API. |
+| `to_cron` | Renders a *compact entry string* back to cron — and that string only comes from `encode()` or a raw DynamoDB attribute, neither of which is public. A user holding a `ScheduleEntry` reads `entry.cron`. Display helper for tooling that reads stored items. |
+
+`schedule.py` imports nothing from `models.py`, and that one-way dependency is load-bearing:
+it is what lets `schedule.py` be vendored into both Lambda packages. Re-exporting from
+`__init__.py` does not disturb it — do not "tidy" the direction.
+
 ## Naming Convention
 
 ### Resource Naming
