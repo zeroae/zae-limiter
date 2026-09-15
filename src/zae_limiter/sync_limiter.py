@@ -1632,6 +1632,8 @@ class SyncRateLimiter:
                     refill_amount_milli=refill_milli[limit.name]
                     or undivided_refill_milli[limit.name],
                     refill_period_ms=period_ms[limit.name],
+                    next_reset_ms=None,
+                    now_ms=now_ms,
                 )
             statuses.append(
                 LimitStatus(

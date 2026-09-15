@@ -231,6 +231,152 @@ class TestCalculateRetryAfter:
         )
 
 
+class TestQuotaRetryAfterUsesTheResetEdge:
+    """A quota has no drip, so its wait is the next reset instant (#530).
+
+    ADR-137 makes ``refill_amount = 0`` valid only alongside a
+    ``reset_schedule``, so the zero-rate branch is the *common* path for a
+    quota rather than the corrupt-item path its comment used to describe.
+    ``next_reset_ms`` is what turns it back into a truthful answer.
+    """
+
+    NOW = 1_800_000_000_000  # an arbitrary but fixed epoch-ms reading
+
+    def test_a_future_reset_is_the_wait(self):
+        """Two different offsets, so a hard-coded constant cannot pass."""
+        assert (
+            calculate_retry_after(
+                deficit_milli=5_000_000,
+                refill_amount_milli=0,
+                refill_period_ms=86_400_000,
+                next_reset_ms=self.NOW + 3_600_000,
+                now_ms=self.NOW,
+            )
+            == 3600.001
+        )
+        assert (
+            calculate_retry_after(
+                deficit_milli=5_000_000,
+                refill_amount_milli=0,
+                refill_period_ms=86_400_000,
+                next_reset_ms=self.NOW + 90_000,
+                now_ms=self.NOW,
+            )
+            == 90.001
+        )
+
+    def test_the_wait_does_not_depend_on_the_deficit_or_the_period(self):
+        """A reset restores the whole balance in one lump, so the size of the
+        shortfall is irrelevant. Discriminates against an implementation that
+        smuggles the deficit back into the reset branch."""
+        big = calculate_retry_after(
+            deficit_milli=999_000_000,
+            refill_amount_milli=0,
+            refill_period_ms=60_000,
+            next_reset_ms=self.NOW + 3_600_000,
+            now_ms=self.NOW,
+        )
+        small = calculate_retry_after(
+            deficit_milli=1,
+            refill_amount_milli=0,
+            refill_period_ms=86_400_000,
+            next_reset_ms=self.NOW + 3_600_000,
+            now_ms=self.NOW,
+        )
+        assert big == small == 3600.001
+
+    def test_a_reset_already_past_reports_no_wait(self):
+        """Nothing has applied the edge yet, but a negative wait is worse than
+        none: a client would `sleep()` on a nonsense value. Discriminates
+        against returning the raw difference."""
+        assert (
+            calculate_retry_after(
+                deficit_milli=5_000_000,
+                refill_amount_milli=0,
+                refill_period_ms=86_400_000,
+                next_reset_ms=self.NOW - 60_000,
+                now_ms=self.NOW,
+            )
+            == 0.0
+        )
+
+    def test_a_reset_exactly_now_reports_no_wait(self):
+        """The boundary between the two branches above."""
+        assert (
+            calculate_retry_after(
+                deficit_milli=5_000_000,
+                refill_amount_milli=0,
+                refill_period_ms=86_400_000,
+                next_reset_ms=self.NOW,
+                now_ms=self.NOW,
+            )
+            == 0.0
+        )
+
+    def test_a_zero_rate_with_no_reset_still_reports_no_wait(self):
+        """The pre-#530 behaviour, preserved. Unreachable for a limit built
+        through the public API — ADR-137 forbids a zero rate without a reset —
+        so what is left of this branch guards a corrupt stored item."""
+        assert (
+            calculate_retry_after(
+                deficit_milli=5_000_000,
+                refill_amount_milli=0,
+                refill_period_ms=86_400_000,
+                next_reset_ms=None,
+                now_ms=self.NOW,
+            )
+            == 0.0
+        )
+
+    def test_the_instant_and_the_clock_must_travel_together(self):
+        """An absolute instant cannot become a wait without the reading it is
+        measured against, so half the pair is treated as neither."""
+        assert (
+            calculate_retry_after(
+                deficit_milli=5_000_000,
+                refill_amount_milli=0,
+                refill_period_ms=86_400_000,
+                next_reset_ms=self.NOW + 3_600_000,
+            )
+            == 0.0
+        )
+
+    def test_a_cleared_deficit_wins_over_a_pending_reset(self):
+        """The deficit guard runs first: nothing is owed, so nothing is waited
+        for. Discriminates against 'a reset always decides the answer'."""
+        assert (
+            calculate_retry_after(
+                deficit_milli=0,
+                refill_amount_milli=0,
+                refill_period_ms=86_400_000,
+                next_reset_ms=self.NOW + 3_600_000,
+                now_ms=self.NOW,
+            )
+            == 0.0
+        )
+
+    def test_a_positive_rate_ignores_the_reset_entirely(self):
+        """The existing arithmetic is untouched: a limit that drips is answered
+        by its rate even when a reset is also pending. Discriminates against
+        checking the reset edge before the rate — which is exactly the ordering
+        bug in surface-plan Task 5's walk that #530 also records."""
+        with_reset = calculate_retry_after(
+            deficit_milli=10_000_000,
+            refill_amount_milli=100_000_000,
+            refill_period_ms=60_000,
+            next_reset_ms=self.NOW + 3_600_000,
+            now_ms=self.NOW,
+        )
+        without_reset = calculate_retry_after(
+            deficit_milli=10_000_000,
+            refill_amount_milli=100_000_000,
+            refill_period_ms=60_000,
+        )
+        assert with_reset == without_reset
+        assert with_reset == pytest.approx(6.0, abs=0.01)
+        assert with_reset != 3600.001
+
+
 class TestShardedRetryEstimate:
     """A per-shard refill share that floors to zero still needs a finite wait.
 
