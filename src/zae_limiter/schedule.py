@@ -38,8 +38,10 @@ __all__ = [
     "encode_reset",
     "matches",
     "next_boundary",
+    "next_reset_edge",
     "parse_cron",
     "prev_reset_edge",
+    "retry_after_with_schedule",
     "to_cron",
 ]
 

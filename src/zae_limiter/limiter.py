@@ -15,7 +15,6 @@ if TYPE_CHECKING:
 
 from .bucket import (
     calculate_available,
-    calculate_retry_after,
     declared_statuses,
     force_consume,
     try_consume,
@@ -43,13 +42,17 @@ from .models import (
     StackOptions,
     UsageSnapshot,
     UsageSummary,
-    is_accrual_rate,
     validate_identifier,
     validate_resource,
 )
 from .repository import Repository
 from .repository_protocol import SpeculativeFailureReason
-from .schedule import next_boundary, prev_reset_edge
+from .schedule import (
+    effective_params,
+    next_boundary,
+    prev_reset_edge,
+    retry_after_with_schedule,
+)
 from .schema import DEFAULT_RESOURCE, WCU_LIMIT_NAME
 
 _UNSET: Any = object()  # sentinel for detecting explicitly-passed deprecated params
@@ -1621,6 +1624,12 @@ class RateLimiter:
             # See `_do_acquire`: the resolved config, not the item, is what
             # makes the parent's refill and ceiling schedule-aware here.
             existing.sched = limit.schedule
+            # And the reset schedule alongside it, for the same reason and from
+            # the same source: `try_consume` reads it to decide whether a reset
+            # edge beats the drip in a rejection's `retry_after_seconds`
+            # (#222 §7). Attaching one without the other would leave a quota's
+            # rejection quoting a drip that ADR-137 says does not exist.
+            existing.reset_sched = limit.reset_schedule
 
             original_tk = existing.tokens_milli
             original_rf = existing.last_refill_ms
@@ -1863,6 +1872,11 @@ class RateLimiter:
                     # the ceiling below come out at the base rate while `vu`
                     # claims the window was honoured.
                     state.sched = limit.schedule
+                    # The reset schedule travels with it. `try_consume` reads
+                    # it for the rejection estimate (#222 §7), so a bucket that
+                    # carried `sched` alone would report a quota's wait as the
+                    # drip ADR-137 gives it — which is none.
+                    state.reset_sched = limit.reset_schedule
 
                 # Capture original values before try_consume modifies them (ADR-115)
                 original_tk = state.tokens_milli
@@ -2093,6 +2107,35 @@ class RateLimiter:
         on_unavailable_action = await self._repository.resolve_on_unavailable()
         return OnUnavailable(on_unavailable_action)
 
+    @staticmethod
+    def _readable_balance(bucket: BucketState, limit: Limit | None, now_ms: int) -> int:
+        """One shard's balance as a *reader* should see it (#222 §3.6, §7).
+
+        `check_availability` writes nothing, so a bucket that crossed a reset
+        edge and has not been touched by a request since still holds the burnt
+        balance on disk — the slow path applies the edge at admission time
+        (`_apply_reset_edge`), and nothing has admitted yet. Reporting the disk
+        value makes the display read "0 remaining, resets at midnight
+        tomorrow" while the very next `acquire()` restores the quota
+        immediately.
+
+        Computed per **shard**, not per limit name: a sharded entity can have
+        some shards past the edge and some not, and collapsing that to "the
+        limit is pending" would report the whole entity restored on the
+        strength of one stale shard.
+
+        The reset schedule comes from the resolved config rather than from
+        `bucket.reset_sched`, because the `rf` it is compared against lives on
+        the item — the same pairing `_apply_reset_edge` uses on the slow path,
+        so the two agree by construction. Costs one backwards cron scan per
+        shard, and only for a limit that actually carries a reset.
+        """
+        if limit is not None and limit.reset_schedule:
+            edge = prev_reset_edge(limit.reset_schedule, now_ms)
+            if edge is not None and edge > bucket.last_refill_ms:
+                return bucket.effective_capacity_milli(now_ms) // 1000
+        return calculate_available(bucket, now_ms)
+
     async def check_availability(
         self,
         entity_id: str,
@@ -2139,9 +2182,22 @@ class RateLimiter:
         configured limit, so ``acquire()`` can reject an amount this call
         reports as available.
 
+        **Schedules.** Everything reported is the value in force at
+        ``checked_at_ms``, not the stored base (#222 §7): the ceiling comes
+        from ``effective_params``, so a ``scale: 0.5`` window reports 500 and
+        not 1000, and the wait walks forward across boundaries instead of
+        dividing by the rate that happens to apply right now. A limit with a
+        ``reset_schedule`` reports the wait to its next edge — for a daily
+        quota, whose ``refill_amount`` is 0 by ADR-137, that is the only finite
+        answer there is. A bucket that crossed a reset edge and has not been
+        written to since reports the balance the next ``acquire()`` will
+        restore, per shard, rather than the burnt one still on disk.
+
         Cost: 1 GSI3 query (KEYS_ONLY) + 1 ``BatchGetItem``, plus config
         resolution (free on a cache hit), regardless of limit count or shard
-        count.
+        count. A limit carrying a ``reset_schedule`` adds one backwards cron
+        scan per shard and the forward walk adds up to eight per exceeded
+        limit; an unscheduled limit adds neither.
 
         Args:
             entity_id: Entity to check
@@ -2178,57 +2234,59 @@ class RateLimiter:
         # Resolve limits using four-tier hierarchy
         resolved_limits, _ = await self._resolve_limits(entity_id, resource, limits)
 
+        resolved_by_name = {limit.name: limit for limit in resolved_limits}
+
         # One GSI3 pass discovers every shard of every resource for this
         # entity (GHSA-76rv); shard 0 alone holds at most capacity // N.
         totals: dict[str, int] = {}
-        refill_milli: dict[str, int] = {}
-        undivided_refill_milli: dict[str, int] = {}
-        period_ms: dict[str, int] = {}
         for bucket in await self._repository.get_buckets(entity_id):
             if bucket.resource != resource:
                 continue
             name = bucket.limit_name
-            totals[name] = totals.get(name, 0) + calculate_available(bucket, now_ms)
-            # Each shard refills at its own share; the entity recovers at the
-            # sum of those shares.
-            refill_milli[name] = refill_milli.get(name, 0) + bucket.effective_refill_amount_milli(
-                now_ms
+            totals[name] = totals.get(name, 0) + self._readable_balance(
+                bucket, resolved_by_name.get(name), now_ms
             )
-            undivided_refill_milli.setdefault(name, bucket.retry_refill_amount_milli(now_ms))
-            period_ms.setdefault(name, bucket.effective_refill_period_ms(now_ms))
 
         statuses: list[LimitStatus] = []
         for limit in resolved_limits:
+            # The ceiling in force *now*, not the base: inside a `scale: 0.5`
+            # window `limit.capacity` is twice what any acquire would admit,
+            # and both the clamp and the no-bucket branch below reported it.
+            # These two sites work from the config-resolved `Limit`, so no
+            # amount of `BucketState` conversion reaches them (#222 §7).
+            eff_cp, _eff_ra, _eff_rp = effective_params(
+                limit.capacity * 1000,
+                limit.refill_amount * 1000,
+                limit.refill_period_seconds * 1000,
+                limit.schedule,
+                now_ms,
+            )
+            ceiling = max(1, eff_cp // 1000)
             if limit.name in totals:
-                available = min(totals[limit.name], limit.capacity)
+                available = min(totals[limit.name], ceiling)
             else:
-                # No bucket yet: the first acquire creates it at full capacity
-                available = limit.capacity
+                # No bucket yet: the first acquire creates it at the capacity
+                # in force now, not at the base.
+                available = ceiling
             requested = needed.get(limit.name, 0)
             exceeded = requested > 0 and available < requested
 
             wait = 0.0
-            if exceeded and limit.name in period_ms:
+            if exceeded:
                 # Derive the wait from the same `available` that is reported,
                 # so the two numbers on screen can never disagree.
-                wait = calculate_retry_after(
+                #
+                # Shards are summed above, so the walk is handed the undivided
+                # base with the default `shard_count=1` — the sum of the shares
+                # *is* the undivided rate, modulo flooring, which is also why
+                # #475's floored-share fallback is not needed here.
+                wait = retry_after_with_schedule(
                     deficit_milli=(requested - available) * 1000,
-                    # Every share floors to 0 for a slow limit split many ways;
-                    # fall back to the undivided rate, as BucketState's own
-                    # retry_refill_amount_milli does. The test is the temporal
-                    # predicate on the *summed* rate, not `limit.is_quota`: a
-                    # dripping limit lands here too, and a quota falls through
-                    # to an undivided 0 that calculate_retry_after then answers
-                    # from the reset edge rather than from a rate.
-                    refill_amount_milli=(
-                        refill_milli[limit.name]
-                        if is_accrual_rate(refill_milli[limit.name])
-                        else undivided_refill_milli[limit.name]
-                    ),
-                    refill_period_ms=period_ms[limit.name],
-                    # TODO(#222 surface-plan Task 5): supply the next reset
-                    # edge once BucketState carries `reset_sched`.
-                    next_reset_ms=None,
+                    cp_milli=limit.capacity * 1000,
+                    ra_milli=limit.refill_amount * 1000,
+                    rp_ms=limit.refill_period_seconds * 1000,
+                    sched=limit.schedule,
+                    reset_sched=limit.reset_schedule,
                     now_ms=now_ms,
                 )
 

@@ -25,6 +25,7 @@ For implementation details, see docs/contributing/architecture.md
 from dataclasses import dataclass
 
 from .models import BucketState, Limit, LimitStatus, is_accrual_rate
+from .schedule import retry_after_with_schedule
 
 
 @dataclass
@@ -152,15 +153,19 @@ def try_consume(
     else:
         # Failure - calculate retry time
         deficit_milli = requested_milli - current_tokens_milli
-        retry_after = calculate_retry_after(
+        # The **undivided base** goes in, with `shard_count` alongside: the
+        # walk re-evaluates `effective_params` per window and takes the shard
+        # share afterwards, so handing it the pre-scaled, pre-divided
+        # `effective_*` values would apply both narrowings twice (#222 §7).
+        retry_after = retry_after_with_schedule(
             deficit_milli=deficit_milli,
-            refill_amount_milli=state.retry_refill_amount_milli(now_ms),
-            refill_period_ms=state.effective_refill_period_ms(now_ms),
-            # TODO(#222 surface-plan Task 5): supply the next reset edge once
-            # BucketState carries `reset_sched`. Until then a quota reports no
-            # wait here, unchanged from before #530.
-            next_reset_ms=None,
+            cp_milli=state.capacity_milli,
+            ra_milli=state.refill_amount_milli,
+            rp_ms=state.refill_period_ms,
+            sched=state.sched,
+            reset_sched=state.reset_sched,
             now_ms=now_ms,
+            shard_count=state.shard_count,
         )
         return ConsumeResult(
             success=False,
@@ -222,6 +227,16 @@ def calculate_retry_after(
         now_ms: The clock reading ``next_reset_ms`` is measured against. Must
             be supplied alongside it; the two travel together because the
             instant alone cannot be turned into a wait.
+
+    Since #222 §7 this has **no production callers**: every one of them walks
+    forward across schedule boundaries instead (``schedule.retry_after_with_
+    schedule``), because the rate in force *now* is the wrong divisor as soon
+    as a boundary falls inside the wait. It stays as the definition that walk
+    is pinned against — the walk's unscheduled path and its ``max_windows``
+    fallback must return the identical value to the millisecond, which
+    ``test_unscheduled_matches_calculate_retry_after_exactly`` enforces. The
+    walk cannot simply call it: ``bucket`` imports ``models`` imports
+    ``schedule``, so the arithmetic is inlined there instead.
 
     Returns:
         Seconds until deficit is recovered (float), or 0.0 when the bucket
@@ -307,14 +322,17 @@ def calculate_time_until_available(
         return 0.0
 
     deficit_milli = needed_milli - refill.new_tokens_milli
-    return calculate_retry_after(
+    # Undivided base plus `shard_count`, as in `try_consume` — the walk does
+    # both narrowings itself.
+    return retry_after_with_schedule(
         deficit_milli=deficit_milli,
-        refill_amount_milli=state.retry_refill_amount_milli(now_ms),
-        refill_period_ms=state.effective_refill_period_ms(now_ms),
-        # TODO(#222 surface-plan Task 5): supply the next reset edge once
-        # BucketState carries `reset_sched`.
-        next_reset_ms=None,
+        cp_milli=state.capacity_milli,
+        ra_milli=state.refill_amount_milli,
+        rp_ms=state.refill_period_ms,
+        sched=state.sched,
+        reset_sched=state.reset_sched,
         now_ms=now_ms,
+        shard_count=state.shard_count,
     )
 
 

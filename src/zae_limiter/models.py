@@ -1078,6 +1078,13 @@ class BucketState:
         reset edge instead (#530). That is why the guard here is
         :func:`is_accrual_rate` and not :attr:`Limit.is_quota`: it has to catch
         the floored share, which is not a quota and must not be treated as one.
+
+        Since #222 §7 the retry estimate is computed by
+        ``schedule.retry_after_with_schedule``, which re-derives this rule per
+        window from the undivided base rather than calling this — it has to,
+        because ``schedule`` may not import ``models`` (that one-way dependency
+        is what lets both Lambdas vendor it). This stays the definition of the
+        rule, and the walk's ``_rate`` helper names it.
         """
         _cp, ra, _rp = self._scheduled_params(now_ms)
         share = ra // self.shard_count
