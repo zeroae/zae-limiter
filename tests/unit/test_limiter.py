@@ -210,7 +210,9 @@ class TestRateLimiterAcquire:
             resource="gpt-4",
             limits=limits,
         )
-        # Bucket should still have full capacity (no commit happened)
+        # Bucket should still have full capacity (no commit happened).
+        # Immune to clock drift (#503): 100 is the capacity ceiling and
+        # `refill_bucket()` clamps there, so this cannot drift upward.
         assert available["rpm"] == 100
 
     async def test_acquire_fallback_when_batch_not_supported(self, limiter, monkeypatch):
@@ -1579,12 +1581,20 @@ class TestWriteOnEnter:
             resource="gpt-4",
             limits=limits,
         )
+        # Immune to clock drift (#503): 100 is the capacity ceiling and
+        # `refill_bucket()` clamps there.
         assert available["rpm"] == 100
 
     async def test_cascade_writes_both_on_enter(self, limiter):
         """Cascade writes both child and parent buckets on enter."""
         await limiter.create_entity(entity_id="proj-cascade")
         await limiter.create_entity(entity_id="key-cascade", parent_id="proj-cascade", cascade=True)
+
+        # Both read-backs below are exact values under the ceiling, read inside
+        # the lease body, so 600 ms of wall clock between the write that stamps
+        # ``rf`` and either read refills them to 96 (#503, same mechanism and
+        # same threshold as #498). Pin the clock; see ``freeze_clock``.
+        freeze_clock(limiter._repository)
 
         limits = [Limit.per_minute("rpm", 100)]
 
@@ -2262,6 +2272,12 @@ class TestRateLimiterCapacity:
 
     async def test_available(self, limiter):
         """Test checking available capacity."""
+        # The post-consumption read-back below is an exact value under the
+        # ceiling, so 600 ms of wall clock would refill it to 71 (#503). Pin
+        # the clock; see ``freeze_clock``. (The first read is the ceiling and
+        # is immune either way.)
+        freeze_clock(limiter._repository)
+
         limits = [Limit.per_minute("rpm", 100)]
 
         # Initial - full capacity
@@ -2290,6 +2306,11 @@ class TestRateLimiterCapacity:
 
     async def test_time_until_available(self, limiter):
         """Test calculating time until capacity available."""
+        # Every token refilled between the write and the read shaves 0.6 s off
+        # the estimate, so ~1 s of wall clock walks 30.0 out of the 29..31
+        # window (#503). Pin the clock; see ``freeze_clock``.
+        freeze_clock(limiter._repository)
+
         limits = [Limit.per_minute("rpm", 100)]
 
         # Consume all capacity
@@ -2328,6 +2349,9 @@ class TestRateLimiterCheckAvailability:
 
         assert check.entity_id == "key-1"
         assert check.resource == "gpt-4"
+        # Immune to clock drift (#503): the entity has no bucket at all, so
+        # `check_availability` reports `limit.capacity` directly and the lazy
+        # refill never runs. No pin needed.
         assert check.available == {"rpm": 100, "tpm": 10_000}
         assert check.needed == {"rpm": 1, "tpm": 500}
         assert check.retry_after_seconds == 0.0
@@ -2337,6 +2361,11 @@ class TestRateLimiterCheckAvailability:
 
     async def test_needed_is_optional(self, limiter):
         """Omitting needed answers availability only, with no wait."""
+        # `available == 0` is a drained bucket, not the floor: refill only adds,
+        # so 600 ms of wall clock between the write and the read turns it into
+        # 1 (#503). Pin the clock; see ``freeze_clock``.
+        freeze_clock(limiter._repository)
+
         limits = [Limit.per_minute("rpm", 100)]
 
         async with limiter.acquire(
@@ -2361,6 +2390,10 @@ class TestRateLimiterCheckAvailability:
 
     async def test_reports_availability_and_wait_together(self, limiter):
         """One call answers both questions for an exhausted bucket."""
+        # `available == 0` flips to 1 after 600 ms and `deficit == 50` follows
+        # it down (#503). Pin the clock; see ``freeze_clock``.
+        freeze_clock(limiter._repository)
+
         limits = [Limit.per_minute("rpm", 100)]
 
         async with limiter.acquire(
@@ -2387,6 +2420,11 @@ class TestRateLimiterCheckAvailability:
 
     async def test_wait_is_max_across_limits(self, limiter):
         """retry_after_seconds is the slowest limit, and zero amounts are skipped."""
+        # Each rpm token refilled between the write and the read shaves 0.6 s
+        # off the estimate, so ~1 s of wall clock walks it out of the 29..31
+        # window (#503). Pin the clock; see ``freeze_clock``.
+        freeze_clock(limiter._repository)
+
         limits = [
             Limit.per_minute("rpm", 100),
             Limit.per_minute("tpm", 10_000),
@@ -2430,6 +2468,9 @@ class TestRateLimiterCheckAvailability:
             limits=limits,
         )
 
+        # Immune to clock drift (#503): the bucket sits at -20, and climbing
+        # back to 0 would take 20 tokens = 12 s of wall clock, far outside the
+        # window a moto-backed test can drift. No pin needed.
         assert check.available["rpm"] < 0
         assert check.allowed is False
         assert check.deficit["rpm"] > 10
@@ -2440,6 +2481,8 @@ class TestRateLimiterCheckAvailability:
 
         check = await limiter.check_availability(entity_id="key-1", resource="gpt-4")
 
+        # Immune to clock drift (#503): no bucket exists, so this is
+        # `limit.capacity` reported directly and refill never runs.
         assert check.available == {"rpm": 50}
         assert [limit.name for limit in check.limits] == ["rpm"]
 
@@ -2476,8 +2519,14 @@ class TestRateLimiterCheckAvailability:
     async def test_carries_a_status_per_limit(self, limiter):
         """The UI renders each limit on its own line, so each needs its own
         availability and its own countdown from the same snapshot."""
-        # Refill once an hour keeps every assertion below independent of how
-        # long the test takes to run.
+        # The hourly refill period only makes `rpm` immune: 100/hour is one
+        # token per 36 s, so `rpm.available == 0` cannot drift. `tpm` is
+        # 10_000/hour — one token every *360 ms*, a tighter window than the
+        # 600 ms of #498/#503 — so `tpm.available == 5_000` drifts to 5_001
+        # sooner than any per-minute limit in this file would. Pin the clock;
+        # see ``freeze_clock``.
+        freeze_clock(limiter._repository)
+
         limits = [
             Limit.custom("rpm", 100, refill_amount=100, refill_period_seconds=3600),
             Limit.custom("tpm", 10_000, refill_amount=10_000, refill_period_seconds=3600),
@@ -2527,6 +2576,11 @@ class TestRateLimiterCheckAvailability:
 
     async def test_available_matches_check_availability(self, limiter):
         """available() delegates, so the two can never disagree."""
+        # Two independent reads are compared, so this drifts on the gap
+        # *between* them: 600 ms there and one side reports 70 while the other
+        # reports 71 (#503). Pin the clock; see ``freeze_clock``.
+        freeze_clock(limiter._repository)
+
         limits = [Limit.per_minute("rpm", 100)]
 
         async with limiter.acquire(
@@ -2552,6 +2606,12 @@ class TestRateLimiterCheckAvailability:
 
     async def test_time_until_available_matches_check_availability(self, limiter):
         """time_until_available() delegates, so the two can never disagree."""
+        # Same between-the-reads drift as above, and here it is already at the
+        # edge: 600 ms between the two calls is one extra token, which moves
+        # the estimate by 0.6 s — past the `abs=0.5` tolerance below (#503).
+        # Pin the clock; see ``freeze_clock``.
+        freeze_clock(limiter._repository)
+
         limits = [Limit.per_minute("rpm", 100)]
 
         async with limiter.acquire(
@@ -2656,6 +2716,8 @@ class TestAvailabilityAcrossShards:
         now_ms = int(time.time() * 1000)
         await self._seed_shards(limiter, limit, [20_000, 20_000], now_ms)
 
+        # Immune to clock drift (#503) without a pin, unlike its siblings
+        # above: `refill_amount=1` over an hour is one token per 3600 s.
         assert await limiter.available("user-1", "gpt-4") == {"rpm": 40}
 
     async def test_the_two_methods_agree_on_a_sharded_entity(self, limiter):
@@ -2688,6 +2750,9 @@ class TestAvailabilityAcrossShards:
             entity_id="user-1", resource="gpt-4", needed={"rpm": 1}
         )
 
+        # Immune to clock drift (#503) without a pin: the effective per-shard
+        # refill is `1 // 32 == 0`, so `tokens_to_add` is 0 for any elapsed
+        # time — which is the very condition this test exists to exercise.
         assert check.available == {"rpm": 0}
         assert check.retry_after_seconds > 0
 
@@ -2923,6 +2988,13 @@ class TestRateLimiterResourceCapacity:
     @pytest.mark.asyncio
     async def test_get_resource_capacity_basic_aggregation(self, limiter):
         """Should aggregate capacity across all entities for a resource."""
+        # `get_resource_capacity()` refills lazily off the same
+        # `Repository._now_ms()` seam, so every per-entity `available` below is
+        # an exact value under the ceiling that 600 ms of wall clock lifts by
+        # one — and `total_available` by up to three (#503). Pin the clock; see
+        # ``freeze_clock``. (`total_capacity` is config-derived and immune.)
+        freeze_clock(limiter._repository)
+
         # Create 3 entities with different consumption levels
         entities = ["entity-a", "entity-b", "entity-c"]
         for entity_id in entities:
@@ -2994,6 +3066,11 @@ class TestRateLimiterResourceCapacity:
     @pytest.mark.asyncio
     async def test_get_resource_capacity_utilization_calculation(self, limiter):
         """Should calculate utilization percentage correctly."""
+        # `entity.available == 70` drifts to 71 after 600 ms, and that also
+        # moves `utilization_pct` to 29.0 — outside the `< 0.1` tolerance
+        # below (#503). Pin the clock; see ``freeze_clock``.
+        freeze_clock(limiter._repository)
+
         await limiter.create_entity("entity-1")
 
         limits = [Limit.per_minute("rpm", 100)]
@@ -8212,6 +8289,9 @@ class TestClientShardCreation:
         other.tokens_milli = 0
         await repo.transact_write([repo.build_composite_create("user-1", "other", [other], now_ms)])
 
+        # Immune to clock drift (#503) without a pin: `refill_amount=1` over an
+        # hour is one token per 3600 s, so the drained "other" bucket stays at
+        # 0. The two 100s are the capacity ceiling, where refill clamps.
         assert await limiter.available("user-1", "gpt-4") == {"rpm": 100}
         assert await limiter.available("user-1", "other") == {"rpm": 0}
         assert await limiter.available("user-1", "unused") == {"rpm": 100}
