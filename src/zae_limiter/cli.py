@@ -21,6 +21,7 @@ from .naming import DEFAULT_STACK_NAME
 if TYPE_CHECKING:
     from .models import Limit
     from .repository import Repository
+    from .schedule import ScheduleEntry
 
 
 def namespace_option(func: Callable[..., Any]) -> Callable[..., Any]:
@@ -2189,16 +2190,45 @@ def _parse_limit(limit_str: str) -> Limit:
         refill_period = 60  # default: per minute
 
     capacity = burst if burst is not None else rate
-    return LimitModel(
-        name=name,
-        capacity=capacity,
-        refill_amount=rate,
-        refill_period_seconds=refill_period,
-    )
+    try:
+        return LimitModel(
+            name=name,
+            capacity=capacity,
+            refill_amount=rate,
+            refill_period_seconds=refill_period,
+        )
+    except ValueError as e:
+        # `Limit.__post_init__` enforces cross-field rules `_parse_limit` cannot
+        # anticipate — most visibly ADR-137's "a zero rate is only valid with a
+        # reset_schedule". Those are operator input errors, so they belong inside
+        # Click's error boundary as a usage message, not as a traceback.
+        raise click.BadParameter(f"Invalid limit '{limit_str}': {e}") from e
+
+
+def _format_reset_cron(entry: ScheduleEntry) -> str:
+    """Render one reset entry as canonical cron plus its timezone, for display.
+
+    Round-tripped through the compact encoding so weekday and month come back as
+    names (``MON-FRI``, not ``1-5``) no matter whether the entry was built in
+    process or decoded from storage. Canonical cron is the rule at every
+    user-facing boundary; the compact form is storage only.
+    """
+    from . import schedule
+
+    compact, tz = schedule.encode((entry,))
+    return f'"{schedule.to_cron(compact)}" {tz or entry.tz}'
 
 
 def _format_limit(limit: Limit) -> str:
     """Format a limit for display."""
+    if limit.is_quota:
+        # A quota does not drip (ADR-137): `refill_amount` is 0 and
+        # `refill_period_seconds` is an inert placeholder, so neither belongs on
+        # the line. The two facts an operator needs are the whole allowance and
+        # the instant it comes back. `capacity` is the allowance, so "burst" —
+        # headroom above a sustained rate — is meaningless here too.
+        resets = ", ".join(_format_reset_cron(entry) for entry in limit.reset_schedule)
+        return f"{limit.name}: {limit.capacity:,} quota (resets {resets})"
     suffix = _format_period(limit.refill_period_seconds)
     base = f"{limit.name}: {limit.refill_amount:,}{suffix}"
     if limit.capacity != limit.refill_amount:
