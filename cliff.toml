@@ -67,6 +67,13 @@ commit_parsers = [
 protect_breaking_commits = false
 # filter out the commits that are not matched by commit parsers
 filter_commits = false
+# regex for matching git tags
+tag_pattern = "v[0-9].*"
+# sort the tags topologically
+topo_order = false
+# sort the commits inside sections by oldest/newest order
+sort_commits = "oldest"
+
 [remote.github]
 # Enables `commit.github.*` in the template: pr_number, pr_title, pr_labels,
 # username, is_first_time. Without this block those fields are empty and every
@@ -80,10 +87,3 @@ filter_commits = false
 # `fix(scope):` commit, because that is the only thing the changelog keys on.
 owner = "zeroae"
 repo = "zae-limiter"
-
-# regex for matching git tags
-tag_pattern = "v[0-9].*"
-# sort the tags topologically
-topo_order = false
-# sort the commits inside sections by oldest/newest order
-sort_commits = "oldest"
