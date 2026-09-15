@@ -206,11 +206,11 @@ class ScheduleEntry:
                 "a schedule entry must set exactly one of `scale` or the absolute "
                 "fields (`capacity`/`refill_amount`/`refill_period_seconds`)"
             )
-        for name, value in (
-            ("scale", self.scale),
-            ("capacity", self.capacity),
-            ("refill_amount", self.refill_amount),
-            ("refill_period_seconds", self.refill_period_seconds),
+        for name, value, is_absolute in (
+            ("scale", self.scale, False),
+            ("capacity", self.capacity, True),
+            ("refill_amount", self.refill_amount, True),
+            ("refill_period_seconds", self.refill_period_seconds, True),
         ):
             if value is None:
                 continue
@@ -225,6 +225,28 @@ class ScheduleEntry:
             # capacity of 10**400 into an OverflowError raised from validation.
             if isinstance(value, float) and not math.isfinite(value):
                 raise ValueError(f"{name} must be a finite number, got {value}")
+            # Then integrality, for the three `int | None` absolutes only —
+            # `scale` is a float field by design. Same failure class as the
+            # non-finite case and invisible to its guard, because this one is a
+            # *type* problem: `math.isfinite(1.5)` is True, `c1.5` encodes
+            # cleanly, and `decode`'s `int(tokens["c"])` then raises on every
+            # later read of that config item (#569). `bool` is rejected
+            # explicitly because it is an `int` subclass, so a bare
+            # `isinstance(value, int)` would *admit* `capacity=True` and store
+            # the equally unreadable `cTrue`.
+            #
+            # Rejected rather than coerced, integral floats included, to agree
+            # with `zae_limiter_provisioner.handler._coerce_int` — the same
+            # guard on the CloudFormation entrance since #561, which takes an
+            # `int` or a string spelling one and refuses every float. The field
+            # is declared `int`, so this narrows nothing the API documented.
+            if is_absolute and (isinstance(value, bool) or not isinstance(value, int)):
+                raise ValueError(
+                    f"{name} must be a whole number, got {value!r}. The absolute "
+                    f"schedule fields are integers: a fractional or non-numeric "
+                    f"value encodes into the stored schedule as bytes no later "
+                    f"read can decode."
+                )
             if value <= 0:
                 raise ValueError(f"{name} must be positive, got {value}")
 

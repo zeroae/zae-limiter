@@ -223,6 +223,26 @@ class TestRoundTrip:
         compact, tz = encode(entries)
         assert encode(decode(compact, tz or "UTC")) == (compact, tz)
 
+    @pytest.mark.parametrize("field", ["capacity", "refill_amount", "refill_period_seconds"])
+    @pytest.mark.parametrize(
+        "value", [1, 7, 1000, 10**9, 10**400, 1.5, 2.0, 0.5, True, False, 0, -1, "5", "1.5"]
+    )
+    def test_encode_is_total_over_the_constructible_domain(self, field, value):
+        """#569: every entry that constructs must survive `decode(*encode(...))`.
+
+        Constructibility is the only gate between an operator's value and bytes
+        on a DynamoDB item, so the two sets have to coincide: anything the
+        constructor admits, the decoder must read back. `capacity=1.5` used to
+        construct, encode as `c1.5`, and then raise `invalid literal for int()`
+        on every subsequent read of that config item.
+        """
+        try:
+            entry = ScheduleEntry(cron="* 9-17 * * MON-FRI", **{field: value})
+        except ValueError:
+            return  # rejected at the gate: no bytes were ever written
+        compact, tz = encode((entry,))
+        _assert_same_entry(decode(compact, tz or "UTC")[0], entry)
+
     def test_the_empty_schedule_round_trips(self):
         compact, tz = encode(())
         assert decode(compact, tz or "UTC") == ()
