@@ -5179,6 +5179,12 @@ class Repository:
             if limit.schedule:
                 compact, _tz = schedule.encode(limit.schedule)
                 base_item[schema.limit_attr(name, schema.LIMIT_FIELD_SCHED)] = {"S": compact}
+            # Without this leg a quota round-trips to `refill_amount=0` with no
+            # reset, which `Limit.__post_init__` rejects — so the write poisons
+            # the config item and every later read raises (#538).
+            if limit.reset_schedule:
+                compact, _tz = schedule.encode_reset(limit.reset_schedule)
+                base_item[schema.limit_attr(name, schema.LIMIT_FIELD_RSCHED)] = {"S": compact}
 
         if hoisted_tz is not None:
             base_item[schema.CONFIG_FIELD_SCHED_TZ] = {"S": hoisted_tz}
@@ -5218,6 +5224,7 @@ class Repository:
                 return int(item.get(attr, {}).get("N", "0"))
 
             sched_attr = item.get(schema.limit_attr(name, schema.LIMIT_FIELD_SCHED), {}).get("S")
+            rsched_attr = item.get(schema.limit_attr(name, schema.LIMIT_FIELD_RSCHED), {}).get("S")
             limits.append(
                 Limit(
                     name=name,
@@ -5225,6 +5232,9 @@ class Repository:
                     refill_amount=_get(schema.LIMIT_FIELD_RA),
                     refill_period_seconds=_get(schema.LIMIT_FIELD_RP),
                     schedule=schedule.decode(sched_attr, sched_tz) if sched_attr else (),
+                    reset_schedule=(
+                        schedule.decode_reset(rsched_attr, sched_tz) if rsched_attr else ()
+                    ),
                 )
             )
 

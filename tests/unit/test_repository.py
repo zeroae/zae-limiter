@@ -5885,3 +5885,40 @@ class TestAggregatorCannotRefillPastAFanOut:
         assert try_refill_bucket(self._table(repo), image, now_ms + 60_000) is True
         item = await self._raw(repo, "quiet-img")
         assert item[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"] == "1000000"
+
+
+class TestQuotaConfigRoundTrip:
+    """A quota written through `set_limits` must come back (#538).
+
+    `Limit.quota()` shipped in #531 with no storage leg, so
+    `_serialize_composite_limits` dropped `reset_schedule` and the next read
+    rebuilt a `Limit` with `refill_amount=0` and no reset — which is exactly
+    what `Limit.__post_init__` rejects. The config item was poisoned by the
+    write and every later read raised.
+    """
+
+    QUOTA = Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York")
+
+    async def test_entity_quota_survives_set_and_get(self, repo):
+        await repo.set_limits("quota-1", [self.QUOTA], resource="gpt-4")
+        (stored,) = await repo.get_limits("quota-1", resource="gpt-4")
+        assert stored == self.QUOTA
+
+    async def test_resource_quota_survives_set_and_get(self, repo):
+        await repo.set_resource_defaults("gpt-4", [self.QUOTA])
+        (stored,) = await repo.get_resource_defaults("gpt-4")
+        assert stored == self.QUOTA
+
+    async def test_system_quota_survives_set_and_get(self, repo):
+        await repo.set_system_defaults([self.QUOTA])
+        stored_limits, _on_unavailable = await repo.get_system_defaults()
+        assert stored_limits == [self.QUOTA]
+
+    async def test_resolve_limits_returns_the_reset_schedule(self, repo):
+        """The read `acquire()`'s slow path actually uses. Without this leg
+        `resolve_limits()` raises, and before #531 it would have silently
+        returned a quota with no reset for Task 3's reset to never fire on."""
+        await repo.set_limits("quota-2", [self.QUOTA], resource="gpt-4")
+        limits, _on_unavailable, source = await repo.resolve_limits("quota-2", "gpt-4")
+        assert source == "entity"
+        assert limits == [self.QUOTA]

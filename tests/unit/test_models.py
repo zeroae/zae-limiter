@@ -2303,3 +2303,67 @@ class TestLimiterInfo:
         assert info.is_healthy is False
         assert info.is_in_progress is True
         assert info.is_failed is True  # ROLLBACK contains "ROLLBACK"
+
+
+class TestResetScheduleAndTimezoneHoisting:
+    """The item-level `sched_tz` covers both tuples (#222 §4.1, surface Task 4).
+
+    `Limit.to_dict`/`from_dict` already carried `reset_schedule` (#531); what
+    this class pins is the *storage* consequence — one timezone attribute per
+    item, and a limit carrying only a reset must still vote on it.
+    """
+
+    QUOTA = Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York")
+
+    def test_to_dict_emits_standard_cron(self):
+        """Audit events are one of §4's standard-cron boundaries, and
+        `to_dict()` is what all three setters put in the event `details`."""
+        assert self.QUOTA.to_dict()["reset_schedule"] == [
+            {"cron": "0 0 * * *", "tz": "America/New_York"}
+        ]
+
+    def test_to_dict_omits_an_absent_reset_schedule(self):
+        assert "reset_schedule" not in Limit.per_day("rpd", 10_000).to_dict()
+
+    def test_from_dict_restores_it(self):
+        assert Limit.from_dict(self.QUOTA.to_dict()) == self.QUOTA
+
+    def test_rejects_a_timezone_disagreement_across_the_two_tuples(self):
+        """Without this guard one of the two is silently reinterpreted in the
+        other's zone on the way back out of storage.
+
+        The disagreement is introduced by `with_schedule` on an existing quota,
+        not by `with_reset_schedule` on a drip: under ADR-137 the latter raises
+        about `refill_amount` first and this test would pass for the wrong
+        reason — `match="timezone"` is what keeps that honest.
+        """
+        with pytest.raises(ValueError, match="timezone"):
+            Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="UTC").with_schedule(
+                (ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", scale=0.5),)
+            )
+
+    def test_agreeing_tuples_construct(self):
+        """The guard must not reject the legal shape §1.7 allows: a quota may
+        carry a parameter schedule as well, in the same zone."""
+        quota = self.QUOTA.with_schedule(
+            (ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", scale=0.5),)
+        )
+        assert quota.schedule and quota.reset_schedule
+
+    def test_a_reset_only_limit_votes_on_the_hoisted_timezone(self):
+        """A quota has no parameter schedule unless one is chained on, so a
+        helper voting on `limit.schedule[0].tz` alone returns None, `sched_tz`
+        is never written, and the stored reset decodes as UTC — a daily New
+        York quota resetting at 19:00 local, forever, with no error."""
+        assert models.hoisted_schedule_timezone([self.QUOTA]) == "America/New_York"
+
+    def test_two_limits_disagreeing_across_different_tuples_are_rejected(self):
+        """Each limit is individually legal; the *item* they share is not."""
+        scheduled = Limit.per_minute("rpm", 1000).with_schedule(
+            (ScheduleEntry(cron="* 0-6 * * *", tz="UTC", scale=0.5),)
+        )
+        with pytest.raises(ValueError, match="share a timezone"):
+            models.hoisted_schedule_timezone([scheduled, self.QUOTA])
+
+    def test_unscheduled_limits_still_do_not_vote(self):
+        assert models.hoisted_schedule_timezone([Limit.per_minute("rpm", 1000)]) is None

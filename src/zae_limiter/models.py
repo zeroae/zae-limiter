@@ -250,8 +250,15 @@ def hoisted_schedule_timezone(limits: list["Limit"]) -> str | None:
 
     Returns ``None`` when no limit on the item carries a schedule; limits
     without one do not vote.
+
+    **Both tuples vote** (#222 §4.1). A limit carrying only a
+    ``reset_schedule`` — which is every quota, and quotas have no parameter
+    schedule unless one is chained on — would otherwise not vote at all:
+    ``sched_tz`` would come back ``None``, be omitted from the item, and the
+    stored reset would decode as UTC on the way back out. A daily quota
+    configured for ``America/New_York`` would then reset at 19:00 local.
     """
-    zones = {limit.schedule[0].tz for limit in limits if limit.schedule}
+    zones = {entry.tz for limit in limits for entry in (*limit.schedule, *limit.reset_schedule)}
     if len(zones) > 1:
         raise ValueError(
             f"all scheduled limits on one config item must share a timezone, got "
@@ -356,13 +363,20 @@ class Limit:
                 "alongside a reset_schedule grants roughly twice the intended "
                 "allowance per period. Use Limit.quota(...) (ADR-137)."
             )
-        if self.schedule:
-            zones = {entry.tz for entry in self.schedule}
+        # Across BOTH tuples, not within each (#222 §4.1). `sched_tz` is one
+        # item-level attribute shared by the parameter schedule and the reset
+        # schedule, so a limit whose `schedule` is America/New_York and whose
+        # `reset_schedule` is UTC has nowhere to put the second zone: it would
+        # serialise, and come back with one of the two silently reinterpreted
+        # in the other's zone, forever and with no error anywhere.
+        if self.schedule or self.reset_schedule:
+            zones = {entry.tz for entry in (*self.schedule, *self.reset_schedule)}
             if len(zones) > 1:
                 raise ValueError(
                     f"all schedule entries on one limit must share a timezone, got "
                     f"{sorted(zones)}. The timezone is stored once per item as "
-                    f"`sched_tz`, not per entry."
+                    f"`sched_tz` and covers the parameter schedule and the reset "
+                    f"schedule together, not per entry and not per tuple."
                 )
 
     @classmethod

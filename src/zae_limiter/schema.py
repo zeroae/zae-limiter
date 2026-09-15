@@ -112,12 +112,16 @@ LIMIT_FIELD_CP = "cp"  # capacity (ceiling)
 LIMIT_FIELD_RA = "ra"  # refill_amount
 LIMIT_FIELD_RP = "rp"  # refill_period_seconds
 LIMIT_FIELD_SCHED = "sched"  # compact-encoded schedule (#222 §4.1)
+LIMIT_FIELD_RSCHED = "rsched"  # compact-encoded reset schedule (#222 §4.1)
 
 # IANA timezone name for every schedule on the item, hoisted out of the
 # individual entries (#222 §4.1). One attribute per item, not per limit: it is
 # the same 16-ish bytes for every entry and the design measured that repetition
 # out. The corollary is that all scheduled limits on one config item must agree
 # on a timezone; `models.hoisted_schedule_timezone()` enforces it at the write.
+# It covers **both** tuples: a limit carrying a parameter schedule in one zone
+# and a reset schedule in another has nowhere to store the second one, so
+# `Limit.__post_init__` rejects the pair rather than letting storage pick.
 CONFIG_FIELD_SCHED_TZ = "sched_tz"
 
 
