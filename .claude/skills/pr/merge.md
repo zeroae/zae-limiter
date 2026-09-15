@@ -46,14 +46,20 @@ messages alone, so a squashed `fix(scope): … Fixes #NNN` would vanish from Bug
    overlap, a local trial merge plus a targeted test run, then `git merge --abort`, is cheap
    insurance and is worth taking anyway.
 
-4. **Check what will actually close.**
+4. **Check what will actually close — the body AND the commits.**
 
    ```bash
-   gh pr view <number> --json closingIssuesReferences
+   gh pr view <number> --json closingIssuesReferences          # body only
+   git log <base>..<head> --format='%B' \
+     | grep -inE '(clos|fix|resolv)[a-z]*[[:space:]]+#[0-9]+'  # commit messages
    ```
 
-   GitHub's parser matches closing keywords as substrings and ignores negation, so a body line
-   reading "Does not close #222" *will* close #222. See `.claude/rules/pull-request-workflow.md`.
+   GitHub's parser matches closing keywords as substrings, ignores negation and quotation, and
+   reads **commit messages landing on the default branch** as well as the PR body. The `gh` query
+   sees only the body, so it cannot catch a directive in a commit message — which is how an epic
+   was closed by the very commit documenting this trap. Run both.
+
+   See `.claude/rules/pull-request-workflow.md`.
 
 ## After merging
 
