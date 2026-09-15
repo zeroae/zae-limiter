@@ -1,6 +1,6 @@
 # ADR-114: Composite Bucket Items
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-01-28
 **Issue:** [#248](https://github.com/zeroae/zae-limiter/issues/248)
 
