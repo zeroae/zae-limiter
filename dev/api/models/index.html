@@ -1296,6 +1296,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.models.Limit.with_schedule" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;with_schedule
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.models.Limit.to_dict" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -4352,6 +4363,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.models.Limit.with_schedule" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;with_schedule
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.models.Limit.to_dict" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -5337,7 +5359,7 @@
   </span>
 
 <a href="#zae_limiter.models.Limit" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">Limit</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">capacity</span><span class="p">,</span> <span class="n">refill_amount</span><span class="p">,</span> <span class="n">refill_period_seconds</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">Limit</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">capacity</span><span class="p">,</span> <span class="n">refill_amount</span><span class="p">,</span> <span class="n">refill_period_seconds</span><span class="p">,</span> <span class="n">schedule</span><span class="o">=</span><span class="p">())</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
@@ -5400,6 +5422,20 @@ to avoid floating point precision issues.</p>
             <td>
               <div class="doc-md-description">
                 <p>Denominator of refill rate</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.models.Limit.schedule">schedule</span></code></td>
+            <td>
+                  <code><span title="tuple">tuple</span>[<span title="zae_limiter.schedule.ScheduleEntry">ScheduleEntry</span>, ...]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Time windows in which different parameters apply (#222).
+The fields above stay the <em>base</em> parameters forever; the schedule
+is applied on top of them at read time by
+<code>schedule.effective_params()</code>.</p>
               </div>
             </td>
           </tr>
@@ -5832,6 +5868,32 @@ temporary spikes above the sustained rate.</p>
   <p>Limit.custom("requests", capacity=1000, refill_amount=100,
             refill_period_seconds=1)</p>
 </details>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="zae_limiter.models.Limit.with_schedule" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">with_schedule</span>
+
+
+<a href="#zae_limiter.models.Limit.with_schedule" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">with_schedule</span><span class="p">(</span><span class="n">schedule</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>This limit with a schedule attached (#222 §1.1).</p>
+<p>Returns a new instance; <code>Limit</code> is frozen and the factory methods
+(<code>per_minute</code>, <code>per_hour</code>, ...) do not take a schedule. Validation
+runs through <code>__post_init__</code>, so a schedule whose entries disagree on
+timezone is rejected here rather than at the DynamoDB write.</p>
+<p>Pass <code>()</code> to clear a schedule: storage is override-not-merge, so a
+limit with no schedule has no schedule.</p>
+
 
     </div>
 
