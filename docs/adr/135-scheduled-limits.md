@@ -1,6 +1,6 @@
 # ADR-135: Scheduled limits are resolved at read time
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-09-15
 **Issue:** [#222](https://github.com/zeroae/zae-limiter/issues/222)
 
