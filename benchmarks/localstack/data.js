@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789497378262,
+  "lastUpdate": 1789498239628,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -23704,6 +23704,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.007553540207227457",
             "extra": "mean: 1.0805390775999968 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b50d1666abcdc84fdbd25b22dff7d1f8be0234c1",
+          "message": "📝 docs(ci): record how to read CI signals before merging (#579)\n\n## Summary\n\nTwo files change, both under `.claude/rules/`: a new `ci-signals.md`,\nand a new section appended\nto `pull-request-workflow.md`. Nothing under `src/` or `tests/` moves.\n\n**Why now.** Every trap recorded here was hit today, during the #222\nwork, and each one was\nrediscovered independently by a different agent. That repetition is the\nwhole argument: nothing in\n`.claude/rules/` or `CLAUDE.md` mentions codecov at all. `codecov.yml`\n*does* document the\ncarryforward hazards (#452, #494), carefully, in its own comments — but\na YAML comment is not\nloaded into an agent's context the way a rule file is, so it may as well\nnot exist at the moment\nsomeone is staring at a red check deciding whether to merge.\n\n**What `ci-signals.md` records.** Codecov posts a `codecov/project`\nstatus before all four flag\nuploads have landed, and the intermediate readings can be alarmingly\nwrong: PR #576 read −1.43%,\nthen −0.75%, and settled at +0.00% success. Judging on the first reading\nwould have blocked a\ngreen PR. Related: a `codecov/patch` FAILURE can be posted by a run that\nwas *cancelled* and\nuploaded nothing at all. Cancelled runs — which a draft→ready flip\nproduces routinely — render as\n`fail 0s` rows and read exactly like real failures. A job can report\n`in_progress` while every one\nof its steps, `Complete job` included, has already concluded success.\nThe legacy combined-status\nendpoint returns a meaningless `pending` with an empty `.statuses[]`,\nbecause every check in this\nrepo posts as a check-run and never as a commit status. Required checks\nare only `lint`, `build`\nand CodeQL, with `strict: false`. And path filters mean `unit`,\n`integration` and `e2e` are\n*absent* from a docs-only PR rather than pending — waiting for them is\nwaiting forever.\n\n**`strict: false` is the one with teeth.** The rest of the list costs\ntime; this one costs\ncorrectness. GitHub will happily let you merge a branch whose green CI\npredates changes on `main`\nthat touch the same files. PR #576 nearly merged on CI that had run\nbefore #573 landed.\n\n**What `pull-request-workflow.md` gains.** The linked-issue trap.\nGitHub's parser has no notion of\nnegation: a PR body line reading \"Does not close #NNN.\" registers that\nissue in\n`closingIssuesReferences` anyway, and it is shut on merge. That is not\nhypothetical — it happened\non PR #573, and the scheduled-limits epic had to be reopened by hand.\nThe rule is to write\n`Refs #NNN` or `Part of #NNN`, never to place a closing keyword adjacent\nto a number you do not\nintend to act on (including inside a denial), and to run\n`gh pr view <n> --json closingIssuesReferences` before merging anything\nthat references an epic.\n\n**Standing exception preserved as-is.** `codecov/project` red against a\nstale base is left alone,\nby owner decision, and the rule says so rather than quietly relitigating\nit. `codecov/patch` is\ndocumented as the opposite case — a genuine signal, to be diagnosed\nrather than waved through.\n\n## Test plan\n\n- [ ] Docs-only change: by the path filters this PR documents, `unit`,\n`integration` and `e2e`\nwill be **absent** rather than pending. Read that per the new rule, not\nas a hang.\n- [ ] `lint`, `build` and CodeQL green.\n- [ ] `gh pr view <n> --json closingIssuesReferences` on this PR returns\nan empty list.\n\nRefs #222\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01QdVj8nPhUwTz2aNJzMFqt5",
+          "timestamp": "2026-09-15T14:43:25-04:00",
+          "tree_id": "e943bb731d333f59b675d0090b8ee39ca66d69dc",
+          "url": "https://github.com/zeroae/zae-limiter/commit/b50d1666abcdc84fdbd25b22dff7d1f8be0234c1"
+        },
+        "date": 1789498238302,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 5.63387151522006,
+            "unit": "iter/sec",
+            "range": "stddev: 0.10122677609717921",
+            "extra": "mean: 177.4978355999906 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 5.695511321643212,
+            "unit": "iter/sec",
+            "range": "stddev: 0.11760150785912982",
+            "extra": "mean: 175.57686106249193 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 15.341418058145567,
+            "unit": "iter/sec",
+            "range": "stddev: 0.09845254790770369",
+            "extra": "mean: 65.18302259999018 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 20.704033881205707,
+            "unit": "iter/sec",
+            "range": "stddev: 0.06392912350264572",
+            "extra": "mean: 48.29976640000382 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 7.101062836443366,
+            "unit": "iter/sec",
+            "range": "stddev: 0.15119796372047878",
+            "extra": "mean: 140.82398973684613 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 118.87098379572292,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0012482758339590594",
+            "extra": "mean: 8.412481903224402 msec\nrounds: 31"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 5.511342292836347,
+            "unit": "iter/sec",
+            "range": "stddev: 0.19944480093079245",
+            "extra": "mean: 181.44400163637124 msec\nrounds: 22"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 4.664790239108505,
+            "unit": "iter/sec",
+            "range": "stddev: 0.19945232662177328",
+            "extra": "mean: 214.37191143478114 msec\nrounds: 23"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 4.057548755497449,
+            "unit": "iter/sec",
+            "range": "stddev: 0.18662871753425164",
+            "extra": "mean: 246.45421663636958 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 6.475907299052464,
+            "unit": "iter/sec",
+            "range": "stddev: 0.10964664470826427",
+            "extra": "mean: 154.41851679166518 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 10.674297052706043,
+            "unit": "iter/sec",
+            "range": "stddev: 0.06860353177680263",
+            "extra": "mean: 93.68298400000867 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 11.545997329669698,
+            "unit": "iter/sec",
+            "range": "stddev: 0.044545223542511905",
+            "extra": "mean: 86.61010144444641 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 7.578395584640436,
+            "unit": "iter/sec",
+            "range": "stddev: 0.12886418917635406",
+            "extra": "mean: 131.9540513333398 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9259494863656497,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00395516277501842",
+            "extra": "mean: 519.2244173999825 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.8618156749450137,
+            "unit": "iter/sec",
+            "range": "stddev: 0.024050635254923486",
+            "extra": "mean: 537.1100981999916 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9038670028456975,
+            "unit": "iter/sec",
+            "range": "stddev: 0.08910127626902417",
+            "extra": "mean: 1.1063574584000093 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.8082025410823042,
+            "unit": "iter/sec",
+            "range": "stddev: 0.10514300582068936",
+            "extra": "mean: 1.2373136054000156 sec\nrounds: 5"
           }
         ]
       }
