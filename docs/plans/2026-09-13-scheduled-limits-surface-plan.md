@@ -3457,10 +3457,11 @@ In `docs/plans/2026-09-13-scheduled-limits-design.md`:
 
 - §6 gains the boundary table from Decision 2, the statement that the parser raises
   `ValueError` and each boundary converts, and the `resolve_on_unavailable` known limitation.
-- §4.1's last line changes from "A version marker is carried in the encoding (~6 B) so §6 can
-  distinguish 'written by a newer client' from 'corrupt'" to a statement that no marker is
-  carried, why, the tokeniser heuristic that replaces it, and that adding one later is
-  non-breaking for a reader tolerant of its absence.
+- ~~§4.1's last line changes…~~ **Already done — do not redo this.** §4.1 was amended ahead of
+  this task, because as written it asserted in the present tense that a marker *is* carried,
+  which was simply false about merged code and would mislead anyone reading it in the interim.
+  It now states that no marker is carried, why, the tokeniser heuristic that replaces it, and
+  that adding one later is non-breaking for a reader tolerant of absence. Tracked as #515.
 - §9 gains the `resolve_on_unavailable` limitation.
 
 - [ ] **Step 7: Lint, type check, commit**
