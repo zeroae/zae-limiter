@@ -599,7 +599,7 @@ entities:
             capacity: 100000
 ```
 
-**Limit fields:** Only `capacity` is required. When omitted, `refill_amount` defaults to `capacity` and `refill_period` defaults to `60` seconds. `capacity` is the bucket ceiling (max tokens). To customize:
+**Limit fields:** Only `capacity` is required. When omitted, `refill_amount` defaults to `capacity` — or to `0` when the limit carries a `reset_schedule`, where a positive `refill_amount` is rejected — and `refill_period` defaults to `60` seconds. `capacity` is the bucket ceiling (max tokens). To customize:
 
 ```yaml
 limits:
@@ -608,6 +608,27 @@ limits:
     refill_amount: 100   # Refill 100 tokens per period
     refill_period: 6     # Every 6 seconds (= 1000/min)
 ```
+
+A limit may also carry a `schedule` (change the parameters while a cron pattern matches) or a
+`reset_schedule` (restore the whole allowance when a window opens):
+
+```yaml
+limits:
+  rpm:
+    capacity: 1000
+    schedule:
+      - cron: "* 9-17 * * MON-FRI"
+        tz: America/New_York
+        scale: 0.5
+  rpmo:
+    capacity: 1000000
+    reset_schedule:
+      - cron: "0 0 1 * *"
+        tz: America/New_York
+```
+
+Both are emitted into the generated CloudFormation template as `Schedule` and `ResetSchedule`
+properties. See [Declarative Limits](../cli.md#declarative-limits) for the full field reference.
 
 ### CLI Workflow
 
@@ -674,6 +695,22 @@ Resources:
 
 This approach lets you manage limits alongside other infrastructure in CloudFormation, with full lifecycle support (Create, Update, Delete).
 
+!!! warning "A partial apply succeeds; it does not roll the stack back"
+    The provisioner commits config writes before fanning them out to live bucket items, so
+    once a fan-out runs something is already in the table and a clean failure is no longer
+    available. A fan-out that fails part-way therefore returns **SUCCESS**, with the failures
+    listed under `errors` in the custom resource's response data, rather than FAILED — a
+    rollback would revert a stack whose configuration had already been applied.
+
+    A successful stack update is therefore not proof that every bucket was reached. Check
+    `errors` in the response data, or the `{stack}-limits-provisioner` log group, which records
+    the same list. Every write is idempotent, so re-running the same stack update reconciles the
+    remainder. The `#PROVISIONER` record is written on both outcomes, so it always describes the
+    config that is actually in the table.
+
+    A failure writing that record *is* reported as FAILED: it is the last step, nothing after
+    it can be salvaged, and a retry is the right answer.
+
 ### Provisioner Architecture
 
 The provisioner is a Lambda function (`{stack}-limits-provisioner`) that:
@@ -717,6 +754,20 @@ is not fleet-wide until every client is upgraded.
 Treat a disable as effective only once the rollout completes. If you are relying on
 it as an access-control boundary rather than an operational switch, finish upgrading
 all clients first.
+
+### Schedules and quotas are enforced client-side
+
+A schedule ([ADR-135](../adr/135-scheduled-limits.md)) rides on the bucket item as `sched`,
+`rsched` and `sched_tz`, with `vu` naming the next instant at which the effective parameters
+change. Enforcement is again the client's conditional write —
+`attribute_not_exists(vu) OR vu > now` — and only a client writes those attributes.
+
+A client older than v0.14.0 has two effects during a rollout. It does not carry the `vu`
+condition, so it keeps spending tokens that were minted under a window which has since closed.
+And any bucket it creates carries no schedule at all, so the aggregator refills that bucket
+toward the base ceiling until an entity-level change fans out or the bucket's TTL expires.
+
+Treat a schedule or a calendar quota as effective only once every client is past v0.14.0.
 
 ## Next Steps
 

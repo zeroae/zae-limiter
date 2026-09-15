@@ -13,6 +13,7 @@ The main components of the API are:
 | [`Repository`](repository.md) | DynamoDB data access and infrastructure management |
 | [`RepositoryProtocol`](repository.md#repositoryprotocol) | Protocol for pluggable backends |
 | [`Limit`](models.md#zae_limiter.models.Limit) | Rate limit configuration |
+| [`ScheduleEntry`](models.md#zae_limiter.schedule.ScheduleEntry) | One window of a limit's schedule, or one reset edge |
 | [`StackOptions`](models.md#zae_limiter.models.StackOptions) | Infrastructure deployment configuration |
 | [`CacheStats`](models.md#zae_limiter.config_cache.CacheStats) | Cache performance statistics |
 | [`ConfigSource`](models.md#zae_limiter.config_cache.ConfigSource) | Config resolution source identifier |
@@ -52,6 +53,53 @@ Limit.per_minute("tpm", 10_000, burst=15_000)
 # Custom period
 Limit.custom("requests", capacity=50, refill_amount=50, refill_period_seconds=30)
 ```
+
+### Quota Periods
+
+`Limit.quota()` grants a whole allowance per calendar window and restores it in one lump when
+the next window opens. The cron expression names the instant the window opens, so the period is
+whatever the expression says:
+
+```python
+from zae_limiter import Limit
+
+# Every 5 hours, on the hour
+Limit.quota("session", 500, cron="0 */5 * * *", tz="America/New_York")
+
+# Daily, at local midnight
+Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York")
+
+# Weekly, Monday morning
+Limit.quota("rpw", 50_000, cron="0 0 * * MON", tz="America/New_York")
+
+# Monthly, on the 1st
+Limit.quota("rpmo", 1_000_000, cron="0 0 1 * *", tz="America/New_York")
+```
+
+A quota does not drip: the balance stays where it is until the next reset edge. A limit either
+drips or resets, never both.
+
+### Scheduled Limits
+
+A `schedule` changes what a limit *is* for as long as the current minute matches its cron
+pattern. Entries are checked in order, and the first match wins; with no match the base limit
+applies:
+
+```python
+from zae_limiter import Limit, ScheduleEntry
+
+Limit.per_minute("rpm", 1000).with_schedule(
+    (
+        # Half throughput during business hours.
+        ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.5),
+        # A flat 2000/min overnight.
+        ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", capacity=2000),
+    )
+)
+```
+
+`scale` multiplies capacity and refill amount together. An entry sets either `scale` or the
+absolute fields, never both.
 
 ### Acquiring Limits
 
@@ -163,6 +211,7 @@ from zae_limiter import (
 
     # Models
     Limit,
+    ScheduleEntry,
     LimiterInfo,
     LimitName,
     Entity,
