@@ -298,7 +298,7 @@ use the `b_{limit_name}_{field}` naming convention:
 | Schedule | `sched` | Item-level schedule, compact encoding | `h9-17w1-5s500` |
 | Reset schedule | `rsched` | Item-level reset schedule, compact encoding | `m0h0` |
 | Timezone | `sched_tz` | IANA zone shared by every schedule on this item | `America/New_York` |
-| Per-limit overrides | `b_rpm_sched`, `b_rpm_rsched` | That limit's own schedule, when it carries one | `h0-6c2000` |
+| Per-limit overrides | `b_rpm_sched`, `b_rpm_rsched` | That limit's own schedule, when it differs from the item default. A literal `-` means that limit has **no** schedule; a missing attribute means it inherits the item default | `h0-6c2000` or `-` |
 
 The ceiling actually enforced is **not** `b_rpm_cp`. The schedule in force at the current
 instant is applied to the base first, and the result is then divided by `shard_count`. An

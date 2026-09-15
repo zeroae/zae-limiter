@@ -137,8 +137,12 @@ See [ADR-111](../adr/111-flatten-all-records.md).
 ```
 
 `sched` / `rsched` / `sched_tz` are the schedule denormalized onto the item (#222, ADR-135).
-They are absent on an unscheduled bucket, and a limit carrying a schedule of its own is stamped
-with `b_{name}_sched` / `b_{name}_rsched`. `cp` / `ra` / `rp` stay the
+They are absent on an unscheduled bucket, and a limit whose schedule differs from the item
+default is stamped with `b_{name}_sched` / `b_{name}_rsched`. On an item that carries a default,
+a limit with **no** schedule is stamped with the reserved marker `-`
+(`schema.BUCKET_SCHED_NONE`), because a missing override already means "inherit the default" and
+cannot also mean "unscheduled" — that is what keeps a quota and a rate limit sharing one item
+from acquiring each other's windows. `cp` / `ra` / `rp` stay the
 **base** parameters: every refiller applies the schedule on top of them at read time and
 materialises only `tk`. `vu` is the earliest instant at which any limit here changes effective
 parameters — the fast path's condition compares against it and nothing else.
