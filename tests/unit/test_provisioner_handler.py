@@ -2,9 +2,14 @@
 
 from unittest.mock import MagicMock, patch
 
+from tests.fixtures.cfn_payloads import (
+    RECORDED_CFN_RESOURCE_PROPERTIES,
+    RECORDED_CFN_RESOURCE_PROPERTIES_VALID,
+)
 from zae_limiter.schema import DEFAULT_RESOURCE, pk_entity, pk_resource, sk_config
 from zae_limiter_provisioner.differ import Change
 from zae_limiter_provisioner.handler import (
+    _cfn_limits_to_manifest,
     _cfn_properties_to_manifest,
     _sync_bucket_param_changes,
     on_event,
@@ -39,6 +44,47 @@ def _entity_default_get_item(namespace_id: str, entity_id: str, value: bool):
         return {}
 
     return _get_item
+
+
+def _setup_client(
+    mock_handler_boto3, mock_applier_boto3, get_item_return=None, disabled_items=None
+):
+    """Set up shared mock client for both handler and applier boto3.
+
+    `disabled_items` maps (PK, SK) -> bool and stands in for the config
+    items `apply_changes` has already written when the fan-out resolves
+    them back: both `fanout_resource` and `fanout_entity` re-resolve per
+    bucket (ADR-125), so a test that expects stamping has to supply the
+    level that decides `disabled`. Any other key falls back to
+    `get_item_return`, which is what `_read_provisioner_state` reads.
+
+    Module-level rather than a shared base-class method, because
+    `mock.patch` used as a class decorator appends its patchings to the
+    *function objects* it finds via `dir()` — inherited ones included — so a
+    second test class carrying its own class-level `@patch` stack would
+    silently re-decorate the first class's methods and break them all.
+    """
+    mock_client = MagicMock()
+    default_get_item = get_item_return or {}
+    if disabled_items:
+
+        def _get_item(*_args, **kwargs):
+            raw_key = kwargs["Key"]
+            key = (raw_key["PK"]["S"], raw_key["SK"]["S"])
+            if key in disabled_items:
+                return {"Item": {"disabled": {"BOOL": disabled_items[key]}}}
+            return default_get_item
+
+        mock_client.get_item.side_effect = _get_item
+    else:
+        mock_client.get_item.return_value = default_get_item
+    # Default to "no buckets discovered" so fan-out (unconditional on every
+    # create/update) doesn't hang: an unconfigured MagicMock response is
+    # truthy for `LastEvaluatedKey`, which would loop forever.
+    mock_client.query.return_value = {"Items": []}
+    mock_handler_boto3.client.return_value = mock_client
+    mock_applier_boto3.client.return_value = mock_client
+    return mock_client
 
 
 class TestCfnPropertiesToManifestDisabled:
@@ -118,36 +164,9 @@ class TestProvisionerHandler:
     def _setup_client(
         self, mock_handler_boto3, mock_applier_boto3, get_item_return=None, disabled_items=None
     ):
-        """Set up shared mock client for both handler and applier boto3.
-
-        `disabled_items` maps (PK, SK) -> bool and stands in for the config
-        items `apply_changes` has already written when the fan-out resolves
-        them back: both `fanout_resource` and `fanout_entity` re-resolve per
-        bucket (ADR-125), so a test that expects stamping has to supply the
-        level that decides `disabled`. Any other key falls back to
-        `get_item_return`, which is what `_read_provisioner_state` reads.
-        """
-        mock_client = MagicMock()
-        default_get_item = get_item_return or {}
-        if disabled_items:
-
-            def _get_item(*_args, **kwargs):
-                raw_key = kwargs["Key"]
-                key = (raw_key["PK"]["S"], raw_key["SK"]["S"])
-                if key in disabled_items:
-                    return {"Item": {"disabled": {"BOOL": disabled_items[key]}}}
-                return default_get_item
-
-            mock_client.get_item.side_effect = _get_item
-        else:
-            mock_client.get_item.return_value = default_get_item
-        # Default to "no buckets discovered" so fan-out (now unconditional on every
-        # create/update, per the fix below) doesn't hang: an unconfigured MagicMock
-        # response is truthy for `LastEvaluatedKey`, which would loop forever.
-        mock_client.query.return_value = {"Items": []}
-        mock_handler_boto3.client.return_value = mock_client
-        mock_applier_boto3.client.return_value = mock_client
-        return mock_client
+        return _setup_client(
+            mock_handler_boto3, mock_applier_boto3, get_item_return, disabled_items
+        )
 
     def test_plan_action_returns_changes(
         self, mock_handler_boto3, mock_applier_boto3, mock_urlopen
@@ -990,3 +1009,470 @@ class TestCfnPropertiesToManifestSchedules:
         from zae_limiter_provisioner.handler import _CFN_SCHEDULE_KEYS
 
         assert _CFN_SCHEDULE_KEYS == {pascal: snake for snake, pascal in _SCHEDULE_KEYS}
+
+
+class TestCfnScalarCoercion:
+    """CloudFormation stringifies every scalar in `ResourceProperties` (#554).
+
+    Measured against a real `aws cloudformation deploy`: `Disabled: false`
+    arrives as `'false'`, `Capacity: 1000` as `'1000'`, `Scale: 0.5` as
+    `'0.5'`. Untreated that broke two ways, and the dangerous one was silent:
+
+    | Entry shape | Outcome before the fix |
+    |---|---|
+    | `Disabled: false` **with** numerics | `TypeError`, apply aborts |
+    | `Disabled: false` with **no** numerics | `bool('false')` -> True, **silently disables** |
+    | `Schedule` with stringified `Scale` | `TypeError` (`_parse_entries` catches `ValueError`) |
+
+    The silent row is exactly what an ADR-125 carve-out looks like: an entry
+    that grants access and declares no limits of its own. Both rows are pinned
+    below, and every assertion runs against the recorded payload rather than a
+    synthetic dict built from native Python types — the latter is what let this
+    ship.
+    """
+
+    def test_recorded_payload_carve_outs_survive_as_real_false(self):
+        """The headline bug: `Disabled: false` must not become `True`.
+
+        `is False` rather than `== False`, because `'false' == False` is
+        already False in Python — the assertion has to pin the *type* too.
+        """
+        manifest = _cfn_properties_to_manifest(RECORDED_CFN_RESOURCE_PROPERTIES)
+
+        assert manifest["resources"]["gpt-4"]["disabled"] is False
+        assert manifest["resources"]["quoted-model"]["disabled"] is False
+        assert manifest["resources"]["enabled-model"]["disabled"] is True
+        assert manifest["entities"]["user-premium"]["resources"]["gpt-4"]["disabled"] is False
+
+    def test_recorded_payload_silent_shape_survives_manifest_parsing(self):
+        """The silent case, end to end through `LimitsManifest`.
+
+        `quoted-model` carries `Disabled` and **no** limits — nothing numeric to
+        trip a `TypeError`, so before the fix this parsed cleanly and disabled a
+        resource the operator was re-enabling.
+        """
+        from zae_limiter_provisioner.manifest import LimitsManifest
+
+        parsed = LimitsManifest.from_dict(
+            _cfn_properties_to_manifest(
+                {"Namespace": "n", "Resources": {"quoted-model": {"Disabled": "false"}}}
+            )
+        )
+        assert parsed.resources["quoted-model"].disabled is False
+
+    def test_recorded_payload_numeric_fields_become_numbers(self):
+        """The loud case: stringified numerics reach `LimitDecl` as numbers."""
+        manifest = _cfn_properties_to_manifest(RECORDED_CFN_RESOURCE_PROPERTIES)
+
+        system_rpm = manifest["system"]["limits"]["rpm"]
+        assert system_rpm["capacity"] == 1000
+        assert isinstance(system_rpm["capacity"], int)
+        assert system_rpm["refill_amount"] == 1000
+        assert isinstance(system_rpm["refill_amount"], int)
+
+        entry = manifest["resources"]["gpt-4"]["limits"]["rpm"]["schedule"][0]
+        assert entry["scale"] == 0.5
+        assert isinstance(entry["scale"], float)
+        assert entry["capacity"] == 2000
+        assert isinstance(entry["capacity"], int)
+
+    def test_recorded_payload_cron_and_tz_stay_strings(self):
+        """Type-directed, not value-sniffing.
+
+        `Cron` is legitimately a string whose content is entirely digits and
+        punctuation. A generic "looks numeric => int" pass — the shape of the
+        obvious wrong fix — would mangle it.
+        """
+        manifest = _cfn_properties_to_manifest(RECORDED_CFN_RESOURCE_PROPERTIES)
+        entries = manifest["resources"]["gpt-4"]["limits"]["rpm"]["schedule"]
+        assert entries[0]["cron"] == "0 9 * * 1-5"
+        assert entries[0]["tz"] == "America/New_York"
+        assert entries[1]["cron"] == "0 18 * * 1-5"
+
+        numeric_looking = _cfn_limits_to_manifest(
+            {"rpm": {"Capacity": "1", "Schedule": [{"Cron": "5 4 3 2 1", "Scale": "2"}]}}
+        )
+        cron = numeric_looking["rpm"]["schedule"][0]["cron"]
+        assert cron == "5 4 3 2 1"
+        assert isinstance(cron, str)
+        assert isinstance(entries[0]["tz"], str)
+
+    def test_recorded_payload_residual_failure_is_a_named_value_error(self):
+        """The recorded payload's own quirk, pinned so it is not mistaken for #554.
+
+        Its first schedule entry sets both `Scale` and `Capacity`, which
+        `ScheduleEntry` forbids. After coercion that surfaces as a `ValueError`
+        naming the entry — reportable back through the CFN response — where
+        before it was a `TypeError` from comparing `str` to `int`.
+        """
+        import pytest
+
+        from zae_limiter_provisioner.manifest import LimitsManifest
+
+        manifest = _cfn_properties_to_manifest(RECORDED_CFN_RESOURCE_PROPERTIES)
+        with pytest.raises(ValueError, match=r"schedule\[0\]: a schedule entry must set exactly"):
+            LimitsManifest.from_dict(manifest)
+
+    def test_corrected_recorded_payload_parses_end_to_end(self):
+        """Same payload, one illegal entry fixed: every scalar still a string."""
+        from zae_limiter.schedule import ScheduleEntry
+        from zae_limiter_provisioner.manifest import LimitsManifest
+
+        parsed = LimitsManifest.from_dict(
+            _cfn_properties_to_manifest(RECORDED_CFN_RESOURCE_PROPERTIES_VALID)
+        )
+        assert parsed.system is not None
+        assert parsed.system.limits["rpm"].capacity == 1000
+        assert parsed.resources["gpt-4"].disabled is False
+        assert parsed.resources["gpt-4"].limits["rpm"].capacity == 500
+        assert parsed.resources["gpt-4"].limits["rpm"].schedule == (
+            ScheduleEntry(cron="0 9 * * 1-5", tz="America/New_York", scale=0.5),
+            ScheduleEntry(cron="0 18 * * 1-5", scale=1.0),
+        )
+        assert parsed.entities["user-premium"].resources["gpt-4"].disabled is False
+        assert parsed.entities["user-premium"].resources["gpt-4"].limits["rpm"].capacity == 100
+
+    def test_disabled_accepts_any_case(self):
+        """`Disabled: "True"` — quoted, so YAML keeps it a string — is truthy by
+        accident under `bool()`. The allowlist lowercases before matching so it
+        is truthy on purpose, and `"FALSE"` is not truthy at all."""
+        manifest = _cfn_properties_to_manifest(
+            {
+                "Namespace": "n",
+                "Resources": {
+                    "a": {"Disabled": "True"},
+                    "b": {"Disabled": "FALSE"},
+                    "c": {"Disabled": "TrUe"},
+                    "d": {"Disabled": "fAlSe"},
+                },
+            }
+        )
+        assert manifest["resources"]["a"]["disabled"] is True
+        assert manifest["resources"]["b"]["disabled"] is False
+        assert manifest["resources"]["c"]["disabled"] is True
+        assert manifest["resources"]["d"]["disabled"] is False
+
+    def test_disabled_raises_on_anything_outside_the_allowlist(self):
+        """Raise rather than fall through to `bool(v)`.
+
+        `disabled` is a kill switch: guessing wrong either locks a tenant out or
+        re-admits one that was meant to stay out, and both are silent. `'1'` and
+        `'yes'` are the plausible spellings an operator might reach for; `''` is
+        what a CloudFormation `Default: ""` parameter delivers.
+        """
+        import pytest
+
+        for value in ("yes", "no", "1", "0", "", "none", 1, 0, None, [], 1.0):
+            with pytest.raises(ValueError, match="must be true or false"):
+                _cfn_properties_to_manifest(
+                    {"Namespace": "n", "Resources": {"gpt-4": {"Disabled": value}}}
+                )
+
+    def test_absent_disabled_is_still_absent_among_stringified_siblings(self):
+        """The tri-state's third state. Coercion converts a present value; it
+        must never invent one, or every apply would re-enable whatever the
+        operator disabled out of band."""
+        manifest = _cfn_properties_to_manifest(
+            {
+                "Namespace": "n",
+                "Resources": {"gpt-4": {"Limits": {"rpm": {"Capacity": "1000"}}}},
+                "Entities": {
+                    "vip": {"Resources": {"gpt-4": {"Limits": {"rpm": {"Capacity": "10"}}}}}
+                },
+            }
+        )
+        assert "disabled" not in manifest["resources"]["gpt-4"]
+        assert "disabled" not in manifest["entities"]["vip"]["resources"]["gpt-4"]
+
+    def test_coercion_is_idempotent_on_already_native_values(self):
+        """Re-invokes can hand back values a previous pass converted, and if AWS
+        ever ships the fix (cloudformation-coverage-roadmap#1037) this boundary
+        keeps working instead of breaking on real types."""
+        native = {
+            "Namespace": "n",
+            "Resources": {
+                "gpt-4": {
+                    "Disabled": False,
+                    "Limits": {
+                        "rpm": {
+                            "Capacity": 500,
+                            "RefillAmount": 250,
+                            "RefillPeriod": 60,
+                            "Schedule": [{"Cron": "0 9 * * *", "Scale": 0.5}],
+                        }
+                    },
+                }
+            },
+        }
+        manifest = _cfn_properties_to_manifest(native)
+        limit = manifest["resources"]["gpt-4"]["limits"]["rpm"]
+        assert manifest["resources"]["gpt-4"]["disabled"] is False
+        assert limit["capacity"] == 500 and isinstance(limit["capacity"], int)
+        assert limit["refill_amount"] == 250
+        assert limit["refill_period"] == 60
+        assert limit["schedule"] == [{"cron": "0 9 * * *", "scale": 0.5}]
+
+        # Idempotent in the strict sense: running the CFN conversion over its own
+        # PascalCase input twice changes nothing.
+        assert _cfn_properties_to_manifest(native) == manifest
+
+    def test_numeric_properties_reject_unparseable_and_boolean_values(self):
+        import pytest
+
+        for value in ("abc", "0.5", "1e3x", None, [], True, False):
+            with pytest.raises(ValueError, match="must be a whole number"):
+                _cfn_limits_to_manifest({"rpm": {"Capacity": value}})
+
+    def test_scale_rejects_non_finite_values(self):
+        """`ScheduleEntry` validates `scale` with `scale <= 0`, and every
+        comparison against NaN is False — so a NaN would pass validation and
+        then poison every effective-parameter calculation. Rejected here, where
+        the field's target type is known."""
+        import pytest
+
+        for value in ("NaN", "nan", "Infinity", "inf", "-inf", float("nan")):
+            with pytest.raises(ValueError, match="must be a finite number"):
+                _cfn_limits_to_manifest(
+                    {"rpm": {"Capacity": "1", "Schedule": [{"Cron": "* * * * *", "Scale": value}]}}
+                )
+
+        with pytest.raises(ValueError, match="must be a number"):
+            _cfn_limits_to_manifest(
+                {"rpm": {"Capacity": "1", "Schedule": [{"Cron": "* * * * *", "Scale": "half"}]}}
+            )
+
+    def test_empty_string_drops_an_optional_numeric_property(self):
+        """A CloudFormation `Parameter: {Default: ""}` is how a template spells
+        "not set" for an optional property; the RPDK's own recast maps `""` to
+        absent for numeric targets. Dropping the key lets `LimitDecl`'s
+        documented default apply."""
+        result = _cfn_limits_to_manifest(
+            {"rpm": {"Capacity": "500", "RefillAmount": "", "RefillPeriod": ""}}
+        )
+        assert result == {"rpm": {"capacity": 500}}
+
+        entry = _cfn_limits_to_manifest(
+            {
+                "rpm": {
+                    "Capacity": "1",
+                    "Schedule": [{"Cron": "* * * * *", "Scale": "2", "Capacity": ""}],
+                }
+            }
+        )
+        assert entry["rpm"]["schedule"] == [{"cron": "* * * * *", "scale": 2.0}]
+
+    def test_empty_capacity_is_an_error_not_a_dropped_key(self):
+        """`capacity` is the one field with no default — the allowance itself.
+        Dropping it would surface as a `KeyError` naming a snake_case key the
+        operator never wrote."""
+        import pytest
+
+        with pytest.raises(ValueError, match=r"Limits\.rpm\.Capacity is required"):
+            _cfn_limits_to_manifest({"rpm": {"Capacity": ""}})
+
+    def test_errors_name_the_full_dotted_property_path(self):
+        """A failing apply is read in CloudWatch, where the only context is the
+        message. Each of the four branches must name where it was."""
+        import pytest
+
+        cases = [
+            ({"System": {"Limits": {"rpm": {"Capacity": "x"}}}}, "System.Limits.rpm.Capacity"),
+            (
+                {"Resources": {"gpt-4": {"Limits": {"rpm": {"Capacity": "x"}}}}},
+                "Resources.gpt-4.Limits.rpm.Capacity",
+            ),
+            ({"Resources": {"gpt-4": {"Disabled": "maybe"}}}, "Resources.gpt-4.Disabled"),
+            (
+                {"Entities": {"vip": {"Resources": {"gpt-4": {"Disabled": "maybe"}}}}},
+                "Entities.vip.Resources.gpt-4.Disabled",
+            ),
+            (
+                {
+                    "Resources": {
+                        "gpt-4": {
+                            "Limits": {
+                                "rpm": {
+                                    "Capacity": "1",
+                                    "Schedule": [{"Cron": "* * * * *", "Scale": "x"}],
+                                }
+                            }
+                        }
+                    }
+                },
+                "Resources.gpt-4.Limits.rpm.Schedule[0].Scale",
+            ),
+        ]
+        for props, expected in cases:
+            with pytest.raises(ValueError) as exc:
+                _cfn_properties_to_manifest({"Namespace": "n", **props})
+            assert expected in str(exc.value)
+
+    def test_every_schedule_property_declares_a_target_type(self):
+        """The coercion is type-directed, so the type table must cover the key
+        table exactly. A seventh schedule property added to one and not the
+        other would either KeyError at runtime or silently skip coercion."""
+        from zae_limiter_provisioner.handler import _CFN_SCHEDULE_COERCERS, _CFN_SCHEDULE_KEYS
+
+        assert set(_CFN_SCHEDULE_COERCERS) == set(_CFN_SCHEDULE_KEYS)
+
+
+@patch("zae_limiter_provisioner.handler.urllib.request.urlopen")
+@patch("zae_limiter_provisioner.applier.boto3")
+@patch("zae_limiter_provisioner.handler.boto3")
+class TestCfnScalarCoercionEndToEnd:
+    """The #554 inversion driven through `on_event`, not just the converter."""
+
+    _setup_client = staticmethod(_setup_client)
+
+    def test_stringified_disabled_false_unstamps_instead_of_stamping(
+        self, mock_handler_boto3, mock_applier_boto3, mock_urlopen
+    ):
+        """A carve-out delivered as `'false'` must clear the stamp, not set it.
+
+        This is the whole bug in one assertion: `bool('false')` is `True`, so
+        before the fix this apply wrote `SET #disabled = :true` over the buckets
+        of a resource the operator was explicitly re-enabling, reported SUCCESS
+        to CloudFormation, and left no trace.
+        """
+        mock_client = self._setup_client(
+            mock_handler_boto3,
+            mock_applier_boto3,
+            disabled_items={(pk_resource("ns123", "gpt-4"), sk_config()): False},
+        )
+        mock_client.query.return_value = {"Items": [{"PK": {"S": "ns123/BUCKET#user-1#gpt-4#0"}}]}
+
+        event = {
+            "RequestType": "Create",
+            "ResourceProperties": {
+                "ServiceToken": "arn:aws:lambda:us-east-1:123:function:test",
+                "TableName": "test-table",
+                "Namespace": "test-ns",
+                "NamespaceId": "ns123",
+                # Exactly as CloudFormation delivers it: strings, not natives.
+                "Resources": {"gpt-4": {"Disabled": "false", "Limits": {}}},
+            },
+            "ResponseURL": "https://cfn-response.example.com",
+            "StackId": "arn:aws:cloudformation:us-east-1:123:stack/test/guid",
+            "RequestId": "test-request-id",
+            "LogicalResourceId": "TenantLimits",
+        }
+        result = on_event(event, MagicMock())
+        assert result["status"] == "applied"
+
+        stamps = _disable_stamps(mock_client)
+        assert [c.kwargs["UpdateExpression"] for c in stamps] == ["REMOVE #disabled"]
+
+    def test_stringified_true_still_stamps(
+        self, mock_handler_boto3, mock_applier_boto3, mock_urlopen
+    ):
+        """The other half of the allowlist — otherwise a constant `False` would
+        pass the test above."""
+        mock_client = self._setup_client(
+            mock_handler_boto3,
+            mock_applier_boto3,
+            disabled_items={(pk_resource("ns123", "gpt-4"), sk_config()): True},
+        )
+        mock_client.query.return_value = {"Items": [{"PK": {"S": "ns123/BUCKET#user-1#gpt-4#0"}}]}
+
+        event = {
+            "RequestType": "Create",
+            "ResourceProperties": {
+                "ServiceToken": "arn:aws:lambda:us-east-1:123:function:test",
+                "TableName": "test-table",
+                "Namespace": "test-ns",
+                "NamespaceId": "ns123",
+                "Resources": {"gpt-4": {"Disabled": "true", "Limits": {}}},
+            },
+            "ResponseURL": "https://cfn-response.example.com",
+            "StackId": "arn:aws:cloudformation:us-east-1:123:stack/test/guid",
+            "RequestId": "test-request-id",
+            "LogicalResourceId": "TenantLimits",
+        }
+        assert on_event(event, MagicMock())["status"] == "applied"
+        stamps = _disable_stamps(mock_client)
+        assert [c.kwargs["UpdateExpression"] for c in stamps] == ["SET #disabled = :true"]
+
+    def test_stringified_numeric_limits_apply_without_a_type_error(
+        self, mock_handler_boto3, mock_applier_boto3, mock_urlopen
+    ):
+        """The loud half of the blast radius, driven through `on_event`.
+
+        Before the fix `'1000' <= 0` raised `TypeError` inside
+        `LimitDecl.from_dict`, the custom resource reported FAILED and nothing
+        was written at all.
+        """
+        self._setup_client(mock_handler_boto3, mock_applier_boto3)
+
+        event = {
+            "RequestType": "Create",
+            "ResourceProperties": {
+                "ServiceToken": "arn:aws:lambda:us-east-1:123:function:test",
+                "TableName": "test-table",
+                "Namespace": "test-ns",
+                "NamespaceId": "ns123",
+                "System": {
+                    "OnUnavailable": "block",
+                    "Limits": {"rpm": {"Capacity": "1000", "RefillPeriod": "60"}},
+                },
+                "Resources": {
+                    "gpt-4": {
+                        "Disabled": "false",
+                        "Limits": {"rpm": {"Capacity": "500", "RefillAmount": "500"}},
+                    }
+                },
+            },
+            "ResponseURL": "https://cfn-response.example.com",
+            "StackId": "arn:aws:cloudformation:us-east-1:123:stack/test/guid",
+            "RequestId": "test-request-id",
+            "LogicalResourceId": "TenantLimits",
+        }
+        result = on_event(event, MagicMock())
+        assert result["status"] == "applied"
+        assert ("system", None, "create") in {
+            (c["level"], c["target"], c["action"]) for c in result["changes"]
+        }
+
+    def test_old_resource_properties_are_ignored_on_update(
+        self, mock_handler_boto3, mock_applier_boto3, mock_urlopen
+    ):
+        """`OldResourceProperties` is present on Update and stringified too, but
+        nothing in this package reads it — verified by grep, pinned here.
+
+        If drift/diff logic is ever added it must run the old properties through
+        the same coercion; comparing coerced-new against stringified-old would
+        report a change in every field on every re-apply. This test fails the
+        moment the old properties start influencing the outcome without going
+        through `_cfn_properties_to_manifest`.
+        """
+        self._setup_client(mock_handler_boto3, mock_applier_boto3)
+
+        base = {
+            "RequestType": "Update",
+            "ResourceProperties": {
+                "ServiceToken": "arn:aws:lambda:us-east-1:123:function:test",
+                "TableName": "test-table",
+                "Namespace": "test-ns",
+                "NamespaceId": "ns123",
+                "Resources": {"gpt-4": {"Limits": {"rpm": {"Capacity": "2000"}}}},
+            },
+            "ResponseURL": "https://cfn-response.example.com",
+            "StackId": "arn:aws:cloudformation:us-east-1:123:stack/test/guid",
+            "RequestId": "test-request-id",
+            "LogicalResourceId": "TenantLimits",
+        }
+        without_old = on_event(dict(base), MagicMock())
+        with_old = on_event(
+            {
+                **base,
+                "OldResourceProperties": {
+                    "TableName": "test-table",
+                    "Namespace": "test-ns",
+                    "NamespaceId": "ns123",
+                    "Resources": {
+                        "claude-3": {"Disabled": "true", "Limits": {"tpm": {"Capacity": "9"}}}
+                    },
+                },
+            },
+            MagicMock(),
+        )
+        assert without_old["changes"] == with_old["changes"]
