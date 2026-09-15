@@ -1,6 +1,6 @@
 # ADR-115: ADD-Based Writes with Lazy Refill
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-01-28
 **Issue:** [#248](https://github.com/zeroae/zae-limiter/issues/248)
 **Depends on:** [ADR-114](114-composite-bucket-items.md)
