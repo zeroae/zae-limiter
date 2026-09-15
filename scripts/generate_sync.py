@@ -311,12 +311,72 @@ Changes should be made to the source file, then regenerated.
 '''
 
 
+class UnsupportedAsyncConstructError(Exception):
+    """Async source uses a construct the sync generator cannot faithfully translate.
+
+    Raised during generation (not at runtime) so that a construct which would
+    produce a silently divergent sync twin becomes a build-time stop instead.
+    """
+
+
+# Keywords each asyncio.* rewrite is allowed to discard, with the reason.
+# Anything not listed is rejected by `_reject_dropped_keywords` rather than
+# silently dropped (issue #491).
+_GATHER_ALLOWED_KEYWORDS: frozenset[str] = frozenset()
+_WAIT_FOR_ALLOWED_KEYWORDS: frozenset[str] = frozenset({"timeout"})
+
+_GATHER_KEYWORD_HELP = """\
+The sync generator rewrites `asyncio.gather(...)` into `self._run_in_executor(...)`,
+which accepts positional callables only. A keyword would be dropped and the sync
+twin would silently diverge from its async original.
+
+For `return_exceptions=True`, move the handling into the coroutine instead. That
+rewrite is equivalent, works unchanged in both twins, and -- unlike a translated
+keyword -- is faithful under every `parallel_mode` strategy:
+
+    async def _safe(item):
+        try:
+            return await work(item)
+        except Exception as exc:  # noqa: BLE001
+            return exc
+
+    results = await asyncio.gather(*[_safe(i) for i in items])
+"""
+
+_WAIT_FOR_KEYWORD_HELP = """\
+The sync generator drops the `asyncio.wait_for(...)` wrapper entirely (sync code
+has no cancellation) and keeps only its first positional argument. `timeout` is
+discarded by design; any other keyword would be silently lost.
+"""
+
+
 class AsyncToSyncTransformer(ast.NodeTransformer):
     """Transform async Python code to sync."""
 
     def __init__(self, source_file: str):
         self.source_file = source_file
         super().__init__()
+
+    def _reject_dropped_keywords(
+        self,
+        node: ast.Call,
+        call_name: str,
+        allowed: frozenset[str],
+        help_text: str,
+    ) -> None:
+        """Abort generation if `node` carries keywords the rewrite would discard.
+
+        Called once per asyncio rewrite, before any replacement node is built, so
+        that every construction path in the rewrite is covered by a single guard.
+        """
+        dropped = [kw.arg if kw.arg is not None else "**kwargs" for kw in node.keywords]
+        dropped = [name for name in dropped if name not in allowed]
+        if not dropped:
+            return
+        raise UnsupportedAsyncConstructError(
+            f"{self.source_file}:{node.lineno}: `{call_name}` does not support "
+            f"keyword argument(s): {', '.join(dropped)}.\n\n{help_text}"
+        )
 
     @staticmethod
     def _rewrite_docstring(body: list[ast.stmt]) -> None:
@@ -392,6 +452,9 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
             and node.func.attr == "wait_for"
             and len(node.args) >= 1
         ):
+            self._reject_dropped_keywords(
+                node, "asyncio.wait_for", _WAIT_FOR_ALLOWED_KEYWORDS, _WAIT_FOR_KEYWORD_HELP
+            )
             # Return just the first argument (the coroutine), skip timeout
             return node.args[0]
 
@@ -402,6 +465,11 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
             and node.func.value.id == "asyncio"
             and node.func.attr == "gather"
         ):
+            # Guard every construction path below with one check, so a new
+            # rewrite shape cannot reintroduce the silent drop (issue #491).
+            self._reject_dropped_keywords(
+                node, "asyncio.gather", _GATHER_ALLOWED_KEYWORDS, _GATHER_KEYWORD_HELP
+            )
             executor_func = ast.Attribute(
                 value=ast.Name(id="self", ctx=ast.Load()),
                 attr="_run_in_executor",
@@ -1429,4 +1497,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except UnsupportedAsyncConstructError as exc:
+        print(f"\nERROR: sync generation aborted.\n\n{exc}", file=sys.stderr)
+        sys.exit(1)

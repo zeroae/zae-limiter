@@ -55,6 +55,20 @@ Native sync code is generated from async source via AST transformation (see ADR-
 
 All explicit modes warn (not error) when conditions are suboptimal. Auto mode silently selects the best strategy without warnings. Resolution happens once at `SyncRepository.__init__` time (not per-call). Usage:
 
+**`asyncio.gather` takes no keywords in generator-covered source (#491).** `_run_in_executor(*funcs)` accepts positional callables only, so a keyword would be dropped and the sync twin would silently diverge — `return_exceptions=True` would generate a twin that raises on the first sibling failure and abandons the rest. Generation now **aborts** (`UnsupportedAsyncConstructError`, exit 1) naming the file, line and keyword. Use the portable rewrite instead, which is faithful under all four strategies (a translated keyword would not be — serial abandons siblings):
+
+```python
+async def _safe(item):
+    try:
+        return await work(item)
+    except Exception as exc:
+        return exc
+
+results = await asyncio.gather(*[_safe(i) for i in items])
+```
+
+`asyncio.wait_for` is guarded the same way: its `timeout` is discarded by design (sync has no cancellation), any other keyword aborts generation.
+
 ```python
 repo = SyncRepository.open(parallel_mode="gevent")
 limiter = SyncRateLimiter(repository=repo)
