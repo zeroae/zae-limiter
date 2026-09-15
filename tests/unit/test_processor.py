@@ -3175,3 +3175,94 @@ class TestAnUnscheduledLimitOnAScheduledItem:
         assert try_refill_bucket(table, state, now_ms=TUE_1400) is True
         values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
         assert int(values[":new_vu"]) > TUE_1400
+
+
+class TestABatchWithNoConsumptionStillReachesTheBucket:
+    """A batch carrying no `tc` delta must still refill, clamp and re-stamp `vu`.
+
+    `process_stream_records` used to return the moment `extract_deltas` came
+    back empty. Usage aggregation was its only job when that short-circuit was
+    written; proactive refill (#317), the negative clamp and the reset edge
+    (#222), the `vu` re-stamp and proactive sharding all landed *below* it
+    afterwards, and none of them reads a consumption delta.
+
+    The batch that exposes it is the one the whole `vu = 0` design depends on:
+    a `_sync_bucket_params` fan-out rewrites `cp`/`ra`/`sched` and stamps
+    `vu = 0` **without touching `tc`**, so the record it puts on the stream
+    carries an unchanged counter. The aggregator returned immediately, leaving
+    the bucket above its new ceiling with `vu` expired and pinned to the client
+    slow path until some client happened to acquire against it.
+    """
+
+    # Unchanged counter: `old_tc == new_tc`, exactly as a fan-out leaves it.
+    # `tk` sits an order of magnitude above the freshly lowered `cp`.
+    SHRUNK = {
+        "rpm": {
+            "old_tc": 600_000,
+            "tc": 600_000,
+            "tk": 1_000_000,
+            "cp": 100_000,
+            "ra": 100_000,
+            "rp": 60_000,
+        }
+    }
+
+    @staticmethod
+    def _run(records, now_ms):
+        with patch("zae_limiter_aggregator.processor.boto3") as mock_boto:
+            mock_table = MagicMock()
+            mock_boto.resource.return_value.Table.return_value = mock_table
+            with patch("zae_limiter_aggregator.processor.time_module") as mock_time:
+                mock_time.perf_counter.return_value = 0.0
+                mock_time.time.return_value = now_ms / 1000
+                result = process_stream_records(records, "test_table", ["hourly"])
+        return result, mock_table
+
+    def test_the_clamp_still_lands(self) -> None:
+        record = _sched_record(limits=self.SHRUNK, rf_ms=TUE_1400 - 60_000)
+        result, table = self._run([record], TUE_1400)
+
+        assert result.refills_written == 1
+        (call,) = table.update_item.call_args_list
+        assert call.kwargs["ExpressionAttributeValues"][":rd_rpm"] == 100_000 - 1_000_000
+
+    def test_vu_is_still_restamped(self) -> None:
+        """The half that pins the bucket to the slow path when it is skipped."""
+        record = _sched_record(
+            limits=self.SHRUNK,
+            rf_ms=TUE_1400 - 60_000,
+            sched=BUSINESS_COMPACT,
+            vu_ms=0,
+        )
+        result, table = self._run([record], TUE_1400)
+
+        assert result.refills_written == 1
+        (call,) = table.update_item.call_args_list
+        assert "#vu = :new_vu" in call.kwargs["UpdateExpression"]
+        # BUSINESS closes at 18:00 local, which is the next parameter change.
+        assert call.kwargs["ExpressionAttributeValues"][":new_vu"] > TUE_1400
+
+    def test_an_empty_batch_is_still_a_no_op(self) -> None:
+        """The short-circuit's legitimate case: nothing to read, nothing to write."""
+        result, table = self._run([], TUE_1400)
+        assert (result.processed_count, result.refills_written) == (0, 0)
+        table.update_item.assert_not_called()
+
+    def test_one_malformed_record_does_not_poison_the_batch(self) -> None:
+        """Reaching the bucket image on every batch means reaching malformed ones.
+
+        `_parse_bucket_record` raises on an attribute it cannot read, and the
+        short-circuit used to hide that from `aggregate_bucket_states` whenever
+        the same record also broke `extract_deltas`. Out of this loop it would
+        fail the invocation and the event source would redrive the same batch
+        until it aged out.
+        """
+        good = _sched_record(limits=self.SHRUNK, rf_ms=TUE_1400 - 60_000)
+        bad = _sched_record(limits=self.SHRUNK, rf_ms=TUE_1400 - 60_000, entity_id="user-2")
+        bad["dynamodb"]["NewImage"]["b_rpm_tc"] = {"N": "not-a-number"}
+
+        result, table = self._run([bad, good], TUE_1400)
+
+        assert result.refills_written == 1
+        (call,) = table.update_item.call_args_list
+        assert "user-1" in call.kwargs["Key"]["PK"]

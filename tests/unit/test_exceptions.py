@@ -1,5 +1,7 @@
 """Tests for exception classes."""
 
+import time
+
 import pytest
 
 from zae_limiter.exceptions import (
@@ -25,6 +27,7 @@ from zae_limiter.exceptions import (
     ZAELimiterError,
 )
 from zae_limiter.models import Limit, LimitStatus
+from zae_limiter.schedule import next_reset_edge
 
 
 class TestRateLimitExceeded:
@@ -154,9 +157,97 @@ class TestRateLimitExceeded:
         assert limit_info["requested"] == 10
         assert limit_info["exceeded"] is True
         assert limit_info["retry_after_seconds"] == 7.5
+        assert limit_info["kind"] == "rate"
         assert limit_info["capacity"] == 100
         assert limit_info["refill_amount"] == 100
         assert limit_info["refill_period_seconds"] == 60
+        assert "resets_at_ms" not in limit_info
+
+    def test_as_dict_quota_is_not_rendered_as_a_rate(self) -> None:
+        """A quota emits `kind`/`resets_at_ms`, never a drip (#545).
+
+        ADR-137 fixes a quota's ``refill_amount`` at 0 and leaves
+        ``refill_period_seconds`` an inert placeholder. Serialising both put a
+        limit that "refills 0 tokens every 1 second" into 429 bodies, which a
+        client computing a rate from them reads as "never recovers".
+        """
+        quota = Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York")
+        status = LimitStatus(
+            entity_id="user-123",
+            resource="gpt-4",
+            limit_name="rpd",
+            limit=quota,
+            available=0,
+            requested=1,
+            exceeded=True,
+            retry_after_seconds=29_000.0,
+        )
+        before_ms = int(time.time() * 1000)
+        info = RateLimitExceeded([status]).as_dict()["limits"][0]
+        after_ms = int(time.time() * 1000)
+
+        assert info["kind"] == "quota"
+        assert info["capacity"] == 10_000
+        # The two fields that described a drip ADR-137 says does not exist.
+        assert "refill_amount" not in info
+        assert "refill_period_seconds" not in info
+
+        # An absolute instant, so the client needs neither a cron parser nor a
+        # reference clock to know when the allowance returns.
+        expected = next_reset_edge(quota.reset_schedule, now_ms=before_ms)
+        assert info["resets_at_ms"] == expected
+        assert next_reset_edge(quota.reset_schedule, now_ms=after_ms) == expected
+
+    def test_as_dict_quota_resets_at_ms_is_null_beyond_the_scan_horizon(self) -> None:
+        """`resets_at_ms` is None, not a guess, when no edge is in reach.
+
+        ``schedule.next_reset_edge`` scans at the granularity of the finest
+        field the cron constrains, so a monthly ``0 0 1 * *`` is only visible
+        within 7 days of its edge. The key stays present so the shape of a
+        quota entry does not vary; its value says "not known", which is the
+        truth rather than an invented instant.
+        """
+        # A 29-February reset: never within a minute-granularity 7-day scan
+        # from this instant, whichever day the suite runs on.
+        quota = Limit.quota("rpy", 10_000, cron="0 0 29 2 *")
+        status = LimitStatus(
+            entity_id="user-123",
+            resource="gpt-4",
+            limit_name="rpy",
+            limit=quota,
+            available=0,
+            requested=1,
+            exceeded=True,
+            retry_after_seconds=0.0,
+        )
+        info = RateLimitExceeded([status]).as_dict()["limits"][0]
+
+        assert info["kind"] == "quota"
+        assert info["resets_at_ms"] is None
+
+    def test_as_dict_mixed_kinds_in_one_body(self) -> None:
+        """A quota and a rate limit on the same rejection keep their own shapes."""
+        quota = Limit.quota("rpd", 10_000, cron="0 0 * * *")
+        rate = Limit.per_minute("rpm", 100)
+        statuses = [
+            LimitStatus(
+                entity_id="u",
+                resource="r",
+                limit_name=limit.name,
+                limit=limit,
+                available=0,
+                requested=1,
+                exceeded=exceeded,
+                retry_after_seconds=retry,
+            )
+            for limit, exceeded, retry in ((quota, True, 60.0), (rate, False, 0.0))
+        ]
+        limits = RateLimitExceeded(statuses).as_dict()["limits"]
+
+        assert [entry["kind"] for entry in limits] == ["quota", "rate"]
+        assert "refill_amount" not in limits[0]
+        assert limits[1]["refill_amount"] == 100
+        assert "resets_at_ms" not in limits[1]
 
     def test_retry_after_header_rounds_up(self) -> None:
         """retry_after_header rounds up fractional seconds."""

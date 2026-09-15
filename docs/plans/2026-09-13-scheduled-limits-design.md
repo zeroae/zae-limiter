@@ -843,14 +843,23 @@ Plus the generated sync counterparts throughout.
   Fixing it means teaching `resolve_on_unavailable` to distinguish "cannot reach DynamoDB" from
   "read a config item I cannot parse", which is wider than §6 needs. The blast radius is pinned
   by `TestSystemLevelCorruptionDowngradesTheMode` so it cannot widen silently.
-- **The provisioner commits before it can fail on an undecodable schedule.**
-  `handler.on_event` calls `apply_changes` and then `_sync_bucket_param_changes`, which is
-  unguarded, so a `ValueError` out of `bucket_sync._decode_limits` — reading a config item some
-  other writer left undecodable — propagates *after* the config writes are committed and
-  *before* `_write_provisioner_state`. The apply is idempotent and re-running reconciles, but a
-  CloudFormation `Custom::ZaeLimiterLimits` update reports FAILED and rolls the stack back with
-  the config changes already applied. Out of scope for §6, which is the client boundary; noted
-  here because the two were decided together.
+- ~~**The provisioner commits before it can fail on an undecodable schedule.**~~ **Resolved by
+  #563.** `apply_changes` still commits before the fan-outs run — that ordering is required, the
+  fan-outs resolve the config this apply has just written — but a `ValueError` out of
+  `bucket_sync._decode_limits` no longer escapes. Both fan-outs now guard **per change** and
+  return their failures; `handler._apply_and_record` appends them to `ApplyResult.errors` and
+  writes `#PROVISIONER` unconditionally, so the record always describes what was committed. The
+  CLI prints the errors and exits 1 (it already did, for a failed config write); the
+  CloudFormation `Custom::ZaeLimiterLimits` response is **SUCCESS carrying the errors** rather
+  than FAILED, because a rollback of a stack whose configuration is already applied is the worst
+  available outcome — and FAILED on an Update would re-invoke the resource with the previous
+  properties, hit the same undecodable item, and strand the stack in
+  `UPDATE_ROLLBACK_FAILED`. This is the contract of `FanoutIncomplete` (§5.2, #468/#487) —
+  config committed first, progress reported, every write idempotent so re-running reconciles —
+  expressed through the provisioner's existing `ApplyResult.errors` channel rather than an
+  exception, since out of a Lambda handler an exception *is* a CloudFormation FAILED. The
+  residual limitation is that the operator must read the errors: a drifted bucket is not
+  self-healing at entity level (no TTL), exactly as `FanoutIncomplete` already documents.
 
 ## Related
 
