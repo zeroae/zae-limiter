@@ -103,6 +103,43 @@ class TestScheduleEntry:
         with pytest.raises(ValueError):
             ScheduleEntry(cron="* * * * *", **kwargs)
 
+    @pytest.mark.parametrize("scale", [float("nan"), float("inf"), float("-inf")])
+    def test_rejects_non_finite_scale(self, scale):
+        """NaN slips past `<= 0` (every NaN comparison is False) and `inf` is positive.
+
+        Both then die much later, inside `encode` ("cannot convert float NaN to
+        integer") or `effective_params`, naming no field (#564).
+        """
+        with pytest.raises(ValueError, match="scale must be a finite number"):
+            ScheduleEntry(cron="* * * * *", scale=scale)
+
+    @pytest.mark.parametrize("field", ["capacity", "refill_amount", "refill_period_seconds"])
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+    def test_rejects_non_finite_absolutes(self, field, value):
+        """Worse than `scale`: these encode *cleanly*, as the byte string `cnan`.
+
+        Nothing raises at write time, so the corrupt value reaches the config item
+        and every later `decode` of it fails (#564).
+        """
+        with pytest.raises(ValueError, match=f"{field} must be a finite number"):
+            ScheduleEntry(cron="* * * * *", **{field: value})
+
+    def test_finite_values_still_pass(self):
+        """The guard must not narrow anything that was already valid."""
+        e = ScheduleEntry(cron="* * * * *", scale=0.5)
+        assert e.scale == 0.5
+        e = ScheduleEntry(cron="* * * * *", capacity=10, refill_amount=5, refill_period_seconds=60)
+        assert (e.capacity, e.refill_amount, e.refill_period_seconds) == (10, 5, 60)
+
+    def test_non_finite_is_rejected_before_positivity(self):
+        """Ordering matters: a NaN must not fall through to `scale must be positive`."""
+        with pytest.raises(ValueError, match="finite"):
+            ScheduleEntry(cron="* * * * *", scale=float("nan"))
+
+    def test_huge_integer_capacity_is_not_swept_up(self):
+        """`math.isfinite` casts to float, so a bare call would OverflowError here."""
+        assert ScheduleEntry(cron="* * * * *", capacity=10**400).capacity == 10**400
+
     @pytest.mark.parametrize("expr", ["* * L * *", "nonsense"])
     def test_rejects_unusable_cron(self, expr):
         """A schedule that stores must be a schedule that evaluates (§3.1)."""
@@ -164,6 +201,31 @@ class TestEffectiveParams:
         sched = (ScheduleEntry(cron="* * * * *", scale=0.0000001),)
         # Exact, not `>= 1`: `>= 1` is also satisfied by returning the base untouched.
         assert effective_params(1000, 500, 60_000, sched, TUE_1400) == (1, 1, 60_000)
+
+    def test_scaling_a_quota_does_not_invent_a_drip(self):
+        """A quota has `refill_amount = 0` by ADR-137; the floor must not raise it.
+
+        Flooring the *scaled* rate at 1 gives a quota a phantom 1-millitoken drip
+        (#556) — a rate the limit is defined not to have. The floor is conditioned
+        on the base rate instead.
+        """
+        sched = (ScheduleEntry(cron="* * * * *", scale=0.5),)
+        assert effective_params(10_000_000, 0, 60_000, sched, TUE_1400) == (5_000_000, 0, 60_000)
+
+    @pytest.mark.parametrize("scale", [0.5, 2.0, 0.0000001])
+    def test_a_quota_stays_a_quota_at_every_scale(self, scale):
+        """Including a boost window and a scale small enough to floor a live rate."""
+        sched = (ScheduleEntry(cron="* * * * *", scale=scale),)
+        assert effective_params(10_000_000, 0, 60_000, sched, TUE_1400)[1] == 0
+
+    def test_the_floor_still_protects_a_limit_that_really_drips(self):
+        """The #556 guard must key on the base rate, not on "is the result zero?".
+
+        Keying on the result would drop a live drip to zero whenever the scale
+        truncated it away, which is the thing the floor exists to prevent.
+        """
+        sched = (ScheduleEntry(cron="* * * * *", scale=0.0000001),)
+        assert effective_params(10_000_000, 1, 60_000, sched, TUE_1400)[1] == 1
 
     def test_absolute_capacity_only_overrides_capacity(self):
         sched = (ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", capacity=2000),)

@@ -653,6 +653,32 @@ class TestBoundaryAwareRetryAfter:
         # One step over the boundary, then the edge — not eight and a fallback.
         assert spy.call_count == 2
 
+    def test_a_sub_token_deficit_on_a_scaled_quota_still_reports_the_edge(self):
+        """The #556 failure the existing tests could not see.
+
+        The tests above use a deficit large enough that even the phantom
+        1-millitoken drip took longer than the reset edge, so the edge won
+        either way and the bug stayed invisible. Here it does not: `rp_ms` is
+        the 1 s `Limit.quota` actually stores (`_QUOTA_REFILL_PERIOD_SECONDS`,
+        inert while `ra` is 0), so the phantom drip clears a 1-millitoken
+        deficit in a single period and the walk reported **1.001 s** — "retry in
+        one second" for a daily quota that does not come back until midnight.
+
+        A quota that is *always* inside its `scale` window, so there is no
+        boundary to step over and nothing but the rate can produce the answer.
+        """
+        always = (ScheduleEntry(cron="* * * * *", tz="America/New_York", scale=0.5),)
+        got = retry_after_with_schedule(
+            deficit_milli=1,
+            cp_milli=10_000_000,
+            ra_milli=0,
+            rp_ms=1_000,
+            sched=always,
+            reset_sched=DAILY,
+            now_ms=_ms("2026-09-15 12:00"),
+        )
+        assert got == pytest.approx(43_200.001, abs=0.002)
+
     def test_a_parameter_boundary_before_the_reset_edge_is_walked_through(self):
         """The other both-tuples ordering: the parameter window closes at 23:00
         and the reset fires at 00:00, so the walk must step over the boundary

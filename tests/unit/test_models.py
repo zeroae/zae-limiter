@@ -852,6 +852,19 @@ class TestZeroRefillPredicates:
         assert quota.accrues(TUE_1400) is False
         assert quota.accrues(TUE_0300) is False
 
+    def test_a_quota_inside_a_scale_window_still_never_accrues(self):
+        """The quota answer must not change just because a window is in force.
+
+        ``effective_params`` used to floor the *scaled* rate at one millitoken
+        (#556), so a quota sitting inside a ``scale`` window answered True here
+        — claiming to accrue at a rate ADR-137 says it does not have. Both
+        instants, because only one of them is inside ``BUSINESS``.
+        """
+        quota = _state(refill_amount_milli=0, sched=BUSINESS, reset_sched=DAILY_RESET)
+        assert quota.effective_refill_amount_milli(TUE_1400) == 0
+        assert quota.accrues(TUE_1400) is False
+        assert quota.accrues(TUE_0300) is False
+
     def test_a_dripping_bucket_stops_accruing_inside_a_shrinking_window(self):
         """Second source, and the reason this is not :attr:`Limit.is_quota`.
 
