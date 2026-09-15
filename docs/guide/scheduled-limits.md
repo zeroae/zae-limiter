@@ -51,7 +51,7 @@ The one place a single instant *is* what you want is a quota reset — see [Quot
 
 The common case. `scale` is a multiplier on the base limit:
 
-```python
+```{.python .lint-only}
 from zae_limiter import Limit, RateLimiter, Repository, ScheduleEntry
 
 repo = await Repository.open()
@@ -76,15 +76,14 @@ Outside the window the limit is 1000/min. Inside it, 500/min.
 
 !!! note "`scale` moves capacity and refill together"
     A scale of `0.5` halves **both** the bucket ceiling and the refill amount, so the time to
-    refill from empty is unchanged. Halving only the ceiling would double the refill speed
-    relative to bucket size, which is not what "half the limit" means to anyone.
+    refill from empty is unchanged.
 
 ## Absolute values
 
 When a window should have its own number rather than a multiple of the base, set `capacity`
 directly. `refill_amount` and `refill_period_seconds` are optional and fall back to the base:
 
-```python
+```{.python .lint-only}
 Limit.per_minute("rpm", 1000).with_schedule((
     ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", capacity=2000),
 ))
@@ -98,7 +97,7 @@ An entry sets **either** `scale` **or** the absolute fields — never both. Mixi
 Entries are checked in order and the first one matching the current minute supplies the limit.
 Nothing merges, and nothing accumulates:
 
-```python
+```{.python .lint-only}
 Limit.per_minute("rpm", 1000).with_schedule((
     # Weekends are quiet — most specific first.
     ScheduleEntry(cron="* * * * SAT,SUN", tz="America/New_York", scale=2.0),
@@ -114,7 +113,7 @@ If no entry matches, the base limit applies. Order the specific before the gener
 
 Every entry carries its own IANA timezone, defaulting to `UTC`:
 
-```python
+```{.python .lint-only}
 ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="Europe/Berlin", scale=0.5)
 ```
 
@@ -125,6 +124,14 @@ ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="Europe/Berlin", scale=0.5)
 Daylight saving is handled for you. A `9-17 America/New_York` window stays 9 a.m. to 5 p.m. local
 on both sides of a transition; only the corresponding UTC instant shifts. You do not need to
 adjust anything twice a year, and the 23-hour and 25-hour days are counted correctly.
+
+!!! warning "One timezone per limit, and per configuration level"
+    Every entry on one limit must name the same `tz`, and so must every scheduled limit written
+    in the same call — one `set_limits()`, one `set_resource_defaults()`, one `limits:` block in
+    a manifest. Mixing zones raises `ValueError` before anything is written.
+
+    So an entity whose `rpm` follows New York and whose `tpm` follows Berlin needs them on
+    separate resources. Limits without a schedule can sit alongside any zone.
 
 ## Quotas
 
@@ -181,7 +188,7 @@ numbers and schedule together.
 That has one consequence people trip over: an entity-level `rpm` with **no** schedule *removes*
 the resource-level schedule for that entity, exactly as it already replaces the numbers.
 
-```python
+```{.python .lint-only}
 # Resource level: everyone gets the business-hours reduction.
 await limiter.set_resource_defaults("gpt-4", limits=[
     Limit.per_minute("rpm", 1000).with_schedule((
@@ -235,8 +242,9 @@ zae-limiter limits apply -n my-app -f limits.yaml
 A `reset_schedule` makes the limit a quota, so `refill_amount` defaults to `0` and you do not
 write it. Giving a quota a non-zero `refill_amount` is an error.
 
-Invalid cron expressions, unknown timezones and a rate beside a reset are all rejected at
-**parse** time, so `limits plan` catches them before anything is written.
+Invalid cron expressions, unknown timezones, a rate beside a reset, and scheduled limits in one
+`limits:` block that disagree on `tz` are all rejected at **parse** time, so `limits plan`
+catches them before anything is written.
 
 ## Viewing a schedule
 
@@ -245,11 +253,11 @@ The CLI shows schedules but does not set them — use the Python API or a manife
 ```console
 $ zae-limiter entity get-limits user-123 --resource gpt-4
 Limits for user-123 (gpt-4):
-  rpm: 1000 capacity, 1000/60s refill
+  rpm: 1,000/min
     Schedule:
       * 9-17 * * MON-FRI  America/New_York  → 50%
       * 0-6 * * *         America/New_York  → capacity 2000
-  rpd: 10000 capacity, 10000/86400s refill
+  rpd: 0/sec (burst: 10,000)
     Reset:
       0 0 * * *           America/New_York  → refill to capacity
 ```
@@ -258,15 +266,20 @@ Limits for user-123 (gpt-4):
     A schedule written as `1-5` comes back as `MON-FRI`, and `1,7` as `JAN,JUL`. The meaning is
     identical — the stored form is canonical and renders with names for readability.
 
+!!! note "A quota shows a zero rate"
+    A quota has no refill rate, so its first line reads `0/sec` and the burst figure is the
+    allowance. The `Reset:` line underneath says when it comes back.
+
 ## What happens at a boundary
 
 Normal requests are unaffected by scheduling: the cost and latency of an `acquire()` inside a
 window are exactly what they are without one.
 
-At the moment a window opens or closes, the **first** request to arrive pays one extra round trip
-while the bucket is brought up to date. Requests already in flight at that instant pay it too.
-After that the cost returns to normal until the next boundary. For a typical peak/off-peak
-schedule that is a handful of extra round trips per bucket per day.
+At the moment a window opens or closes, the **first** request to arrive takes the slow path while
+the bucket is brought up to date: three round trips instead of one, and roughly twice the
+DynamoDB cost for that one request. Requests already in flight at that instant pay it too. After
+that the cost returns to normal until the next boundary. For a typical peak/off-peak schedule
+that is two such requests per bucket per day.
 
 Idle buckets do nothing at a boundary, correctly — they update on their next request.
 
@@ -291,14 +304,14 @@ holds forever. A **quota** is the exception — see the limitation below.
   mechanism, not both. This keeps "why is my limit this number" answerable.
 - **Extended cron syntax is not supported.** `L` (last), `W` (weekday) and `#` (nth weekday) are
   rejected at construction. Standard ranges, lists, steps and names — `1-5`, `1,3`, `*/15`,
-  `MON-FRI`, `JAN,JUL` — all work. Sunday may be written `0`, `7` or `SUN`; all three are
-  equivalent and store identically, so they never read back as two different schedules.
-- **Seconds are not addressable, and a six-field expression is rejected.** Cron's finest
-  granularity here is one minute. Schedulers such as Quartz and Spring accept an extra leading
-  *seconds* field, and `cronsim` will parse one — but nothing in this library is finer than a
-  minute, so a six-field expression would silently widen to the whole of the minute it names.
-  `ScheduleEntry(cron="30 5 9 * * *", ...)` therefore raises `ValueError` at construction,
-  naming the five required fields, rather than quietly covering sixty times the intended window.
+  `MON-FRI`, `JAN,JUL` — all work.
+- **Sunday is `0` inside a range or a step.** On its own or in a list, Sunday may be written
+  `0`, `7` or `SUN` and all three store identically. In a range or a step it must be `0` —
+  `SUN-THU` is `0-4`, `SUN/2` is `0/2` — and a range that *ends* at Sunday (`MON-SUN`,
+  `SAT-SUN`, `7-4`) runs backwards and is rejected; write `*` or a list instead.
+- **Seconds are not addressable.** The finest granularity is one minute, and an expression must
+  have exactly five fields. The six-field form some schedulers accept, with a leading *seconds*
+  field, raises `ValueError` at construction.
 - **Resource- and system-level schedule changes reach existing buckets when those buckets expire**
   rather than immediately, consistent with how default-derived limits already behave. Entity-level
   changes take effect immediately.
