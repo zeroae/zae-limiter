@@ -33,30 +33,120 @@
 
 **Interfaces:**
 - Consumes: `ScheduleEntry`, `parse_cron` (core plan Task 1)
-- Produces: `Limit.reset_schedule: tuple[ScheduleEntry, ...] = ()`; `ScheduleEntry.as_reset()` validation path
+- Produces: `Limit.reset_schedule: tuple[ScheduleEntry, ...] = ()`; `Limit.quota(name, amount, *, cron, tz)`; `ScheduleEntry.reset()` validation path
+
+**ADR-137 and ADR-138 were accepted after this task was written, and ADR-137 changes its
+shape.** [ADR-137](../adr/137-reset-replaces-drip.md): a limit drips **or** resets, never both
+and never neither — `refill_amount = 0` is valid *only* alongside a non-empty `reset_schedule`,
+and a positive rate alongside a reset is rejected at construction.
+[ADR-138](../adr/138-fixed-reset-windows-only.md) scopes reset to fixed calendar windows, which
+constrains no code here but must reach the guide (#524).
+
+**Decision: the amount and the reset arrive in the same call — `Limit.quota(...)`.**
+
+```python
+Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York")
+```
+
+This is not ergonomic sugar; it is the only shape ADR-137 leaves standing. The chained form
+
+```python
+Limit.quota("rpd", 10_000).with_reset_schedule(...)        # impossible, not merely verbose
+```
+
+cannot work, because the intermediate value — zero refill, no reset yet — is exactly the state
+validation rejects, and `Limit.__post_init__` runs at construction. The explicit spelling dies
+on the same line: `Limit.custom(name=..., refill_amount=0, refill_period_seconds=...)` raises
+before there is an object to attach a reset to. So the general rule, which holds for any future
+design here: **any form that builds the limit first and attaches the reset afterwards is dead
+on arrival.** `Limit.quota()` is the ergonomic spelling of that rule; passing `reset_schedule`
+into `custom()` would be the verbose equivalent of the same constraint.
+
+`with_reset_schedule()` therefore survives only as a *replacement* operator on a limit that is
+already a quota — swapping one reset schedule for another — never as the way a quota is built.
+Clearing one with `with_reset_schedule(())` is a validation error for the same reason: it
+leaves a bucket that can never recover.
+
+**Rejected: let `with_reset_schedule()` silently zero the refill**, so that
+`Limit.per_day("rpd", 10_000).with_reset_schedule(...)` "works". It throws away a number the
+caller explicitly passed — the same class of problem ADR-137 rejected when it declined to leave
+a configured-but-inert rate ("Keep the positive-rate rule and silently ignore the stored
+rate"). A quota author who writes `per_day(..., 10_000)` and gets a limit whose stored
+`refill_amount` is 0 has been silently overruled.
+
+A quota may still carry a *parameter* schedule — `Limit.quota(...).with_schedule(...)` is
+valid, because `with_schedule` never touches `refill_amount` and the intermediate value is
+already a legal quota. Only the **reset** has to arrive with the amount.
+
+**`with_reset_schedule()` does not exist yet** — it is this task's own deliverable, so the
+decision above shapes it rather than changing it. Note that #524 records the held user-guide
+PR #483 leading with exactly the now-invalid `Limit.per_day(...).with_reset_schedule(...)`
+form; Task 12's docs pass and #524 both land on `Limit.quota()`.
+
+**Downstream tasks still spell it the old way.** Tasks 3, 4, 5, 8, 10 and 11 were written
+before ADR-137 and build their fixtures as `Limit.per_day("rpd", 10_000).with_reset_schedule(
+DAILY)`, which now raises at construction. The substitution is mechanical —
+`Limit.quota("rpd", 10_000, cron=..., tz=...)`, with `.with_schedule(...)` chained after it
+where a param schedule is also wanted — and is left to whoever picks each of those tasks up,
+rather than pre-applied here. Expect it: a green run of those tests is impossible until it is
+made.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
+class TestQuotaFactory:
+    def test_quota_sets_the_zero_refill_and_the_reset_together(self):
+        q = Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York")
+        assert q.capacity == 10_000
+        assert q.refill_amount == 0          # ADR-137: a quota does not drip
+        assert q.reset_schedule[0].cron == "0 0 * * *"
+        assert q.reset_schedule[0].tz == "America/New_York"
+
+    def test_a_zero_refill_without_a_reset_is_rejected(self):
+        """ADR-137: never neither — the bucket could never recover."""
+        with pytest.raises(ValueError, match="reset_schedule"):
+            Limit.custom("rpd", capacity=10_000, refill_amount=0, refill_period_seconds=86_400)
+
+    def test_a_positive_rate_alongside_a_reset_is_rejected(self):
+        """ADR-137: never both — the drip returns the allowance a second time."""
+        with pytest.raises(ValueError, match="refill_amount"):
+            Limit.per_day("rpd", 10_000).with_reset_schedule(
+                (ScheduleEntry.reset(cron="0 0 * * *", tz="America/New_York"),)
+            )
+
+
 class TestResetScheduleValidation:
     def test_reset_entry_carries_cron_and_tz_only(self):
-        e = ScheduleEntry(cron="0 0 * * *", tz="America/New_York")
-        assert Limit.per_day("rpd", 10_000).with_reset_schedule((e,)).reset_schedule == (e,)
+        e = ScheduleEntry.reset(cron="0 0 * * *", tz="America/New_York")
+        q = Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York")
+        assert q.reset_schedule == (e,)
 
     @pytest.mark.parametrize("kwargs", [
         {"scale": 0.5}, {"capacity": 100},
         {"refill_amount": 10}, {"refill_period_seconds": 30},
     ])
     def test_rejects_a_reset_entry_carrying_a_modifier(self, kwargs):
-        """A reset overrides no parameters; a modifier on one is a category error."""
+        """A reset overrides no parameters; a modifier on one is a category error.
+
+        The entry under test is a *param* entry handed to the reset tuple, which
+        is the only way to construct one — `ScheduleEntry.reset()` takes no
+        modifiers at all.
+        """
         e = ScheduleEntry(cron="0 0 * * *", **kwargs)
         with pytest.raises(ValueError, match="reset"):
-            Limit.per_day("rpd", 10_000).with_reset_schedule((e,))
+            Limit.quota("rpd", 10_000, cron="0 0 * * *").with_reset_schedule((e,))
 
     def test_a_bare_schedule_entry_is_invalid_for_the_params_tuple(self):
         """The same entry is legal as a reset and illegal as a param override."""
         with pytest.raises(ValueError, match="exactly one"):
             ScheduleEntry(cron="0 0 * * *")
+
+    def test_clearing_a_quotas_reset_is_rejected(self):
+        """`with_reset_schedule(())` on a zero-refill limit leaves a bucket that
+        can never recover, so ADR-137 makes it unconstructible rather than
+        silently restoring a drip."""
+        with pytest.raises(ValueError, match="reset_schedule"):
+            Limit.quota("rpd", 10_000, cron="0 0 * * *").with_reset_schedule(())
 ```
 
 That last test exposes the design tension to resolve in Step 3: `ScheduleEntry.__post_init__`
@@ -71,17 +161,79 @@ entries through a classmethod:
         return cls(cron=cron, tz=tz, _reset=True)
 ```
 
-Update the tests above to use `ScheduleEntry.reset(...)` once that exists, keeping
-`test_rejects_a_reset_entry_carrying_a_modifier` pointed at a *param* entry passed to
-`with_reset_schedule`.
+The tests above already use `ScheduleEntry.reset(...)`, and
+`test_rejects_a_reset_entry_carrying_a_modifier` stays pointed at a *param* entry passed to
+`with_reset_schedule` — that is the only way to construct an entry carrying a modifier, since
+the classmethod does not accept one.
 
-- [ ] **Step 2: Run and watch it fail** — `AttributeError: 'Limit' object has no attribute 'reset_schedule'`
+- [ ] **Step 2: Run and watch it fail** — `AttributeError: type object 'Limit' has no attribute 'quota'`
 
 - [ ] **Step 3: Implement.** Add `_reset: bool = False` to `ScheduleEntry` with the classmethod above; `__post_init__` requires exactly one modifier when `_reset` is False and **no** modifier when it is True. Add `reset_schedule` and `with_reset_schedule()` to `Limit`, validating that every entry has `_reset=True`.
 
-Also add `Limit.per_day(name, rate, burst=None)` if it does not exist — a daily quota is the motivating case and `per_hour` already establishes the pattern.
+Then add the ADR-137 cross-field rule to `Limit.__post_init__`, replacing the bare
+`refill_amount <= 0` check (`models.py:254`) — the two fields can no longer be validated
+independently, and the message must explain the pairing rather than the field:
 
-- [ ] **Step 4: Run, regenerate sync, commit** — `✨ feat(models): add reset_schedule for calendar quota reset`
+```python
+if self.refill_amount < 0:
+    raise ValueError("refill_amount must not be negative")
+if self.refill_amount == 0 and not self.reset_schedule:
+    raise ValueError(
+        "refill_amount=0 means the limit does not drip, which is only valid "
+        "with a reset_schedule; otherwise the bucket can never recover. "
+        "Use Limit.quota(name, amount, cron=..., tz=...) (ADR-137)."
+    )
+if self.refill_amount > 0 and self.reset_schedule:
+    raise ValueError(
+        "a limit drips or resets, never both: a positive refill_amount "
+        "alongside a reset_schedule grants roughly twice the intended "
+        "allowance per period. Use Limit.quota(...) (ADR-137)."
+    )
+```
+
+and the factory that makes the legal shape the reachable one:
+
+```python
+    @classmethod
+    def quota(
+        cls,
+        name: str,
+        amount: int,
+        *,
+        cron: str,
+        tz: str = "UTC",
+    ) -> "Limit":
+        """An allowance of ``amount`` per calendar window, restored at each edge.
+
+        A quota does not drip: the balance is *set* to the capacity when the
+        window opens and does not recover in between (ADR-137). The window is a
+        fixed calendar window — every entity on this schedule resets at the same
+        wall-clock instant (ADR-138).
+        """
+        return cls(
+            name=name,
+            capacity=amount,
+            refill_amount=0,
+            refill_period_seconds=_QUOTA_REFILL_PERIOD_SECONDS,
+            reset_schedule=(ScheduleEntry.reset(cron=cron, tz=tz),),
+        )
+```
+
+**One thing Step 3 must settle, because the factory cannot construct without it:**
+`refill_period_seconds` is still validated `> 0` and there is no sensible value for the
+denominator of a rate that is zero. Pick a documented module constant
+(`_QUOTA_REFILL_PERIOD_SECONDS = 1` is the least misleading: it reads as "0 per second", where
+86_400 reads as a daily rate that is not what the limit does) and say in the docstring that the
+field is inert while `refill_amount` is 0. Do **not** expose it as a `quota()` keyword; a knob
+that changes nothing is worse than a constant. Note this does not rescue the TTL formula, which
+divides by `refill_amount`, not by the period — that is ADR-137's named consequence and is
+#222's to solve for resource- and system-level reset limits.
+
+`Limit.per_day` already exists (`models.py:340`), so the earlier "add it if it does not exist"
+note is discharged. It stays a *drip* factory and must not grow a reset parameter: a limit
+built by `per_day` is a rate, and `quota` is the allowance.
+
+- [ ] **Step 4: Run, regenerate sync, commit** — `✨ feat(models): add Limit.quota and reset_schedule for quotas`
 
 ---
 
@@ -2191,6 +2343,53 @@ contract the applier depends on.
 `-> dict[str, int]`. Adding schedules widens it to `dict[str, Any]`; mypy will catch the
 annotation if you forget.
 
+**Decision: in YAML, a non-empty `reset_schedule` flips the `refill_amount` default from
+`capacity` to `0`.** The author never types the zero:
+
+```yaml
+limits:
+  rpd:
+    capacity: 10000
+    reset_schedule:
+      - cron: "0 0 * * *"
+        tz: America/New_York
+```
+
+This is forced by [ADR-137](../adr/137-reset-replaces-drip.md), which was accepted after this
+task was written. Without the flip, the shorthand default fills `refill_amount = capacity`,
+producing a positive rate **and** a reset — precisely the configuration ADR-137 rejects. The
+manifest that reads most naturally would be the one that fails, and it would fail with a
+message about a field the author never wrote.
+
+**Exactly two existing lines change** (`manifest.py:28` and the loop at `:30-40`):
+
+1. `refill_amount = d.get("refill_amount", capacity)` becomes conditional on whether
+   `reset_schedule` is present and non-empty — that single boolean is the whole discriminator.
+2. `refill_amount` comes **out** of the shared `value <= 0` loop and gets its own rule: zero is
+   permitted, but only alongside a reset. `capacity` and `refill_period` stay strictly positive
+   and stay in the loop.
+
+**An explicit non-zero `refill_amount` written beside a `reset_schedule` is still an error.** A
+stated conflict is loud and worth rejecting; an omission just picks the right default. (An
+explicit `refill_amount: 0` beside a reset is fine, and must be — `to_dict()` always emits the
+field, so it is what a round trip produces.)
+
+Two facts this task should not have to rediscover:
+
+- **The provisioner never constructs `Limit` objects.** `applier.py:58` writes
+  `l_{name}_{cp,ra,rp}` attributes straight onto the config item from the manifest dict, so
+  there is no "which factory does the parser call" question to answer here. `Limit.quota()`
+  (Task 1) is for humans writing Python; the YAML path never touches it, and the two surfaces
+  agree because they enforce the same rule, not because they share code.
+- **`from_dict`'s existing error message already says** "Limits are rejected at parse time so
+  `limits plan` surfaces the problem before anything is written." That behaviour is the point
+  and must be preserved for the new rule: a bad quota is caught by `limits plan`, in the CLI,
+  before anything reaches the table.
+
+`LimitDecl` currently has **no** `schedule` or `reset_schedule` fields at all — Task 6 adds
+both. Everything above is therefore a constraint on code this task is about to write, not a
+change to code that exists.
+
 - [ ] **Step 1: Write the failing test**
 
 ```python
@@ -2214,7 +2413,6 @@ resources:
             capacity: 2000
       rpd:
         capacity: 10000
-        refill_period: 86400
         reset_schedule:
           - cron: "0 0 * * *"
             tz: America/New_York
@@ -2236,6 +2434,46 @@ class TestManifestSchedules:
         rpd = manifest.resources["gpt-4"].limits["rpd"]
         assert rpd.reset_schedule[0].cron == "0 0 * * *"
         assert rpd.schedule == ()
+
+    def test_a_reset_schedule_flips_the_refill_amount_default_to_zero(self):
+        """ADR-137: a quota does not drip, and the author never types the zero.
+        The old default (`refill_amount = capacity`) would build the one
+        configuration the ADR rejects out of the most natural manifest."""
+        manifest = LimitsManifest.from_yaml(YAML)
+        assert manifest.resources["gpt-4"].limits["rpd"].refill_amount == 0
+
+    def test_an_unscheduled_limit_still_defaults_to_capacity(self):
+        """The flip is conditional on the reset, and on nothing else."""
+        manifest = LimitsManifest.from_yaml(YAML)
+        rpm = manifest.resources["gpt-4"].limits["rpm"]
+        assert rpm.refill_amount == 1000
+
+    def test_rejects_an_explicit_rate_beside_a_reset(self):
+        """A stated conflict is loud; only an omission gets the default."""
+        bad = YAML.replace(
+            "        capacity: 10000\n",
+            "        capacity: 10000\n        refill_amount: 10000\n",
+        )
+        with pytest.raises(ValueError, match="reset"):
+            LimitsManifest.from_yaml(bad)
+
+    def test_an_explicit_zero_beside_a_reset_is_accepted(self):
+        """`to_dict()` always emits refill_amount, so this is what a round trip
+        produces; rejecting it would make the manifest unable to restate itself."""
+        decl = LimitDecl.from_dict(
+            {
+                "capacity": 10_000,
+                "refill_amount": 0,
+                "reset_schedule": [{"cron": "0 0 * * *", "tz": "America/New_York"}],
+            }
+        )
+        assert decl.refill_amount == 0
+
+    def test_rejects_a_zero_rate_without_a_reset(self):
+        """ADR-137: never neither. capacity and refill_period stay strictly
+        positive; only refill_amount gained the conditional zero."""
+        with pytest.raises(ValueError, match="reset_schedule"):
+            LimitDecl.from_dict({"capacity": 10_000, "refill_amount": 0})
 
     def test_absent_schedule_is_an_empty_tuple(self):
         manifest = LimitsManifest.from_yaml(
@@ -2290,6 +2528,18 @@ class TestScheduleSurvivesToChangeData:
         restored = LimitDecl.from_dict(decl.to_dict())
         assert restored == decl
 
+    def test_to_dict_round_trips_a_quota(self):
+        """The emitted `refill_amount: 0` must survive re-parsing — the applier
+        writes `l_rpd_ra = 0` from it, and a CFN round trip re-reads it."""
+        decl = LimitDecl.from_dict(
+            {
+                "capacity": 10_000,
+                "reset_schedule": [{"cron": "0 0 * * *", "tz": "America/New_York"}],
+            }
+        )
+        assert decl.to_dict()["refill_amount"] == 0
+        assert LimitDecl.from_dict(decl.to_dict()) == decl
+
     def test_change_data_carries_the_schedule(self):
         from zae_limiter_provisioner.differ import compute_diff
 
@@ -2335,15 +2585,38 @@ class LimitDecl:
         capacity = d["capacity"]
         if "burst" in d:
             capacity = d["burst"]
-        refill_amount = d.get("refill_amount", capacity)
         refill_period = d.get("refill_period", 60)
+
+        # ADR-137: a limit drips or resets, never both. A reset flips the
+        # shorthand default from `capacity` to 0 so the natural manifest — one
+        # that names only the allowance and the schedule — is the valid one.
+        resets = bool(d.get("reset_schedule"))
+        refill_amount = d.get("refill_amount", 0 if resets else capacity)
+
         for field_name, value in (
             ("capacity", capacity),
-            ("refill_amount", refill_amount),
             ("refill_period", refill_period),
         ):
             if value <= 0:
-                raise ValueError(f"{field_name} must be positive, got {value}")
+                raise ValueError(
+                    f"{field_name} must be positive, got {value}. "
+                    "Limits are rejected at parse time so `limits plan` surfaces the "
+                    "problem before anything is written."
+                )
+        if refill_amount < 0:
+            raise ValueError(f"refill_amount must not be negative, got {refill_amount}")
+        if refill_amount == 0 and not resets:
+            raise ValueError(
+                "refill_amount=0 means the limit does not drip, which is only valid "
+                "with a reset_schedule; otherwise the bucket can never recover (ADR-137)."
+            )
+        if refill_amount > 0 and resets:
+            raise ValueError(
+                "a limit drips or resets, never both: a positive refill_amount "
+                f"({refill_amount}) alongside a reset_schedule grants roughly twice "
+                "the intended allowance per period. Omit refill_amount and it "
+                "defaults to 0 (ADR-137)."
+            )
         return cls(
             capacity=capacity,
             refill_amount=refill_amount,
@@ -2384,8 +2657,10 @@ def _entry_to_dict(entry: ScheduleEntry) -> dict[str, Any]:
     return d
 ```
 
-The positivity validation above is the same rule issue #481's Task 6 adds; if that has already
-landed, keep it and add only the two schedule fields.
+The `capacity` / `refill_period` positivity validation above is the rule already on `main`
+(`manifest.py:30-40`, also issue #481's Task 6); keep it, and change only what the decision
+above names — `refill_amount` leaving that loop, its conditional default, and the two schedule
+fields.
 
 `differ.py` needs **no change** — it passes `to_dict()` through into `Change.data` already.
 
@@ -2406,6 +2681,12 @@ LimitDecl gains `schedule` and `reset_schedule`, parsed into
 ScheduleEntry so cron, timezone and the reset-entry rules are validated
 at parse time — `limits plan` now rejects an unusable manifest before
 anything is written, rather than the Lambda raising at apply.
+
+A non-empty reset_schedule flips the refill_amount shorthand default
+from `capacity` to 0 (ADR-137), so the natural quota manifest — an
+allowance and a schedule, no zero typed — is the valid one rather than
+the rejected drip-and-reset pairing. An explicit non-zero rate beside a
+reset stays an error.
 
 differ.py is unchanged: it compares nothing, emitting every manifest
 item on every apply, so the only contract to pin is that the schedule
