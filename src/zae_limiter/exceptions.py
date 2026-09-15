@@ -1,9 +1,12 @@
 """Exceptions for zae-limiter."""
 
+import time
 from typing import TYPE_CHECKING, Any
 
+from .schedule import next_reset_edge
+
 if TYPE_CHECKING:
-    from .models import LimitStatus
+    from .models import Limit, LimitStatus
 
 
 # ---------------------------------------------------------------------------
@@ -114,12 +117,70 @@ class RateLimitExceeded(RateLimitError):  # noqa: N818
             f"Retry after {self.retry_after_seconds:.1f}s"
         )
 
+    @staticmethod
+    def _limit_shape(limit: "Limit", now_ms: int) -> dict[str, Any]:
+        """The fields describing *how this limit recovers*, by its kind (#545).
+
+        Two shapes, tagged by ``kind``, because a quota and a rate limit
+        recover by different mechanisms and there is no honest set of fields
+        that covers both:
+
+        * ``"rate"`` drips, so ``refill_amount`` per
+          ``refill_period_seconds`` is the whole answer.
+        * ``"quota"`` does **not** drip (ADR-137): ``refill_amount`` is fixed
+          at 0 and ``refill_period_seconds`` is ``_QUOTA_REFILL_PERIOD_SECONDS``,
+          an inert placeholder kept only because the field is validated
+          positive. Serialising those two is worse than serialising nothing —
+          a client dividing one by the other computes "0 tokens per second,
+          never recovers", which is false about a limit that comes back whole
+          at its next reset edge. They are therefore **omitted**, and the fact
+          a client actually needs is emitted instead: ``resets_at_ms``, the
+          absolute epoch-millisecond instant the allowance returns.
+
+        ``kind`` is emitted on **both** shapes so the distinction is read
+        directly rather than inferred from ``refill_amount == 0`` — which is
+        not a safe inference in either direction. A dripping limit's share can
+        floor to zero without being a quota (#475), and #556 gives a quota
+        inside a ``scale`` window a phantom 1-millitoken drip. ``kind`` is
+        derived from :attr:`Limit.is_quota`, the structural predicate, which
+        both of those carve-outs already respect.
+
+        An absolute instant rather than the cron string the CLI shows: an HTTP
+        client should not need a cron parser to schedule a retry, and being
+        absolute it is self-interpreting — no companion ``checked_at_ms`` is
+        required to read it. ``None`` when ``schedule.next_reset_edge`` finds
+        no edge inside its scan horizon; the key stays present so a quota
+        entry's shape does not vary with the calendar.
+        """
+        if not limit.is_quota:
+            return {
+                "kind": "rate",
+                "capacity": limit.capacity,
+                "refill_amount": limit.refill_amount,
+                "refill_period_seconds": limit.refill_period_seconds,
+            }
+        return {
+            "kind": "quota",
+            "capacity": limit.capacity,
+            "resets_at_ms": next_reset_edge(limit.reset_schedule, now_ms=now_ms),
+        }
+
     def as_dict(self) -> dict[str, Any]:
         """
         Serialize for JSON API responses.
 
         Returns a dictionary suitable for returning in a 429 response body.
+
+        Per-limit entries carry a ``kind`` of ``"rate"`` or ``"quota"`` and,
+        for a quota, ``resets_at_ms`` in place of the drip fields — see
+        :meth:`_limit_shape`.
         """
+        # One clock reading for the whole body, so two quotas on the same
+        # rejection cannot report reset instants scanned from different
+        # instants. Read here rather than at construction time: this is the
+        # only consumer, and rejections are a hot path that must not pay for a
+        # cron scan it may never serialize.
+        now_ms = int(time.time() * 1000)
         return {
             "error": "rate_limit_exceeded",
             "message": str(self),
@@ -130,9 +191,7 @@ class RateLimitExceeded(RateLimitError):  # noqa: N818
                     "entity_id": s.entity_id,
                     "resource": s.resource,
                     "limit_name": s.limit_name,
-                    "capacity": s.limit.capacity,
-                    "refill_amount": s.limit.refill_amount,
-                    "refill_period_seconds": s.limit.refill_period_seconds,
+                    **self._limit_shape(s.limit, now_ms),
                     "available": s.available,
                     "requested": s.requested,
                     "exceeded": s.exceeded,
