@@ -21,14 +21,23 @@ per calendar month" is a contractual statement about the calendar, not about the
 per-entity window is what a session cap needs. Real services ship both, often together.
 
 They are not, however, hard to build in the same way. A per-entity window expressed as a
-**duration** — reset the balance and set the valid-until stamp to `now + interval` — needs no
-anchor field at all, because the valid-until stamp *is* the anchor. It is in fact cheaper than
-the calendar form: no cron parsing, no timezone database, no daylight-saving handling, no
-boundary scan. An earlier draft of this record rejected per-entity windows on the grounds that
-they would require per-entity state the fast path could not compute from the item alone. That
-reasoning was wrong: it described a design storing a fixed start instant and projecting
-multiples of the interval from it, and did not hold for the sliding form. The decision below
-therefore rests on scope, not on feasibility.
+**duration** is shallower than the calendar form on evaluation — no cron parsing, no timezone
+database, no daylight-saving handling, no boundary scan, and a recovery horizon that is the
+window length exactly — but it is not cheaper overall, because it costs more in storage, in
+shard coherence (the calendar form gets that free, since every shard shares one clock and one
+cron, whereas a window start has to be propagated across an entity's shards) and in durability.
+It also needs an anchor of its own, and that anchor cannot be the valid-until stamp: beyond
+gating the fast path, `vu` carries the marker a limit-change fan-out stamps and the staleness
+pin the aggregator adds to its refill condition, and the calendar form escapes that collision
+only because its reset decision is taken from the cron and the last-refill stamp, never from
+`vu`. A duration window reading its expiry off `vu` would read every fan-out as an elapsed
+window, so every `set_limits()` call would silently restore every caller's balance and restart
+every caller's clock. Two earlier drafts of this record misplaced that anchor in opposite
+directions — state the item could not carry, then no anchor at all — and both were wrong in the
+same place: one per-limit attribute carries it, cheap but not free and not `vu`. The decision
+below therefore rests on scope, not on feasibility, although the durability asymmetry recorded
+under Consequences is the argument that survives closest scrutiny and is what a later record
+will have to answer.
 
 ## Decision
 
@@ -64,8 +73,8 @@ storage and documentation, and #222 is already long. It remains the answer to th
 herd noted above.
 
 ### Per-entity window storing a fixed start instant and projecting intervals from it
-Rejected because: it needs an anchor field the sliding `now + interval` form does not, for no
-behaviour the sliding form lacks.
+Rejected because: it needs the same anchor the duration form does, and still cannot express "go
+idle long enough and your window restarts", which is what anchoring to the entity is for.
 
 ### Derive an anchor from the entity identifier to stagger resets
 Rejected because: it silently gives entities different allowance boundaries than their
