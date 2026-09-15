@@ -37,6 +37,7 @@ __all__ = [
     "effective_params",
     "encode",
     "encode_reset",
+    "entry_params",
     "matches",
     "next_boundary",
     "next_reset_edge",
@@ -248,6 +249,47 @@ def matches(parsed: ParsedCron, now_ms: int) -> bool:
     return (dom_ok and dow_ok) if parsed.day_and else (dom_ok or dow_ok)
 
 
+def entry_params(
+    cp_milli: int,
+    ra_milli: int,
+    rp_ms: int,
+    entry: ScheduleEntry,
+) -> tuple[int, int, int]:
+    """The (capacity, refill_amount, refill_period) ``entry`` puts in force.
+
+    The override arithmetic of §1.1/§1.2 with the *matching* taken out, so that
+    a caller which already knows the entry applies — or which, like
+    :func:`zae_limiter.schema._recovery_seconds`, must consider every window
+    without a clock to pick one — shares this definition rather than restating
+    it. All values are milli-units, matching ``bucket.py``.
+    """
+    if entry.scale is not None:
+        # Scale capacity and refill together so time-to-fill is preserved
+        # (§1.1). Truncate rather than round, so a scaled limit is never
+        # larger than asked for; floor at 1 milli-unit, since a zero
+        # capacity is unadmittable.
+        #
+        # The rate's floor is conditioned on the BASE rate, not on the
+        # scaled result (#556). A quota has `refill_amount = 0` by
+        # definition (ADR-137), and flooring that to 1 invents a drip the
+        # limit is defined not to have: `BucketState.accrues()` then
+        # answers True for a bucket that cannot accrue, and
+        # `retry_after_with_schedule` walks a 1-millitoken-per-period rate
+        # instead of going to the next reset edge. A limit that really
+        # does drip still gets the floor, so a tiny scale cannot round a
+        # live rate away to nothing.
+        return (
+            max(1, int(cp_milli * entry.scale)),
+            0 if ra_milli == 0 else max(1, int(ra_milli * entry.scale)),
+            rp_ms,
+        )
+    return (
+        entry.capacity * 1000 if entry.capacity is not None else cp_milli,
+        entry.refill_amount * 1000 if entry.refill_amount is not None else ra_milli,
+        entry.refill_period_seconds * 1000 if entry.refill_period_seconds is not None else rp_ms,
+    )
+
+
 def effective_params(
     cp_milli: int,
     ra_milli: int,
@@ -267,35 +309,8 @@ def effective_params(
         return cp_milli, ra_milli, rp_ms
 
     for entry in sched:
-        if not matches(parse_cron(entry.cron, entry.tz), now_ms):
-            continue
-        if entry.scale is not None:
-            # Scale capacity and refill together so time-to-fill is preserved
-            # (§1.1). Truncate rather than round, so a scaled limit is never
-            # larger than asked for; floor at 1 milli-unit, since a zero
-            # capacity is unadmittable.
-            #
-            # The rate's floor is conditioned on the BASE rate, not on the
-            # scaled result (#556). A quota has `refill_amount = 0` by
-            # definition (ADR-137), and flooring that to 1 invents a drip the
-            # limit is defined not to have: `BucketState.accrues()` then
-            # answers True for a bucket that cannot accrue, and
-            # `retry_after_with_schedule` walks a 1-millitoken-per-period rate
-            # instead of going to the next reset edge. A limit that really
-            # does drip still gets the floor, so a tiny scale cannot round a
-            # live rate away to nothing.
-            return (
-                max(1, int(cp_milli * entry.scale)),
-                0 if ra_milli == 0 else max(1, int(ra_milli * entry.scale)),
-                rp_ms,
-            )
-        return (
-            entry.capacity * 1000 if entry.capacity is not None else cp_milli,
-            entry.refill_amount * 1000 if entry.refill_amount is not None else ra_milli,
-            entry.refill_period_seconds * 1000
-            if entry.refill_period_seconds is not None
-            else rp_ms,
-        )
+        if matches(parse_cron(entry.cron, entry.tz), now_ms):
+            return entry_params(cp_milli, ra_milli, rp_ms, entry)
     return cp_milli, ra_milli, rp_ms
 
 

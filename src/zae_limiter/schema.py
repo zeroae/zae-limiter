@@ -2,7 +2,7 @@
 
 from typing import TYPE_CHECKING, Any
 
-from .schedule import parse_cron
+from .schedule import entry_params, parse_cron
 
 if TYPE_CHECKING:
     from .models import Limit
@@ -682,6 +682,31 @@ def _reset_cycle_seconds(entry: "ScheduleEntry") -> int:
     return _MINUTE_SECONDS
 
 
+def _time_to_fill_seconds(name: str, cp_milli: int, ra_milli: int, rp_ms: int) -> float:
+    """Seconds to refill one set of dripping parameters from empty to full.
+
+    Parameters arrive in milli-units rather than whole ones because that is
+    where the schedule overrides reaching here are defined:
+    ``schedule.entry_params`` floors a scaled rate at one **milli**-unit, and
+    rounding that back to whole tokens would divide by zero. For the unscaled
+    base the quotient is identical either way.
+    """
+    if ra_milli <= 0:
+        # Unreachable: `Limit.__post_init__` rejects a zero rate unless a
+        # `reset_schedule` pairs with it (and `is_quota` catches those before
+        # this function is reached), rejects a negative one outright, and
+        # `ScheduleEntry.__post_init__` requires every override to be
+        # positive. Stated rather than divided by, so that a future
+        # constructor bypassing validation surfaces as this sentence and not
+        # as the `ZeroDivisionError` of #532.
+        raise ValueError(
+            f"limit {name!r} neither drips (refill_amount="
+            f"{ra_milli / 1000:g}) nor resets (no reset_schedule), so it can "
+            f"never recover and has no bucket TTL horizon (ADR-137)."
+        )
+    return (cp_milli / ra_milli) * (rp_ms / 1000)
+
+
 def _recovery_seconds(limit: "Limit") -> float:
     """How long ``limit`` needs to bring a fully spent balance back to full.
 
@@ -706,27 +731,42 @@ def _recovery_seconds(limit: "Limit") -> float:
     the provisioner's manifest decls), never a per-shard share that could have
     floored to zero on the way in.
 
-    Known gap, unchanged by #532 and not a quota problem: a dripping limit's
-    horizon is read from its **base** parameters, so an *absolute* schedule
-    entry that lowers ``refill_amount`` (or raises ``capacity``) inside one
-    window recovers more slowly than this reports. ``scale`` entries are safe —
-    §1.1 scales capacity and refill together precisely so time-to-fill is
-    preserved.
+    A dripping limit's horizon is the **worst case** across its base parameters
+    and every window of its ``schedule`` (#557). The base is always in the set:
+    it applies outside every window, and including it is also the rounding-up
+    direction. An *absolute* entry — one overriding ``capacity``,
+    ``refill_amount`` or ``refill_period_seconds`` rather than scaling — moves
+    time-to-fill, and the night window of
+    ``per_minute("rpm", 60).with_schedule((ScheduleEntry(cron="0 0-6 * * *",
+    refill_amount=1),))`` needs 3600 s against the base's 60 s. Reading the base
+    alone gave that bucket a 420 s TTL, so it was swept while still in debt and
+    recreated at full capacity — the over-admission ADR-136 exempts
+    custom-configured buckets from TTL to avoid. ``scale`` entries come out
+    unchanged, as §1.1 intends: capacity and refill move together.
+
+    Worst case rather than the current window because this function holds no
+    clock (see :func:`calculate_bucket_ttl_seconds`) and so cannot know which
+    window the expiry will land in — nor which windows the bucket will sit idle
+    through on the way there.
+
+    The walk is reached only by a limit that drips. A quota takes the branch
+    above whatever its parameter schedule says, which is both safe and correct:
+    a quota's rate is zero by ADR-137 and dividing by a window's version of it
+    would be #532 again, while the reset restores the balance in full within
+    the reset period no matter what the windows do to the ceiling.
     """
     if limit.is_quota:
         return float(min(_reset_cycle_seconds(entry) for entry in limit.reset_schedule))
-    if limit.refill_amount <= 0:
-        # Unreachable through `Limit.__post_init__`, which rejects a zero rate
-        # unless a `reset_schedule` pairs with it, and rejects a negative one
-        # outright. Stated rather than divided by, so that a future constructor
-        # bypassing validation surfaces as this sentence and not as the
-        # `ZeroDivisionError` of #532.
-        raise ValueError(
-            f"limit {limit.name!r} neither drips (refill_amount="
-            f"{limit.refill_amount}) nor resets (no reset_schedule), so it can "
-            f"never recover and has no bucket TTL horizon (ADR-137)."
-        )
-    return (limit.capacity / limit.refill_amount) * limit.refill_period_seconds
+
+    cp_milli = limit.capacity * 1000
+    ra_milli = limit.refill_amount * 1000
+    rp_ms = limit.refill_period_seconds * 1000
+    horizons = [_time_to_fill_seconds(limit.name, cp_milli, ra_milli, rp_ms)]
+    horizons.extend(
+        _time_to_fill_seconds(limit.name, *entry_params(cp_milli, ra_milli, rp_ms, entry))
+        for entry in limit.schedule
+    )
+    return max(horizons)
 
 
 def calculate_bucket_ttl_seconds(
@@ -734,7 +774,7 @@ def calculate_bucket_ttl_seconds(
     multiplier: int,
 ) -> int | None:
     """
-    Calculate bucket TTL in seconds from the slowest recovery (#271, #296, #532).
+    Calculate bucket TTL in seconds from the slowest recovery (#271, #296, #532, #557).
 
     For buckets using default limits (system/resource), a TTL allows DynamoDB
     to auto-expire unused buckets. The TTL is ``max_recovery × multiplier``,
@@ -744,7 +784,9 @@ def calculate_bucket_ttl_seconds(
     ===================================  ==========================================
     Limit shape                          Recovery horizon
     ===================================  ==========================================
-    Drips (``refill_amount > 0``)        ``(capacity / refill_amount) × refill_period_seconds``
+    Drips (``refill_amount > 0``)        ``(capacity / refill_amount) × refill_period_seconds``,
+                                         taken at its **slowest** over the base
+                                         parameters and every ``schedule`` window (#557)
     Quota (``is_quota``, ADR-137)        the reset period — the cycle of its ``reset_schedule``
     ===================================  ==========================================
 
