@@ -5150,6 +5150,16 @@ class Repository:
         A composite bucket item stores all limits for an entity+resource in a
         single DynamoDB item. Per-limit attributes use the prefix b_{name}_{field}
         with a shared rf (refill timestamp). See ADR-114.
+
+        Both schedule tuples are decoded off the item (#222 §4.1) under the
+        same item-level-default-plus-per-limit-override rule the aggregator
+        applies, so the ``ALL_OLD`` / ``ALL_NEW`` images behind the speculative
+        path carry the schedule that was in force for the write. Without them
+        every fast-path ``LimitStatus`` reports the base capacity, flat, inside
+        a window that has already halved it. The slow path overwrites
+        ``state.sched`` from the config it just resolved (``_do_acquire``),
+        which is the fresher of the two — that ordering is deliberate and this
+        does not change it.
         """
         entity_id = item.get("entity_id", {}).get("S", "")
         resource = item.get("resource", {}).get("S", "")
@@ -5157,6 +5167,45 @@ class Repository:
         # Carried so refill math uses this shard's effective share (ADR-133).
         # The reserved wcu limit is per-partition and stays undivided.
         shard_count = int(item.get("shard_count", {}).get("N", "1"))
+
+        # One hoisted zone for the whole item, covering both tuples (#222
+        # §4.1). Absent on every item written before scheduling existed, where
+        # UTC is harmless: it is only ever consulted alongside a compact
+        # string, and those items carry none.
+        sched_tz = item.get(schema.BUCKET_FIELD_SCHED_TZ, {}).get("S") or "UTC"
+        item_sched = item.get(schema.BUCKET_FIELD_SCHED, {}).get("S")
+        item_rsched = item.get(schema.BUCKET_FIELD_RSCHED, {}).get("S")
+        # Keyed by (compact, reset) rather than by limit: the item-level
+        # default is shared by every limit that has no override of its own, so
+        # a 20-limit item decodes it once.
+        decoded: dict[tuple[str, bool], tuple[schedule.ScheduleEntry, ...]] = {}
+
+        def _schedule_for(
+            name: str, field: str, item_compact: str | None, reset: bool
+        ) -> tuple[schedule.ScheduleEntry, ...]:
+            """One limit's tuple: its own override if it has one, else the item default.
+
+            Absence means "inherit the default" — the write side only emits
+            `b_{name}_{field}` where a limit's encoding *differs* from it — so
+            this is the exact inverse of `_encode_one_tuple`, and the same rule
+            `processor._parse_bucket_record` applies. It is also why an
+            unscheduled limit sharing an item with a scheduled one inherits a
+            schedule it never asked for: #541, open, deliberately not fixed
+            here. Two inheritance rules on one item would be worse than the one
+            documented defect.
+            """
+            attr = schema.bucket_attr(name, field)
+            override = item.get(attr, {}).get("S")
+            compact = override or item_compact
+            if not compact:
+                return ()
+            key = (compact, reset)
+            if key not in decoded:
+                if reset:
+                    decoded[key] = schedule.decode_reset(compact, sched_tz)
+                else:
+                    decoded[key] = schedule.decode(compact, sched_tz)
+            return decoded[key]
 
         # Discover limit names by scanning for b_{name}_tk attributes
         limit_names: list[str] = []
@@ -5177,6 +5226,23 @@ class Repository:
             tc_attr = item.get(schema.bucket_attr(name, schema.BUCKET_FIELD_TC), {})
             total_consumed = int(tc_attr["N"]) if "N" in tc_attr else None
 
+            # `wcu` is never scheduled — it tracks partition write pressure,
+            # not a user limit, and is the one limit `effective_params` must
+            # not scale (a 0.5x window would halve the write ceiling on
+            # exactly the hot buckets sharding exists to protect). The
+            # aggregator reaches the same place by exempting it at each
+            # consumer instead; doing it here keeps every client consumer of
+            # `state.sched` — refill, ceiling, retry estimate — covered at
+            # once. Mirrors `Limit._carrier` and `BucketState.for_wcu`, which
+            # both set the tuples to `()` explicitly on the write side.
+            is_wcu = name == schema.WCU_LIMIT_NAME
+            sched = (
+                () if is_wcu else _schedule_for(name, schema.BUCKET_FIELD_SCHED, item_sched, False)
+            )
+            reset_sched = (
+                () if is_wcu else _schedule_for(name, schema.BUCKET_FIELD_RSCHED, item_rsched, True)
+            )
+
             buckets.append(
                 BucketState(
                     entity_id=entity_id,
@@ -5188,7 +5254,9 @@ class Repository:
                     refill_amount_milli=_get(schema.BUCKET_FIELD_RA),
                     refill_period_ms=_get(schema.BUCKET_FIELD_RP),
                     total_consumed_milli=total_consumed,
-                    shard_count=1 if name == schema.WCU_LIMIT_NAME else shard_count,
+                    shard_count=1 if is_wcu else shard_count,
+                    sched=sched,
+                    reset_sched=reset_sched,
                 )
             )
 

@@ -4180,11 +4180,53 @@ class SyncRepository:
         A composite bucket item stores all limits for an entity+resource in a
         single DynamoDB item. Per-limit attributes use the prefix b_{name}_{field}
         with a shared rf (refill timestamp). See ADR-114.
+
+        Both schedule tuples are decoded off the item (#222 §4.1) under the
+        same item-level-default-plus-per-limit-override rule the aggregator
+        applies, so the ``ALL_OLD`` / ``ALL_NEW`` images behind the speculative
+        path carry the schedule that was in force for the write. Without them
+        every fast-path ``LimitStatus`` reports the base capacity, flat, inside
+        a window that has already halved it. The slow path overwrites
+        ``state.sched`` from the config it just resolved (``_do_acquire``),
+        which is the fresher of the two — that ordering is deliberate and this
+        does not change it.
         """
         entity_id = item.get("entity_id", {}).get("S", "")
         resource = item.get("resource", {}).get("S", "")
         rf = int(item.get(schema.BUCKET_FIELD_RF, {}).get("N", "0"))
         shard_count = int(item.get("shard_count", {}).get("N", "1"))
+        sched_tz = item.get(schema.BUCKET_FIELD_SCHED_TZ, {}).get("S") or "UTC"
+        item_sched = item.get(schema.BUCKET_FIELD_SCHED, {}).get("S")
+        item_rsched = item.get(schema.BUCKET_FIELD_RSCHED, {}).get("S")
+        decoded: dict[tuple[str, bool], tuple[schedule.ScheduleEntry, ...]] = {}
+
+        def _schedule_for(
+            name: str, field: str, item_compact: str | None, reset: bool
+        ) -> tuple[schedule.ScheduleEntry, ...]:
+            """One limit's tuple: its own override if it has one, else the item default.
+
+            Absence means "inherit the default" — the write side only emits
+            `b_{name}_{field}` where a limit's encoding *differs* from it — so
+            this is the exact inverse of `_encode_one_tuple`, and the same rule
+            `processor._parse_bucket_record` applies. It is also why an
+            unscheduled limit sharing an item with a scheduled one inherits a
+            schedule it never asked for: #541, open, deliberately not fixed
+            here. Two inheritance rules on one item would be worse than the one
+            documented defect.
+            """
+            attr = schema.bucket_attr(name, field)
+            override = item.get(attr, {}).get("S")
+            compact = override or item_compact
+            if not compact:
+                return ()
+            key = (compact, reset)
+            if key not in decoded:
+                if reset:
+                    decoded[key] = schedule.decode_reset(compact, sched_tz)
+                else:
+                    decoded[key] = schedule.decode(compact, sched_tz)
+            return decoded[key]
+
         limit_names: list[str] = []
         suffix = f"_{schema.BUCKET_FIELD_TK}"
         for attr_name in item:
@@ -4201,6 +4243,13 @@ class SyncRepository:
 
             tc_attr = item.get(schema.bucket_attr(name, schema.BUCKET_FIELD_TC), {})
             total_consumed = int(tc_attr["N"]) if "N" in tc_attr else None
+            is_wcu = name == schema.WCU_LIMIT_NAME
+            sched = (
+                () if is_wcu else _schedule_for(name, schema.BUCKET_FIELD_SCHED, item_sched, False)
+            )
+            reset_sched = (
+                () if is_wcu else _schedule_for(name, schema.BUCKET_FIELD_RSCHED, item_rsched, True)
+            )
             buckets.append(
                 BucketState(
                     entity_id=entity_id,
@@ -4212,7 +4261,9 @@ class SyncRepository:
                     refill_amount_milli=_get(schema.BUCKET_FIELD_RA),
                     refill_period_ms=_get(schema.BUCKET_FIELD_RP),
                     total_consumed_milli=total_consumed,
-                    shard_count=1 if name == schema.WCU_LIMIT_NAME else shard_count,
+                    shard_count=1 if is_wcu else shard_count,
+                    sched=sched,
+                    reset_sched=reset_sched,
                 )
             )
         return buckets

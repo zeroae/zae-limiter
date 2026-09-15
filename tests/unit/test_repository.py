@@ -6166,3 +6166,194 @@ class TestResetScheduleReachesStorage:
             assert not (set_aliases & remove_aliases), (
                 f"{limits[0].name}: {set_aliases & remove_aliases}"
             )
+
+
+class TestDeserialisedBucketsCarryBothSchedules:
+    """`_deserialize_composite_bucket` reads `sched` / `rsched` off the item.
+
+    Every `BucketState` the client builds from a stored item comes from here,
+    including the `ALL_OLD` / `ALL_NEW` images behind the speculative path. An
+    empty `sched` there makes every schedule-aware number computed from a
+    `BucketState` — the refill ceiling, `Limit.from_bucket_state`, the
+    rejection's `LimitStatus` — silently flat inside a window that has already
+    changed the parameters.
+
+    The slow path overwrites `state.sched` from the config it just resolved
+    (`_do_acquire`), which is the fresher of the two; these tests are about the
+    paths that have no config in hand.
+    """
+
+    NIGHT = (ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", scale=0.5),)
+    RESET = (ScheduleEntry.reset(cron="0 0 * * *", tz="America/New_York"),)
+    QUOTA = Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York")
+
+    @staticmethod
+    async def _seed(repo, entity_id, resource, limits):
+        """Write a real bucket item through the real create path."""
+        now_ms = int(time.time() * 1000)
+        states = [BucketState.from_limit(entity_id, resource, lim, now_ms) for lim in limits]
+        await repo.transact_write(
+            [repo.build_composite_create(entity_id, resource, states, now_ms)]
+        )
+
+    async def test_the_parameter_schedule_reaches_bucket_state(self, repo):
+        await repo.create_entity("ds-1")
+        limit = Limit.per_minute("rpm", 1000).with_schedule(self.NIGHT)
+        await self._seed(repo, "ds-1", "gpt-4", [limit])
+
+        (bucket,) = [
+            b for b in await repo.get_buckets("ds-1", resource="gpt-4") if b.limit_name == "rpm"
+        ]
+        assert bucket.sched == self.NIGHT
+
+    async def test_the_reset_schedule_reaches_bucket_state(self, repo):
+        """The second tuple decodes independently of the first, and a quota
+        carries only this one."""
+        await repo.create_entity("ds-2")
+        await self._seed(repo, "ds-2", "gpt-4", [self.QUOTA])
+
+        (bucket,) = [
+            b for b in await repo.get_buckets("ds-2", resource="gpt-4") if b.limit_name == "rpd"
+        ]
+        assert bucket.reset_sched == self.RESET
+        assert bucket.sched == ()
+
+    async def test_both_tuples_on_one_limit(self, repo):
+        await repo.create_entity("ds-3")
+        await self._seed(repo, "ds-3", "gpt-4", [self.QUOTA.with_schedule(self.NIGHT)])
+
+        (bucket,) = [
+            b for b in await repo.get_buckets("ds-3", resource="gpt-4") if b.limit_name == "rpd"
+        ]
+        assert bucket.sched == self.NIGHT
+        assert bucket.reset_sched == self.RESET
+
+    async def test_a_per_limit_override_beats_the_item_default(self, repo):
+        """Absence means "inherit"; `b_{name}_sched` is written only where a
+        limit differs from the item default. Reading the default for every
+        limit would refill the overridden one at the wrong rate — over-refilling
+        whenever the override is the tighter of the two."""
+        tighter = (ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", scale=0.25),)
+        await repo.create_entity("ds-4")
+        await self._seed(
+            repo,
+            "ds-4",
+            "gpt-4",
+            [
+                Limit.per_minute("rpm", 1000).with_schedule(self.NIGHT),
+                Limit.per_minute("tpm", 100_000).with_schedule(tighter),
+            ],
+        )
+
+        by_name = {b.limit_name: b for b in await repo.get_buckets("ds-4", resource="gpt-4")}
+        assert by_name["rpm"].sched == self.NIGHT
+        assert by_name["tpm"].sched == tighter
+
+    async def test_a_per_limit_reset_override_beats_the_item_default(self, repo):
+        # `7`, not `SUN`: the compact form normalises names to numbers so that
+        # re-encoding a decoded schedule is byte-identical (`schedule.encode`).
+        weekly = (ScheduleEntry.reset(cron="0 0 * * 7", tz="America/New_York"),)
+        await repo.create_entity("ds-5")
+        await self._seed(
+            repo,
+            "ds-5",
+            "gpt-4",
+            [self.QUOTA, Limit.quota("rpw", 50_000, cron="0 0 * * SUN", tz="America/New_York")],
+        )
+
+        by_name = {b.limit_name: b for b in await repo.get_buckets("ds-5", resource="gpt-4")}
+        assert by_name["rpd"].reset_sched == self.RESET
+        assert by_name["rpw"].reset_sched == weekly
+
+    async def test_an_unscheduled_item_yields_empty_tuples(self, repo):
+        """Discriminates against "always return the item default": every bucket
+        written before scheduling existed must still deserialise to `()`, not
+        to a UTC schedule invented from a missing attribute."""
+        await repo.create_entity("ds-6")
+        await self._seed(repo, "ds-6", "gpt-4", [Limit.per_minute("rpm", 1000)])
+
+        for bucket in await repo.get_buckets("ds-6", resource="gpt-4"):
+            assert bucket.sched == ()
+            assert bucket.reset_sched == ()
+
+    async def test_wcu_never_carries_the_item_schedule(self, repo):
+        """`wcu` tracks partition write pressure, not a user limit. Scaling it
+        by a 0.5x window would halve the write ceiling on exactly the hot
+        buckets sharding exists to protect (#519 is the aggregator's version of
+        that bug). The user limit on the same item still gets it, so this
+        discriminates against "never attach a schedule at all"."""
+        await repo.create_entity("ds-7")
+        await self._seed(
+            repo, "ds-7", "gpt-4", [Limit.per_minute("rpm", 1000).with_schedule(self.NIGHT)]
+        )
+
+        buckets = repo._deserialize_composite_bucket(await self._raw_item(repo, "ds-7", "gpt-4"))
+        by_name = {b.limit_name: b for b in buckets}
+        assert by_name[WCU_LIMIT_NAME].sched == ()
+        assert by_name[WCU_LIMIT_NAME].reset_sched == ()
+        assert by_name["rpm"].sched == self.NIGHT
+
+    async def test_an_unscheduled_limit_inherits_the_item_default(self, repo):
+        """#541, open and deliberately NOT fixed here: "unscheduled" and "same
+        as the default" both encode as absence, so the reader cannot tell them
+        apart. Pinned so that fixing it is a deliberate change with a failing
+        test, not a silent drift — and so this reader cannot quietly acquire a
+        second inheritance rule the aggregator does not share."""
+        await repo.create_entity("ds-8")
+        await self._seed(
+            repo,
+            "ds-8",
+            "gpt-4",
+            [Limit.per_minute("rpm", 1000).with_schedule(self.NIGHT), Limit.per_minute("tpm", 10)],
+        )
+
+        by_name = {b.limit_name: b for b in await repo.get_buckets("ds-8", resource="gpt-4")}
+        assert by_name["tpm"].sched == self.NIGHT, "#541: inherits, for now"
+
+    async def test_the_speculative_failure_image_carries_the_schedule(self, repo):
+        """The path that matters most: a fast rejection builds its statuses
+        from these states and has no config in hand."""
+        await repo.create_entity("ds-9")
+        limit = Limit.per_minute("rpm", 10).with_schedule(self.NIGHT)
+        await self._seed(repo, "ds-9", "gpt-4", [limit])
+
+        result = await repo.speculative_consume("ds-9", "gpt-4", {"rpm": 5_000}, shard_id=0)
+        assert result.success is False
+        by_name = {b.limit_name: b for b in result.old_buckets}
+        assert by_name["rpm"].sched == self.NIGHT
+
+    async def test_the_speculative_success_image_carries_the_schedule(self, repo):
+        await repo.create_entity("ds-10")
+        limit = Limit.per_minute("rpm", 1000).with_schedule(self.NIGHT)
+        await self._seed(repo, "ds-10", "gpt-4", [limit])
+
+        result = await repo.speculative_consume("ds-10", "gpt-4", {"rpm": 1}, shard_id=0)
+        assert result.success is True
+        by_name = {b.limit_name: b for b in result.buckets}
+        assert by_name["rpm"].sched == self.NIGHT
+
+    async def test_the_timezone_comes_from_the_item_not_utc(self, repo):
+        """`sched_tz` is hoisted once per item. Defaulting to UTC when it is
+        present would shift every window by the offset — silent, and wrong by
+        five hours here."""
+        await repo.create_entity("ds-11")
+        await self._seed(
+            repo, "ds-11", "gpt-4", [Limit.per_minute("rpm", 1000).with_schedule(self.NIGHT)]
+        )
+
+        by_name = {b.limit_name: b for b in await repo.get_buckets("ds-11", resource="gpt-4")}
+        assert by_name["rpm"].sched[0].tz == "America/New_York"
+
+    @staticmethod
+    async def _raw_item(repo, entity_id, resource, shard=0):
+        from zae_limiter import schema
+
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, resource, shard)},
+                "SK": {"S": schema.sk_state()},
+            },
+        )
+        return response.get("Item") or {}
