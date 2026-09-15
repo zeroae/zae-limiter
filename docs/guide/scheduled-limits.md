@@ -1,7 +1,7 @@
 # Scheduled (Cron) Limits
 
 Rate limits that change with the clock — halve throughput during business hours, raise it
-overnight, close a maintenance window, or reset a daily quota at local midnight.
+overnight, close a maintenance window, or hand back a quota at the start of each period.
 
 Without scheduling, a limit holds until someone calls `set_limits()`. The usual workaround is an
 external cron job that swaps capacity at each tick, which means extra infrastructure, no
@@ -10,7 +10,7 @@ move that into the library: the schedule travels with the limit, and every reade
 effective value for the current instant.
 
 !!! info "Added in v0.14.0"
-    `ScheduleEntry`, `Limit.with_schedule()` and `Limit.with_reset_schedule()` are new in v0.14.0.
+    `ScheduleEntry`, `Limit.with_schedule()` and `Limit.quota()` are new in v0.14.0.
 
 ## When to use it
 
@@ -18,7 +18,7 @@ effective value for the current instant.
 |---------|---------|
 | **Peak / off-peak** | Half the throughput 9–5 on weekdays, full rate overnight |
 | **Maintenance window** | Drop to a trickle during a nightly batch job |
-| **Daily quota** | 10,000 requests per day, back to full at local midnight |
+| **Quota** | 10,000 requests per calendar month, back to full on the 1st |
 | **Weekend capacity** | Raise limits Saturday and Sunday when traffic is lighter |
 
 ## The mental model: a pattern, not a timer
@@ -45,8 +45,7 @@ cron daemon would fire once a day — describes a window exactly **one minute lo
 never what you want for a limit. As a rule of thumb, leave the minute field as `*` unless you
 genuinely mean a sub-hour window.
 
-The one place a single instant *is* what you want is a quota reset, which has its own field —
-see [Daily quotas](#daily-quotas-reset_schedule).
+The one place a single instant *is* what you want is a quota reset — see [Quotas](#quotas).
 
 ## Scaling a limit during a window
 
@@ -127,44 +126,46 @@ Daylight saving is handled for you. A `9-17 America/New_York` window stays 9 a.m
 on both sides of a transition; only the corresponding UTC instant shifts. You do not need to
 adjust anything twice a year, and the 23-hour and 25-hour days are counted correctly.
 
-## Daily quotas: `reset_schedule`
+## Quotas
 
-A token bucket refills *continuously*. That is right for a rate, and wrong for a quota. With
-`Limit.per_day("rpd", 10_000)`, a caller who burns the whole allowance at 00:01 earns it back a
-fraction at a time over the following 24 hours — not all at once at the next midnight.
+A token bucket drips: tokens come back gradually, at the refill rate. That is right for a rate
+limit and wrong for an allowance. A **quota** hands back its whole balance at a calendar instant
+and does not recover in between — spend it, and you wait for the reset.
 
-`reset_schedule` is the second, separate field for that:
+`Limit.quota()` builds one. The period is whatever the cron expression says:
 
-```python
-from zae_limiter import Limit, ScheduleEntry
+```{.python .lint-only}
+from zae_limiter import Limit
 
 await limiter.set_limits(
     "user-123",
     limits=[
-        Limit.per_day("rpd", 10_000).with_reset_schedule((
-            ScheduleEntry.reset(cron="0 0 * * *", tz="America/New_York"),
-        )),
+        # 10,000 requests per calendar month, back to full at midnight on the 1st.
+        Limit.quota("monthly", 10_000, cron="0 0 1 * *", tz="America/New_York"),
     ],
     resource="gpt-4",
 )
 ```
 
-Read it as: **at midnight New York, put the balance back to the limit, whatever it was a second
-earlier.**
+Any other period is the same call with a different expression:
 
-Two differences from `schedule` worth knowing:
+```{.python .lint-only}
+Limit.quota("session", 500, cron="0 */5 * * *", tz="America/New_York")    # every five hours
+Limit.quota("weekly", 50_000, cron="0 0 * * MON", tz="America/New_York")  # Monday midnight
+Limit.quota("daily", 10_000, cron="0 0 * * *", tz="America/New_York")     # local midnight
+```
 
-- **It fires on an edge, not across a window.** A `schedule` entry is active *while* it matches;
-  a reset fires on the transition *into* matching. That is why `0 0 * * *` is correct here, and
-  why the one-minute-window caveat above does not apply.
-- **Reset entries carry `cron` and `tz` only.** They set no capacity or refill — a reset changes
-  the balance, not the limit. Use `ScheduleEntry.reset()` to build them; passing an entry with a
-  modifier to `with_reset_schedule()` raises `ValueError`.
+A quota has no refill rate: a limit either drips or resets, never both
+([ADR-137](../adr/137-reset-replaces-drip.md)).
+
+A reset fires on the **edge**, not across a window: it applies on the transition *into* matching,
+so `0 0 * * *` is right here even though the same expression would be a one-minute window as a
+`schedule` entry.
 
 !!! note "Idle buckets reset when they wake"
     A reset applies on the first request after its edge, not at the edge itself. A bucket idle
-    from 18:00 to 09:00 the next morning gets its reset on that 09:00 request. Two missed
-    midnights apply once — setting the balance to the limit is idempotent.
+    from 18:00 to 09:00 the next morning gets its reset on that 09:00 request. Several missed
+    edges apply once — setting the balance to the allowance is idempotent.
 
 !!! tip "Usage history is unaffected"
     A reset restores tokens without touching the total-consumed counter, so
@@ -221,7 +222,6 @@ resources:
             capacity: 2000
       rpd:
         capacity: 10000
-        refill_period: 86400
         reset_schedule:
           - cron: "0 0 * * *"
             tz: America/New_York
@@ -232,8 +232,11 @@ zae-limiter limits plan -n my-app -f limits.yaml    # preview
 zae-limiter limits apply -n my-app -f limits.yaml
 ```
 
-Invalid cron expressions and unknown timezones are rejected at **parse** time, so `limits plan`
-catches them before anything is written.
+A `reset_schedule` makes the limit a quota, so `refill_amount` defaults to `0` and you do not
+write it. Giving a quota a non-zero `refill_amount` is an error.
+
+Invalid cron expressions, unknown timezones and a rate beside a reset are all rejected at
+**parse** time, so `limits plan` catches them before anything is written.
 
 ## Viewing a schedule
 
@@ -267,12 +270,23 @@ schedule that is a handful of extra round trips per bucket per day.
 
 Idle buckets do nothing at a boundary, correctly — they update on their next request.
 
-`RateLimitExceeded.retry_after_seconds` accounts for boundaries. If a limit rises in ten minutes,
-the wait reflects that rather than assuming the current, lower rate holds forever; and for a daily
-quota it reports the time until the reset rather than a long drip-refill.
+`RateLimitExceeded.retry_after_seconds` accounts for boundaries on a limit that drips: if the
+limit rises in ten minutes, the wait reflects that rather than assuming the current, lower rate
+holds forever. A **quota** is the exception — see the limitation below.
 
 ## Limitations
 
+- **A quota period is a fixed calendar window, shared by everyone on it.** The cron expression
+  names wall-clock instants, so `0 */5 * * *` resets at 00:00, 05:00, 10:00 … for **every**
+  entity alike — not five hours after each caller's own first request. A window anchored to each
+  caller's own activity is not supported; it may arrive in a later release
+  ([ADR-138](../adr/138-fixed-reset-windows-only.md)). Note also that resetting every entity at
+  the same instant concentrates load at the boundary.
+- **A quota reports no `retry_after_seconds`.** The wait estimate is computed from a refill
+  rate, and a quota has none, so an exhausted quota reports a wait of zero rather than the time
+  until its reset. Do not build a client backoff on it for a quota — compute the next reset
+  instant yourself. Tracked in
+  [#530](https://github.com/zeroae/zae-limiter/issues/530); limits that drip are unaffected.
 - **One time-varying mechanism per bucket.** A bucket uses cron scheduling or another dynamic
   mechanism, not both. This keeps "why is my limit this number" answerable.
 - **Extended cron syntax is not supported.** `L` (last), `W` (weekday) and `#` (nth weekday) are
