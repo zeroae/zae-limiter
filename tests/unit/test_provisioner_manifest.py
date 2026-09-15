@@ -318,6 +318,60 @@ class TestScheduleEntryShapeErrors:
         with pytest.raises(ValueError, match=r"reset_schedule\[0\]"):
             LimitDecl.from_dict({"capacity": 10, "reset_schedule": [{"cron": "nonsense"}]})
 
+    @pytest.mark.parametrize("field", ["capacity", "refill_amount", "refill_period_seconds"])
+    @pytest.mark.parametrize("value", [1.5, 2.0, True])
+    def test_a_non_integer_absolute_is_rejected_at_parse_time(self, field, value):
+        """#569: the YAML path had no equivalent of `handler._coerce_int`.
+
+        `capacity: 1.5` parsed, encoded as `c1.5` and then made every later read
+        of that config item raise. `limits plan` must surface it before anything
+        is written.
+        """
+        with pytest.raises(ValueError, match=rf"schedule\[0\].*{field} must be a whole number"):
+            LimitDecl.from_dict({"capacity": 10, "schedule": [{"cron": "* * * * *", field: value}]})
+
+
+class TestNonIntegerAbsolutesEndToEnd:
+    """The full manifest path from #569's second repro."""
+
+    def test_a_manifest_with_a_fractional_capacity_is_rejected(self):
+        import yaml
+
+        doc = """
+namespace: default
+resources:
+  gpt-4:
+    limits:
+      rpm:
+        capacity: 1000
+        schedule:
+          - cron: "* 9-17 * * MON-FRI"
+            capacity: 1.5
+"""
+        with pytest.raises(ValueError, match="capacity must be a whole number"):
+            LimitsManifest.from_dict(yaml.safe_load(doc))
+
+    def test_an_integer_capacity_still_parses_and_round_trips(self):
+        import yaml
+
+        from zae_limiter.schedule import decode, encode
+
+        doc = """
+namespace: default
+resources:
+  gpt-4:
+    limits:
+      rpm:
+        capacity: 1000
+        schedule:
+          - cron: "* 9-17 * * MON-FRI"
+            capacity: 2
+"""
+        m = LimitsManifest.from_dict(yaml.safe_load(doc))
+        entries = m.resources["gpt-4"].limits["rpm"].schedule
+        assert entries[0].capacity == 2
+        assert decode(*encode(entries))[0].capacity == 2
+
 
 class TestDripAndResetAcrossWindows:
     """ADR-137 is a rule about the limit, not about one field.

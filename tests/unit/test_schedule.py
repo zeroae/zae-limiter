@@ -140,6 +140,99 @@ class TestScheduleEntry:
         """`math.isfinite` casts to float, so a bare call would OverflowError here."""
         assert ScheduleEntry(cron="* * * * *", capacity=10**400).capacity == 10**400
 
+
+class TestAbsolutesAreIntegers:
+    """The three absolute fields are `int | None` and nothing enforced it (#569).
+
+    A non-integral float passes #564's finiteness guard (`math.isfinite(1.5)` is
+    True), encodes cleanly as the byte string `c1.5`, and then dies at `decode`'s
+    bare `int(tokens["c"])` — the same "bytes no later read can decode" failure
+    class, arriving through the type system rather than through finiteness.
+    """
+
+    @pytest.mark.parametrize("field", ["capacity", "refill_amount", "refill_period_seconds"])
+    @pytest.mark.parametrize("value", [1.5, 0.5, 2.5])
+    def test_rejects_a_non_integral_float(self, field, value):
+        with pytest.raises(ValueError, match=f"{field} must be a whole number"):
+            ScheduleEntry(cron="* * * * *", **{field: value})
+
+    @pytest.mark.parametrize("field", ["capacity", "refill_amount", "refill_period_seconds"])
+    def test_rejects_an_integral_float_too(self, field):
+        """`2.0` is rejected rather than coerced, agreeing with `_coerce_int`.
+
+        The field is declared `int`; accepting a float that happens to be whole
+        would widen the documented contract, and would leave a YAML author with
+        an arbitrary line to reason about (2.0 fine, 1.5 not).
+        """
+        with pytest.raises(ValueError, match=f"{field} must be a whole number"):
+            ScheduleEntry(cron="* * * * *", **{field: 2.0})
+
+    @pytest.mark.parametrize("field", ["capacity", "refill_amount", "refill_period_seconds"])
+    @pytest.mark.parametrize("value", [True, False])
+    def test_rejects_a_boolean(self, field, value):
+        """`bool` is an `int` subclass, so a bare `isinstance(x, int)` admits it.
+
+        `ScheduleEntry(capacity=True)` encoded as `cTrue`, which `decode` cannot
+        read either.
+        """
+        with pytest.raises(ValueError, match=f"{field} must be a whole number"):
+            ScheduleEntry(cron="* * * * *", **{field: value})
+
+    @pytest.mark.parametrize("field", ["capacity", "refill_amount", "refill_period_seconds"])
+    def test_rejects_a_string(self, field):
+        """Previously a `TypeError` from `value <= 0`, naming no field."""
+        with pytest.raises(ValueError, match=f"{field} must be a whole number"):
+            ScheduleEntry(cron="* * * * *", **{field: "5"})
+
+    def test_integers_still_pass(self):
+        e = ScheduleEntry(cron="* * * * *", capacity=10, refill_amount=5, refill_period_seconds=60)
+        assert (e.capacity, e.refill_amount, e.refill_period_seconds) == (10, 5, 60)
+
+    def test_scale_is_still_a_float_field(self):
+        """`scale` is a float by design; the integer rule is only for the absolutes."""
+        assert ScheduleEntry(cron="* * * * *", scale=0.5).scale == 0.5
+        assert ScheduleEntry(cron="* * * * *", scale=2).scale == 2
+
+    @pytest.mark.parametrize("field", ["capacity", "refill_amount", "refill_period_seconds"])
+    def test_non_finite_still_reports_finiteness_not_integrality(self, field):
+        """Ordering: #564's message is the specific one, so it stays first."""
+        with pytest.raises(ValueError, match=f"{field} must be a finite number"):
+            ScheduleEntry(cron="* * * * *", **{field: float("nan")})
+
+    @pytest.mark.parametrize("value", [1.5, 2.0, True, "1.5"])
+    def test_agrees_with_the_cloudformation_boundary(self, value):
+        """#561 already rejected these at `Custom::ZaeLimiterLimits`; the direct
+        API and the YAML manifest did not. The two boundaries now agree."""
+        from zae_limiter_provisioner.handler import _coerce_int
+
+        with pytest.raises(ValueError):
+            _coerce_int(value, "Capacity")
+        with pytest.raises(ValueError):
+            ScheduleEntry(cron="* * * * *", capacity=value)
+
+    def test_the_one_deliberate_divergence_is_the_cfn_string(self):
+        """`_coerce_int` parses `"5"` because CloudFormation delivers every
+        property as a string. That concession belongs to that boundary only —
+        the Python field is `int`, so a string is not an integer here."""
+        from zae_limiter_provisioner.handler import _coerce_int
+
+        assert _coerce_int("5", "Capacity") == 5
+        with pytest.raises(ValueError, match="whole number"):
+            ScheduleEntry(cron="* * * * *", capacity="5")
+
+    @pytest.mark.parametrize("field", ["capacity", "refill_amount", "refill_period_seconds"])
+    @pytest.mark.parametrize("value", [1, 7, 1000, 10**9, 1.5, 2.0, True, False, 0, -1, "5"])
+    def test_every_constructible_entry_stays_in_integer_milli_units(self, field, value):
+        """`entry_params` multiplies the absolute by 1000 with no int conversion,
+        so a float field produced a float milli-unit (`2500.0`) in the in-memory
+        path before storage came into it at all. Constructibility is the gate."""
+        try:
+            entry = ScheduleEntry(cron="* * * * *", **{field: value})
+        except ValueError:
+            return  # rejected at the gate; nothing downstream ever sees it
+        cp, ra, rp = effective_params(1_000, 1_000, 60_000, (entry,), 1_768_000_000_000)
+        assert all(isinstance(v, int) and not isinstance(v, bool) for v in (cp, ra, rp))
+
     @pytest.mark.parametrize("expr", ["* * L * *", "nonsense"])
     def test_rejects_unusable_cron(self, expr):
         """A schedule that stores must be a schedule that evaluates (§3.1)."""
