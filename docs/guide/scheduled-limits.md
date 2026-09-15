@@ -127,8 +127,9 @@ adjust anything twice a year, and the 23-hour and 25-hour days are counted corre
 
 !!! warning "One timezone per limit, and per configuration level"
     Every entry on one limit must name the same `tz`, and so must every scheduled limit written
-    in the same call — one `set_limits()`, one `set_resource_defaults()`, one `limits:` block in
-    a manifest. Mixing zones raises `ValueError` before anything is written.
+    to the same configuration level — one `set_limits()`, one `set_resource_defaults()`, one
+    `limits:` block in a manifest. Through the Python API, mixing zones raises `ValueError`
+    before anything is written.
 
     So an entity whose `rpm` follows New York and whose `tpm` follows Berlin needs them on
     separate resources. Limits without a schedule can sit alongside any zone.
@@ -242,9 +243,8 @@ zae-limiter limits apply -n my-app -f limits.yaml
 A `reset_schedule` makes the limit a quota, so `refill_amount` defaults to `0` and you do not
 write it. Giving a quota a non-zero `refill_amount` is an error.
 
-Invalid cron expressions, unknown timezones, a rate beside a reset, and scheduled limits in one
-`limits:` block that disagree on `tz` are all rejected at **parse** time, so `limits plan`
-catches them before anything is written.
+Invalid cron expressions, unknown timezones and a rate beside a reset are rejected at **parse**
+time, so `limits plan` catches them before anything is written.
 
 ## Viewing a schedule
 
