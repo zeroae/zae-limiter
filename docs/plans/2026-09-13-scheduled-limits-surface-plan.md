@@ -22,7 +22,7 @@
 - Sync codegen, lint rules, and the `pytest tests/unit/` gevent hazard are all as stated in the core plan's Global Constraints — they apply here unchanged. Three of them bite repeatedly below and are worth restating:
   - **`Repository._now_ms()` does not cover the config cache.** `config_cache.py:99` and `:103` still call `time.time()`, so a test that jumps the injected clock across a boundary resolves the **pre**-jump `Limit` — schedule and all — for 60 real seconds. Call `invalidate_config_cache()` after every jump, or build with `config_cache_ttl=0`. This bites Tasks 3, 5 and 11 specifically.
   - **Never `pytest tests/unit/ -o "addopts="`.** It un-skips the gevent tests into the same process as the asyncio ones and hangs with no output. Run `uv run pytest tests/unit/ -q` and `uv run pytest tests/unit/ -m gevent -n 0 -q` separately.
-  - **Never bare `uv run ruff format .`.** The local ruff is newer than pre-commit's pinned 0.9.2 and reformats 34 unrelated files, including the Python blocks inside these plan documents. Scope the formatter to the directories you touched.
+  - ~~**Never bare `uv run ruff format .`**~~ — **retired by #486.** Every ruff declaration is now pinned to one exact version, so the hook and the `uv run` CLI produce identical output and a bare format run on a clean tree reformats nothing. The scoped `pre-commit run --files <paths>` invocations below still work and are still cheaper to run; they are no longer *required*.
 - **Every `file.py:NNN` reference below predates the core plan's merge and has drifted.** The
   core plan is now complete — all 14 tasks are on `main` — so these tasks can and should be
   checked against real merged code rather than against a plan. Treat a line number as a hint
@@ -2759,9 +2759,9 @@ Expected: PASS
 - [ ] **Step 5: Lint, type check, commit**
 
 ```bash
-# Never bare `uv run ruff format .` (Global Constraints) — it reformats 34
-# unrelated files, these plan documents included. pre-commit runs ruff
-# check and format at the pinned 0.9.2 over exactly these paths.
+# pre-commit runs ruff check and format at the pinned version over exactly
+# these paths. (A bare `uv run ruff format .` is safe since #486 — the pin
+# and the CLI agree — but scoping is still cheaper.)
 pre-commit run --files src/zae_limiter_provisioner/manifest.py tests/unit/test_provisioner_manifest.py tests/unit/test_differ.py
 uv run mypy
 git add src/zae_limiter_provisioner/manifest.py tests/unit/test_provisioner_manifest.py
@@ -2992,9 +2992,9 @@ uv run pytest tests/unit/test_limits_cli.py tests/unit/test_provisioner_handler.
 - [ ] **Step 6: Lint, type check, commit**
 
 ```bash
-# Never bare `uv run ruff format .` (Global Constraints) — it reformats 34
-# unrelated files, these plan documents included. pre-commit runs ruff
-# check and format at the pinned 0.9.2 over exactly these paths.
+# pre-commit runs ruff check and format at the pinned version over exactly
+# these paths. (A bare `uv run ruff format .` is safe since #486 — the pin
+# and the CLI agree — but scoping is still cheaper.)
 pre-commit run --files src/zae_limiter_provisioner/bucket_sync.py src/zae_limiter/infra/provisioner_builder.py tests/unit/test_provisioner_bucket_sync.py tests/unit/test_provisioner_builder.py
 uv run mypy
 git add -A
@@ -3249,9 +3249,9 @@ uv run pytest tests/unit/test_provisioner_bucket_sync.py tests/unit/test_provisi
 - [ ] **Step 5: Lint, type check, commit**
 
 ```bash
-# Never bare `uv run ruff format .` (Global Constraints) — it reformats 34
-# unrelated files, these plan documents included. pre-commit runs ruff
-# check and format at the pinned 0.9.2 over exactly these paths.
+# pre-commit runs ruff check and format at the pinned version over exactly
+# these paths. (A bare `uv run ruff format .` is safe since #486 — the pin
+# and the CLI agree — but scoping is still cheaper.)
 pre-commit run --files src/zae_limiter/cli.py tests/unit/test_cli.py
 uv run mypy
 git add -A
@@ -3425,9 +3425,9 @@ Expected: PASS (5 tests)
 - [ ] **Step 5: Lint, type check, commit**
 
 ```bash
-# Never bare `uv run ruff format .` (Global Constraints) — it reformats 34
-# unrelated files, these plan documents included. pre-commit runs ruff
-# check and format at the pinned 0.9.2 over exactly these paths.
+# pre-commit runs ruff check and format at the pinned version over exactly
+# these paths. (A bare `uv run ruff format .` is safe since #486 — the pin
+# and the CLI agree — but scoping is still cheaper.)
 pre-commit run --files src/zae_limiter/repository.py tests/unit/test_repository.py tests/unit/test_limiter.py tests/unit/test_schedule_encoding.py tests/integration/test_schedule_failure.py
 uv run mypy
 uv run pytest tests/unit/test_cli.py -q
@@ -4909,7 +4909,8 @@ the core plan's SDD ledger. Each is fixed in the task named, not papered over.
     `tests/unit/test_processor.py`, not `test_aggregator_processor.py`; and `uv run ruff format .`
     must never be run bare in this repo (local ruff reformats 34 unrelated files including these
     plan documents — core plan Task 4's ledger). Every expanded step scopes the formatter to the
-    directories it touched.
+    directories it touched. **The second half is retired by #486**: every ruff declaration is now
+    pinned to one exact version, so a bare format run on a clean tree reformats nothing.
 
 ## Corrected after ADR-137 / ADR-138 (2026-09-15)
 
@@ -4961,8 +4962,8 @@ above was written. This pass reconciled the document with both.
 
 26. **Four steps still ran the formatter bare**, contradicting ledger entry 19's own claim that
     "every expanded step scopes the formatter". Tasks 6, 8, 9 and 10 now run
-    `pre-commit run --files <paths>`, which applies ruff check and format at the pinned 0.9.2
-    over exactly the files that task touches.
+    `pre-commit run --files <paths>`, which applies ruff check and format at the pinned version
+    over exactly the files that task touches. (Since #486 the bare run is harmless either way.)
 
 27. **Every line reference in the document has drifted** past the core plan's merge. Recorded
     in the Global Constraints with the offsets spot-checked during this pass, rather than

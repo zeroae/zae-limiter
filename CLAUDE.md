@@ -42,6 +42,22 @@ pre-commit run --all-files
 uv run cfn-lint src/zae_limiter/infra/cfn_template.yaml
 ```
 
+**Run the lint commands bare — `.` is the whole tree, and that is correct (#486).** Ruff is
+pinned to one exact version in five places (`[build-system] requires`, the `[dev]` extra, the
+hatch default env, `.pre-commit-config.yaml`'s `rev`, and `ci-lint.yml`'s `pip install`), so
+`uv run ruff format .` and the commit hook produce byte-identical output. On a clean tree the
+bare command reformats nothing — the standing "never run bare `uv run ruff format .`"
+workaround is retired.
+
+Two ruff versions do not agree, and the damage is not limited to churn:
+`scripts/generate_sync.py` formats its output with whatever `ruff` is on `PATH` while the
+`verify-sync-generated` hook regenerates and checks with the pinned one, so a construct the two
+disagree on leaves a generated sync twin reported permanently out of date with nothing in the
+output naming the cause (observed on #513: a multi-line `lambda` with a conditional body). The
+`check-ruff-pin` hook (`scripts/check_ruff_pin.py`) fails the commit if any of the five drifts —
+including a dependabot bump that moves `pyproject.toml` without the hook `rev`, which is the
+expected way it fires.
+
 ### Sync Code Generation
 
 Native sync code is generated from async source via AST transformation (see ADR-121). The transformer handles `asyncio.gather(a, b)` by converting it to `self._run_in_executor(lambda: a, lambda: b)`, with a configurable `parallel_mode` parameter on `SyncRepository` that controls the execution strategy:
