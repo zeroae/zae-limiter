@@ -305,6 +305,37 @@ instant is applied to the base first, and the result is then divided by `shard_c
 entity on a `scale: 0.5` window across 2 shards admits `cp × 0.5 / 2` per shard. Compare
 observed rejections against that, not against the stored number.
 
+### Bucket Expiry
+
+Bucket items carry a DynamoDB TTL, and whether they do depends on where their limits came
+from:
+
+| Limits resolved from | TTL |
+|----------------------|-----|
+| Entity config, for that resource | None — the item persists |
+| Entity config, entity-wide `_default_` | None — the item persists |
+| Resource defaults | `recovery_horizon × multiplier` |
+| System defaults | `recovery_horizon × multiplier` |
+| A `limits=` override passed to `acquire()` | `recovery_horizon × multiplier` |
+
+The multiplier is `bucket_ttl_refill_multiplier`, default 7; set it to 0 to disable expiry
+everywhere.
+
+For resource- and system-level limits this expiry is also the **propagation mechanism**:
+changing those defaults does not rewrite live buckets, so a bucket picks up the new numbers
+when it expires and is recreated. Entity-level changes fan out immediately and need no expiry.
+
+The recovery horizon is the longest a limit could need to come back:
+
+- A limit that drips uses time-to-fill, `(capacity / refill_amount) × refill_period_seconds`,
+  taken at its **slowest** across the base parameters and every schedule window. An entry that
+  overrides `refill_amount` or `refill_period_seconds` to something slower therefore lengthens
+  the TTL for the whole item.
+- A quota uses its **reset period** — the cycle its reset cron repeats on, rounded up (31 days
+  for a monthly pattern, 366 for an annual one).
+
+Across limits sharing one item the largest horizon wins.
+
 ### Verification After Changes
 
 After adjusting limits, verify:

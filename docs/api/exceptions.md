@@ -305,9 +305,17 @@ present on both kinds.
 
 `resets_at_ms` is an **absolute** epoch-millisecond instant, so a client can
 schedule a retry without parsing cron and without a reference clock of its own.
-It is `null` when the reset is further out than the scheduler's forward scan can
-see — a monthly or annual reset, most of its cycle. The key is always present on
-a quota entry.
+The key is always present on a quota entry.
+
+!!! warning "Both retry fields have a reach limit on a long quota period"
+    `resets_at_ms` is `null` once the next reset is more than **7 days** away, which covers a
+    monthly or annual quota for most of its cycle. `retry_after_seconds` reaches further but
+    not indefinitely: it is accurate out to about **56 days** and reports `0.0` beyond that, so
+    an annual quota can say "retry immediately" when the allowance is in fact gone until
+    January. Treat `resets_at_ms: null` or a `retry_after_seconds` of `0.0` on an `exceeded`
+    quota as "no estimate available" rather than as "retry now", and back off on your own
+    schedule. Tracked as
+    [#574](https://github.com/zeroae/zae-limiter/issues/574).
 
 !!! warning "A quota never reports `refill_amount`"
     A quota's stored `refill_amount` is fixed at 0 and its `refill_period_seconds`

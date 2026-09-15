@@ -28,6 +28,15 @@ Infrastructure errors that trigger on_unavailable:
 - DynamoDB throttling
 - Network failures
 - Service unavailable errors
+- A stored schedule that cannot be decoded
+
+!!! note "An unreadable schedule is an unavailable limiter"
+    A limiter that cannot work out what the limit is does not fall back to the unscheduled
+    base — that would run a `scale: 0.5` window at full capacity, which is the one outcome
+    worth avoiding. It raises `RateLimiterUnavailable` and your `on_unavailable` mode decides,
+    exactly as it does for a timeout. The whole config item is rejected together, so a level
+    with one unreadable limit supplies none of its limits rather than silently dropping the
+    one.
 
 ## BLOCK (Default)
 

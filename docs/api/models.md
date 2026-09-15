@@ -16,6 +16,13 @@ Data models for rate limit configuration and status.
 One window of a limit's `schedule`, or one edge of its `reset_schedule`. Build reset entries
 with `ScheduleEntry.reset()`, which takes `cron` and `tz` only.
 
+Everything is validated at construction, so an entry that applies is an entry that evaluates.
+`ValueError` is raised for a cron expression that will not parse, a `tz` that is not a
+resolvable IANA name, an entry setting neither `scale` nor an absolute field or setting both,
+and any modifier that is not positive and finite. The absolute fields — `capacity`,
+`refill_amount`, `refill_period_seconds` — are integers, so a fractional value such as `100.5`
+is rejected rather than rounded. `scale` is the field that takes a fraction.
+
 ::: zae_limiter.schedule.ScheduleEntry
     options:
       show_root_heading: true

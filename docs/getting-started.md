@@ -321,6 +321,9 @@ except RateLimitExceeded as e:
     )
 ```
 
+The body lists every limit named in `consume`, each tagged `kind: "rate"` or `kind: "quota"`.
+See [`as_dict()` Output](api/exceptions.md#as_dict-output).
+
 ## Centralized Configuration (v0.5.0+)
 
 zae-limiter supports storing rate limit configurations in DynamoDB, eliminating the need to hardcode limits in application code.

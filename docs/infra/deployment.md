@@ -695,6 +695,22 @@ Resources:
 
 This approach lets you manage limits alongside other infrastructure in CloudFormation, with full lifecycle support (Create, Update, Delete).
 
+!!! warning "A partial apply succeeds; it does not roll the stack back"
+    The provisioner commits config writes before fanning them out to live bucket items, so
+    once a fan-out runs something is already in the table and a clean failure is no longer
+    available. A fan-out that fails part-way therefore returns **SUCCESS**, with the failures
+    listed under `errors` in the custom resource's response data, rather than FAILED — a
+    rollback would revert a stack whose configuration had already been applied.
+
+    A successful stack update is therefore not proof that every bucket was reached. Check
+    `errors` in the response data, or the `{stack}-limits-provisioner` log group, which records
+    the same list. Every write is idempotent, so re-running the same stack update reconciles the
+    remainder. The `#PROVISIONER` record is written on both outcomes, so it always describes the
+    config that is actually in the table.
+
+    A failure writing that record *is* reported as FAILED: it is the last step, nothing after
+    it can be salvaged, and a retry is the right answer.
+
 ### Provisioner Architecture
 
 The provisioner is a Lambda function (`{stack}-limits-provisioner`) that:

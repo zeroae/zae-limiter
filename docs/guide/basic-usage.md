@@ -337,6 +337,11 @@ except RateLimitExceeded as e:
     print(e.as_dict())
 ```
 
+Each entry in `as_dict()`'s `limits` array carries a `kind` — `"rate"`, which reports
+`refill_amount` and `refill_period_seconds`, or `"quota"`, which reports `resets_at_ms` and no
+drip fields at all. Read `kind` rather than inferring the shape from the fields present. See
+[`as_dict()` Output](../api/exceptions.md#as_dict-output) for the full body.
+
 ### Service Unavailable
 
 ```python

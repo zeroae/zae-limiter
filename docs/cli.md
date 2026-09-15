@@ -201,6 +201,23 @@ The generated template uses `Custom::ZaeLimiterLimits` backed by the provisioner
 | `--endpoint-url` | | Custom endpoint URL (e.g., LocalStack) |
 | `--namespace` | `-N` | Namespace (default: `"default"`) |
 
+### Partial Failures
+
+Config writes are committed before the fan-out that carries them to live bucket items, so an
+apply can get part-way and stop. `limits apply` reports what landed, prints each failure on
+stderr, and exits 1:
+
+```
+Applied: 2 created, 1 updated, 0 deleted.
+
+Errors (1):
+  - bucket param sync entity user-123: <reason>
+```
+
+Every write is idempotent, so re-running the same manifest reconciles the remainder. The
+`#PROVISIONER` record is written either way, so it always describes the config that is actually
+in the table.
+
 !!! note "Provisioner Lambda"
     The `plan`, `apply`, and `diff` subcommands invoke the `{name}-limits-provisioner` Lambda function. This function must be deployed as part of the main stack before using these commands. It is deployed by default; `zae-limiter deploy --no-provisioner` (or `--no-iam`, which leaves no role for it) skips it.
 
