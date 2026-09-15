@@ -4728,6 +4728,94 @@ class SyncRepository:
                 break
         return pks
 
+    def reclaim_quota_surplus(
+        self, entity_id: str, resource: str, shares_milli: dict[str, int]
+    ) -> tuple[int, dict[str, int]]:
+        """Clamp a quota's existing shards to their new share, and report the take (#587).
+
+        Called once, just before the slow path creates a shard that does not
+        exist yet, and only for limits that are quotas. A doubling shrinks every
+        shard's ceiling from ``cp // old_count`` to ``cp // new_count``, and
+        ``bucket.refill_bucket`` would trim each shard to the new one on its
+        next materialising pass anyway (``min(capacity, tokens)``, #496 / #222
+        §3.3). Doing it here instead makes the trim and the new shard's grant a
+        single conserving **transfer**: what comes off the siblings is exactly
+        what the new shard is created with, so the entity's spendable total does
+        not move across a doubling.
+
+        Eager rather than lazy because the speculative fast path is a pure
+        ``ADD`` with no ceiling arithmetic (#469 / #222 §3.3). An unclamped
+        sibling can spend its surplus at full speed while the new shard holds a
+        grant made from that same surplus — the over-admission of #587 in
+        transient form. Nothing is destroyed that was not already doomed, so a
+        reclaim followed by a rejected acquire costs the entity nothing.
+
+        A **dripping** limit must never be passed here. Its stored ``ra`` is
+        undivided, so its shards' ceilings still sum to the configured capacity
+        and a new shard starting full costs at most one ``time_to_fill`` of
+        burst, which token-bucket semantics allow; clamping it early would only
+        throw away tokens the refill is about to re-add.
+
+        Cost: 1 GSI3 KEYS_ONLY query + 1 ``BatchGetItem`` + one conditional
+        ``UpdateItem`` per shard that actually holds a surplus — none at all in
+        the common case of an entity that has already spent down. Paid once per
+        shard creation, bounded by ``MAX_SHARD_COUNT`` over the life of an
+        (entity, resource).
+
+        Args:
+            entity_id: Entity owning the shards.
+            resource: Resource the shards belong to.
+            shares_milli: ``{limit_name: capacity_milli // shard_count}`` for
+                the quota limits only — the ceiling each shard is clamped to.
+
+        Returns:
+            ``(shards_found, {limit_name: reclaimed_milli})``. ``shards_found``
+            is 0 when nothing has been materialised for this (entity, resource)
+            at all, which is **not** the same as reclaiming nothing: the caller
+            grants a full share in that case and a capped transfer otherwise.
+        """
+        reclaimed: dict[str, int] = dict.fromkeys(shares_milli, 0)
+        if not shares_milli:
+            return (0, reclaimed)
+        pks = self._discover_entity_bucket_pks(entity_id, resource)
+        if not pks:
+            return (0, reclaimed)
+        client = self._get_client()
+        keys = [{"PK": {"S": pk}, "SK": {"S": schema.sk_state()}} for pk in pks]
+        items: list[dict[str, Any]] = []
+        for start in range(0, len(keys), 100):
+            items.extend(
+                self._batch_get_all(
+                    keys[start : start + 100],
+                    context=f"quota shards for entity {entity_id!r}",
+                    entity_id=entity_id,
+                )
+            )
+        for item in items:
+            pk = item["PK"]["S"]
+            for name, share in shares_milli.items():
+                attr = schema.bucket_attr(name, schema.BUCKET_FIELD_TK)
+                raw = item.get(attr, {}).get("N")
+                if raw is None or int(raw) <= share:
+                    continue
+                try:
+                    response = client.update_item(
+                        TableName=self.table_name,
+                        Key={"PK": {"S": pk}, "SK": {"S": schema.sk_state()}},
+                        UpdateExpression="SET #tk = :share",
+                        ConditionExpression="#tk > :share",
+                        ExpressionAttributeNames={"#tk": attr},
+                        ExpressionAttributeValues={":share": {"N": str(share)}},
+                        ReturnValues="UPDATED_OLD",
+                    )
+                except ClientError as e:
+                    if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                        continue
+                    raise
+                previous = int(response["Attributes"][attr]["N"])
+                reclaimed[name] += previous - share
+        return (len(pks), reclaimed)
+
     def _fanout_resource(self, resource: str, disabled: bool) -> int:
         """Stamp every bucket for a resource, honoring per-entity overrides.
 
