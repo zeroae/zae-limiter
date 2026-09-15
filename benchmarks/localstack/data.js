@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789430612535,
+  "lastUpdate": 1789431378883,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -18699,6 +18699,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.003847783864669416",
             "extra": "mean: 1.0766665575999923 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "49a142577a64f22f5fcd0c719fdbc1251898d8dc",
+          "message": "📝 docs(models): correct the 1 KB size claim and bind #508 to Task 13 (#509)\n\n## Summary\n\nTwo independent corrections to planning documents. No code change.\n\n### 1. The 1 KB size claim contradicted its own table (#507)\n\nBoth `docs/plans/2026-09-13-scheduled-limits-design.md` (§4.2 prose) and\n`docs/plans/2026-09-13-scheduled-limits-core-plan.md` (Task 5's \"Why\"\nparagraph)\nclaimed the rejected JSON encoding \"crossed 1 KB at 3 limits × 2 entries\n(917 B)\".\n917 is under 1024.\n\nThe design doc's **table** was always correct — it marks only the 4×3\n(1337 B) and\n6×4 (2129 B) rows as over. So the error was confined to the prose\nsentence, which\nappeared verbatim in both files. Corrected to name **4 limits × 3\nentries** as the\nfirst row that actually crosses.\n\nThis is worth a PR rather than a silent fixup because the 1 KB WCU cliff\nis the\n*entire* argument for inventing a bespoke encoding instead of using\nJSON. The first\nnumber a reader checks should be one that supports the argument it is\noffered as\nevidence for; a reader who checks `917 < 1024` and stops has no reason\nto trust the\nrest of §4.2.\n\nCredit to the Task 5 agent (#504), which found it by **re-deriving** the\nsizes from\nthe encoding rather than restating the doc's figures.\n\n**Deliberately not fixed here:** that agent's independent reconstruction\ndiffers from\nthe docs' figures by roughly 15–90 B on *every* row —\n\n| docs | agent |\n|------|-------|\n| 479 | 487 |\n| 733 | 741 |\n| 917 | 934 |\n| 1337 | 1363 |\n| 2129 | 2221 |\n| 721 | 751 |\n\n— attributable to longer entity/resource names plus a `ttl` attribute in\nthe agent's\nmodel. Both sets agree on which rows cross 1 KB, which is the only thing\nthe argument\nrests on. This PR corrects the one sentence that contradicted its own\ntable and leaves\nthe table's figures alone, rather than half-reconciling a single row and\nleaving the\ncolumn internally inconsistent.\n\n### 2. `_sync_bucket_params` and `rf` is now a Task 13 requirement\n(#508)\n\nCore-plan Task 13 now carries an explicit REQUIREMENT to decide whether\n`_sync_bucket_params` bumps `rf`.\n\n**The bug.** The aggregator guards `try_refill_bucket` with an\noptimistic lock on the\nshared `rf` timestamp (`ConditionExpression: rf = :expected_rf`). But\n`_sync_bucket_params` — the #468/#487 limit-change fan-out — rewrites\n`cp`/`ra`/`rp`\non every shard **without touching `rf`**. The lock therefore cannot\ndistinguish a\nstream image captured *before* the fan-out from one captured *after*: an\naggregator\ninvocation holding a pre-shrink image passes the condition and refills\nthe bucket\ntoward the old, larger capacity.\n\nTransient — #496 made `refill_bucket` clamp to `min(capacity_milli,\ntokens_milli)` on\nevery path, so the next materialising pass trims the overage. But in the\ninterval the\nbucket admits above the limit `set_limits()` was called to impose, which\nis the one\nthing that call is for.\n\n**Not new in kind.** PR #506 already closed the same structural gap for\na different\nsymptom — a stale image computing `vu` from a superseded schedule,\ncancelling the one\nmaterialising pass that `vu = 0` exists to force — by adding `AND #sched\n= :expected_sched`\nto the condition. That guard was added only on the re-stamp path;\n`cp`/`ra` stayed\nunguarded.\n\n**Why recorded in the plan instead of fixed in its own PR.**\n`_sync_bucket_params` is\nprecisely the function Task 13 rewrites. A standalone fix would conflict\nwith Task 13\nwithin the day, and worse, would pre-empt a design decision that belongs\nto that task.\nBoth candidate options are written into the task:\n\n- pin per-limit `cp` in the aggregator's condition, mirroring #506's\n`#sched` pin; or\n- have the fan-out bump `rf`, which closes the whole class at once —\n\nwith the caveat recorded that bumping `rf` forfeits refill accrued since\nthe last stamp\nand interacts with the unconditional `vu = 0` write directly above it.\n\n## Test plan\n\n- [x] None runnable — planning documents only, no code touched.\n- [x] Verified by reading the design doc's §4.2 table against its own\nprose and\n      confirming the table marks only the 4×3 and 6×4 rows as over 1 KB.\n\nCloses #507\nRefs #222\nRefs #508\n\n**#508 stays open** for Task 13 to resolve. **#222 is not closed** by\nthis PR.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01QdVj8nPhUwTz2aNJzMFqt5",
+          "timestamp": "2026-09-14T20:10:51-04:00",
+          "tree_id": "54147dde8d2fe3441f97523a489d483c83bad0ab",
+          "url": "https://github.com/zeroae/zae-limiter/commit/49a142577a64f22f5fcd0c719fdbc1251898d8dc"
+        },
+        "date": 1789431377699,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 22.284878386292654,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007542687299662274",
+            "extra": "mean: 44.873478000000944 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 17.33363994000095,
+            "unit": "iter/sec",
+            "range": "stddev: 0.014462102221543384",
+            "extra": "mean: 57.69128720000083 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 35.6311342495217,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004109218786847725",
+            "extra": "mean: 28.065342882353615 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 32.91807626349636,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004468569964221319",
+            "extra": "mean: 30.37844593333432 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 21.75364877632301,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0064867036320163055",
+            "extra": "mean: 45.96929969230793 msec\nrounds: 13"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 56.013862883364546,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0033744758435328447",
+            "extra": "mean: 17.852723388891434 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 22.914869367530553,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008782817779916434",
+            "extra": "mean: 43.63978620000163 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 21.742133543345275,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010954125112413473",
+            "extra": "mean: 45.993646300000535 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 19.36593414052515,
+            "unit": "iter/sec",
+            "range": "stddev: 0.05443612940044861",
+            "extra": "mean: 51.63706499999915 msec\nrounds: 23"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 24.19678017930628,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008396299315899495",
+            "extra": "mean: 41.32781273333327 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 22.413733653688084,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007482995494001744",
+            "extra": "mean: 44.61550295238091 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 20.673277445586006,
+            "unit": "iter/sec",
+            "range": "stddev: 0.011094044399312513",
+            "extra": "mean: 48.37162383333234 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 26.400505509597227,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006292591930544036",
+            "extra": "mean: 37.878062586206 msec\nrounds: 29"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.925677963706347,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007603054978592627",
+            "extra": "mean: 519.2976286000089 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9384664041315383,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0008188616193052084",
+            "extra": "mean: 515.8717209999907 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9474734215731636,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006129315053177416",
+            "extra": "mean: 1.0554385772000046 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9260381487164179,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010086916918960699",
+            "extra": "mean: 1.0798691192000036 sec\nrounds: 5"
           }
         ]
       }
