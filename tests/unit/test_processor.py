@@ -2580,19 +2580,36 @@ class TestAggregatorRestampsVu:
         state = _sched_state(sched=BUSINESS, sched_compact=BUSINESS_COMPACT, vu_ms=TUE_1400 - 1)
         assert try_refill_bucket(table, state, now_ms=TUE_1400) is True
         kwargs = table.update_item.call_args.kwargs
-        assert kwargs["ConditionExpression"] == "rf = :expected_rf AND #sched = :expected_sched"
+        assert kwargs["ConditionExpression"] == (
+            "rf = :expected_rf AND #vu = :expected_vu AND #sched = :expected_sched"
+        )
         assert kwargs["ExpressionAttributeValues"][":expected_sched"] == BUSINESS_COMPACT
         assert kwargs["ExpressionAttributeNames"]["#sched"] == "sched"
 
-    def test_a_plain_refill_keeps_the_bare_rf_condition(self) -> None:
-        """Discriminates the test above: the extra guard rides with the `vu`
-        re-stamp only, so it cannot cost skipped refills on every other write."""
+    def test_a_plain_refill_keeps_only_the_rf_and_vu_guards(self) -> None:
+        """Discriminates the test above: the `#sched` guard rides with the `vu`
+        re-stamp only, so it cannot cost skipped refills on every other write.
+
+        The `#vu` pin does ride on every write — that is #508, and it is the
+        one thing that makes a pre-fan-out image detectable at all, since the
+        fan-out moves `cp`/`ra`/`rp`/`sched` and `vu` but never `rf`."""
         table = MagicMock()
         state = _sched_state(sched=BUSINESS)
         assert try_refill_bucket(table, state, now_ms=TUE_1400) is True
         kwargs = table.update_item.call_args.kwargs
-        assert kwargs["ConditionExpression"] == "rf = :expected_rf"
-        assert "ExpressionAttributeNames" not in kwargs
+        assert kwargs["ConditionExpression"] == ("rf = :expected_rf AND attribute_not_exists(#vu)")
+        assert "#sched" not in kwargs["ExpressionAttributeNames"]
+
+    def test_the_vu_pin_matches_the_stamp_the_image_carried(self) -> None:
+        """A `vu` present on the image is pinned by value, not by existence:
+        the fan-out writes `vu = 0` over a *scheduled* bucket's live boundary
+        too, and that must be just as detectable."""
+        table = MagicMock()
+        state = _sched_state(sched=BUSINESS, vu_ms=TUE_1400 + 3_600_000)
+        assert try_refill_bucket(table, state, now_ms=TUE_1400) is True
+        kwargs = table.update_item.call_args.kwargs
+        assert "#vu = :expected_vu" in kwargs["ConditionExpression"]
+        assert kwargs["ExpressionAttributeValues"][":expected_vu"] == TUE_1400 + 3_600_000
 
 
 class TestScheduleIsCarriedFromTheStreamImage:
