@@ -655,11 +655,16 @@ class TestDecodeRaisesValueErrorForTheAggregatorsSake:
         `exceptions` would end the one-way dependency that lets `models` import
         `ScheduleEntry` and both Lambda stubs vendor this file."""
         import ast
+        import inspect
         import pathlib
 
-        import zae_limiter.schedule as sched_mod
-
-        tree = ast.parse(pathlib.Path(sched_mod.__file__).read_text())
+        # Located through a symbol this module already imports, rather than by
+        # importing `zae_limiter.schedule` a second way: the file's own style
+        # is `from ... import ...`, and mixing the two forms is what the
+        # repository's lint bot flags.
+        source = inspect.getsourcefile(decode)
+        assert source is not None
+        tree = ast.parse(pathlib.Path(source).read_text())
         imported = set()
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.level:
