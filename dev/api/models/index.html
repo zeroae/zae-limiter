@@ -6309,12 +6309,19 @@ result divides and scales exactly once.</p>
 <code>LeaseEntry.limit</code> carries, and the slow path already puts the
 undivided config limit there; a pre-divided one would be narrowed a
 second time when the lease builds a status from it.</p>
-<p>No <code>reset_schedule</code>: bucket items do not carry one yet (surface Task
-5). When they do, the two fields have to move <strong>together</strong> — the
+<p>No <code>reset_schedule</code>, for two reasons that both have to clear before
+it can be carried. Bucket items now <em>do</em> carry one (<code>rsched</code> /
+<code>b_{name}_rsched</code>, #222 §4.1), but nothing populates
+<code>BucketState.reset_sched</code> on the way <strong>back in</strong>:
+<code>_deserialize_composite_bucket</code> reads the base params and neither
+schedule tuple, so <code>state.reset_sched</code> here is always <code>()</code> and
+adding it would be a no-op that merely looked like a fix. And once it
+is populated, the two fields have to move <strong>together</strong> — the
 <code>max(1, ...)</code> floor below turns a quota's zero rate into one token,
-which alongside a reset is precisely what ADR-137 rejects, so adding
-<code>reset_schedule=state.reset_sched</code> on its own raises rather than
-round-trips.</p>
+which alongside a reset is precisely what ADR-137 rejects, so
+<code>reset_schedule=state.reset_sched</code> on its own would start <em>raising</em>
+rather than round-tripping. Until both land, a fast-path rejection on a
+quota quotes a phantom one-token drip (surface plan Tasks 5 and 10).</p>
 
 
     </div>
@@ -6849,7 +6856,7 @@ echoed back, since nothing was evaluated for them.</p>
   </span>
 
 <a href="#zae_limiter.models.BucketState" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">BucketState</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">limit_name</span><span class="p">,</span> <span class="n">tokens_milli</span><span class="p">,</span> <span class="n">last_refill_ms</span><span class="p">,</span> <span class="n">capacity_milli</span><span class="p">,</span> <span class="n">refill_amount_milli</span><span class="p">,</span> <span class="n">refill_period_ms</span><span class="p">,</span> <span class="n">total_consumed_milli</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_count</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">sched</span><span class="o">=</span><span class="p">())</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">BucketState</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">limit_name</span><span class="p">,</span> <span class="n">tokens_milli</span><span class="p">,</span> <span class="n">last_refill_ms</span><span class="p">,</span> <span class="n">capacity_milli</span><span class="p">,</span> <span class="n">refill_amount_milli</span><span class="p">,</span> <span class="n">refill_period_ms</span><span class="p">,</span> <span class="n">total_consumed_milli</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_count</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">sched</span><span class="o">=</span><span class="p">(),</span> <span class="n">reset_sched</span><span class="o">=</span><span class="p">())</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
