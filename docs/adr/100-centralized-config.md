@@ -32,7 +32,7 @@ Implement centralized configuration with these architectural choices:
 | Caching strategy | [ADR-103](103-config-caching.md) *(superseded by [ADR-122](122-resolve-limits-on-repository.md))* | 60s TTL with negative caching; resolution later moved to the Repository protocol |
 | API behavior | [ADR-104](104-stored-limits-default.md) | Stored limits as default |
 | Read consistency | [ADR-105](105-eventual-consistency.md) | Eventually consistent reads |
-| Disable flag | [ADR-125](125-resource-disable.md) | Tri-state `disabled` beside limits, resolved by an independent walk over the same levels |
+| Disable flag | [ADR-125](125-resource-disable.md) | Tri-state `disabled` beside limits, resolved by an independent walk over the entity and resource levels |
 | Bucket TTL | [ADR-136](136-entity-config-bucket-ttl.md) | The resolved level decides whether a bucket persists or expires |
 | Schedules on config | [ADR-135](135-scheduled-limits.md) | Per-limit `sched`/`rsched`, with one `sched_tz` hoisted per item |
 
