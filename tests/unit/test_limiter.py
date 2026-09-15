@@ -28,6 +28,13 @@ from zae_limiter.infra.discovery import InfrastructureDiscovery
 from zae_limiter.models import BucketState
 from zae_limiter.repository_protocol import SpeculativeResult
 from zae_limiter.schedule import ScheduleEntry
+from zae_limiter.schema import (
+    BUCKET_FIELD_TK,
+    BUCKET_FIELD_VU,
+    bucket_attr,
+    pk_bucket,
+    sk_state,
+)
 
 
 def freeze_clock(repo) -> int:
@@ -9172,3 +9179,192 @@ class TestWcuHiddenFromUser:
         limit_names = {b.limit_name for b in buckets}
         assert "wcu" not in limit_names
         assert "rpm" in limit_names
+
+
+class TestScheduleBoundaryRouting:
+    """An expired ``vu`` routes acquire() to the slow path (#222 §2.1).
+
+    ``vu`` (valid-until, epoch ms) says when the ``tk`` on the item stopped
+    reflecting the parameters in force. A fast-path write that trips it is
+    **not** a rejection: the limits that refused it are stale and the new
+    window may have widened them. Only the slow path can re-materialise, so
+    SCHEDULE_BOUNDARY must reach it rather than raising RateLimitExceeded or
+    burning a shard retry.
+
+    The tests below pin the *route*, not the outcome, and deliberately so:
+    until the slow path materialises, an exhausted-and-expired bucket still
+    ends in RateLimitExceeded either way. What changes is who decides — the
+    stale image, or a fresh read that can see the new window.
+    """
+
+    LIMITS = [Limit.custom("rpm", capacity=100, refill_amount=100, refill_period_seconds=60)]
+
+    @staticmethod
+    async def _stamp(repo, entity_id, resource, expression, names, values, shard_id=0):
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, resource, shard_id)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression=expression,
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues=values,
+        )
+
+    async def _drain(self, repo, entity_id, resource, shard_id=0):
+        """Empty the rpm balance without touching ``rf``, so no refill helps."""
+        await self._stamp(
+            repo,
+            entity_id,
+            resource,
+            "SET #tk = :zero",
+            {"#tk": bucket_attr("rpm", BUCKET_FIELD_TK)},
+            {":zero": {"N": "0"}},
+            shard_id=shard_id,
+        )
+
+    async def _expire_vu(self, repo, entity_id, resource, now_ms, shard_id=0):
+        await self._stamp(
+            repo,
+            entity_id,
+            resource,
+            "SET #vu = :vu",
+            {"#vu": BUCKET_FIELD_VU},
+            {":vu": {"N": str(now_ms - 1)}},
+            shard_id=shard_id,
+        )
+
+    @staticmethod
+    def _spy_slow_path(limiter) -> list[dict]:
+        """Record every ``_do_acquire`` call; the calls still run for real."""
+        calls: list[dict] = []
+        original = limiter._do_acquire
+
+        async def spy(*args, **kwargs):
+            calls.append(kwargs)
+            return await original(*args, **kwargs)
+
+        limiter._do_acquire = spy
+        return calls
+
+    async def test_expired_vu_reaches_the_slow_path(self, limiter):
+        repo = limiter._repository
+        async with limiter.acquire("vu-route", "gpt-4", limits=self.LIMITS, consume={"rpm": 1}):
+            pass
+
+        now_ms = freeze_clock(repo)
+        await self._drain(repo, "vu-route", "gpt-4")
+        await self._expire_vu(repo, "vu-route", "gpt-4", now_ms)
+
+        calls = self._spy_slow_path(limiter)
+        with pytest.raises(RateLimitExceeded):
+            async with limiter.acquire("vu-route", "gpt-4", limits=self.LIMITS, consume={"rpm": 1}):
+                pass
+
+        assert len(calls) == 1, "a closed window must be decided by the slow path, not the image"
+
+    async def test_absent_vu_still_fast_rejects(self, limiter):
+        """The contrast case: identical bucket, no ``vu``, no slow path.
+
+        Without this, a fix that routed *every* failure to the slow path — or
+        treated a missing attribute as ``vu = 0`` — would look correct.
+        """
+        repo = limiter._repository
+        async with limiter.acquire("vu-noroute", "gpt-4", limits=self.LIMITS, consume={"rpm": 1}):
+            pass
+
+        freeze_clock(repo)
+        await self._drain(repo, "vu-noroute", "gpt-4")
+
+        calls = self._spy_slow_path(limiter)
+        with pytest.raises(RateLimitExceeded):
+            async with limiter.acquire(
+                "vu-noroute", "gpt-4", limits=self.LIMITS, consume={"rpm": 1}
+            ):
+                pass
+
+        assert calls == [], "an exhausted unscheduled bucket must still fast-reject (0 RCU)"
+
+    async def test_expired_parent_vu_reaches_the_slow_path_and_refunds_the_child(self, limiter):
+        """The cascade twin: a closed window on the parent is not a rejection.
+
+        The parent is judged on the warm parallel path, which has no shared
+        helper to short-circuit — it calls ``would_refill_satisfy`` directly.
+        The child's speculative debit must be handed back before the acquire
+        is re-run through the slow path, or the entity pays twice.
+        """
+        repo = limiter._repository
+        await limiter.create_entity("vu-parent")
+        await limiter.create_entity("vu-child", parent_id="vu-parent", cascade=True)
+
+        # Two acquires: the first creates both buckets, the second warms the
+        # entity cache so the parent is written on the parallel fast path.
+        for _ in range(2):
+            async with limiter.acquire("vu-child", "gpt-4", limits=self.LIMITS, consume={"rpm": 1}):
+                pass
+
+        now_ms = freeze_clock(repo)
+        await self._drain(repo, "vu-parent", "gpt-4")
+        await self._expire_vu(repo, "vu-parent", "gpt-4", now_ms)
+        before = await repo.get_buckets("vu-child", resource="gpt-4")
+        child_before = next(b.tokens_milli for b in before if b.limit_name == "rpm")
+
+        calls = self._spy_slow_path(limiter)
+        with pytest.raises(RateLimitExceeded):
+            async with limiter.acquire("vu-child", "gpt-4", limits=self.LIMITS, consume={"rpm": 1}):
+                pass
+
+        assert len(calls) == 1, "a closed parent window must be decided by the slow path"
+        after = await repo.get_buckets("vu-child", resource="gpt-4")
+        child_after = next(b.tokens_milli for b in after if b.limit_name == "rpm")
+        assert child_after == child_before, "the child's speculative debit was not refunded"
+
+    async def test_boundary_on_a_probed_shard_reaches_the_slow_path(self, limiter):
+        """A shard retry that lands on a closed window must not fast-reject.
+
+        Shard 0 is exhausted under limits still in force; shard 1 crossed its
+        boundary but still holds a full share — the transient state while
+        shards re-materialise one at a time. Probing shard 1 returns no lease,
+        and falling through to the caller's fast rejection would raise
+        RateLimitExceeded on shard 0's balance while shard 1 was one slow-path
+        pass away from admitting. Handing the probed shard to the slow path
+        turns that rejection into an admission, so this test discriminates on
+        the outcome, not the route.
+        """
+        repo = limiter._repository
+        async with limiter.acquire("vu-shard", "gpt-4", limits=self.LIMITS, consume={"rpm": 1}):
+            pass
+
+        now_ms = freeze_clock(repo)
+        # Shard 1: a full clone whose window has closed. Shard 0: drained.
+        states = [BucketState.from_limit("vu-shard", "gpt-4", self.LIMITS[0], now_ms)]
+        await repo.transact_write(
+            [
+                repo.build_composite_create(
+                    "vu-shard", "gpt-4", states, now_ms, shard_id=1, shard_count=2
+                )
+            ]
+        )
+        await self._stamp(
+            repo, "vu-shard", "gpt-4", "SET shard_count = :two", {}, {":two": {"N": "2"}}
+        )
+        await self._drain(repo, "vu-shard", "gpt-4")
+        await self._expire_vu(repo, "vu-shard", "gpt-4", now_ms, shard_id=1)
+
+        # Pin the first draw to the drained shard so the retry is the one that
+        # meets the boundary; ADR-134 would otherwise re-pick at random.
+        def pinned_shard(entity_id, resource, shard_id=None, shard_count=None):
+            return (0, 2) if shard_id is None else (shard_id, 2)
+
+        repo.select_shard = pinned_shard
+
+        calls = self._spy_slow_path(limiter)
+        async with limiter.acquire("vu-shard", "gpt-4", limits=self.LIMITS, consume={"rpm": 1}):
+            pass
+
+        assert len(calls) == 1, "the probed boundary shard must be handed to the slow path"
+        assert calls[0].get("shard_id") == 1, (
+            f"the slow path must target the boundary shard, got {calls[0]}"
+        )

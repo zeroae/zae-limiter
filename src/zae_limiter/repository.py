@@ -2565,10 +2565,11 @@ class Repository:
             consume: Amount per limit (tokens, not milli).
             ttl_seconds: TTL in seconds, or None for no TTL change.
             shard_id: Target shard index (default 0).
-            now_ms: The caller's "now" (issue #430). Both clock-derived parts
-                of the write — the ``ttl`` stamp and the ``#ttl > :now_epoch``
-                expiry guard — are derived from this one value. None reads
-                the clock once here.
+            now_ms: The caller's "now" (issue #430). Every clock-derived part
+                of the write — the ``ttl`` stamp, the ``#ttl > :now_epoch``
+                expiry guard and the ``#vu > :vu_now`` schedule-window guard
+                (#222) — is derived from this one value. None reads the clock
+                once here.
 
         Returns:
             SpeculativeResult with shard_id and shard_count populated.
@@ -2638,6 +2639,19 @@ class Repository:
         attr_names["#disabled"] = schema.BUCKET_FIELD_DISABLED
         condition_parts.append("attribute_not_exists(#disabled)")
 
+        # Reject a bucket whose schedule window has closed (#222 §2.1). The
+        # fast path cannot evaluate a schedule, so `vu` is a precomputed
+        # instant: past it, `tk` was materialised under parameters that no
+        # longer apply and only the slow path may spend it. Absent means "no
+        # schedule, never expires", which is every bucket written before
+        # scheduling existed — so this costs nothing on the unscheduled path.
+        # Uses the bound `now_ms`; a fresh read here would re-introduce the
+        # second clock reading #430 removed, and could straddle the boundary
+        # the comparison is about.
+        attr_names["#vu"] = schema.BUCKET_FIELD_VU
+        attr_values[":vu_now"] = {"N": str(now_ms)}
+        condition_parts.append("(attribute_not_exists(#vu) OR #vu > :vu_now)")
+
         condition_expr = " AND ".join(condition_parts)
 
         try:
@@ -2702,6 +2716,26 @@ class Repository:
                             shard_id=shard_id,
                             shard_count=old_shard_count,
                             failure_reason=SpeculativeFailureReason.DISABLED,
+                        )
+
+                    # A closed schedule window outranks exhaustion (#222 §2.1):
+                    # the limits that rejected this write are stale, and the
+                    # new window may admit it. Must precede the exhausted
+                    # checks, or a boundary reads as a rejection and the caller
+                    # sees RateLimitExceeded against limits no longer in force
+                    # — and a stale `wcu` reading would double shard_count at
+                    # every boundary. Mirrors the condition exactly (`vu > now`
+                    # passes), against the same bound `now_ms`.
+                    vu_raw = old_item.get(schema.BUCKET_FIELD_VU, {}).get("N")
+                    if vu_raw is not None and int(vu_raw) <= now_ms:
+                        return SpeculativeResult(
+                            success=False,
+                            old_buckets=old_buckets,
+                            cascade=old_cascade,
+                            parent_id=old_parent_id,
+                            shard_id=shard_id,
+                            shard_count=old_shard_count,
+                            failure_reason=SpeculativeFailureReason.SCHEDULE_BOUNDARY,
                         )
 
                     # Classify failure reason (GHSA-76rv)

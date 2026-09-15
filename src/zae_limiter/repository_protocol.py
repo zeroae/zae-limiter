@@ -32,6 +32,14 @@ class SpeculativeFailureReason(Enum):
     inspecting individual BucketState token values. DISABLED means the bucket
     is stamped disabled (ADR-125); the limiter must raise ResourceDisabled
     rather than retry or reshard.
+
+    SCHEDULE_BOUNDARY means the item's ``vu`` (valid-until) has passed, so
+    ``tk`` was last materialised under schedule parameters that no longer
+    apply (#222 §2.1). The limiter must take the slow path to re-materialise
+    — not retry on another shard (every shard crosses the same boundary, so
+    it cannot help and would create a shard needlessly) and above all not
+    fast-reject, which would report RateLimitExceeded against limits the new
+    window may have already raised.
     """
 
     APP_LIMIT_EXHAUSTED = "app_limit_exhausted"
@@ -39,6 +47,7 @@ class SpeculativeFailureReason(Enum):
     BOTH_EXHAUSTED = "both_exhausted"
     BUCKET_MISSING = "bucket_missing"
     DISABLED = "disabled"
+    SCHEDULE_BOUNDARY = "schedule_boundary"
 
 
 @dataclass

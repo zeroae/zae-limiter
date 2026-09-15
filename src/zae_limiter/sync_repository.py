@@ -2121,10 +2121,11 @@ class SyncRepository:
             consume: Amount per limit (tokens, not milli).
             ttl_seconds: TTL in seconds, or None for no TTL change.
             shard_id: Target shard index (default 0).
-            now_ms: The caller's "now" (issue #430). Both clock-derived parts
-                of the write — the ``ttl`` stamp and the ``#ttl > :now_epoch``
-                expiry guard — are derived from this one value. None reads
-                the clock once here.
+            now_ms: The caller's "now" (issue #430). Every clock-derived part
+                of the write — the ``ttl`` stamp, the ``#ttl > :now_epoch``
+                expiry guard and the ``#vu > :vu_now`` schedule-window guard
+                (#222) — is derived from this one value. None reads the clock
+                once here.
 
         Returns:
             SpeculativeResult with shard_id and shard_count populated.
@@ -2176,6 +2177,9 @@ class SyncRepository:
         condition_parts.append("(attribute_not_exists(#ttl) OR #ttl > :now_epoch)")
         attr_names["#disabled"] = schema.BUCKET_FIELD_DISABLED
         condition_parts.append("attribute_not_exists(#disabled)")
+        attr_names["#vu"] = schema.BUCKET_FIELD_VU
+        attr_values[":vu_now"] = {"N": str(now_ms)}
+        condition_parts.append("(attribute_not_exists(#vu) OR #vu > :vu_now)")
         condition_expr = " AND ".join(condition_parts)
         try:
             response = client.update_item(
@@ -2226,6 +2230,17 @@ class SyncRepository:
                             shard_id=shard_id,
                             shard_count=old_shard_count,
                             failure_reason=SpeculativeFailureReason.DISABLED,
+                        )
+                    vu_raw = old_item.get(schema.BUCKET_FIELD_VU, {}).get("N")
+                    if vu_raw is not None and int(vu_raw) <= now_ms:
+                        return SpeculativeResult(
+                            success=False,
+                            old_buckets=old_buckets,
+                            cascade=old_cascade,
+                            parent_id=old_parent_id,
+                            shard_id=shard_id,
+                            shard_count=old_shard_count,
+                            failure_reason=SpeculativeFailureReason.SCHEDULE_BOUNDARY,
                         )
                     wcu_exhausted = any(
                         b.limit_name == schema.WCU_LIMIT_NAME and b.tokens_milli < 1000

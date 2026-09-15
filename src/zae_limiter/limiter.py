@@ -846,16 +846,18 @@ class RateLimiter:
                     self._check_speculative_failure(result, consume, now_ms)
                     untried = [s for s in range(result.shard_count) if s != result.shard_id]
                     return None, random.choice(untried), result.shard_count, parent_hint
-                retry_result, missing_shard = await self._retry_on_other_shard(
+                retry_result, slow_path_shard = await self._retry_on_other_shard(
                     entity_id, resource, consume, ttl_seconds=None, result=result, now_ms=now_ms
                 )
                 if retry_result is not None:
                     return retry_result, result.shard_id, result.shard_count, parent_hint
-                if missing_shard is not None:
-                    # A shard the entity is entitled to does not exist yet —
-                    # the slow path creates it rather than fast-rejecting on
-                    # the drained shard's balance (issue #439).
-                    return None, missing_shard, result.shard_count, parent_hint
+                if slow_path_shard is not None:
+                    # A probed shard the fast path could not settle: one the
+                    # entity is entitled to but that does not exist yet (issue
+                    # #439), or one past its schedule boundary (#222). Either
+                    # way the slow path goes there rather than fast-rejecting
+                    # on the drained shard's balance.
+                    return None, slow_path_shard, result.shard_count, parent_hint
 
             self._check_speculative_failure(result, consume, now_ms)
             # BUCKET_MISSING has no image to read a shard_count from; let the
@@ -1016,6 +1018,20 @@ class RateLimiter:
         if parent_result.failure_reason == SpeculativeFailureReason.DISABLED:
             await self._compensate_child(entity_id, resource, consume, result.shard_id)
             raise ResourceDisabled(entity_id=parent_id, resource=resource, level="bucket")
+
+        # A closed schedule window on the parent is not a rejection either
+        # (#222 §2.1), and unlike the child path there is no shared helper to
+        # short-circuit: the `would_refill_satisfy` gate below would judge the
+        # parent against parameters that no longer apply and raise
+        # RateLimitExceeded on a window that may have just been widened. Take
+        # the same route a parent image this path cannot use already takes —
+        # give the child's tokens back and hand the whole acquire to the slow
+        # path, which re-materialises parent and child together. The parent
+        # shard is left unpinned: every shard crosses the boundary at once, so
+        # pinning this one buys nothing and would concentrate the writes.
+        if parent_result.failure_reason is SpeculativeFailureReason.SCHEDULE_BOUNDARY:
+            await self._compensate_child(entity_id, resource, consume, result.shard_id)
+            return None, parent_hint
 
         if parent_result.old_buckets is None:
             await self._compensate_child(entity_id, resource, consume, result.shard_id)
@@ -1187,6 +1203,14 @@ class RateLimiter:
         if result.old_buckets is None:
             return
 
+        # A closed schedule window is never a rejection (#222 §2.1). The image
+        # reports `tk` materialised under parameters that no longer apply, so
+        # `would_refill_satisfy` would be answering the wrong question — and
+        # answering it "no" raises RateLimitExceeded against a limit the new
+        # window may have just raised. Only the slow path can re-materialise.
+        if result.failure_reason is SpeculativeFailureReason.SCHEDULE_BOUNDARY:
+            return
+
         bucket_names = {b.limit_name for b in result.old_buckets}
         if not all(name in bucket_names for name in consume):
             return
@@ -1223,16 +1247,20 @@ class RateLimiter:
                 attempt that sent it here
 
         Returns:
-            ``(lease, missing_shard)``. ``lease`` is set if a retry on another
-            shard succeeded. Otherwise ``missing_shard`` is the first shard a
-            retry found not to exist yet (``BUCKET_MISSING``, probing stops
-            there), so the slow path can create it instead of fast-rejecting
-            (issue #439); None if every retried shard existed or no untried
-            shards remain. Never called for cascading entities.
+            ``(lease, slow_path_shard)``. ``lease`` is set if a retry on
+            another shard succeeded. Otherwise ``slow_path_shard`` is the
+            first shard a retry found the fast path cannot settle — one that
+            does not exist yet (``BUCKET_MISSING``, issue #439) or one whose
+            schedule window has closed (``SCHEDULE_BOUNDARY``, #222 §2.1) —
+            so the slow path creates or re-materialises it there instead of
+            fast-rejecting on the drained shard that sent us here. Probing
+            stops at the first such shard. None if every retried shard was
+            simply exhausted or no untried shards remain. Never called for
+            cascading entities.
         """
         tried_shards = {result.shard_id}
         shard_count = result.shard_count
-        missing_shard: int | None = None
+        slow_path_shard: int | None = None
 
         for _ in range(self._MAX_SHARD_RETRIES):
             untried = [s for s in range(shard_count) if s not in tried_shards]
@@ -1249,12 +1277,20 @@ class RateLimiter:
                     self._build_lease_from_speculative(entity_id, resource, consume, retry),
                     None,
                 )
-            if retry.failure_reason == SpeculativeFailureReason.BUCKET_MISSING:
+            if retry.failure_reason in (
+                SpeculativeFailureReason.BUCKET_MISSING,
+                SpeculativeFailureReason.SCHEDULE_BOUNDARY,
+            ):
                 # Probing further shards costs 1 RT + 1 WCU each; a missing
-                # shard is one the slow path will create with a fresh share.
-                missing_shard = new_shard
+                # shard is one the slow path will create with a fresh share,
+                # and a boundary-expired one is a shard the slow path will
+                # re-materialise. Both are "the fast path cannot settle this,
+                # but the slow path can" — falling through to the caller's
+                # fast rejection instead would reject on the first shard's
+                # stale balance while this one was about to be refilled.
+                slow_path_shard = new_shard
                 break
-        return None, missing_shard
+        return None, slow_path_shard
 
     def _build_lease_from_speculative(
         self,
