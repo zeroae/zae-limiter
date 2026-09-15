@@ -13,12 +13,19 @@ from zae_limiter.repository import Repository
 from zae_limiter.repository_protocol import SpeculativeFailureReason
 from zae_limiter.schedule import ScheduleEntry
 from zae_limiter.schema import (
+    BUCKET_FIELD_DISABLED,
+    BUCKET_FIELD_TK,
+    BUCKET_FIELD_VU,
+    WCU_LIMIT_NAME,
+    bucket_attr,
     calculate_bucket_ttl,
     limit_attr,
     parse_bucket_attr,
     parse_bucket_sk,
     parse_limit_attr,
+    pk_bucket,
     sk_config,
+    sk_state,
 )
 
 
@@ -3125,6 +3132,247 @@ class TestSpeculativeConsume:
             assert exc_info.value.response["Error"]["Code"] == "InternalServerError"
         finally:
             client.update_item = original
+
+
+class TestScheduleBoundaryClassification:
+    """``vu`` gates the fast path; an expired one routes to the slow path (#222 §2.1).
+
+    ``vu`` (valid-until, epoch ms) is the earliest instant at which any limit
+    on the item changes effective params. Past it, ``tk`` was materialised
+    under parameters that no longer apply, so the write must not be admitted
+    and — crucially — must not be reported as a rejection either.
+    """
+
+    LIMIT = Limit.per_minute("rpm", 100)
+
+    async def _make_bucket(self, repo, entity_id="vu-1", **kwargs):
+        """Create a real composite bucket item (wcu included) for ``entity_id``."""
+        now_ms = repo._now_ms()
+        state = BucketState.from_limit(entity_id, "gpt-4", self.LIMIT, now_ms)
+        put_item = repo.build_composite_create(entity_id, "gpt-4", [state], now_ms, **kwargs)
+        await repo.transact_write([put_item])
+        return entity_id
+
+    @staticmethod
+    async def _set_attrs(repo, entity_id, expression, names, values):
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "gpt-4", 0)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression=expression,
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues=values,
+        )
+
+    async def _set_vu(self, repo, entity_id, vu_ms):
+        await self._set_attrs(
+            repo,
+            entity_id,
+            "SET #vu = :vu",
+            {"#vu": BUCKET_FIELD_VU},
+            {":vu": {"N": str(vu_ms)}},
+        )
+
+    async def test_expired_vu_classifies_as_schedule_boundary(self, repo):
+        entity_id = await self._make_bucket(repo)
+        await self._set_vu(repo, entity_id, repo._now_ms() - 1)
+
+        result = await repo.speculative_consume(entity_id, "gpt-4", {"rpm": 1})
+        assert result.success is False
+        assert result.failure_reason is SpeculativeFailureReason.SCHEDULE_BOUNDARY
+
+    async def test_vu_exactly_now_is_expired(self, repo):
+        """``vu`` is the first instant at which the item is stale, not the last
+        at which it is fresh: the condition is ``vu > now``, so ``vu == now``
+        fails. The two sides must agree — the condition and the classifier both
+        use ``>`` / ``<=`` against the same bound ``now_ms``, or a write could
+        fail the condition and then be classified as something else."""
+        entity_id = await self._make_bucket(repo, "vu-boundary")
+        pinned = repo._now_ms()
+        repo._now_ms = lambda: pinned
+        await self._set_vu(repo, entity_id, pinned)
+
+        result = await repo.speculative_consume(entity_id, "gpt-4", {"rpm": 1})
+        assert result.success is False
+        assert result.failure_reason is SpeculativeFailureReason.SCHEDULE_BOUNDARY
+
+    async def test_schedule_boundary_wins_over_app_limit_exhausted(self, repo):
+        """An empty bucket whose ``vu`` also expired must re-materialise, not
+        reject — otherwise the caller sees RateLimitExceeded against a limit
+        that may have just been raised."""
+        entity_id = await self._make_bucket(repo, "vu-drained")
+        assert (await repo.speculative_consume(entity_id, "gpt-4", {"rpm": 100})).success is True
+        await self._set_vu(repo, entity_id, repo._now_ms() - 1)
+
+        result = await repo.speculative_consume(entity_id, "gpt-4", {"rpm": 1})
+        assert result.failure_reason is SpeculativeFailureReason.SCHEDULE_BOUNDARY
+
+    async def test_schedule_boundary_wins_over_wcu_exhausted(self, repo):
+        """Ordering matters against the *infrastructure* limit too: classifying
+        a closed window as WCU_EXHAUSTED would make the limiter double
+        ``shard_count`` at every boundary, permanently shrinking every shard's
+        share, instead of re-materialising once."""
+        entity_id = await self._make_bucket(repo, "vu-wcu")
+        await self._set_attrs(
+            repo,
+            entity_id,
+            "SET #wcu = :zero, #vu = :vu",
+            {"#wcu": bucket_attr(WCU_LIMIT_NAME, BUCKET_FIELD_TK), "#vu": BUCKET_FIELD_VU},
+            {":zero": {"N": "0"}, ":vu": {"N": str(repo._now_ms() - 1)}},
+        )
+
+        result = await repo.speculative_consume(entity_id, "gpt-4", {"rpm": 1})
+        assert result.failure_reason is SpeculativeFailureReason.SCHEDULE_BOUNDARY
+
+    async def test_disabled_still_wins_over_schedule_boundary(self, repo):
+        """A disabled bucket stays disabled across a schedule boundary: no
+        re-materialisation can admit it, and ADR-125 requires ResourceDisabled
+        rather than a slow-path pass that would only rediscover the stamp."""
+        entity_id = await self._make_bucket(repo, "vu-disabled")
+        await self._set_attrs(
+            repo,
+            entity_id,
+            "SET #disabled = :true, #vu = :vu",
+            {"#disabled": BUCKET_FIELD_DISABLED, "#vu": BUCKET_FIELD_VU},
+            {":true": {"BOOL": True}, ":vu": {"N": str(repo._now_ms() - 1)}},
+        )
+
+        result = await repo.speculative_consume(entity_id, "gpt-4", {"rpm": 1})
+        assert result.failure_reason is SpeculativeFailureReason.DISABLED
+
+    async def test_future_vu_does_not_affect_the_fast_path(self, repo):
+        entity_id = await self._make_bucket(repo, "vu-future")
+        await self._set_vu(repo, entity_id, repo._now_ms() + 3_600_000)
+
+        result = await repo.speculative_consume(entity_id, "gpt-4", {"rpm": 1})
+        assert result.success is True
+
+    async def test_absent_vu_does_not_affect_the_fast_path(self, repo):
+        """Unscheduled buckets carry no ``vu`` at all — every bucket written
+        before this feature, and every bucket written by a limit that has no
+        schedule. ``attribute_not_exists`` must let them straight through."""
+        entity_id = await self._make_bucket(repo, "vu-absent")
+        result = await repo.speculative_consume(entity_id, "gpt-4", {"rpm": 1})
+        assert result.success is True
+        assert result.failure_reason is None
+
+    async def test_absent_vu_still_classifies_exhaustion_normally(self, repo):
+        """The unscheduled rejection path is unchanged: no ``vu``, no
+        SCHEDULE_BOUNDARY. Guards against a classifier that treats a missing
+        attribute as ``vu = 0``."""
+        entity_id = await self._make_bucket(repo, "vu-absent-drained")
+        assert (await repo.speculative_consume(entity_id, "gpt-4", {"rpm": 100})).success is True
+
+        result = await repo.speculative_consume(entity_id, "gpt-4", {"rpm": 1})
+        assert result.failure_reason is SpeculativeFailureReason.APP_LIMIT_EXHAUSTED
+
+
+class TestScheduleBoundaryFastPathCost:
+    """The ``vu`` guard must cost nothing on the fast path (#222 §2.1).
+
+    The load-bearing claim of the whole design is that the fast path gains
+    exactly one comparison: no config read, no schedule evaluation, no extra
+    round trip. Measured here rather than asserted in prose.
+    """
+
+    LIMIT = Limit.per_minute("rpm", 100)
+
+    @staticmethod
+    async def _count_calls(repo, coro_factory):
+        """Run ``coro_factory()`` with every DynamoDB verb counted."""
+        client = await repo._get_client()
+        counts: dict[str, int] = {}
+        captured: list[dict] = []
+        originals = {}
+
+        def wrap(verb):
+            original = getattr(client, verb)
+            originals[verb] = original
+
+            async def counting(*args, **kwargs):
+                counts[verb] = counts.get(verb, 0) + 1
+                if verb == "update_item":
+                    captured.append(kwargs)
+                return await original(*args, **kwargs)
+
+            setattr(client, verb, counting)
+
+        for verb in ("get_item", "batch_get_item", "query", "scan", "update_item", "put_item"):
+            wrap(verb)
+        try:
+            await coro_factory()
+        finally:
+            for verb, original in originals.items():
+                setattr(client, verb, original)
+        return counts, captured
+
+    async def test_fast_path_reads_nothing_and_writes_once(self, repo):
+        """One UpdateItem, no reads — with and without ``vu`` on the item."""
+        now_ms = repo._now_ms()
+        state = BucketState.from_limit("cost-1", "gpt-4", self.LIMIT, now_ms)
+        await repo.transact_write([repo.build_composite_create("cost-1", "gpt-4", [state], now_ms)])
+
+        counts, captured = await self._count_calls(
+            repo, lambda: repo.speculative_consume("cost-1", "gpt-4", {"rpm": 1})
+        )
+        assert counts == {"update_item": 1}, f"fast path issued {counts}"
+
+        # The condition gains exactly one clause naming `vu`, and nothing else
+        # changed: the SET/ADD expression is untouched.
+        condition = captured[0]["ConditionExpression"]
+        assert condition.count("#vu") == 2, condition  # attribute_not_exists(#vu) OR #vu > :vu_now
+        assert condition.count(":vu_now") == 1, condition
+        assert "#vu" not in captured[0]["UpdateExpression"]
+
+    async def test_vu_clause_costs_no_extra_call_when_present(self, repo):
+        now_ms = repo._now_ms()
+        state = BucketState.from_limit("cost-2", "gpt-4", self.LIMIT, now_ms)
+        await repo.transact_write([repo.build_composite_create("cost-2", "gpt-4", [state], now_ms)])
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, "cost-2", "gpt-4", 0)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="SET #vu = :vu",
+            ExpressionAttributeNames={"#vu": BUCKET_FIELD_VU},
+            ExpressionAttributeValues={":vu": {"N": str(now_ms + 3_600_000)}},
+        )
+
+        counts, _ = await self._count_calls(
+            repo, lambda: repo.speculative_consume("cost-2", "gpt-4", {"rpm": 1})
+        )
+        assert counts == {"update_item": 1}, f"scheduled fast path issued {counts}"
+
+
+class TestScheduleBoundaryUsesOneClockReading:
+    """The ``vu`` comparison must reuse the bound ``now_ms`` (#430)."""
+
+    async def test_adding_vu_does_not_add_a_clock_reading(self, repo):
+        now_ms = int(time.time() * 1000)
+        state = BucketState.from_limit("vu-clock", "gpt-4", Limit.per_minute("rpm", 100), now_ms)
+        await repo.transact_write(
+            [repo.build_composite_create("vu-clock", "gpt-4", [state], now_ms)]
+        )
+
+        readings: list[int] = []
+        base = repo._now_ms()
+
+        def fake_now_ms() -> int:
+            readings.append(base + 60_000 * len(readings))
+            return readings[-1]
+
+        repo._now_ms = fake_now_ms
+        result = await repo.speculative_consume("vu-clock", "gpt-4", {"rpm": 1})
+
+        assert result.success is True
+        assert len(readings) == 1, (
+            f"speculative_consume read the clock {len(readings)} times: {readings}"
+        )
 
 
 class TestCompositeNormalGuard:

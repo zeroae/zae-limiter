@@ -690,13 +690,13 @@ class SyncRateLimiter:
                     self._check_speculative_failure(result, consume, now_ms)
                     untried = [s for s in range(result.shard_count) if s != result.shard_id]
                     return (None, random.choice(untried), result.shard_count, parent_hint)
-                retry_result, missing_shard = self._retry_on_other_shard(
+                retry_result, slow_path_shard = self._retry_on_other_shard(
                     entity_id, resource, consume, ttl_seconds=None, result=result, now_ms=now_ms
                 )
                 if retry_result is not None:
                     return (retry_result, result.shard_id, result.shard_count, parent_hint)
-                if missing_shard is not None:
-                    return (None, missing_shard, result.shard_count, parent_hint)
+                if slow_path_shard is not None:
+                    return (None, slow_path_shard, result.shard_count, parent_hint)
             self._check_speculative_failure(result, consume, now_ms)
             observed_count = (
                 None
@@ -817,6 +817,9 @@ class SyncRateLimiter:
         if parent_result.failure_reason == SpeculativeFailureReason.DISABLED:
             self._compensate_child(entity_id, resource, consume, result.shard_id)
             raise ResourceDisabled(entity_id=parent_id, resource=resource, level="bucket")
+        if parent_result.failure_reason is SpeculativeFailureReason.SCHEDULE_BOUNDARY:
+            self._compensate_child(entity_id, resource, consume, result.shard_id)
+            return (None, parent_hint)
         if parent_result.old_buckets is None:
             self._compensate_child(entity_id, resource, consume, result.shard_id)
             return (None, parent_hint)
@@ -927,6 +930,8 @@ class SyncRateLimiter:
         """
         if result.old_buckets is None:
             return
+        if result.failure_reason is SpeculativeFailureReason.SCHEDULE_BOUNDARY:
+            return
         bucket_names = {b.limit_name for b in result.old_buckets}
         if not all(name in bucket_names for name in consume):
             return
@@ -962,16 +967,20 @@ class SyncRateLimiter:
                 attempt that sent it here
 
         Returns:
-            ``(lease, missing_shard)``. ``lease`` is set if a retry on another
-            shard succeeded. Otherwise ``missing_shard`` is the first shard a
-            retry found not to exist yet (``BUCKET_MISSING``, probing stops
-            there), so the slow path can create it instead of fast-rejecting
-            (issue #439); None if every retried shard existed or no untried
-            shards remain. Never called for cascading entities.
+            ``(lease, slow_path_shard)``. ``lease`` is set if a retry on
+            another shard succeeded. Otherwise ``slow_path_shard`` is the
+            first shard a retry found the fast path cannot settle — one that
+            does not exist yet (``BUCKET_MISSING``, issue #439) or one whose
+            schedule window has closed (``SCHEDULE_BOUNDARY``, #222 §2.1) —
+            so the slow path creates or re-materialises it there instead of
+            fast-rejecting on the drained shard that sent us here. Probing
+            stops at the first such shard. None if every retried shard was
+            simply exhausted or no untried shards remain. Never called for
+            cascading entities.
         """
         tried_shards = {result.shard_id}
         shard_count = result.shard_count
-        missing_shard: int | None = None
+        slow_path_shard: int | None = None
         for _ in range(self._MAX_SHARD_RETRIES):
             untried = [s for s in range(shard_count) if s not in tried_shards]
             if not untried:
@@ -986,10 +995,13 @@ class SyncRateLimiter:
                     self._build_lease_from_speculative(entity_id, resource, consume, retry),
                     None,
                 )
-            if retry.failure_reason == SpeculativeFailureReason.BUCKET_MISSING:
-                missing_shard = new_shard
+            if retry.failure_reason in (
+                SpeculativeFailureReason.BUCKET_MISSING,
+                SpeculativeFailureReason.SCHEDULE_BOUNDARY,
+            ):
+                slow_path_shard = new_shard
                 break
-        return (None, missing_shard)
+        return (None, slow_path_shard)
 
     def _build_lease_from_speculative(
         self, entity_id: str, resource: str, consume: dict[str, int], result: "SpeculativeResult"

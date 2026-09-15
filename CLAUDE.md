@@ -942,6 +942,8 @@ All PK and GSI PK values are prefixed with `{ns}/` where `{ns}` is the opaque na
 - Cascade, parent_id, and shard_count are denormalized into bucket items (via `build_composite_create`) to avoid entity metadata lookup
 - On `wcu` exhaustion, doubles `shard_count` on the current shard and retries on a new shard
 - Condition includes `attribute_not_exists(#disabled)` alongside the TTL guard (ADR-125), rejecting buckets stamped disabled without any config read
+- Condition also includes `(attribute_not_exists(#vu) OR #vu > :vu_now)` (#222 §2.1). `vu` (valid-until, epoch ms) is the earliest instant at which any limit on the item changes effective params, precomputed by whoever last materialised `tk`; past it the fast path must not spend tokens that were minted under parameters no longer in force. Absent means "no schedule, never expires", so every unscheduled bucket — which is every bucket written before scheduling existed — passes unchanged. `:vu_now` is the **bound** `now_ms` (#430), the same instant the `ttl` stamp and the TTL guard use: the fast path still reads the clock exactly once and still evaluates no schedule and reads no config
+- A failure tripping `vu` classifies as `SpeculativeFailureReason.SCHEDULE_BOUNDARY`, **ahead of `DISABLED`'s successor checks and every exhausted reason** — a closed window is not a rejection, and reading it as one would raise `RateLimitExceeded` against limits the new window may have just raised, or (worse) read as `WCU_EXHAUSTED` and double `shard_count` at every boundary. `DISABLED` still outranks it: no re-materialisation admits a disabled bucket. The limiter routes `SCHEDULE_BOUNDARY` to the slow path — the only place that re-materialises — never to a fast rejection and never to a shard retry, since every shard crosses the same boundary. A *probed* shard that reports it (the transient where shards re-materialise one at a time) is handed to the slow path exactly as a `BUCKET_MISSING` probe is. On the cascade path a boundary-expired **parent** refunds the child's speculative debit and falls back to the full slow path rather than the parent-only one, costing one extra compensating write per crossing
 
 **Entity metadata cache (issue #318, GHSA-76rv):**
 - `Repository._entity_cache` stores `{entity_id: (cascade, parent_id, shard_counts)}` where `shard_counts` is `dict[str, int]` (resource → shard_count)
@@ -970,7 +972,7 @@ All PK and GSI PK values are prefixed with `{ns}/` where `{ns}` is the opaque na
 
 | Writer | UpdateExpression | Condition | Touches `rf`? |
 |--------|-----------------|-----------|---------------|
-| Speculative consume | `ADD tk -consumed` | `attribute_exists(PK) AND tk >= consumed` | No |
+| Speculative consume | `ADD tk -consumed` | `attribute_exists(PK) AND tk >= consumed AND (attribute_not_exists(vu) OR vu > :now)` | No |
 | Normal path (initial) | `SET rf = :new_rf ADD tk -consumed` | `rf = :expected_rf` | Yes (optimistic lock) |
 | Normal path (retry) | `ADD tk -consumed` | `tk >= consumed` | No (skips refill) |
 | Client shard create (ADR-133) | `Put` full item, `tk = cp // shard_count`, `wcu` undivided | `attribute_not_exists(PK)` | Sets `rf = now` |
