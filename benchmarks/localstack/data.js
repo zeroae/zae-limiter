@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789496252562,
+  "lastUpdate": 1789497378262,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -23561,6 +23561,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.01699387249483244",
             "extra": "mean: 1.082279291600014 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c29a1f9c7b57edcd629e810d71f7f13483655003",
+          "message": "🐛 fix(limiter): require whole numbers in the schedule absolutes (#578)\n\n## Summary\n\n`ScheduleEntry`'s `capacity`, `refill_amount` and\n`refill_period_seconds` are declared `int | None`, but nothing enforced\nit. A non-integral float passed validation, encoded cleanly into the\ncompact storage encoding as the byte string `c1.5`, and then raised\n`invalid literal for int() with base 10: '1.5'` from `decode`'s bare\n`int(tokens[\"c\"])` — bytes written to DynamoDB that no later read can\ndecode. Since #562 that fails safe, but the limit actually in force is\nsilently **not** the one the operator configured, and the only way out\nis an admin rewrite of the config item. The write side is where it is\nstopped.\n\nSame failure class as the non-finite absolutes of #564 and invisible to\nthat guard, because this one is a *type* problem: `math.isfinite(1.5)`\nis `True`. `capacity=True` slipped through from the other direction —\n`bool` is an `int` subclass, so it stored the equally unreadable\n`cTrue`.\n\n### The asymmetry fixed\n\n#561's `_coerce_int` already rejected all of this at the CloudFormation\n(`Custom::ZaeLimiterLimits`) boundary. The YAML manifest path and the\ndirect Python API had no equivalent. The guard now sits in\n`ScheduleEntry.__post_init__`, beside #564's finiteness check, so all\nthree entrances agree. `_parse_entries` already wraps a constructor\n`ValueError` with the offending entry index, so `zae-limiter limits\nplan` surfaces it before anything is written.\n\n### Integral floats are rejected, not coerced\n\n`2.0` raises. Three reasons:\n\n1. It matches `_coerce_int`, which accepts an `int` or a string spelling\none and falls through to *\"must be a whole number\"* for every float,\n`2.0` and the string `\"2.0\"` included.\n2. The field is declared `int | None`, so rejecting non-`int` narrows\nnothing the API documented — which is precisely why this is a v0.14.0\nvalidation fix rather than a v1.0.0 design change.\n3. \"Every non-`int` is rejected\" is one rule a manifest author can hold;\naccept-`2.0`-reject-`1.5` is an arbitrary line.\n\nThe one deliberate divergence from `_coerce_int` is pinned by test: it\nparses the string `\"5\"` because CloudFormation delivers every property\nas a string, and that concession belongs to that boundary alone.\n\n### Ordering is load-bearing\n\nThe integrality check runs **after** #564's finiteness check (so a NaN\nkeeps its specific *\"must be a finite number\"* message) and **before**\nthe positivity check (so a non-numeric value reports its type instead of\nraising `TypeError` from `value <= 0`).\n\n### Also covered\n\n`entry_params` multiplies an absolute by 1000 with no int conversion, so\na float field produced a float milli-unit (`2500.0`) in the in-memory\npath before storage came into it. Fixed transitively by the constructor\nguard and pinned by a test asserting integer milli-units for every\nconstructible entry.\n\n`scale` is untouched — it is a float field by design (#564 guards its\nfiniteness, #570 covers its magnitude at v1.0.0).\n\n## Test plan\n\nNew tests:\n\n- `TestAbsolutesAreIntegers` (`test_schedule.py`) — `1.5` / `2.0` /\n`True` / `False` / `\"5\"` per field, the `_coerce_int` agreement, the one\ndeliberate divergence, and integer milli-units\n- `test_encode_is_total_over_the_constructible_domain`\n(`test_schedule_encoding.py`) — for every `ScheduleEntry` that\nconstructs, `decode(*encode((entry,)))` succeeds (AC4)\n- `TestNonIntegerAbsolutesEndToEnd` (`test_provisioner_manifest.py`) —\nthe YAML manifest path end to end, including #569's exact second repro\n\nResults, run in the worktree:\n\n- [x] Failing-first: new tests written before the guard → **63 failed,\n58 passed**\n- [x] After the fix: `test_schedule.py test_schedule_encoding.py\ntest_provisioner_manifest.py` → **439 passed**\n- [x] Full unit suite `uv run pytest tests/unit/ -q` → **4672 passed in\n370s**\n- [x] Gevent `uv run pytest tests/unit/ -m gevent -n 0 -q` → **26\npassed, 4672 deselected**\n- [x] `uv run mypy` → Success, no issues in 58 source files\n- [x] `uv run ruff check .` → All checks passed; `ruff format --check`\non the 4 touched files → all formatted\n- [x] `hatch run generate-sync` → \"All files up to date\" (`schedule.py`\nhas no generated twin)\n- [x] Mutation check: reverting the guard and re-running the new tests →\n**63 failed, 58 passed**; restoring it → **121 passed**\n\nFixes #569\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01QdVj8nPhUwTz2aNJzMFqt5",
+          "timestamp": "2026-09-15T14:32:11-04:00",
+          "tree_id": "708337f7e1443ac26c46d8778f188ce69cc08253",
+          "url": "https://github.com/zeroae/zae-limiter/commit/c29a1f9c7b57edcd629e810d71f7f13483655003"
+        },
+        "date": 1789497376806,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 23.94817022049607,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008450371645601116",
+            "extra": "mean: 41.75684366666764 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 17.048909758876164,
+            "unit": "iter/sec",
+            "range": "stddev: 0.012630963238842642",
+            "extra": "mean: 58.6547769999997 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 40.455171148058675,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0035141185175092305",
+            "extra": "mean: 24.718718809523246 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 36.73478266220101,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004425025230549574",
+            "extra": "mean: 27.222156428571168 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 19.437246562081206,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005407774788670396",
+            "extra": "mean: 51.44761614285593 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 79.3463643985296,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0015242011067013138",
+            "extra": "mean: 12.602971888886335 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 24.37057799765028,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006367140609837862",
+            "extra": "mean: 41.03308506250514 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 25.568451667036626,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0069930002988423685",
+            "extra": "mean: 39.1106983333379 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 25.8677560379994,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004766611708053623",
+            "extra": "mean: 38.65816573076586 msec\nrounds: 26"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 26.350686176447837,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005137103845818359",
+            "extra": "mean: 37.949675894732366 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 28.759428673321413,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006281865423294027",
+            "extra": "mean: 34.77120534482823 msec\nrounds: 29"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 24.60178733271855,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008854646757973952",
+            "extra": "mean: 40.647453230768896 msec\nrounds: 26"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 29.40269430271243,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0053806975373201235",
+            "extra": "mean: 34.01048862068905 msec\nrounds: 29"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.930041126103776,
+            "unit": "iter/sec",
+            "range": "stddev: 0.002088372005316107",
+            "extra": "mean: 518.1236743999989 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9374102199502965,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0012338862283158589",
+            "extra": "mean: 516.1529497999936 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.942774348263025,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010633453514043474",
+            "extra": "mean: 1.0606992032000107 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9254639843485499,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007553540207227457",
+            "extra": "mean: 1.0805390775999968 sec\nrounds: 5"
           }
         ]
       }
