@@ -57,7 +57,19 @@ Task(Explore): Analyze commits since the last release tag and:
 gh issue list --milestone "v<version>" --state open --json number,title
 ```
 
-### 5. Generate PR
+### 5. Accept ADRs Shipping in This Release
+
+ADRs are accepted at release time (`.claude/rules/adr-rules.md`). Find the Proposed ones:
+
+```bash
+rg -l '^\*\*Status:\*\* Proposed' docs/adr/
+```
+
+For each whose work ships in this release, run `/adr accept <number>` and include the status
+transitions in the release PR. A release PR that leaves a Proposed ADR describing shipped code
+is not ready — report it as a blocking open item.
+
+### 6. Generate PR
 
 Use template from [release-template.md](release-template.md).
 
@@ -71,7 +83,7 @@ gh pr create \
   --milestone "v<version>"
 ```
 
-### 6. Invoke Release-Prep Skill
+### 7. Invoke Release-Prep Skill
 
 After creating the PR, suggest running the `release-prep` skill for full verification:
 
