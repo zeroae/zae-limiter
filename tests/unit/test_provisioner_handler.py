@@ -1773,3 +1773,33 @@ class TestPostCommitFanoutFailure:
             if c.kwargs["Key"]["PK"]["S"] == "ns123/BUCKET#user-2#claude-3#0"
         ]
         assert len(_provisioner_writes(mock_client)) == 1
+
+    def test_disable_fanout_failure_is_reported_not_raised(
+        self, mock_handler_boto3, mock_applier_boto3, mock_urlopen
+    ):
+        """The ADR-125 stamp fan-out is guarded on the same terms.
+
+        It runs before the param sync and after the same committed config
+        writes, so an exception escaping it loses the record identically.
+        `_decode_limits` is not its failure mode — a throttled GSI3 query is —
+        but the ordering hazard is the fan-out's, not any one exception's.
+        """
+        mock_client = _setup_client(mock_handler_boto3, mock_applier_boto3)
+        mock_client.query.side_effect = RuntimeError("ProvisionedThroughputExceeded")
+
+        result = on_event(
+            {
+                "action": "apply",
+                "table_name": "test-table",
+                "namespace_id": "ns123",
+                "manifest": {
+                    "namespace": "test-ns",
+                    "resources": {"gpt-4": {"limits": {"rpm": {"capacity": 1000}}}},
+                },
+            },
+            MagicMock(),
+        )
+
+        assert result["status"] == "applied"
+        assert any("gpt-4" in e and "ProvisionedThroughputExceeded" in e for e in result["errors"])
+        assert len(_provisioner_writes(mock_client)) == 1
