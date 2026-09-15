@@ -51,7 +51,8 @@ def build_lambda_package() -> bytes:
     copies:
     - ``zae_limiter_aggregator/`` (all .py files)
     - ``zae_limiter/__init__.py`` (empty stub — makes it a valid package)
-    - ``zae_limiter/schema.py`` (full copy — no external deps)
+    - ``zae_limiter/schema.py`` (full copy; imports ``schedule`` for the
+      bucket-TTL reset horizon, #532)
     - ``zae_limiter/bucket.py`` (refill math for aggregator refill)
     - ``zae_limiter/models.py`` (dataclasses used by bucket.py)
     - ``zae_limiter/exceptions.py`` (exceptions used by models.py)
@@ -138,7 +139,8 @@ def build_lambda_package() -> bytes:
         # `from zae_limiter.schema import ...`
         (dest_zae_limiter / "__init__.py").write_text("")
 
-        # Full copy of schema.py — no external deps (only imports typing)
+        # Full copy of schema.py. Its only intra-package import is
+        # `schedule` (reset-schedule TTL horizons, #532), vendored below.
         schema_src = zae_limiter_path / "schema.py"
         shutil.copy2(schema_src, dest_zae_limiter / "schema.py")
 

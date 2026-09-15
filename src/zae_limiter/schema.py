@@ -2,8 +2,11 @@
 
 from typing import TYPE_CHECKING, Any
 
+from .schedule import parse_cron
+
 if TYPE_CHECKING:
     from .models import Limit
+    from .schedule import ScheduleEntry
 
 # Table and index names
 DEFAULT_TABLE_NAME = "rate_limits"
@@ -626,38 +629,170 @@ def calculate_ttl(now_ms: int, ttl_seconds: int = 86400) -> int:
     return (now_ms // 1000) + ttl_seconds
 
 
+# --------------------------------------------------------------------------
+# Bucket TTL horizons (#271, #296, #532)
+#
+# The horizon of a cron pattern: how long it takes for the set of instants it
+# matches to repeat. Read off the COARSEST field the pattern constrains, which
+# is the opposite end from `schedule._granularity` (that one picks a scan step
+# from the finest field). `0 0 * * *` constrains hour, so it repeats daily;
+# `0 0 1 * *` constrains day-of-month, so it repeats monthly.
+# --------------------------------------------------------------------------
+_MINUTE_SECONDS = 60
+_HOUR_SECONDS = 3_600
+_DAY_SECONDS = 86_400
+_WEEK_SECONDS = 7 * _DAY_SECONDS
+# Long months and leap years, so the horizon is never short of a real gap.
+_MONTH_SECONDS = 31 * _DAY_SECONDS
+_YEAR_SECONDS = 366 * _DAY_SECONDS
+
+
+def _reset_cycle_seconds(entry: "ScheduleEntry") -> int:
+    """Upper bound on the gap between two consecutive edges of one reset entry.
+
+    Derived from the coarsest cron field the entry constrains, because that is
+    the cycle over which its firing set repeats. Every branch rounds **up** —
+    31 days for a monthly pattern, 366 for an annual one — since a horizon that
+    is too short is the harmful direction (see
+    :func:`calculate_bucket_ttl_seconds`).
+
+    Exact for every pattern whose firing set repeats within its own cycle,
+    which is every practical quota schedule. The one class it understates is a
+    pattern that skips whole years — ``0 0 29 2 *`` fires on Feb 29 and so has
+    a real gap near four years against the one year reported here. The
+    multiplier absorbs it: at the default 7 the resulting horizon is seven
+    years, comfortably past the real gap, and the operator who writes a
+    quadrennial quota has bigger questions than bucket expiry.
+
+    Day-of-month is tested before day-of-week deliberately: when both are
+    constrained cron ORs them, so the answer must be the *wider* of the two
+    cycles, and a month is wider than a week.
+    """
+    parsed = parse_cron(entry.cron, entry.tz)
+    if len(parsed.months) < 12:
+        return _YEAR_SECONDS
+    if len(parsed.days) < 31:
+        return _MONTH_SECONDS
+    if len(parsed.weekdays) < 7:
+        return _WEEK_SECONDS
+    if len(parsed.hours) < 24:
+        return _DAY_SECONDS
+    if len(parsed.minutes) < 60:
+        return _HOUR_SECONDS
+    return _MINUTE_SECONDS
+
+
+def _recovery_seconds(limit: "Limit") -> float:
+    """How long ``limit`` needs to bring a fully spent balance back to full.
+
+    Two shapes, because ADR-137 gives a limit two ways to recover and exactly
+    one of them is a rate (see :func:`calculate_bucket_ttl_seconds` for why the
+    TTL is built on this quantity rather than on time-to-fill directly).
+
+    A **quota** (``Limit.is_quota`` — no drip at all, ``refill_amount = 0``
+    paired with a ``reset_schedule``) recovers in a lump at a calendar edge, so
+    its horizon is the reset *period*: the longest it can wait for the next
+    edge. Where several reset entries share a limit, the **tightest** cycle
+    wins — the balance is restored by whichever entry fires first, so every
+    entry's cycle is independently an upper bound and the smallest of them is
+    the sharpest one that is still correct.
+
+    Asking :attr:`Limit.is_quota`, the **structural** predicate, is deliberate.
+    The temporal question — "is this rate adding tokens right now?", which
+    ``models.is_accrual_rate`` and ``BucketState.accrues`` ask — is the wrong
+    one here twice over: a TTL is a horizon rather than an instant, and the
+    limits reaching this function are the *undivided* config limits (the slow
+    path's ``LeaseEntry.limit``, ``_sync_bucket_params``'s resolved config,
+    the provisioner's manifest decls), never a per-shard share that could have
+    floored to zero on the way in.
+
+    Known gap, unchanged by #532 and not a quota problem: a dripping limit's
+    horizon is read from its **base** parameters, so an *absolute* schedule
+    entry that lowers ``refill_amount`` (or raises ``capacity``) inside one
+    window recovers more slowly than this reports. ``scale`` entries are safe —
+    §1.1 scales capacity and refill together precisely so time-to-fill is
+    preserved.
+    """
+    if limit.is_quota:
+        return float(min(_reset_cycle_seconds(entry) for entry in limit.reset_schedule))
+    if limit.refill_amount <= 0:
+        # Unreachable through `Limit.__post_init__`, which rejects a zero rate
+        # unless a `reset_schedule` pairs with it, and rejects a negative one
+        # outright. Stated rather than divided by, so that a future constructor
+        # bypassing validation surfaces as this sentence and not as the
+        # `ZeroDivisionError` of #532.
+        raise ValueError(
+            f"limit {limit.name!r} neither drips (refill_amount="
+            f"{limit.refill_amount}) nor resets (no reset_schedule), so it can "
+            f"never recover and has no bucket TTL horizon (ADR-137)."
+        )
+    return (limit.capacity / limit.refill_amount) * limit.refill_period_seconds
+
+
 def calculate_bucket_ttl_seconds(
     limits: "list[Limit]",
     multiplier: int,
 ) -> int | None:
     """
-    Calculate bucket TTL in seconds based on time-to-fill (Issue #271, #296).
+    Calculate bucket TTL in seconds from the slowest recovery (#271, #296, #532).
 
-    For buckets using default limits (system/resource), a TTL allows
-    DynamoDB to auto-expire unused buckets. The TTL is calculated as:
-    max_time_to_fill × multiplier
+    For buckets using default limits (system/resource), a TTL allows DynamoDB
+    to auto-expire unused buckets. The TTL is ``max_recovery × multiplier``,
+    where the recovery horizon of each limit depends on how that limit
+    recovers:
 
-    where time_to_fill = (capacity / refill_amount) × refill_period_seconds
+    ===================================  ==========================================
+    Limit shape                          Recovery horizon
+    ===================================  ==========================================
+    Drips (``refill_amount > 0``)        ``(capacity / refill_amount) × refill_period_seconds``
+    Quota (``is_quota``, ADR-137)        the reset period — the cycle of its ``reset_schedule``
+    ===================================  ==========================================
 
-    This ensures buckets have enough time to fully refill before expiring,
-    even for slow-refill limits where capacity >> refill_amount.
+    A single ``max`` still spans both shapes, so a composite bucket carrying a
+    quota beside a dripping limit expires on whichever recovers more slowly.
+
+    **Why a quota needs its own horizon, and why it is a period rather than a
+    wait.** Time-to-fill divides by ``refill_amount``, which ADR-137 fixes at
+    zero for every quota; #532 is the ``ZeroDivisionError`` that follows.
+    ADR-136 confines the exposure — a bucket resolving its limits from *entity*
+    configuration carries no TTL at all — so only resource- and system-level
+    quotas reach here, but "no TTL for a quota" is not an available answer for
+    exactly those levels: ADR-136 makes TTL the **propagation mechanism** for
+    resource and system limits, which do not fan out on change and pick up new
+    parameters only by expiring and being recreated. A quota with no TTL would
+    enforce its original allowance forever.
+
+    The reset **period** rather than the wait to the next edge, because this
+    function holds no clock and every production caller
+    (``lease._commit_initial``, ``Repository._sync_bucket_params``, the
+    provisioner's ``bucket_sync``) calls it without one. The period bounds that
+    wait from above at every instant, which keeps the signature and the three
+    call sites unchanged.
+
+    **Every approximation rounds the horizon up**, because the two error
+    directions are not symmetric. Too long only delays propagation of a
+    parameter change. Too short expires a bucket that is still carrying
+    state — and a bucket recreated while in debt comes back at full capacity,
+    which for a quota is an unscheduled reset and an over-admission of up to
+    ``capacity``.
 
     Args:
         limits: List of Limit objects to consider (must be non-empty)
-        multiplier: Multiplier applied to max time-to-fill (default: 7)
+        multiplier: Multiplier applied to the max recovery horizon (default: 7)
 
     Returns:
         TTL in seconds, or None if multiplier <= 0 (disabled) or limits is empty
+
+    Raises:
+        ValueError: if a limit neither drips nor resets (unconstructible today;
+            see :func:`_recovery_seconds`).
     """
     if multiplier <= 0 or not limits:
         return None
 
-    # Time-to-fill = (capacity / refill_amount) × refill_period_seconds
-    # Use max across all limits to ensure the slowest limit has time to refill
-    max_time_to_fill = max(
-        (limit.capacity / limit.refill_amount) * limit.refill_period_seconds for limit in limits
-    )
-    return int(max_time_to_fill * multiplier)
+    # Max across all limits, so the slowest to recover governs the whole item.
+    max_recovery = max(_recovery_seconds(limit) for limit in limits)
+    return int(max_recovery * multiplier)
 
 
 def calculate_bucket_ttl(
@@ -666,21 +801,17 @@ def calculate_bucket_ttl(
     multiplier: int,
 ) -> int | None:
     """
-    Calculate bucket TTL timestamp based on time-to-fill (Issue #271, #296).
+    Calculate bucket TTL timestamp from the slowest recovery (#271, #296, #532).
 
-    For buckets using default limits (system/resource), a TTL allows
-    DynamoDB to auto-expire unused buckets. The TTL is calculated as:
-    now + (max_time_to_fill × multiplier)
-
-    where time_to_fill = (capacity / refill_amount) × refill_period_seconds
-
-    This ensures buckets have enough time to fully refill before expiring,
-    even for slow-refill limits where capacity >> refill_amount.
+    ``now + calculate_bucket_ttl_seconds(limits, multiplier)``. See that
+    function for the horizon each limit shape contributes — time-to-fill for a
+    limit that drips, the reset period for a quota (ADR-137), and a single
+    ``max`` across both.
 
     Args:
         now_ms: Current time in milliseconds
         limits: List of Limit objects to consider
-        multiplier: Multiplier applied to max time-to-fill (default: 7)
+        multiplier: Multiplier applied to the max recovery horizon (default: 7)
 
     Returns:
         TTL timestamp in epoch seconds, or None if multiplier <= 0 (disabled)

@@ -50,7 +50,7 @@ def build_provisioner_package() -> bytes:
     Installs dependencies via aws-lambda-builders, then copies:
     - ``zae_limiter_provisioner/`` (all .py files)
     - ``zae_limiter/__init__.py`` (empty stub)
-    - ``zae_limiter/schema.py`` (key builders, no external deps)
+    - ``zae_limiter/schema.py`` (key builders; imports ``schedule``, #532)
     - ``zae_limiter/models.py`` (dataclasses used by schema)
     - ``zae_limiter/exceptions.py`` (exceptions used by models)
     - ``zae_limiter/schedule.py`` (cron evaluation for scheduled limits, #222)
@@ -129,7 +129,7 @@ def build_provisioner_package() -> bytes:
         # Empty __init__.py
         (dest_zae_limiter / "__init__.py").write_text("")
 
-        # schema.py — key builders (no external deps)
+        # schema.py — key builders; imports `schedule` (TTL horizons, #532)
         shutil.copy2(zae_limiter_path / "schema.py", dest_zae_limiter / "schema.py")
 
         # models.py — dataclasses used by schema

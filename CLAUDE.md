@@ -1267,13 +1267,26 @@ Buckets using system/resource default limits have TTL for auto-expiration:
 |--------------------------------|--------------|
 | Entity limits, resource-specific (`entity`) | No TTL (persist indefinitely) |
 | Entity limits, entity-wide `_default_` (`entity_default`) | No TTL (persist indefinitely) |
-| Resource defaults (`resource`) | TTL = now + max_time_to_fill × multiplier |
-| System defaults (`system`) | TTL = now + max_time_to_fill × multiplier |
-| Override parameter | TTL = now + max_time_to_fill × multiplier |
+| Resource defaults (`resource`) | TTL = now + max_recovery × multiplier |
+| System defaults (`system`) | TTL = now + max_recovery × multiplier |
+| Override parameter | TTL = now + max_recovery × multiplier |
 
 **[ADR-136](docs/adr/136-entity-config-bucket-ttl.md) (supersedes ADR-119):** entity configuration is custom at **either** entity level, so an entity-wide `_default_` bucket persists like a resource-specific one. The test lives in `limiter.py`'s `_is_custom_config()` — a single helper, because the three call sites that consume it (`_try_parent_only_acquire`, `_do_acquire`'s per-entity entries, and the `_wcu_carrier` argument) had drifted to a two-way `== "entity"` test that silently excluded `entity_default` (#489). TTL is also the **propagation mechanism** for resource/system buckets, which do not fan out on change, so widening this test any further would stop them picking up new parameters.
 
-Where `time_to_fill = (capacity / refill_amount) × refill_period_seconds`. This ensures slow-refill limits (where `capacity >> refill_amount`) have enough time to fully refill before expiring.
+**Recovery horizon, per limit shape (#532).** `max_recovery` is a single `max` across every limit on the composite item, and the horizon each one contributes depends on how it recovers:
+
+| Limit shape | Recovery horizon |
+|-------------|------------------|
+| Drips (`refill_amount > 0`) | `time_to_fill = (capacity / refill_amount) × refill_period_seconds` |
+| Quota (`Limit.is_quota`, ADR-137) | the **reset period** — the cycle over which its `reset_schedule` cron repeats |
+
+The dripping formula is unchanged, and still ensures slow-refill limits (where `capacity >> refill_amount`) have time to fully refill before expiring. A quota needs its own horizon because ADR-137 fixes `refill_amount = 0` for every one of them, and time-to-fill divides by exactly that field — the `ZeroDivisionError` of #532. "No TTL for a quota" is not available as an answer: ADR-136 makes TTL the **propagation mechanism** for resource- and system-level limits, so a quota with no TTL would enforce its original allowance forever.
+
+The reset *period* rather than the wait to the next edge, because `schema.calculate_bucket_ttl_seconds(limits, multiplier)` holds no clock and none of its three production callers (`lease._commit_initial`, `Repository._sync_bucket_params`, `zae_limiter_provisioner.bucket_sync`) has one to pass — the period bounds that wait from above at every instant. The period is read off the **coarsest** cron field the reset pattern constrains (`schema._reset_cycle_seconds`; the opposite end from `schedule._granularity`, which picks a scan step from the finest), and every approximation rounds **up**: 31 days for a monthly pattern, 366 for an annual one, the tightest cycle where several reset entries share a limit. Too long only delays propagation; too short expires a bucket still carrying debt, and a bucket recreated in debt comes back at full capacity — for a quota, an unscheduled reset.
+
+A limit that neither drips nor resets is unconstructible (`Limit.__post_init__`, ADR-137); `schema._recovery_seconds` raises a `ValueError` naming the limit rather than dividing, so a future validation bypass surfaces as that sentence and not as #532 again.
+
+`schema.py` therefore imports `schedule.py` (for `parse_cron`). Both Lambda stubs already vendor `schedule.py` and both install `cronsim`, so the import closure is unchanged.
 
 Configure via `bucket_ttl_refill_multiplier` parameter (default: 7). Set to 0 to disable.
 
@@ -1295,6 +1308,9 @@ limiter = RateLimiter(
 **TTL calculation examples:**
 - `Limit.per_minute("rpm", 100)`: time_to_fill = (100/100)×60 = 60s, TTL = 60×7 = 420s (7 min)
 - Slow refill: capacity=1000, refill_amount=10, period=60s → time_to_fill = 6000s, TTL = 42000s (11.7 hours)
+- `Limit.quota("rpd", 10000, cron="0 0 * * *")`: reset period = 86400s, TTL = 86400×7 = 604800s (7 days)
+- `Limit.quota("rpmo", 10000, cron="0 0 1 * *")`: reset period = 31 days, TTL = 217 days
+- Mixed item, slow refill (42000s) beside an hourly quota (3600×7 = 25200s): TTL = 42000s — the `max` spans both shapes
 
 **TTL behavior on upgrade/downgrade:**
 - Entity with custom limits → TTL removed on next acquire
