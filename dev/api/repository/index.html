@@ -9721,7 +9721,7 @@ composite writes. This updates one limit's tk within the composite item.</p>
 
 
 <a href="#zae_limiter.repository.Repository.build_composite_create" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_create</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">states</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="mi">86400</span><span class="p">,</span> <span class="n">cascade</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">parent_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">shard_count</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_create</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">states</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="mi">86400</span><span class="p">,</span> <span class="n">cascade</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">parent_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">shard_count</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">vu</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -9891,6 +9891,25 @@ concurrent creation race (attribute_not_exists).</p>
                   <code>1</code>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>vu</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Valid-until stamp in epoch ms (#222 §2.1) — the earliest
+instant at which any limit on this item changes effective
+params. <code>None</code> omits the attribute, which the fast path
+reads as "no schedule, never expires".</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -9907,7 +9926,7 @@ concurrent creation race (attribute_not_exists).</p>
 
 
 <a href="#zae_limiter.repository.Repository.build_composite_normal" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_normal</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consumed</span><span class="p">,</span> <span class="n">refill_amounts</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="n">expected_rf</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_normal</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consumed</span><span class="p">,</span> <span class="n">refill_amounts</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="n">expected_rf</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">vu</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -10057,6 +10076,25 @@ SET rf:now. CONDITION rf = :expected.</p>
             </td>
             <td>
                   <code>0</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>vu</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Valid-until stamp in epoch ms (#222 §2.1), or <code>None</code> to
+leave the attribute untouched. <code>None</code> is not "no schedule":
+it means this pass has nothing to say about the boundary, so a
+<code>vu</code> already on the item survives.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
             </td>
           </tr>
       </tbody>
@@ -15455,7 +15493,7 @@ image), or None to read the entity cache</p>
 
 
 <a href="#zae_limiter.repository_protocol.RepositoryProtocol.build_composite_create" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_create</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">states</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="mi">86400</span><span class="p">,</span> <span class="n">cascade</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">parent_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">shard_count</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_create</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">states</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="mi">86400</span><span class="p">,</span> <span class="n">cascade</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">parent_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">shard_count</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">vu</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -15591,6 +15629,22 @@ image), or None to read the entity cache</p>
                   <code>None</code>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>vu</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Valid-until stamp in epoch ms, or None to omit (#222 §2.1)</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -15607,7 +15661,7 @@ image), or None to read the entity cache</p>
 
 
 <a href="#zae_limiter.repository_protocol.RepositoryProtocol.build_composite_normal" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_normal</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consumed</span><span class="p">,</span> <span class="n">refill_amounts</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="n">expected_rf</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_normal</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consumed</span><span class="p">,</span> <span class="n">refill_amounts</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="n">expected_rf</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">vu</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -15732,6 +15786,22 @@ image), or None to read the entity cache</p>
             <td>
               <div class="doc-md-description">
                 <p>TTL behavior (None=no change, 0=remove, &gt;0=set)</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>vu</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Valid-until stamp in epoch ms, or None to leave it untouched</p>
               </div>
             </td>
             <td>
