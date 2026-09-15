@@ -202,6 +202,31 @@ class TestEffectiveParams:
         # Exact, not `>= 1`: `>= 1` is also satisfied by returning the base untouched.
         assert effective_params(1000, 500, 60_000, sched, TUE_1400) == (1, 1, 60_000)
 
+    def test_scaling_a_quota_does_not_invent_a_drip(self):
+        """A quota has `refill_amount = 0` by ADR-137; the floor must not raise it.
+
+        Flooring the *scaled* rate at 1 gives a quota a phantom 1-millitoken drip
+        (#556) — a rate the limit is defined not to have. The floor is conditioned
+        on the base rate instead.
+        """
+        sched = (ScheduleEntry(cron="* * * * *", scale=0.5),)
+        assert effective_params(10_000_000, 0, 60_000, sched, TUE_1400) == (5_000_000, 0, 60_000)
+
+    @pytest.mark.parametrize("scale", [0.5, 2.0, 0.0000001])
+    def test_a_quota_stays_a_quota_at_every_scale(self, scale):
+        """Including a boost window and a scale small enough to floor a live rate."""
+        sched = (ScheduleEntry(cron="* * * * *", scale=scale),)
+        assert effective_params(10_000_000, 0, 60_000, sched, TUE_1400)[1] == 0
+
+    def test_the_floor_still_protects_a_limit_that_really_drips(self):
+        """The #556 guard must key on the base rate, not on "is the result zero?".
+
+        Keying on the result would drop a live drip to zero whenever the scale
+        truncated it away, which is the thing the floor exists to prevent.
+        """
+        sched = (ScheduleEntry(cron="* * * * *", scale=0.0000001),)
+        assert effective_params(10_000_000, 1, 60_000, sched, TUE_1400)[1] == 1
+
     def test_absolute_capacity_only_overrides_capacity(self):
         sched = (ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", capacity=2000),)
         assert effective_params(*BASE, sched, TUE_0300) == (2_000_000, 200_000, 60_000)

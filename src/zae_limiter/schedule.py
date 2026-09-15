@@ -274,9 +274,19 @@ def effective_params(
             # (§1.1). Truncate rather than round, so a scaled limit is never
             # larger than asked for; floor at 1 milli-unit, since a zero
             # capacity is unadmittable.
+            #
+            # The rate's floor is conditioned on the BASE rate, not on the
+            # scaled result (#556). A quota has `refill_amount = 0` by
+            # definition (ADR-137), and flooring that to 1 invents a drip the
+            # limit is defined not to have: `BucketState.accrues()` then
+            # answers True for a bucket that cannot accrue, and
+            # `retry_after_with_schedule` walks a 1-millitoken-per-period rate
+            # instead of going to the next reset edge. A limit that really
+            # does drip still gets the floor, so a tiny scale cannot round a
+            # live rate away to nothing.
             return (
                 max(1, int(cp_milli * entry.scale)),
-                max(1, int(ra_milli * entry.scale)),
+                0 if ra_milli == 0 else max(1, int(ra_milli * entry.scale)),
                 rp_ms,
             )
         return (
@@ -771,11 +781,12 @@ def retry_after_with_schedule(
         need_ms = (remaining * eff_rp) // rate
         window_end = boundary if boundary is not None else cursor + need_ms
 
-        # The edge still wins over a positive rate when it lands first. That is
-        # not defensive: `effective_params` floors a scaled rate at 1 milli-unit
-        # (#556), so a quota inside a `scale` window arrives here with a phantom
-        # 1-millitoken drip rather than a zero. The walk must not depend on that
-        # floor being either present or absent.
+        # The edge still wins over a positive rate when it lands first. A quota
+        # inside a `scale` window no longer reaches here with a phantom
+        # 1-millitoken drip — `effective_params` conditions that floor on the
+        # base rate since #556 — but a limit that genuinely drips *and* resets
+        # does, and for it the edge can still land before the deficit clears.
+        # The walk must not depend on that floor being either present or absent.
         if edge is not None and edge <= min(window_end, cursor + need_ms):
             return (edge - now_ms + 1) / 1000.0
         if cursor + need_ms <= window_end:
