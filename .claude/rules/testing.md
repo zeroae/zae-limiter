@@ -44,6 +44,17 @@ Class event loop (E2E workflow tests, loop_scope="class")
 
 `SharedStack` is a frozen dataclass with no active connections. Each consumer creates its own `Repository` on its own event loop, avoiding cross-event-loop async resource sharing.
 
+### Shared stacks are named per pytest session (#577)
+
+The CloudFormation stack is `shared-minimal-<session key>`, never the bare `shared-minimal`, where the key is 8 hex characters derived from the **controller basetemp** (`session_root()` strips the `popen-gwN` suffix an xdist worker gets, so every worker computes the same key). The `FileLock` and the metadata JSON keep their plain names — they already live in a directory private to the session.
+
+The fixed global name was a data-loss bug, not a tidiness problem. `ensure_infrastructure()` is idempotent, so a second concurrent `pytest` invocation silently **adopted** the first one's live stack, and whichever session finished first deleted the table the other was still writing to. The victim saw `ResourceNotFoundException ... non-existent table` surfacing as `RateLimiterUnavailable`, with no assertion ever reached. CI cannot reproduce it — one session per runner — but under this repo's worktree workflow concurrent local sessions are the normal case.
+
+Two rules follow, and both matter:
+
+- **Never delete a stack by a name you did not derive from your own session root.** `_delete_recorded_stack()` refuses any record whose stack name lacks the session key of the directory holding it, which also makes it safe alongside a peer still running the pre-#577 revision.
+- **Orphans are reclaimed by pid liveness, never by age.** A run killed before `pytest_sessionfinish` leaks its stack; `pytest_sessionstart` writes `zae-session-owner.pid` into the session root and reaps peer roots whose pid is gone. Sweeping by age would reintroduce the same failure with a longer fuse.
+
 ### Key patterns
 
 - **Session fixtures** use `@pytest_asyncio.fixture(scope="session", loop_scope="session")` with `Repository.builder().build()`
