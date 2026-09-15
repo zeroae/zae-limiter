@@ -215,18 +215,22 @@ def process_stream_records(
             )
             errors.append(error_msg)
 
-    if not deltas:
-        processing_time_ms = (time_module.perf_counter() - start_time) * 1000
-        logger.info(
-            "Batch processing completed",
-            processed_count=len(records),
-            deltas_extracted=0,
-            snapshots_updated=0,
-            refills_written=0,
-            error_count=len(errors),
-            processing_time_ms=round(processing_time_ms, 2),
-        )
-        return ProcessResult(len(records), 0, 0, errors)
+    # No early return on an empty `deltas`, deliberately. Usage aggregation was
+    # this function's only job when that short-circuit was written; refill
+    # (#317), the negative clamp and reset edge (#222 §3.3/§3.6), the `vu`
+    # re-stamp (§2.1) and proactive sharding all landed *below* it afterwards,
+    # and every one of them reads the bucket image rather than a consumption
+    # delta. Returning here skipped all of them for any batch that carried no
+    # consumption — which is exactly the batch a `_sync_bucket_params` fan-out
+    # produces: it rewrites `cp`/`ra`/`sched` and stamps `vu = 0` without
+    # touching `tc`. The bucket was then left above its new ceiling with `vu`
+    # expired, pinned to the client slow path, until some client happened to
+    # acquire against it. A shard_count propagation and an ADR-125 disable
+    # stamp have the same shape.
+    #
+    # The snapshot loop below is a no-op on an empty list, so the cost of
+    # falling through is `aggregate_bucket_states()` over records that parse to
+    # nothing.
 
     # Update snapshots
     snapshots_updated = 0
@@ -613,11 +617,27 @@ def aggregate_bucket_states(
     """
     bucket_states: dict[tuple[str, str, str, int], BucketRefillState] = {}
 
-    for record in records:
+    for idx, record in enumerate(records):
         if record.get("eventName") != "MODIFY":
             continue
 
-        parsed = _parse_bucket_record(record)
+        # Per record, not per batch. `_parse_bucket_record` reads attributes
+        # straight off the stream image and raises on a malformed one (a `tc`
+        # that is not a number, say); letting that out of here would fail the
+        # whole invocation, and the event source would redrive the same batch
+        # until it aged out — the poison-pill shape the `extract_deltas` loop
+        # above already guards against one record at a time, and that core
+        # plan Task 14 closed for an undecodable schedule. Every other reader
+        # of these attributes fails at item granularity; so does this one.
+        try:
+            parsed = _parse_bucket_record(record)
+        except Exception as exc:
+            logger.warning(
+                f"Skipping unparseable bucket record: {exc}",
+                exc_info=True,
+                record_index=idx,
+            )
+            continue
         if not parsed:
             continue
 
