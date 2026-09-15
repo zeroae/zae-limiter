@@ -609,3 +609,101 @@ class TestResetDecoding:
         param_compact, tz = encode((BUSINESS, NIGHTS))
         with pytest.raises(ValueError, match="modifier"):
             decode_reset(param_compact, tz)
+
+
+class TestDecodeRaisesValueErrorForTheAggregatorsSake:
+    """`processor._decode_schedule` catches `ValueError` specifically (#222 §6).
+
+    Raising anything else from the parser slips through that catch and aborts
+    the whole stream batch — `aggregate_bucket_states` is outside any try —
+    which is the poison pill core plan Task 14 fixed, and it would take usage
+    snapshots down with it. The client-side conversion to
+    `RateLimiterUnavailable` belongs at the Repository boundary, not here, and
+    `schedule.py` must stay free of any `zae_limiter` import so `models` can use
+    it without a cycle and both Lambdas can vendor it.
+
+    A regression guard, so it passes on the day it is written.
+    """
+
+    @pytest.mark.parametrize(
+        "compact", ["this is not a schedule", "Xh9-17s500", "h9-17s500s600", "v9:h9-17"]
+    )
+    def test_decode_raises_value_error(self, compact):
+        with pytest.raises(ValueError):
+            decode(compact, "UTC")
+
+    @pytest.mark.parametrize("compact", ["this is not a schedule", "m0h0s500", "zzz"])
+    def test_decode_reset_raises_value_error(self, compact):
+        """The reset decoder is the second parser and fails into the same
+        channel — including for a modifier token, which it rejects rather than
+        ignores."""
+        with pytest.raises(ValueError):
+            decode_reset(compact, "UTC")
+
+    def test_decode_does_not_raise_an_infrastructure_error(self):
+        """Explicit, because `RateLimiterUnavailable` is not a `ValueError`:
+        the aggregator's `except ValueError` would not catch it and the failure
+        would be invisible until a stream stalled in production."""
+        from zae_limiter.exceptions import InfrastructureError
+
+        with pytest.raises(ValueError) as excinfo:
+            decode("this is not a schedule", "UTC")
+        assert not isinstance(excinfo.value, InfrastructureError)
+
+    def test_schedule_module_imports_nothing_from_the_package(self):
+        """The other half of why the conversion cannot live here: importing
+        `exceptions` would end the one-way dependency that lets `models` import
+        `ScheduleEntry` and both Lambda stubs vendor this file."""
+        import ast
+        import pathlib
+
+        import zae_limiter.schedule as sched_mod
+
+        tree = ast.parse(pathlib.Path(sched_mod.__file__).read_text())
+        imported = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.level:
+                imported.add(node.module or "")
+            elif isinstance(node, ast.ImportFrom) and (node.module or "").startswith("zae_limiter"):
+                imported.add(node.module or "")
+            elif isinstance(node, ast.Import):
+                imported.update(
+                    alias.name for alias in node.names if alias.name.startswith("zae_limiter")
+                )
+        assert imported == set(), f"schedule.py must import nothing from zae_limiter: {imported}"
+
+    def test_an_unknown_tag_only_reaches_the_tokeniser_at_an_entry_boundary(self):
+        """The heuristic that replaces the version marker (#515) is *weaker*
+        than Task 10's Decision 1 claims, and this is where that is pinned.
+
+        Decision 1 says a newer client's unknown tag "lands there with a precise
+        offset", so the log can tell a forward-compatibility problem from
+        corruption. It only does so when the unknown tag stands where a *tag* is
+        expected — the start of an entry. `_TOKEN_RE` takes a value as "anything
+        that is not a known tag letter", so an unknown tag anywhere *after* a
+        value is swallowed into that value and fails downstream instead, as a
+        cronsim rejection or a bare `int()` error that names neither the tag nor
+        the offset. That covers the realistic shape of a new modifier tag, which
+        a newer encoder would append after the cron fields.
+
+        So the distinction is not merely "not a proof" (corruption can fail at
+        an offset too); it is also incomplete in the other direction. The §6
+        text says so rather than overselling it.
+        """
+        # Entry-initial: the tokeniser sees it and reports the offset.
+        with pytest.raises(ValueError, match="cannot parse from offset 0"):
+            decode("q42h9-17s500", "UTC")
+        with pytest.raises(ValueError, match="cannot parse from offset 0"):
+            decode("h9-17s500;q42m0", "UTC")
+
+        # Mid-entry: absorbed into the preceding value. Neither message
+        # mentions a tag or an offset.
+        with pytest.raises(ValueError, match="invalid cron expression"):
+            decode("h9-17q42s500", "UTC")
+        with pytest.raises(ValueError, match="invalid literal for int"):
+            decode("h9-17s500q42", "UTC")
+
+        # And a genuinely bad cron field reads the same way as that third case,
+        # which is the collision the heuristic cannot see through.
+        with pytest.raises(ValueError, match="invalid cron expression"):
+            decode("h99", "UTC")
