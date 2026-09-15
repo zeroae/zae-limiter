@@ -96,6 +96,37 @@ entities:
 
 Only `capacity` is required per limit. Defaults: `refill_amount` = `capacity`, `refill_period` = `60` seconds.
 
+A limit may also carry a `schedule`, which changes its parameters while the current minute
+matches a cron pattern, and a `reset_schedule`, which restores the balance to the full
+allowance when a window opens:
+
+```yaml
+limits:
+  rpm:
+    capacity: 1000
+    schedule:
+      - cron: "* 9-17 * * MON-FRI"
+        tz: America/New_York
+        scale: 0.5
+      - cron: "* 0-6 * * *"
+        tz: America/New_York
+        capacity: 2000
+  rpd:
+    capacity: 10000
+    reset_schedule:
+      - cron: "0 0 * * *"
+        tz: America/New_York
+```
+
+Both take standard 5-field cron. A `schedule` entry sets either `scale` or the absolute fields
+(`capacity`, `refill_amount`, `refill_period_seconds`); entries are checked in order and the
+first match wins. A `reset_schedule` entry takes `cron` and `tz` only.
+
+A limit with a `reset_schedule` does not drip: `refill_amount` defaults to `0` rather than to
+`capacity`, and setting it to anything positive is rejected. A limit drips or resets, never
+both. `Schedule` and `ResetSchedule` round trip through the generated
+`Custom::ZaeLimiterLimits` resource.
+
 ### Preview Changes
 
 ```bash
@@ -172,6 +203,31 @@ The generated template uses `Custom::ZaeLimiterLimits` backed by the provisioner
 
 !!! note "Provisioner Lambda"
     The `plan`, `apply`, and `diff` subcommands invoke the `{name}-limits-provisioner` Lambda function. This function must be deployed as part of the main stack before using these commands. It is deployed by default; `zae-limiter deploy --no-provisioner` (or `--no-iam`, which leaves no role for it) skips it.
+
+## Schedules and Quotas
+
+`system get-defaults`, `resource get-defaults` and `entity get-limits` render a limit's
+schedule beneath it. Cron is shown canonically, with weekday and month as names, followed by
+the timezone and what the window does:
+
+```
+Limits for entity 'user-123' on resource 'gpt-4':
+  rpm: 1,000/min
+    Schedule:
+      "* 9-17 * * MON-FRI" America/New_York  → scale 50%
+      "* 0-6 * * *" America/New_York  → capacity 2,000
+```
+
+A quota carries its whole allowance and the instant it comes back on one line:
+
+```
+Limits for entity 'user-123' on resource 'gpt-4':
+  session: 500 quota (resets "0 */5 * * *" America/New_York)
+  rpmo: 1,000,000 quota (resets "0 0 1 * *" America/New_York)
+```
+
+Schedules are set through the Python API or a YAML manifest. The `-l name:rate/period` flag on
+`set-defaults` and `set-limits` does not take a cron expression.
 
 ## Disabling Resources and Entities
 

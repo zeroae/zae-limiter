@@ -251,6 +251,19 @@ entities:
 
 **Limit shorthand defaults:** Only `capacity` is required. When omitted: `burst` defaults to `capacity`, `refill_amount` defaults to `capacity`, `refill_period` defaults to `60` (seconds).
 
+**`schedule` / `reset_schedule` (#222, ADR-135):** Optional lists of entries on any
+`limits.<name>` mapping, at every level. `schedule` entries carry `cron`, `tz` and exactly one
+of `scale` or the absolute fields (`capacity`, `refill_amount`, `refill_period_seconds`);
+`reset_schedule` entries carry `cron` and `tz` only. Standard 5-field cron at the manifest
+boundary — the compact form is storage only. A `reset_schedule` flips the `refill_amount`
+shorthand default from `capacity` to **0** (`manifest.LimitDecl.from_dict`), so the natural
+manifest is the ADR-137-valid one and a positive rate beside a reset is rejected with a message
+about the pairing rather than about a field the author never wrote. Both round-trip through the
+CloudFormation `Custom::ZaeLimiterLimits` resource as `Schedule` and `ResetSchedule`
+properties; `limits_cli._SCHEDULE_KEYS` and `handler._CFN_SCHEDULE_KEYS` are exact inverses,
+pinned by a unit test, and cannot share a module because the provisioner zip carries only the
+four-file `zae_limiter` stub.
+
 **`disabled` (ADR-125):** Optional tri-state boolean on `resources.<name>` and
 `entities.<id>.resources.<name>` entries (omit to inherit; `true`/`false` to set explicitly).
 Not supported on `system`. Round-trips through the generated CloudFormation
@@ -775,6 +788,32 @@ Bucket items use per-(entity, resource, shard) partition keys: `PK={ns}/BUCKET#{
 - `ConditionalCheckFailedException` is silently skipped (another writer updated `rf` first)
 - New types: `ParsedBucketRecord`, `ParsedBucketLimit` (shared stream record parsing), `BucketRefillState`, `LimitRefillInfo` (per-bucket aggregated state for refill decisions)
 - `ProcessResult` includes `refills_written` field; handler response body includes the count
+
+### Scheduled Limits (#222, ADR-135)
+
+A `Limit` carries two independent tuples of `ScheduleEntry`. `schedule` is **level**-triggered
+and answers "what is the limit right now?" — an entry is active while `now` matches all five
+cron fields as sets, first match wins, no match means the base. `reset_schedule` is
+**edge**-triggered and answers "when does the balance go back to full, in one lump?" — it fires
+on the transition *into* matching, which is why `0 0 * * *` is correct there and would be a
+one-minute window in `schedule`. `Limit.quota()` is the only constructor for the second
+(ADR-137: a limit drips or resets, never both, so the allowance and the reset must arrive
+together); windows are fixed calendar windows, never anchored to an entity's own first use
+(ADR-138).
+
+Both ride on the `Limit` through the existing four-level resolution, so no setter signature
+changed and inheritance is **override, not merge** — an entity-level limit with no schedule
+removes the resource-level schedule for that entity exactly as it already replaces the numbers.
+
+The mechanism is read-time resolution: `cp`/`ra`/`rp` on the item stay the undivided **base**
+forever, every refiller computes `effective = f(base, sched, now)` as local variables, and the
+only materialised quantity is `tk`. The fast path evaluates nothing and is gated by `vu` alone.
+The pieces are documented where they live — `vu` and `SCHEDULE_BOUNDARY` under the speculative
+write pattern, `sched`/`rsched`/`sched_tz` under the config attribute format and the writer
+table, the quota TTL horizon under ADR-136, and the boundary walk under Exception Design.
+
+See [ADR-135](docs/adr/135-scheduled-limits.md) for the decision and the alternatives
+considered, and `docs/plans/2026-09-13-scheduled-limits-design.md` for the full design.
 
 ### Combined Capacity Check (Issue #472)
 
@@ -1347,15 +1386,17 @@ limiter = RateLimiter(
 - `aioboto3`: Async DynamoDB client
 - `aws-lambda-builders`: Cross-platform Lambda packaging (see ADR-113)
 - `boto3`: Sync DynamoDB (for Lambda aggregator)
+- `cronsim`: Cron parsing for scheduled limits (#222). Parsing only — matching, boundary scanning and the compact encoding are ours (`schedule.py`), because no cron library computes when a *window* closes
 - `pip`: Required by `aws-lambda-builders` for dependency resolution
 - `questionary`: Interactive prompts for CLI workflows
+- `tzdata`: IANA timezone database for `zoneinfo`. A runtime dependency, not a platform assumption — the Lambda runtime image is not guaranteed to ship `/usr/share/zoneinfo`
 
 **Optional extras:**
 - `[plot]`: `asciichartpy` for ASCII chart visualization of usage snapshots
-- `[dev]`: Testing and development tools (pytest, moto, ruff, mypy, pre-commit, types-gevent)
+- `[dev]`: Testing and development tools (pytest, moto, ruff, mypy, pre-commit, types-gevent) plus `croniter`, the **test-only** oracle the cron matcher is pinned against (#222 §3.1) — never a runtime dependency
 - `[docs]`: MkDocs documentation generation
 - `[cdk]`: AWS CDK constructs
-- `[lambda]`: Lambda Powertools (aws-lambda-powertools)
+- `[lambda]`: Lambda Powertools (aws-lambda-powertools), plus `cronsim` and `tzdata` — both Lambda packages vendor `schedule.py` and evaluate schedules from the item
 - `[local]`: `docker` for LocalStack container management
 - `[bench]`: `docker`, `locust`, `gevent` for load testing and benchmarks
 

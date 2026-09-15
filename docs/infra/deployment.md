@@ -609,6 +609,27 @@ limits:
     refill_period: 6     # Every 6 seconds (= 1000/min)
 ```
 
+A limit may also carry a `schedule` (change the parameters while a cron pattern matches) or a
+`reset_schedule` (restore the whole allowance when a window opens):
+
+```yaml
+limits:
+  rpm:
+    capacity: 1000
+    schedule:
+      - cron: "* 9-17 * * MON-FRI"
+        tz: America/New_York
+        scale: 0.5
+  rpmo:
+    capacity: 1000000
+    reset_schedule:
+      - cron: "0 0 1 * *"
+        tz: America/New_York
+```
+
+Both are emitted into the generated CloudFormation template as `Schedule` and `ResetSchedule`
+properties. See [Declarative Limits](../cli.md#declarative-limits) for the full field reference.
+
 ### CLI Workflow
 
 The typical workflow mirrors `terraform plan` / `terraform apply`:

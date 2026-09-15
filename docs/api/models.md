@@ -11,6 +11,18 @@ Data models for rate limit configuration and status.
       members_order: source
       heading_level: 3
 
+## ScheduleEntry
+
+One window of a limit's `schedule`, or one edge of its `reset_schedule`. Build reset entries
+with `ScheduleEntry.reset()`, which takes `cron` and `tz` only.
+
+::: zae_limiter.schedule.ScheduleEntry
+    options:
+      show_root_heading: true
+      show_source: false
+      members_order: source
+      heading_level: 3
+
 ## Entity
 
 ::: zae_limiter.models.Entity
