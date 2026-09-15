@@ -138,6 +138,14 @@ class ScheduleEntry:
     The cron expression is a **match pattern**, not a fire time: the entry is
     active for every minute the pattern matches (§1.2). ``* 9-17 * * MON-FRI``
     is business hours, not "once at the top of each of those hours".
+
+    A **reset** entry (``ScheduleEntry.reset``) is the one exception to both
+    halves of that sentence. It carries ``cron`` and ``tz`` and nothing else,
+    because it overrides no parameters (§3.6), and it is read as an *edge*
+    rather than a window: it fires on the transition into matching, not for
+    every minute of it. The two kinds live in separate tuples on ``Limit``
+    (``schedule`` and ``reset_schedule``) and are validated by opposite rules,
+    so the flag is private and set only by the classmethod.
     """
 
     cron: str
@@ -146,9 +154,43 @@ class ScheduleEntry:
     capacity: int | None = None
     refill_amount: int | None = None
     refill_period_seconds: int | None = None
+    _reset: bool = False
+
+    @classmethod
+    def reset(cls, cron: str, tz: str = "UTC") -> ScheduleEntry:
+        """An entry that resets the balance rather than changing the params.
+
+        The instant this expression starts matching, the bucket's ``tk`` goes
+        back to the effective capacity in force there (§3.6) — the one thing a
+        token bucket cannot express, and what makes "10,000 a day, back to
+        10,000 at midnight" different from a 24-hour refill period.
+
+        Belongs in ``Limit.reset_schedule``, never in ``Limit.schedule``: the
+        parameter tuple is resolved first-match-wins, so an entry that supplies
+        no parameters would win its window and then shadow every entry below
+        it.
+        """
+        return cls(cron=cron, tz=tz, _reset=True)
 
     def __post_init__(self) -> None:
         parse_cron(self.cron, self.tz)  # raises ValueError on anything unusable
+
+        if self._reset:
+            # A reset names an instant, not a parameter override (§3.6). The
+            # positivity checks below are unreachable once this holds, since
+            # every modifier is None.
+            carried = sorted(
+                name
+                for name in ("scale", "capacity", "refill_amount", "refill_period_seconds")
+                if getattr(self, name) is not None
+            )
+            if carried:
+                raise ValueError(
+                    f"a reset schedule entry carries `cron` and `tz` only; got {carried}. "
+                    f"A reset overrides no parameters — it names the instant the balance "
+                    f"goes back to the effective capacity."
+                )
+            return
 
         absolutes = (self.capacity, self.refill_amount, self.refill_period_seconds)
         has_absolute = any(v is not None for v in absolutes)
