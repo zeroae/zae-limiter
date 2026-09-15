@@ -21,7 +21,29 @@ TTL also serves a second purpose ADR-119 did not record: it is the propagation m
 > hierarchy itself — it is not superseded in full, because marking it so would remove the
 > hierarchy decision from enforcement entirely.
 
-A bucket carries a TTL only when its limits resolve from the resource or system level; entity configuration at either the per-resource or the entity-wide `_default_` level is custom, and those buckets must persist indefinitely. ADR-119's time-to-fill TTL formula is unchanged.
+A bucket carries a TTL only when its limits resolve from the resource or system level; entity
+configuration at either the per-resource or the entity-wide `_default_` level is custom, and
+those buckets must persist indefinitely.
+
+Where a TTL does apply, ADR-119's flat time-to-fill formula no longer suffices: the recovery
+horizon a limit contributes depends on **how that limit recovers**. A limit that drips
+contributes its slowest time-to-fill across its base parameters and every window of its
+schedule, because an absolute schedule override moves time-to-fill inside its own window
+(#557). A quota (ADR-137 — no drip, `refill_amount` fixed at zero) contributes its reset
+period instead, because time-to-fill divides by exactly that field (#532).
+`calculate_bucket_ttl_seconds` takes the `max` across every limit on the composite item,
+spanning both shapes.
+
+Every approximation in that horizon must round **up**. Too long only delays propagation of a
+parameter change; too short expires a bucket still carrying debt, and a bucket recreated in
+debt comes back at full capacity — for a quota, an unscheduled reset. The reset *period*
+rather than the wait to the next edge for the same reason: the function holds no clock, and
+none of its three production callers (`lease._commit_initial`,
+`Repository._sync_bucket_params`, `zae_limiter_provisioner.bucket_sync`) has one to pass, so
+the period is used as the bound that dominates that wait at every instant.
+
+A limit that neither drips nor resets is unconstructible (ADR-137); `_recovery_seconds` must
+raise a `ValueError` naming the limit rather than divide by its rate.
 
 ## Consequences
 
