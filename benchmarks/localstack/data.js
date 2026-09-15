@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789447284687,
+  "lastUpdate": 1789449434481,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -19557,6 +19557,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.010792776815292915",
             "extra": "mean: 1.0775191003999793 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a17720d80281d9b5df0d5a570655dea68e5ab47e",
+          "message": "🐛 fix(models): report the scheduled, per-shard capacity in rejections (#517)\n\n## Summary\n\nTask 10 of the #222 scheduled-limits core plan. `LimitStatus.limit` is\nwhat a caller reads off `RateLimitExceeded`, and it was being narrowed\nin two places that did not know about each other. This makes\n`Limit.per_shard` the **single** narrowing point and gives it the clock.\n\n`per_shard(shard_count, now_ms)` now applies both narrowings in the\norder #222 Global Constraints requires — **scale first, divide second**:\nthe schedule in force at `now_ms` scales the undivided base, then the\nshard takes `capacity // shard_count` and `refill_amount //\nshard_count`. Previously it only divided, so a slow-path rejection\ninside a `0.5x` window quoted the **base** capacity — the bug §3.5\nnames.\n\n## Changes\n\n- `models.py`\n- `Limit.per_shard(shard_count, now_ms)`: scales through\n`effective_params` in **milli-units** (so it floors exactly where\n`BucketState` does — a status built from a config `Limit` and one built\nfrom a bucket item agree to the token), then divides.\n`refill_period_seconds` follows an absolute window's override but is\n**never** divided: shards split the numerator, they all refill on the\nsame clock. The result carries `schedule=()` — it is a point-in-time\nmaterialisation, and leaving the schedule attached would invite a second\napplication and read as \"500, which halves to 250\". Fast-exits only when\nunsharded **and** unscheduled.\n- `Limit.from_bucket_state()`: stops pre-dividing. Returns the item's\nundivided base plus its `sched`, built via `cls(...)` rather than\n`cls.custom(...)` so the schedule rides along.\n- `bucket.py`: `declared_statuses()` narrows explicitly, since\n`from_bucket_state` no longer does.\n- `lease.py`, `limiter.py`: the three `per_shard` call sites pass the\ncommit's existing clock reading.\n- Regenerated `sync_lease.py`, `sync_limiter.py`.\n- CLAUDE.md: the #475 bullet now describes the combined narrowing and\nstates that `from_bucket_state` deliberately does not narrow.\n\n## Two bugs this fixes\n\n1. **Double narrowing on the fast path.** `from_bucket_state`\npre-divided, and its result feeds `LeaseEntry.limit`, which the lease\nnarrows *again* for every status it reports. A 4-shard fast-path lease\nreported `capacity // 16` where the slow path reported `capacity // 4`.\nBoth provenances now agree — covered by\n`test_a_bucket_state_limit_narrows_exactly_once`.\n2. **The base period, not the effective one.** The plan's Task 10 built\nthe limit from `state.refill_period_ms`; an absolute schedule entry can\noverride it. This is the Task 9 defect carried forward, so the effective\nperiod is used instead.\n\n## Notes\n\n- `test_scale_applies_before_shard_division` is written to discriminate:\nit picks shard/multiplier pairs where divide-then-scale and\nscale-then-divide are different integers, so reordering the method fails\nit.\n- Sub-token shares still clamp to 1 (`Limit` validates `capacity > 0`);\na `0.5x` window on a share of one would otherwise raise from inside a\nrejection path.\n- `test_per_shard_tolerates_a_zero_or_negative_shard_count` pins the\n`max(1, shard_count)` divisor guard, now reachable because the fast-exit\nno longer covers every `shard_count <= 1` case.\n\n## Test plan\n\n- `uv run pytest tests/unit/ -q` -> **3737 passed**\n- `uv run pytest tests/unit/ -m gevent -n 0 -q` -> **26 passed**\n- ruff, ruff-format, `mypy --strict` (58 source files), and the\nsync-codegen check all clean (`pre-commit run --from-ref origin/main\n--to-ref HEAD`)\n\nRefs #222, #475\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01QdVj8nPhUwTz2aNJzMFqt5",
+          "timestamp": "2026-09-15T01:12:12-04:00",
+          "tree_id": "f89fdce960d624764ba51ab8c935e3129eabb7ec",
+          "url": "https://github.com/zeroae/zae-limiter/commit/a17720d80281d9b5df0d5a570655dea68e5ab47e"
+        },
+        "date": 1789449433134,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 33.16404855297587,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00472243916224473",
+            "extra": "mean: 30.153133999988313 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 22.951230376875237,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00959018209403967",
+            "extra": "mean: 43.570648874997175 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 47.424986750923885,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004499590397733248",
+            "extra": "mean: 21.085931035721778 msec\nrounds: 28"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 53.6221769348278,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0026006541223906497",
+            "extra": "mean: 18.64900041666336 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 29.597340027866746,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007107975596425916",
+            "extra": "mean: 33.78681999998889 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 107.65858444133683,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0008562721658967016",
+            "extra": "mean: 9.28862296666087 msec\nrounds: 30"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 27.748593665428952,
+            "unit": "iter/sec",
+            "range": "stddev: 0.032610618420776526",
+            "extra": "mean: 36.03786238889168 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 31.753298139092067,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003792294977165863",
+            "extra": "mean: 31.492791571433067 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 32.770374101598534,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005071528961294008",
+            "extra": "mean: 30.515367230770188 msec\nrounds: 26"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 31.82929081938903,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006069044266784887",
+            "extra": "mean: 31.417602285717383 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 36.41347576801658,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004748620944948288",
+            "extra": "mean: 27.46236053846692 msec\nrounds: 26"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 30.85628730927994,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007246690318912766",
+            "extra": "mean: 32.40830596295533 msec\nrounds: 27"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 36.9175479858692,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004577932768583429",
+            "extra": "mean: 27.087389454542496 msec\nrounds: 44"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9368436254122665,
+            "unit": "iter/sec",
+            "range": "stddev: 0.002425194856726522",
+            "extra": "mean: 516.3039425999841 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9346985411315762,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003521921797072752",
+            "extra": "mean: 516.8763912000031 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.948452051542331,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008294862712334457",
+            "extra": "mean: 1.0543495565999819 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9334828467667482,
+            "unit": "iter/sec",
+            "range": "stddev: 0.011417116790606528",
+            "extra": "mean: 1.0712569635999671 sec\nrounds: 5"
           }
         ]
       }
