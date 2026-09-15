@@ -3302,7 +3302,26 @@ ADR-118 otherwise remains <strong>Accepted</strong> and authoritative on the fou
 hierarchy itself — it is not superseded in full, because marking it so would remove the
 hierarchy decision from enforcement entirely.</p>
 </blockquote>
-<p>A bucket carries a TTL only when its limits resolve from the resource or system level; entity configuration at either the per-resource or the entity-wide <code>_default_</code> level is custom, and those buckets must persist indefinitely. ADR-119's time-to-fill TTL formula is unchanged.</p>
+<p>A bucket carries a TTL only when its limits resolve from the resource or system level; entity
+configuration at either the per-resource or the entity-wide <code>_default_</code> level is custom, and
+those buckets must persist indefinitely.</p>
+<p>Where a TTL does apply, ADR-119's flat time-to-fill formula no longer suffices: the recovery
+horizon a limit contributes depends on <strong>how that limit recovers</strong>. A limit that drips
+contributes its slowest time-to-fill across its base parameters and every window of its
+schedule, because an absolute schedule override moves time-to-fill inside its own window
+(#557). A quota (ADR-137 — no drip, <code>refill_amount</code> fixed at zero) contributes its reset
+period instead, because time-to-fill divides by exactly that field (#532).
+<code>calculate_bucket_ttl_seconds</code> takes the <code>max</code> across every limit on the composite item,
+spanning both shapes.</p>
+<p>Every approximation in that horizon must round <strong>up</strong>. Too long only delays propagation of a
+parameter change; too short expires a bucket still carrying debt, and a bucket recreated in
+debt comes back at full capacity — for a quota, an unscheduled reset. The reset <em>period</em>
+rather than the wait to the next edge for the same reason: the function holds no clock, and
+none of its three production callers (<code>lease._commit_initial</code>,
+<code>Repository._sync_bucket_params</code>, <code>zae_limiter_provisioner.bucket_sync</code>) has one to pass, so
+the period is used as the bound that dominates that wait at every instant.</p>
+<p>A limit that neither drips nor resets is unconstructible (ADR-137); <code>_recovery_seconds</code> must
+raise a <code>ValueError</code> naming the limit rather than divide by its rate.</p>
 <h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>
 <p><strong>Positive:</strong>
 - Explicitly configured entities never lose rate limit state, matching ADR-119's own stated intent

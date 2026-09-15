@@ -3326,14 +3326,21 @@ or by reset edge, never by both and never by neither.</p>
   about independently, and the error message must explain the pairing rather than the field.
 - Bucket TTL derives from time-to-fill, which divides by the refill amount and is therefore
   undefined at zero. ADR-136 confines the exposure: a bucket resolving its limits from entity
-  configuration carries no TTL at all, so an entity-level reset limit is unaffected. Only
-  resource- and system-level reset limits reach the formula, and #222 must give them an expiry
-  that does not divide by the rate. ADR-136's statement that the time-to-fill formula is
-  unchanged remains true for every limit that drips.
+  configuration carries no TTL at all, so an entity-level reset limit is unaffected, and only
+  resource- and system-level reset limits reach the formula. The expiry #222 owed those has
+  since landed (#532) — <code>schema._recovery_seconds</code> gives a reset-only limit its <strong>reset
+  period</strong> as the horizon rather than dividing by a rate this decision fixes at zero. Every
+  limit still needs a horizon, so the TTL gained a second shape rather than an exemption.
 - The honest "retry after" for a reset-only limit is the next reset instant, not a rate
-  computation. Until that lands, such a limit has no rate to fall back on at all.
-- Declarative manifests must carry an explicit zero rather than omitting the field, since the
-  shorthand defaults <code>refill_amount</code> to <code>capacity</code>.</p>
+  computation, because such a limit has no rate to fall back on at all. That is what is now
+  reported (#530, #560): <code>schedule.retry_after_with_schedule</code> backs every
+  <code>retry_after_seconds</code>, and a reset edge it can reach is the answer outright rather than an
+  estimate divided by a rate of zero.
+- Declarative manifests have to discriminate on the reset, so the shorthand's <code>refill_amount</code>
+  default depends on a second field: <code>manifest.LimitDecl.from_dict</code> defaults it to <code>0</code> when a
+  <code>reset_schedule</code> is present and to <code>capacity</code> otherwise. That keeps the natural manifest —
+  allowance and reset, no rate — the valid one, at the cost of a defaulting rule that can no
+  longer be read off the field alone.</p>
 <h2 id="alternatives-considered">Alternatives Considered<a class="headerlink" href="#alternatives-considered" title="Permanent link">&para;</a></h2>
 <h3 id="keep-the-positive-rate-rule-and-silently-ignore-the-stored-rate-when-a-reset-is-present">Keep the positive-rate rule and silently ignore the stored rate when a reset is present<a class="headerlink" href="#keep-the-positive-rate-rule-and-silently-ignore-the-stored-rate-when-a-reset-is-present" title="Permanent link">&para;</a></h3>
 <p>Rejected because: it leaves a configured number that does nothing, which an operator reading

@@ -3330,7 +3330,7 @@
 
 
 <h1 id="adr-135-scheduled-limits-are-resolved-at-read-time">ADR-135: Scheduled limits are resolved at read time<a class="headerlink" href="#adr-135-scheduled-limits-are-resolved-at-read-time" title="Permanent link">&para;</a></h1>
-<p><strong>Status:</strong> Proposed
+<p><strong>Status:</strong> Accepted
 <strong>Date:</strong> 2026-09-15
 <strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/222">#222</a></p>
 <h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
@@ -3361,8 +3361,10 @@ item changes effective parameters.</p>
 <ul>
 <li>Steady-state cost is unchanged: the fast-path condition gains one comparison against an
   attribute that is absent on every unscheduled bucket, and still reads no configuration.</li>
-<li>Client and aggregator derive the same effective value from the item alone, so the two never
-  need to agree on anything beyond the clock.</li>
+<li>The item carries its own schedule, so the aggregator refills a scheduled bucket without
+  reading configuration at all and needs no client involvement. The slow path instead applies
+  the configuration it has just resolved, which is the fresher of the two; the two readers can
+  therefore disagree for as long as an item is stale, which is by design and not a race.</li>
 <li>Boundary cost is paid once per in-flight request at the boundary, not once per bucket, and an
   idle bucket costs nothing until it is next used.</li>
 <li>Base parameters stay on the item, so actor-written changes (<code>set_limits</code>, the manifest

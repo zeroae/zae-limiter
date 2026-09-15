@@ -2084,6 +2084,45 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#alternatives-considered" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Alternatives Considered
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Alternatives Considered">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#explicit-limits-on-every-acquire-call" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Explicit limits on every acquire() call
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#one-adr-covering-the-whole-centralized-config-design" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        One ADR covering the whole centralized-config design
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#implementation" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3330,6 +3369,45 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#alternatives-considered" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Alternatives Considered
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Alternatives Considered">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#explicit-limits-on-every-acquire-call" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Explicit limits on every acquire() call
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#one-adr-covering-the-whole-centralized-config-design" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        One ADR covering the whole centralized-config design
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#implementation" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3368,15 +3446,15 @@
 
 
 <h1 id="adr-100-centralized-configuration-access-patterns">ADR-100: Centralized Configuration Access Patterns<a class="headerlink" href="#adr-100-centralized-configuration-access-patterns" title="Permanent link">&para;</a></h1>
-<p><strong>Status:</strong> Proposed
+<p><strong>Status:</strong> Accepted
 <strong>Date:</strong> 2026-01-18
 <strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/129">#129</a>
 <strong>Milestone:</strong> v0.5.0</p>
 <blockquote>
-<p><strong>Note (post-v0.5.0):</strong> This is the original index for the centralized-config design. Two sub-decisions have since been superseded — the hierarchy expanded from three to four levels (<a href="../118-four-level-config-hierarchy/">ADR-118</a> supersedes <a href="../102-config-hierarchy/">ADR-102</a>) and limit resolution/caching moved to the Repository protocol (<a href="../122-resolve-limits-on-repository/">ADR-122</a> supersedes <a href="../103-config-caching/">ADR-103</a>). The original per-limit <code>#LIMIT#</code> config keys were replaced by composite <code>#CONFIG</code> items (<a href="../114-composite-bucket-items/">ADR-114</a>, <a href="../115-add-based-writes-lazy-refill/">ADR-115</a>). See the updated access patterns below.</p>
+<p><strong>Note (post-v0.5.0):</strong> This is the original index for the centralized-config design. Two sub-decisions have since been superseded — the hierarchy expanded from three to four levels (<a href="../118-four-level-config-hierarchy/">ADR-118</a> supersedes <a href="../102-config-hierarchy/">ADR-102</a>) and limit resolution/caching moved to the Repository protocol (<a href="../122-resolve-limits-on-repository/">ADR-122</a> supersedes <a href="../103-config-caching/">ADR-103</a>). The original per-limit <code>#LIMIT#</code> config keys were replaced by a single composite <code>#CONFIG</code> item per level in the v0.8.0 composite-limits migration, applying <a href="../114-composite-bucket-items/">ADR-114</a>'s composite shape to config records; no ADR of its own records that change. Config items are written full-replace, so <a href="../115-add-based-writes-lazy-refill/">ADR-115</a>'s ADD-based write paths apply to buckets only. See the updated access patterns below.</p>
 </blockquote>
 <h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
-<p>zae-limiter is a distributed rate limiting library where multiple clients must behave consistently. Currently:</p>
+<p>zae-limiter is a distributed rate limiting library where multiple clients must behave consistently. Before v0.5.0:</p>
 <ol>
 <li><strong>Limits passed explicitly</strong> - Each <code>acquire()</code> call requires limits</li>
 <li><strong>No global defaults</strong> - Cannot set system-wide or resource-level default limits</li>
@@ -3384,6 +3462,12 @@
 <li><strong>Scattered config</strong> - Behavior settings are constructor-only, risking inconsistent fail-open/fail-closed behavior</li>
 </ol>
 <h2 id="decision">Decision<a class="headerlink" href="#decision" title="Permanent link">&para;</a></h2>
+<blockquote>
+<p><strong>Maintained index — exemption from <a href="../000-adr-format-standard/">ADR-000</a>.</strong> Beyond the choice to
+centralize configuration at all, this record decides nothing itself: it indexes the sub-decisions
+below, each of which owns one architectural choice. Those records stay immutable once Accepted;
+<em>this index is maintained</em>, its rows corrected as sub-decisions are superseded or added.</p>
+</blockquote>
 <p>Implement centralized configuration with these architectural choices:</p>
 <table>
 <thead>
@@ -3402,7 +3486,7 @@
 <tr>
 <td>Config hierarchy</td>
 <td><a href="../102-config-hierarchy/">ADR-102</a> <em>(superseded by <a href="../118-four-level-config-hierarchy/">ADR-118</a>)</em></td>
-<td>Three levels: System &gt; Resource &gt; Entity — later expanded to four</td>
+<td>Three levels: Entity &gt; Resource &gt; System — later expanded to four</td>
 </tr>
 <tr>
 <td>Caching strategy</td>
@@ -3419,21 +3503,37 @@
 <td><a href="../105-eventual-consistency/">ADR-105</a></td>
 <td>Eventually consistent reads</td>
 </tr>
+<tr>
+<td>Disable flag</td>
+<td><a href="../125-resource-disable/">ADR-125</a></td>
+<td>Tri-state <code>disabled</code> beside limits, resolved by an independent walk over the entity and resource levels</td>
+</tr>
+<tr>
+<td>Bucket TTL</td>
+<td><a href="../136-entity-config-bucket-ttl/">ADR-136</a></td>
+<td>The resolved level decides whether a bucket persists or expires</td>
+</tr>
+<tr>
+<td>Schedules on config</td>
+<td><a href="../135-scheduled-limits/">ADR-135</a></td>
+<td>Per-limit <code>sched</code>/<code>rsched</code>, with one <code>sched_tz</code> hoisted per item</td>
+</tr>
 </tbody>
 </table>
 <h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>
 <p><strong>Positive:</strong>
 - Consistent behavior across distributed clients
-- Negligible cost with caching (~0.00025 RCU/request at scale)
-- Enables per-resource and per-entity customization
+- Caching keeps config reads off the per-request cost path
+- Enables per-resource, per-entity, and entity-wide customization
 - Clean upgrade path to v0.6.0 full schema migration</p>
 <p><strong>Negative:</strong>
-- Max 60s staleness for config changes
+- Config resolution is stale for up to the cache TTL (60s by default; entity-level setters evict eagerly)
+- Resource- and system-level changes reach an existing bucket only when its TTL expires, not within the cache TTL (<a href="../136-entity-config-bucket-ttl/">ADR-136</a>)
 - Additional complexity in resolution logic
 - Breaking change for explicit-limits-only users</p>
 <h2 id="access-patterns-added">Access Patterns Added<a class="headerlink" href="#access-patterns-added" title="Permanent link">&para;</a></h2>
 <blockquote>
-<p>The original per-limit sort keys (<code>SK begins_with #LIMIT#</code>) were replaced by composite config items (<a href="../114-composite-bucket-items/">ADR-114</a>, <a href="../118-four-level-config-hierarchy/">ADR-118</a>): a single <code>#CONFIG</code> item per level, namespace-prefixed with <code>{ns}/</code>. Both are shown below.</p>
+<p>The original per-limit sort keys (<code>SK begins_with #LIMIT#</code>) were replaced by a single <code>#CONFIG</code> item per level, namespace-prefixed with <code>{ns}/</code>. The entity-level sort key carries the resource, and <code>_default_</code> is a legal value of that slot naming the entity-wide level (<a href="../118-four-level-config-hierarchy/">ADR-118</a>). Both are shown below.</p>
 </blockquote>
 <table>
 <thead>
@@ -3461,6 +3561,12 @@
 </tr>
 </tbody>
 </table>
+<h2 id="alternatives-considered">Alternatives Considered<a class="headerlink" href="#alternatives-considered" title="Permanent link">&para;</a></h2>
+<h3 id="explicit-limits-on-every-acquire-call">Explicit limits on every <code>acquire()</code> call<a class="headerlink" href="#explicit-limits-on-every-acquire-call" title="Permanent link">&para;</a></h3>
+<p>Rejected because: distributed clients drift apart, with no central place to change a limit.</p>
+<h3 id="one-adr-covering-the-whole-centralized-config-design">One ADR covering the whole centralized-config design<a class="headerlink" href="#one-adr-covering-the-whole-centralized-config-design" title="Permanent link">&para;</a></h3>
+<p>Rejected because: independent decisions folded into one record cannot be superseded
+independently — which ADR-118, ADR-122 and ADR-136 have each since needed to do.</p>
 <h2 id="implementation">Implementation<a class="headerlink" href="#implementation" title="Permanent link">&para;</a></h2>
 <p>See linked issues for implementation details:</p>
 <ul>

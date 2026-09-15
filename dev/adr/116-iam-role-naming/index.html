@@ -3402,7 +3402,7 @@
 
 
 <h1 id="adr-116-iam-role-naming-convention">ADR-116: IAM Role Naming Convention<a class="headerlink" href="#adr-116-iam-role-naming-convention" title="Permanent link">&para;</a></h1>
-<p><strong>Status:</strong> Proposed
+<p><strong>Status:</strong> Accepted
 <strong>Date:</strong> 2026-01-30
 <strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/252">#252</a></p>
 <h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
@@ -3413,7 +3413,7 @@
 </ol>
 <p>With enterprise environments using permission boundaries (e.g., <code>role_name_format="PowerUserPB-{}"</code>), users hit the 64-char limit unexpectedly when derived roles append additional suffixes like <code>-readonly</code>.</p>
 <h2 id="decision">Decision<a class="headerlink" href="#decision" title="Permanent link">&para;</a></h2>
-<p>IAM role names must follow the pattern: <code>{format}.replace("{}", f"{stack_name}-{component}")</code> where component is one of: <code>aggr</code> (4 chars), <code>app</code> (3 chars), <code>admin</code> (5 chars), <code>read</code> (4 chars). All component names must be ≤ 8 characters to ensure users who choose valid stack names today won't break on library upgrades.</p>
+<p>IAM role names must follow the pattern: <code>{format}.replace("{}", f"{stack_name}-{component}")</code> where component is one of: <code>aggr</code> (4 chars), <code>app</code> (3 chars), <code>admin</code> (5 chars), <code>read</code> (4 chars), and — added with the declarative-limits provisioner — <code>prov</code> (4 chars). All component names must be ≤ 8 characters to ensure users who choose valid stack names today won't break on library upgrades.</p>
 <h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>
 <p><strong>Positive:</strong>
 - Shorter role names leave room for longer stack names and format templates

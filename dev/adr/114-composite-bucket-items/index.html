@@ -3424,7 +3424,7 @@
 
 
 <h1 id="adr-114-composite-bucket-items">ADR-114: Composite Bucket Items<a class="headerlink" href="#adr-114-composite-bucket-items" title="Permanent link">&para;</a></h1>
-<p><strong>Status:</strong> Proposed
+<p><strong>Status:</strong> Accepted
 <strong>Date:</strong> 2026-01-28
 <strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/248">#248</a></p>
 <h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
@@ -3446,6 +3446,14 @@ item with SK <code>#BUCKET#{resource}</code>. Per-limit attributes must use the 
 <code>b_{limit_name}_{field}</code> with short field names: <code>tk</code> (tokens), <code>cp</code> (capacity),
 <code>ra</code> (refill amount), <code>rp</code> (refill period), <code>tc</code> (total consumed).
 GSI2SK must be per-entity (<code>BUCKET#{entity_id}</code>), not per-limit.</p>
+<blockquote>
+<p><strong>Note (v0.9.0, GHSA-76rv-2r9v-c5m6):</strong> pre-shard buckets moved the resource and a shard
+index into the partition key, so the item is now keyed <code>PK={ns}/BUCKET#{entity_id}#{resource}#{shard}</code>,
+<code>SK=#STATE</code>, with <code>GSI2SK=BUCKET#{entity_id}#{shard_id}</code> — one composite item per
+entity+resource+<strong>shard</strong>. One item holding every limit, and the <code>b_{limit_name}_{field}</code>
+attribute prefix, are unchanged. See <a href="../133-client-shard-creation/">ADR-133</a> and
+<a href="../134-random-shard-selection/">ADR-134</a>.</p>
+</blockquote>
 <h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>
 <p><strong>Positive:</strong>
 - Acquire cost is constant regardless of limit count (1 item read, 1 item write)
