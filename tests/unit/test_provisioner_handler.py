@@ -1241,6 +1241,50 @@ class TestCfnScalarCoercion:
                 {"rpm": {"Capacity": "1", "Schedule": [{"Cron": "* * * * *", "Scale": "half"}]}}
             )
 
+    def test_scale_rejects_booleans_and_non_scalar_shapes(self):
+        """`Scale: true` is a mistake, not the number 1 — and `bool` is an `int`
+        subclass, so it would otherwise slip through the numeric branch."""
+        import pytest
+
+        with pytest.raises(ValueError, match="got boolean"):
+            _cfn_limits_to_manifest(
+                {"rpm": {"Capacity": "1", "Schedule": [{"Cron": "* * * * *", "Scale": True}]}}
+            )
+        for value in (None, [], {"a": 1}):
+            with pytest.raises(ValueError, match="must be a number"):
+                _cfn_limits_to_manifest(
+                    {"rpm": {"Capacity": "1", "Schedule": [{"Cron": "* * * * *", "Scale": value}]}}
+                )
+
+    def test_empty_scale_drops_the_property(self):
+        """Same `Default: ""` idiom as the integer fields."""
+        result = _cfn_limits_to_manifest(
+            {
+                "rpm": {
+                    "Capacity": "1",
+                    "Schedule": [{"Cron": "* * * * *", "Scale": "", "Capacity": "5"}],
+                }
+            }
+        )
+        assert result["rpm"]["schedule"] == [{"cron": "* * * * *", "capacity": 5}]
+
+    def test_string_properties_reject_non_strings(self):
+        """`Cron`/`Tz` have a declared target type too. A non-string can only
+        reach here from a direct Lambda invoke, and without this it surfaces as
+        an `AttributeError` inside `parse_cron` naming no property at all."""
+        import pytest
+
+        with pytest.raises(ValueError, match=r"Schedule\[0\]\.Cron must be a string"):
+            _cfn_limits_to_manifest(
+                {"rpm": {"Capacity": "1", "Schedule": [{"Cron": 5, "Scale": "2"}]}}
+            )
+        with pytest.raises(ValueError, match=r"Schedule\[0\]\.Tz must be a string"):
+            _cfn_limits_to_manifest(
+                {"rpm": {"Capacity": "1", "Schedule": [{"Cron": "* * * * *", "Tz": 5}]}}
+            )
+        with pytest.raises(ValueError, match="System.OnUnavailable must be a string"):
+            _cfn_properties_to_manifest({"Namespace": "n", "System": {"OnUnavailable": 1}})
+
     def test_empty_string_drops_an_optional_numeric_property(self):
         """A CloudFormation `Parameter: {Default: ""}` is how a template spells
         "not set" for an optional property; the RPDK's own recast maps `""` to
