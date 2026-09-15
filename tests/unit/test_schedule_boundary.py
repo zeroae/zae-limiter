@@ -1,17 +1,21 @@
 """Tests for next_boundary (#222 §3.2)."""
 
 from datetime import UTC, datetime
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 import pytest
 
+from zae_limiter.bucket import calculate_retry_after
 from zae_limiter.schedule import (
     ScheduleEntry,
     effective_params,
     matches,
     next_boundary,
+    next_reset_edge,
     parse_cron,
     prev_reset_edge,
+    retry_after_with_schedule,
 )
 
 NY = ZoneInfo("America/New_York")
@@ -29,6 +33,7 @@ def _iso(ms: int, tz: ZoneInfo = NY) -> str:
 
 
 BUSINESS = (ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.5),)
+IST_BUSINESS = (ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="Asia/Kolkata", scale=0.5),)
 
 
 class TestNextBoundary:
@@ -462,3 +467,323 @@ class TestParseCacheIsHot:
         first = parse_cron.cache_info().misses
         next_boundary(BUSINESS, now_ms=_ms("2026-09-15 06:00"))
         assert parse_cron.cache_info().misses == first
+
+
+class TestNextResetEdge:
+    def test_finds_the_next_midnight(self):
+        assert _iso(next_reset_edge(DAILY, now_ms=_ms("2026-09-15 09:00"))).startswith(
+            "2026-09-16T00:00"
+        )
+
+    def test_standing_on_an_edge_returns_the_following_one(self):
+        """Strictly after `now`, for the same reason `next_boundary` is: an
+        answer at `now` makes a wait of zero look like a wait until a reset."""
+        assert _iso(next_reset_edge(DAILY, now_ms=_ms("2026-09-16 00:00"))).startswith(
+            "2026-09-17T00:00"
+        )
+
+    def test_a_never_matching_expression_has_no_edge(self):
+        """`0 0 29 2 *` — a leap day, out of reach of the minute-granularity
+        scan almost always. (§3.6 names February 30th; cronsim rejects it.)"""
+        never = (ScheduleEntry.reset(cron="0 0 29 2 *"),)
+        assert next_reset_edge(never, now_ms=_ms("2026-09-15 09:00")) is None
+
+    def test_empty_reset_schedule(self):
+        assert next_reset_edge((), now_ms=_ms("2026-09-15 09:00")) is None
+
+    def test_reports_none_where_the_internal_twin_reports_the_cap(self):
+        """Discriminates this against `_next_reset_edge`, which caps rather
+        than reporting None. The cap is right for a `vu` stamp and wrong for a
+        wait, which would quote a countdown to an instant where nothing
+        happens."""
+        from zae_limiter.schedule import _next_reset_edge
+
+        never = (ScheduleEntry.reset(cron="0 0 29 2 *"),)
+        now = _ms("2026-09-15 09:00")
+        assert next_reset_edge(never, now_ms=now) is None
+        assert _next_reset_edge(never, now) == now + 7 * _DAY_MS
+
+    def test_takes_the_earliest_across_entries(self):
+        """The mirror of `prev_reset_edge` taking the latest: looking forward,
+        the first edge to fire is the one that matters."""
+        pair = (
+            ScheduleEntry.reset(cron="0 0 * * *", tz="America/New_York"),
+            ScheduleEntry.reset(cron="0 12 * * *", tz="America/New_York"),
+        )
+        assert _iso(next_reset_edge(pair, now_ms=_ms("2026-09-15 09:00"))).startswith(
+            "2026-09-15T12:00"
+        )
+
+
+class TestBoundaryAwareRetryAfter:
+    BASE = dict(cp_milli=1_000_000, ra_milli=1_000_000, rp_ms=60_000)
+
+    def test_the_specs_worked_example(self):
+        """Flat says 30.001 s; the truth is 50.001 s — 10 s yielding 166_666
+        millitokens, then 333_334 remaining at half rate."""
+        got = retry_after_with_schedule(
+            deficit_milli=500_000,
+            **self.BASE,
+            sched=BUSINESS,
+            now_ms=_ms("2026-09-15 08:59:50"),
+        )
+        assert got == pytest.approx(50.001, abs=0.002)
+
+    def test_the_flat_estimate_is_the_wrong_answer(self):
+        """Discriminates the test above against an implementation that walks
+        but never applies the window's effective rate."""
+        flat = calculate_retry_after(500_000, 1_000_000, 60_000)
+        assert flat == pytest.approx(30.001, abs=0.002)
+
+    def test_a_non_whole_hour_offset_is_handled(self):
+        """Asia/Kolkata is +05:30, so a 09:00 local edge is 03:30Z — half a
+        step off the hourly probe grid. This is the case core plan Task 4's
+        two-phase refinement exists for; America/New_York cannot tell a correct
+        scan from a late one, because its offset is a whole number of hours."""
+        got = retry_after_with_schedule(
+            deficit_milli=500_000,
+            **self.BASE,
+            sched=IST_BUSINESS,
+            now_ms=_ms("2026-09-15 08:59:50", IST),
+        )
+        assert got == pytest.approx(50.001, abs=0.002)
+
+    def test_a_boundary_that_raises_the_limit_shortens_the_wait(self):
+        """The over-reporting direction. From 08:59:50 the base 1000/min needs
+        30 s; the 09:00 window doubles the rate, so 10 s of base refill leaves
+        333_334 to clear at 2000/min = 10.000 s. Total 20.001 s."""
+        doubling = (ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=2.0),)
+        got = retry_after_with_schedule(
+            deficit_milli=500_000,
+            **self.BASE,
+            sched=doubling,
+            now_ms=_ms("2026-09-15 08:59:50"),
+        )
+        assert got == pytest.approx(20.001, abs=0.002)
+
+    def test_a_reset_edge_dominates(self):
+        """A daily quota's answer is 'at midnight', and it is the *only*
+        answer: ADR-137 gives a reset-carrying limit `ra_milli == 0`, so there
+        is no drip to fall back on. Before #530 this reported 0.0 — 'retry
+        immediately', an hour early and repeatedly."""
+        got = retry_after_with_schedule(
+            deficit_milli=5_000_000,
+            cp_milli=10_000_000,
+            ra_milli=0,  # ADR-137: a limit drips or resets, never both
+            rp_ms=86_400_000,
+            sched=(),
+            reset_sched=DAILY,
+            now_ms=_ms("2026-09-15 23:00"),
+        )
+        assert got == pytest.approx(3600.001, abs=0.002)
+
+    def test_a_quota_with_no_deficit_does_not_report_its_next_reset(self):
+        """Discriminates the test above against "a quota always returns its
+        next edge"."""
+        got = retry_after_with_schedule(
+            deficit_milli=0,
+            cp_milli=10_000_000,
+            ra_milli=0,
+            rp_ms=86_400_000,
+            sched=(),
+            reset_sched=DAILY,
+            now_ms=_ms("2026-09-15 23:00"),
+        )
+        assert got == 0.0
+
+    def test_a_zero_rate_with_no_reset_is_still_no_wait(self):
+        """The other half of the discrimination: the edge, not the zero rate,
+        is what produces a non-zero answer above. Unreachable through a
+        constructible limit — it guards a corrupt stored item."""
+        got = retry_after_with_schedule(
+            deficit_milli=5_000_000,
+            cp_milli=10_000_000,
+            ra_milli=0,
+            rp_ms=86_400_000,
+            sched=(),
+            reset_sched=(),
+            now_ms=_ms("2026-09-15 23:00"),
+        )
+        assert got == 0.0
+
+    def test_a_quota_inside_a_scale_window_still_reports_its_edge(self):
+        """Both tuples live at once, and the walk must not depend on #556.
+
+        `effective_params` floors a scaled rate at 1 milli-unit, so a quota
+        inside a `scale` window arrives in the walk with `eff_ra == 1` — a
+        phantom drip, not the zero the rate gate looks for. The positive-rate
+        branch has to consult the edge too, or this reports a 24-day countdown
+        (5_000_000 millitokens at 1 per day) instead of one hour.
+        """
+        evening = (ScheduleEntry(cron="* 22-23 * * *", tz="America/New_York", scale=0.5),)
+        with patch("zae_limiter.schedule.next_boundary", wraps=next_boundary) as spy:
+            got = retry_after_with_schedule(
+                deficit_milli=5_000_000,
+                cp_milli=10_000_000,
+                ra_milli=0,
+                rp_ms=86_400_000,
+                sched=evening,
+                reset_sched=DAILY,
+                now_ms=_ms("2026-09-15 23:00"),
+            )
+        assert got == pytest.approx(3600.001, abs=0.002)
+        # The walk must *return* on the edge, not merely arrive at the same
+        # number by exhausting its budget and falling back. Deleting the
+        # positive-rate branch's edge check still gives 3600.001 — via the
+        # fallback — after eight windows of cron scanning on a rejection path.
+        assert spy.call_count == 1
+
+    def test_a_zero_rate_window_steps_to_its_boundary_rather_than_reporting_it(self):
+        """A boundary is not an answer; nothing happens at one except a change
+        of rate. The same quota asked at noon, outside its `scale` window, must
+        report midnight (12 h) and not the 22:00 boundary it steps over (10 h).
+        """
+        evening = (ScheduleEntry(cron="* 22-23 * * *", tz="America/New_York", scale=0.5),)
+        with patch("zae_limiter.schedule.next_boundary", wraps=next_boundary) as spy:
+            got = retry_after_with_schedule(
+                deficit_milli=5_000_000,
+                cp_milli=10_000_000,
+                ra_milli=0,
+                rp_ms=86_400_000,
+                sched=evening,
+                reset_sched=DAILY,
+                now_ms=_ms("2026-09-15 12:00"),
+            )
+        assert got == pytest.approx(43_200.001, abs=0.002)
+        # One step over the boundary, then the edge — not eight and a fallback.
+        assert spy.call_count == 2
+
+    def test_a_parameter_boundary_before_the_reset_edge_is_walked_through(self):
+        """The other both-tuples ordering: the parameter window closes at 23:00
+        and the reset fires at 00:00, so the walk must step over the boundary
+        and still land on the edge rather than stopping at the boundary."""
+        early_evening = (ScheduleEntry(cron="* 20-22 * * *", tz="America/New_York", scale=0.5),)
+        got = retry_after_with_schedule(
+            deficit_milli=5_000_000,
+            cp_milli=10_000_000,
+            ra_milli=0,
+            rp_ms=86_400_000,
+            sched=early_evening,
+            reset_sched=DAILY,
+            now_ms=_ms("2026-09-15 22:30"),
+        )
+        # 22:30 -> 00:00 is 90 minutes, across the 23:00 window close.
+        assert got == pytest.approx(5400.001, abs=0.002)
+
+    def test_unscheduled_matches_calculate_retry_after_exactly(self):
+        """Not 'approximately' — the unscheduled path must be the identical
+        integer arithmetic, or every existing retry assertion in the suite
+        drifts by a millisecond."""
+        got = retry_after_with_schedule(
+            deficit_milli=500_000, **self.BASE, sched=(), now_ms=_ms("2026-09-15 10:00")
+        )
+        assert got == calculate_retry_after(500_000, 1_000_000, 60_000)
+
+    def test_a_cleared_deficit_is_no_wait(self):
+        got = retry_after_with_schedule(
+            deficit_milli=0, **self.BASE, sched=BUSINESS, now_ms=_ms("2026-09-15 10:00")
+        )
+        assert got == 0.0
+
+    def test_the_shard_share_is_applied_inside_each_window(self):
+        """Scale first, then divide (Global Constraints). Half of 1000/min
+        across 2 shards is 250/min, so 500 tokens take 120 s, not 60."""
+        got = retry_after_with_schedule(
+            deficit_milli=500_000,
+            **self.BASE,
+            sched=BUSINESS,
+            now_ms=_ms("2026-09-15 10:00"),
+            shard_count=2,
+        )
+        assert got == pytest.approx(120.001, abs=0.002)
+
+    def test_dividing_before_scaling_would_be_a_different_answer(self):
+        """Discriminates the test above: 60 s is scale-only, 120 s is both."""
+        scale_only = retry_after_with_schedule(
+            deficit_milli=500_000,
+            **self.BASE,
+            sched=BUSINESS,
+            now_ms=_ms("2026-09-15 10:00"),
+        )
+        assert scale_only == pytest.approx(60.001, abs=0.002)
+
+    def test_a_share_that_floors_to_zero_falls_back_to_the_undivided_rate(self):
+        """Same rule as `BucketState.retry_refill_amount_milli` (#475): a share
+        of zero has no finite wait, so report the undivided *scheduled* rate
+        rather than dividing by zero or returning 0.0."""
+        got = retry_after_with_schedule(
+            deficit_milli=500,
+            cp_milli=1_000,
+            ra_milli=1_000,
+            rp_ms=60_000,
+            sched=BUSINESS,
+            now_ms=_ms("2026-09-15 10:00"),
+            shard_count=1024,
+        )
+        assert got == pytest.approx(calculate_retry_after(500, 500, 60_000), abs=0.002)
+
+    def test_the_floored_fallback_is_the_scheduled_rate_not_the_base(self):
+        """Discriminates the test above: the base rate would be 1_000, which
+        halves the wait to something nothing in the system refills at."""
+        got = retry_after_with_schedule(
+            deficit_milli=500,
+            cp_milli=1_000,
+            ra_milli=1_000,
+            rp_ms=60_000,
+            sched=BUSINESS,
+            now_ms=_ms("2026-09-15 10:00"),
+            shard_count=1024,
+        )
+        assert got != pytest.approx(calculate_retry_after(500, 1_000, 60_000), abs=0.002)
+
+    def test_falls_back_to_the_flat_estimate_past_the_walk_cap(self):
+        """A schedule that alternates every minute against a deficit that takes
+        an hour exhausts the 8-window budget. The fallback must be the flat
+        estimate, not a partial walk reported as if it were complete."""
+        alternating = (ScheduleEntry(cron="*/2 * * * *", tz="UTC", scale=0.001),)
+        got = retry_after_with_schedule(
+            deficit_milli=10_000_000,
+            **self.BASE,
+            sched=alternating,
+            now_ms=_ms("2026-09-15 10:00:00"),
+        )
+        assert got == calculate_retry_after(10_000_000, 1_000_000, 60_000)
+
+    def test_the_walk_cap_is_honoured_rather_than_looping(self):
+        """Pins the budget itself: nine windows must not be walked. Verified by
+        counting boundary lookups rather than by timing."""
+        alternating = (ScheduleEntry(cron="*/2 * * * *", tz="UTC", scale=0.001),)
+        with patch("zae_limiter.schedule.next_boundary", wraps=next_boundary) as spy:
+            retry_after_with_schedule(
+                deficit_milli=10_000_000,
+                **self.BASE,
+                sched=alternating,
+                now_ms=_ms("2026-09-15 10:00:00"),
+            )
+        assert spy.call_count == 8
+
+    def test_the_cap_fallback_still_carries_the_reset_edge(self):
+        """The `max_windows` fallback is exactly where a quota that outran the
+        walk lands (#530). An inlined copy that stopped at the rate arithmetic
+        would reintroduce the 0.0 this function exists to remove."""
+        got = retry_after_with_schedule(
+            deficit_milli=5_000_000,
+            cp_milli=10_000_000,
+            ra_milli=0,
+            rp_ms=86_400_000,
+            sched=(),
+            reset_sched=DAILY,
+            now_ms=_ms("2026-09-15 23:00"),
+            max_windows=0,  # forces the fallback without a pathological schedule
+        )
+        assert got == pytest.approx(3600.001, abs=0.002)
+
+    def test_a_zero_shard_count_does_not_divide_by_zero(self):
+        got = retry_after_with_schedule(
+            deficit_milli=500_000,
+            **self.BASE,
+            sched=(),
+            now_ms=_ms("2026-09-15 10:00"),
+            shard_count=0,
+        )
+        assert got == calculate_retry_after(500_000, 1_000_000, 60_000)

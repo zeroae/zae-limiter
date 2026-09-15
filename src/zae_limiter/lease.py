@@ -6,9 +6,10 @@ import warnings
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from .bucket import calculate_available, calculate_retry_after, force_consume, try_consume
+from .bucket import calculate_available, force_consume, try_consume
 from .exceptions import LeaseExpiredError, RateLimitExceeded
 from .models import BucketState, Limit, LimitStatus
+from .schedule import retry_after_with_schedule
 from .schema import calculate_bucket_ttl_seconds
 
 # TransactionConflict retry constants (Issue #332)
@@ -748,15 +749,26 @@ def _build_retry_failure_statuses(entries: list[LeaseEntry], now_ms: int) -> lis
             continue
         deficit_milli = max(0, entry.consumed * 1000 - entry.state.tokens_milli)
         # A sharded bucket refills at its share (GHSA-76rv); the undivided
-        # rate would under-report the wait by shard_count.
-        retry_after = calculate_retry_after(
+        # rate would under-report the wait by shard_count. The walk takes the
+        # undivided base and does both narrowings — schedule, then shard —
+        # itself (#222 §7), and returns the next reset edge outright when one
+        # lands before the deficit clears.
+        #
+        # Both schedules come off the **state**, not off `entry.limit`. In
+        # production they are the same tuples — `_do_acquire` attaches the
+        # resolved config's schedules to each state before admission, and
+        # `BucketState.from_limit` stamps them onto a new one — but the state
+        # is the single source `try_consume` also reads, so the fast and slow
+        # paths cannot answer the same question from different fields.
+        retry_after = retry_after_with_schedule(
             deficit_milli=deficit_milli,
-            refill_amount_milli=entry.state.retry_refill_amount_milli(now_ms),
-            refill_period_ms=entry.state.effective_refill_period_ms(now_ms),
-            # TODO(#222 surface-plan Task 5): supply the next reset edge once
-            # BucketState carries `reset_sched`.
-            next_reset_ms=None,
+            cp_milli=entry.state.capacity_milli,
+            ra_milli=entry.state.refill_amount_milli,
+            rp_ms=entry.state.refill_period_ms,
+            sched=entry.state.sched,
+            reset_sched=entry.state.reset_sched,
             now_ms=now_ms,
+            shard_count=entry.state.shard_count,
         )
         statuses.append(
             LimitStatus(

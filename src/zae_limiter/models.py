@@ -664,26 +664,38 @@ class Limit:
         undivided config limit there; a pre-divided one would be narrowed a
         second time when the lease builds a status from it.
 
-        No ``reset_schedule``, for two reasons that both have to clear before
-        it can be carried. Bucket items now *do* carry one (``rsched`` /
-        ``b_{name}_rsched``, #222 §4.1), but nothing populates
-        ``BucketState.reset_sched`` on the way **back in**:
-        ``_deserialize_composite_bucket`` reads the base params and neither
-        schedule tuple, so ``state.reset_sched`` here is always ``()`` and
-        adding it would be a no-op that merely looked like a fix. And once it
-        is populated, the two fields have to move **together** — the
-        ``max(1, ...)`` floor below turns a quota's zero rate into one token,
-        which alongside a reset is precisely what ADR-137 rejects, so
-        ``reset_schedule=state.reset_sched`` on its own would start *raising*
-        rather than round-tripping. Until both land, a fast-path rejection on a
-        quota quotes a phantom one-token drip (surface plan Tasks 5 and 10).
+        ``reset_schedule`` and the ``max(1, ...)`` rate floor move **together**,
+        because neither is correct without the other: the floor turns a quota's
+        zero rate into one token, and a positive rate alongside a reset is
+        precisely what ADR-137 rejects, so carrying the tuple on its own would
+        start *raising* from inside a rejection path rather than round-tripping.
+        Carried together, a quota bucket reconstructs as the quota it is —
+        ``refill_amount=0``, reset intact — instead of advertising a phantom
+        one-token drip beside a ``retry_after_seconds`` computed from the
+        calendar edge.
+
+        The pairing is decided by the **stored** shape, ``refill_amount_milli
+        == 0 and reset_sched``, not by either half alone. A bucket item
+        carrying a reset beside a positive rate is unconstructible under
+        ADR-137 and so means corruption; it keeps the floor and loses the
+        tuple, preserving the pre-#222 reading rather than raising where a
+        rejection is already being reported — the same call
+        ``bucket.calculate_retry_after``'s last branch makes.
+
+        Note that ``state.reset_sched`` is populated by the slow path (from the
+        resolved config) and by ``BucketState.from_limit``, but **not yet** by
+        ``_deserialize_composite_bucket`` — so for a bucket read back off the
+        item this is still the old behaviour exactly, and becomes live with no
+        further edit once that deserialiser decodes ``rsched``.
         """
+        is_quota = state.refill_amount_milli == 0 and bool(state.reset_sched)
         return cls(
             name=state.limit_name,
             capacity=max(1, state.capacity_milli // 1000),
-            refill_amount=max(1, state.refill_amount_milli // 1000),
+            refill_amount=0 if is_quota else max(1, state.refill_amount_milli // 1000),
             refill_period_seconds=max(1, state.refill_period_ms // 1000),
             schedule=state.sched,
+            reset_schedule=state.reset_sched if is_quota else (),
         )
 
     def per_shard(self, shard_count: int, now_ms: int) -> "Limit":
@@ -1066,6 +1078,13 @@ class BucketState:
         reset edge instead (#530). That is why the guard here is
         :func:`is_accrual_rate` and not :attr:`Limit.is_quota`: it has to catch
         the floored share, which is not a quota and must not be treated as one.
+
+        Since #222 §7 the retry estimate is computed by
+        ``schedule.retry_after_with_schedule``, which re-derives this rule per
+        window from the undivided base rather than calling this — it has to,
+        because ``schedule`` may not import ``models`` (that one-way dependency
+        is what lets both Lambdas vendor it). This stays the definition of the
+        rule, and the walk's ``_rate`` helper names it.
         """
         _cp, ra, _rp = self._scheduled_params(now_ms)
         share = ra // self.shard_count

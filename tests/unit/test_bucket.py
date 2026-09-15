@@ -713,3 +713,144 @@ class TestScheduledRefillPeriod:
         assert calculate_time_until_available(state, 1_000, TUE_1400) == pytest.approx(
             6.0, abs=0.01
         )
+
+
+DAILY = (ScheduleEntry.reset(cron="0 0 * * *", tz="America/New_York"),)
+TUE_085950 = int(datetime(2026, 9, 15, 8, 59, 50, tzinfo=NY).timestamp() * 1000)
+TUE_2300 = int(datetime(2026, 9, 15, 23, 0, tzinfo=NY).timestamp() * 1000)
+
+
+class TestTryConsumeWalksBoundaries:
+    """`try_consume` feeds both the fast-rejection statuses (via
+    `declared_statuses`) and slow-path admission (via `_admit_limit`), so
+    converting it converts two of the four LimitStatus sites at once."""
+
+    def test_a_lowering_boundary_lengthens_the_estimate(self):
+        """The spec's worked example (#222 §7) seen through a bucket. 10 s at
+        the base 1000/min yields 166_666 millitokens, then 333_334 remain at
+        half rate: 50.001 s, where the flat estimate says 30.001 s."""
+        state = _sched_state(last_refill_ms=TUE_085950, sched=BUSINESS)
+        result = try_consume(state, 500, TUE_085950)
+        assert result.success is False
+        assert result.retry_after_seconds == pytest.approx(50.001, abs=0.002)
+
+    def test_the_same_bucket_unscheduled_reports_the_flat_estimate(self):
+        """Discriminates the test above: a test that accepts 30.001 for the
+        scheduled bucket has tested nothing."""
+        state = _sched_state(last_refill_ms=TUE_085950)
+        result = try_consume(state, 500, TUE_085950)
+        assert result.retry_after_seconds == pytest.approx(30.001, abs=0.002)
+
+    def test_a_reset_edge_dominates_the_estimate(self):
+        """`refill_amount_milli=0` is not an edge case — ADR-137 makes it the
+        only shape a `reset_sched` can arrive in, so this is what every quota
+        rejection looks like. Before this wiring it reported 0.0 (#530)."""
+        state = _sched_state(
+            limit_name="rpd",
+            capacity_milli=10_000_000,
+            refill_amount_milli=0,
+            refill_period_ms=86_400_000,
+            last_refill_ms=TUE_2300,
+            reset_sched=DAILY,
+        )
+        result = try_consume(state, 5_000, TUE_2300)
+        assert result.success is False
+        assert result.retry_after_seconds == pytest.approx(3600.001, abs=0.002)
+
+    def test_the_same_quota_without_its_reset_reports_no_wait(self):
+        """Discriminates the test above. A bucket that neither drips nor resets
+        has no finite wait; it is the *edge* that produces the hour."""
+        state = _sched_state(
+            limit_name="rpd",
+            capacity_milli=10_000_000,
+            refill_amount_milli=0,
+            refill_period_ms=86_400_000,
+            last_refill_ms=TUE_2300,
+        )
+        assert try_consume(state, 5_000, TUE_2300).retry_after_seconds == 0.0
+
+    def test_the_shard_share_is_applied_after_the_window(self):
+        """Scale then divide. Half of 1000/min across 2 shards is 250/min, so
+        500 tokens take 120 s — and the walk must be handed the *undivided*
+        base, or both narrowings land twice and it reports 240 s."""
+        state = _sched_state(shard_count=2, last_refill_ms=TUE_1400, sched=BUSINESS)
+        result = try_consume(state, 500, TUE_1400)
+        assert result.retry_after_seconds == pytest.approx(120.001, abs=0.002)
+
+    def test_a_successful_consume_still_reports_no_wait(self):
+        state = _sched_state(tokens_milli=1_000_000, last_refill_ms=TUE_1400, sched=BUSINESS)
+        result = try_consume(state, 500, TUE_1400)
+        assert result.success is True
+        assert result.retry_after_seconds == 0.0
+
+
+class TestTimeUntilAvailableWalksBoundaries:
+    """The other `calculate_retry_after` seam in this module (#222 §7)."""
+
+    def test_a_lowering_boundary_lengthens_the_estimate(self):
+        state = _sched_state(last_refill_ms=TUE_085950, sched=BUSINESS)
+        got = calculate_time_until_available(state, 500, TUE_085950)
+        assert got == pytest.approx(50.001, abs=0.002)
+
+    def test_the_same_bucket_unscheduled_reports_the_flat_estimate(self):
+        state = _sched_state(last_refill_ms=TUE_085950)
+        got = calculate_time_until_available(state, 500, TUE_085950)
+        assert got == pytest.approx(30.001, abs=0.002)
+
+    def test_a_quota_reports_its_reset_edge(self):
+        state = _sched_state(
+            limit_name="rpd",
+            capacity_milli=10_000_000,
+            refill_amount_milli=0,
+            refill_period_ms=86_400_000,
+            last_refill_ms=TUE_2300,
+            reset_sched=DAILY,
+        )
+        got = calculate_time_until_available(state, 5_000, TUE_2300)
+        assert got == pytest.approx(3600.001, abs=0.002)
+
+
+class TestDeclaredStatusesCarryTheWalk:
+    """Site 1: the speculative fast rejection, the path most rejections take.
+
+    The compressed plan text named three LimitStatus sites and missed this one.
+    """
+
+    def test_a_quota_and_a_drip_on_one_item_each_report_their_own_wait(self):
+        """Many limits per status: `RateLimitExceeded` takes the max across
+        them, so the quota's hour must survive beside the drip's half minute
+        rather than being flattened to it."""
+        drip = _sched_state(limit_name="rpm", last_refill_ms=TUE_2300)
+        quota = _sched_state(
+            limit_name="rpd",
+            capacity_milli=10_000_000,
+            refill_amount_milli=0,
+            refill_period_ms=86_400_000,
+            last_refill_ms=TUE_2300,
+            reset_sched=DAILY,
+        )
+        _ok, statuses = would_refill_satisfy(
+            [drip, quota], {"rpm": 500, "rpd": 5_000}, now_ms=TUE_2300
+        )
+        by_name = {s.limit_name: s for s in statuses}
+        assert by_name["rpm"].retry_after_seconds == pytest.approx(30.001, abs=0.002)
+        assert by_name["rpd"].retry_after_seconds == pytest.approx(3600.001, abs=0.002)
+        assert max(s.retry_after_seconds for s in statuses) == pytest.approx(3600.001, abs=0.002)
+
+    def test_a_quota_status_reports_no_phantom_drip(self):
+        """`Limit.from_bucket_state`'s `max(1, ...)` floor reconstructed a
+        quota as `refill_amount=1` with no reset, so the *reported limit* on a
+        fast-path rejection advertised a one-token drip that ADR-137 says does
+        not exist — beside a `retry_after_seconds` of an hour."""
+        quota = _sched_state(
+            limit_name="rpd",
+            capacity_milli=10_000_000,
+            refill_amount_milli=0,
+            refill_period_ms=86_400_000,
+            last_refill_ms=TUE_2300,
+            reset_sched=DAILY,
+        )
+        _ok, statuses = would_refill_satisfy([quota], {"rpd": 5_000}, now_ms=TUE_2300)
+        assert statuses[0].limit.refill_amount == 0
+        assert statuses[0].limit.is_quota
+        assert statuses[0].limit.reset_schedule == DAILY
