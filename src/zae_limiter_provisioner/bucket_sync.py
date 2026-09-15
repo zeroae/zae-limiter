@@ -98,11 +98,11 @@ _STALE_FIELDS = (
     BUCKET_FIELD_RP,
     BUCKET_FIELD_TC,
     # A dropped limit's own schedule overrides go with it, matching the async
-    # path. Manifests cannot express a schedule, but a limit deleted through a
-    # manifest may have been given one through the Python API, and left behind
-    # they re-attach the moment a limit of that name is configured again. That
-    # is worse for `rsched` than for `sched`: an orphan reset restores a
-    # balance on a calendar nobody configured.
+    # path. A limit deleted through a manifest may have carried a schedule —
+    # from the manifest itself since #543, or from the Python API — and left
+    # behind they re-attach the moment a limit of that name is configured
+    # again. That is worse for `rsched` than for `sched`: an orphan reset
+    # restores a balance on a calendar nobody configured.
     BUCKET_FIELD_SCHED,
     BUCKET_FIELD_RSCHED,
 )
