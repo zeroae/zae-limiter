@@ -356,6 +356,49 @@ def _cfn_properties_to_manifest(properties: dict[str, Any]) -> dict[str, Any]:
     return manifest
 
 
+# CloudFormation schedule property -> manifest schedule-entry field (#222).
+#
+# The exact inverse of `zae_limiter.limits_cli._SCHEDULE_KEYS`; the two cannot
+# share a module because the provisioner Lambda zip carries only a four-file
+# `zae_limiter` stub and so can never import `limits_cli`. A unit test pins them
+# as inverses. The snake_case column is `manifest._ENTRY_FIELDS`, whose
+# allowlist is strict — producing a key outside it, or the right key in the
+# wrong case, fails the whole apply.
+_CFN_SCHEDULE_KEYS: dict[str, str] = {
+    "Cron": "cron",
+    "Tz": "tz",
+    "Scale": "scale",
+    "Capacity": "capacity",
+    "RefillAmount": "refill_amount",
+    "RefillPeriodSeconds": "refill_period_seconds",
+}
+
+
+def _cfn_schedule_to_manifest(entries: Any) -> Any:
+    """Convert CFN schedule entries back to manifest snake_case.
+
+    Table-driven, so an unrecognised *property* is dropped rather than forwarded
+    in some guessed spelling: `manifest._parse_entries` rejects any key outside
+    its six-field allowlist, and failing the operator's whole apply over a key
+    this function invented would be the worse outcome.
+
+    A malformed *shape* is the opposite case and is passed through untouched —
+    a `Schedule` that is a bare string, or a list holding something other than
+    mappings, reaches `_parse_entries`, which names the offending entry and
+    fails the custom resource. Swallowing it here would apply the limit with
+    its schedule silently missing, which is the one failure nothing downstream
+    could detect.
+    """
+    if not isinstance(entries, list):
+        return entries
+    return [
+        {snake: entry[pascal] for pascal, snake in _CFN_SCHEDULE_KEYS.items() if pascal in entry}
+        if isinstance(entry, dict)
+        else entry
+        for entry in entries
+    ]
+
+
 def _cfn_limits_to_manifest(cfn_limits: dict[str, Any]) -> dict[str, Any]:
     """Convert CFN PascalCase limits to manifest snake_case."""
     result = {}
@@ -365,6 +408,15 @@ def _cfn_limits_to_manifest(cfn_limits: dict[str, Any]) -> dict[str, Any]:
             limit["refill_amount"] = cfn_limit["RefillAmount"]
         if "RefillPeriod" in cfn_limit:
             limit["refill_period"] = cfn_limit["RefillPeriod"]
+        # Set only when non-empty, matching both the generator's emission rule
+        # and `LimitDecl.to_dict()`: an empty list must not be invented as a
+        # key, or the manifest this path builds would differ from the one
+        # `limits apply` sends for the same intent.
+        for prop, key in (("Schedule", "schedule"), ("ResetSchedule", "reset_schedule")):
+            if prop in cfn_limit:
+                converted = _cfn_schedule_to_manifest(cfn_limit[prop])
+                if converted:
+                    limit[key] = converted
         result[name] = limit
     return result
 

@@ -211,6 +211,60 @@ def limits_cfn_template(name: str, file_path: str) -> None:
     click.echo(yaml.dump(template, default_flow_style=False, sort_keys=False))
 
 
+# Manifest schedule-entry field -> CloudFormation property name (#222).
+#
+# The snake_case column must stay exactly `zae_limiter_provisioner.manifest.
+# _ENTRY_FIELDS`: that allowlist is strict, so a seventh property or one spelled
+# differently here becomes a ValueError inside the provisioner Lambda at deploy
+# time rather than at `limits cfn-template` time. `_reset` is deliberately
+# absent — it is private, and a reset entry smuggled into the parameter tuple
+# would win its window and then supply nothing.
+#
+# Note `refill_period_seconds` -> `RefillPeriodSeconds`, which is *not* the
+# limit-level `refill_period` -> `RefillPeriod` pair a few lines below.
+#
+# `zae_limiter_provisioner.handler._CFN_SCHEDULE_KEYS` is the inverse. The two
+# cannot share a module: the provisioner Lambda zip carries only a four-file
+# `zae_limiter` stub, so it can never import this one. A unit test pins them as
+# exact inverses of each other.
+_SCHEDULE_KEYS: tuple[tuple[str, str], ...] = (
+    ("cron", "Cron"),
+    ("tz", "Tz"),
+    ("scale", "Scale"),
+    ("capacity", "Capacity"),
+    ("refill_amount", "RefillAmount"),
+    ("refill_period_seconds", "RefillPeriodSeconds"),
+)
+
+
+def _schedule_to_cfn(raw: Any, *, key: str, limit_name: str) -> list[dict[str, Any]]:
+    """Convert manifest schedule entries to CFN PascalCase, omitting absent keys.
+
+    Mirrors ``manifest._parse_entries``' tolerance for shape, so that the two
+    ways of applying the same YAML — ``limits apply`` and a generated
+    ``Custom::ZaeLimiterLimits`` — accept and reject the same documents. Entry
+    *contents* stay unvalidated here (the generator walks raw dicts and never
+    builds a ``LimitDecl``), so a bad cron still surfaces in the Lambda.
+    """
+    if not isinstance(raw, list):
+        # `schedule:` with nothing under it is YAML null, not a list, and the
+        # manifest parser reads that as "no schedule" — so must this, or the
+        # same file would generate a template but fail to apply directly.
+        if raw is None:
+            return []
+        raise click.ClickException(
+            f"{limit_name}.{key} must be a list of entries, got {type(raw).__name__}."
+        )
+    entries = []
+    for i, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            raise click.ClickException(
+                f"{limit_name}.{key}[{i}] must be a mapping, got {type(entry).__name__}."
+            )
+        entries.append({pascal: entry[snake] for snake, pascal in _SCHEDULE_KEYS if snake in entry})
+    return entries
+
+
 def _limits_to_cfn(limits: dict[str, Any]) -> dict[str, Any]:
     """Convert manifest limits dict to CFN PascalCase format."""
     result = {}
@@ -220,6 +274,17 @@ def _limits_to_cfn(limits: dict[str, Any]) -> dict[str, Any]:
             cfn_limit["RefillAmount"] = limit["refill_amount"]
         if "refill_period" in limit:
             cfn_limit["RefillPeriod"] = limit["refill_period"]
+        # Emitted only when non-empty, matching `LimitDecl.to_dict()`: an
+        # unscheduled limit's template is byte-identical to what it was before
+        # schedules existed, and an empty list never stands in for "absent".
+        # Key *presence* is the wrong test here (unlike ADR-125's `Disabled`,
+        # where False is a meaningful carve-out) — `schedule: []` and
+        # `schedule:` both mean "no schedule".
+        for key, prop in (("schedule", "Schedule"), ("reset_schedule", "ResetSchedule")):
+            if key in limit:
+                converted = _schedule_to_cfn(limit[key], key=key, limit_name=name)
+                if converted:
+                    cfn_limit[prop] = converted
         result[name] = cfn_limit
     return result
 

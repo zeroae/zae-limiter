@@ -788,3 +788,205 @@ class TestSyncBucketParamChanges:
         ):
             _sync_bucket_param_changes("tbl", "ns123", changes)
         sync.assert_not_called()
+
+
+class TestCfnPropertiesToManifestSchedules:
+    """CFN `Schedule` / `ResetSchedule` -> manifest `schedule` / `reset_schedule`.
+
+    The manifest parser validates entries against a strict six-key snake_case
+    allowlist, so this direction must produce exactly those keys: a seventh
+    key, or a wrong case, is a ValueError inside the Lambda at deploy time.
+    """
+
+    def test_schedule_survives_the_return_trip(self):
+        from zae_limiter_provisioner.handler import _cfn_limits_to_manifest
+
+        cfn = {
+            "rpm": {
+                "Capacity": 1000,
+                "Schedule": [
+                    {"Cron": "* 9-17 * * MON-FRI", "Tz": "America/New_York", "Scale": 0.5},
+                    {"Cron": "* 0-6 * * *", "Tz": "UTC", "Capacity": 2000},
+                ],
+            }
+        }
+        assert _cfn_limits_to_manifest(cfn)["rpm"]["schedule"] == [
+            {"cron": "* 9-17 * * MON-FRI", "tz": "America/New_York", "scale": 0.5},
+            {"cron": "* 0-6 * * *", "tz": "UTC", "capacity": 2000},
+        ]
+
+    def test_reset_schedule_survives_the_return_trip(self):
+        from zae_limiter_provisioner.handler import _cfn_limits_to_manifest
+
+        cfn = {"rpd": {"Capacity": 10000, "ResetSchedule": [{"Cron": "0 0 * * *", "Tz": "UTC"}]}}
+        assert _cfn_limits_to_manifest(cfn)["rpd"]["reset_schedule"] == [
+            {"cron": "0 0 * * *", "tz": "UTC"}
+        ]
+
+    def test_both_tuples_convert_independently(self):
+        from zae_limiter_provisioner.handler import _cfn_limits_to_manifest
+
+        result = _cfn_limits_to_manifest(
+            {
+                "rpd": {
+                    "Capacity": 10000,
+                    "RefillPeriod": 86400,
+                    "Schedule": [{"Cron": "* * * * SAT,SUN", "Scale": 0.5}],
+                    "ResetSchedule": [{"Cron": "0 0 * * *", "Tz": "UTC"}],
+                }
+            }
+        )["rpd"]
+        assert result["schedule"] == [{"cron": "* * * * SAT,SUN", "scale": 0.5}]
+        assert result["reset_schedule"] == [{"cron": "0 0 * * *", "tz": "UTC"}]
+
+    def test_every_entry_field_converts_back(self):
+        from zae_limiter_provisioner.handler import _cfn_limits_to_manifest
+
+        cfn = {
+            "rpm": {
+                "Capacity": 1,
+                "Schedule": [
+                    {
+                        "Cron": "* * * * *",
+                        "Tz": "Europe/Paris",
+                        "Capacity": 5,
+                        "RefillAmount": 6,
+                        "RefillPeriodSeconds": 7,
+                    }
+                ],
+            }
+        }
+        assert _cfn_limits_to_manifest(cfn)["rpm"]["schedule"] == [
+            {
+                "cron": "* * * * *",
+                "tz": "Europe/Paris",
+                "capacity": 5,
+                "refill_amount": 6,
+                "refill_period_seconds": 7,
+            }
+        ]
+
+    def test_absent_properties_stay_absent(self):
+        from zae_limiter_provisioner.handler import _cfn_limits_to_manifest
+
+        result = _cfn_limits_to_manifest({"rpm": {"Capacity": 1000}})["rpm"]
+        assert result == {"capacity": 1000}
+
+    def test_empty_and_null_lists_do_not_invent_a_key(self):
+        """A key whose value is an empty tuple is omitted by
+        ``LimitDecl.to_dict()``; inventing `schedule: []` here would make the
+        CFN path's manifest differ from the CLI path's for the same intent."""
+        from zae_limiter_provisioner.handler import _cfn_limits_to_manifest
+
+        result = _cfn_limits_to_manifest(
+            {"rpm": {"Capacity": 1, "Schedule": [], "ResetSchedule": None}}
+        )["rpm"]
+        assert result == {"capacity": 1}
+
+    def test_unknown_cfn_entry_keys_are_dropped_not_lowercased(self):
+        """A table-driven conversion drops what it does not know. A naive
+        "lowercase every key" would forward `Bogus` as `bogus` and the strict
+        manifest allowlist would reject the whole apply."""
+        from zae_limiter_provisioner.handler import _cfn_limits_to_manifest
+
+        result = _cfn_limits_to_manifest(
+            {"rpm": {"Capacity": 1, "Schedule": [{"Cron": "* * * * *", "Scale": 2, "Bogus": 9}]}}
+        )["rpm"]
+        assert result["schedule"] == [{"cron": "* * * * *", "scale": 2}]
+
+    def test_snake_case_keys_are_not_accepted_as_cfn_input(self):
+        """CFN properties are PascalCase. Accepting snake_case here would mask
+        a generator that forgot to convert."""
+        from zae_limiter_provisioner.handler import _cfn_limits_to_manifest
+
+        result = _cfn_limits_to_manifest(
+            {"rpm": {"Capacity": 1, "Schedule": [{"cron": "* * * * *", "scale": 2}]}}
+        )["rpm"]
+        assert result["schedule"] == [{}]
+
+    def test_schedules_convert_at_system_resource_and_entity_levels(self):
+        """`_cfn_limits_to_manifest` is reached from three branches of
+        ``_cfn_properties_to_manifest``; and the result must actually parse."""
+        from zae_limiter_provisioner.manifest import LimitsManifest
+
+        manifest_data = _cfn_properties_to_manifest(
+            {
+                "Namespace": "test-ns",
+                "System": {
+                    "Limits": {
+                        "rpm": {"Capacity": 1, "Schedule": [{"Cron": "* * * * *", "Scale": 2.0}]}
+                    }
+                },
+                "Resources": {
+                    "gpt-4": {
+                        "Limits": {
+                            "rpd": {
+                                "Capacity": 10,
+                                "RefillPeriod": 86400,
+                                "ResetSchedule": [{"Cron": "0 0 * * *", "Tz": "UTC"}],
+                            }
+                        }
+                    }
+                },
+                "Entities": {
+                    "vip-1": {
+                        "Resources": {
+                            "gpt-4": {
+                                "Limits": {
+                                    "rpm": {
+                                        "Capacity": 3,
+                                        "Schedule": [{"Cron": "2 * * * *", "Scale": 4.0}],
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+            }
+        )
+        assert manifest_data["system"]["limits"]["rpm"]["schedule"] == [
+            {"cron": "* * * * *", "scale": 2.0}
+        ]
+        assert manifest_data["resources"]["gpt-4"]["limits"]["rpd"]["reset_schedule"] == [
+            {"cron": "0 0 * * *", "tz": "UTC"}
+        ]
+        assert manifest_data["entities"]["vip-1"]["resources"]["gpt-4"]["limits"]["rpm"][
+            "schedule"
+        ] == [{"cron": "2 * * * *", "scale": 4.0}]
+
+        parsed = LimitsManifest.from_dict(manifest_data)
+        assert parsed.resources["gpt-4"].limits["rpd"].reset_schedule[0].cron == "0 0 * * *"
+        assert parsed.resources["gpt-4"].limits["rpd"].refill_amount == 0
+
+    def test_malformed_shape_reaches_the_manifest_parser(self):
+        """A `Schedule` that is not a list of mappings is passed through, not
+        swallowed: `_parse_entries` names the offending entry and fails the
+        custom resource. Dropping it here would apply the limit with its
+        schedule silently missing — the one failure nothing downstream could
+        detect."""
+        import pytest
+
+        from zae_limiter_provisioner.handler import _cfn_limits_to_manifest
+        from zae_limiter_provisioner.manifest import LimitsManifest
+
+        bad_type = _cfn_limits_to_manifest({"rpm": {"Capacity": 1, "Schedule": "0 0 * * *"}})
+        assert bad_type["rpm"]["schedule"] == "0 0 * * *"
+        with pytest.raises(ValueError, match="schedule must be a list"):
+            LimitsManifest.from_dict(
+                {"namespace": "n", "resources": {"gpt-4": {"limits": bad_type}}}
+            )
+
+        bad_entry = _cfn_limits_to_manifest({"rpm": {"Capacity": 1, "Schedule": ["nope"]}})
+        assert bad_entry["rpm"]["schedule"] == ["nope"]
+        with pytest.raises(ValueError, match=r"schedule\[0\] must be a mapping"):
+            LimitsManifest.from_dict(
+                {"namespace": "n", "resources": {"gpt-4": {"limits": bad_entry}}}
+            )
+
+    def test_key_tables_are_exact_inverses(self):
+        """The generator and the consumer keep independent tables; a silent
+        divergence is the one failure mode the round trip cannot self-report."""
+        from zae_limiter.limits_cli import _SCHEDULE_KEYS
+        from zae_limiter_provisioner.handler import _CFN_SCHEDULE_KEYS
+
+        assert _CFN_SCHEDULE_KEYS == {pascal: snake for snake, pascal in _SCHEDULE_KEYS}
