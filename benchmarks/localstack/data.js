@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789499026540,
+  "lastUpdate": 1789500552103,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -23990,6 +23990,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.2634433252540849",
             "extra": "mean: 1.3800097257999824 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "79d0fd5ffb1c0b9a000dc72e7d9108fb6198f616",
+          "message": "✨ feat(ci): give /pr a merge mode instead of falling through to create (#580)\n\n## Summary\n\n`/pr merge <n>` matched no pattern in the mode table in\n`.claude/skills/pr/SKILL.md`, so it landed\non the catch-all row `(none) or other → Create`. Invoking the documented\nmerge flow therefore\nrouted to *creating a pull request*.\n\nThe practical consequence is that every merge performed in this session\nran on improvised\nbehaviour rather than a written procedure. That is also why `gh pr merge\n--squash` kept being\nattempted and rejected: this repository sets `allow_squash_merge: false`\nand\n`allow_merge_commit: true`, and nothing in the skill said so.\n\nThis is the same shape as the `/issue comment` gap repaired in d9be9b9c,\nwhich fell through to\n`gh issue edit --body` and would have overwritten an issue body. The new\nmode is only half the\nremedy — a catch-all that silently turns an unknown verb into a *write*\nis the real defect, so the\nmode table now states explicitly that unrecognised arguments are **not**\nCreate and must be\nreported back instead.\n\n**What `merge.md` records**, all of it re-derived independently by more\nthan one agent today:\n\n- `--merge` only. A squash would collapse the individual `fix(scope): …`\ncommits that `git-cliff`\nreads to build the Bug Fixes section of the changelog (see\n`.claude/rules/commits.md`).\n- Poll check-runs to a conclusion, with a bounded loop or `gh run watch`\n— never a loop that\n`pgrep`s for its own command line, which matches itself and can never\nexit.\n- Branch protection sets `strict: false`, so a green can predate changes\non `main` touching the\nsame files. Compare what landed since the merge base against what the\nbranch touches, and on\n  real overlap merge `main` **in** rather than rebasing.\n- Inspect `closingIssuesReferences` before merging, since GitHub's\nparser ignores negation and will\nact on a keyword adjacent to a number the author did not intend to act\non.\n- Afterwards, verify that any epic the PR merely referenced is still\nopen, and clean up with\n  `git branch -d`, never `-D`.\n\n**Ordering note.** `merge.md` points at `.claude/rules/ci-signals.md`\nand at the linked-issue\nsection of `.claude/rules/pull-request-workflow.md`, both of which\narrive in #579. Landing that one\nfirst keeps the cross-references live; this change is otherwise\nindependent of it.\n\n## Test plan\n\n- [ ] Skill-only change under `.claude/skills/pr/`. Per the path\nfilters, `unit`, `integration` and\n`e2e` will be **absent** rather than pending — read that as absence, not\nas a hang.\n- [ ] `lint`, `build` and CodeQL green.\n- [ ] `/pr merge <n>` selects Merge mode and reads `merge.md`; an\nunrecognised verb reports an\n      unknown mode rather than proposing a new pull request.\n- [ ] `gh pr view <n> --json closingIssuesReferences` on this pull\nrequest returns an empty list.\n\nRefs #222\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01QdVj8nPhUwTz2aNJzMFqt5",
+          "timestamp": "2026-09-15T15:23:52-04:00",
+          "tree_id": "86e993b468ff292048f443dbb755cc52a621e75f",
+          "url": "https://github.com/zeroae/zae-limiter/commit/79d0fd5ffb1c0b9a000dc72e7d9108fb6198f616"
+        },
+        "date": 1789500550929,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 30.55275760190829,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006893779817718452",
+            "extra": "mean: 32.73026981818299 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 22.62071665260864,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007880671436832009",
+            "extra": "mean: 44.20726431249822 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 51.13815690043901,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00239111248329459",
+            "extra": "mean: 19.554869799998897 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 51.22586495201887,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004561095752848235",
+            "extra": "mean: 19.521388285715783 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 26.130125989276415,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007180013155586442",
+            "extra": "mean: 38.27000300000052 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 102.71522454055662,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0013568984235806194",
+            "extra": "mean: 9.735655103447247 msec\nrounds: 29"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 31.81710432712462,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004282055944426966",
+            "extra": "mean: 31.42963576190317 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 23.42735501269446,
+            "unit": "iter/sec",
+            "range": "stddev: 0.04252238513650701",
+            "extra": "mean: 42.68514305000011 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 27.45284123479871,
+            "unit": "iter/sec",
+            "range": "stddev: 0.017755843971646344",
+            "extra": "mean: 36.42610218181784 msec\nrounds: 33"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 31.305583374556033,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006509245395620467",
+            "extra": "mean: 31.943183681820837 msec\nrounds: 22"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 37.02598882119546,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00446725441500513",
+            "extra": "mean: 27.008056552632883 msec\nrounds: 38"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 28.464964795146496,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00834911599007269",
+            "extra": "mean: 35.13090591176519 msec\nrounds: 34"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 34.993348223791706,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0042789016614943436",
+            "extra": "mean: 28.576859624998896 msec\nrounds: 32"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.91624926062962,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008199582381104124",
+            "extra": "mean: 521.8527779999931 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9386422774487528,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0021567728373595957",
+            "extra": "mean: 515.8249212000044 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9497274928195141,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0038436001520777015",
+            "extra": "mean: 1.0529336126000088 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.922840574746463,
+            "unit": "iter/sec",
+            "range": "stddev: 0.015020284568186161",
+            "extra": "mean: 1.0836107853999977 sec\nrounds: 5"
           }
         ]
       }
