@@ -11,6 +11,7 @@ from zae_limiter.schedule import (
     matches,
     next_boundary,
     parse_cron,
+    prev_reset_edge,
 )
 
 NY = ZoneInfo("America/New_York")
@@ -178,17 +179,6 @@ class TestNextBoundary:
         assert effective_params(*base, BUSINESS, b - 60_000) == base
         assert effective_params(*base, BUSINESS, b) == (500_000, 100_000, 60_000)
 
-    def test_reset_sched_is_accepted_and_ignored(self):
-        """Surface-plan Task 2 makes it a boundary source; until then it must not bite.
-
-        Pins the two-tuple signature so the unused parameter is not removed as
-        dead code, which would turn that later change into a signature change
-        rippling through `lease.py` and `processor.py`.
-        """
-        other = (ScheduleEntry(cron="0 * * * *", scale=0.5),)
-        now = _ms("2026-09-15 06:00")
-        assert next_boundary(BUSINESS, other, now_ms=now) == next_boundary(BUSINESS, now_ms=now)
-
     def test_now_ms_is_keyword_only(self):
         """The second *positional* slot belongs to `reset_sched` (#500).
 
@@ -197,6 +187,213 @@ class TestNextBoundary:
         """
         with pytest.raises(TypeError, match="now_ms"):
             next_boundary(BUSINESS, _ms("2026-09-15 06:00"))
+
+
+DAILY = (ScheduleEntry.reset(cron="0 0 * * *", tz="America/New_York"),)
+
+
+class TestPrevResetEdge:
+    def test_finds_the_most_recent_midnight(self):
+        assert _iso(prev_reset_edge(DAILY, _ms("2026-09-15 09:00"))).startswith("2026-09-15T00:00")
+
+    def test_an_idle_bucket_sees_the_missed_edge(self):
+        """Idle 18:00 -> 09:00: the edge is in the past and must still be found."""
+        rf = _ms("2026-09-14 18:00")
+        assert prev_reset_edge(DAILY, _ms("2026-09-15 09:00")) > rf
+
+    def test_two_missed_edges_report_only_the_latest(self):
+        """Applying a reset is idempotent, so one edge is enough."""
+        assert _iso(prev_reset_edge(DAILY, _ms("2026-09-16 09:00"))).startswith("2026-09-16T00:00")
+
+    def test_no_edge_since_the_last_refill(self):
+        rf = _ms("2026-09-15 01:00")
+        assert prev_reset_edge(DAILY, _ms("2026-09-15 09:00")) <= rf
+
+    def test_an_out_of_reach_expression_resets_nothing(self):
+        """No edge within the cap, so nothing to apply.
+
+        The plan and design §3.6 both name `0 0 30 2 *` (February 30th) here, but
+        cronsim rejects it outright — `ScheduleEntry` never constructs, so the
+        case is unreachable. `0 0 29 2 *` is the constructible equivalent: it
+        matches only on a leap-year February 29th, which is outside the seven-day
+        minute-granularity cap on all but one day in roughly 1,461.
+        """
+        out_of_reach = (ScheduleEntry.reset(cron="0 0 29 2 *"),)
+        assert prev_reset_edge(out_of_reach, _ms("2026-09-15 09:00")) is None
+
+    def test_empty_reset_schedule(self):
+        assert prev_reset_edge((), _ms("2026-09-15 09:00")) is None
+
+    def test_standing_exactly_on_the_edge_reports_that_edge(self):
+        """The contract is "at or before", not "strictly before".
+
+        The materialising pass compares the edge against `rf`, so an edge dropped
+        for arriving exactly on it would be seen by the *next* pass instead —
+        harmless for a daily reset, and a silently lost window for a fine one.
+        """
+        midnight = _ms("2026-09-15 00:00")
+        assert prev_reset_edge(DAILY, midnight) == midnight
+
+    def test_reports_the_opening_of_a_window_not_its_latest_matching_minute(self):
+        """`* 0 * * *` matches all sixty minutes of hour zero; the edge is 00:00.
+
+        An implementation that stops at the latest *matching* minute answers 00:45
+        here, which would re-fire the reset on every request inside the window.
+        """
+        hourly = (ScheduleEntry.reset(cron="* 0 * * *", tz="America/New_York"),)
+        assert _iso(prev_reset_edge(hourly, _ms("2026-09-15 00:45"))).startswith("2026-09-15T00:00")
+
+    def test_reports_the_opening_from_outside_the_window_too(self):
+        """The 00:45 case above answers from inside; this one walks back into it.
+
+        From 05:00 the backwards scan steps over four non-matching local hours,
+        finds hour zero, and must resolve it to that hour's *last* minute (00:59)
+        before the second search turns it into the 00:00 edge. Returning the
+        probe itself — 00:00 — happens to give the same final answer here and a
+        wrong one for any window whose opening is not also a probe.
+        """
+        hourly = (ScheduleEntry.reset(cron="* 0 * * *", tz="America/New_York"),)
+        assert _iso(prev_reset_edge(hourly, _ms("2026-09-15 05:00"))).startswith("2026-09-15T00:00")
+
+    def test_a_match_sitting_on_the_horizon_is_not_an_edge(self):
+        """An edge needs a non-matching minute before it, and the cap hides that one.
+
+        `0 0 15 9 *` matches once a year. Seven days later — exactly the
+        minute-granularity cap — the match is the oldest instant the scan may
+        look at, so whether it *opened* there is unknowable and None is the only
+        honest answer. Claiming an edge at the horizon would re-fire the reset on
+        every pass for a bucket that has been idle exactly that long.
+        """
+        annual = (ScheduleEntry.reset(cron="0 0 15 9 *", tz="America/New_York"),)
+        assert prev_reset_edge(annual, _ms("2026-09-22 00:00")) is None
+
+    def test_an_always_matching_expression_has_no_edge(self):
+        """No transition into matching anywhere in the horizon, so nothing rises."""
+        always = (ScheduleEntry.reset(cron="* * * * *"),)
+        assert prev_reset_edge(always, _ms("2026-09-15 09:00")) is None
+
+    @pytest.mark.parametrize("order", [(0, 1), (1, 0)])
+    def test_is_the_maximum_across_entries_not_the_first_match(self, order):
+        """Reset entries are independent instants, not first-match-wins overrides.
+
+        Midnight and noon both have an edge before 15:00; the pass needs the noon
+        one. Both orderings are asserted, so returning the first entry with an
+        edge cannot pass by luck.
+        """
+        entries = (
+            ScheduleEntry.reset(cron="0 0 * * *", tz="America/New_York"),
+            ScheduleEntry.reset(cron="0 12 * * *", tz="America/New_York"),
+        )
+        sched = tuple(entries[i] for i in order)
+        assert _iso(prev_reset_edge(sched, _ms("2026-09-15 15:00"))).startswith("2026-09-15T12:00")
+
+    def test_entries_may_disagree_about_the_timezone(self):
+        """Tokyo midnight is 11:00 the previous day in New York, so it wins at 14:00 NY."""
+        sched = (
+            ScheduleEntry.reset(cron="0 0 * * *", tz="America/New_York"),
+            ScheduleEntry.reset(cron="0 0 * * *", tz="Asia/Tokyo"),
+        )
+        assert _iso(prev_reset_edge(sched, _ms("2026-09-15 14:00"))).startswith("2026-09-15T11:00")
+
+    def test_each_entry_keeps_its_own_horizon(self):
+        """A coarse entry's edge must not be hidden by a fine neighbour's shorter cap.
+
+        `* 0 1 * *` scans at hour granularity and looks back 31 days; `0 0 29 2 *`
+        scans at minute granularity and looks back 7. Resolving one granularity
+        for the whole tuple picks the finer, and the monthly edge nineteen days
+        back disappears.
+        """
+        sched = (
+            ScheduleEntry.reset(cron="0 0 29 2 *"),
+            ScheduleEntry.reset(cron="* 0 1 * *", tz="America/New_York"),
+        )
+        assert _iso(prev_reset_edge(sched, _ms("2026-09-20 09:00"))).startswith("2026-09-01T00:00")
+
+    def test_a_skipped_local_hour_produces_no_edge_that_day(self):
+        """`30 2 * * *` does not fire on a spring-forward day; it never is 02:30.
+
+        A reset edge is a fact about the wall clock, so the most recent edge on
+        2027-03-14 is the *previous* day's. croniter's `get_prev` disagrees and
+        reschedules the skipped fire to 03:00, which is a scheduler's job and not
+        a matcher's — the reason that expression is excluded from the reset half
+        of the croniter oracle in test_schedule_oracle.py.
+        """
+        sched = (ScheduleEntry.reset(cron="30 2 * * *", tz="America/New_York"),)
+        assert _iso(prev_reset_edge(sched, _ms("2027-03-14 04:14"))).startswith("2027-03-13T02:30")
+
+    def test_the_edge_follows_local_midnight_across_dst(self):
+        """Spring forward moves midnight New York from 05:00Z to 04:00Z."""
+        before = prev_reset_edge(DAILY, _ms("2027-03-12 09:00"))
+        after = prev_reset_edge(DAILY, _ms("2027-03-16 09:00"))
+        assert datetime.fromtimestamp(before / 1000, UTC).hour == 5  # EST
+        assert datetime.fromtimestamp(after / 1000, UTC).hour == 4  # EDT
+
+
+class TestNextBoundarySpansBothTuples:
+    def test_a_reset_edge_is_a_boundary(self):
+        # From 22:00 the next param change is 09:00, but the reset fires at 00:00.
+        assert _iso(next_boundary(BUSINESS, DAILY, now_ms=_ms("2026-09-15 22:00"))).startswith(
+            "2026-09-16T00:00"
+        )
+
+    def test_a_nearer_param_change_still_wins(self):
+        """The other direction: the minimum is genuinely a minimum, not a preference."""
+        assert _iso(next_boundary(BUSINESS, DAILY, now_ms=_ms("2026-09-15 06:00"))).startswith(
+            "2026-09-15T09:00"
+        )
+
+    def test_reset_only_schedule_still_produces_boundaries(self):
+        assert _iso(next_boundary((), DAILY, now_ms=_ms("2026-09-15 09:00"))).startswith(
+            "2026-09-16T00:00"
+        )
+
+    def test_neither_tuple_means_no_boundary(self):
+        assert next_boundary((), (), now_ms=_ms("2026-09-15 09:00")) is None
+
+    def test_an_empty_reset_tuple_changes_nothing(self):
+        now = _ms("2026-09-15 06:00")
+        assert next_boundary(BUSINESS, (), now_ms=now) == next_boundary(BUSINESS, now_ms=now)
+
+    def test_standing_on_a_reset_edge_returns_the_next_one(self):
+        """Strictly after `now`, or `vu` expires the instant it is written."""
+        assert _iso(next_boundary((), DAILY, now_ms=_ms("2026-09-15 00:00"))).startswith(
+            "2026-09-16T00:00"
+        )
+
+    def test_standing_inside_a_reset_window_skips_past_it(self):
+        """`* 0 * * *` matches all sixty minutes; the next *edge* is tomorrow's 00:00.
+
+        The current window has to be left before looking for an edge, because the
+        next matching minute from inside one is 00:31 — no rising edge at all. A
+        `vu` of 00:31 would re-materialise the bucket every minute until 01:00 and
+        apply no reset, since `prev_reset_edge` correctly reports 00:00 each time.
+        """
+        hourly = (ScheduleEntry.reset(cron="* 0 * * *", tz="America/New_York"),)
+        assert _iso(next_boundary((), hourly, now_ms=_ms("2026-09-15 00:30"))).startswith(
+            "2026-09-16T00:00"
+        )
+
+    def test_a_reset_that_never_stops_matching_caps_too(self):
+        """`* * * * *` has no rising edge because it has no falling one either.
+
+        The forward scan has to leave the current window before an edge can
+        exist, and here it never does. Capping keeps the bucket materialising
+        once a horizon rather than pinning `vu` to nothing at all.
+        """
+        always = (ScheduleEntry.reset(cron="* * * * *"),)
+        now = _ms("2026-09-15 09:00")
+        assert next_boundary((), always, now_ms=now) == now + 366 * _DAY_MS
+
+    def test_an_out_of_reach_reset_caps_rather_than_vanishing(self):
+        """A yearly reset cannot be seen seven days out, and must not report nothing.
+
+        None would leave `vu` unset and the fast path spending pre-reset tokens
+        forever, because only a materialising pass runs the backwards scan that
+        would find the edge. The cap forces one pass per horizon instead.
+        """
+        yearly = (ScheduleEntry.reset(cron="0 0 1 1 *", tz="America/New_York"),)
+        now = _ms("2026-09-15 09:00")
+        assert next_boundary((), yearly, now_ms=now) == now + 7 * _DAY_MS
 
 
 def _brute_force_boundary(sched: tuple[ScheduleEntry, ...], now_ms: int, horizon_ms: int):
