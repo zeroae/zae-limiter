@@ -10,6 +10,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from zae_limiter.schema import (
+    BUCKET_SCHED_NONE,
     bucket_attr,
     gsi3_pk_entity,
     limit_attr,
@@ -964,3 +965,97 @@ class TestDecodeAdmitsScheduledLimits:
         assert written == 1
         values = client.update_item.call_args.kwargs["ExpressionAttributeValues"]
         assert values[":sched"] == {"S": BIZ_COMPACT}
+
+
+class TestTheMirrorMarksUnscheduledLimits:
+    """#541, on the Lambda side of the same encoder.
+
+    The provisioner and ``set_limits()`` write the same attributes to the same
+    items, so a different inheritance rule here would mean which schedule a
+    limit runs under depends on which writer touched the bucket last. Every
+    manifest apply re-asserts every resource (`differ.py`), so this runs often.
+    """
+
+    MIXED = {
+        "rpm": {"capacity": 1000, "refill_amount": 1000, "refill_period": 60, "schedule": BIZ},
+        "tpm": {"capacity": 50, "refill_amount": 50, "refill_period": 60},
+        "rpd": {
+            "capacity": 10000,
+            "refill_amount": 0,
+            "refill_period": 86400,
+            "reset_schedule": MIDNIGHT,
+        },
+    }
+
+    def _build(self):
+        return build_bucket_param_update(
+            self.MIXED, ttl_multiplier=None, stale_limit_names=None, now_ms=0
+        )
+
+    def _override(self, names, values, limit, field):
+        alias = next(
+            a
+            for a, attr in names.items()
+            if attr == bucket_attr(limit, field) and not a.startswith("#stale")
+        )
+        return values.get(f":{alias[1:]}"), alias
+
+    def test_an_unscheduled_limit_is_marked_rather_than_left_absent(self):
+        expr, names, values = self._build()
+        value, alias = self._override(names, values, "tpm", "sched")
+        assert value == {"S": BUCKET_SCHED_NONE}
+        assert f"{alias} = :{alias[1:]}" in expr
+
+    def test_a_quota_is_marked_unscheduled_on_the_parameter_tuple(self):
+        """The direction the issue understates: without the marker the daily
+        quota inherits the rate limit's 0.5x window and silently serves half
+        its allowance between 09:00 and 17:00."""
+        _expr, names, values = self._build()
+        assert self._override(names, values, "rpd", "sched")[0] == {"S": BUCKET_SCHED_NONE}
+
+    def test_a_rate_limit_is_marked_reset_free(self):
+        """...and without this one the rate limit takes the quota's midnight
+        reset, a hard SET of its balance on a calendar it never declared."""
+        _expr, names, values = self._build()
+        assert self._override(names, values, "rpm", "rsched")[0] == {"S": BUCKET_SCHED_NONE}
+        assert self._override(names, values, "tpm", "rsched")[0] == {"S": BUCKET_SCHED_NONE}
+
+    def test_the_limits_supplying_each_default_still_carry_no_override(self):
+        """Not "an override for every limit": absence still means "inherit",
+        which is what keeps a shared schedule down to one attribute."""
+        expr, names, _values = self._build()
+        removed = _removed(expr, names)
+        assert bucket_attr("rpm", "sched") in removed
+        assert bucket_attr("rpd", "rsched") in removed
+
+    def test_no_attribute_is_both_set_and_removed(self):
+        """#488 again, over the branch the marker adds."""
+        expr, names, _values = self._build()
+        set_attrs = _set_attrs(expr, names)
+        assert not (set_attrs & _removed(expr, names))
+
+
+def test_the_mirror_encodes_exactly_what_the_async_repository_does():
+    """One encoder, mirrored — asserted against the original, not re-described.
+
+    `bucket_sync._encode_one_tuple` is a hand-written copy of
+    `Repository._encode_one_tuple`, and the two write the same attributes to
+    the same bucket items. A divergence in which limit supplies the item-level
+    default, or in whether an unscheduled limit is marked (#541), would make a
+    limit's schedule depend on whether an admin last used the Python API or a
+    manifest.
+    """
+    from zae_limiter.models import Limit
+    from zae_limiter.repository import Repository
+    from zae_limiter_provisioner.bucket_sync import _encode_item_schedules
+    from zae_limiter_provisioner.manifest import entries_from_manifest
+
+    limits = [
+        Limit.per_minute("rpm", 1000).with_schedule(
+            entries_from_manifest(BIZ, reset=False),
+        ),
+        Limit.per_minute("tpm", 50),
+        Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York"),
+    ]
+    named = [(lim.name, lim.schedule, lim.reset_schedule) for lim in limits]
+    assert _encode_item_schedules(named) == Repository._encode_item_schedules(named)

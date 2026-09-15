@@ -33,6 +33,7 @@ from zae_limiter.schema import (
     BUCKET_FIELD_TC,
     BUCKET_FIELD_TK,
     BUCKET_FIELD_VU,
+    BUCKET_SCHED_NONE,
     CONFIG_FIELD_SCHED_TZ,
     DEFAULT_RESOURCE,
     GSI3_NAME,
@@ -119,17 +120,22 @@ def _encode_one_tuple(
     the same items, and a different choice of item-level default here would
     silently re-scale whichever limits inherit it.
 
-    Note the inheritance rule this mirrors deliberately: a limit with *no*
-    schedule gets no override, and absence means "inherit the item default", so
-    it is read as sharing the default (#541). Diverging here would give one
-    item two inheritance rules depending on which writer touched it last.
+    A limit with **no** schedule of this kind gets the explicit
+    ``BUCKET_SCHED_NONE`` override (#541), exactly as the async encoder does.
+    Absence still means "inherit the item default"; it just no longer *also*
+    means "unscheduled". Diverging here would give one item two inheritance
+    rules depending on which writer touched it last.
     """
-    scheduled = [(name, sched) for name, sched in named_schedules if sched]
+    scheduled = [(name, encoder(sched)[0]) for name, sched in named_schedules if sched]
     if not scheduled:
         return None
-    encodings = [(name, encoder(sched)[0]) for name, sched in scheduled]
-    default_compact = encodings[0][1]
-    overrides = {name: compact for name, compact in encodings if compact != default_compact}
+    default_compact = scheduled[0][1]
+    encodings = dict(scheduled)
+    overrides = {}
+    for name, _sched in named_schedules:
+        compact = encodings.get(name, BUCKET_SCHED_NONE)
+        if compact != default_compact:
+            overrides[name] = compact
     return default_compact, overrides
 
 
@@ -238,9 +244,11 @@ def build_bucket_param_update(
     # Per-limit overrides are SET where a limit differs from the item default
     # and REMOVEd everywhere else — including on the scheduled branch. Absence
     # means "inherit the item default", so a limit that used to carry its own
-    # schedule and now shares the default (or has none at all) keeps enforcing
-    # the superseded one forever unless its override is stripped. Each alias
-    # lands in exactly one of the two lists, never both (#488).
+    # schedule and now shares the default keeps enforcing the superseded one
+    # forever unless its override is stripped. A limit that now has *no*
+    # schedule gets `BUCKET_SCHED_NONE` SET instead (#541) — removing its
+    # override would make it inherit the default. Each alias lands in exactly
+    # one of the two lists, never both (#488).
     for prefix, field, part in (
         ("sched", BUCKET_FIELD_SCHED, param),
         ("rsched", BUCKET_FIELD_RSCHED, reset_part),

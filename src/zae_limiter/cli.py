@@ -2264,9 +2264,11 @@ def _format_schedule_lines(limit: Limit, indent: str) -> list[str]:
     The **reset** schedule is deliberately absent. It is rendered inline by
     :func:`_format_limit`, for the reasons in that function's docstring.
 
-    Renders exactly what this ``Limit`` carries, and resolves nothing: a limit
-    inheriting an item-level schedule it does not declare (#541) must not be
-    shown as owning one.
+    Renders exactly what this ``Limit`` carries, and resolves nothing. Config
+    items store one ``l_{name}_sched`` per limit with no item-level default, so
+    a limit that declares no schedule has none to show — and since #541 the
+    same is true on bucket items, where an unscheduled limit beside a scheduled
+    one is stamped ``BUCKET_SCHED_NONE`` rather than left to inherit.
     """
     if not limit.schedule:
         return []

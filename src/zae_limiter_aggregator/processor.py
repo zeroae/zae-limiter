@@ -33,6 +33,7 @@ from zae_limiter.schema import (
     BUCKET_FIELD_TK,
     BUCKET_FIELD_VU,
     BUCKET_PREFIX,
+    BUCKET_SCHED_NONE,
     SK_BUCKET,
     WCU_LIMIT_NAME,
     WCU_SHARD_WARN_THRESHOLD,
@@ -503,21 +504,30 @@ def _parse_bucket_record(record: dict[str, Any]) -> ParsedBucketRecord | None:
         # `b_{name}_sched` overrides the item-level default for this limit
         # only (§4.1). Ignoring it would refill an overridden limit at the
         # item default's rate — over-refilling whenever the override is the
-        # tighter of the two.
+        # tighter of the two. `BUCKET_SCHED_NONE` is the override that says
+        # "this limit has none" (#541): absence still means "inherit", so
+        # without an explicit spelling an unscheduled limit beside a scheduled
+        # one is refilled toward `0.5 x capacity` at `0.5 x` its rate.
         limit_sched = sched
         sched_attr = f"{BUCKET_ATTR_PREFIX}{limit_name}_{BUCKET_FIELD_SCHED}"
         limit_compact = new_image.get(sched_attr, {}).get("S")
-        if limit_compact and limit_compact != sched_compact:
+        if limit_compact == BUCKET_SCHED_NONE:
+            limit_sched = ()
+        elif limit_compact and limit_compact != sched_compact:
             limit_sched, decode_error = _decode_schedule(limit_compact, sched_tz)
             if decode_error:
                 sched_error = f"{limit_name} schedule {decode_error}"
 
         # `b_{name}_rsched` overrides the item-level reset default for this
-        # limit only, mirroring `b_{name}_sched` above.
+        # limit only, mirroring `b_{name}_sched` above — the `NONE` marker
+        # included, and it matters more here: an inherited reset hard-SETs a
+        # balance on a calendar the limit never declared.
         limit_reset_sched = reset_sched
         rsched_attr = f"{BUCKET_ATTR_PREFIX}{limit_name}_{BUCKET_FIELD_RSCHED}"
         limit_rcompact = new_image.get(rsched_attr, {}).get("S")
-        if limit_rcompact and limit_rcompact != rsched_compact:
+        if limit_rcompact == BUCKET_SCHED_NONE:
+            limit_reset_sched = ()
+        elif limit_rcompact and limit_rcompact != rsched_compact:
             limit_reset_sched, reset_decode_error = _decode_reset_schedule(limit_rcompact, sched_tz)
             if reset_decode_error:
                 sched_error = f"{limit_name} reset schedule {reset_decode_error}"
@@ -711,10 +721,15 @@ def _item_next_boundary(state: BucketRefillState, now_ms: int) -> int | None:
     when something unrelated forced a materialising pass (#222 §3.6).
 
     Returns None when nothing on the item is scheduled.
+
+    The item-level pair is a member in its own right, not a fall-back for the
+    per-limit ones (#541). A limit recorded as explicitly unscheduled
+    contributes no boundary of its own, but the default still does — some limit
+    on the item carries it, and `vu` is one item-level attribute, so the
+    earliest change *anywhere* is the one that has to force the pass.
     """
     pairs = {(state.sched, state.reset_sched)} | {
-        (info.sched or state.sched, info.reset_sched or state.reset_sched)
-        for info in state.limits.values()
+        (info.sched, info.reset_sched) for info in state.limits.values()
     }
     boundaries = [
         b
@@ -790,16 +805,19 @@ def try_refill_bucket(
         else:
             # Scale first, THEN divide by shard_count: the schedule applies to
             # the whole limit, the shard split to what is left of it.
-            # `info.sched` is the item-level default unless the item carried a
-            # per-limit override; falling back keeps a state assembled without
-            # the per-limit copy (a hand-built one, or a future caller) from
-            # silently refilling at the unscheduled base rate.
+            #
+            # `info.sched` is authoritative and there is deliberately no
+            # fall-back to `state.sched` (#541): the parser already resolves
+            # every limit against the item default, so an empty tuple here
+            # means the limit is *explicitly* unscheduled — `b_{name}_sched`
+            # held `BUCKET_SCHED_NONE` — and falling back would hand it the
+            # window it was recorded as not having.
             scaled_cp, scaled_ra, effective_rp = effective_params(
-                info.cp_milli, info.ra_milli, info.rp_ms, info.sched or state.sched, now_ms
+                info.cp_milli, info.ra_milli, info.rp_ms, info.sched, now_ms
             )
             effective_cp = scaled_cp // state.shard_count
             effective_ra = scaled_ra // state.shard_count
-            reset_sched = info.reset_sched or state.reset_sched
+            reset_sched = info.reset_sched
 
         # A reset edge crossed since this item was last refilled sets the
         # balance to the effective capacity, which as an `ADD` is
@@ -1187,7 +1205,14 @@ def propagate_shard_count(
         limit_compact = new_image.get(
             f"{BUCKET_ATTR_PREFIX}{limit_name}_{BUCKET_FIELD_SCHED}", {}
         ).get("S")
-        limit_sched, limit_error = _decode_schedule(limit_compact, sched_tz)
+        # `BUCKET_SCHED_NONE` means this limit declares no schedule (#541), so
+        # it takes neither its own nor the item's: seeded from the item
+        # default, an unscheduled limit's new shard would start at half its
+        # share for the life of the window.
+        declares_none = limit_compact == BUCKET_SCHED_NONE
+        limit_sched, limit_error = (
+            ((), None) if declares_none else _decode_schedule(limit_compact, sched_tz)
+        )
         error = sched_error or limit_error
         if error is not None:
             logger.warning(
@@ -1202,7 +1227,7 @@ def propagate_shard_count(
             info["cp_milli"],
             info["ra_milli"],
             info["rp_ms"],
-            limit_sched or item_sched,
+            () if declares_none else (limit_sched or item_sched),
             now_ms,
         )
         starting_tokens[limit_name] = scaled_cp // new_count
