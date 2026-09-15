@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789487736035,
+  "lastUpdate": 1789491811821,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -22846,6 +22846,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.006644290723184925",
             "extra": "mean: 1.0850090879999925 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "883c295c141c93385f73e9e4d440d0b5c0b69090",
+          "message": "🐛 fix(models): reject non-finite schedule modifiers, and stop a scaled quota inventing a drip (#565)\n\n## Summary\n\nTwo pre-existing defects in `src/zae_limiter/schedule.py`, both found\nwhile working on #554,\neach landing as its own commit so git-cliff files them separately.\n\n### 1. Non-finite modifiers escape validation (#564)\n\n`ScheduleEntry.__post_init__` gated its four numeric modifiers on\npositivity alone. Every\ncomparison against NaN is `False`, so `scale <= 0` *admits* a NaN, and\nan infinity is\ntrivially positive — both passed construction and escaped, dying much\nlater at a layer that\nnames neither the field nor the manifest entry.\n\n- `scale` at least failed loudly, from inside the storage encoder\n(`cannot convert float NaN\n  to integer`) or `effective_params` on the acquire path.\n- The absolute overrides were worse: `capacity=nan` **encoded cleanly**\nto the byte string\n`cnan`, so nothing raised at write time. The poison reached the config\nitem and every\n  subsequent `decode` of that limit raised instead — permanently.\n\nThe fix rejects all four at construction with a `ValueError` naming the\nfield and the value,\nordered **ahead** of the positivity test so a NaN cannot fall through to\n`scale must be\npositive`. `_parse_entries` already wraps that, so `limits plan` now\nreports\n`schedule[0]: scale must be a finite number, got nan` before anything is\nwritten.\n\nThe `isinstance(value, float)` guard on the finiteness check is\nload-bearing: `math.isfinite`\nconverts its argument to a float, so a bare call would turn an\nabsurd-but-previously-workable\ninteger `capacity=10**400` into an `OverflowError` raised from\nvalidation. A regression test\npins that.\n\nThe CloudFormation path was already covered by the coercion layer in\n#561; the YAML\n`limits apply` path and the direct Python API were not. Reset entries\ncarry `cron`/`tz` only\nand were never exposed.\n\n### 2. A scaled quota gets a phantom one-millitoken drip (#556)\n\n`effective_params` floored the *scaled* refill rate at one milli-unit,\nso a quota — whose\n`refill_amount` is 0 by definition (ADR-137) — came out of any `scale`\nwindow dripping:\n\n```\neffective_params(10_000_000, 0, 60_000, (scale=0.5,), 0)\n->  (5_000_000, 1, 60_000)        # expected (5_000_000, 0, 60_000)\n```\n\nThe floor is now conditioned on the **base** rate rather than the scaled\nresult, so a limit\nthat really drips keeps its floor (a tiny scale still cannot round a\nlive rate away to\nnothing) while a quota stays at zero. The absolute-override branch was\nalready correct.\n\nTwo user-visible consequences, both now pinned:\n\n- `BucketState.accrues()` answered `True` for a scaled quota — claiming\nto accrue at a rate\n  the limit is defined not to have.\n- `retry_after_with_schedule` walked the phantom rate instead of going\nto the next reset\nedge. A daily quota at the 1 s `_QUOTA_REFILL_PERIOD_SECONDS` that\n`Limit.quota` actually\nstores, with a 1-millitoken deficit, reported **1.001 s** where the\ntruth is **43200 s** —\n\"retry in one second\" on a 429 for a quota that does not come back until\nmidnight. Every\nexisting boundary test used a deficit large enough that the reset edge\nwon either way,\n  which is why this survived.\n\n`ScheduleEntry` raises plain `ValueError` and must keep doing so —\n`schedule.py` deliberately\nimports nothing from `models.py`/`exceptions.py`, since it is vendored\ninto both Lambda\npackages. No other validation or evaluation semantics change.\n\n## Verification\n\n| Gate | Result |\n|------|--------|\n| `uv run pytest tests/unit/ -q` | **4537 passed** (9m 50s) |\n| `uv run pytest tests/unit/ -m gevent -n 0 -q` | **26 passed** |\n| `uv run mypy` | Success, no issues in 58 source files |\n| `uv run ruff check` / `format --check` (changed files) | clean / 4\nfiles already formatted |\n| `uv run diff-cover coverage.xml --compare-branch=origin/main\n--fail-under=100` | **100%** — 6 lines, 0 missing |\n| `python scripts/generate_sync.py` | \"All files up to date\" — no diff |\n\n`origin/main` (`b736e428`) is merged in, not rebased.\n\n**Mutation checks**, each guard reverted alone:\n\n- Revert the `math.isfinite` guard → **13 of 15** new #564 tests fail.\nThe 2 that pass are\nthe deliberate controls (finite values still accepted;\n`capacity=10**400` still accepted).\n- Revert the `0 if ra_milli == 0 else ...` guard → **all 6** new #556\ntests fail, including\nthe `retry_after_with_schedule` one, which reports `1.001` against an\nexpected `43200.001`.\n\n## Test plan\n\n- [x] Full unit suite, gevent suite, mypy, ruff, diff-cover, sync-code\ncheck — all above\n- [x] End-to-end through the YAML manifest: `LimitsManifest.from_dict`\nnow rejects\n`scale: .nan`, `scale: .inf` and `capacity: .nan` as `schedule[0]:\n<field> must be a\n      finite number, got <value>`\n- [ ] CI green\n\nNew tests:\n- `tests/unit/test_schedule.py` — `nan`/`inf`/`-inf` rejected for\n`scale` and each of the\nthree absolutes; finite values still pass; non-finite rejected *before*\nthe positivity\ntest; `capacity=10**400` still accepted; a quota keeps `refill_amount =\n0` at every scale;\n  the floor still protects a limit that really drips\n- `tests/unit/test_models.py` — a quota inside a `scale` window still\nnever accrues\n- `tests/unit/test_schedule_boundary.py` — a sub-token deficit on a\nscaled quota still\n  reports its reset edge\n\nFixes #564\nFixes #556\nRefs #222, #554\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01QdVj8nPhUwTz2aNJzMFqt5",
+          "timestamp": "2026-09-15T12:59:24-04:00",
+          "tree_id": "892819f2097507923544b2f86f564648e370731c",
+          "url": "https://github.com/zeroae/zae-limiter/commit/883c295c141c93385f73e9e4d440d0b5c0b69090"
+        },
+        "date": 1789491810619,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 22.519926757192987,
+            "unit": "iter/sec",
+            "range": "stddev: 0.012531315692868238",
+            "extra": "mean: 44.40511777777405 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 17.590248477534395,
+            "unit": "iter/sec",
+            "range": "stddev: 0.011242851624242349",
+            "extra": "mean: 56.849680166665216 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 37.52167893170436,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00567425950858881",
+            "extra": "mean: 26.651259444444502 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 36.158578958587874,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006875506338155072",
+            "extra": "mean: 27.65595410000188 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 20.276140878489414,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00905136942551887",
+            "extra": "mean: 49.31904971428175 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 85.88213375650854,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0016872649440698387",
+            "extra": "mean: 11.643865333332096 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 25.883164755443634,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005930331349822522",
+            "extra": "mean: 38.63515182352979 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 14.37956143697519,
+            "unit": "iter/sec",
+            "range": "stddev: 0.10587066317361252",
+            "extra": "mean: 69.54315014285685 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 24.58138037711325,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007280044931146107",
+            "extra": "mean: 40.68119790909141 msec\nrounds: 22"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 25.07015931089651,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007044123009646291",
+            "extra": "mean: 39.88805925000083 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 25.48417735888905,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006600680893752911",
+            "extra": "mean: 39.2400345483859 msec\nrounds: 31"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 24.469687997199838,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006346316774540147",
+            "extra": "mean: 40.86688805000023 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 29.9786430239385,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0061870952097213975",
+            "extra": "mean: 33.357080212119065 msec\nrounds: 33"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.8988105002637745,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006793193520606471",
+            "extra": "mean: 526.645497200002 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.911280056358715,
+            "unit": "iter/sec",
+            "range": "stddev: 0.002656331121359789",
+            "extra": "mean: 523.2095613999945 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9403186912574248,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0027549704185423317",
+            "extra": "mean: 1.0634692358000108 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9018665702247552,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008029085461846445",
+            "extra": "mean: 1.1088114728000051 sec\nrounds: 5"
           }
         ]
       }
