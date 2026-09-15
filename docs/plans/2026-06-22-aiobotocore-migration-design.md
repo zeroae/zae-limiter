@@ -64,6 +64,7 @@ lifecycle are unchanged because `aioboto3` delegates the client path straight to
 ```python
 # before
 import aioboto3
+
 self._session = aioboto3.Session()
 self._client = await self._session.client(
     "dynamodb", region_name=..., endpoint_url=...
@@ -71,6 +72,7 @@ self._client = await self._session.client(
 
 # after
 from aiobotocore.session import get_session
+
 self._session = get_session()
 self._client = await self._session.create_client(
     "dynamodb", region_name=..., endpoint_url=...

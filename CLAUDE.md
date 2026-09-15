@@ -64,6 +64,7 @@ async def _safe(item):
     except Exception as exc:
         return exc
 
+
 results = await asyncio.gather(*[_safe(i) for i in items])
 ```
 
@@ -522,9 +523,9 @@ from zae_limiter import RateLimiter, Repository
 # Provision infrastructure + register namespace
 repo = await (
     Repository.builder()
-    .namespace("default")       # Resolve namespace (default: "default")
-    .config_cache_ttl(120)      # Config cache TTL in seconds
-    .build()                    # Async: creates infra, registers default ns, resolves namespace
+    .namespace("default")  # Resolve namespace (default: "default")
+    .config_cache_ttl(120)  # Config cache TTL in seconds
+    .build()  # Async: creates infra, registers default ns, resolves namespace
 )
 limiter = RateLimiter(repository=repo)
 
@@ -540,11 +541,7 @@ repo = await (
 )
 
 # LocalStack development
-repo = await (
-    Repository.builder()
-    .endpoint_url("http://localhost:4566")
-    .build()
-)
+repo = await Repository.builder().endpoint_url("http://localhost:4566").build()
 ```
 
 **Builder `build()` steps:**

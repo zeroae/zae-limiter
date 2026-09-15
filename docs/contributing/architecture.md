@@ -109,30 +109,30 @@ See [ADR-111](../adr/111-flatten-all-records.md).
 ```python
 # Bucket record (FLAT structure, ADR-114/115, GHSA-76rv):
 {
-    "PK": "{ns}/BUCKET#user-1#gpt-4#0",   # per-(entity, resource, shard) PK
+    "PK": "{ns}/BUCKET#user-1#gpt-4#0",  # per-(entity, resource, shard) PK
     "SK": "#STATE",
     "entity_id": "user-1",
     "resource": "gpt-4",
-    "shard_count": 1,                       # total shards for this entity+resource
-    "b_tpm_tk": 9500000,                    # tokens_milli for tpm limit
-    "b_tpm_cp": 10000000,                   # capacity_milli for tpm limit
-    "b_tpm_tc": 500000,                     # total_consumed_milli for tpm
-    "b_rpm_tk": 95000,                      # tokens_milli for rpm limit
-    "b_rpm_cp": 100000,                     # capacity_milli for rpm limit
-    "b_rpm_tc": 5000,                       # total_consumed_milli for rpm
-    "b_wcu_tk": 999000,                     # wcu infrastructure limit tokens
-    "b_wcu_cp": 1000000,                    # wcu capacity (1000 WCU/sec)
-    "b_wcu_tc": 1000,                       # wcu total consumed
-    "rf": 1704067200000,                    # last_refill_ms (shared across limits)
-    "sched": "h9-17w1-5s500",               # item-level schedule, compact encoding (#222)
-    "sched_tz": "America/New_York",         # IANA zone shared by every schedule here
-    "vu": 1704088800000,                    # valid_until_ms: next boundary on this item
+    "shard_count": 1,  # total shards for this entity+resource
+    "b_tpm_tk": 9500000,  # tokens_milli for tpm limit
+    "b_tpm_cp": 10000000,  # capacity_milli for tpm limit
+    "b_tpm_tc": 500000,  # total_consumed_milli for tpm
+    "b_rpm_tk": 95000,  # tokens_milli for rpm limit
+    "b_rpm_cp": 100000,  # capacity_milli for rpm limit
+    "b_rpm_tc": 5000,  # total_consumed_milli for rpm
+    "b_wcu_tk": 999000,  # wcu infrastructure limit tokens
+    "b_wcu_cp": 1000000,  # wcu capacity (1000 WCU/sec)
+    "b_wcu_tc": 1000,  # wcu total consumed
+    "rf": 1704067200000,  # last_refill_ms (shared across limits)
+    "sched": "h9-17w1-5s500",  # item-level schedule, compact encoding (#222)
+    "sched_tz": "America/New_York",  # IANA zone shared by every schedule here
+    "vu": 1704088800000,  # valid_until_ms: next boundary on this item
     "cascade": False,
     "GSI2PK": "{ns}/RESOURCE#gpt-4",
     "GSI2SK": "BUCKET#user-1#0",
-    "GSI3PK": "{ns}/ENTITY#user-1",         # bucket discovery by entity
+    "GSI3PK": "{ns}/ENTITY#user-1",  # bucket discovery by entity
     "GSI3SK": "BUCKET#gpt-4#0",
-    "ttl": 1234567890
+    "ttl": 1234567890,
 }
 ```
 
@@ -163,13 +163,13 @@ exceeds consumption rate. See [Issue #179](https://github.com/zeroae/zae-limiter
     "PK": "{ns}/ENTITY#user-1",
     "SK": "#USAGE#gpt-4#2024-01-01T14:00:00Z",
     "entity_id": "user-1",
-    "resource": "gpt-4",        # Top-level attribute
-    "window": "hourly",         # Top-level attribute
-    "window_start": "...",      # Top-level attribute
-    "tpm": 5000,                # Counter at top-level
-    "total_events": 10,         # Counter at top-level
+    "resource": "gpt-4",  # Top-level attribute
+    "window": "hourly",  # Top-level attribute
+    "window_start": "...",  # Top-level attribute
+    "tpm": 5000,  # Counter at top-level
+    "total_events": 10,  # Counter at top-level
     "GSI2PK": "{ns}/RESOURCE#gpt-4",
-    "ttl": 1234567890
+    "ttl": 1234567890,
 }
 ```
 
@@ -186,16 +186,16 @@ See: [Issue #168](https://github.com/zeroae/zae-limiter/issues/168)
 ```python
 # Resource config (composite, FLAT structure):
 {
-    "PK": "{ns}/RESOURCE#gpt-4",       # or {ns}/SYSTEM# or {ns}/ENTITY#{id}
-    "SK": "#CONFIG",                   # or #CONFIG#{resource} for entity level
+    "PK": "{ns}/RESOURCE#gpt-4",  # or {ns}/SYSTEM# or {ns}/ENTITY#{id}
+    "SK": "#CONFIG",  # or #CONFIG#{resource} for entity level
     "resource": "gpt-4",
-    "l_tpm_cp": 100000,               # capacity for tpm limit
-    "l_tpm_ra": 100000,               # refill_amount for tpm limit
-    "l_tpm_rp": 60,                   # refill_period_seconds for tpm limit
-    "l_tpm_sched": "h9-17w1-5s500",   # tpm's schedule, compact encoding (#222)
-    "l_rpd_rsched": "m0h0",           # rpd's reset schedule ("0 0 * * *")
-    "sched_tz": "America/New_York",   # one zone per item, hoisted out of the entries
-    "config_version": 1               # Atomic counter for cache invalidation
+    "l_tpm_cp": 100000,  # capacity for tpm limit
+    "l_tpm_ra": 100000,  # refill_amount for tpm limit
+    "l_tpm_rp": 60,  # refill_period_seconds for tpm limit
+    "l_tpm_sched": "h9-17w1-5s500",  # tpm's schedule, compact encoding (#222)
+    "l_rpd_rsched": "m0h0",  # rpd's reset schedule ("0 0 * * *")
+    "sched_tz": "America/New_York",  # one zone per item, hoisted out of the entries
+    "config_version": 1,  # Atomic counter for cache invalidation
 }
 ```
 
@@ -292,7 +292,7 @@ Refill rates are stored as a fraction (amount/period) rather than a decimal:
 ```python
 # 100 tokens per minute stored as:
 refill_amount_milli = 100_000  # millitokens (numerator)
-refill_period_ms = 60_000      # milliseconds (denominator)
+refill_period_ms = 60_000  # milliseconds (denominator)
 ```
 
 This avoids representing `1.6667 tokens/second` as a float. Instead:
@@ -565,7 +565,7 @@ Entity metadata uses version numbers for optimistic locking:
 ```python
 # Read entity with version 5
 # Update fails if version changed
-condition_expression="version = :expected_version"
+condition_expression = "version = :expected_version"
 ```
 
 ## Project Structure

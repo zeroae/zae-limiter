@@ -35,9 +35,11 @@ def _load_cfn_template() -> dict:
     ):
         loader.add_constructor(
             f"!{tag}",
-            lambda loader, node: loader.construct_sequence(node)
-            if isinstance(node, yaml.SequenceNode)
-            else loader.construct_scalar(node),
+            lambda loader, node: (
+                loader.construct_sequence(node)
+                if isinstance(node, yaml.SequenceNode)
+                else loader.construct_scalar(node)
+            ),
         )
     return yaml.load(template_text, Loader=loader)
 

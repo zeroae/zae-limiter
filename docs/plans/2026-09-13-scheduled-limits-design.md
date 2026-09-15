@@ -52,12 +52,12 @@ Rejected alternatives are recorded in §1.7.
 ```python
 @dataclass(frozen=True)
 class ScheduleEntry:
-    cron: str                               # 5-field, matched as a pattern
-    tz: str = "UTC"                         # IANA name, validated via zoneinfo
+    cron: str  # 5-field, matched as a pattern
+    tz: str = "UTC"  # IANA name, validated via zoneinfo
     # exactly one of:
-    scale: float | None = None              # multiplier of base capacity AND refill_amount
-    capacity: int | None = None             # absolute
-    refill_amount: int | None = None        # optional; defaults to the base's value
+    scale: float | None = None  # multiplier of base capacity AND refill_amount
+    capacity: int | None = None  # absolute
+    refill_amount: int | None = None  # optional; defaults to the base's value
     refill_period_seconds: int | None = None
 ```
 

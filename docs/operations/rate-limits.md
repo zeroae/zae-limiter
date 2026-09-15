@@ -228,8 +228,8 @@ await limiter.set_limits(
     entity_id="api-key-123",
     resource="gpt-4",  # Resource these limits apply to
     limits=[
-        Limit.per_minute("rpm", 1000),      # Requests per minute
-        Limit.per_minute("tpm", 100_000),   # Tokens per minute
+        Limit.per_minute("rpm", 1000),  # Requests per minute
+        Limit.per_minute("tpm", 100_000),  # Tokens per minute
     ],
 )
 

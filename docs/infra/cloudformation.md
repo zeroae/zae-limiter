@@ -380,17 +380,16 @@ Policies and roles respect `PermissionBoundary` if configured.
 import boto3
 
 # Attach AcquireOnlyPolicy to your own role, or assume a created role
-sts = boto3.client('sts')
+sts = boto3.client("sts")
 credentials = sts.assume_role(
-    RoleArn='arn:aws:iam::123456789012:role/my-app-acq',
-    RoleSessionName='my-app'
-)['Credentials']
+    RoleArn="arn:aws:iam::123456789012:role/my-app-acq", RoleSessionName="my-app"
+)["Credentials"]
 
 # Use assumed credentials
 session = boto3.Session(
-    aws_access_key_id=credentials['AccessKeyId'],
-    aws_secret_access_key=credentials['SecretAccessKey'],
-    aws_session_token=credentials['SessionToken']
+    aws_access_key_id=credentials["AccessKeyId"],
+    aws_secret_access_key=credentials["SecretAccessKey"],
+    aws_session_token=credentials["SessionToken"],
 )
 ```
 

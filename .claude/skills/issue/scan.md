@@ -107,14 +107,14 @@ Regex patterns for subjective language detection:
 
 ```python
 SUBJECTIVE_PATTERNS = [
-    r'\bwhere\s+(beneficial|appropriate|needed|necessary)\b',
-    r'\bas\s+(appropriate|needed|necessary)\b',
-    r'\b(improved?|better)\b(?!.*[<>=≤≥]\s*\d)',  # without metric
-    r'\bwell[-\s]?(documented|tested|designed|structured)\b',
-    r'\b(clean|cleaner)\s+(code|implementation)\b',
-    r'\b(reasonable|acceptable|adequate)\b',
-    r'\b(properly|correctly)\s+\w+',
-    r'\bgood\s+(coverage|performance|quality)\b',
+    r"\bwhere\s+(beneficial|appropriate|needed|necessary)\b",
+    r"\bas\s+(appropriate|needed|necessary)\b",
+    r"\b(improved?|better)\b(?!.*[<>=≤≥]\s*\d)",  # without metric
+    r"\bwell[-\s]?(documented|tested|designed|structured)\b",
+    r"\b(clean|cleaner)\s+(code|implementation)\b",
+    r"\b(reasonable|acceptable|adequate)\b",
+    r"\b(properly|correctly)\s+\w+",
+    r"\bgood\s+(coverage|performance|quality)\b",
 ]
 ```
 
