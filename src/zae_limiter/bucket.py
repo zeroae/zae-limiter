@@ -131,9 +131,9 @@ def try_consume(
         tokens_milli=state.tokens_milli,
         last_refill_ms=state.last_refill_ms,
         now_ms=now_ms,
-        capacity_milli=state.effective_capacity_milli,
-        refill_amount_milli=state.effective_refill_amount_milli,
-        refill_period_ms=state.refill_period_ms,
+        capacity_milli=state.effective_capacity_milli(now_ms),
+        refill_amount_milli=state.effective_refill_amount_milli(now_ms),
+        refill_period_ms=state.effective_refill_period_ms(now_ms),
     )
 
     current_tokens_milli = refill.new_tokens_milli
@@ -154,8 +154,8 @@ def try_consume(
         deficit_milli = requested_milli - current_tokens_milli
         retry_after = calculate_retry_after(
             deficit_milli=deficit_milli,
-            refill_amount_milli=state.retry_refill_amount_milli,
-            refill_period_ms=state.refill_period_ms,
+            refill_amount_milli=state.retry_refill_amount_milli(now_ms),
+            refill_period_ms=state.effective_refill_period_ms(now_ms),
         )
         return ConsumeResult(
             success=False,
@@ -217,9 +217,9 @@ def calculate_available(
         tokens_milli=state.tokens_milli,
         last_refill_ms=state.last_refill_ms,
         now_ms=now_ms,
-        capacity_milli=state.effective_capacity_milli,
-        refill_amount_milli=state.effective_refill_amount_milli,
-        refill_period_ms=state.refill_period_ms,
+        capacity_milli=state.effective_capacity_milli(now_ms),
+        refill_amount_milli=state.effective_refill_amount_milli(now_ms),
+        refill_period_ms=state.effective_refill_period_ms(now_ms),
     )
     return refill.new_tokens_milli // 1000
 
@@ -244,9 +244,9 @@ def calculate_time_until_available(
         tokens_milli=state.tokens_milli,
         last_refill_ms=state.last_refill_ms,
         now_ms=now_ms,
-        capacity_milli=state.effective_capacity_milli,
-        refill_amount_milli=state.effective_refill_amount_milli,
-        refill_period_ms=state.refill_period_ms,
+        capacity_milli=state.effective_capacity_milli(now_ms),
+        refill_amount_milli=state.effective_refill_amount_milli(now_ms),
+        refill_period_ms=state.effective_refill_period_ms(now_ms),
     )
 
     needed_milli = needed * 1000
@@ -256,8 +256,8 @@ def calculate_time_until_available(
     deficit_milli = needed_milli - refill.new_tokens_milli
     return calculate_retry_after(
         deficit_milli=deficit_milli,
-        refill_amount_milli=state.retry_refill_amount_milli,
-        refill_period_ms=state.refill_period_ms,
+        refill_amount_milli=state.retry_refill_amount_milli(now_ms),
+        refill_period_ms=state.effective_refill_period_ms(now_ms),
     )
 
 
@@ -284,9 +284,9 @@ def force_consume(
         tokens_milli=state.tokens_milli,
         last_refill_ms=state.last_refill_ms,
         now_ms=now_ms,
-        capacity_milli=state.effective_capacity_milli,
-        refill_amount_milli=state.effective_refill_amount_milli,
-        refill_period_ms=state.refill_period_ms,
+        capacity_milli=state.effective_capacity_milli(now_ms),
+        refill_amount_milli=state.effective_refill_amount_milli(now_ms),
+        refill_period_ms=state.effective_refill_period_ms(now_ms),
     )
 
     # Consume (can go negative)
