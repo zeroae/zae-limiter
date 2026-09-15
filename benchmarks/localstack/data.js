@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789426359492,
+  "lastUpdate": 1789430612535,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -18556,6 +18556,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 1.2769717746558",
             "extra": "mean: 2.496098962799999 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8984e6b0f8c66b0ee3cc025224ed1979daf7cdbc",
+          "message": "✨ feat(aggregator): schedule-aware refill, vu re-stamping, and Lambda packaging (#506)\n\n## Summary\n\nTask 14 of the #222 scheduled-limits core plan. The Lambda aggregator\nnow evaluates the bucket item's own schedule — never config — when it\nrefills, and re-stamps an expired `vu` in the same `rf`-locked write.\n`schedule.py` is vendored into both Lambda deployment packages.\n\nCommits:\n- `273d680b` ✨ feat(infra): vendor schedule.py into both Lambda packages\n- `fa879d2e` ✨ feat(aggregator): refill at the scheduled rate and\nre-stamp vu\n- `3f8e1550` ✅ test(aggregator): cover an undecodable per-limit schedule\noverride\n\n## What changed\n\n- `BucketRefillState.sched` / `.sched_compact` / `.vu_ms` /\n`.sched_error`, `LimitRefillInfo.sched`, and the matching\n`ParsedBucket*` fields; `_parse_bucket_record` decodes `sched`,\n`sched_tz`, `b_{name}_sched` and `vu` from the stream image.\n- `try_refill_bucket` computes effective params through\n`effective_params()` — scale first, divide by `shard_count` second — and\nre-stamps an expired `vu` with the next boundary.\n- `schema.py` gains `BUCKET_FIELD_SCHED`, `BUCKET_FIELD_SCHED_TZ`,\n`BUCKET_FIELD_VU` (Tasks 11 and 13 will consume the same constants).\n- `infra/lambda_builder.py` and `infra/provisioner_builder.py` both\nvendor `schedule.py`.\n\n## Five corrections beyond the plan's text\n\n1. **Per-limit `b_{name}_sched` overrides are honoured.** The plan read\nonly the item-level default, which over-refills whenever a limit's own\nschedule is the tighter of the two.\n2. **`vu` is the minimum boundary across every schedule on the item**,\nnot the item-level default's — matching the rule Task 12 gives the\nclient slow path. A late `vu` leaves the fast path admitting at the\nprevious window's rate, which is the unsafe direction.\n3. **`wcu` is exempt from both the schedule and the shard division.**\nDividing it was a pre-existing divergence from the client\n(`_deserialize_composite_bucket` passes `shard_count=1` for `wcu`) and\nfrom the aggregator's own Path 2 clone; scaling it would let a user's\n0.5x window halve the per-partition write ceiling and drive spurious\nshard doubling.\n4. **The Path 2 shard clone fills a new shard to the scheduled share.**\nIt clones shard 0's future `vu`, so a base-capacity clone during a\nscaled window would be spent before any pass trimmed it.\n`propagate_shard_count` takes an optional `now_ms` for this.\n5. **An undecodable stored schedule is reported, not raised.**\n`aggregate_bucket_states` runs outside any try block, so raising would\nabort the whole batch — snapshots included — and retry until the stream\nstalled. The bucket is skipped entirely rather than refilled at the\n*base* rate, which would silently undo a scale-down (§6). Usage deltas\nstill flow.\n\n## Two-writer correctness\n\nThe `vu` re-stamp pins the schedule it read into the\n`ConditionExpression`. The #468 fan-out rewrites `sched` and sets `vu =\n0` **without touching `rf`**, so the `rf` optimistic lock alone cannot\ntell a pre-fan-out stream image from a current one; without the guard a\nstale image would push `vu` back into the future and cancel the\nmaterialising pass `vu = 0` exists to force. A plain refill keeps the\nbare `rf = :expected_rf` condition, so the extra clause costs no skipped\nrefills elsewhere.\n\n**Reported, not fixed (pre-existing, out of scope):** the same \"fan-out\ndoes not touch `rf`\" gap means the aggregator can still refill from a\nstale `cp`/`ra` after a `set_limits` shrink. The unconditional clamp\n(#496 / Task 7) trims it on the following pass, so it is transient, but\nit predates #222 and closing it needs either `cp` in the condition or\nthe fan-out bumping `rf`.\n\n## Test plan\n\n- `uv run pytest tests/unit/ -q` → **3642 passed** (+35 new)\n- `uv run pytest tests/unit/ -m gevent -n 0 -q` → **26 passed**\n- `uv run pytest tests/integration/ -q` against LocalStack → **123\npassed** (+3 new, which validate the real `SET rf, #vu ADD …` expression\nand the two-clause condition that a MagicMock cannot)\n- Patch coverage **100%** (95/95 lines), ruff + ruff-format (pinned\n0.9.2) + mypy clean\n- No generated sync file changed — `processor.py` and the builders are\nnot codegen sources\n\nEvery new assertion was mutation-checked: dropping the `schedule.py`\ncopy, removing `cronsim` from the `[lambda]` extra, treating `wcu` as a\nuser limit, ignoring the per-limit override, taking the boundary from\nthe item default only, dropping the `sched` guard, and removing the\nundecodable-schedule skip each fail exactly the test that claims to\ncover them.\n\nRefs #222\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01QdVj8nPhUwTz2aNJzMFqt5",
+          "timestamp": "2026-09-14T19:58:27-04:00",
+          "tree_id": "e09b79bb0ac331dcade3b936f4ac8d0311d7f9ed",
+          "url": "https://github.com/zeroae/zae-limiter/commit/8984e6b0f8c66b0ee3cc025224ed1979daf7cdbc"
+        },
+        "date": 1789430611421,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 27.60494498090011,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008724067278862163",
+            "extra": "mean: 36.22539370000197 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 18.820103628325125,
+            "unit": "iter/sec",
+            "range": "stddev: 0.016541384878901267",
+            "extra": "mean: 53.13467023077141 msec\nrounds: 13"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 44.36566258963962,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004002065005049784",
+            "extra": "mean: 22.53995413636677 msec\nrounds: 22"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 38.974834952250276,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004713592423631664",
+            "extra": "mean: 25.657581391303964 msec\nrounds: 23"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 24.264941519912966,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006499563711770681",
+            "extra": "mean: 41.211721000001276 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 86.7293106970927,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0019516425148127306",
+            "extra": "mean: 11.53012738095613 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 25.34650389636032,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005725602391046724",
+            "extra": "mean: 39.453172875001385 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 19.621882039370814,
+            "unit": "iter/sec",
+            "range": "stddev: 0.06305581416666967",
+            "extra": "mean: 50.96351094117909 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 28.086948018877656,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0071660365481459685",
+            "extra": "mean: 35.60372594871771 msec\nrounds: 39"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 29.58196587723405,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005015731273103099",
+            "extra": "mean: 33.80437947058781 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 31.663036800438547,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004255246315775532",
+            "extra": "mean: 31.58256759459502 msec\nrounds: 37"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 26.598470779235914,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008285999444045351",
+            "extra": "mean: 37.59614634615197 msec\nrounds: 26"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 33.187979845816514,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004397679518820999",
+            "extra": "mean: 30.131391083330865 msec\nrounds: 36"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9384030326507609,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0016432780730489354",
+            "extra": "mean: 515.8885862000034 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9394915788071394,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00048233673139018207",
+            "extra": "mean: 515.5990419999853 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9498151384104393,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007683264797558491",
+            "extra": "mean: 1.0528364515999897 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9287926637464338,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003847783864669416",
+            "extra": "mean: 1.0766665575999923 sec\nrounds: 5"
           }
         ]
       }
