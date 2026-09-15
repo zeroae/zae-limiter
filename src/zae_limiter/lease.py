@@ -413,6 +413,14 @@ class Lease:
                         ttl_seconds=ttl_seconds,
                         shard_id=shard_id,
                         vu=vu,
+                        # No boundary anywhere in the group means nothing on
+                        # this item is scheduled — the group covers every
+                        # limit sharing it, declared or not. Leaving `vu`
+                        # alone would strand a `vu = 0` written by the #468
+                        # fan-out (which stamps it on every fan-out, scheduled
+                        # or not, to force exactly this pass), and the fast
+                        # path would fail its `vu > now` guard forever.
+                        clear_vu=not boundaries,
                     )
                 )
 

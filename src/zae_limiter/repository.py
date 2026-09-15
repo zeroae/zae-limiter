@@ -2235,6 +2235,7 @@ class Repository:
         ttl_seconds: int | None = None,
         shard_id: int = 0,
         vu: int | None = None,
+        clear_vu: bool = False,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -2257,6 +2258,12 @@ class Repository:
                 leave the attribute untouched. ``None`` is not "no schedule":
                 it means this pass has nothing to say about the boundary, so a
                 `vu` already on the item survives.
+            clear_vu: REMOVE `vu` instead of leaving it. Only meaningful with
+                ``vu=None``, and only correct when the caller knows nothing on
+                the item is scheduled — `_commit_initial()` does, because its
+                group covers every limit sharing the item. This is the half of
+                the #468 fan-out's `vu = 0` that makes it self-clearing rather
+                than a permanent fast-path demotion.
         """
         add_parts: list[str] = []
         set_parts: list[str] = ["#rf = :now"]
@@ -2287,6 +2294,17 @@ class Repository:
             set_parts.append("#vu = :vu")
             attr_names["#vu"] = schema.BUCKET_FIELD_VU
             attr_values[":vu"] = {"N": str(vu)}
+        elif clear_vu:
+            # Nothing on the item is scheduled, so there is no boundary to
+            # gate on and the stamp must go. Without this an unscheduled
+            # bucket that the #468 fan-out stamped `vu = 0` would fail the
+            # fast-path condition on *every* future acquire — permanently
+            # demoted to the 3-round-trip slow path, since the fan-out's
+            # forced pass is the only thing that can clear it and this is that
+            # pass. SET and REMOVE are mutually exclusive here by
+            # construction, never both in one expression (#488).
+            remove_parts.append("#vu")
+            attr_names["#vu"] = schema.BUCKET_FIELD_VU
 
         condition_parts: list[str] = ["#rf = :expected_rf"]
 

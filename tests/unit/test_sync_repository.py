@@ -4015,6 +4015,64 @@ class TestSlowPathWritesVu:
         assert ":vu" not in upd["ExpressionAttributeValues"]
         assert "vu" not in upd["UpdateExpression"]
 
+    def test_normal_clears_vu_when_asked(self, repo):
+        """`clear_vu` REMOVEs the stamp. `vu=None` cannot mean this: leaving
+        `vu` alone is the right behaviour for a pass that has nothing to say
+        about the boundary, but a pass that knows nothing on the item is
+        scheduled has to strip the `vu = 0` the #468 fan-out wrote — or the
+        item fails `(attribute_not_exists(vu) OR vu > now)` forever."""
+        item = repo.build_composite_normal(
+            "user-1",
+            "gpt-4",
+            consumed={"rpm": 1000},
+            refill_amounts={"rpm": 0},
+            now_ms=self.NOW,
+            expected_rf=self.NOW - 1000,
+            vu=None,
+            clear_vu=True,
+        )
+        expr = item["Update"]["UpdateExpression"]
+        set_clause, remove_clause = expr.split(" REMOVE ")
+        assert "#vu" in remove_clause
+        assert "#vu" not in set_clause
+        assert item["Update"]["ExpressionAttributeNames"]["#vu"] == BUCKET_FIELD_VU
+        assert ":vu" not in item["Update"]["ExpressionAttributeValues"]
+
+    def test_a_boundary_wins_over_clear_vu(self, repo):
+        """The two are mutually exclusive by construction, never both in one
+        expression (#488). A caller passing both must get the SET."""
+        item = repo.build_composite_normal(
+            "user-1",
+            "gpt-4",
+            consumed={"rpm": 1000},
+            refill_amounts={"rpm": 0},
+            now_ms=self.NOW,
+            expected_rf=self.NOW - 1000,
+            vu=self.HORIZON,
+            clear_vu=True,
+        )
+        expr = item["Update"]["UpdateExpression"]
+        assert "#vu = :vu" in expr
+        assert " REMOVE " not in expr or "#vu" not in expr.split(" REMOVE ")[1]
+
+    def test_clear_vu_rides_beside_a_ttl_remove(self, repo):
+        """Both REMOVEs in one clause, which is the shape the unscheduled
+        entity-config bucket actually takes (ADR-136 REMOVEs `ttl`)."""
+        item = repo.build_composite_normal(
+            "user-1",
+            "gpt-4",
+            consumed={"rpm": 1000},
+            refill_amounts={"rpm": 0},
+            now_ms=self.NOW,
+            expected_rf=self.NOW - 1000,
+            ttl_seconds=0,
+            vu=None,
+            clear_vu=True,
+        )
+        remove_clause = item["Update"]["UpdateExpression"].split(" REMOVE ")[1]
+        assert "#ttl" in remove_clause
+        assert "#vu" in remove_clause
+
     def test_normal_never_sets_and_removes_vu_together(self, repo):
         """``ttl`` can be REMOVEd in the same expression; ``vu`` must not join
         it. SET and REMOVE on one attribute is the ValidationException #488

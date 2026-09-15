@@ -318,6 +318,7 @@ class SyncLease:
                         ttl_seconds=ttl_seconds,
                         shard_id=shard_id,
                         vu=vu,
+                        clear_vu=not boundaries,
                     )
                 )
         if not items:

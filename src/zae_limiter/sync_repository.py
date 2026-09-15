@@ -1848,6 +1848,7 @@ class SyncRepository:
         ttl_seconds: int | None = None,
         shard_id: int = 0,
         vu: int | None = None,
+        clear_vu: bool = False,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -1870,6 +1871,12 @@ class SyncRepository:
                 leave the attribute untouched. ``None`` is not "no schedule":
                 it means this pass has nothing to say about the boundary, so a
                 `vu` already on the item survives.
+            clear_vu: REMOVE `vu` instead of leaving it. Only meaningful with
+                ``vu=None``, and only correct when the caller knows nothing on
+                the item is scheduled — `_commit_initial()` does, because its
+                group covers every limit sharing the item. This is the half of
+                the #468 fan-out's `vu = 0` that makes it self-clearing rather
+                than a permanent fast-path demotion.
         """
         add_parts: list[str] = []
         set_parts: list[str] = ["#rf = :now"]
@@ -1890,6 +1897,9 @@ class SyncRepository:
             set_parts.append("#vu = :vu")
             attr_names["#vu"] = schema.BUCKET_FIELD_VU
             attr_values[":vu"] = {"N": str(vu)}
+        elif clear_vu:
+            remove_parts.append("#vu")
+            attr_names["#vu"] = schema.BUCKET_FIELD_VU
         condition_parts: list[str] = ["#rf = :expected_rf"]
         for name in consumed:
             c = consumed[name]

@@ -593,6 +593,7 @@ class RepositoryProtocol(Protocol):
         ttl_seconds: int | None = None,
         shard_id: int = 0,
         vu: int | None = None,
+        clear_vu: bool = False,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -605,6 +606,8 @@ class RepositoryProtocol(Protocol):
             expected_rf: Expected refill timestamp for optimistic lock
             ttl_seconds: TTL behavior (None=no change, 0=remove, >0=set)
             vu: Valid-until stamp in epoch ms, or None to leave it untouched
+            clear_vu: REMOVE `vu` rather than leaving it, for a pass that
+                knows nothing on the item is scheduled (#222 §2.1)
         """
         ...
 
