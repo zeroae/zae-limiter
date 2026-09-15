@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789473802304,
+  "lastUpdate": 1789476763481,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -21559,6 +21559,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.008201690041626521",
             "extra": "mean: 1.084832816200003 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1df7de34f8e34aa80c514334e2f0cff775cee420",
+          "message": "✨ feat(models): detect reset edges and fold them into vu (#546)\n\n## Summary\n\nSurface-plan Task 2 for #222: `prev_reset_edge`, and `next_boundary`\nstarting to honour the\n`reset_sched` tuple it has accepted since core-plan Task 4.\n\n**No signature change.** `next_boundary(sched, reset_sched=(), *,\nnow_ms)` is untouched, which\nis the whole reason that parameter was taken early — `lease.py` and\n`processor.py` keep working\nunedited. `now_ms` stays keyword-only (#500): the second *positional*\nslot belongs to\n`reset_sched`, so a positional call would silently bind a timestamp to a\nschedule tuple.\n\n`prev_reset_edge(reset_sched, now_ms) -> int | None` is the most recent\nrising edge **at or\nbefore** `now_ms`. Detection is backwards on purpose (design §3.6): the\nmaterialising pass asks\n`prev_reset_edge(reset_sched, now) > rf`, so a bucket idle from 18:00 to\n09:00 has the missed\nmidnight applied at 09:00, and two missed midnights apply once because\nsetting the balance to\ncapacity is idempotent.\n\n## Defects found beyond the plan's text\n\n**1. `next_boundary` skipped a whole matching window when a DST shift\nshortened a local unit —\nfiled as #540, fixed here in its own commit.**\n\nThe coarse probe grid was aligned to the UTC epoch with a fixed step,\nbut the match state is\npiecewise-constant on *local* calendar units. A local unit shortened by\na clock change can fall\nentirely between two probes and be stepped over. Verified against merged\n`main` with a\nbrute-force minute scan:\n\n| Cron / TZ | Returned | Truth | Late by |\n|---|---|---|---|\n| `* * * * SUN` @ `Atlantic/Azores` from 2027-03-24 06:23Z | 2027-04-04\n00:00Z | 2027-03-28 01:00Z | **167 h** |\n| `* 2 * * *` @ `Australia/Lord_Howe` from 2026-10-03 06:23Z |\n2026-10-04 15:00Z | 2026-10-03 15:30Z | 23.5 h |\n\nAzores is UTC-1 and springs forward *at local midnight*, so that Sunday\nruns 01:00Z → 00:00Z —\n23 hours strictly inside a 24-hour UTC grid cell. Lord Howe's DST shift\nis 30 minutes, so local\nhour 2 lasts half an hour, and its +10:30 offset puts local hour starts\non the UTC half hour.\nLate is the unsafe direction: `vu` keeps the fast path spending tokens\nminted under the old\nlimits well inside the new window.\n\nThe minute-resolution refinement was no mitigation — it only runs once a\nchange has been\n*detected* between two probes, and here it never is.\n\nFix: probe **local calendar unit starts** instead of a fixed UTC grid.\nEvery unit contributes\nits own start, so none can be skipped however short the clock made it.\nNo constant step could\npromise that — offset changes of two hours (Antarctica/Troll) and three\n(Antarctica/Casey) also\noccur. `next_boundary`'s own minute refinement is kept as a bounded\nbackstop; the new reset\nhelpers do not need one and do not have one (see below). Minute\ngranularity is provably\nunaffected — every offset in use is a whole number of minutes — so it\nkeeps an integer fast path\nand pays no `datetime` round trip.\n\nThis is not incidental scope: the backwards scan is specified to use the\nsame granularity and\ncaps, so `prev_reset_edge` would have inherited the bug by construction.\n\n**2. The plan's canonical \"never matches\" expression does not exist.**\n§3.6, the surface plan and\nits Step 1 test all use `0 0 30 2 *` (February 30th) for the\nreset-nothing case. `cronsim`\nrejects it — `ScheduleEntry(cron=\"0 0 30 2 *\")` raises `ValueError: Bad\nday-of-month`, so the\ncase is unreachable as written. The test uses `0 0 29 2 *` instead:\nconstructible, and matches\nonly on a leap-year February 29th, so it is outside a seven-day cap on\nall but one day in ~1,461.\n\n**3. croniter is an oracle for matching but not for edge finding.**\n`croniter.get_prev` is a\n*scheduler* API and reschedules a fire skipped by spring-forward: for\n`30 2 * * *` on 2027-03-14\nit reports 03:00, where a reset edge is a fact about the wall clock and\nsimply does not occur\nthat day — which is also what `croniter.match` and our `matches` both\nsay. That expression is\ntherefore excluded from the reset half of the oracle, with the reason\nwritten down, and our\nsemantics are pinned directly instead.\n\n## Design decisions worth flagging\n\n- **The edge is the `max` across entries, not the first match.** Reset\nentries are independent\ninstants, unlike `schedule`'s priority-ordered first-match-wins\noverrides. Asserted in both\n  orderings so a first-entry implementation cannot pass by luck.\n- **Each entry is scanned at its own granularity and cap.** A `0 0 * *\n*` neighbour must not\n  shorten a `* 0 1 * *`'s horizon from 31 days to 7 and hide its edge.\n- **An out-of-reach reset caps rather than returning `None`.** A yearly\n`0 0 1 1 *` scans at\nminute granularity and cannot see its own edge seven days out. `None`\nwould leave `vu` unset\nand the fast path spending pre-reset tokens indefinitely, because only a\nmaterialising pass\nruns the backwards scan that would find it. The cap forces one pass per\nhorizon instead, and\nthe backwards scan then finds the edge from the far side — matching\n`_next_param_change`'s\n  existing contract.\n- **Two backwards searches, not one.** The latest *matching* minute is\nthe inside of the window;\nthe edge is where it opened. `* 0 * * *` at 00:45 must report 00:00, not\n00:45.\n- **Forwards, the current window must be left first.** From inside `* 0\n* * *` at 00:30 the next\nmatching minute is 00:31, which is no edge at all; a `vu` there\nre-materialises the bucket every\n  minute and applies nothing.\n- **The reset helpers carry no minute refinement.** On a unit-aligned\ngrid the answer is exactly\nthe probe going forwards, and exactly `hi - 1` (the last minute of the\nprobe's unit) going\nbackwards — so a refinement loop would be provably unreachable code. The\n100% patch-coverage\ngate is what forced that to be stated rather than written defensively:\nit flagged six\nunreachable lines, and each one turned out to be a claim that was either\nwrong or redundant.\n\n## Test plan\n\n- `uv run pytest tests/unit/ -q` — **4066 passed (0:05:28)**\n- `uv run pytest tests/unit/ -m gevent -n 0 -q` — **26 passed, 4063\ndeselected**\n- `uv run mypy` — clean\n- `pre-commit run --files ...` — clean\n- `diff-cover coverage.xml --compare-branch=origin/main\n--fail-under=100` — **100%**, 96 lines, 0 missing\n- Mutation-checked with 13 mutations, all killed, zero survivors:\nfirst-entry instead of max;\nlatest matching minute instead of the window opening; an always-matching\nexpression reporting\nan edge; `prev_reset_edge` as a no-op; strictly-before instead of\nat-or-before; `reset_sched`\nignored (the old behaviour); reset always winning over a nearer param\nchange; the out-of-reach\ncap; one joint granularity for the whole tuple; skipping the \"leave the\ncurrent window first\"\nstep; and a minute fast path that skips every other minute. The #540 fix\nwas separately\nmutation-checked by reverting `_next_probe` to the UTC grid, which\nkilled 3 tests including one\n  brute-force sweep case.\n\nOne mutation **survived on the first pass** — disabling \"leave the\ncurrent window first\" — and\nthat is the most useful thing the exercise produced: nothing covered\nstanding *inside* a\nmulti-minute reset window, because every `next_boundary` test used the\nsingle-minute\n`0 0 * * *`. `test_standing_inside_a_reset_window_skips_past_it` closes\nit and the mutation now\n  dies.\n- `TestAgainstABruteForceMinuteScan` extended with `Atlantic/Azores` and\nthe Lord Howe\nshifted-hour expression, plus the two switch-day starts, and\n`test_schedule_oracle.py` gains a\n  croniter cross-check of `prev_reset_edge` over 360 comparisons.\n\nRefs #222\nFixes #540\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01QdVj8nPhUwTz2aNJzMFqt5",
+          "timestamp": "2026-09-15T08:48:43-04:00",
+          "tree_id": "72461c436bf91658835da490d19661423f7e0963",
+          "url": "https://github.com/zeroae/zae-limiter/commit/1df7de34f8e34aa80c514334e2f0cff775cee420"
+        },
+        "date": 1789476762275,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 24.01052352433848,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010227129863168144",
+            "extra": "mean: 41.648404666659644 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 17.55221301417237,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009666488876036303",
+            "extra": "mean: 56.972872833332154 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 40.192885658277675,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0032674562738566745",
+            "extra": "mean: 24.88002499999776 msec\nrounds: 22"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 38.046145571374986,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004616217990186906",
+            "extra": "mean: 26.28387146666379 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 22.41297221143285,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007930641867854983",
+            "extra": "mean: 44.61701868750367 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 80.98050204689042,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00216372769896609",
+            "extra": "mean: 12.348651523807131 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 25.915309497427604,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005588607221174916",
+            "extra": "mean: 38.587229687504276 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 26.628385108491397,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004900022059819007",
+            "extra": "mean: 37.55391083333532 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 24.44906683561029,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007252569875726902",
+            "extra": "mean: 40.90135655171472 msec\nrounds: 29"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 28.53323044048624,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005254306082779114",
+            "extra": "mean: 35.0468553529461 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 27.854789112540747,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004588225642388158",
+            "extra": "mean: 35.900469249999865 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 25.72644101917746,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010470969739188462",
+            "extra": "mean: 38.87051455172374 msec\nrounds: 29"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 30.301130116103543,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004580470387506136",
+            "extra": "mean: 33.00206943332948 msec\nrounds: 30"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9276320079621296,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004127828649567525",
+            "extra": "mean: 518.7712156000089 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9390465051307717,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0013464814156929454",
+            "extra": "mean: 515.717388600001 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9516562195839028,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0024728967005073184",
+            "extra": "mean: 1.0507996263999986 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9217998720285228,
+            "unit": "iter/sec",
+            "range": "stddev: 0.01893609198629257",
+            "extra": "mean: 1.084834171000034 sec\nrounds: 5"
           }
         ]
       }
