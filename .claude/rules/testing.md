@@ -55,6 +55,8 @@ Two rules follow, and both matter:
 - **Never delete a stack by a name you did not derive from your own session root.** `_delete_recorded_stack()` refuses any record whose stack name lacks the session key of the directory holding it, which also makes it safe alongside a peer still running the pre-#577 revision.
 - **Orphans are reclaimed by pid liveness, never by age.** A run killed before `pytest_sessionfinish` leaks its stack; `pytest_sessionstart` writes `zae-session-owner.pid` into the session root and reaps peer roots whose pid is gone. Sweeping by age would reintroduce the same failure with a longer fuse.
 
+The intended stack name is written to `<base>.pending` **before** the stack is created and removed once `<base>.json` lands. `builder().build()` does several things after `CREATE_COMPLETE` — namespace registration, version record, Lambda update — and a session killed inside that window leaves a live stack that no record names. Only the `.json` means "ready", so a surviving worker still falls through to the idempotent create rather than adopting a half-built stack.
+
 ### Key patterns
 
 - **Session fixtures** use `@pytest_asyncio.fixture(scope="session", loop_scope="session")` with `Repository.builder().build()`

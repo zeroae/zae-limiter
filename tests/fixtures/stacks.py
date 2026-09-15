@@ -70,6 +70,16 @@ _XDIST_WORKER_DIR = re.compile(r"^popen-gw\d+$")
 OWNER_FILE = "zae-session-owner.pid"
 """Marker recording the pid of the pytest process that owns a session root."""
 
+PENDING_SUFFIX = ".pending"
+"""Suffix of the record written before a stack is created, removed after."""
+
+_RECORD_GLOBS = ("shared-*.json", f"shared-*{PENDING_SUFFIX}")
+
+
+def _stack_records(root: Path) -> list[Path]:
+    """Every shared-stack record in ``root``: ready (``.json``) and pending."""
+    return sorted(p for pattern in _RECORD_GLOBS for p in root.glob(pattern))
+
 
 def session_root(basetemp: Path) -> Path:
     """Return the controller basetemp for a session, given any process's basetemp.
@@ -221,14 +231,24 @@ async def get_or_create_shared_stack(
     root = session_root(tmp_path_factory.getbasetemp())
     lock_file = root / f"{lock_name}.lock"
     data_file = root / f"{lock_name}.json"
+    pending_file = root / f"{lock_name}{PENDING_SUFFIX}"
 
     with FileLock(str(lock_file)):
         if data_file.exists():
             return SharedStack(**json.loads(data_file.read_text()))
 
-        # First worker — create the stack
+        # First worker — create the stack. Record the intended name *before*
+        # creating anything: `build()` does several things after the stack
+        # reaches CREATE_COMPLETE, and a session killed inside that window
+        # would otherwise leak a stack no reaper could name. The name is
+        # deterministic, so the record can be written up front; it is only the
+        # `.json` that means "ready", so a surviving worker still falls through
+        # to the idempotent create rather than adopting a half-built stack.
+        name = session_stack_name(lock_name, root)
+        pending_file.write_text(json.dumps(asdict(SharedStack(name, "us-east-1", endpoint_url))))
+
         stack, repo = await create_shared_stack(
-            session_stack_name(lock_name, root),
+            name,
             "us-east-1",
             endpoint_url=endpoint_url,
             enable_aggregator=enable_aggregator,
@@ -237,6 +257,7 @@ async def get_or_create_shared_stack(
             usage_retention_days=usage_retention_days,
         )
         data_file.write_text(json.dumps(asdict(stack)))
+        pending_file.unlink(missing_ok=True)
         await repo.close()
 
     return stack
@@ -284,7 +305,7 @@ def cleanup_shared_stacks(tmp_root: Path) -> None:
     run's :func:`reap_orphan_stacks` retries it.
     """
     root = session_root(tmp_root)
-    for data_file in sorted(root.glob("shared-*.json")):
+    for data_file in _stack_records(root):
         if _delete_recorded_stack(data_file):
             data_file.unlink(missing_ok=True)
 
@@ -308,9 +329,11 @@ def reap_orphan_stacks(root: Path) -> None:
     if parent == root:
         return
     for peer in sorted(parent.glob("pytest-*")):
-        if peer == root or not peer.is_dir():
+        # pytest-current is pytest's own symlink to the newest basetemp; through
+        # it every path — and so every session key — reads differently.
+        if peer == root or peer.is_symlink() or not peer.is_dir():
             continue
-        data_files = sorted(peer.glob("shared-*.json"))
+        data_files = _stack_records(peer)
         if not data_files or _owner_alive(peer):
             continue
         for data_file in data_files:

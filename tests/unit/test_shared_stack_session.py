@@ -20,6 +20,7 @@ import pytest
 
 from tests.fixtures.stacks import (
     OWNER_FILE,
+    PENDING_SUFFIX,
     SharedStack,
     cleanup_shared_stacks,
     reap_orphan_stacks,
@@ -64,9 +65,9 @@ def fake_repo(monkeypatch):
     return _FakeSyncRepository
 
 
-def _write_record(root: Path, base: str, name: str) -> Path:
+def _write_record(root: Path, base: str, name: str, suffix: str = ".json") -> Path:
     root.mkdir(parents=True, exist_ok=True)
-    data_file = root / f"{base}.json"
+    data_file = root / f"{base}{suffix}"
     data_file.write_text(
         json.dumps({"name": name, "region": "us-east-1", "endpoint_url": "http://localhost:4566"})
     )
@@ -193,6 +194,17 @@ class TestCleanup:
 
         assert data_file.exists()
 
+    def test_deletes_a_stack_that_was_still_being_created(self, tmp_path, fake_repo):
+        # A .pending record names a stack whose build() never finished.
+        root = tmp_path / "pytest-1"
+        name = session_stack_name("shared-minimal", root)
+        pending = _write_record(root, "shared-minimal", name, PENDING_SUFFIX)
+
+        cleanup_shared_stacks(root)
+
+        assert fake_repo.deleted == [name]
+        assert not pending.exists()
+
     def test_tolerates_an_unreadable_record(self, tmp_path, fake_repo):
         root = tmp_path / "pytest-1"
         root.mkdir(parents=True)
@@ -216,6 +228,21 @@ class TestReapOrphans:
 
         assert fake_repo.deleted == [name]
         assert not data_file.exists()
+
+    def test_reaps_a_stack_a_dead_peer_never_finished_creating(self, tmp_path, fake_repo):
+        # The window #577's first repro landed in: killed after
+        # CREATE_COMPLETE, before the .json was written.
+        mine = tmp_path / "pytest-2"
+        mine.mkdir()
+        peer = tmp_path / "pytest-1"
+        name = session_stack_name("shared-minimal", peer)
+        pending = _write_record(peer, "shared-minimal", name, PENDING_SUFFIX)
+        (peer / OWNER_FILE).write_text(str(_dead_pid()))
+
+        reap_orphan_stacks(mine)
+
+        assert fake_repo.deleted == [name]
+        assert not pending.exists()
 
     def test_leaves_a_live_peers_stack_alone(self, tmp_path, fake_repo):
         mine = tmp_path / "pytest-2"
@@ -250,6 +277,21 @@ class TestReapOrphans:
         reap_orphan_stacks(mine)
 
         assert fake_repo.deleted == []
+
+    def test_ignores_the_pytest_current_symlink(self, tmp_path, fake_repo):
+        # Reached through the symlink, the same directory hashes differently
+        # and its own records would read as another session's.
+        mine = tmp_path / "pytest-2"
+        mine.mkdir()
+        peer = tmp_path / "pytest-1"
+        _write_record(peer, "shared-minimal", session_stack_name("shared-minimal", peer))
+        (peer / OWNER_FILE).write_text(str(_dead_pid()))
+        (tmp_path / "pytest-current").symlink_to(peer, target_is_directory=True)
+
+        reap_orphan_stacks(mine)
+
+        # Reaped exactly once, via the real directory.
+        assert fake_repo.deleted == [session_stack_name("shared-minimal", peer)]
 
     def test_ignores_directories_that_are_not_pytest_roots(self, tmp_path, fake_repo):
         mine = tmp_path / "pytest-2"
