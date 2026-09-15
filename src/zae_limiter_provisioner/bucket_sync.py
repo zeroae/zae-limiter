@@ -25,8 +25,10 @@ from zae_limiter.schema import (
     BUCKET_FIELD_CP,
     BUCKET_FIELD_RA,
     BUCKET_FIELD_RP,
+    BUCKET_FIELD_SCHED,
     BUCKET_FIELD_TC,
     BUCKET_FIELD_TK,
+    BUCKET_FIELD_VU,
     DEFAULT_RESOURCE,
     GSI3_NAME,
     LIMIT_FIELD_CP,
@@ -70,6 +72,11 @@ _STALE_FIELDS = (
     BUCKET_FIELD_RA,
     BUCKET_FIELD_RP,
     BUCKET_FIELD_TC,
+    # A dropped limit's own schedule override goes with it, matching the async
+    # path. Manifests cannot express a schedule, but a limit deleted through a
+    # manifest may have been given one through the Python API, and left behind
+    # it re-attaches the moment a limit of that name is configured again.
+    BUCKET_FIELD_SCHED,
 )
 
 
@@ -108,6 +115,20 @@ def build_bucket_param_update(
             set_parts.append(f"{alias} = :{alias[1:]}")
             expr_names[alias] = bucket_attr(name, field)
             expr_values[f":{alias[1:]}"] = {"N": str(value)}
+
+    # Mirrors `Repository._build_bucket_param_update`: `vu = 0` on EVERY
+    # fan-out, scheduled or not, forcing exactly one materialising pass that
+    # clamps a surplus over a lowered ceiling before the fast path (a pure ADD
+    # with no cap maths) can spend it. A manifest apply that shrinks a
+    # capacity has precisely #469's exposure, and `differ.py` re-asserts every
+    # manifest resource on every apply, so the mirror needs this as much as
+    # the async path does. Schedules themselves are not manifest-expressible
+    # yet, so `sched`/`sched_tz` are deliberately left alone here — this write
+    # must not strip a schedule set through the Python API. `#vu` is SET, so
+    # it must never join `remove_parts` (#488).
+    set_parts.append("#vu = :vu_zero")
+    expr_names["#vu"] = BUCKET_FIELD_VU
+    expr_values[":vu_zero"] = {"N": "0"}
 
     if ttl_multiplier is not None:
         expr_names["#ttl"] = "ttl"

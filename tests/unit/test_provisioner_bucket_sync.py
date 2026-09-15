@@ -85,9 +85,43 @@ class TestBuildBucketParamUpdate:
             LIMITS, ttl_multiplier=None, stale_limit_names={"tpm"}, now_ms=1_789_000_000_000
         )
         removed = {names[a.strip()] for a in expr.split("REMOVE")[1].split(",")}
-        assert removed == {bucket_attr("tpm", f) for f in ("tk", "cp", "ra", "rp", "tc")}
+        assert removed == {bucket_attr("tpm", f) for f in ("tk", "cp", "ra", "rp", "tc", "sched")}
         assert bucket_attr("tpm", "rf") not in removed
         assert "rf" not in removed
+
+    def test_vu_is_expired_on_every_update(self):
+        """Mirrors the async fan-out (#222 Task 13): `vu = 0` unconditionally,
+        forcing one materialising pass that clamps a surplus over a lowered
+        ceiling. A manifest apply that shrinks a capacity has exactly #469's
+        exposure, and `differ.py` re-asserts every manifest resource on every
+        apply, so the mirror needs this as much as the async path."""
+        expr, names, values = build_bucket_param_update(
+            LIMITS, ttl_multiplier=None, stale_limit_names=None, now_ms=1_789_000_000_000
+        )
+        assert "#vu = :vu_zero" in expr
+        assert names["#vu"] == "vu"
+        assert values[":vu_zero"] == {"N": "0"}
+
+    def test_vu_is_never_set_and_removed_together(self):
+        """#488: SET and REMOVE on one attribute is a ValidationException, and
+        `ttl_multiplier=0` is the branch that builds a REMOVE list."""
+        expr, _names, _values = build_bucket_param_update(
+            LIMITS, ttl_multiplier=0, stale_limit_names={"tpm"}, now_ms=1_789_000_000_000
+        )
+        set_clause, remove_clause = expr.split(" REMOVE ")
+        assert "#vu" in set_clause
+        assert "#vu" not in remove_clause
+
+    def test_the_mirror_does_not_touch_sched(self):
+        """Schedules are not manifest-expressible, so a manifest apply must
+        not strip one set through the Python API. Only the per-limit override
+        of a limit the manifest *deleted* goes, with the rest of that limit."""
+        expr, names, _values = build_bucket_param_update(
+            LIMITS, ttl_multiplier=None, stale_limit_names=None, now_ms=1_789_000_000_000
+        )
+        assert "sched" not in names.values()
+        assert "sched_tz" not in names.values()
+        assert "REMOVE" not in expr
 
     def test_hyphenated_limit_names_use_indexed_aliases(self):
         """Limit names may contain hyphens, which are illegal in expression names."""

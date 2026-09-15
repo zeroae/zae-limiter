@@ -1722,34 +1722,69 @@ class SyncRepository:
         return update
 
     @staticmethod
-    def _stamp_schedule(item: dict[str, Any], states: list[BucketState]) -> None:
-        """Write ``sched`` / ``sched_tz`` / ``b_{name}_sched`` onto a new item.
+    def _encode_item_schedule(
+        named_schedules: list[tuple[str, tuple[schedule.ScheduleEntry, ...] | None]],
+    ) -> tuple[str, str, dict[str, str]] | None:
+        """Resolve §4.1's item-level default plus per-limit overrides.
 
-        §4.1 stores one item-level default schedule plus a per-limit override
-        only where a limit differs, and hoists the timezone out of every entry
-        into a single item-level ``sched_tz`` — so two limits on one item
-        cannot carry different timezones. ``set_limits()`` already rejects that
-        at config-write time (``hoisted_schedule_timezone``); the same check is
-        repeated here because an ``acquire(limits=[...])`` override reaches a
-        bucket create without ever passing through a config write, and silently
-        keeping the first limit's timezone would reinterpret the second limit's
-        cron in the wrong zone.
+        One encoder for both writers of these attributes — the bucket-create
+        stamp (`_stamp_schedule`) and the `set_limits` fan-out
+        (`_build_bucket_param_update`). They write into different shapes (a
+        PutItem's item map vs an UpdateExpression's SET parts), but the
+        *semantics* must not diverge: which schedule becomes the item-level
+        default, which limits get an override, and what counts as a timezone
+        conflict.
+
+        Args:
+            named_schedules: ``(limit_name, schedule)`` for every limit on the
+                item, scheduled or not. Order decides the item-level default.
+
+        Returns:
+            ``(default_compact, tz, overrides)`` where ``overrides`` maps a
+            limit name to its own compact encoding — present only for limits
+            that differ from the default. ``None`` when nothing on the item is
+            scheduled.
+
+        Raises:
+            ValueError: The scheduled limits disagree on a timezone. It is
+                hoisted to a single item-level ``sched_tz``, so an item cannot
+                carry two. ``set_limits()`` rejects this at config-write time
+                (``hoisted_schedule_timezone``); the check is repeated here
+                because an ``acquire(limits=[...])`` override reaches a bucket
+                create without ever passing through a config write, and
+                silently keeping the first limit's zone would reinterpret the
+                second limit's cron in the wrong one.
         """
-        scheduled = [s for s in states if s.sched]
+        scheduled = [(name, sched) for name, sched in named_schedules if sched]
         if not scheduled:
-            return
-        zones = {entry.tz for state in scheduled for entry in state.sched}
+            return None
+        zones = {entry.tz for _name, sched in scheduled for entry in sched}
         if len(zones) > 1:
             raise ValueError(
                 f"all scheduled limits on one bucket item must share a timezone, got {sorted(zones)}. The timezone is stored once per item as `sched_tz`, not per limit."
             )
-        encodings = {state.limit_name: schedule.encode(state.sched) for state in scheduled}
-        default_compact, default_tz = encodings[scheduled[0].limit_name]
+        encodings = [(name, schedule.encode(sched)) for name, sched in scheduled]
+        default_compact, default_tz = encodings[0][1]
+        overrides = {
+            name: compact for name, (compact, _tz) in encodings if compact != default_compact
+        }
+        return (default_compact, default_tz or "UTC", overrides)
+
+    def _stamp_schedule(self, item: dict[str, Any], states: list[BucketState]) -> None:
+        """Write ``sched`` / ``sched_tz`` / ``b_{name}_sched`` onto a new item.
+
+        A fresh item carries no stale override to strip, so this is the SET
+        half of what `_build_bucket_param_update` does; both go through
+        `_encode_item_schedule` so the two cannot drift.
+        """
+        encoded = self._encode_item_schedule([(s.limit_name, s.sched) for s in states])
+        if encoded is None:
+            return
+        default_compact, tz, overrides = encoded
         item[schema.BUCKET_FIELD_SCHED] = {"S": default_compact}
-        item[schema.BUCKET_FIELD_SCHED_TZ] = {"S": default_tz or "UTC"}
-        for name, (compact, _tz) in encodings.items():
-            if compact != default_compact:
-                item[schema.bucket_attr(name, schema.BUCKET_FIELD_SCHED)] = {"S": compact}
+        item[schema.BUCKET_FIELD_SCHED_TZ] = {"S": tz}
+        for name, compact in overrides.items():
+            item[schema.bucket_attr(name, schema.BUCKET_FIELD_SCHED)] = {"S": compact}
 
     def build_composite_create(
         self,
@@ -2799,6 +2834,35 @@ class SyncRepository:
             set_parts.append(f"#rp{i} = :rp{i}")
             expr_names[f"#rp{i}"] = rp_attr
             expr_values[f":rp{i}"] = {"N": str(limit.refill_period_seconds * 1000)}
+        encoded = self._encode_item_schedule([(limit.name, limit.schedule) for limit in limits])
+        if encoded is not None:
+            default_compact, default_tz, overrides = encoded
+            set_parts.append("#sched = :sched")
+            expr_names["#sched"] = schema.BUCKET_FIELD_SCHED
+            expr_values[":sched"] = {"S": default_compact}
+            set_parts.append("#sched_tz = :sched_tz")
+            expr_names["#sched_tz"] = schema.BUCKET_FIELD_SCHED_TZ
+            expr_values[":sched_tz"] = {"S": default_tz}
+        else:
+            overrides = {}
+            for alias, attr in (
+                ("#sched", schema.BUCKET_FIELD_SCHED),
+                ("#sched_tz", schema.BUCKET_FIELD_SCHED_TZ),
+            ):
+                expr_names[alias] = attr
+                remove_parts.append(alias)
+        for i, limit in enumerate(limits):
+            alias = f"#lsched{i}"
+            expr_names[alias] = schema.bucket_attr(limit.name, schema.BUCKET_FIELD_SCHED)
+            compact = overrides.get(limit.name)
+            if compact is None:
+                remove_parts.append(alias)
+            else:
+                set_parts.append(f"{alias} = :lsched{i}")
+                expr_values[f":lsched{i}"] = {"S": compact}
+        set_parts.append("#vu = :vu_zero")
+        expr_names["#vu"] = schema.BUCKET_FIELD_VU
+        expr_values[":vu_zero"] = {"N": "0"}
         if bucket_ttl_refill_multiplier is not None:
             expr_names["#ttl"] = "ttl"
             if bucket_ttl_refill_multiplier > 0:
@@ -2819,6 +2883,7 @@ class SyncRepository:
                     schema.BUCKET_FIELD_RA,
                     schema.BUCKET_FIELD_RP,
                     schema.BUCKET_FIELD_TC,
+                    schema.BUCKET_FIELD_SCHED,
                 )
             ):
                 alias = f"#stale{i}_{j}"
