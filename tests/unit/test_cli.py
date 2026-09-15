@@ -4198,6 +4198,90 @@ class TestLimitParsing:
         limit = Limit(name="rpm", capacity=100, refill_amount=100, refill_period_seconds=300)
         assert _format_limit(limit) == "rpm: 100/5min"
 
+    # --- Quota formatting tests (issue #539) ---
+
+    def test_format_limit_quota(self) -> None:
+        """A quota names its allowance and its reset, never a rate."""
+        from zae_limiter.cli import _format_limit
+        from zae_limiter.models import Limit
+
+        limit = Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York")
+
+        assert _format_limit(limit) == 'rpd: 10,000 quota (resets "0 0 * * *" America/New_York)'
+
+    def test_format_limit_quota_omits_rate_and_burst(self) -> None:
+        """None of ADR-137's internal encoding leaks into the line."""
+        from zae_limiter.cli import _format_limit
+        from zae_limiter.models import Limit
+
+        formatted = _format_limit(Limit.quota("rpd", 10_000, cron="0 0 * * *"))
+
+        # `refill_amount=0` is how "does not drip" is stored, not a fact to print,
+        # and `_QUOTA_REFILL_PERIOD_SECONDS = 1` is an inert placeholder.
+        assert "0/sec" not in formatted
+        assert "/sec" not in formatted
+        assert "burst" not in formatted
+        assert formatted == 'rpd: 10,000 quota (resets "0 0 * * *" UTC)'
+
+    def test_format_limit_quotas_with_different_resets_are_distinguishable(self) -> None:
+        """Two quotas of the same size must not render identically."""
+        from zae_limiter.cli import _format_limit
+        from zae_limiter.models import Limit
+
+        daily = _format_limit(Limit.quota("rpd", 10_000, cron="0 0 * * *"))
+        monthly = _format_limit(Limit.quota("rpd", 10_000, cron="0 0 1 * *"))
+
+        assert daily == 'rpd: 10,000 quota (resets "0 0 * * *" UTC)'
+        assert monthly == 'rpd: 10,000 quota (resets "0 0 1 * *" UTC)'
+        assert daily != monthly
+
+    def test_format_limit_quota_renders_weekday_as_names(self) -> None:
+        """Canonical cron at the user-facing boundary: ``1-5`` comes back ``MON-FRI``."""
+        from zae_limiter.cli import _format_limit
+        from zae_limiter.models import Limit
+
+        limit = Limit.quota("rpd", 500, cron="0 0 * * 1-5", tz="Europe/Berlin")
+
+        assert _format_limit(limit) == 'rpd: 500 quota (resets "0 0 * * MON-FRI" Europe/Berlin)'
+
+    def test_format_limit_zero_rate_without_reset_is_not_a_quota(self) -> None:
+        """The branch is structural (``is_quota``), not ``refill_amount == 0``.
+
+        A per-shard share that floors to zero also has no rate but carries no
+        ``reset_schedule``, and must not be advertised as a quota.
+        """
+        from zae_limiter.cli import _format_limit
+        from zae_limiter.models import Limit
+
+        limit = Limit.per_minute("rpm", 1000)
+        object.__setattr__(limit, "refill_amount", 0)
+
+        assert "quota" not in _format_limit(limit)
+
+    def test_parse_limit_zero_rate_is_a_usage_error(self) -> None:
+        """ADR-137's cross-field guard stays inside Click's error boundary.
+
+        ``-l rpd:0:10000`` is exactly what an operator reading the old
+        ``rpd: 0/sec (burst: 10,000)`` would type back; it must not traceback.
+        """
+        import click
+
+        from zae_limiter.cli import _parse_limit
+
+        with pytest.raises(click.BadParameter) as exc_info:
+            _parse_limit("rpd:0:10000")
+
+        assert "rpd:0:10000" in str(exc_info.value)
+        assert "Limit.quota" in str(exc_info.value)
+
+    def test_system_set_defaults_zero_rate_exits_cleanly(self, runner: CliRunner) -> None:
+        """The same input through a real command fails like any other bad ``-l``."""
+        result = runner.invoke(cli, ["system", "set-defaults", "-l", "rpd:0:10000"])
+
+        assert result.exit_code == 1
+        assert "Traceback" not in result.output
+        assert "Limit.quota" in result.output
+
     # --- CLI invocation with period ---
 
     @patch("zae_limiter.repository.Repository")
