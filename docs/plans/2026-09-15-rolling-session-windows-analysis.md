@@ -34,7 +34,7 @@ fanned across shards, and let each shard apply its own reset when it sees `ws > 
 `prev_reset_edge(cron, now) > rf` with the cron replaced by a stored number. The fan-out never
 touches `tk`, which is what makes it safe.
 
-**The two facts that carry it.**
+**The facts that carry it.**
 
 1. **`ws` is monotonic and `tk` never rides the fan-out.** Each new window starts at a fresh
    clock reading strictly after the previous window ended, so `ws` only increases and
@@ -76,8 +76,8 @@ at a realistic 1% sharded. The alternative to paying it is not $0 — it is an e
 one DynamoDB partition, which is a throttling outage, not a line item.
 
 **Effort:** 8–10 PRs remaining, ~3 weeks, across 12 source files and both Lambda packages (the
-prerequisite #587 was one of the original 9–11 and is merged). Shallow
-relative to #222 — no cron, no timezones, no DST, no boundary scan, no encoding grammar.
+prerequisite #587 was one of the original 9–11 and is merged). Shallow relative to #222 — no
+cron, no timezones, no DST, no boundary scan, no encoding grammar.
 
 **Recommended sequence:** (0) fix the quota doubling over-issue for calendar quotas — **done,
 #587 / PR #594**; (1) the `ws`/`rsa` storage and the per-shard `ws > rf` reset; (2) the `ws`
@@ -754,7 +754,8 @@ It does not eliminate it.
 | `tests/` | unit (roll arithmetic, monotonic fan-out guard, **the reclaim-then-grant table of §3.4 extended to a `reset_after` quota**, `is_quota` widening at all **seven** sites, `_recovery_seconds` raising nothing on an empty `reset_schedule`); integration (`vu` still gates with **zero config reads**, asserted with `capacity_counter` — the load-bearing claim; fan-out convergence across 4 shards; a doubling mid-window conserving what is *spendable*; a cascade pair rolling independently); E2E with `reset_after` = 2 s, real waiting, marked `slow`, **with and without the aggregator** | **L** |
 | `docs/` + a **new Proposed ADR** for the duration-window decision, alongside ADR-138's edit (§7.2) | — | M |
 
-**Effort: 8–10 PRs remaining, ~3 weeks** (#587 is merged). Broad but *shallow* relative to #222 — no cron, no timezone
+**Effort: 8–10 PRs remaining, ~3 weeks** (#587 is merged). Broad but *shallow* relative to
+#222 — no cron, no timezone
 handling, no DST, no boundary scan, no encoding grammar, no oracle test.
 
 ---
