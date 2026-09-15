@@ -45,6 +45,7 @@ def _state(
     refill_period_ms: int = 60_000,
     shard_count: int = 1,
     sched: tuple[ScheduleEntry, ...] = (),
+    reset_sched: tuple[ScheduleEntry, ...] = (),
 ) -> BucketState:
     """A bucket item's stored state: base parameters, never the effective ones."""
     return BucketState(
@@ -58,6 +59,7 @@ def _state(
         refill_period_ms=refill_period_ms,
         shard_count=shard_count,
         sched=sched,
+        reset_sched=reset_sched,
     )
 
 
@@ -182,6 +184,39 @@ class TestLimit:
         own ``sched`` is the only schedule a status built from it can quote."""
         state = _state(sched=BUSINESS)
         assert Limit.from_bucket_state(state).schedule == BUSINESS
+
+    def test_from_bucket_state_reconstructs_a_quota_as_a_quota(self):
+        """The `max(1, ...)` rate floor and `reset_schedule` move together: a
+        quota bucket reconstructed with a floored `refill_amount=1` and no
+        reset advertises a one-token drip ADR-137 says does not exist, beside a
+        `retry_after_seconds` computed from the calendar edge."""
+        state = _state(refill_amount_milli=0, reset_sched=DAILY_RESET)
+        limit = Limit.from_bucket_state(state)
+        assert limit.refill_amount == 0
+        assert limit.reset_schedule == DAILY_RESET
+        assert limit.is_quota
+
+    def test_a_quota_survives_per_shard_with_its_reset(self):
+        """The narrowing applied on top of it must not reintroduce the drip."""
+        state = _state(refill_amount_milli=0, reset_sched=DAILY_RESET, shard_count=4)
+        narrowed = Limit.from_bucket_state(state).per_shard(4, TUE_1400)
+        assert narrowed.refill_amount == 0
+        assert narrowed.reset_schedule == DAILY_RESET
+
+    def test_a_reset_beside_a_positive_rate_keeps_the_old_reading(self):
+        """Unconstructible under ADR-137, so it means a corrupt item. Carrying
+        the tuple would make `Limit.__post_init__` *raise* from inside a
+        rejection path; the floor is kept and the tuple dropped instead."""
+        state = _state(refill_amount_milli=1_000_000, reset_sched=DAILY_RESET)
+        limit = Limit.from_bucket_state(state)
+        assert limit.refill_amount == 1000
+        assert limit.reset_schedule == ()
+
+    def test_a_zero_rate_with_no_reset_still_floors(self):
+        """The other half: absent a reset there is nothing to make it a legal
+        quota, so the floor still applies rather than raising."""
+        state = _state(refill_amount_milli=0)
+        assert Limit.from_bucket_state(state).refill_amount == 1
 
     def test_from_bucket_state_clamps_a_sub_token_base(self):
         """``Limit`` validates ``capacity > 0`` and this runs on the rejection
