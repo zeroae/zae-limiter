@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789492739196,
+  "lastUpdate": 1789493715091,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -23132,6 +23132,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.012794281950765237",
             "extra": "mean: 1.0961194086000035 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "168ddfd525908510008933d2c2fe6d749195c1a5",
+          "message": "🐛 fix(exceptions): render a quota as a quota in 429 bodies (#572)\n\n## Summary\n\n`RateLimitExceeded.as_dict()` serialized every limit as a rate. For a\nquota (ADR-137: recovers at a calendar reset, never drips) that put\n`\"refill_amount\": 0, \"refill_period_seconds\": 1` into the 429 body.\nNeither is a fact about the limit — `refill_amount` is 0 by ADR-137's\ndefinition and `refill_period_seconds` is\n`_QUOTA_REFILL_PERIOD_SECONDS`, an inert placeholder kept only because\nthe field is validated positive. A client dividing one by the other\ncomputes \"0 tokens per second, never recovers\". The CLI analogue was\nfixed in #539 / PR #542 (`cli._format_limit` branches on `is_quota`);\n`exceptions.py` never got the equivalent.\n\n## The field-shape decision\n\nEach per-limit entry now carries a `kind`, and the recovery fields\nfollow it:\n\n| `kind` | Recovery fields |\n|--------|-----------------|\n| `\"rate\"` | `capacity`, `refill_amount`, `refill_period_seconds` |\n| `\"quota\"` | `capacity`, `resets_at_ms` (the two drip fields\n**omitted**) |\n\nRationale:\n\n1. **Omit, don't null.** v0.14.0 is pre-1.0 and pre-freeze, so getting\nthe shape right beats keeping it additive.\n`refill_amount`/`refill_period_seconds` describe a drip ADR-137 says\ndoes not exist; emitting `0` and `1` invites a consumer to compute a\nrate from them. Nothing in this repo indexes those two keys except one\nassertion in `tests/unit/test_exceptions.py` — `docs/api/exceptions.md`\ndid not even document them, and `examples/fastapi-demo`,\n`examples/basic_rate_limiting.py`, `docs/guide/`, `docs/cli.md` read\nonly `error`, `limits[].limit_name` and `limits[].exceeded`.\n2. **`kind` on both shapes**, so a consumer never infers a quota from\n`refill_amount == 0` — unsafe in both directions: a dripping limit's\nper-shard share can floor to zero without being a quota (#475), and #556\ngives a scaled quota a phantom 1-millitoken drip. Derived from\n`Limit.is_quota`, the structural predicate both carve-outs already\nrespect. The fix is therefore correct independently of #556.\n3. **`resets_at_ms` absolute, not cron.** An operator reading a terminal\nwants the recurrence (what the CLI renders); an HTTP client wants a\ntimestamp it can schedule a retry against without a cron parser. Being\nabsolute it is self-interpreting, so `LimitStatus` needs **no**\n`checked_at_ms` — that broader API question, raised as the open wrinkle\nin the issue, stays out of scope.\n4. `as_dict()` reads the clock **once** for the whole body, so two\nquotas on one rejection cannot report edges scanned from different\ninstants.\n\n## Breaking?\n\n**No, in practice.** `Limit.quota` was introduced for v0.14.0 (`git show\nv0.13.0:src/zae_limiter/models.py` has no `def quota`), so no released\nconsumer has ever seen a quota entry. For the rate entries that did\nship, this **adds** `kind` and removes nothing. No `!` and no `BREAKING\nCHANGE:` footer, deliberately — marking it would send every 429-parsing\nuser auditing a shape they cannot have encountered.\n\n## Before / after (actual output, not illustrative)\n\nBefore, for `Limit.quota(\"rpd\", 10_000, cron=\"0 0 * * *\",\ntz=\"America/New_York\")` beside `Limit.per_minute(\"rpm\", 100)`:\n\n```json\n    {\n      \"entity_id\": \"user-123\", \"resource\": \"gpt-4\", \"limit_name\": \"rpd\",\n      \"capacity\": 10000,\n      \"refill_amount\": 0,\n      \"refill_period_seconds\": 1,\n      \"available\": 0, \"requested\": 1, \"exceeded\": true,\n      \"retry_after_seconds\": 29000.0\n    },\n    {\n      \"entity_id\": \"user-123\", \"resource\": \"gpt-4\", \"limit_name\": \"rpm\",\n      \"capacity\": 100, \"refill_amount\": 100, \"refill_period_seconds\": 60,\n      \"available\": 80, \"requested\": 1, \"exceeded\": false,\n      \"retry_after_seconds\": 0.0\n    }\n```\n\nAfter:\n\n```json\n    {\n      \"entity_id\": \"user-123\", \"resource\": \"gpt-4\", \"limit_name\": \"rpd\",\n      \"kind\": \"quota\",\n      \"capacity\": 10000,\n      \"resets_at_ms\": 1789531200000,\n      \"available\": 0, \"requested\": 1, \"exceeded\": true,\n      \"retry_after_seconds\": 29000.0\n    },\n    {\n      \"entity_id\": \"user-123\", \"resource\": \"gpt-4\", \"limit_name\": \"rpm\",\n      \"kind\": \"rate\",\n      \"capacity\": 100, \"refill_amount\": 100, \"refill_period_seconds\": 60,\n      \"available\": 80, \"requested\": 1, \"exceeded\": false,\n      \"retry_after_seconds\": 0.0\n    }\n```\n\n`1789531200000` is 2026-09-16 00:00 America/New_York — the next daily\nedge.\n\n## Known limitation (pre-existing, not introduced here)\n\n`schedule.next_reset_edge` scans at the granularity of the finest cron\nfield constrained, so a minute-constrained expression has a 7-day\nhorizon. A monthly `0 0 1 * *` therefore reports `resets_at_ms: null`\nfor most of its cycle. This is the *same* horizon that already makes\nsuch a quota's `retry_after_seconds` return `0.0` from\n`retry_after_with_schedule`'s flat fallback on `main` — not a\nregression, and `schedule.py` was off-limits for this change (concurrent\nwork on #564 / #556). `null` is the honest answer under that horizon;\nthe key stays present so a quota entry's shape does not vary with the\ncalendar.\n\n## Files changed\n\n- `src/zae_limiter/exceptions.py` — new\n`RateLimitExceeded._limit_shape()`, spliced into `as_dict()`.\n- `tests/unit/test_exceptions.py` — 3 new tests +\n`test_as_dict_structure` updated.\n- `docs/api/exceptions.md` — the documented `as_dict()` output was\nalready missing `refill_amount`/`refill_period_seconds`; corrected, plus\na `kind` table and the quota warning.\n- `CLAUDE.md` — Exception Design bullet.\n- `src/zae_limiter/infra/lambda_builder.py` — comment only:\n`exceptions.py` now imports `schedule.py`, which both Lambda stubs\nalready vendor, so the import closure is unchanged.\n\n## Test plan\n\n- [x] `uv run pytest tests/unit/ -q` → **4518 passed**\n- [x] `uv run pytest tests/unit/ -m gevent -n 0 -q` → **26 passed**\n- [x] `uv run pytest tests/doctest/ -q` → **346 passed, 224 skipped**\n- [x] `uv run mypy` → Success: no issues found in 58 source files\n- [x] `uv run ruff check .` → All checks passed\n- [x] `uv run ruff format --check` on the touched files → 3 files\nalready formatted (a bare repo-wide `ruff format` is the known #486\nversion trap and was not run)\n- [x] `hatch run generate-sync` → \"All files up to date\"; nothing\ntouched here has a generated twin\n- [x] **Mutation check**: reverting `src/zae_limiter/exceptions.py` to\n`main` fails all 4 `as_dict` tests; restoring passes them\n- [ ] CI green on 3.11 + 3.12\n\nFixes #545\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01QdVj8nPhUwTz2aNJzMFqt5",
+          "timestamp": "2026-09-15T13:27:29-04:00",
+          "tree_id": "bd4b0c69424dd780f8cb89720b1244655b2cecf8",
+          "url": "https://github.com/zeroae/zae-limiter/commit/168ddfd525908510008933d2c2fe6d749195c1a5"
+        },
+        "date": 1789493713618,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 20.503904877556987,
+            "unit": "iter/sec",
+            "range": "stddev: 0.012422934426560379",
+            "extra": "mean: 48.771197777774155 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 16.411057312697334,
+            "unit": "iter/sec",
+            "range": "stddev: 0.011355848534911605",
+            "extra": "mean: 60.934526090911525 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 34.408449355641196,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005423595269450947",
+            "extra": "mean: 29.06262905555934 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 33.98666843853469,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006705896577289081",
+            "extra": "mean: 29.423301722218298 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 21.802823077138314,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008387178057608878",
+            "extra": "mean: 45.865620083326064 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 58.405701490372365,
+            "unit": "iter/sec",
+            "range": "stddev: 0.002618690200718261",
+            "extra": "mean: 17.121616117646333 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 23.719323326733296,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00857342203586468",
+            "extra": "mean: 42.159718733330465 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 23.993561011189108,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0102649795313903",
+            "extra": "mean: 41.67784846666412 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 20.17134872030428,
+            "unit": "iter/sec",
+            "range": "stddev: 0.04200038206143343",
+            "extra": "mean: 49.57526707142839 msec\nrounds: 28"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 25.46050623558898,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006356026073592104",
+            "extra": "mean: 39.27651676470552 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 22.810150384624976,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007262020965185819",
+            "extra": "mean: 43.84013183332816 msec\nrounds: 30"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 22.722052387378003,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0041619963285258405",
+            "extra": "mean: 44.01010889999952 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 27.630832799952135,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006018702739550241",
+            "extra": "mean: 36.19145348386793 msec\nrounds: 31"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9326609500751353,
+            "unit": "iter/sec",
+            "range": "stddev: 0.001622362474755611",
+            "extra": "mean: 517.4213303999977 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9359745958130379,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0007988302388953604",
+            "extra": "mean: 516.5357035999932 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9478819615484598,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0031009006484595245",
+            "extra": "mean: 1.0549836799999865 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9190486008295987,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010021508830572375",
+            "extra": "mean: 1.088081739200004 sec\nrounds: 5"
           }
         ]
       }
