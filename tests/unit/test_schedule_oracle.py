@@ -12,7 +12,13 @@ from zoneinfo import ZoneInfo
 import pytest
 from croniter import croniter
 
-from zae_limiter.schedule import ScheduleEntry, matches, parse_cron, prev_reset_edge
+from zae_limiter.schedule import (
+    ScheduleEntry,
+    matches,
+    next_reset_edge,
+    parse_cron,
+    prev_reset_edge,
+)
 
 NY = ZoneInfo("America/New_York")
 
@@ -138,3 +144,61 @@ def test_prev_reset_edge_agrees_with_croniter(expr):
 def test_reset_oracle_comparison_count():
     """Pin the sample size, as the matcher sweep above does."""
     assert len(_reset_sample_instants()) * len(RESET_EXPRESSIONS) == 360
+
+
+# Coarse quota periods, whose edges are further apart than the seven-day cap the
+# reset scanners used before #574 — so none of these could be oracle-tested at
+# all until the horizon became the entry's own cycle. Single-minute patterns
+# again, so croniter's fire times *are* the edges.
+COARSE_RESET_EXPRESSIONS = [
+    "0 0 1 * *",  # monthly
+    "0 0 1 1,4,7,10 *",  # quarterly
+    "0 0 1 1 *",  # annual
+    "0 0 1 7 *",  # annual, mid-year, so both directions cross a year end
+]
+
+
+def _coarse_sample_instants():
+    """Twenty-four instants spread over two years, one per month.
+
+    Deliberately not the dense sweep above: each assertion here runs a scan of
+    up to 366 days, and one per month of a two-year span already exercises every
+    position within each period's cycle.
+    """
+    return [
+        int(datetime(year, month, 15, 12, 0, tzinfo=NY).timestamp())
+        for year in (2027, 2028)
+        for month in range(1, 13)
+    ]
+
+
+@pytest.mark.parametrize("expr", COARSE_RESET_EXPRESSIONS)
+def test_coarse_prev_reset_edge_agrees_with_croniter(expr):
+    sched = (ScheduleEntry.reset(cron=expr, tz="America/New_York"),)
+    for ts in _coarse_sample_instants():
+        dt = datetime.fromtimestamp(ts, NY)
+        expected = croniter(expr, dt).get_prev(datetime)
+        got = prev_reset_edge(sched, ts * 1000)
+        assert got is not None, f"{expr} found no edge before {dt.isoformat()}"
+        assert datetime.fromtimestamp(got / 1000, NY) == expected, (
+            f"{expr} disagreed looking back from {dt.isoformat()}"
+        )
+
+
+@pytest.mark.parametrize("expr", RESET_EXPRESSIONS + COARSE_RESET_EXPRESSIONS)
+def test_next_reset_edge_agrees_with_croniter(expr):
+    """The forward twin, which had no oracle test at all before #574.
+
+    It is the one `RateLimitExceeded.as_dict()` serialises as `resets_at_ms`
+    (#545) and the one a quota's `retry_after_seconds` is measured to, so a
+    silent disagreement with a real cron implementation shows up in 429 bodies.
+    """
+    sched = (ScheduleEntry.reset(cron=expr, tz="America/New_York"),)
+    for ts in _coarse_sample_instants():
+        dt = datetime.fromtimestamp(ts, NY)
+        expected = croniter(expr, dt).get_next(datetime)
+        got = next_reset_edge(sched, now_ms=ts * 1000)
+        assert got is not None, f"{expr} found no edge after {dt.isoformat()}"
+        assert datetime.fromtimestamp(got / 1000, NY) == expected, (
+            f"{expr} disagreed looking forward from {dt.isoformat()}"
+        )

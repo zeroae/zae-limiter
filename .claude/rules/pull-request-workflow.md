@@ -32,30 +32,45 @@ All changes must go through pull requests. Direct commits to `main` are not allo
 
 **Important:** Never force-push to main or bypass CI checks.
 
-## Closing keywords are matched as substrings, negation and all
+## Closing keywords are matched as substrings, in commit messages too
 
-GitHub's linked-issue parser has no notion of negation. A PR body containing
+GitHub's linked-issue parser has no notion of negation or quotation. A body reading
 
 ```
-Does not close #222.
+Does not close #NNN.
 ```
 
-registers `#222` in `closingIssuesReferences` and **closes the epic on merge**. This happened on
-PR #573: the scheduled-limits epic was closed by a line written specifically to say it should not
-be, and had to be reopened.
+registers `#NNN` in `closingIssuesReferences` and **closes that issue on merge** — the "Does
+not" is invisible to it.
+
+**This applies to commit messages landing on the default branch exactly as it does to PR
+bodies.** That half is what bites, because the usual check only inspects the PR:
+
+```bash
+gh pr view <n> --json closingIssuesReferences   # PR body only — does NOT see commit messages
+```
+
+Both happened in one day on the scheduled-limits epic. First a PR body carried the negated
+phrasing. Then the PR that *documented that trap* closed the same epic again — this time from a
+commit message quoting the example, which the PR-body check could not see.
 
 So:
 
-- To reference an issue without closing it, write **`Refs #222`** or **`Part of #222`**.
+- To reference an issue without closing it, write **`Refs #NNN`** or **`Part of #NNN`**.
 - Never place `close`/`closes`/`closed`/`fix`/`fixes`/`fixed`/`resolve`/`resolves`/`resolved`
-  adjacent to an issue number you do not intend to close — **including inside a denial**.
-- Before merging anything that references an epic, check what will actually close:
+  next to an issue number you do not intend to close — **including inside a denial, a quotation,
+  or an example**.
+- **Write documentation about closing keywords with a placeholder** (`#NNN`), never a live issue
+  number. An example containing a real number is a live directive that propagates into every
+  commit message and PR body that quotes it.
+- Check the commits, not just the PR body, before merging anything that references an epic:
 
 ```bash
-gh pr view <n> --json closingIssuesReferences
+git log <base>..<head> --format='%B' | grep -inE '(clos|fix|resolv)[a-z]*[[:space:]]+#[0-9]+'
 ```
 
-Verify the epic is still open afterwards; a reopen is cheap, a silently closed epic is not.
+Verify the epic is still open **after** the merge as well. A reopen is cheap; a silently closed
+epic is not.
 
 ## Reading CI before you merge
 
