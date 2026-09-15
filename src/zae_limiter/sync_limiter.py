@@ -45,7 +45,7 @@ from .models import (
     validate_identifier,
     validate_resource,
 )
-from .schedule import next_boundary
+from .schedule import next_boundary, prev_reset_edge
 from .schema import DEFAULT_RESOURCE, WCU_LIMIT_NAME
 from .sync_config_cache import ConfigSource
 from .sync_lease import LeaseEntry, SyncLease
@@ -1100,6 +1100,73 @@ class SyncRateLimiter:
         return frozenset(unknown)
 
     @staticmethod
+    def _apply_reset_edge(limit: Limit, state: BucketState, now_ms: int) -> bool:
+        """Restore the balance if a calendar reset edge was crossed (#222 §3.6).
+
+        Detection is **backwards**: "was there a rising edge since this item was
+        last refilled?", not "is a reset due?". That makes idle buckets correct
+        for free — a bucket idle from 18:00 to 09:00 has its ``rf`` sitting at
+        18:00, and the 09:00 pass sees the missed midnight and applies it then.
+        Two missed midnights apply once, because setting the balance to the
+        capacity is idempotent.
+
+        The comparison is strictly ``>``: the pass that applies a reset stamps
+        ``rf`` at or after the edge, so ``>=`` would re-fire on every later
+        request and refund everything spent since — an unbounded quota.
+
+        The target is the **shard's share** of the capacity *in force at*
+        ``now_ms``: ``effective_capacity_milli`` applies the parameter schedule
+        and then divides by ``shard_count``. Resetting every shard to the
+        undivided capacity would multiply the entity's quota by ``shard_count``.
+
+        Must be called **before** :meth:`_admit_limit`, so the restored balance
+        gates the request that crossed the edge rather than the one after it.
+        Mutates ``state`` in place and returns whether it did;
+        ``_original_tokens_milli`` and ``_original_rf_ms`` must already have
+        been captured, because they are the *stored* values the ``ADD`` delta
+        and the ``rf`` lock are built from. ``tc`` is never touched: the
+        counter has to stay monotonic (``.claude/rules/design-validation.md``),
+        which is what makes this safer than #471's ``reset_bucket()``.
+        """
+        if not limit.reset_schedule:
+            return False
+        edge = prev_reset_edge(limit.reset_schedule, now_ms)
+        if edge is None or edge <= state.last_refill_ms:
+            return False
+        state.tokens_milli = state.effective_capacity_milli(now_ms)
+        return True
+
+    @staticmethod
+    def _materialisation_stamps(limit: Limit, now_ms: int) -> tuple[int | None, int | None]:
+        """``(vu, next reset edge)`` for one limit at one clock reading (#222).
+
+        ``vu`` is the minimum of the two futures — the next parameter change and
+        the next reset edge — because either invalidates the materialised
+        ``tk``. A limit carrying a ``reset_schedule`` and **no** ``schedule`` is
+        the daily-quota shape, and it must still produce a ``vu``: without one
+        the speculative condition never fails, the slow path never runs, and the
+        reset fires only when something unrelated forces a materialising pass.
+
+        The reset half is returned separately because the commit needs the two
+        apart. ``_commit_initial()`` takes a *second* clock reading a round trip
+        later, and only a reset edge crossed in that gap can invalidate the
+        reset decision taken here — a parameter boundary crossed in the same gap
+        is handled by ``vu <= rf`` forcing one extra pass, which for a reset is
+        not enough (the next pass would compare the edge against an ``rf`` that
+        has already moved past it).
+
+        Both halves are computed here rather than through one
+        ``next_boundary(schedule, reset_schedule, ...)`` call so that neither
+        cron scan runs twice.
+        """
+        param_ms = next_boundary(limit.schedule, now_ms=now_ms) if limit.schedule else None
+        reset_ms = (
+            next_boundary((), limit.reset_schedule, now_ms=now_ms) if limit.reset_schedule else None
+        )
+        candidates = [b for b in (param_ms, reset_ms) if b is not None]
+        return (min(candidates) if candidates else None, reset_ms)
+
+    @staticmethod
     def _admit_limit(
         entity_id: str,
         resource: str,
@@ -1218,11 +1285,13 @@ class SyncRateLimiter:
             existing.sched = limit.schedule
             original_tk = existing.tokens_milli
             original_rf = existing.last_refill_ms
+            self._apply_reset_edge(limit, existing, now_ms)
             status, consumed = self._admit_limit(
                 parent_id, resource, limit, existing, consume, now_ms
             )
             if status is not None:
                 statuses.append(status)
+            parent_boundary_ms, parent_reset_edge_ms = self._materialisation_stamps(limit, now_ms)
             parent_entries.append(
                 LeaseEntry(
                     entity_id=parent_id,
@@ -1236,7 +1305,8 @@ class SyncRateLimiter:
                     _declared=status is not None,
                     _shard_id=parent_shard,
                     _shard_count=parent_shard_count,
-                    _boundary_ms=next_boundary(limit.schedule, now_ms=now_ms),
+                    _boundary_ms=parent_boundary_ms,
+                    _reset_edge_ms=parent_reset_edge_ms,
                 )
             )
         carrier = self._wcu_carrier(
@@ -1360,10 +1430,13 @@ class SyncRateLimiter:
                     state.sched = limit.schedule
                 original_tk = state.tokens_milli
                 original_rf = state.last_refill_ms
+                if not is_new:
+                    self._apply_reset_edge(limit, state, now_ms)
                 status, consumed = self._admit_limit(eid, resource, limit, state, consume, now_ms)
                 if status is not None:
                     statuses.append(status)
                 has_custom_config = _is_custom_config(entity_config_sources.get(eid))
+                boundary_ms, reset_edge_ms = self._materialisation_stamps(limit, now_ms)
                 entries.append(
                     LeaseEntry(
                         entity_id=eid,
@@ -1380,7 +1453,8 @@ class SyncRateLimiter:
                         _cascade=entity.cascade if entity and eid == entity_id else False,
                         _parent_id=entity.parent_id if entity and eid == entity_id else None,
                         _declared=status is not None,
-                        _boundary_ms=next_boundary(limit.schedule, now_ms=now_ms),
+                        _boundary_ms=boundary_ms,
+                        _reset_edge_ms=reset_edge_ms,
                     )
                 )
             carrier = self._wcu_carrier(

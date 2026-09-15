@@ -68,6 +68,13 @@ class LeaseEntry:
     # next one. `_commit_initial()` takes the minimum across the entries
     # sharing a bucket item, because `vu` is one item-level attribute.
     _boundary_ms: int | None = None
+    # The next `reset_schedule` edge after that same clock reading, or None
+    # when this limit carries no reset schedule (#222 §3.6). The reset half of
+    # `_boundary_ms`, kept separate because `_commit_initial()` needs the two
+    # apart: an edge crossed between the acquire path's reading and the
+    # commit's is the one case `RateLimiter._apply_reset_edge()` cannot have
+    # seen, and `rf` is stamped at the *later* reading.
+    _reset_edge_ms: int | None = None
 
 
 @dataclass
@@ -401,6 +408,33 @@ class Lease:
                     refill_amounts[name] = (
                         entry.state.tokens_milli - entry._original_tokens_milli + consumed_milli
                     )
+                    # No reset code is needed for an edge the acquire path
+                    # already saw: it put `effective_capacity` on the state
+                    # before `try_consume`, so the line above resolves to
+                    # `eff_cp - stored_tk + consumed` on its own, and
+                    # `build_composite_normal` turns that into the identical
+                    # `ADD (eff_cp - tk_observed)` the aggregator writes.
+                    #
+                    # An edge crossed *between* the two clock readings is the
+                    # exception, and it is silent rather than merely late.
+                    # `_apply_reset_edge()` ran at the earlier reading and saw
+                    # nothing, yet `rf` below is stamped at this one — so the
+                    # next pass compares the edge against an `rf` already past
+                    # it and never applies it either. A whole period's quota
+                    # disappears, and the aggregator cannot rescue it: it reads
+                    # the same poisoned `rf` off the stream image.
+                    #
+                    # Re-expressing it here cannot double-apply: the acquire
+                    # path covers every edge at or before its own reading, and
+                    # `_reset_edge_ms` is strictly after it. Admission was
+                    # gated against the pre-reset balance, which is the
+                    # conservative direction — one request may be rejected at
+                    # the boundary, rather than a whole period silently lost.
+                    if entry._reset_edge_ms is not None and entry._reset_edge_ms <= now_ms:
+                        refill_amounts[name] = (
+                            entry.state.effective_capacity_milli(now_ms)
+                            - entry._original_tokens_milli
+                        )
 
                 items.append(
                     repo.build_composite_normal(

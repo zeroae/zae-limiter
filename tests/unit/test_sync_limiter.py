@@ -7729,3 +7729,383 @@ class TestFanOutVuSelfClears:
                 pass
         assert BUCKET_FIELD_VU not in self._raw(repo, "vu-shards", shard=0)
         assert self._raw(repo, "vu-shards", shard=1)[BUCKET_FIELD_VU]["N"] == "0"
+
+
+RESET_NY = ZoneInfo("America/New_York")
+
+
+def _ny(s: str) -> int:
+    """An ISO local time in America/New_York, as epoch milliseconds."""
+    return int(datetime.fromisoformat(s).replace(tzinfo=RESET_NY).timestamp() * 1000)
+
+
+RPD = Limit.quota("rpd", 10000, cron="0 0 * * *", tz="America/New_York")
+
+
+class TestApplyResetEdge:
+    """The reset decision, isolated from DynamoDB (#222 §3.6).
+
+    ``_apply_reset_edge`` answers one question — "has a rising reset edge been
+    crossed since this item was last refilled?" — and, when it has, sets the
+    balance to the shard's share of the capacity in force *at that instant*.
+    """
+
+    @staticmethod
+    def _state(**kwargs) -> BucketState:
+        base = dict(
+            entity_id="user-1",
+            resource="gpt-4",
+            limit_name="rpd",
+            tokens_milli=0,
+            last_refill_ms=_ny("2026-09-15 18:00"),
+            capacity_milli=10000000,
+            refill_amount_milli=0,
+            refill_period_ms=1000,
+        )
+        base.update(kwargs)
+        return BucketState(**base)
+
+    def test_sets_tokens_to_the_effective_capacity(self):
+        state = self._state()
+        assert SyncRateLimiter._apply_reset_edge(RPD, state, _ny("2026-09-16 09:00")) is True
+        assert state.tokens_milli == 10000000
+
+    def test_uses_the_shards_share(self):
+        """Resetting every shard to the undivided capacity multiplies the
+        entity's quota by shard_count (§3.6)."""
+        state = self._state(shard_count=4)
+        assert SyncRateLimiter._apply_reset_edge(RPD, state, _ny("2026-09-16 09:00")) is True
+        assert state.tokens_milli == 2500000
+
+    def test_respects_a_concurrent_param_schedule(self):
+        """A reset landing inside a 0.5x window restores half — the limit in
+        force, not the base. Effective params first, balance second."""
+        limit = RPD.with_schedule(
+            (ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", scale=0.5),)
+        )
+        state = self._state(sched=limit.schedule)
+        assert SyncRateLimiter._apply_reset_edge(limit, state, _ny("2026-09-16 03:00")) is True
+        assert state.tokens_milli == 5000000
+
+    def test_no_edge_since_the_last_refill_changes_nothing(self):
+        state = self._state(tokens_milli=42, last_refill_ms=_ny("2026-09-16 01:00"))
+        assert SyncRateLimiter._apply_reset_edge(RPD, state, _ny("2026-09-16 09:00")) is False
+        assert state.tokens_milli == 42
+
+    def test_an_edge_exactly_at_the_last_refill_does_not_re_fire(self):
+        """``> rf``, not ``>= rf``. The pass that applies a reset stamps ``rf``
+        at or after the edge, so ``>=`` would re-apply it on every subsequent
+        request and refund everything spent since — an unbounded quota."""
+        state = self._state(tokens_milli=42, last_refill_ms=_ny("2026-09-16 00:00"))
+        assert SyncRateLimiter._apply_reset_edge(RPD, state, _ny("2026-09-16 09:00")) is False
+        assert state.tokens_milli == 42
+
+    def test_two_missed_edges_apply_once(self):
+        """Setting the balance to the capacity is idempotent, so one edge is
+        enough and ``prev_reset_edge`` reporting only the latest is sufficient.
+        An implementation that *added* a window's worth per missed edge would
+        hand back 20,000 here."""
+        state = self._state(last_refill_ms=_ny("2026-09-14 18:00"))
+        assert SyncRateLimiter._apply_reset_edge(RPD, state, _ny("2026-09-16 09:00")) is True
+        assert state.tokens_milli == 10000000
+
+    def test_a_limit_without_a_reset_schedule_is_untouched(self):
+        state = self._state(tokens_milli=7)
+        plain = Limit.per_day("rpd", 10000)
+        assert SyncRateLimiter._apply_reset_edge(plain, state, _ny("2026-09-16 09:00")) is False
+        assert state.tokens_milli == 7
+
+    def test_a_never_matching_expression_resets_nothing(self):
+        """A leap day, out of reach of the scan. ``prev_reset_edge`` returns
+        None and nothing happens — the contract Task 2 pins from the other
+        side."""
+        limit = Limit.quota("rpd", 10000, cron="0 0 29 2 *", tz="America/New_York")
+        state = self._state(tokens_milli=7)
+        assert SyncRateLimiter._apply_reset_edge(limit, state, _ny("2026-09-16 09:00")) is False
+        assert state.tokens_milli == 7
+
+    def test_debt_is_cleared_rather_than_carried(self):
+        """A reset *sets* the balance; it does not add to it. An entity that
+        overdrew via adjust() starts the new day whole. This is what makes the
+        aggregator's ``ADD (eff_cp - tk_observed)`` the same operation."""
+        state = self._state(tokens_milli=-3000000)
+        assert SyncRateLimiter._apply_reset_edge(RPD, state, _ny("2026-09-16 09:00")) is True
+        assert state.tokens_milli == 10000000
+
+    def test_the_wcu_carrier_is_exempt(self):
+        """``rsched`` is an item-level attribute that applies to every limit on
+        the item by default, and the aggregator has to exempt ``wcu`` by hand.
+        On the client it is free — ``Limit._carrier()`` never sets a reset
+        schedule — but "free" is a property to pin, not to assume."""
+        wcu_state = self._state(
+            limit_name="wcu",
+            capacity_milli=1000000,
+            refill_amount_milli=1000000,
+            refill_period_ms=60000,
+        )
+        carrier = Limit._carrier(wcu_state)
+        assert carrier.reset_schedule == ()
+        assert (
+            SyncRateLimiter._apply_reset_edge(carrier, wcu_state, _ny("2026-09-16 09:00")) is False
+        )
+        assert wcu_state.tokens_milli == 0
+
+
+class TestResetMaterialisationThroughAcquire:
+    """The reset must gate admission, not just the write that follows it."""
+
+    @staticmethod
+    def _slow(sync_limiter):
+        """The same moto repository, forced onto the slow path.
+
+        The speculative fast path is a conditional UpdateItem that never
+        evaluates a schedule; in production it reaches the slow path because
+        `vu` expires at the reset edge. Here we go straight there.
+        """
+        return SyncRateLimiter(repository=sync_limiter._repository, speculative_writes=False)
+
+    @staticmethod
+    def _raw(repo, entity_id, resource="gpt-4", shard=0):
+        client = repo._get_client()
+        response = client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, resource, shard)},
+                "SK": {"S": sk_state()},
+            },
+        )
+        return response["Item"]
+
+    @staticmethod
+    def _bucket(repo, entity_id, limit_name="rpd", resource="gpt-4"):
+        return next(
+            b for b in repo.get_buckets(entity_id, resource=resource) if b.limit_name == limit_name
+        )
+
+    def test_the_quota_comes_back_in_one_lump(self, sync_limiter):
+        """Burn 10,000 at 23:00, cross midnight, spend 9,000 at 00:30.
+
+        Without the reset the second acquire raises outright: a quota does not
+        drip (ADR-137), so the 90 minutes between the two calls return exactly
+        nothing and the balance is still 0. That is what makes this
+        discriminating rather than a restatement of the balance — and it is
+        also why the final assertion is an exact 1_000_000 with no drip term.
+        """
+        repo = sync_limiter._repository
+        slow = self._slow(sync_limiter)
+        repo.set_limits("reset-1", [RPD], resource="gpt-4")
+        repo._now_ms = lambda: _ny("2026-09-15 23:00")
+        with slow.acquire("reset-1", "gpt-4", consume={"rpd": 10000}):
+            pass
+        repo._now_ms = lambda: _ny("2026-09-16 00:30")
+        repo.invalidate_config_cache()
+        with slow.acquire("reset-1", "gpt-4", consume={"rpd": 9000}):
+            pass
+        assert self._bucket(repo, "reset-1").tokens_milli == 1000000
+
+    def test_the_reset_never_touches_tc(self, sync_limiter):
+        """The total-consumed counter must stay monotonic across the edge.
+
+        19,000 tokens were consumed across the two calls and `tc` must say so.
+        An implementation that expressed the reset by rewriting the item, or by
+        crediting `tc`, fails here — the failure mode #471's `reset_bucket()`
+        had, and the reason `.claude/rules/design-validation.md` exists.
+        """
+        repo = sync_limiter._repository
+        slow = self._slow(sync_limiter)
+        repo.set_limits("reset-2", [RPD], resource="gpt-4")
+        repo._now_ms = lambda: _ny("2026-09-15 23:00")
+        with slow.acquire("reset-2", "gpt-4", consume={"rpd": 10000}):
+            pass
+        repo._now_ms = lambda: _ny("2026-09-16 00:30")
+        repo.invalidate_config_cache()
+        with slow.acquire("reset-2", "gpt-4", consume={"rpd": 9000}):
+            pass
+        assert self._bucket(repo, "reset-2").total_consumed_milli == 19000000
+
+    def test_the_reset_gates_admission_not_just_the_write(self, sync_limiter):
+        """The whole point of the seam's position.
+
+        The quota is burnt to exactly 0 before midnight and the post-midnight
+        request asks for the *entire* allowance. Applied after `_admit_limit`
+        the balance would be right in DynamoDB and the request still rejected;
+        applied before it, the request is admitted against the restored quota.
+        """
+        repo = sync_limiter._repository
+        slow = self._slow(sync_limiter)
+        repo.set_limits("reset-gate", [RPD], resource="gpt-4")
+        repo._now_ms = lambda: _ny("2026-09-15 23:00")
+        with slow.acquire("reset-gate", "gpt-4", consume={"rpd": 10000}):
+            pass
+        assert self._bucket(repo, "reset-gate").tokens_milli == 0
+        repo._now_ms = lambda: _ny("2026-09-16 00:30")
+        repo.invalidate_config_cache()
+        with slow.acquire("reset-gate", "gpt-4", consume={"rpd": 10000}):
+            pass
+        assert self._bucket(repo, "reset-gate").tokens_milli == 0
+
+    def test_an_idle_bucket_resets_on_wake_not_at_the_edge(self, sync_limiter):
+        """Idle 18:00 -> 09:00 the next morning: the missed midnight is found
+        by the backwards scan and applied by the 09:00 pass (§3.6)."""
+        repo = sync_limiter._repository
+        slow = self._slow(sync_limiter)
+        repo.set_limits("reset-3", [RPD], resource="gpt-4")
+        repo._now_ms = lambda: _ny("2026-09-15 18:00")
+        with slow.acquire("reset-3", "gpt-4", consume={"rpd": 10000}):
+            pass
+        repo._now_ms = lambda: _ny("2026-09-16 09:00")
+        repo.invalidate_config_cache()
+        with slow.acquire("reset-3", "gpt-4", consume={"rpd": 10000}):
+            pass
+        assert self._bucket(repo, "reset-3").tokens_milli == 0
+
+    def test_two_missed_midnights_still_hand_back_one_allowance(self, sync_limiter):
+        """Idle across *two* edges. Setting the balance is idempotent, so the
+        entity gets one day's quota back, not two."""
+        repo = sync_limiter._repository
+        slow = self._slow(sync_limiter)
+        repo.set_limits("reset-idle2", [RPD], resource="gpt-4")
+        repo._now_ms = lambda: _ny("2026-09-14 18:00")
+        with slow.acquire("reset-idle2", "gpt-4", consume={"rpd": 10000}):
+            pass
+        repo._now_ms = lambda: _ny("2026-09-16 09:00")
+        repo.invalidate_config_cache()
+        with slow.acquire("reset-idle2", "gpt-4", consume={"rpd": 1000}):
+            pass
+        assert self._bucket(repo, "reset-idle2").tokens_milli == 9000000
+
+    def test_only_the_limit_carrying_the_reset_is_restored(self, sync_limiter):
+        """One item, two limits, one `rf` — but the reset is decided per limit.
+
+        `rpm` drips and carries no reset; `rpd` is a quota that does. Crossing
+        midnight must not hand `rpm` its ceiling back, which an item-level
+        reset would.
+        """
+        repo = sync_limiter._repository
+        slow = self._slow(sync_limiter)
+        rpm = Limit.custom("rpm", capacity=100, refill_amount=10, refill_period_seconds=60)
+        repo.set_limits("reset-multi", [RPD, rpm], resource="gpt-4")
+        repo._now_ms = lambda: _ny("2026-09-15 23:59")
+        with slow.acquire("reset-multi", "gpt-4", consume={"rpd": 10000, "rpm": 100}):
+            pass
+        assert self._bucket(repo, "reset-multi", "rpm").tokens_milli == 0
+        repo._now_ms = lambda: _ny("2026-09-16 00:00:30")
+        repo.invalidate_config_cache()
+        with slow.acquire("reset-multi", "gpt-4", consume={"rpd": 0, "rpm": 0}):
+            pass
+        assert self._bucket(repo, "reset-multi", "rpd").tokens_milli == 10000000
+        assert self._bucket(repo, "reset-multi", "rpm").tokens_milli == 15000
+
+    def test_a_cascading_child_resets_both_items(self, sync_limiter):
+        """Child and parent are separate items with separate `rf` stamps, and
+        each is reset from its own resolved limits.
+
+        Both items' `vu` expire at the edge, so this runs through the *full*
+        slow path — `_try_parent_only_acquire` is covered separately below,
+        because a boundary-expired parent is routed away from it by design.
+        """
+        repo = sync_limiter._repository
+        sync_limiter.create_entity("org-1")
+        sync_limiter.create_entity("key-1", parent_id="org-1", cascade=True)
+        repo.set_limits("org-1", [RPD], resource="gpt-4")
+        repo.set_limits("key-1", [RPD], resource="gpt-4")
+        repo._now_ms = lambda: _ny("2026-09-15 23:00")
+        with sync_limiter.acquire("key-1", "gpt-4", consume={"rpd": 10000}):
+            pass
+        repo._now_ms = lambda: _ny("2026-09-16 00:30")
+        repo.invalidate_config_cache()
+        with sync_limiter.acquire("key-1", "gpt-4", consume={"rpd": 9000}):
+            pass
+        assert self._bucket(repo, "org-1").tokens_milli == 1000000
+        assert self._bucket(repo, "key-1").tokens_milli == 1000000
+
+    def test_the_parent_only_slow_path_also_resets(self, sync_limiter):
+        """`_try_parent_only_acquire` builds its own LeaseEntry list and is a
+        second, easily-missed seam.
+
+        Driven directly, because the fast path routes a *boundary-expired*
+        parent to the full slow path rather than here — this seam is reached
+        only when the parent's `vu` is intact (an item predating the schedule,
+        or one whose other limits forced the fallback) while a reset edge has
+        still been crossed since its `rf`. Without the reset here, the parent
+        is exhausted and the method returns None, which the caller reads as a
+        rejection and compensates the child for.
+        """
+        repo = sync_limiter._repository
+        slow = self._slow(sync_limiter)
+        repo.set_limits("po-org", [RPD], resource="gpt-4")
+        repo._now_ms = lambda: _ny("2026-09-15 23:00")
+        with slow.acquire("po-org", "gpt-4", consume={"rpd": 10000}):
+            pass
+        assert self._bucket(repo, "po-org").tokens_milli == 0
+        repo._now_ms = lambda: _ny("2026-09-16 00:30")
+        repo.invalidate_config_cache()
+        lease = sync_limiter._try_parent_only_acquire("po-org", "gpt-4", {"rpd": 9000}, [], 0, 1)
+        assert lease is not None, "the restored quota must admit the request"
+        assert self._bucket(repo, "po-org").tokens_milli == 1000000
+
+    def test_vu_is_stamped_for_a_reset_only_limit(self, sync_limiter):
+        """A limit with a reset schedule and no parameter schedule still needs
+        `vu`, or the fast path never yields and the reset never fires.
+
+        This is the whole daily-quota shape.
+        """
+        repo = sync_limiter._repository
+        slow = self._slow(sync_limiter)
+        repo.set_limits("reset-4", [RPD], resource="gpt-4")
+        repo._now_ms = lambda: _ny("2026-09-15 23:00")
+        with slow.acquire("reset-4", "gpt-4", consume={"rpd": 1}):
+            pass
+        item = self._raw(repo, "reset-4")
+        assert int(item[BUCKET_FIELD_VU]["N"]) == _ny("2026-09-16 00:00")
+
+    def test_vu_is_the_earlier_of_a_param_boundary_and_a_reset_edge(self, sync_limiter):
+        """Both tuples vote. The 0.5x window closes at 07:00, three hours
+        before the reset would fire again, so `vu` is the window's edge —
+        a `vu` taken from the reset alone would be 17 hours late."""
+        repo = sync_limiter._repository
+        slow = self._slow(sync_limiter)
+        night = RPD.with_schedule(
+            (ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", scale=0.5),)
+        )
+        repo.set_limits("reset-5", [night], resource="gpt-4")
+        repo._now_ms = lambda: _ny("2026-09-16 03:00")
+        with slow.acquire("reset-5", "gpt-4", consume={"rpd": 1}):
+            pass
+        item = self._raw(repo, "reset-5")
+        assert int(item[BUCKET_FIELD_VU]["N"]) == _ny("2026-09-16 07:00")
+
+    def test_an_edge_crossed_between_the_two_clock_readings_is_not_lost(self, sync_limiter):
+        """The acquire path and `_commit_initial()` read the clock a round trip
+        apart, and `rf` is stamped at the *later* reading.
+
+        An edge that falls in that gap is invisible to `_apply_reset_edge`,
+        which ran at the earlier one — and the `rf` it then stamps is already
+        past the edge, so the *next* pass skips it too, and the aggregator,
+        reading the same `rf` off the stream image, skips it as well. A whole
+        period's quota disappears with no error anywhere. The commit
+        re-expresses the delta rather than letting that happen.
+        """
+        repo = sync_limiter._repository
+        slow = self._slow(sync_limiter)
+        repo.set_limits("reset-race", [RPD], resource="gpt-4")
+        repo._now_ms = lambda: _ny("2026-09-15 23:00")
+        with slow.acquire("reset-race", "gpt-4", consume={"rpd": 10000}):
+            pass
+        assert self._bucket(repo, "reset-race").tokens_milli == 0
+        from zae_limiter.sync_lease import SyncLease
+
+        original = SyncLease._commit_initial
+
+        def commit_after_midnight(lease_self):
+            repo._now_ms = lambda: _ny("2026-09-16 00:00:01")
+            return original(lease_self)
+
+        repo._now_ms = lambda: _ny("2026-09-15 23:59:59")
+        repo.invalidate_config_cache()
+        with patch.object(SyncLease, "_commit_initial", commit_after_midnight):
+            with slow.acquire("reset-race", "gpt-4", consume={"rpd": 0}):
+                pass
+        bucket = self._bucket(repo, "reset-race")
+        assert bucket.tokens_milli == 10000000, "the edge crossed mid-pass still applies"
+        assert bucket.total_consumed_milli == 10000000, "and `tc` is still monotonic"

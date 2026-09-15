@@ -44,6 +44,7 @@ class LeaseEntry:
     _parent_id: str | None = None
     _declared: bool = True
     _boundary_ms: int | None = None
+    _reset_edge_ms: int | None = None
 
 
 @dataclass
@@ -307,6 +308,11 @@ class SyncLease:
                     refill_amounts[name] = (
                         entry.state.tokens_milli - entry._original_tokens_milli + consumed_milli
                     )
+                    if entry._reset_edge_ms is not None and entry._reset_edge_ms <= now_ms:
+                        refill_amounts[name] = (
+                            entry.state.effective_capacity_milli(now_ms)
+                            - entry._original_tokens_milli
+                        )
                 items.append(
                     repo.build_composite_normal(
                         entity_id=entity_id,
