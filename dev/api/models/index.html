@@ -5982,7 +5982,17 @@ limit with no schedule has no schedule.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Reconstruct a Limit from BucketState fields, as that shard sees it.</p>
+        <p>The <em>base</em> limit a bucket item encodes, schedule included.</p>
+<p>Bucket items store the undivided, unscaled base parameters forever
+(#222 §2.1) alongside the schedule that applies on top of them, so
+what comes back here is the configured limit — not the view one shard
+has of it right now. Narrowing to a shard and to the window in force
+is :meth:<code>per_shard</code>, which does both together; calling it on this
+result divides and scales exactly once.</p>
+<p>This deliberately does <strong>not</strong> pre-divide. The result is what
+<code>LeaseEntry.limit</code> carries, and the slow path already puts the
+undivided config limit there; a pre-divided one would be narrowed a
+second time when the lease builds a status from it.</p>
 
 
     </div>
@@ -5997,21 +6007,36 @@ limit with no schedule has no schedule.</p>
 
 
 <a href="#zae_limiter.models.Limit.per_shard" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">per_shard</span><span class="p">(</span><span class="n">shard_count</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">per_shard</span><span class="p">(</span><span class="n">shard_count</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
 
-        <p>This limit as a single shard of <code>shard_count</code> sees it.</p>
-<p>A sharded bucket holds and refills only its share — <code>capacity //
-shard_count</code>, <code>refill_amount // shard_count</code> (GHSA-76rv) — so a
-status reported from one shard has to say so. Reporting the undivided
-config would promise a capacity no shard can serve and, for a request
-larger than the share, a <code>retry_after_seconds</code> that never pays off.</p>
+        <p>This limit as a single shard of <code>shard_count</code> sees it at <code>now_ms</code>.</p>
+<p>Two narrowings happen here, and the order matters (#222 §2.1): the
+schedule in force at <code>now_ms</code> scales the <strong>undivided</strong> parameters,
+and only then does the shard take its share — <code>capacity //
+shard_count</code>, <code>refill_amount // shard_count</code> (GHSA-76rv). Dividing
+first and scaling second is a different integer, and it is the wrong
+one: the bucket itself refills against
+<code>BucketState.effective_capacity_milli</code>, which scales first.</p>
+<p>Both narrowings belong together because both feed <code>LimitStatus</code> and
+neither may be applied twice. A status reported from one shard has to
+quote the share, or it promises a capacity no shard can serve and, for
+a request larger than the share, a <code>retry_after_seconds</code> that never
+pays off (#475). A status reported inside a <code>0.5x</code> window has to
+quote the scaled value for the same reason.</p>
+<p><code>refill_period_seconds</code> follows the window — an absolute schedule
+entry may override it — but is never divided: shards split the
+numerator and every shard refills on the same clock.</p>
+<p>The result carries no schedule. It is a point-in-time materialisation,
+and leaving the schedule attached would invite a second application
+and read to a caller as "500, which halves to 250".</p>
 <p>Shares are floored to one whole token because <code>Limit</code> is whole-token
 and must stay constructible; <code>schema.MAX_SHARD_COUNT</code> bounds how
-small a real share can get. Surfacing an unadmittable request as an
-event or metric is tracked in #475.</p>
+small a real share can get, and a <code>0.5x</code> window on a share of one
+would otherwise raise from inside a rejection path. Surfacing an
+unadmittable request as an event or metric is tracked in #475.</p>
 
 
     </div>
