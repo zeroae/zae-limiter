@@ -43,6 +43,7 @@ from .models import (
     StackOptions,
     UsageSnapshot,
     UsageSummary,
+    is_accrual_rate,
     validate_identifier,
     validate_resource,
 )
@@ -2125,9 +2126,15 @@ class RateLimiter:
                     deficit_milli=(requested - available) * 1000,
                     # Every share floors to 0 for a slow limit split many ways;
                     # fall back to the undivided rate, as BucketState's own
-                    # retry_refill_amount_milli does.
+                    # retry_refill_amount_milli does. The test is the temporal
+                    # predicate on the *summed* rate, not `limit.is_quota`: a
+                    # dripping limit lands here too, and a quota falls through
+                    # to an undivided 0 that calculate_retry_after then answers
+                    # from the reset edge rather than from a rate.
                     refill_amount_milli=(
-                        refill_milli[limit.name] or undivided_refill_milli[limit.name]
+                        refill_milli[limit.name]
+                        if is_accrual_rate(refill_milli[limit.name])
+                        else undivided_refill_milli[limit.name]
                     ),
                     refill_period_ms=period_ms[limit.name],
                     # TODO(#222 surface-plan Task 5): supply the next reset

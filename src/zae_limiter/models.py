@@ -193,6 +193,35 @@ OnUnavailableAction = Literal["allow", "block"]
 _QUOTA_REFILL_PERIOD_SECONDS = 1
 
 
+def is_accrual_rate(refill_amount_milli: int) -> bool:
+    """Does this refill rate actually add tokens?
+
+    The **temporal** half of ADR-137's "this limit has no refill", in its
+    primitive form: a rate that has already been resolved — scaled by whatever
+    schedule window is in force, and divided by ``shard_count``.
+    :meth:`BucketState.accrues` is the same question bound to a bucket and a
+    clock reading; this is what a free function holding only the rate can ask.
+
+    Deliberately **not** the same question as :attr:`Limit.is_quota`, and the
+    reason the two are separate predicates. A resolved rate reaches zero two
+    ways:
+
+    * a **quota** never drips at all, at any instant (``refill_amount = 0``
+      paired with a ``reset_schedule``); and
+    * a limit that *does* drip can be accruing nothing at this instant, when
+      its share floors away — ``ra_milli // shard_count`` is 0 for a
+      1-token/minute limit spread over 32 shards, and a ``scale`` window
+      shrinks the numerator before the shard split reaches it.
+
+    Only the first has a ``reset_schedule`` to be recognised by, so code that
+    divides by a rate, or computes a wait from one, must ask *this* rather than
+    test for a quota: a quota-only special case is silently wrong for the
+    second case, which predates ADR-137 (#475, GHSA-76rv) and has no marker on
+    the limit at all.
+    """
+    return refill_amount_milli > 0
+
+
 def _schedule_entry_to_dict(entry: ScheduleEntry) -> dict[str, Any]:
     """One schedule entry as a plain dict, emitting only the fields that are set.
 
@@ -504,6 +533,31 @@ class Limit:
         )
 
     @property
+    def is_quota(self) -> bool:
+        """Does this limit recover at a reset edge rather than by dripping?
+
+        The **structural** half of ADR-137's "this limit has no refill": a
+        property of the configuration and of nothing else. True for a quota at
+        every instant, false for a dripping limit at every instant — including
+        one whose effective rate happens to be zero right now.
+
+        Derived from ``reset_schedule`` rather than from ``refill_amount == 0``
+        because the reset is what the limit *has*; the zero rate is the
+        consequence ``__post_init__`` pairs with it, and the pairing is what
+        makes the two spellings interchangeable for any constructible limit.
+        ``reset_schedule`` is also the half that survives
+        :meth:`per_shard`, which must return a quota whose rate is still zero.
+
+        Consumers are the ones that must treat a quota as a different *kind* of
+        thing no matter what the clock says: display (``10,000 per day``, never
+        ``0/sec``), validation, documentation. Anything asking "is this
+        accruing right now" wants :meth:`BucketState.accrues` instead — a quota
+        is only one of the two ways to get a zero rate, and the other one
+        carries no ``reset_schedule`` to be found by.
+        """
+        return bool(self.reset_schedule)
+
+    @property
     def refill_rate(self) -> float:
         """Tokens per second (for display/debugging)."""
         return self.refill_amount / self.refill_period_seconds
@@ -654,9 +708,13 @@ class Limit:
         zero and must stay zero (ADR-137). Flooring it to one would both invent
         a drip the operator never configured and make the result
         unconstructible, since a positive rate alongside the ``reset_schedule``
-        this carries through is exactly what validation rejects. The test is on
-        the *base* rate rather than the scheduled one: no drip, scaled by
-        anything, is still no drip.
+        this carries through is exactly what validation rejects. The carve-out
+        asks :attr:`is_quota`, the **structural** predicate, deliberately: no
+        drip, scaled by any window and divided by any shard count, is still no
+        drip, so the question must not depend on ``now_ms``. The temporal
+        predicate would be the wrong one here — it is also true of a dripping
+        limit whose share has floored away, and zeroing *that* limit's rate
+        would report a recovering limit as one that never recovers.
         """
         if shard_count <= 1 and not self.schedule:
             return self
@@ -674,7 +732,7 @@ class Limit:
         return replace(
             self,
             capacity=max(1, (cp_milli // divisor) // 1000),
-            refill_amount=(0 if self.refill_amount == 0 else max(1, (ra_milli // divisor) // 1000)),
+            refill_amount=(0 if self.is_quota else max(1, (ra_milli // divisor) // 1000)),
             refill_period_seconds=max(1, rp_ms // 1000),
             schedule=(),
         )
@@ -929,6 +987,35 @@ class BucketState:
         _cp, _ra, rp = self._scheduled_params(now_ms)
         return rp
 
+    def accrues(self, now_ms: int) -> bool:
+        """Is this shard gaining tokens at ``now_ms``?
+
+        The **temporal** half of ADR-137's "this limit has no refill", bound to
+        a bucket and a clock: :func:`is_accrual_rate` applied to the rate this
+        shard actually refills at right now, schedule and shard split included.
+
+        False for two unrelated reasons, which is the whole point of keeping it
+        apart from :attr:`Limit.is_quota`:
+
+        * the limit is a **quota** and never drips (``ra`` is 0 on the item); or
+        * the limit drips, but *this* shard's share of the rate in force floors
+          to zero — a slow limit split many ways, or a ``scale`` window that
+          shrank the numerator before ``// shard_count`` reached it.
+
+        A caller that special-cases only the first gets the second wrong
+        silently, because a sharded dripping limit carries nothing that marks
+        it. Anything that divides by the refill rate, or computes a wait from
+        it, must ask this question; anything that decides how to *describe* the
+        limit — display, validation — wants :attr:`Limit.is_quota`, which does
+        not move with the clock.
+
+        Note what this does **not** say: a bucket that is not accruing may
+        still recover, at the next ``reset_schedule`` edge for a quota, or on
+        the next re-materialisation for a share that a widening window brings
+        back above zero.
+        """
+        return is_accrual_rate(self.effective_refill_amount_milli(now_ms))
+
     def retry_refill_amount_milli(self, now_ms: int) -> int:
         """Refill rate to use for a "seconds until available" estimate.
 
@@ -944,11 +1031,18 @@ class BucketState:
         The fallback is the *scheduled* undivided rate, not the stored base
         rate: during a ``scale`` window the base rate is a speed nothing in
         the system refills at, so quoting it would under-report the wait.
+
+        A **quota** falls through to the same fallback and gets 0 back, because
+        the undivided rate is 0 too — the estimate is then not a rate question
+        at all, and ``bucket.calculate_retry_after`` answers it from the next
+        reset edge instead (#530). That is why the guard here is
+        :func:`is_accrual_rate` and not :attr:`Limit.is_quota`: it has to catch
+        the floored share, which is not a quota and must not be treated as one.
         """
-        share = self.effective_refill_amount_milli(now_ms)
-        if share:
-            return share
         _cp, ra, _rp = self._scheduled_params(now_ms)
+        share = ra // self.shard_count
+        if is_accrual_rate(share):
+            return share
         return ra
 
     @classmethod

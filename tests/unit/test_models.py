@@ -754,6 +754,121 @@ class TestScheduledStatusCapacity:
         )
 
 
+#: Shrink the rate far enough that a single shard's share rounds away entirely.
+#: ``effective_params`` floors a scaled value at one *milli*-token, so this is
+#: as close to "stops dripping" as a parameter schedule can get — and it is a
+#: dripping limit throughout, with no ``reset_schedule`` anywhere.
+TINY = (ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.001),)
+
+
+class TestZeroRefillPredicates:
+    """Two predicates for "this limit has no refill", deliberately distinct.
+
+    ADR-137 made ``refill_amount = 0`` the normal state of a quota, so the bare
+    ``refill_amount <= 0`` tests scattered through the codebase became a named
+    concept — but only after separating two questions a single check conflates:
+
+    * **structural**, :attr:`Limit.is_quota`: does this limit recover at a
+      reset edge rather than by dripping? A property of the configuration,
+      identical at every instant.
+    * **temporal**, :meth:`BucketState.accrues`: is this shard gaining tokens
+      *at this instant*? False for a quota, and **also** false for a limit that
+      does drip whose scheduled per-shard share has floored to zero.
+
+    The second case predates ADR-137 (#475, GHSA-76rv) and carries no
+    ``reset_schedule`` to be recognised by, so a quota-only special case is
+    silently wrong there. That is what these tests pin.
+    """
+
+    # --- structural: `Limit.is_quota` ------------------------------------
+
+    def test_a_quota_is_one_and_a_dripping_limit_is_not(self):
+        assert Limit.quota("rpd", 10_000, cron="0 0 * * *").is_quota is True
+        assert Limit.per_minute("rpm", 100).is_quota is False
+
+    def test_it_does_not_move_with_the_clock(self):
+        """Structural means structural. ``BUSINESS`` halves every parameter at
+        ``TUE_1400`` and nothing at ``TUE_0300``; neither answer may follow."""
+        quota = Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York").with_schedule(
+            BUSINESS
+        )
+        drip = Limit.per_minute("rpm", 100).with_schedule(BUSINESS)
+        for now in (TUE_1400, TUE_0300):
+            assert quota.per_shard(4, now).is_quota is True
+            assert drip.per_shard(4, now).is_quota is False
+
+    def test_a_dripping_limit_narrowed_to_its_floor_is_still_not_a_quota(self):
+        """A reported share floors at one whole token, so the narrowed limit
+        never *looks* like a quota — while the bucket underneath it may be
+        accruing nothing at all. The temporal tests below take that up."""
+        narrowed = Limit.per_minute("rpm", 1).per_shard(32, TUE_1400)
+        assert narrowed.is_quota is False
+        assert narrowed.refill_amount == 1
+
+    # --- temporal: `BucketState.accrues` ---------------------------------
+
+    def test_an_ordinary_bucket_accrues(self):
+        assert _state().accrues(TUE_1400) is True
+
+    def test_a_quota_bucket_never_accrues(self):
+        """First source of a zero effective rate: ``ra`` is 0 on the item, so
+        the answer is False at every instant rather than inside a window."""
+        quota = _state(refill_amount_milli=0)
+        assert quota.accrues(TUE_1400) is False
+        assert quota.accrues(TUE_0300) is False
+
+    def test_a_dripping_bucket_stops_accruing_inside_a_shrinking_window(self):
+        """Second source, and the reason this is not :attr:`Limit.is_quota`.
+
+        ``int(1_000 * 0.001)`` floors to one millitoken, which ``// 8`` takes to
+        zero — inside the window only. Same bucket, two instants, two answers,
+        so an implementation that ignores ``now_ms`` (or that asks whether the
+        limit is a quota) cannot pass this.
+        """
+        state = _state(refill_amount_milli=1_000, shard_count=8, sched=TINY)
+        assert state.effective_refill_amount_milli(TUE_1400) == 0
+        assert state.accrues(TUE_1400) is False
+        assert state.effective_refill_amount_milli(TUE_0300) == 125
+        assert state.accrues(TUE_0300) is True
+
+    def test_a_share_can_floor_away_with_no_schedule_at_all(self):
+        """The same second source without any window: a slow limit split very
+        wide. Nothing here carries a ``reset_schedule``, so there is nothing a
+        structural check could even look at."""
+        assert _state(refill_amount_milli=1_000, shard_count=1024).accrues(TUE_1400) is False
+        assert _state(refill_amount_milli=1_000, shard_count=2).accrues(TUE_1400) is True
+
+    def test_the_two_predicates_disagree_on_a_floored_share(self):
+        """The crux. The limit is not a quota *and* the bucket is not accruing,
+        so collapsing the pair into one check gets this row wrong whichever way
+        it collapses."""
+        limit = Limit.custom("rpm", capacity=5, refill_amount=1, refill_period_seconds=60)
+        state = _state(capacity_milli=5_000, refill_amount_milli=1_000, shard_count=1024)
+        assert limit.is_quota is False
+        assert state.accrues(TUE_1400) is False
+
+    # --- the primitive both are built on ----------------------------------
+
+    def test_is_accrual_rate_is_strictly_positive(self):
+        assert models.is_accrual_rate(1) is True
+        assert models.is_accrual_rate(0) is False
+        # A corrupt stored item, not a constructible limit — but the callers
+        # divide, so "not positive" is the question, not "not zero".
+        assert models.is_accrual_rate(-1) is False
+
+    def test_a_quotas_retry_rate_falls_through_to_zero(self):
+        """``retry_refill_amount_milli`` falls back to the *undivided* rate for
+        a floored share, and a quota's undivided rate is 0 too — which is what
+        routes ``calculate_retry_after`` to the reset edge instead of a rate
+        (#530). Pinned because the fallback is what keeps a floored share from
+        ever reaching that branch."""
+        assert _state(refill_amount_milli=0).retry_refill_amount_milli(TUE_1400) == 0
+        assert (
+            _state(refill_amount_milli=1_000, shard_count=1024).retry_refill_amount_milli(TUE_1400)
+            == 1_000
+        )
+
+
 class TestEntity:
     """Tests for Entity model."""
 
