@@ -263,14 +263,23 @@ class TestPrevResetEdge:
     def test_a_match_sitting_on_the_horizon_is_not_an_edge(self):
         """An edge needs a non-matching minute before it, and the cap hides that one.
 
-        `0 0 15 9 *` matches once a year. Seven days later — exactly the
-        minute-granularity cap — the match is the oldest instant the scan may
-        look at, so whether it *opened* there is unknowable and None is the only
-        honest answer. Claiming an edge at the horizon would re-fire the reset on
-        every pass for a bucket that has been idle exactly that long.
+        `0 0 29 2 *` matches once every four years. Exactly 366 days later —
+        the horizon a month-constrained pattern gets since #574 — the match is
+        the oldest instant the scan may look at, so whether it *opened* there is
+        unknowable and None is the only honest answer. Claiming an edge at the
+        horizon would re-fire the reset on every pass for a bucket that has been
+        idle exactly that long.
+
+        A *yearly* pattern was the example before #574 widened the horizon, and
+        can no longer be: its previous firing is now always well inside reach.
         """
-        annual = (ScheduleEntry.reset(cron="0 0 15 9 *", tz="America/New_York"),)
-        assert prev_reset_edge(annual, _ms("2026-09-22 00:00")) is None
+        leap_day = (ScheduleEntry.reset(cron="0 0 29 2 *", tz="America/New_York"),)
+        # 2024-02-29 00:00 + 366 days, so the match lands exactly on the floor.
+        assert prev_reset_edge(leap_day, _ms("2025-03-01 00:00")) is None
+        # One minute earlier, the non-matching minute below it is in reach.
+        assert _iso(prev_reset_edge(leap_day, _ms("2025-02-28 23:59"))).startswith(
+            "2024-02-29T00:00"
+        )
 
     def test_an_always_matching_expression_has_no_edge(self):
         """No transition into matching anywhere in the horizon, so nothing rises."""
@@ -390,15 +399,24 @@ class TestNextBoundarySpansBothTuples:
         assert next_boundary((), always, now_ms=now) == now + 366 * _DAY_MS
 
     def test_an_out_of_reach_reset_caps_rather_than_vanishing(self):
-        """A yearly reset cannot be seen seven days out, and must not report nothing.
+        """A reset past the horizon must not report nothing.
 
         None would leave `vu` unset and the fast path spending pre-reset tokens
         forever, because only a materialising pass runs the backwards scan that
         would find the edge. The cap forces one pass per horizon instead.
+
+        A *yearly* reset used to be the example here, and since #574 is no
+        longer out of reach: the horizon is the entry's own cycle, so `0 0 1 1 *`
+        answers with the real January 1st. `0 0 29 2 *` is what is left — a leap
+        day, nearly 900 days out from here, past even the 366-day cycle a
+        month-constrained pattern gets.
         """
         yearly = (ScheduleEntry.reset(cron="0 0 1 1 *", tz="America/New_York"),)
         now = _ms("2026-09-15 09:00")
-        assert next_boundary((), yearly, now_ms=now) == now + 7 * _DAY_MS
+        assert next_boundary((), yearly, now_ms=now) == _ms("2027-01-01 00:00")
+
+        leap_day = (ScheduleEntry.reset(cron="0 0 29 2 *", tz="America/New_York"),)
+        assert next_boundary((), leap_day, now_ms=now) == now + 366 * _DAY_MS
 
 
 def _brute_force_boundary(sched: tuple[ScheduleEntry, ...], now_ms: int, horizon_ms: int):
@@ -501,7 +519,9 @@ class TestNextResetEdge:
         never = (ScheduleEntry.reset(cron="0 0 29 2 *"),)
         now = _ms("2026-09-15 09:00")
         assert next_reset_edge(never, now_ms=now) is None
-        assert _next_reset_edge(never, now) == now + 7 * _DAY_MS
+        # 366 days, not seven: the horizon is the entry's own cycle since #574,
+        # and a month-constrained pattern cycles annually.
+        assert _next_reset_edge(never, now) == now + 366 * _DAY_MS
 
     def test_takes_the_earliest_across_entries(self):
         """The mirror of `prev_reset_edge` taking the latest: looking forward,

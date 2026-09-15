@@ -353,6 +353,18 @@ _ADVANCE = {
     "day": timedelta(days=1),
 }
 
+# How long until a pattern's firing set repeats, read off the COARSEST field it
+# constrains — the opposite end of the expression from `_granularity`, which
+# reads the finest. Long months and leap years, so the cycle is never short of a
+# real gap; every branch rounds **up**, because too long only costs probes where
+# too short hides an edge outright (#574).
+_MINUTE_SECONDS = 60
+_HOUR_SECONDS = 3_600
+_DAY_SECONDS = 86_400
+_WEEK_SECONDS = 7 * _DAY_SECONDS
+_MONTH_SECONDS = 31 * _DAY_SECONDS
+_YEAR_SECONDS = 366 * _DAY_SECONDS
+
 
 def _granularity(parsed: tuple[ParsedCron, ...]) -> tuple[str, int]:
     """Unit and cap for a scan, from the finest field any entry constrains.
@@ -369,6 +381,76 @@ def _granularity(parsed: tuple[ParsedCron, ...]) -> tuple[str, int]:
     if any(len(p.hours) < 24 for p in parsed):
         return "hour", _CAP["hour"]
     return "day", _CAP["day"]
+
+
+def cycle_seconds(parsed: ParsedCron) -> int:
+    """Upper bound on the gap between two consecutive firings of one pattern.
+
+    Derived from the **coarsest** cron field the pattern constrains, because
+    that is the cycle over which its firing set repeats: ``0 0 * * *``
+    constrains the hour, so it repeats daily; ``0 0 1 * *`` constrains the
+    day-of-month, so it repeats monthly.
+
+    Exact for every pattern whose firing set repeats within its own cycle,
+    which is every practical quota schedule. The one class it understates is a
+    pattern that skips whole years — ``0 0 29 2 *`` fires on February 29th and
+    so has a real gap near four years against the one year reported here.
+
+    Day-of-month is tested before day-of-week deliberately: when both are
+    constrained cron ORs them, so the answer must be the *wider* of the two
+    cycles, and a month is wider than a week.
+
+    Lives here rather than in ``schema.py`` because two unrelated callers ask
+    the same question and drifting answers is exactly what #574 was:
+    :func:`_reset_scan` sizes a scan horizon with it, and
+    ``schema._reset_cycle_seconds`` sizes a quota bucket's TTL recovery horizon
+    (#532).
+    """
+    if len(parsed.months) < 12:
+        return _YEAR_SECONDS
+    if len(parsed.days) < 31:
+        return _MONTH_SECONDS
+    if len(parsed.weekdays) < 7:
+        return _WEEK_SECONDS
+    if len(parsed.hours) < 24:
+        return _DAY_SECONDS
+    if len(parsed.minutes) < 60:
+        return _HOUR_SECONDS
+    return _MINUTE_SECONDS
+
+
+def _reset_scan(parsed: ParsedCron) -> tuple[str, int]:
+    """Probe step and scan horizon for **one** reset entry (#574).
+
+    Step and horizon are different questions and are read off opposite ends of
+    the expression. The *step* must be fine enough that the match state is
+    constant across it, so it comes from :func:`_granularity` and the finest
+    constrained field. The *horizon* asks how far away the next edge can be,
+    which is :func:`cycle_seconds`' question and comes from the coarsest.
+
+    Conflating the two is what #574 was: every practical reset pattern pins the
+    minute, so every one of them — monthly, quarterly, annual alike — was
+    scanned with the minute step's seven-day cap and reported no edge for most
+    of its own cycle. ``next_reset_edge`` then returned ``None`` (surfacing as
+    ``resets_at_ms: null`` in a 429 body, #545) and an annual quota's
+    ``retry_after_seconds`` fell through to the flat estimate's ``0.0`` — "retry
+    immediately" against a limit that cannot admit anything for months.
+
+    The **maximum** of the two rather than the cycle outright, so the horizon
+    can only ever grow: ``* * * * *`` constrains nothing and so has a
+    one-minute cycle, but it is scanned at day granularity with a 366-day cap
+    and shrinking that would hide edges the old code could see. In practice
+    only the date-constrained patterns move — monthly to 31 days, quarterly and
+    annual to 366.
+
+    Not applied to :func:`_next_param_change`, whose cap is a
+    re-materialisation interval rather than a search horizon: a coarse
+    *parameter* window is still honoured exactly, because ``effective_params``
+    is evaluated at read time. Only an *edge* can be missed by being out of
+    reach.
+    """
+    unit, step_cap = _granularity((parsed,))
+    return unit, max(step_cap, cycle_seconds(parsed) * 1000)
 
 
 def _truncate(d: datetime, unit: str) -> datetime:
@@ -497,6 +579,41 @@ def _next_param_change(sched: tuple[ScheduleEntry, ...], now_ms: int) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _unreachable_block(parsed: ParsedCron, t_ms: int) -> str | None:
+    """The largest local calendar block containing ``t_ms`` that cannot match.
+
+    ``"day"`` when the *date* fields rule the whole local day out, ``"hour"``
+    when the date matches but the hour does not, ``None`` when only the minute
+    can still decide. Exactly :func:`matches` with the minute test removed, and
+    read at the same granularities the probe grid is built from.
+
+    This is what keeps the widened reset horizon (#574) affordable. A search for
+    a *match* may skip such a block whole, because every instant in it shares
+    the state being walked away from: the date fields depend only on the local
+    date, so if they fail, no minute of that local day matches; likewise the
+    hour field within one local hour. A search for a **non**-match may not —
+    the block is exactly what it is looking for — so both call sites below skip
+    only when ``want`` is True.
+
+    The bound that follows: a forward search costs at most one probe per
+    non-matching local day in the horizon, plus at most 24 hour probes and 60
+    minute probes on the first date that does match (the field sets are never
+    empty, so a matching date always yields a matching minute). That is ~450
+    probes over a 366-day horizon against the 527,040 a flat minute walk would
+    cost.
+    """
+    d = datetime.fromtimestamp(t_ms / 1000, parsed.tz)
+    if d.month not in parsed.months:
+        return "day"
+    dom_ok = d.day in parsed.days
+    dow_ok = d.isoweekday() in parsed.weekdays
+    if not ((dom_ok and dow_ok) if parsed.day_and else (dom_ok or dow_ok)):
+        return "day"
+    if d.hour not in parsed.hours:
+        return "hour"
+    return None
+
+
 def _earliest_where(
     parsed: ParsedCron, want: bool, start_ms: int, horizon_ms: int, unit: str
 ) -> int | None:
@@ -511,6 +628,11 @@ def _earliest_where(
     The horizon guard rides on the first ``matches`` rather than standing alone,
     because both call sites below pass a ``start_ms`` already inside the horizon;
     it is there so an answer can never be returned from beyond it.
+
+    When looking for a match, whole local days and hours that
+    :func:`_unreachable_block` rules out are stepped over in one probe. That
+    skips only instants already known to be non-matching, so the grid stays
+    exhaustive; see that function for the resulting bound.
     """
     t = -(-start_ms // _MINUTE_MS) * _MINUTE_MS
     if t <= horizon_ms and matches(parsed, t) == want:
@@ -521,7 +643,12 @@ def _earliest_where(
     while probe <= horizon_ms:
         if matches(parsed, probe) == want:
             return probe
-        probe = _next_probe(single, probe, unit)
+        block = _unreachable_block(parsed, probe) if want else None
+        if block is None:
+            probe = _next_probe(single, probe, unit)
+        else:
+            after = (_unit_after(parsed.tz, probe, block) // _MINUTE_MS) * _MINUTE_MS
+            probe = max(after, probe + _MINUTE_MS)
     return None
 
 
@@ -540,6 +667,13 @@ def _latest_where(
     where that state stopped. `* 0 * * *` looked up from 05:00 must answer 00:59,
     not 00:00 — the caller turns that into the 00:00 edge, and doing it here
     would lose the window's length.
+
+    Skips whole unreachable days and hours exactly as ``_earliest_where`` does,
+    and under the same restriction to ``want=True``. ``hi`` moves back to the
+    *start* of the skipped block rather than to the probe, which is what keeps
+    the "everything in ``[probe, hi)`` shares ``probe``'s state" invariant true
+    across a skip: a day or hour start is also a unit start at every
+    granularity, so the probe below it is still exactly one unit earlier.
     """
     t = (start_ms // _MINUTE_MS) * _MINUTE_MS
     if t < floor_ms:
@@ -553,8 +687,12 @@ def _latest_where(
     while probe >= floor_ms:
         if matches(parsed, probe) == want:
             return hi - _MINUTE_MS
-        hi = probe
-        probe = _prev_probe(single, probe, unit)
+        block = _unreachable_block(parsed, probe) if want else None
+        if block is None:
+            hi = probe
+        else:
+            hi = min(hi, (_unit_start(parsed.tz, probe, block) // _MINUTE_MS) * _MINUTE_MS)
+        probe = _prev_probe(single, hi, unit)
     return None
 
 
@@ -601,19 +739,20 @@ def prev_reset_edge(reset_sched: tuple[ScheduleEntry, ...], now_ms: int) -> int 
     *any* edge has been missed since ``rf``. Applying a reset is idempotent, so
     the latest one subsumes every earlier one.
 
-    Each entry is scanned at its own granularity and cap, because they are
-    independent: a `0 0 * * *` neighbour must not shorten a `* 0 1 * *`'s horizon
-    from 31 days to 7 and hide its edge.
+    Each entry gets its own step and horizon from :func:`_reset_scan`, because
+    they are independent: a `0 0 * * *` neighbour must not shorten a
+    `0 0 1 * *`'s horizon from 31 days to 7 and hide its edge.
 
     Returns None for an empty tuple and for an expression with no edge inside the
     cap, which resets nothing. (§3.6 names `0 0 30 2 *` for that case; cronsim
     rejects February 30th outright, so the constructible equivalent is
-    `0 0 29 2 *` — a leap day, out of reach of a seven-day scan almost always.)
+    `0 0 29 2 *` — a leap day, out of reach even of the 366-day horizon a
+    month-constrained pattern earns, for three years in every four.)
     """
     edges = []
     for entry in reset_sched:
         parsed = parse_cron(entry.cron, entry.tz)
-        unit, cap = _granularity((parsed,))
+        unit, cap = _reset_scan(parsed)
         edge = _prev_rising_edge(parsed, now_ms, unit, cap)
         if edge is not None:
             edges.append(edge)
@@ -630,14 +769,14 @@ def _forward_reset_scan(
     those are two ways of *reporting* the same scan — running it twice invites
     the two answers to disagree about the same expression.
 
-    Each entry is scanned at its own granularity and cap, for the same reason
-    :func:`prev_reset_edge` does: a ``0 0 * * *`` neighbour must not shorten a
-    ``* 0 1 * *``'s horizon from 31 days to 7 and hide its edge.
+    Each entry gets its own step and horizon from :func:`_reset_scan`, for the
+    same reason :func:`prev_reset_edge` does: a ``0 0 * * *`` neighbour must not
+    shorten a ``0 0 1 * *``'s horizon from 31 days to 7 and hide its edge.
     """
     out: list[tuple[int | None, int]] = []
     for entry in reset_sched:
         parsed = parse_cron(entry.cron, entry.tz)
-        unit, cap = _granularity((parsed,))
+        unit, cap = _reset_scan(parsed)
         out.append((_next_rising_edge(parsed, now_ms, unit, cap), cap))
     return out
 
@@ -645,10 +784,16 @@ def _forward_reset_scan(
 def next_reset_edge(reset_sched: tuple[ScheduleEntry, ...], *, now_ms: int) -> int | None:
     """The first reset edge strictly after ``now_ms``, or None within the cap.
 
-    The forward twin of :func:`prev_reset_edge`: same adaptive granularity, same
+    The forward twin of :func:`prev_reset_edge`: same adaptive step, same
     horizon, same "no edge within the cap means the expression never matches"
     reading (§3.6 names ``0 0 30 2 *``; cronsim rejects February 30th outright,
     so the constructible equivalent is ``0 0 29 2 *``).
+
+    Since #574 the horizon is the entry's own cycle (:func:`_reset_scan`), so
+    None here means what it says rather than "coarser than seven days": every
+    practical quota period — session, daily, weekly, monthly, quarterly, annual
+    — reports a real edge from every instant in its cycle. That is what makes
+    ``resets_at_ms`` in a 429 body (#545) worth reading.
 
     The **minimum** across entries, where ``prev_reset_edge`` takes the maximum,
     and both for the same reason: reset entries are independent instants, so
@@ -658,8 +803,8 @@ def next_reset_edge(reset_sched: tuple[ScheduleEntry, ...], *, now_ms: int) -> i
     Unlike :func:`_next_reset_edge` this reports None rather than ``now_ms +
     cap`` when nothing is in reach. The cap is the right answer for a ``vu``
     stamp, which must force a re-materialisation per horizon; it is the wrong
-    answer for a *wait*, which would then quote a 7-day countdown to an instant
-    at which nothing happens.
+    answer for a *wait*, which would then quote a countdown to an instant at
+    which nothing happens.
 
     ``now_ms`` is keyword-only for the same reason :func:`next_boundary`'s is
     (#500): the second positional slot is a schedule tuple everywhere else in
@@ -673,12 +818,17 @@ def _next_reset_edge(reset_sched: tuple[ScheduleEntry, ...], now_ms: int) -> int
     """The earliest reset edge after ``now_ms``, or ``now_ms + cap`` if none is in reach.
 
     The cap rather than None, matching ``_next_param_change``, and for a sharper
-    reason here: a yearly `0 0 1 1 *` scans at minute granularity and so cannot
-    see its own edge seven days out. Reporting None would leave ``vu`` unset and
-    the fast path spending pre-reset tokens indefinitely, because nothing else
-    would ever demote the bucket to the pass that runs the *backwards* scan.
-    Capping forces one materialisation per horizon, and the backwards scan then
-    finds the edge from the far side.
+    reason here: reporting None would leave ``vu`` unset and the fast path
+    spending pre-reset tokens indefinitely, because nothing else would ever
+    demote the bucket to the pass that runs the *backwards* scan. Capping forces
+    one materialisation per horizon, and the backwards scan then finds the edge
+    from the far side.
+
+    Since #574 this is a rare fallback rather than the everyday answer for a
+    coarse quota — a yearly `0 0 1 1 *` now sees its own edge — and the cap it
+    falls back to can never hide one: an entry reports None exactly when its
+    real edge is *past* the cap, so ``vu`` still lands at or before that edge
+    and the materialising pass that follows re-scans from closer in.
     """
     return min(
         now_ms + cap if edge is None else edge
@@ -754,7 +904,18 @@ def retry_after_with_schedule(
     and reporting "at midnight".
 
     Capped at ``max_windows``, after which it falls back to the flat estimate
-    rather than reporting a partial walk as a complete one. The fallback quotes
+    rather than reporting a partial walk as a complete one. Eight is untouched
+    by #574 and is not a second half of that fix: a quota's rate is zero in
+    every window, so the zero-rate branch below returns the edge on **iteration
+    one** as soon as ``next_reset_edge`` can see it. The 56-day reach an annual
+    quota used to fall off was the product of the budget and the seven-day cap —
+    each iteration advanced ``cursor`` by one cap, hunting for an edge the scan
+    could not yet see. With the horizon fixed there is nothing to hunt, and the
+    walk costs one iteration where it used to cost eight. Raising the budget
+    instead would have papered over the horizon for a quota and done nothing at
+    all for ``next_reset_edge``, whose ``resets_at_ms`` has no walk to rescue it.
+
+    The fallback quotes
     the **base** rate rather than the window's: past the cap the walk has no
     view of the schedule at all, and the momentary rate of whichever window the
     caller happened to ask in is a worse guess than the nominal one — a 0.001x
