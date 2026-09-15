@@ -39,8 +39,10 @@ item changes effective parameters.
 
 - Steady-state cost is unchanged: the fast-path condition gains one comparison against an
   attribute that is absent on every unscheduled bucket, and still reads no configuration.
-- Client and aggregator derive the same effective value from the item alone, so the two never
-  need to agree on anything beyond the clock.
+- The item carries its own schedule, so the aggregator refills a scheduled bucket without
+  reading configuration at all and needs no client involvement. The slow path instead applies
+  the configuration it has just resolved, which is the fresher of the two; the two readers can
+  therefore disagree for as long as an item is stale, which is by design and not a race.
 - Boundary cost is paid once per in-flight request at the boundary, not once per bucket, and an
   idle bucket costs nothing until it is next used.
 - Base parameters stay on the item, so actor-written changes (`set_limits`, the manifest
