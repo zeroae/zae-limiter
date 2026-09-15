@@ -1285,6 +1285,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.models.Limit.quota" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;quota
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.models.Limit.custom" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1300,6 +1311,17 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;with_schedule
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.Limit.with_reset_schedule" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;with_reset_schedule
       
     </span>
   </a>
@@ -4363,6 +4385,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.models.Limit.quota" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;quota
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.models.Limit.custom" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -4378,6 +4411,17 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;with_schedule
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.Limit.with_reset_schedule" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;with_reset_schedule
       
     </span>
   </a>
@@ -5381,7 +5425,7 @@
   </span>
 
 <a href="#zae_limiter.models.Limit" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">Limit</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">capacity</span><span class="p">,</span> <span class="n">refill_amount</span><span class="p">,</span> <span class="n">refill_period_seconds</span><span class="p">,</span> <span class="n">schedule</span><span class="o">=</span><span class="p">())</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">Limit</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">capacity</span><span class="p">,</span> <span class="n">refill_amount</span><span class="p">,</span> <span class="n">refill_period_seconds</span><span class="p">,</span> <span class="n">schedule</span><span class="o">=</span><span class="p">(),</span> <span class="n">reset_schedule</span><span class="o">=</span><span class="p">())</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
@@ -5432,7 +5476,9 @@ to avoid floating point precision issues.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Numerator of refill rate</p>
+                <p>Numerator of refill rate. <code>0</code> means the limit does not
+drip at all, and is valid <strong>only</strong> alongside a non-empty
+<code>reset_schedule</code> (ADR-137).</p>
               </div>
             </td>
           </tr>
@@ -5443,7 +5489,8 @@ to avoid floating point precision issues.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Denominator of refill rate</p>
+                <p>Denominator of refill rate. Inert while
+<code>refill_amount</code> is 0.</p>
               </div>
             </td>
           </tr>
@@ -5461,8 +5508,34 @@ is applied on top of them at read time by
               </div>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="zae_limiter.models.Limit.reset_schedule">reset_schedule</span></code></td>
+            <td>
+                  <code><span title="tuple">tuple</span>[<span title="zae_limiter.schedule.ScheduleEntry">ScheduleEntry</span>, ...]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Calendar instants at which the balance goes back to the
+effective capacity in one lump (#222 §3.6). A second, independent
+tuple rather than a third kind of entry in <code>schedule</code>, because
+<code>schedule</code> is resolved first-match-wins and an entry overriding
+no parameters would win its window and supply nothing. Entries are
+built with <code>ScheduleEntry.reset()</code>.</p>
+              </div>
+            </td>
+          </tr>
       </tbody>
     </table>
+        <p>A limit <strong>drips or resets, never both and never neither</strong> (ADR-137): a
+positive <code>refill_amount</code> alongside a <code>reset_schedule</code> would return the
+allowance a second time over the period, and a zero one without a reset
+leaves a bucket that can never recover. Both are rejected at construction,
+so the amount and the reset have to arrive in the same call — which is what
+:meth:<code>quota</code> is for. A quota may still carry a <em>parameter</em> schedule
+(<code>Limit.quota(...).with_schedule(...)</code>): that one sets the ceiling the
+reset restores to, and never touches <code>refill_amount</code>.</p>
+<p>The reset window is a <strong>fixed calendar window</strong> — every entity on one
+schedule resets at the same wall-clock instant (ADR-138).</p>
 
 
 
@@ -5868,6 +5941,131 @@ temporary spikes above the sustained rate.</p>
 <div class="doc doc-object doc-function">
 
 
+<h4 id="zae_limiter.models.Limit.quota" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">quota</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
+  </span>
+
+<a href="#zae_limiter.models.Limit.quota" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">quota</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">amount</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">cron</span><span class="p">,</span> <span class="n">tz</span><span class="o">=</span><span class="s1">'UTC'</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>An allowance of <code>amount</code> per calendar window, restored at each edge.</p>
+<p>A quota does not drip: the balance is <em>set</em> to the capacity when the
+window opens and does not recover in between (ADR-137). That is what
+makes "10,000 a day, and when they are gone you wait for midnight"
+different from <code>per_day("rpd", 10_000)</code>, which returns roughly seven
+tokens a minute all day.</p>
+<p>The window is a <strong>fixed calendar window</strong> — every entity on this
+schedule resets at the same wall-clock instant, in <code>tz</code> (ADR-138).</p>
+<p>The amount and the reset have to arrive together, which is the whole
+reason this factory exists. Building the limit first and attaching the
+reset afterwards cannot work at any spelling: the intermediate value is
+either a drip with a reset or a zero rate with none, and <code>Limit</code>
+rejects both. :meth:<code>with_reset_schedule</code> is therefore a <em>replacement</em>
+operator on a limit that is already a quota, never the way one is made.</p>
+<p><code>refill_period_seconds</code> is stored as
+<code>_QUOTA_REFILL_PERIOD_SECONDS</code> and is inert while <code>refill_amount</code>
+is 0; it exists only because the field is validated positive.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>name</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Limit name (e.g., "rpd")</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>amount</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The whole allowance for one window (also the ceiling)</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>cron</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Standard 5-field cron naming the instant the window opens</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>tz</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>IANA timezone the expression is read in</p>
+              </div>
+            </td>
+            <td>
+                  <code>&#39;UTC&#39;</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<details class="example" open>
+  <summary>10,000 a day, back to 10,000 at New York midnight</summary>
+  <p>Limit.quota("rpd", 10_000, cron="0 0 * * *",
+            tz="America/New_York")</p>
+</details>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
 <h4 id="zae_limiter.models.Limit.custom" class="doc doc-heading">
 <code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">custom</span>
 
@@ -5915,6 +6113,40 @@ runs through <code>__post_init__</code>, so a schedule whose entries disagree on
 timezone is rejected here rather than at the DynamoDB write.</p>
 <p>Pass <code>()</code> to clear a schedule: storage is override-not-merge, so a
 limit with no schedule has no schedule.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="zae_limiter.models.Limit.with_reset_schedule" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">with_reset_schedule</span>
+
+
+<a href="#zae_limiter.models.Limit.with_reset_schedule" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">with_reset_schedule</span><span class="p">(</span><span class="n">reset_schedule</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Swap one quota's reset schedule for another (#222 §3.6).</p>
+<p>A <em>replacement</em> operator on a limit that is already a quota, not the way
+a quota is built — use :meth:<code>quota</code> for that. ADR-137 leaves nothing
+else standing: this method returns a limit whose <code>refill_amount</code> is
+whatever it already was, so calling it on a dripping limit produces a
+rate alongside a reset and raises, and calling it with <code>()</code> on a quota
+produces a zero rate with no reset and raises too. Both are rejected
+here rather than silently repaired, because either repair would throw
+away a number the caller explicitly passed.</p>
+<p>Entries must come from :meth:<code>ScheduleEntry.reset</code>; a parameter entry is
+rejected rather than silently stored, since the two mean different
+things to every reader downstream.</p>
+<p>Independent of :meth:<code>with_schedule</code>, which a quota may also carry: the
+parameter schedule decides what the ceiling is, the reset schedule
+decides when the balance returns to it.</p>
 
 
     </div>
@@ -5993,6 +6225,12 @@ result divides and scales exactly once.</p>
 <code>LeaseEntry.limit</code> carries, and the slow path already puts the
 undivided config limit there; a pre-divided one would be narrowed a
 second time when the lease builds a status from it.</p>
+<p>No <code>reset_schedule</code>: bucket items do not carry one yet (surface Task
+5). When they do, the two fields have to move <strong>together</strong> — the
+<code>max(1, ...)</code> floor below turns a quota's zero rate into one token,
+which alongside a reset is precisely what ADR-137 rejects, so adding
+<code>reset_schedule=state.reset_sched</code> on its own raises rather than
+round-trips.</p>
 
 
     </div>
@@ -6032,11 +6270,24 @@ numerator and every shard refills on the same clock.</p>
 <p>The result carries no schedule. It is a point-in-time materialisation,
 and leaving the schedule attached would invite a second application
 and read to a caller as "500, which halves to 250".</p>
+<p><code>reset_schedule</code> <strong>is</strong> carried through, for the mirror-image reason:
+nothing here applies it, so there is nothing to apply twice, and it is
+the only thing that tells a reported status the balance returns in a
+lump at a calendar instant rather than dripping back at
+<code>refill_amount</code>. Dropping it would leave a daily-quota rejection
+quoting a wait computed from the drip alone.</p>
 <p>Shares are floored to one whole token because <code>Limit</code> is whole-token
 and must stay constructible; <code>schema.MAX_SHARD_COUNT</code> bounds how
 small a real share can get, and a <code>0.5x</code> window on a share of one
 would otherwise raise from inside a rejection path. Surfacing an
 unadmittable request as an event or metric is tracked in #475.</p>
+<p>That floor is <strong>not</strong> applied to a quota's <code>refill_amount</code>, which is
+zero and must stay zero (ADR-137). Flooring it to one would both invent
+a drip the operator never configured and make the result
+unconstructible, since a positive rate alongside the <code>reset_schedule</code>
+this carries through is exactly what validation rejects. The test is on
+the <em>base</em> rate rather than the scheduled one: no drip, scaled by
+anything, is still no drip.</p>
 
 
     </div>
