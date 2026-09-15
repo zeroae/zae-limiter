@@ -4,6 +4,7 @@ import asyncio
 import time
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 from botocore.exceptions import ClientError
@@ -26,6 +27,7 @@ from zae_limiter.exceptions import (
 from zae_limiter.infra.discovery import InfrastructureDiscovery
 from zae_limiter.models import BucketState
 from zae_limiter.repository_protocol import SpeculativeResult
+from zae_limiter.schedule import ScheduleEntry
 
 
 def freeze_clock(repo) -> int:
@@ -748,7 +750,8 @@ class TestLeaseRetryPath:
         limit = Limit.per_minute("rpm", 100)
         state = MagicMock()
         state.tokens_milli = 50_000
-        state.retry_refill_amount_milli = 100_000
+        state.retry_refill_amount_milli.return_value = 100_000
+        state.effective_refill_period_ms.return_value = 60_000
         state.refill_period_ms = 60_000
         state.shard_count = 1
         entry = LeaseEntry(
@@ -770,7 +773,7 @@ class TestLeaseRetryPath:
             consumed=0,
             _declared=False,
         )
-        statuses = _build_retry_failure_statuses([entry, undeclared])
+        statuses = _build_retry_failure_statuses([entry, undeclared], now_ms=1000)
         assert len(statuses) == 1
         assert statuses[0].entity_id == "e1"
         assert statuses[0].limit_name == "rpm"
@@ -788,7 +791,8 @@ class TestLeaseRetryPath:
         limit = Limit.per_minute("rpm", 100)
         state = MagicMock()
         state.tokens_milli = 100_000
-        state.retry_refill_amount_milli = 100_000
+        state.retry_refill_amount_milli.return_value = 100_000
+        state.effective_refill_period_ms.return_value = 60_000
         state.refill_period_ms = 60_000
         state.shard_count = 1
         entry = LeaseEntry(
@@ -798,7 +802,7 @@ class TestLeaseRetryPath:
             state=state,
             consumed=10,
         )
-        statuses = _build_retry_failure_statuses([entry])
+        statuses = _build_retry_failure_statuses([entry], now_ms=1000)
         assert statuses[0].retry_after_seconds == 0.0
 
     async def test_commit_retry_on_condition_failure(self, limiter):
@@ -824,7 +828,8 @@ class TestLeaseRetryPath:
         state.tokens_milli = 50_000
         state.last_refill_ms = 1000
         state.total_consumed_milli = None
-        state.retry_refill_amount_milli = 100_000
+        state.retry_refill_amount_milli.return_value = 100_000
+        state.effective_refill_period_ms.return_value = 60_000
         state.refill_period_ms = 60_000
         state.shard_count = 1
 
@@ -875,7 +880,8 @@ class TestWriteOnEnter:
         state.tokens_milli = 90_000
         state.last_refill_ms = 1000
         state.total_consumed_milli = None
-        state.retry_refill_amount_milli = 100_000
+        state.retry_refill_amount_milli.return_value = 100_000
+        state.effective_refill_period_ms.return_value = 60_000
         state.refill_period_ms = 60_000
         state.shard_count = 1
         return LeaseEntry(
@@ -1039,9 +1045,41 @@ class TestWriteOnEnter:
         )
         entry = LeaseEntry(entity_id="e1", resource="gpt-4", limit=limit, state=state, consumed=500)
 
-        (status,) = _build_retry_failure_statuses([entry])
+        (status,) = _build_retry_failure_statuses([entry], now_ms=1000)
         # 500 tokens at 500 tokens/60 s (the shard's share) = 60 s, not 30 s
         assert status.retry_after_seconds == pytest.approx(60.0, abs=0.01)
+
+    def test_retry_failure_statuses_use_the_clock_they_are_given(self):
+        """A scheduled limit's refill rate depends on when you ask (#222 §3.5).
+
+        The status must be built from the commit's single clock reading, so a
+        rejection inside a 0.5x window quotes the halved rate and a rejection
+        outside it quotes the full one.
+        """
+        from zae_limiter.lease import LeaseEntry, _build_retry_failure_statuses
+
+        ny = ZoneInfo("America/New_York")
+        in_window = int(datetime(2026, 9, 15, 14, 0, tzinfo=ny).timestamp() * 1000)
+        out_of_window = int(datetime(2026, 9, 15, 3, 0, tzinfo=ny).timestamp() * 1000)
+        limit = Limit.custom("rpm", 1000, refill_amount=1000, refill_period_seconds=60)
+        state = BucketState(
+            entity_id="e1",
+            resource="gpt-4",
+            limit_name="rpm",
+            tokens_milli=0,
+            last_refill_ms=0,
+            capacity_milli=1_000_000,
+            refill_amount_milli=1_000_000,
+            refill_period_ms=60_000,
+            sched=(ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.5),),
+        )
+        entry = LeaseEntry(entity_id="e1", resource="gpt-4", limit=limit, state=state, consumed=500)
+
+        # 500 tokens at 500/60 s inside the window; at 1000/60 s outside it.
+        (inside,) = _build_retry_failure_statuses([entry], now_ms=in_window)
+        assert inside.retry_after_seconds == pytest.approx(60.0, abs=0.01)
+        (outside,) = _build_retry_failure_statuses([entry], now_ms=out_of_window)
+        assert outside.retry_after_seconds == pytest.approx(30.0, abs=0.01)
 
     def test_retry_failure_statuses_report_the_effective_limit(self):
         """The reported limit must be the shard's share too (#475): a status
@@ -1063,7 +1101,7 @@ class TestWriteOnEnter:
         )
         entry = LeaseEntry(entity_id="e1", resource="gpt-4", limit=limit, state=state, consumed=500)
 
-        (status,) = _build_retry_failure_statuses([entry])
+        (status,) = _build_retry_failure_statuses([entry], now_ms=1000)
         assert (status.limit.capacity, status.limit.refill_amount) == (250, 250)
         assert status.limit_name == "rpm"
 

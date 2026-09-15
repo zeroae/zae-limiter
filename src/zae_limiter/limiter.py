@@ -2036,9 +2036,11 @@ class RateLimiter:
             totals[name] = totals.get(name, 0) + calculate_available(bucket, now_ms)
             # Each shard refills at its own share; the entity recovers at the
             # sum of those shares.
-            refill_milli[name] = refill_milli.get(name, 0) + bucket.effective_refill_amount_milli
-            undivided_refill_milli.setdefault(name, bucket.retry_refill_amount_milli)
-            period_ms.setdefault(name, bucket.refill_period_ms)
+            refill_milli[name] = refill_milli.get(name, 0) + bucket.effective_refill_amount_milli(
+                now_ms
+            )
+            undivided_refill_milli.setdefault(name, bucket.retry_refill_amount_milli(now_ms))
+            period_ms.setdefault(name, bucket.effective_refill_period_ms(now_ms))
 
         statuses: list[LimitStatus] = []
         for limit in resolved_limits:

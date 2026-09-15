@@ -1,16 +1,21 @@
 """Tests for token bucket calculations."""
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 import pytest
 
 from zae_limiter.bucket import (
     calculate_available,
     calculate_retry_after,
+    calculate_time_until_available,
     force_consume,
     refill_bucket,
     try_consume,
     would_refill_satisfy,
 )
 from zae_limiter.models import BucketState
+from zae_limiter.schedule import ScheduleEntry
 
 
 class TestRefillBucket:
@@ -252,12 +257,12 @@ class TestShardedRetryEstimate:
 
     def test_share_that_floors_to_zero_falls_back_to_the_undivided_rate(self):
         state = self._state(1024)
-        assert state.effective_refill_amount_milli == 0
-        assert state.retry_refill_amount_milli == 1_000
+        assert state.effective_refill_amount_milli(1_000) == 0
+        assert state.retry_refill_amount_milli(1_000) == 1_000
 
     def test_nonzero_share_is_used_as_is(self):
         state = self._state(2)
-        assert state.retry_refill_amount_milli == 500
+        assert state.retry_refill_amount_milli(1_000) == 500
 
     def test_try_consume_rejects_without_dividing_by_zero(self):
         """The exact repro: 1 token/min at shard_count=1024."""
@@ -426,3 +431,139 @@ class TestWouldRefillSatisfy:
         assert would_help is False
         assert statuses[0].retry_after_seconds > 0
         assert statuses[0].limit.name == "rpm"
+
+
+NY = ZoneInfo("America/New_York")
+TUE_1400 = int(datetime(2026, 9, 15, 14, 0, tzinfo=NY).timestamp() * 1000)  # inside 9-17
+TUE_0300 = int(datetime(2026, 9, 15, 3, 0, tzinfo=NY).timestamp() * 1000)  # outside
+
+
+def _sched_state(**kwargs) -> BucketState:
+    """A BucketState with the three required identity fields filled in."""
+    base = dict(
+        entity_id="user-1",
+        resource="gpt-4",
+        limit_name="rpm",
+        tokens_milli=0,
+        last_refill_ms=0,
+        capacity_milli=1_000_000,
+        refill_amount_milli=1_000_000,
+        refill_period_ms=60_000,
+    )
+    base.update(kwargs)
+    return BucketState(**base)  # type: ignore[arg-type]
+
+
+BUSINESS = (ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.5),)
+
+
+class TestScheduledEffectiveParams:
+    """The effective params of a scheduled bucket are a function of time (#222 §3.5)."""
+
+    def test_scale_applies_before_shard_division(self):
+        """Scale then divide: the schedule applies to the whole limit, shards
+        split the result. Dividing first would floor twice against a smaller
+        numerator and drift."""
+        state = _sched_state(shard_count=4, sched=BUSINESS)
+        assert state.effective_capacity_milli(TUE_1400) == 125_000  # (1_000_000*0.5)//4
+        assert state.effective_capacity_milli(TUE_0300) == 250_000  # 1_000_000//4, no match
+
+    def test_scale_then_divide_is_not_divide_then_scale(self):
+        """The ordering is observable, and this is a case where it shows.
+
+        Both orders floor twice, and for most inputs the two floors land on the
+        same integer — which makes an ordering bug invisible to a carelessly
+        chosen example. 7 shards of a 0.99x window separates them:
+
+        * scale-then-divide (correct): ``int(1_000 * 0.99) // 7`` == 141
+        * divide-then-scale (wrong):   ``int((1_000 // 7) * 0.99)`` == 140
+        """
+        sched = (ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.99),)
+        state = _sched_state(
+            capacity_milli=1_000, refill_amount_milli=1_000, shard_count=7, sched=sched
+        )
+        assert state.effective_capacity_milli(TUE_1400) == 141
+        assert state.effective_refill_amount_milli(TUE_1400) == 141
+
+    def test_refill_scales_with_capacity(self):
+        state = _sched_state(shard_count=1, sched=BUSINESS)
+        assert state.effective_refill_amount_milli(TUE_1400) == 500_000
+        assert state.effective_refill_amount_milli(TUE_0300) == 1_000_000
+
+    def test_unscheduled_state_is_unchanged_at_any_instant(self):
+        state = _sched_state(shard_count=1)
+        assert state.effective_capacity_milli(TUE_1400) == 1_000_000
+        assert state.effective_capacity_milli(TUE_0300) == 1_000_000
+
+    def test_absolute_entry_overrides_capacity(self):
+        night = (ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", capacity=2000),)
+        state = _sched_state(shard_count=1, sched=night)
+        assert state.effective_capacity_milli(TUE_0300) == 2_000_000
+        assert state.effective_capacity_milli(TUE_1400) == 1_000_000
+
+    def test_retry_rate_falls_back_to_the_undivided_scheduled_rate(self):
+        """A share that floors to 0 has no finite wait. Fall back to the
+        *scheduled* undivided rate — falling back to the base rate would quote
+        a speed nothing in the system refills at during the window."""
+        state = _sched_state(refill_amount_milli=1_000, shard_count=1024, sched=BUSINESS)
+        assert state.effective_refill_amount_milli(TUE_1400) == 0
+        assert state.retry_refill_amount_milli(TUE_1400) == 500  # 1_000*0.5, undivided
+
+    def test_retry_rate_uses_the_share_when_it_is_non_zero(self):
+        state = _sched_state(shard_count=2, sched=BUSINESS)
+        assert state.retry_refill_amount_milli(TUE_1400) == 250_000
+
+
+class TestScheduledRefillPeriod:
+    """An absolute ``ScheduleEntry`` may replace ``refill_period_seconds`` too.
+
+    ``effective_params`` has always returned a triple and the aggregator
+    (``processor.py``) already feeds all three into ``refill_bucket``. The
+    client must use the same denominator or the two refillers compute
+    different token counts for the same bucket in the same window.
+    """
+
+    FASTER = (
+        ScheduleEntry(
+            cron="* 9-17 * * MON-FRI",
+            tz="America/New_York",
+            capacity=10_000,
+            refill_amount=1_000,
+            refill_period_seconds=6,  # 10x the base rate
+        ),
+    )
+
+    def _state(self, **kwargs) -> BucketState:
+        return _sched_state(
+            capacity_milli=10_000_000,
+            refill_amount_milli=1_000_000,
+            refill_period_ms=60_000,
+            **kwargs,
+        )
+
+    def test_period_follows_the_schedule(self):
+        state = self._state(sched=self.FASTER)
+        assert state.effective_refill_period_ms(TUE_1400) == 6_000
+        assert state.effective_refill_period_ms(TUE_0300) == 60_000
+
+    def test_period_is_never_divided_by_shard_count(self):
+        """Shards split the numerator; they all refill on the same clock."""
+        state = self._state(shard_count=4, sched=self.FASTER)
+        assert state.effective_refill_period_ms(TUE_1400) == 6_000
+
+    def test_refill_uses_the_scheduled_period(self):
+        """The end-to-end check: one minute of elapsed time refills 10x as much
+        inside the window. Reading the base period here yields 1_000."""
+        state = self._state(sched=self.FASTER, last_refill_ms=TUE_1400 - 60_000)
+        assert calculate_available(state, TUE_1400) == 10_000
+
+        outside = self._state(sched=self.FASTER, last_refill_ms=TUE_0300 - 60_000)
+        assert calculate_available(outside, TUE_0300) == 1_000
+
+    def test_retry_estimate_uses_the_scheduled_period(self):
+        """A wait quoted against the base period is 10x too long here."""
+        state = self._state(sched=self.FASTER, last_refill_ms=TUE_1400)
+        # 1_000 tokens short at 1_000 tokens / 6 s
+        assert calculate_time_until_available(state, 1_000, TUE_1400) == pytest.approx(
+            6.0, abs=0.01
+        )

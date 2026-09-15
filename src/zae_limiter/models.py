@@ -6,7 +6,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 from .exceptions import InvalidIdentifierError, InvalidNameError
-from .schedule import ScheduleEntry
+from .schedule import ScheduleEntry, effective_params
 
 # ---------------------------------------------------------------------------
 # Validation Constants
@@ -648,6 +648,10 @@ class BucketState:
     # the entity admits shard_count x capacity. The reserved `wcu` limit is
     # per-partition and is never divided (its shard_count stays 1).
     shard_count: int = 1
+    # Compact-encoded schedule decoded from the bucket item (#222 §4.1). Empty
+    # for an unscheduled bucket, which is the overwhelming majority — the
+    # effective methods below then return the stored values unchanged.
+    sched: tuple[ScheduleEntry, ...] = ()
 
     @property
     def tokens(self) -> int:
@@ -659,18 +663,51 @@ class BucketState:
         """Capacity / ceiling (not millitokens)."""
         return self.capacity_milli // 1000
 
-    @property
-    def effective_capacity_milli(self) -> int:
-        """This shard's share of the capacity: ``capacity_milli // shard_count``."""
-        return self.capacity_milli // self.shard_count
+    def _scheduled_params(self, now_ms: int) -> tuple[int, int, int]:
+        """The undivided (capacity, refill_amount, refill_period) at ``now_ms``.
 
-    @property
-    def effective_refill_amount_milli(self) -> int:
-        """This shard's share of the refill: ``refill_amount_milli // shard_count``."""
-        return self.refill_amount_milli // self.shard_count
+        Returns the stored base unchanged when ``sched`` is empty, which is the
+        overwhelming majority of buckets.
+        """
+        return effective_params(
+            self.capacity_milli,
+            self.refill_amount_milli,
+            self.refill_period_ms,
+            self.sched,
+            now_ms,
+        )
 
-    @property
-    def retry_refill_amount_milli(self) -> int:
+    def effective_capacity_milli(self, now_ms: int) -> int:
+        """This shard's share of the capacity in force at ``now_ms``.
+
+        Scale first, divide second (#222 §2.1): the schedule applies to the
+        whole limit and the shards split the result. Dividing first floors
+        against a smaller numerator and drifts below the intended share.
+        """
+        cp, _ra, _rp = self._scheduled_params(now_ms)
+        return cp // self.shard_count
+
+    def effective_refill_amount_milli(self, now_ms: int) -> int:
+        """This shard's share of the refill in force at ``now_ms``.
+
+        Scale first, divide second, exactly as ``effective_capacity_milli``.
+        """
+        _cp, ra, _rp = self._scheduled_params(now_ms)
+        return ra // self.shard_count
+
+    def effective_refill_period_ms(self, now_ms: int) -> int:
+        """The refill denominator in force at ``now_ms``.
+
+        A ``ScheduleEntry`` absolute override may replace
+        ``refill_period_seconds``, so the period is time-dependent exactly as
+        the capacity and the refill amount are. Unlike those two it is **not**
+        divided by ``shard_count``: every shard refills on the same clock and
+        only the numerator is split.
+        """
+        _cp, _ra, rp = self._scheduled_params(now_ms)
+        return rp
+
+    def retry_refill_amount_milli(self, now_ms: int) -> int:
         """Refill rate to use for a "seconds until available" estimate.
 
         ``effective_refill_amount_milli`` floors to 0 for a slow refill on a
@@ -681,8 +718,16 @@ class BucketState:
         the limit itself refills at, and a retry draws a shard at random — so
         it may well land somewhere that admits. ``schema.MAX_SHARD_COUNT``
         bounds how far apart the two can get.
+
+        The fallback is the *scheduled* undivided rate, not the stored base
+        rate: during a ``scale`` window the base rate is a speed nothing in
+        the system refills at, so quoting it would under-report the wait.
         """
-        return self.effective_refill_amount_milli or self.refill_amount_milli
+        share = self.effective_refill_amount_milli(now_ms)
+        if share:
+            return share
+        _cp, ra, _rp = self._scheduled_params(now_ms)
+        return ra
 
     @classmethod
     def from_limit(

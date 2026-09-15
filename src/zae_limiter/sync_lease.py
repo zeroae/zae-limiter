@@ -404,7 +404,7 @@ class SyncLease:
                             break
                         downgraded.append(item)
                     if not lost_put or retry_attempt == 1:
-                        statuses = _build_retry_failure_statuses(self.entries)
+                        statuses = _build_retry_failure_statuses(self.entries, now_ms)
                         raise RateLimitExceeded(statuses) from retry_exc
                     retry_items = downgraded
         self._initial_committed = True
@@ -535,11 +535,16 @@ def _is_transaction_conflict(exc: Exception) -> bool:
     return False
 
 
-def _build_retry_failure_statuses(entries: list[LeaseEntry]) -> list[LimitStatus]:
+def _build_retry_failure_statuses(entries: list[LeaseEntry], now_ms: int) -> list[LimitStatus]:
     """Build LimitStatus list for a retry failure (rate limit exceeded).
 
     Only declared entries are reported (Issue #455): undeclared entries are
     write-only carriers that never gate admission.
+
+    ``now_ms`` is the commit's single clock reading, not a fresh one (#222
+    §3.5): a scheduled limit's effective refill rate depends on when you ask,
+    so a second reading could quote a different window than the rejection it
+    describes.
     """
     statuses: list[LimitStatus] = []
     for entry in entries:
@@ -548,8 +553,8 @@ def _build_retry_failure_statuses(entries: list[LeaseEntry]) -> list[LimitStatus
         deficit_milli = max(0, entry.consumed * 1000 - entry.state.tokens_milli)
         retry_after = calculate_retry_after(
             deficit_milli=deficit_milli,
-            refill_amount_milli=entry.state.retry_refill_amount_milli,
-            refill_period_ms=entry.state.refill_period_ms,
+            refill_amount_milli=entry.state.retry_refill_amount_milli(now_ms),
+            refill_period_ms=entry.state.effective_refill_period_ms(now_ms),
         )
         statuses.append(
             LimitStatus(
