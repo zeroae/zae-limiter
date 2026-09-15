@@ -1281,12 +1281,38 @@ class TestStackOptions:
         """Test ROLE_COMPONENTS constant is defined."""
         from zae_limiter.models import ROLE_COMPONENTS
 
-        assert ROLE_COMPONENTS == ("aggr", "app", "admin", "read")
+        assert ROLE_COMPONENTS == ("aggr", "app", "admin", "read", "prov")
+
+    def test_role_components_covers_every_shipped_role(self):
+        """Test ROLE_COMPONENTS lists every component to_parameters() names.
+
+        The constant is the ADR-116 registry, so a role that ships without an
+        entry here escapes the <= 8 char invariant test below -- which is how
+        ``prov`` went unguarded.
+        """
+        from zae_limiter.models import ROLE_COMPONENTS
+
+        opts = StackOptions(role_name_format="{}", create_iam_roles=True)
+        params = opts.to_parameters("mystack")
+        shipped = {
+            params[key].rsplit("-", 1)[-1]
+            for key in (
+                "aggregator_role_name",
+                "app_role_name",
+                "admin_role_name",
+                "readonly_role_name",
+                "provisioner_role_name",
+            )
+        }
+        assert shipped == set(ROLE_COMPONENTS)
 
     def test_role_components_max_length_invariant(self):
         """Test all role components are <= 8 characters (ADR-116 invariant)."""
         from zae_limiter.models import ROLE_COMPONENTS
 
+        # Guards against the tuple silently shrinking, which would make the
+        # loop below pass vacuously for a component it no longer lists.
+        assert len(ROLE_COMPONENTS) == 5
         for component in ROLE_COMPONENTS:
             assert len(component) <= 8, f"Component '{component}' exceeds 8 chars"
 
