@@ -10,6 +10,7 @@ import pytest
 from botocore.exceptions import ClientError
 
 from zae_limiter.schedule import ScheduleEntry, decode, decode_reset
+from zae_limiter.schema import BUCKET_SCHED_NONE
 from zae_limiter_aggregator.processor import (
     BucketRefillState,
     ConsumptionDelta,
@@ -2340,11 +2341,17 @@ def _sched_state(**kwargs) -> BucketRefillState:
         },
     )
     limit_sched = kwargs.pop("limit_sched", None)
+    limit_reset_sched = kwargs.pop("limit_reset_sched", None)
     base.update(kwargs)
     state = BucketRefillState(**base)
-    if limit_sched is not None:
-        for name, sched in limit_sched.items():
-            state.limits[name].sched = sched
+    # `_parse_bucket_record` resolves every limit against the item-level
+    # default, so a real state never carries one only at the item level. Since
+    # #541 `try_refill_bucket` reads `info.sched` alone — an empty tuple there
+    # means the limit is *explicitly* unscheduled — so the helper has to seed
+    # the per-limit copies the way the parser would.
+    for name, info in state.limits.items():
+        info.sched = (limit_sched or {}).get(name, state.sched)
+        info.reset_sched = (limit_reset_sched or {}).get(name, state.reset_sched)
     return state
 
 
@@ -2814,11 +2821,15 @@ def _quota_state(**kwargs) -> BucketRefillState:
         },
     )
     limit_reset = kwargs.pop("limit_reset", None)
+    limit_sched = kwargs.pop("limit_sched", None)
     base.update(kwargs)
     state = BucketRefillState(**base)
-    if limit_reset is not None:
-        for name, reset in limit_reset.items():
-            state.limits[name].reset_sched = reset
+    # Seeded per limit for the same reason `_sched_state` is: since #541
+    # `try_refill_bucket` reads `info.reset_sched` alone, because an empty
+    # tuple there means "explicitly no reset" rather than "not populated".
+    for name, info in state.limits.items():
+        info.sched = (limit_sched or {}).get(name, state.sched)
+        info.reset_sched = (limit_reset or {}).get(name, state.reset_sched)
     return state
 
 
@@ -3067,3 +3078,100 @@ class TestResetSchedIsCarriedFromTheStreamImage:
         state = next(iter(states.values()))
         assert state.reset_sched == decode_reset(DAILY_RESET_COMPACT, "America/New_York")
         assert state.limits["rpd"].reset_sched == state.reset_sched
+
+
+class TestAnUnscheduledLimitOnAScheduledItem:
+    """#541: `BUCKET_SCHED_NONE` is an override meaning "this limit has none".
+
+    Before it, "unscheduled" and "same as the item default" were both spelled
+    as *absence* of `b_{name}_sched`, and the aggregator read every absence as
+    inheritance. On a mixed item that runs both ways at once: a plain rate
+    limit is refilled toward `0.5 x capacity` at `0.5 x` its rate, and it takes
+    the quota's midnight reset — a hard SET of its balance on a calendar it
+    never declared.
+    """
+
+    # 1_000_000 milli capacity refilling in one minute. One stale minute at the
+    # base rate yields 1_000_000, which covers the 600_000 consumption estimate
+    # and is therefore skipped; at 0.5x it yields 500_000 and is written. The
+    # two are distinguishable by whether `update_item` is called at all.
+    MIXED = {
+        "rpm": {"tk": 0, "cp": 1_000_000, "ra": 1_000_000, "rp": 60_000, "tc": 600_000},
+        "tpm": {"tk": 0, "cp": 1_000_000, "ra": 1_000_000, "rp": 60_000, "tc": 600_000},
+    }
+
+    def _record(self, **kwargs):
+        return _sched_record(
+            limits=self.MIXED,
+            sched=BUSINESS_COMPACT,
+            limit_sched={"tpm": BUCKET_SCHED_NONE},
+            **kwargs,
+        )
+
+    def test_parse_reads_the_marker_as_no_schedule(self) -> None:
+        parsed = _parse_bucket_record(self._record())
+        assert parsed is not None
+        assert parsed.sched == BUSINESS_DECODED  # the item default is unchanged
+        assert parsed.limits["rpm"].sched == BUSINESS_DECODED  # inherits, as before
+        assert parsed.limits["tpm"].sched == ()
+        assert parsed.sched_error is None  # the marker is not a decode failure
+
+    def test_the_marked_limit_refills_at_its_base_rate(self) -> None:
+        """The scheduled sibling is written and the marked one is not: at the
+        base rate a stale minute already covers the consumption estimate."""
+        table = MagicMock()
+        state = next(iter(aggregate_bucket_states([self._record()]).values()))
+        assert try_refill_bucket(table, state, now_ms=TUE_1400) is True
+        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+        assert values[":rd_rpm"] == 500_000
+        assert ":rd_tpm" not in values
+
+    def test_the_marked_limit_takes_no_reset_edge(self) -> None:
+        """The direction the issue understates. `rsched` is one item-level
+        attribute, so a quota sharing an item with a rate limit handed the rate
+        limit its midnight reset — a hard SET of the balance, and the drip
+        skipped on that pass."""
+        table = MagicMock()
+        record = _sched_record(
+            limits={
+                "rpd": {"tk": 2_000_000, "cp": 10_000_000, "ra": 0, "rp": 1_000, "tc": 0},
+                "rpm": {"tk": 0, "cp": 1_000_000, "ra": 1_000_000, "rp": 60_000, "tc": 0},
+            },
+            rf_ms=TUE_2300,
+            rsched=DAILY_RESET_COMPACT,
+            limit_rsched={"rpm": BUCKET_SCHED_NONE},
+        )
+        state = next(iter(aggregate_bucket_states([record]).values()))
+        assert try_refill_bucket(table, state, now_ms=WED_0030) is True
+        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+        assert values[":rd_rpd"] == 10_000_000 - 2_000_000  # the quota does reset
+        assert ":rd_rpm" not in values  # ...and the rate limit is already full
+
+    def test_a_cloned_shard_seeds_the_marked_limit_unscaled(self) -> None:
+        """Path 2 creates a shard full, so an inherited 0.5x would halve an
+        unscheduled limit's share for the life of the window."""
+        table = MagicMock()
+        record = _sched_record(
+            limits={
+                "rpm": {"tk": 500_000, "cp": 1_000_000, "ra": 1_000_000, "rp": 60_000, "tc": 0},
+                "tpm": {"tk": 500_000, "cp": 1_000_000, "ra": 1_000_000, "rp": 60_000, "tc": 0},
+            },
+            sched=BUSINESS_COMPACT,
+            limit_sched={"tpm": BUCKET_SCHED_NONE},
+            shard_count=2,
+        )
+        record["dynamodb"]["OldImage"]["shard_count"] = {"N": "1"}
+        assert propagate_shard_count(table, record, TUE_1400) == 1
+        item = table.put_item.call_args.kwargs["Item"]
+        assert item["b_rpm_tk"] == 250_000  # (1_000_000 * 0.5) // 2
+        assert item["b_tpm_tk"] == 500_000  # 1_000_000 // 2, unscaled
+
+    def test_the_marker_still_yields_the_items_vu(self) -> None:
+        """`vu` is one item-level attribute, so the earliest boundary anywhere
+        on the item still has to force a materialising pass — a marked limit
+        contributes none of its own but must not suppress its siblings'."""
+        table = MagicMock()
+        state = next(iter(aggregate_bucket_states([self._record(vu_ms=TUE_1400 - 1)]).values()))
+        assert try_refill_bucket(table, state, now_ms=TUE_1400) is True
+        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+        assert int(values[":new_vu"]) > TUE_1400

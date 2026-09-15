@@ -92,6 +92,22 @@ BUCKET_FIELD_RSCHED = "rsched"  # item-level default reset schedule (§3.6, §4.
 BUCKET_FIELD_SCHED_TZ = "sched_tz"  # IANA name, hoisted out of every entry
 BUCKET_FIELD_VU = "vu"  # valid-until, epoch ms — schedule materialisation stamp
 
+# The explicit spelling of "this limit has no schedule of its own" (#541).
+#
+# Absence of a `b_{name}_sched` still means "inherit the item default" — that is
+# what keeps a 20-limit item on one shared schedule down to one attribute. But
+# absence cannot *also* mean "unscheduled", which is what it meant before #541:
+# an unscheduled limit sharing an item with a scheduled one then inherited a
+# window it never declared, in both directions at once (a rate limit acquiring a
+# quota's midnight reset, a quota acquiring the rate limit's 0.5x scale).
+#
+# Not a legal compact encoding: `schedule._tokenise` rejects it at offset 0, so
+# it can never collide with a real schedule, and a reader that has not learned
+# it fails loudly on an undecodable attribute rather than silently scaling a
+# limit. Written only on items that carry an item-level default — an entirely
+# unscheduled bucket grows no schedule attributes at all.
+BUCKET_SCHED_NONE = "-"
+
 # Disable flag (ADR-125). Tri-state on config items: absent = inherit,
 # True/False = explicit. On bucket items the attribute is present only
 # when the bucket is effectively disabled, so the speculative guard can

@@ -25,6 +25,7 @@ from zae_limiter.schema import (
     BUCKET_FIELD_SCHED_TZ,
     BUCKET_FIELD_TK,
     BUCKET_FIELD_VU,
+    BUCKET_SCHED_NONE,
     CONFIG_FIELD_SCHED_TZ,
     LIMIT_FIELD_RSCHED,
     WCU_LIMIT_NAME,
@@ -5335,12 +5336,16 @@ class TestCreateStampsSchedule:
         assert bucket_attr("tpm", "sched") not in item
         assert item[bucket_attr("cpm", "sched")]["S"] == "h0-6s250"
 
-    def test_an_unscheduled_limit_beside_a_scheduled_one_gets_no_override(self, repo):
-        """Absence means "use the item default", so an unscheduled limit on a
-        scheduled item would silently inherit the schedule. Recorded rather
-        than fixed here: §4.1 has no encoding for "explicitly unscheduled",
-        and the config hierarchy makes the mix unreachable through
-        ``set_limits``."""
+    def test_an_unscheduled_limit_beside_a_scheduled_one_is_marked_unscheduled(self, repo):
+        """#541. Absence means "use the item default", so an unscheduled limit
+        on a scheduled item silently inherited the schedule until §4.1 grew an
+        encoding for "explicitly unscheduled" (``BUCKET_SCHED_NONE``).
+
+        The mix is reachable through ``set_limits``, contrary to the claim this
+        test used to carry: ``models.hoisted_schedule_timezone`` documents that
+        "limits without one do not vote", so an unscheduled limit clears the one
+        write-time check a mixed list has to pass, and the config hierarchy
+        resolves the whole list from one level."""
         item = self._item(
             repo,
             [
@@ -5348,7 +5353,10 @@ class TestCreateStampsSchedule:
                 Limit.per_minute("tpm", 5000),
             ],
         )
-        assert bucket_attr("tpm", "sched") not in item
+        assert item[bucket_attr("tpm", "sched")]["S"] == BUCKET_SCHED_NONE
+        # ...and the scheduled limit that supplied the default still needs no
+        # copy of its own, so this is not "an override for every limit".
+        assert bucket_attr("rpm", "sched") not in item
 
     def test_rejects_limits_that_disagree_on_timezone(self, repo):
         """``sched_tz`` is one attribute per item, so keeping the first limit's
@@ -5629,7 +5637,12 @@ class TestFanOutStampsSchedule:
     @pytest.mark.asyncio
     async def test_a_limit_that_loses_its_schedule_beside_one_that_keeps_it(self, repo):
         """The other direction into the same trap: the item stays scheduled,
-        so the `else` branch's blanket REMOVE never runs."""
+        so the `else` branch's blanket REMOVE never runs.
+
+        The superseded `b_tpm_sched` is replaced rather than removed (#541):
+        removal would put `tpm` back on the item default, which is exactly the
+        schedule it just lost. `BUCKET_SCHED_NONE` is the only value that says
+        "unscheduled" without saying "inherit"."""
         await repo.create_entity("fan-drop")
         await self._seed(
             repo,
@@ -5657,7 +5670,9 @@ class TestFanOutStampsSchedule:
 
         item = await self._raw(repo, "fan-drop", "gpt-4")
         assert item["sched"]["S"] == "h9-17w1-5s500"
-        assert bucket_attr("tpm", "sched") not in item
+        assert item[bucket_attr("tpm", "sched")]["S"] == BUCKET_SCHED_NONE
+        buckets = {b.limit_name: b for b in repo._deserialize_composite_bucket(item)}
+        assert buckets["tpm"].sched == ()
 
     @pytest.mark.asyncio
     async def test_a_stale_limits_schedule_override_is_removed_with_it(self, repo):
@@ -6297,12 +6312,12 @@ class TestDeserialisedBucketsCarryBothSchedules:
         assert by_name[WCU_LIMIT_NAME].reset_sched == ()
         assert by_name["rpm"].sched == self.NIGHT
 
-    async def test_an_unscheduled_limit_inherits_the_item_default(self, repo):
-        """#541, open and deliberately NOT fixed here: "unscheduled" and "same
-        as the default" both encode as absence, so the reader cannot tell them
-        apart. Pinned so that fixing it is a deliberate change with a failing
-        test, not a silent drift — and so this reader cannot quietly acquire a
-        second inheritance rule the aggregator does not share."""
+    async def test_an_unscheduled_limit_does_not_inherit_the_item_default(self, repo):
+        """#541. "Unscheduled" and "same as the default" used to be the same
+        byte pattern — absence — so this reader gave an unscheduled limit a
+        window it never declared. The writer now spells the first case
+        ``BUCKET_SCHED_NONE``; this reader honours it, and the aggregator's
+        parser applies the identical rule."""
         await repo.create_entity("ds-8")
         await self._seed(
             repo,
@@ -6312,7 +6327,10 @@ class TestDeserialisedBucketsCarryBothSchedules:
         )
 
         by_name = {b.limit_name: b for b in await repo.get_buckets("ds-8", resource="gpt-4")}
-        assert by_name["tpm"].sched == self.NIGHT, "#541: inherits, for now"
+        assert by_name["tpm"].sched == ()
+        # The scheduled limit on the same item still gets it, so this does not
+        # pass by never attaching a schedule at all.
+        assert by_name["rpm"].sched == self.NIGHT
 
     async def test_the_speculative_failure_image_carries_the_schedule(self, repo):
         """The path that matters most: a fast rejection builds its statuses
@@ -6649,3 +6667,131 @@ class TestUnreadableStoredSchedule:
         await self._seed(repo, "plain-3")
         (stored,) = await repo.get_limits("plain-3", resource="gpt-4")
         assert stored.schedule == self.BUSINESS
+
+
+class TestAMixedItemAttributesEachScheduleToItsOwnLimit:
+    """#541: a limit with no schedule of its own must not inherit the item's.
+
+    One bucket item carries one hoisted ``sched`` / ``rsched`` pair plus the
+    per-limit ``b_{name}_*`` overrides, and absence of an override means
+    "inherit the item default". That rule has no spelling for "this limit is
+    explicitly unscheduled", so before #541 the two were the same byte pattern
+    and every reader picked inheritance.
+
+    The mix below is the shape that makes the defect bite in **both**
+    directions at once:
+
+    * ``rpm`` is scaled to ``0.5x`` during business hours and has no reset;
+    * ``tpm`` is a plain rate limit with neither;
+    * ``rpd`` is a daily quota (ADR-137) with a reset and no parameter schedule.
+
+    Contaminated, ``rpm`` acquires ``rpd``'s midnight reset — its balance is
+    hard-SET at the edge and its drip skipped that pass — while ``rpd``
+    acquires ``rpm``'s ``0.5x`` window and silently serves half its allowance
+    between 09:00 and 17:00. ``tpm`` gets both.
+
+    Reached through ``set_limits``, deliberately: the deferral on record
+    claimed "the config hierarchy makes the mix unreachable through
+    ``set_limits``", and it is not so — ``models.hoisted_schedule_timezone``
+    documents that "limits without one do not vote", so an unscheduled limit
+    passes the one write-time check a mixed list has to clear.
+    """
+
+    ZONE = "America/New_York"
+    BUSINESS = (ScheduleEntry(cron="* 9-17 * * 1-5", tz=ZONE, scale=0.5),)
+    MIDNIGHT = (ScheduleEntry.reset(cron="0 0 * * *", tz=ZONE),)
+
+    def _limits(self):
+        return [
+            Limit.per_minute("rpm", 1000).with_schedule(self.BUSINESS),
+            Limit.per_minute("tpm", 100_000),
+            Limit.quota("rpd", 10_000, cron="0 0 * * *", tz=self.ZONE),
+        ]
+
+    @staticmethod
+    async def _seed(repo, entity_id, resource, limits):
+        now_ms = int(time.time() * 1000)
+        states = [BucketState.from_limit(entity_id, resource, lim, now_ms) for lim in limits]
+        await repo.transact_write(
+            [repo.build_composite_create(entity_id, resource, states, now_ms)]
+        )
+
+    @staticmethod
+    async def _raw(repo, entity_id, resource, shard=0):
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, resource, shard)},
+                "SK": {"S": sk_state()},
+            },
+        )
+        return response.get("Item") or {}
+
+    @pytest.mark.asyncio
+    async def test_the_bucket_create_stamp_attributes_each_schedule(self, repo):
+        await repo.create_entity("mix-1")
+        await self._seed(repo, "mix-1", "gpt-4", self._limits())
+
+        by_name = {b.limit_name: b for b in await repo.get_buckets("mix-1", resource="gpt-4")}
+        assert by_name["rpm"].sched == self.BUSINESS
+        assert by_name["rpm"].reset_sched == ()
+        assert by_name["tpm"].sched == ()
+        assert by_name["tpm"].reset_sched == ()
+        assert by_name["rpd"].sched == ()
+        assert by_name["rpd"].reset_sched == self.MIDNIGHT
+
+    @pytest.mark.asyncio
+    async def test_the_set_limits_fan_out_attributes_each_schedule(self, repo):
+        """The other writer of these attributes. It must agree with the create
+        stamp byte for byte, or which schedule a limit runs under would depend
+        on whether an admin had touched the entity since the bucket was born."""
+        await repo.create_entity("mix-2")
+        # Seeded unscheduled, so the schedules on the item can only have come
+        # from the fan-out. Every limit is present up front because the fan-out
+        # rewrites parameters, never balances — it does not add a limit's `tk`.
+        await self._seed(
+            repo,
+            "mix-2",
+            "gpt-4",
+            [
+                Limit.per_minute("rpm", 1000),
+                Limit.per_minute("tpm", 100_000),
+                Limit.per_minute("rpd", 10_000),
+            ],
+        )
+
+        await repo.set_limits("mix-2", self._limits(), resource="gpt-4")
+
+        by_name = {b.limit_name: b for b in await repo.get_buckets("mix-2", resource="gpt-4")}
+        assert by_name["rpm"].sched == self.BUSINESS
+        assert by_name["rpm"].reset_sched == ()
+        assert by_name["tpm"].sched == ()
+        assert by_name["tpm"].reset_sched == ()
+        assert by_name["rpd"].sched == ()
+        assert by_name["rpd"].reset_sched == self.MIDNIGHT
+
+    @pytest.mark.asyncio
+    async def test_both_writers_produce_the_same_attributes(self, repo):
+        """One encoder, two writers (#541 acceptance criteria). Compared as a
+        set of schedule attributes rather than whole items, which differ in
+        balances and timestamps by construction."""
+        await repo.create_entity("mix-3")
+        await repo.create_entity("mix-4")
+        await self._seed(repo, "mix-3", "gpt-4", self._limits())
+        await self._seed(repo, "mix-4", "gpt-4", [Limit.per_minute("rpm", 1000)])
+        await repo.set_limits("mix-4", self._limits(), resource="gpt-4")
+
+        def _sched_attrs(item):
+            return {
+                k: v["S"]
+                for k, v in item.items()
+                if k.endswith(("sched", "rsched", "sched_tz")) and "S" in v
+            }
+
+        created = _sched_attrs(await self._raw(repo, "mix-3", "gpt-4"))
+        fanned = _sched_attrs(await self._raw(repo, "mix-4", "gpt-4"))
+        assert created == fanned
+        assert created["sched"] == "h9-17w1-5s500"
+        assert created["rsched"] == "m0h0"
+        assert created["sched_tz"] == self.ZONE

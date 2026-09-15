@@ -2088,13 +2088,28 @@ class Repository:
         only the limits whose encoding differs from the default, or ``None``
         when no limit on the item carries this kind of schedule. The timezone
         is resolved once for the whole item by the caller, not here.
+
+        A limit with **no** schedule of this kind is an override too, spelled
+        ``schema.BUCKET_SCHED_NONE`` (#541). Absence still means "inherit the
+        item default", which is what keeps a shared schedule down to one
+        attribute — but it can no longer *also* mean "unscheduled", because
+        both readings applied to the same byte pattern and every reader picked
+        the wrong one. The contamination ran both ways on a mixed item: a rate
+        limit acquired the quota's midnight reset, and the quota acquired the
+        rate limit's ``0.5x`` window.
         """
-        scheduled = [(name, sched) for name, sched in named_schedules if sched]
+        scheduled = [(name, encoder(sched)[0]) for name, sched in named_schedules if sched]
         if not scheduled:
             return None
-        encodings = [(name, encoder(sched)[0]) for name, sched in scheduled]
-        default_compact = encodings[0][1]
-        overrides = {name: compact for name, compact in encodings if compact != default_compact}
+        # Order decides the item-level default, as it always has: a different
+        # pick would relabel which limits need an override.
+        default_compact = scheduled[0][1]
+        encodings = dict(scheduled)
+        overrides = {}
+        for name, _sched in named_schedules:
+            compact = encodings.get(name, schema.BUCKET_SCHED_NONE)
+            if compact != default_compact:
+                overrides[name] = compact
         return default_compact, overrides
 
     @classmethod
@@ -3519,10 +3534,13 @@ class Repository:
         # Per-limit overrides are SET where a limit differs from the item
         # default and REMOVEd everywhere else — including on the scheduled
         # branch. Absence means "inherit the item default", so a limit that
-        # used to carry its own schedule and now shares the default (or has
-        # none at all) keeps enforcing the superseded one forever unless its
-        # override is stripped. Each alias lands in exactly one of the two
-        # lists, never both (#488).
+        # used to carry its own schedule and now shares the default keeps
+        # enforcing the superseded one forever unless its override is
+        # stripped. A limit that now has *no* schedule is not in that class:
+        # it gets `BUCKET_SCHED_NONE` SET rather than its override REMOVEd
+        # (#541), because removing it would make it inherit the default
+        # instead. Each alias lands in exactly one of the two lists, never
+        # both (#488).
         for prefix, field, part in (
             ("sched", schema.BUCKET_FIELD_SCHED, param),
             ("rsched", schema.BUCKET_FIELD_RSCHED, reset),
@@ -5229,14 +5247,19 @@ class Repository:
             Absence means "inherit the default" — the write side only emits
             `b_{name}_{field}` where a limit's encoding *differs* from it — so
             this is the exact inverse of `_encode_one_tuple`, and the same rule
-            `processor._parse_bucket_record` applies. It is also why an
-            unscheduled limit sharing an item with a scheduled one inherits a
-            schedule it never asked for: #541, open, deliberately not fixed
-            here. Two inheritance rules on one item would be worse than the one
-            documented defect.
+            `processor._parse_bucket_record` applies.
+
+            `BUCKET_SCHED_NONE` is the third reading (#541): an override that
+            says "this limit has none of this kind", written for every
+            unscheduled limit on an item that carries a default. Without it
+            "unscheduled" and "same as the default" are one byte pattern, and
+            an unscheduled limit sharing an item with a scheduled one inherits
+            a window it never declared.
             """
             attr = schema.bucket_attr(name, field)
             override = item.get(attr, {}).get("S")
+            if override == schema.BUCKET_SCHED_NONE:
+                return ()
             compact = override or item_compact
             if not compact:
                 return ()

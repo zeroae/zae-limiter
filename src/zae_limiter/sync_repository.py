@@ -1733,13 +1733,26 @@ class SyncRepository:
         only the limits whose encoding differs from the default, or ``None``
         when no limit on the item carries this kind of schedule. The timezone
         is resolved once for the whole item by the caller, not here.
+
+        A limit with **no** schedule of this kind is an override too, spelled
+        ``schema.BUCKET_SCHED_NONE`` (#541). Absence still means "inherit the
+        item default", which is what keeps a shared schedule down to one
+        attribute — but it can no longer *also* mean "unscheduled", because
+        both readings applied to the same byte pattern and every reader picked
+        the wrong one. The contamination ran both ways on a mixed item: a rate
+        limit acquired the quota's midnight reset, and the quota acquired the
+        rate limit's ``0.5x`` window.
         """
-        scheduled = [(name, sched) for name, sched in named_schedules if sched]
+        scheduled = [(name, encoder(sched)[0]) for name, sched in named_schedules if sched]
         if not scheduled:
             return None
-        encodings = [(name, encoder(sched)[0]) for name, sched in scheduled]
-        default_compact = encodings[0][1]
-        overrides = {name: compact for name, compact in encodings if compact != default_compact}
+        default_compact = scheduled[0][1]
+        encodings = dict(scheduled)
+        overrides = {}
+        for name, _sched in named_schedules:
+            compact = encodings.get(name, schema.BUCKET_SCHED_NONE)
+            if compact != default_compact:
+                overrides[name] = compact
         return (default_compact, overrides)
 
     @classmethod
@@ -4249,14 +4262,19 @@ class SyncRepository:
             Absence means "inherit the default" — the write side only emits
             `b_{name}_{field}` where a limit's encoding *differs* from it — so
             this is the exact inverse of `_encode_one_tuple`, and the same rule
-            `processor._parse_bucket_record` applies. It is also why an
-            unscheduled limit sharing an item with a scheduled one inherits a
-            schedule it never asked for: #541, open, deliberately not fixed
-            here. Two inheritance rules on one item would be worse than the one
-            documented defect.
+            `processor._parse_bucket_record` applies.
+
+            `BUCKET_SCHED_NONE` is the third reading (#541): an override that
+            says "this limit has none of this kind", written for every
+            unscheduled limit on an item that carries a default. Without it
+            "unscheduled" and "same as the default" are one byte pattern, and
+            an unscheduled limit sharing an item with a scheduled one inherits
+            a window it never declared.
             """
             attr = schema.bucket_attr(name, field)
             override = item.get(attr, {}).get("S")
+            if override == schema.BUCKET_SCHED_NONE:
+                return ()
             compact = override or item_compact
             if not compact:
                 return ()
