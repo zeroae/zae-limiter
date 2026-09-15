@@ -4174,17 +4174,99 @@ class SyncRepository:
             total_consumed_milli=total_consumed_milli,
         )
 
+    def _decode_stored_schedule(
+        self, attr_name: str, compact: str, tz: str, *, reset: bool = False
+    ) -> tuple[schedule.ScheduleEntry, ...]:
+        """Decode a stored schedule, or declare the limiter unavailable (#222 §6).
+
+        A limiter that cannot determine which limit is in force is definitionally
+        unavailable, and ``on_unavailable`` is the knob that already exists for
+        that — under ``allow`` it degrades exactly the way the operator asked,
+        under ``block`` it raises. The alternative, treating an unreadable
+        schedule as *no* schedule, runs at the **base** limit: a parse error
+        would then double a customer's limit when the schedule said ``0.5x``,
+        and with ``vu`` left expired the bucket would be pinned to the slow path
+        permanently.
+
+        The parser keeps raising ``ValueError`` and is deliberately not touched.
+        ``schedule.py`` is pure stdlib plus cronsim with no ``zae_limiter``
+        imports, so that ``models`` can import it without a cycle and both
+        Lambdas can vendor it; and the aggregator's ``_decode_schedule`` catches
+        ``ValueError`` *specifically*, so raising an ``InfrastructureError``
+        there would slip through that catch and re-arm the poison-pill failure
+        core plan Task 14 fixed. Each boundary converts instead: the aggregator
+        skips the bucket, and this is the client's conversion.
+
+        The message carries the attribute name and the stored value because no
+        version marker says whether a newer client wrote this (#515).
+        ``_tokenise`` does discriminate structurally — an unknown tag reads
+        ``cannot parse from offset N`` where a cronsim rejection reads ``invalid
+        cron expression`` — but that is a heuristic, not a proof: corruption can
+        fail at an offset too.
+        """
+        try:
+            if reset:
+                return schedule.decode_reset(compact, tz)
+            return schedule.decode(compact, tz)
+        except ValueError as exc:
+            raise RateLimiterUnavailable(
+                f"stored schedule in {attr_name} could not be decoded: {compact!r} ({tz}): {exc}",
+                cause=exc,
+                stack_name=self.stack_name,
+            ) from exc
+
     def _deserialize_composite_bucket(self, item: dict[str, Any]) -> list[BucketState]:
         """Deserialize a composite DynamoDB item to a list of BucketStates.
 
         A composite bucket item stores all limits for an entity+resource in a
         single DynamoDB item. Per-limit attributes use the prefix b_{name}_{field}
         with a shared rf (refill timestamp). See ADR-114.
+
+        Both schedule tuples are decoded off the item (#222 §4.1) under the
+        same item-level-default-plus-per-limit-override rule the aggregator
+        applies, so the ``ALL_OLD`` / ``ALL_NEW`` images behind the speculative
+        path carry the schedule that was in force for the write. Without them
+        every fast-path ``LimitStatus`` reports the base capacity, flat, inside
+        a window that has already halved it. The slow path overwrites
+        ``state.sched`` from the config it just resolved (``_do_acquire``),
+        which is the fresher of the two — that ordering is deliberate and this
+        does not change it.
         """
         entity_id = item.get("entity_id", {}).get("S", "")
         resource = item.get("resource", {}).get("S", "")
         rf = int(item.get(schema.BUCKET_FIELD_RF, {}).get("N", "0"))
         shard_count = int(item.get("shard_count", {}).get("N", "1"))
+        sched_tz = item.get(schema.BUCKET_FIELD_SCHED_TZ, {}).get("S") or "UTC"
+        item_sched = item.get(schema.BUCKET_FIELD_SCHED, {}).get("S")
+        item_rsched = item.get(schema.BUCKET_FIELD_RSCHED, {}).get("S")
+        decoded: dict[tuple[str, bool], tuple[schedule.ScheduleEntry, ...]] = {}
+
+        def _schedule_for(
+            name: str, field: str, item_compact: str | None, reset: bool
+        ) -> tuple[schedule.ScheduleEntry, ...]:
+            """One limit's tuple: its own override if it has one, else the item default.
+
+            Absence means "inherit the default" — the write side only emits
+            `b_{name}_{field}` where a limit's encoding *differs* from it — so
+            this is the exact inverse of `_encode_one_tuple`, and the same rule
+            `processor._parse_bucket_record` applies. It is also why an
+            unscheduled limit sharing an item with a scheduled one inherits a
+            schedule it never asked for: #541, open, deliberately not fixed
+            here. Two inheritance rules on one item would be worse than the one
+            documented defect.
+            """
+            attr = schema.bucket_attr(name, field)
+            override = item.get(attr, {}).get("S")
+            compact = override or item_compact
+            if not compact:
+                return ()
+            key = (compact, reset)
+            if key not in decoded:
+                decoded[key] = self._decode_stored_schedule(
+                    attr if override else field, compact, sched_tz, reset=reset
+                )
+            return decoded[key]
+
         limit_names: list[str] = []
         suffix = f"_{schema.BUCKET_FIELD_TK}"
         for attr_name in item:
@@ -4201,6 +4283,13 @@ class SyncRepository:
 
             tc_attr = item.get(schema.bucket_attr(name, schema.BUCKET_FIELD_TC), {})
             total_consumed = int(tc_attr["N"]) if "N" in tc_attr else None
+            is_wcu = name == schema.WCU_LIMIT_NAME
+            sched = (
+                () if is_wcu else _schedule_for(name, schema.BUCKET_FIELD_SCHED, item_sched, False)
+            )
+            reset_sched = (
+                () if is_wcu else _schedule_for(name, schema.BUCKET_FIELD_RSCHED, item_rsched, True)
+            )
             buckets.append(
                 BucketState(
                     entity_id=entity_id,
@@ -4212,7 +4301,9 @@ class SyncRepository:
                     refill_amount_milli=_get(schema.BUCKET_FIELD_RA),
                     refill_period_ms=_get(schema.BUCKET_FIELD_RP),
                     total_consumed_milli=total_consumed,
-                    shard_count=1 if name == schema.WCU_LIMIT_NAME else shard_count,
+                    shard_count=1 if is_wcu else shard_count,
+                    sched=sched,
+                    reset_sched=reset_sched,
                 )
             )
         return buckets
@@ -4264,11 +4355,30 @@ class SyncRepository:
 
         Discovers limit names by scanning for l_{name}_cp attributes.
 
+        A stored schedule that will not decode raises ``RateLimiterUnavailable``
+        (#222 §6) and takes **the whole item** with it, not just its own limit.
+        Returning the other limits would drop the unreadable one from the level
+        entirely, and config precedence is per *level*, not per limit — a level
+        that still defines anything wins outright — so the dropped limit would
+        not fall back to the resource or system value, it would go unenforced.
+        That is strictly worse than the over-admission this guard exists to
+        prevent. It would also amplify: ``_sync_bucket_params`` resolves limits
+        and stamps them onto every bucket, so a partial read would erase the
+        limit from the items enforcing it. Both other readers of these
+        attributes already fail at item granularity — the aggregator skips the
+        whole bucket on one bad limit (``processor.try_refill_bucket``), and the
+        provisioner's ``_decode_limits`` raises out of the whole item.
+
         Args:
             item: DynamoDB item with l_{name}_{field} attributes
 
         Returns:
             List of Limit objects reconstructed from composite attributes
+
+        Raises:
+            RateLimiterUnavailable: A stored schedule on this item cannot be
+                decoded, or a limit carrying one cannot be reconstructed from
+                what is stored.
         """
         limit_names: list[str] = []
         suffix = f"_{schema.LIMIT_FIELD_CP}"
@@ -4285,20 +4395,37 @@ class SyncRepository:
                 attr = schema.limit_attr(name, field)
                 return int(item.get(attr, {}).get("N", "0"))
 
-            sched_attr = item.get(schema.limit_attr(name, schema.LIMIT_FIELD_SCHED), {}).get("S")
-            rsched_attr = item.get(schema.limit_attr(name, schema.LIMIT_FIELD_RSCHED), {}).get("S")
-            limits.append(
-                Limit(
-                    name=name,
-                    capacity=_get(schema.LIMIT_FIELD_CP),
-                    refill_amount=_get(schema.LIMIT_FIELD_RA),
-                    refill_period_seconds=_get(schema.LIMIT_FIELD_RP),
-                    schedule=schedule.decode(sched_attr, sched_tz) if sched_attr else (),
-                    reset_schedule=schedule.decode_reset(rsched_attr, sched_tz)
-                    if rsched_attr
-                    else (),
-                )
+            sched_name = schema.limit_attr(name, schema.LIMIT_FIELD_SCHED)
+            rsched_name = schema.limit_attr(name, schema.LIMIT_FIELD_RSCHED)
+            sched_attr = item.get(sched_name, {}).get("S")
+            rsched_attr = item.get(rsched_name, {}).get("S")
+            sched = (
+                self._decode_stored_schedule(sched_name, sched_attr, sched_tz) if sched_attr else ()
             )
+            reset_sched = (
+                self._decode_stored_schedule(rsched_name, rsched_attr, sched_tz, reset=True)
+                if rsched_attr
+                else ()
+            )
+            try:
+                limits.append(
+                    Limit(
+                        name=name,
+                        capacity=_get(schema.LIMIT_FIELD_CP),
+                        refill_amount=_get(schema.LIMIT_FIELD_RA),
+                        refill_period_seconds=_get(schema.LIMIT_FIELD_RP),
+                        schedule=sched,
+                        reset_schedule=reset_sched,
+                    )
+                )
+            except ValueError as exc:
+                if not sched and (not reset_sched):
+                    raise
+                raise RateLimiterUnavailable(
+                    f"stored limit {name!r} carries a schedule but cannot be reconstructed: {exc}",
+                    cause=exc,
+                    stack_name=self.stack_name,
+                ) from exc
         return limits
 
     def resolve_limits(
