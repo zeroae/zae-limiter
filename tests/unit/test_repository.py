@@ -6562,6 +6562,37 @@ class TestUnreadableStoredSchedule:
         with pytest.raises(RateLimiterUnavailable, match="cannot be reconstructed"):
             await repo.get_limits("corrupt-4e", resource="gpt-4")
 
+    async def test_an_unscheduled_limit_that_will_not_reconstruct_still_raises_value_error(
+        self, repo
+    ):
+        """The scoping decision, from the other side.
+
+        `#538`'s shape — a stored zero rate with no reset — is a config item
+        the client cannot turn into a `Limit` either, but no schedule decides
+        it, so it keeps raising the `ValueError` it always has. Widening the
+        conversion to every validation failure in the read path would make the
+        exception type say less, not more.
+        """
+        from zae_limiter import schema
+
+        await self._seed(repo, "corrupt-4f", [Limit.per_minute("rpm", 1000)])
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_entity(repo._namespace_id, "corrupt-4f")},
+                "SK": {"S": schema.sk_config("gpt-4")},
+            },
+            UpdateExpression="SET #a = :v",
+            ExpressionAttributeNames={"#a": limit_attr("rpm", "ra")},
+            ExpressionAttributeValues={":v": {"N": "0"}},
+        )
+        await repo.invalidate_config_cache()
+
+        with pytest.raises(ValueError, match="reset_schedule") as excinfo:
+            await repo.get_limits("corrupt-4f", resource="gpt-4")
+        assert not isinstance(excinfo.value, RateLimiterUnavailable)
+
     async def test_an_unreadable_bucket_schedule_raises(self, repo):
         """`_deserialize_composite_bucket` is the other decode site, and it is
         the one behind the speculative path's ALL_OLD / ALL_NEW states."""
