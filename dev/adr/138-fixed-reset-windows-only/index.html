@@ -3221,10 +3221,21 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#per-entity-anchor-timestamp-on-the-bucket-item" class="md-nav__link">
+  <a href="#duration-based-windows-anchored-to-the-entity-in-this-release" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Per-entity anchor timestamp on the bucket item
+        Duration-based windows anchored to the entity, in this release
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#per-entity-window-storing-a-fixed-start-instant-and-projecting-intervals-from-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Per-entity window storing a fixed start instant and projecting intervals from it
       
     </span>
   </a>
@@ -3298,16 +3309,22 @@ use, so one caller's five hours begin when that caller begins and another's begi
 deployed allowance systems work this way, including the session limits that motivated
 <code>reset_schedule</code> in the first place. A reader who sees "five-hour reset window" will reasonably
 assume this behaviour.</p>
-<p>The two are not variants of one feature. A per-entity window requires an anchor timestamp
-stored on each bucket and compared per entity, whereas a calendar window is a pure function of
-the clock. The distinction matters for cost as well as storage: the fast path gates on a single
-valid-until stamp that any writer can compute from the bucket item alone, and per-entity
-anchoring would make that stamp depend on state the aggregator would have to read and maintain
-separately.</p>
+<p>The two express different products. A calendar window is what a billing period needs — "10,000
+per calendar month" is a contractual statement about the calendar, not about the caller. A
+per-entity window is what a session cap needs. Real services ship both, often together.</p>
+<p>They are not, however, hard to build in the same way. A per-entity window expressed as a
+<strong>duration</strong> — reset the balance and set the valid-until stamp to <code>now + interval</code> — needs no
+anchor field at all, because the valid-until stamp <em>is</em> the anchor. It is in fact cheaper than
+the calendar form: no cron parsing, no timezone database, no daylight-saving handling, no
+boundary scan. An earlier draft of this record rejected per-entity windows on the grounds that
+they would require per-entity state the fast path could not compute from the item alone. That
+reasoning was wrong: it described a design storing a fixed start instant and projecting
+multiples of the interval from it, and did not hold for the sliding form. The decision below
+therefore rests on scope, not on feasibility.</p>
 <h2 id="decision">Decision<a class="headerlink" href="#decision" title="Permanent link">&para;</a></h2>
-<p><code>reset_schedule</code> supports fixed calendar windows only. Windows anchored to an entity's own
-activity are out of scope for this feature, and adding them requires a separate decision record
-and a separate mechanism.</p>
+<p><code>reset_schedule</code> supports fixed calendar windows only. Duration-based windows anchored to an
+entity's own activity are deferred to a later release on scope grounds, not excluded as
+infeasible, and require their own decision record when taken up.</p>
 <h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>
 <p><strong>Positive:</strong>
 - The valid-until stamp stays computable from the bucket item alone, which is what keeps the
@@ -3318,15 +3335,21 @@ and a separate mechanism.</p>
   per-entity anchor would have to survive item expiry.</p>
 <p><strong>Negative:</strong>
 - Every entity resets simultaneously, concentrating load at the boundary. For a large tenant
-  population this is a thundering herd the current design does nothing to spread.
+  population this is a thundering herd the current design does nothing to spread. The deferred
+  duration form does not have this property at all, which is the strongest argument for taking
+  it up.
 - The nearest common real-world behaviour is the one excluded, so the limitation must be stated
   explicitly in the user guide rather than left to be discovered.
 - A caller wanting per-entity windows has no partial path: the feature is absent rather than
   approximate.</p>
 <h2 id="alternatives-considered">Alternatives Considered<a class="headerlink" href="#alternatives-considered" title="Permanent link">&para;</a></h2>
-<h3 id="per-entity-anchor-timestamp-on-the-bucket-item">Per-entity anchor timestamp on the bucket item<a class="headerlink" href="#per-entity-anchor-timestamp-on-the-bucket-item" title="Permanent link">&para;</a></h3>
-<p>Rejected because: it makes the valid-until stamp depend on per-entity state, which removes the
-property that any writer can compute it from the item alone.</p>
+<h3 id="duration-based-windows-anchored-to-the-entity-in-this-release">Duration-based windows anchored to the entity, in this release<a class="headerlink" href="#duration-based-windows-anchored-to-the-entity-in-this-release" title="Permanent link">&para;</a></h3>
+<p>Deferred, not rejected: it is a second refill mechanism with its own configuration surface,
+storage and documentation, and #222 is already long. It remains the answer to the thundering
+herd noted above.</p>
+<h3 id="per-entity-window-storing-a-fixed-start-instant-and-projecting-intervals-from-it">Per-entity window storing a fixed start instant and projecting intervals from it<a class="headerlink" href="#per-entity-window-storing-a-fixed-start-instant-and-projecting-intervals-from-it" title="Permanent link">&para;</a></h3>
+<p>Rejected because: it needs an anchor field the sliding <code>now + interval</code> form does not, for no
+behaviour the sliding form lacks.</p>
 <h3 id="derive-an-anchor-from-the-entity-identifier-to-stagger-resets">Derive an anchor from the entity identifier to stagger resets<a class="headerlink" href="#derive-an-anchor-from-the-entity-identifier-to-stagger-resets" title="Permanent link">&para;</a></h3>
 <p>Rejected because: it silently gives entities different allowance boundaries than their
 configuration states, and the drift is undiscoverable from the config.</p>
