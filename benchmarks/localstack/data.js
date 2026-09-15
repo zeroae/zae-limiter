@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789431378883,
+  "lastUpdate": 1789433244185,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -18842,6 +18842,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.010086916918960699",
             "extra": "mean: 1.0798691192000036 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3601df0a6aeec863d2a743eee0baf8321c054be1",
+          "message": "🐛 fix(ci): abort sync codegen on dropped asyncio.gather keywords (#510)\n\n## Summary\n\n`AsyncToSyncTransformer.visit_Call` rewrote `asyncio.gather(...)` into\n`self._run_in_executor(...)` by building a fresh `ast.Call` with\n`keywords=[]`, silently discarding whatever the author wrote. Async\nsource using `return_exceptions=True` generated a sync twin behaving as\n`return_exceptions=False` — it raises on the first sibling failure and\nabandons the rest, where the async original collects the exception and\nlets siblings finish. Nothing detected it: the output is valid, mypy and\nruff pass, and the CI gate only checks output-matches-input.\n\n## Mechanism chosen: reject, not translate\n\nI checked whether `_run_in_executor` can express `return_exceptions`\nbefore deciding. **It can, in all four `parallel_mode` strategies** —\ncontrary to the issue's premise:\n\n| Strategy | `return_exceptions=True` expressible? | How |\n|---|---|---|\n| gevent | Yes | `joinall(..., raise_error=False)`, then `g.value` /\n`g.exception` per greenlet |\n| threadpool | Yes | all futures already submitted; check\n`f.exception()` before `f.result()` |\n| serial | Yes | wrap each `fn()` in try/except; the loop continues, so\nsiblings still run |\n| auto | Yes | delegates to one of the above |\n\nRejected translation anyway, for three reasons:\n\n1. **The pattern is not foreclosed by rejecting it.** `gather(*[f(x) for\nx in xs], return_exceptions=True)` has an exactly equivalent rewrite\nthat already works today — catch inside the coroutine and return the\nexception. That rewrite is *more* portable than a translated keyword,\nbecause it is faithful under **serial** execution, where\n`return_exceptions=False` semantics are not (async gather lets siblings\nfinish after one raises; serial abandons them). So rejection costs an\nauthor one helper, not a design.\n2. **Rejection is the necessary backbone either way.** Even if\n`return_exceptions` were translated, every *other* keyword would still\nneed rejecting. Special-casing the one keyword we thought of re-opens\nthe silent-drop hole for anything future.\n3. **Zero current consumers.** Implementing it means hand-writing new\nconcurrency semantics into a code *template* (a string in\n`generate_sync.py`), exercised only through the generated twin, for no\ncall site that exists.\n\nThe guard therefore runs **once at the top of the gather branch**,\nbefore any replacement node is built, rather than at each construction\nsite — so a future fourth rewrite shape cannot reintroduce the hole. The\nerror names file, line and keyword, and prints the portable rewrite:\n\n```\nrepository.py:871: `asyncio.gather` does not support keyword argument(s): return_exceptions.\n\nThe sync generator rewrites `asyncio.gather(...)` into `self._run_in_executor(...)`,\nwhich accepts positional callables only. ...\n```\n\n`hatch run generate-sync` exits 1 on such input.\n\n## Audit of the other `asyncio.*` rewrites in `visit_Call`\n\nRequired by the issue's acceptance criteria.\n\n| Rewrite | Drops keywords? | Action |\n|---|---|---|\n| `asyncio.gather(...)` | Yes — the bug | Hard error on **any** keyword\n|\n| `asyncio.wait_for(coro, timeout)` | Yes — `timeout` | `timeout`'s drop\nis the documented *intent* (sync has no cancellation); now allow-listed,\nand **any other** keyword is a hard error. `limiter.py:382` is the one\nlive call site and passes `timeout=` — unaffected |\n| `__aenter__` client-creation strip | **No** | Returns\n`node.func.value`, the inner `session.create_client(...)` call, with its\nkeywords intact; the stripped `.__enter__()` call never carries any. No\nhole. Regression test added |\n\n## Correction to the issue\n\nThe issue lists **four** `keywords=[]` construction sites (441, 461,\n477, 501). Only **three** are drop sites — 461 is the synthesized `fn()`\nbody inside the generic-starred lambda (`ast.Call(func=Name('fn'),\nargs=[], keywords=[])`), not a rewrite of a user call. The three real\nshapes are fixed-positional, generic-starred, and starred-listcomp; each\nhas its own test.\n\nAlso confirmed: `repository.py:3201` (named in the issue) is no longer a\ngather call site. The live sites are `repository.py:871`, `:2488`,\n`:2945`, plus `tests/unit/test_limiter.py:1635` and\n`tests/unit/test_config_cache.py:488` in transformed test files — **all\npositional**. The bug was latent, not live.\n\n## Test plan\n\nNew `tests/unit/test_generate_sync.py` — the first test file to drive\n`AsyncToSyncTransformer` directly (the acceptance criteria noted none\nexisted). 20 tests: each gather shape still rewrites when positional;\neach aborts on `return_exceptions=True`, on `**kwargs`, and on an\nunknown future keyword; the error names file:line and suggests the\nrewrite; `wait_for` drops `timeout` positionally and by keyword but\naborts on anything else; the `__aenter__` strip and ordinary calls keep\ntheir keywords.\n\n- [x] `uv run pytest tests/unit/ -q` — **3662 passed** (4m13s)\n- [x] `uv run pytest tests/unit/ -m gevent -n 0 -q` — **26 passed**\n- [x] `uv run mypy` — Success, 58 source files\n- [x] `uv run ruff check .` — All checks passed\n- [x] `hatch run generate-sync` — all 14 generated files **Unchanged**;\n`git diff --exit-code` clean apart from the generator change itself\n- [x] End-to-end: temporarily added `return_exceptions=True` to\n`repository.py:871`; generation aborted with the message above and exit\n1; reverted\n\nCloses #491\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01QdVj8nPhUwTz2aNJzMFqt5",
+          "timestamp": "2026-09-14T20:42:43-04:00",
+          "tree_id": "a57c5eb9895ab83252a12e951670f72a9586ca75",
+          "url": "https://github.com/zeroae/zae-limiter/commit/3601df0a6aeec863d2a743eee0baf8321c054be1"
+        },
+        "date": 1789433242797,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 9.390343039954795,
+            "unit": "iter/sec",
+            "range": "stddev: 0.1450263437649719",
+            "extra": "mean: 106.49238220000257 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 6.699797920312092,
+            "unit": "iter/sec",
+            "range": "stddev: 0.11248298356790111",
+            "extra": "mean: 149.25823314286137 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 12.290564565888676,
+            "unit": "iter/sec",
+            "range": "stddev: 0.08277229411844796",
+            "extra": "mean: 81.36322742857617 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 32.86611823719917,
+            "unit": "iter/sec",
+            "range": "stddev: 0.013502208281652552",
+            "extra": "mean: 30.42647120000197 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 17.47139914973191,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0436828638388612",
+            "extra": "mean: 57.23640055555279 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 80.96611357633923,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0034252882924173168",
+            "extra": "mean: 12.350846000001544 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 14.825454711591288,
+            "unit": "iter/sec",
+            "range": "stddev: 0.03939218527089621",
+            "extra": "mean: 67.45155676190825 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 12.977560426006471,
+            "unit": "iter/sec",
+            "range": "stddev: 0.11251721863866836",
+            "extra": "mean: 77.05608505555814 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 24.67656533772019,
+            "unit": "iter/sec",
+            "range": "stddev: 0.028924607628928744",
+            "extra": "mean: 40.524278249996826 msec\nrounds: 44"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 24.252977014866406,
+            "unit": "iter/sec",
+            "range": "stddev: 0.028507819997047355",
+            "extra": "mean: 41.23205161110851 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 30.465925451687802,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009603411618818601",
+            "extra": "mean: 32.82355566666695 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 18.982709455857936,
+            "unit": "iter/sec",
+            "range": "stddev: 0.034500688117910704",
+            "extra": "mean: 52.67951881818466 msec\nrounds: 22"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 14.54745060379661,
+            "unit": "iter/sec",
+            "range": "stddev: 0.07719581383571873",
+            "extra": "mean: 68.74056680000129 msec\nrounds: 35"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.8281738218674906,
+            "unit": "iter/sec",
+            "range": "stddev: 0.05450013038967793",
+            "extra": "mean: 546.9939390000093 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.7214445968088596,
+            "unit": "iter/sec",
+            "range": "stddev: 0.04439741732906113",
+            "extra": "mean: 580.9074551999856 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.7727303565957793,
+            "unit": "iter/sec",
+            "range": "stddev: 0.13156895152835804",
+            "extra": "mean: 1.2941124823999985 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.7329484280853978,
+            "unit": "iter/sec",
+            "range": "stddev: 0.1909395292285184",
+            "extra": "mean: 1.3643524723999918 sec\nrounds: 5"
           }
         ]
       }
