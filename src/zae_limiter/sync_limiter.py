@@ -41,6 +41,7 @@ from .models import (
     StackOptions,
     UsageSnapshot,
     UsageSummary,
+    is_accrual_rate,
     validate_identifier,
     validate_resource,
 )
@@ -1630,7 +1631,8 @@ class SyncRateLimiter:
                 wait = calculate_retry_after(
                     deficit_milli=(requested - available) * 1000,
                     refill_amount_milli=refill_milli[limit.name]
-                    or undivided_refill_milli[limit.name],
+                    if is_accrual_rate(refill_milli[limit.name])
+                    else undivided_refill_milli[limit.name],
                     refill_period_ms=period_ms[limit.name],
                     next_reset_ms=None,
                     now_ms=now_ms,

@@ -24,7 +24,7 @@ For implementation details, see docs/contributing/architecture.md
 
 from dataclasses import dataclass
 
-from .models import BucketState, Limit, LimitStatus
+from .models import BucketState, Limit, LimitStatus, is_accrual_rate
 
 
 @dataclass
@@ -187,21 +187,29 @@ def calculate_retry_after(
     "retry after" is the next reset instant, so callers that know it pass it in
     ``next_reset_ms`` and the three cases become (#530):
 
-    ============================  ==================================
-    Condition                     Result
-    ============================  ==================================
-    ``refill_amount_milli > 0``   rate arithmetic; ``next_reset_ms``
-                                  is ignored entirely
-    rate 0, reset known           the wait until that reset instant
-    rate 0, no reset              ``0.0``
-    ============================  ==================================
+    ==============================  ==================================
+    Condition                       Result
+    ==============================  ==================================
+    :func:`~.models.is_accrual_rate`  rate arithmetic; ``next_reset_ms``
+                                    is ignored entirely
+    not accruing, reset known       the wait until that reset instant
+    not accruing, no reset          ``0.0``
+    ==============================  ==================================
 
-    The last row is unreachable for any constructible limit. ADR-137 makes
-    ``refill_amount = 0`` valid *only* alongside a ``reset_schedule``, so a
-    zero rate implies a reset exists — which is precisely why the reset has to
-    be threaded through here rather than left to the four call sites. What
-    remains of that branch once again means what it always claimed to: a
-    corrupt stored item whose rate is itself 0.
+    The rate handed in is an **effective** one — scheduled, and narrowed to one
+    shard — so "not accruing" is the temporal predicate
+    (:meth:`BucketState.accrues`), not "is a quota". The two differ: a dripping
+    limit whose per-shard share floors to zero is also not accruing. Every
+    caller reaches this through ``BucketState.retry_refill_amount_milli``,
+    which falls back to the *undivided* rate for exactly that case, so a
+    floored share never arrives here as a zero.
+
+    The last row is therefore unreachable for any constructible limit. ADR-137
+    makes ``refill_amount = 0`` valid *only* alongside a ``reset_schedule``, so
+    a zero rate that survives that fallback implies a reset exists — which is
+    precisely why the reset has to be threaded through here rather than left to
+    the four call sites. What remains of that branch once again means what it
+    always claimed to: a corrupt stored item whose rate is itself 0.
 
     Args:
         deficit_milli: How many millitokens we're short
@@ -221,7 +229,7 @@ def calculate_retry_after(
     """
     if deficit_milli <= 0:
         return 0.0
-    if refill_amount_milli <= 0:
+    if not is_accrual_rate(refill_amount_milli):
         if next_reset_ms is not None and now_ms is not None:
             # A reset restores the whole balance at once, so the edge *is* the
             # answer — no rate is involved. The +1ms mirrors the rounding

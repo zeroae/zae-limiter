@@ -12,6 +12,7 @@ from boto3.dynamodb.types import TypeDeserializer
 from botocore.exceptions import ClientError
 
 from zae_limiter.bucket import refill_bucket
+from zae_limiter.models import is_accrual_rate
 from zae_limiter.schedule import (
     ScheduleEntry,
     decode,
@@ -684,7 +685,13 @@ def try_refill_bucket(
     any_needs_refill = False
 
     for limit_name, info in state.limits.items():
-        if info.rp_ms <= 0 or info.ra_milli <= 0:
+        # A stored rate that is not an accrual rate has nothing to refill. That
+        # is the *normal* state of a quota since ADR-137 — it recovers at a
+        # `reset_schedule` edge, which this function does not apply — and
+        # otherwise means a corrupt or unparsed item. Either way, skipping is
+        # right: `refill_bucket` would add nothing and the `rp_ms` half of the
+        # guard exists to keep its drift division off a zero denominator.
+        if info.rp_ms <= 0 or not is_accrual_rate(info.ra_milli):
             continue
 
         if limit_name == WCU_LIMIT_NAME:
