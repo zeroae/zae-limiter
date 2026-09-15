@@ -1,6 +1,6 @@
 # ADR-116: IAM Role Naming Convention
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-01-30
 **Issue:** [#252](https://github.com/zeroae/zae-limiter/issues/252)
 
