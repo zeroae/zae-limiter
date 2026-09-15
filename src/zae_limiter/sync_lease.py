@@ -561,6 +561,8 @@ def _build_retry_failure_statuses(entries: list[LeaseEntry], now_ms: int) -> lis
             deficit_milli=deficit_milli,
             refill_amount_milli=entry.state.retry_refill_amount_milli(now_ms),
             refill_period_ms=entry.state.effective_refill_period_ms(now_ms),
+            next_reset_ms=None,
+            now_ms=now_ms,
         )
         statuses.append(
             LimitStatus(

@@ -2130,6 +2130,10 @@ class RateLimiter:
                         refill_milli[limit.name] or undivided_refill_milli[limit.name]
                     ),
                     refill_period_ms=period_ms[limit.name],
+                    # TODO(#222 surface-plan Task 5): supply the next reset
+                    # edge once BucketState carries `reset_sched`.
+                    next_reset_ms=None,
+                    now_ms=now_ms,
                 )
 
             statuses.append(
