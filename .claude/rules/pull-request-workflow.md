@@ -31,3 +31,34 @@ All changes must go through pull requests. Direct commits to `main` are not allo
 6. Once approved and CI passes, the PR will be merged to main
 
 **Important:** Never force-push to main or bypass CI checks.
+
+## Closing keywords are matched as substrings, negation and all
+
+GitHub's linked-issue parser has no notion of negation. A PR body containing
+
+```
+Does not close #222.
+```
+
+registers `#222` in `closingIssuesReferences` and **closes the epic on merge**. This happened on
+PR #573: the scheduled-limits epic was closed by a line written specifically to say it should not
+be, and had to be reopened.
+
+So:
+
+- To reference an issue without closing it, write **`Refs #222`** or **`Part of #222`**.
+- Never place `close`/`closes`/`closed`/`fix`/`fixes`/`fixed`/`resolve`/`resolves`/`resolved`
+  adjacent to an issue number you do not intend to close — **including inside a denial**.
+- Before merging anything that references an epic, check what will actually close:
+
+```bash
+gh pr view <n> --json closingIssuesReferences
+```
+
+Verify the epic is still open afterwards; a reopen is cheap, a silently closed epic is not.
+
+## Reading CI before you merge
+
+See `ci-signals.md`. A red check is frequently a cancelled run, a partial codecov upload, or a
+stale base rather than a failure — and `strict: false` means GitHub will let you merge a green
+that predates changes on `main`.
