@@ -4735,7 +4735,36 @@ EOF
 
 **Files:** Create `docs/adr/135-scheduled-limits.md`; modify `CLAUDE.md`, `docs/guide/`, `docs/cli.md`, `docs/api/`
 
-- [ ] **Step 1:** Write ADR-135 from the design doc. **Verify 135 is still unclaimed** against `main` and open PRs before using it — #393 holds 126-132, and `main` currently tops out at 134. Do not pre-claim a number in a branch name; that practice caused the #304 and #320 collisions.
+> ⚠️ **The user-facing docs are a how-to, not a changelog.** This task writes to two
+> audiences and they take opposite treatments, so decide per file before writing a word.
+>
+> **`docs/adr/135-*.md` and `CLAUDE.md` carry the reasoning.** An ADR exists to record why a
+> decision was taken and what was rejected; `CLAUDE.md` is a developer reference. Both should
+> be complete.
+>
+> **`docs/guide/`, `docs/cli.md` and `docs/api/` carry none of it.** A reader there has no
+> history to reconcile. The test to apply to every sentence: *if it exists to explain what
+> used to be true, what changed, or what an earlier design did, cut it.* No "previously", no
+> "note that this no longer", no rejected alternatives, no justification of the design. Show
+> the API that exists and what it does. Someone learning the feature did not attend the design
+> discussion and does not need to know there was one.
+>
+> A worked example of getting this wrong, from the guide (#524): an early draft explained why
+> `Limit.per_day(...).with_reset_schedule(...)` is rejected. No reader has ever written that
+> line — the form they meet is the one that exists. Explaining a rejected shape teaches a wrong
+> thing first and then unteaches it.
+>
+> **Two things that are not history and must stay:** the version admonition (it tells a reader
+> on an older release why something is absent), and any *current* limitation — ADR-138's
+> fixed-window restriction in particular, stated as a fact about the feature rather than as a
+> decision taken.
+>
+> **Do not frame a configurable thing by one of its values.** The reset period is whatever the
+> cron says; a section called "daily quotas" with three midnight examples teaches that quotas
+> are a midnight feature. Show the range — a session cap resetting every few hours, a monthly
+> plan on the 1st, a weekly cap — with one example worked in full and the rest as one-liners.
+
+- [ ] **Step 1:** Write ADR-135 from the design doc. **Verify 135 is still unclaimed** against `main` and open PRs before using it — #393 holds 126-132. Do not pre-claim a number in a branch name; that practice caused the #304 and #320 collisions. Note `main` now tops out at **138**: ADR-136 (entity config bucket TTL), ADR-137 (a limit drips or resets, never both) and ADR-138 (fixed calendar reset windows only) all landed after this plan was written, and 135 remains free only by accident. ADR-135 must not restate or contradict 137 and 138 — read both first and reference them rather than re-deciding what they settled.
 - [ ] **Step 2:** Update `CLAUDE.md`: the schedule attributes in the DynamoDB writer table, `SCHEDULE_BOUNDARY` in the failure-reason list, `cronsim`/`tzdata`/`croniter` in Dependencies, and the retired 1.5x shard transient if the core plan has not already done it.
 - [ ] **Step 3:** Run the `docs-updater` agent per `.claude/rules/docs-parity.md`.
 - [ ] **Step 4:** Commit — `📝 docs(adr): record the scheduled limits design as ADR-135`
