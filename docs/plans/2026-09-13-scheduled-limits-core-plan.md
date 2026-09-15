@@ -812,7 +812,7 @@ EOF
   - `decode(compact: str, tz: str) -> tuple[ScheduleEntry, ...]`
   - `to_cron(compact_entry: str) -> str` — canonical 5-field cron for display
 
-**Why.** DynamoDB bills WCU per 1 KB, and a bucket item crossing 1 KB doubles the write cost of every acquire on it forever. Measured: the obvious JSON encoding crosses 1 KB at 3 limits × 2 entries (917 B) and reaches 1337 B at 4 × 3. The compact form is **4.9x smaller** and holds the worst shared case to 805 B — against 721 B for the same item with no schedule at all.
+**Why.** DynamoDB bills WCU per 1 KB, and a bucket item crossing 1 KB doubles the write cost of every acquire on it forever. Measured: the obvious JSON encoding reaches 917 B at 3 limits × 2 entries and first crosses 1 KB at 4 × 3 (1337 B). The compact form is **4.9x smaller** and holds the worst shared case to 805 B — against 721 B for the same item with no schedule at all. (This sentence previously said the JSON form *crossed* 1 KB at 3 × 2, which 917 B does not; #507.)
 
 **Grammar.** Wildcard fields omitted; remaining fields letter-tagged `m h D M w`; names normalised to numbers; `scale` as integer per-mille with tag `s`; absolute capacity `c`, refill amount `a`, period `p`. Entries separated by `;`. Timezone hoisted to one item-level attribute. Example: `h9-17w1-5s500;h0-6c2000`.
 
@@ -2083,6 +2083,40 @@ inside `if scheduled:`** — that was the plan's original shape and it would hav
 unscheduled entity exposed, which is most of them. Note also that `vu` must NOT appear in the
 `else` branch's REMOVE list: `SET` and `REMOVE` on one attribute in a single
 `UpdateExpression` is the `ValidationException` #488 hit.
+
+**The fan-out must also decide #508: does `_sync_bucket_params` bump `rf`?** This is a
+REQUIREMENT of this task, not a suggestion — do not implement Task 13 without resolving it,
+and state which option you took and why.
+
+The aggregator guards `try_refill_bucket` with an optimistic lock on the shared `rf`
+timestamp. That lock exists so a refill computed from a stale stream image cannot be applied
+after another writer has moved the bucket on. But `_sync_bucket_params` rewrites `cp`/`ra`/`rp`
+on every shard **without touching `rf`**, so the lock cannot distinguish a stream image
+captured before the fan-out from one captured after — and an aggregator invocation holding a
+pre-shrink image passes the condition and refills toward the **old, larger** capacity. The
+over-refill is transient (since #496, `refill_bucket` clamps on every path, so the next
+materialising pass trims it), but in the interval the bucket admits above the limit
+`set_limits` was called to impose.
+
+PR #506 already closed the **same structural gap for a different symptom**: a stale image could
+compute `vu` from a superseded schedule and push the boundary into the future, cancelling the
+one materialising pass the `vu = 0` above exists to force. It fixed that by adding
+`AND #sched = :expected_sched` to the aggregator's condition — but only on the re-stamp path.
+`cp`/`ra` remains unguarded, which is #508.
+
+Two options:
+
+1. **Pin per-limit `cp` in the aggregator's condition**, mirroring how #506 pinned `#sched`.
+   Narrow, local to `processor.py`, and closes one attribute.
+2. **Have the fan-out bump `rf`.** Closes the whole class — every attribute the fan-out writes,
+   including ones added later — with the lock that already exists. But `rf` is the refill
+   clock, so moving it forfeits the refill accrued since the last stamp, and that interacts
+   with the `vu = 0` pass above: think it through rather than applying it reflexively.
+
+Option 2 is the broader fix and this task owns the function, which is why the decision sits
+here rather than in the aggregator. Whichever you choose, add a test that fails against the
+current behaviour — a stale pre-shrink image must not be able to refill toward the old
+capacity.
 
 **`vu = 0`, not a computed boundary.** Computing it would leave `vu` in the future while `tk` still holds a surplus over the new cap, so the fast path would admit against it until natural refill caught up — the exact burst #469 existed to prevent. `vu = 0` forces one materialising pass that trims. Cost at 10k active buckets is one failed conditional plus one slow pass each, ≈ $0.014 per admin operation.
 
