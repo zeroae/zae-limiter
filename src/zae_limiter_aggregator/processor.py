@@ -759,6 +759,33 @@ def try_refill_bucket(
     expr_values[":expected_rf"] = state.rf_ms
     condition = "rf = :expected_rf"
 
+    # #508: the `rf` lock alone cannot see a `_sync_bucket_params` fan-out.
+    # That fan-out rewrites `cp`/`ra`/`rp`/`sched` on every shard and does NOT
+    # touch `rf`, so a stream image captured before it passes the lock and
+    # refills toward the *old, larger* capacity — above the limit `set_limits`
+    # was called to impose, until the next materialising pass clamps it (#496).
+    #
+    # Pinning `vu` closes the whole class rather than one attribute: since
+    # #222's Task 13 the fan-out SETs `vu = 0` on EVERY fan-out, scheduled or
+    # not, so `vu` is the epoch marker for "the operator changed something
+    # here" and covers every attribute that write touches, including ones
+    # added later. It costs one condition term instead of the three-per-limit
+    # that pinning cp/ra/rp individually would, and unlike bumping `rf` in the
+    # fan-out it forfeits no accrued refill.
+    #
+    # It adds no false failures the `rf` lock was not already going to catch:
+    # the only other writers of `vu` are the client slow path and this
+    # function, and both move `rf` in the same write. PR #506 pinned `#sched`
+    # for the narrower version of this race on the re-stamp path only; that
+    # pin is kept below because it is what makes the *boundary* it computes
+    # trustworthy, which is a different claim from "the item has not moved".
+    expr_names["#vu"] = BUCKET_FIELD_VU
+    if state.vu_ms is None:
+        condition += " AND attribute_not_exists(#vu)"
+    else:
+        condition += " AND #vu = :expected_vu"
+        expr_values[":expected_vu"] = state.vu_ms
+
     # An expired `vu` means this pass is the materialisation the fast path is
     # waiting on: stamp the next boundary so it can resume. A `vu` still in the
     # future is left alone — re-stamping it would move the gate the client is
@@ -767,7 +794,6 @@ def try_refill_bucket(
         boundary = _item_next_boundary(state, now_ms)
         if boundary is not None:
             set_parts.append("#vu = :new_vu")
-            expr_names["#vu"] = BUCKET_FIELD_VU
             expr_values[":new_vu"] = boundary
             # The stream image the boundary was computed from can be older than
             # the item: the #468 fan-out rewrites `sched`/`cp` and `vu = 0`
@@ -792,8 +818,9 @@ def try_refill_bucket(
         "ConditionExpression": condition,
         "ExpressionAttributeValues": expr_values,
     }
-    # DynamoDB rejects an unused ExpressionAttributeNames entry, so the map is
-    # only sent when the `vu` re-stamp above actually put aliases in it.
+    # Always non-empty since the #508 `vu` pin above, but kept as a guard:
+    # DynamoDB rejects an ExpressionAttributeNames map with an unused entry,
+    # and a future edit that drops the last alias would otherwise fail there.
     if expr_names:
         update_kwargs["ExpressionAttributeNames"] = expr_names
 

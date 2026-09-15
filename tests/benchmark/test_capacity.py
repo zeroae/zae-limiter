@@ -12,6 +12,7 @@ Note: These tests use moto (mocked DynamoDB) to enable API call counting.
 import pytest
 
 from zae_limiter import Limit
+from zae_limiter.schedule import ScheduleEntry
 
 pytestmark = pytest.mark.benchmark
 
@@ -708,3 +709,73 @@ class TestSpeculativeCapacity:
         assert capacity_counter.update_item == 1, "Should have 1 UpdateItem call (condition failed)"
         assert capacity_counter.put_item == 0, "Should not use PutItem"
         assert len(capacity_counter.transact_write_items) == 0, "Should not use TransactWriteItems"
+
+
+class TestScheduledFastPathCapacity:
+    """The load-bearing claim of #222: a schedule costs the fast path nothing.
+
+    `vu` exists so the speculative condition can gate on a schedule without
+    evaluating one. If a scheduled bucket ever reached config — or the
+    aggregator's parse, or a shard discovery — the entire design would be a
+    more expensive way to do what `set_limits` already does.
+    """
+
+    SCHEDULE = (ScheduleEntry(cron="* * * * *", tz="UTC", scale=0.5),)
+
+    def test_future_vu_costs_no_reads(self, sync_limiter, capacity_counter):
+        limits = [Limit.per_minute("rpm", 1_000_000).with_schedule(self.SCHEDULE)]
+        # Warm the bucket, the entity cache and the config cache.
+        with sync_limiter.acquire("vu-cap", "api", limits=limits, consume={"rpm": 1}):
+            pass
+
+        capacity_counter.reset()
+        with capacity_counter.counting():
+            with sync_limiter.acquire("vu-cap", "api", limits=limits, consume={"rpm": 1}):
+                pass
+
+        assert capacity_counter.get_item == 0, "fast path must not read config"
+        assert capacity_counter.batch_get_item == [], "fast path must not batch-read"
+        assert capacity_counter.query == 0, "fast path must not query"
+        assert capacity_counter.update_item == 1, "one conditional UpdateItem, as unscheduled"
+
+    def test_an_unscheduled_bucket_costs_exactly_the_same(self, sync_limiter, capacity_counter):
+        """Discriminates the test above: the numbers are only meaningful if the
+        unscheduled baseline they are being compared to is identical."""
+        limits = [Limit.per_minute("rpm", 1_000_000)]
+        with sync_limiter.acquire("vu-cap-base", "api", limits=limits, consume={"rpm": 1}):
+            pass
+
+        capacity_counter.reset()
+        with capacity_counter.counting():
+            with sync_limiter.acquire("vu-cap-base", "api", limits=limits, consume={"rpm": 1}):
+                pass
+
+        assert capacity_counter.get_item == 0
+        assert capacity_counter.batch_get_item == []
+        assert capacity_counter.query == 0
+        assert capacity_counter.update_item == 1
+
+    def test_the_fan_outs_forced_pass_costs_one_slow_acquire_not_every_one(
+        self, sync_limiter, capacity_counter
+    ):
+        """`vu = 0` buys the clamp for exactly one demoted acquire. Before
+        `clear_vu` the stamp was unremovable on an unscheduled bucket and every
+        subsequent acquire paid the slow path's 1 RCU + 2 WCU, forever."""
+        sync_limiter.create_entity("vu-cap-fanout")
+        sync_limiter.set_limits("vu-cap-fanout", [Limit.per_minute("rpm", 1_000_000)])
+        with sync_limiter.acquire("vu-cap-fanout", "api", consume={"rpm": 1}):
+            pass
+        sync_limiter.set_limits("vu-cap-fanout", [Limit.per_minute("rpm", 500_000)])
+
+        capacity_counter.reset()
+        with capacity_counter.counting():
+            with sync_limiter.acquire("vu-cap-fanout", "api", consume={"rpm": 1}):
+                pass
+        assert capacity_counter.batch_get_item, "the forced pass IS a slow path"
+
+        capacity_counter.reset()
+        with capacity_counter.counting():
+            with sync_limiter.acquire("vu-cap-fanout", "api", consume={"rpm": 1}):
+                pass
+        assert capacity_counter.batch_get_item == [], "and the next one is not"
+        assert capacity_counter.update_item == 1

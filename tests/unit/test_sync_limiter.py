@@ -7598,3 +7598,134 @@ class TestSlowPathMaterialisesVu:
             pass
         item = self._raw(repo, "vu-trim")
         assert item[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"] == "500000"
+
+
+class TestFanOutVuSelfClears:
+    """`vu = 0` from the #468 fan-out must survive exactly one acquire.
+
+    Task 13 writes `vu = 0` on **every** fan-out, scheduled or not, so that a
+    capacity shrink gets one materialising pass that clamps the surplus before
+    the fast path (a pure `ADD` with no cap maths) can spend it.
+
+    That only works if the pass can *clear* the stamp again. On an unscheduled
+    bucket there is no boundary to re-stamp, and `build_composite_normal`'s
+    `vu=None` means "leave it alone" — so before `clear_vu` the `0` stayed on
+    the item forever and the fast-path condition `(attribute_not_exists(vu) OR
+    vu > now)` failed on every subsequent acquire. The entity was permanently
+    demoted from 1 round trip to 3, at $1.375/M instead of $0.625/M, and
+    entity-level buckets carry no TTL so nothing would ever have recycled it.
+    """
+
+    NOW = int(datetime(2026, 9, 15, 10, 5, tzinfo=UTC).timestamp() * 1000)
+
+    @staticmethod
+    def _raw(repo, entity_id, resource="gpt-4", shard=0):
+        client = repo._get_client()
+        response = client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, resource, shard)},
+                "SK": {"S": sk_state()},
+            },
+        )
+        return response["Item"]
+
+    def test_an_unscheduled_bucket_clears_vu_on_the_forced_pass(self, sync_limiter):
+        repo = sync_limiter._repository
+        repo.create_entity("vu-clear")
+        with sync_limiter.acquire(
+            "vu-clear", "gpt-4", limits=[Limit.per_minute("rpm", 1000)], consume={"rpm": 1}
+        ):
+            pass
+        repo.set_limits("vu-clear", [Limit.per_minute("rpm", 10)], resource="gpt-4")
+        assert self._raw(repo, "vu-clear")[BUCKET_FIELD_VU]["N"] == "0"
+        with sync_limiter.acquire("vu-clear", "gpt-4", consume={"rpm": 1}):
+            pass
+        assert BUCKET_FIELD_VU not in self._raw(repo, "vu-clear")
+
+    def test_the_forced_pass_trims_the_surplus_it_exists_for(self, sync_limiter):
+        """#469's scenario end to end: shrink 1000 -> 10 on a full bucket."""
+        repo = sync_limiter._repository
+        repo.create_entity("vu-trim-shrink")
+        with sync_limiter.acquire(
+            "vu-trim-shrink", "gpt-4", limits=[Limit.per_minute("rpm", 1000)], consume={"rpm": 0}
+        ):
+            pass
+        assert (
+            self._raw(repo, "vu-trim-shrink")[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"] == "1000000"
+        )
+        repo.set_limits("vu-trim-shrink", [Limit.per_minute("rpm", 10)], resource="gpt-4")
+        with sync_limiter.acquire("vu-trim-shrink", "gpt-4", consume={"rpm": 0}):
+            pass
+        item = self._raw(repo, "vu-trim-shrink")
+        assert item[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"] == "10000"
+        assert BUCKET_FIELD_VU not in item
+
+    def test_the_fast_path_is_restored_after_one_pass(self, sync_limiter):
+        """The cost claim: one demoted acquire, not every acquire forever."""
+        repo = sync_limiter._repository
+        repo.create_entity("vu-restore")
+        with sync_limiter.acquire(
+            "vu-restore", "gpt-4", limits=[Limit.per_minute("rpm", 1000)], consume={"rpm": 1}
+        ):
+            pass
+        repo.set_limits("vu-restore", [Limit.per_minute("rpm", 500)], resource="gpt-4")
+        with sync_limiter.acquire("vu-restore", "gpt-4", consume={"rpm": 1}):
+            pass
+        calls: list[str] = []
+        real = repo.speculative_consume
+
+        def spy(*args, **kwargs):
+            result = real(*args, **kwargs)
+            calls.append("ok" if result.success else str(result.reason))
+            return result
+
+        with patch.object(repo, "speculative_consume", spy):
+            with sync_limiter.acquire("vu-restore", "gpt-4", consume={"rpm": 1}):
+                pass
+        assert calls == ["ok"]
+
+    def test_a_scheduled_bucket_restamps_rather_than_clears(self, sync_limiter):
+        """The contrast case: `clear_vu` must not fire where a boundary exists,
+        or a scheduled bucket would fast-path straight past its next window."""
+        repo = sync_limiter._repository
+        repo._now_ms = lambda: self.NOW
+        scheduled = Limit.per_minute("rpm", 1000).with_schedule(
+            (ScheduleEntry(cron="* 9-17 * * *", tz="UTC", scale=0.5),)
+        )
+        repo.create_entity("vu-sched")
+        with sync_limiter.acquire("vu-sched", "gpt-4", limits=[scheduled], consume={"rpm": 1}):
+            pass
+        repo.set_limits("vu-sched", [scheduled], resource="gpt-4")
+        assert self._raw(repo, "vu-sched")[BUCKET_FIELD_VU]["N"] == "0"
+        with sync_limiter.acquire("vu-sched", "gpt-4", consume={"rpm": 1}):
+            pass
+        item = self._raw(repo, "vu-sched")
+        expected = int(datetime(2026, 9, 15, 18, 0, tzinfo=UTC).timestamp() * 1000)
+        assert item[BUCKET_FIELD_VU]["N"] == str(expected)
+
+    def test_every_shard_clears_its_own_stamp(self, sync_limiter):
+        """`vu` is per item. The fan-out stamps N shards; each clears its own
+        on its own next acquire, and one cleared shard does not clear another.
+        """
+        repo = sync_limiter._repository
+        repo.create_entity("vu-shards")
+        now_ms = repo._now_ms()
+        limits = [Limit.per_minute("rpm", 1000)]
+        for shard_id in (0, 1):
+            states = [BucketState.from_limit("vu-shards", "gpt-4", lim, now_ms) for lim in limits]
+            repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        "vu-shards", "gpt-4", states, now_ms, shard_id=shard_id, shard_count=2
+                    )
+                ]
+            )
+        repo.set_limits("vu-shards", [Limit.per_minute("rpm", 500)], resource="gpt-4")
+        result = repo.speculative_consume("vu-shards", "gpt-4", {"rpm": 1}, shard_id=0)
+        assert not result.success, "vu = 0 must close the fast path"
+        with patch.object(repo, "select_shard", lambda *a, **k: (0, 2)):
+            with sync_limiter.acquire("vu-shards", "gpt-4", consume={"rpm": 1}):
+                pass
+        assert BUCKET_FIELD_VU not in self._raw(repo, "vu-shards", shard=0)
+        assert self._raw(repo, "vu-shards", shard=1)[BUCKET_FIELD_VU]["N"] == "0"

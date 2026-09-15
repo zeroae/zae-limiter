@@ -4779,13 +4779,16 @@ class TestStaleLimitAliasesAreExpressionSafe:
             assert alias.startswith("#")
             for bad in self.ILLEGAL_IN_ALIAS:
                 assert bad not in alias, f"{alias!r} is not a legal expression alias"
-        # The aliases must still resolve to the right attributes.
+        # The aliases must still resolve to the right attributes. The stale
+        # names lose their schedule override along with everything else, and
+        # the unscheduled `else` branch clears the item-level `sched` pair
+        # plus the surviving limit's own override (#222 Task 13).
         removed = {names[alias] for alias in aliases}
         assert removed == {
             bucket_attr(name, field)
             for name in ("req-min", "tok.sec")
-            for field in ("tk", "cp", "ra", "rp", "tc")
-        }
+            for field in ("tk", "cp", "ra", "rp", "tc", "sched")
+        } | {"sched", "sched_tz", bucket_attr("rpm", "sched")}
 
     @pytest.mark.asyncio
     async def test_scoped_reconcile_with_a_hyphenated_stale_name(self, repo):
@@ -5161,6 +5164,64 @@ class TestSlowPathWritesVu:
         assert ":vu" not in upd["ExpressionAttributeValues"]
         assert "vu" not in upd["UpdateExpression"]
 
+    def test_normal_clears_vu_when_asked(self, repo):
+        """`clear_vu` REMOVEs the stamp. `vu=None` cannot mean this: leaving
+        `vu` alone is the right behaviour for a pass that has nothing to say
+        about the boundary, but a pass that knows nothing on the item is
+        scheduled has to strip the `vu = 0` the #468 fan-out wrote — or the
+        item fails `(attribute_not_exists(vu) OR vu > now)` forever."""
+        item = repo.build_composite_normal(
+            "user-1",
+            "gpt-4",
+            consumed={"rpm": 1000},
+            refill_amounts={"rpm": 0},
+            now_ms=self.NOW,
+            expected_rf=self.NOW - 1000,
+            vu=None,
+            clear_vu=True,
+        )
+        expr = item["Update"]["UpdateExpression"]
+        set_clause, remove_clause = expr.split(" REMOVE ")
+        assert "#vu" in remove_clause
+        assert "#vu" not in set_clause
+        assert item["Update"]["ExpressionAttributeNames"]["#vu"] == BUCKET_FIELD_VU
+        assert ":vu" not in item["Update"]["ExpressionAttributeValues"]
+
+    def test_a_boundary_wins_over_clear_vu(self, repo):
+        """The two are mutually exclusive by construction, never both in one
+        expression (#488). A caller passing both must get the SET."""
+        item = repo.build_composite_normal(
+            "user-1",
+            "gpt-4",
+            consumed={"rpm": 1000},
+            refill_amounts={"rpm": 0},
+            now_ms=self.NOW,
+            expected_rf=self.NOW - 1000,
+            vu=self.HORIZON,
+            clear_vu=True,
+        )
+        expr = item["Update"]["UpdateExpression"]
+        assert "#vu = :vu" in expr
+        assert " REMOVE " not in expr or "#vu" not in expr.split(" REMOVE ")[1]
+
+    def test_clear_vu_rides_beside_a_ttl_remove(self, repo):
+        """Both REMOVEs in one clause, which is the shape the unscheduled
+        entity-config bucket actually takes (ADR-136 REMOVEs `ttl`)."""
+        item = repo.build_composite_normal(
+            "user-1",
+            "gpt-4",
+            consumed={"rpm": 1000},
+            refill_amounts={"rpm": 0},
+            now_ms=self.NOW,
+            expected_rf=self.NOW - 1000,
+            ttl_seconds=0,
+            vu=None,
+            clear_vu=True,
+        )
+        remove_clause = item["Update"]["UpdateExpression"].split(" REMOVE ")[1]
+        assert "#ttl" in remove_clause
+        assert "#vu" in remove_clause
+
     def test_normal_never_sets_and_removes_vu_together(self, repo):
         """``ttl`` can be REMOVEd in the same expression; ``vu`` must not join
         it. SET and REMOVE on one attribute is the ValidationException #488
@@ -5311,4 +5372,516 @@ class TestCreateStampsSchedule:
             "sched-1", "gpt-4", Limit.per_minute("rpm", 1000).with_schedule(self.BUSINESS), outside
         )
         item = repo.build_composite_create("sched-1", "gpt-4", [state], outside)["Put"]["Item"]
+        assert item[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"] == "1000000"
+
+
+class TestFanOutStampsSchedule:
+    """The `set_limits` fan-out re-stamps the schedule and expires `vu` (#222 Task 13).
+
+    Two independent jobs share one write:
+
+    * **`sched`/`sched_tz`/`b_{name}_sched`** follow the config, because the
+      aggregator reads the bucket item and nothing else. A bucket left holding
+      a superseded schedule is refilled toward a ceiling the operator already
+      changed.
+    * **`vu = 0` on EVERY fan-out**, scheduled or not, forcing exactly one
+      materialising pass. Since #496 `refill_bucket` clamps on every path, but
+      the speculative fast path is a pure ADD with no cap maths, so after a
+      capacity shrink nothing else trims the surplus before it is spent. This
+      is what makes #222 subsume #469 completely rather than partially.
+    """
+
+    BUSINESS = (ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.5),)
+    NIGHTLY = (ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", scale=0.25),)
+    BERLIN = (ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="Europe/Berlin", scale=0.5),)
+
+    @staticmethod
+    async def _seed(repo, entity_id, resource, limits, shards=1):
+        now_ms = int(time.time() * 1000)
+        for shard_id in range(shards):
+            states = [BucketState.from_limit(entity_id, resource, lim, now_ms) for lim in limits]
+            await repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        entity_id,
+                        resource,
+                        states,
+                        now_ms,
+                        shard_id=shard_id,
+                        shard_count=shards,
+                    )
+                ]
+            )
+
+    @staticmethod
+    async def _raw(repo, entity_id, resource, shard=0):
+        from zae_limiter import schema
+
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, resource, shard)},
+                "SK": {"S": schema.sk_state()},
+            },
+        )
+        return response.get("Item") or {}
+
+    # -- the plan's four ---------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_set_limits_stamps_sched_and_expires_vu(self, repo):
+        await repo.create_entity("fan-1")
+        await self._seed(repo, "fan-1", "gpt-4", [Limit.per_minute("rpm", 1000)])
+
+        await repo.set_limits(
+            "fan-1",
+            [Limit.per_minute("rpm", 1000).with_schedule(self.BUSINESS)],
+            resource="gpt-4",
+        )
+
+        item = await self._raw(repo, "fan-1", "gpt-4")
+        assert item["sched"]["S"] == "h9-17w1-5s500"
+        assert item["sched_tz"]["S"] == "America/New_York"
+        assert item[BUCKET_FIELD_VU]["N"] == "0"
+
+    @pytest.mark.asyncio
+    async def test_removing_a_schedule_removes_sched_but_still_expires_vu(self, repo):
+        """The two stamps are not removed together, and must not be conflated.
+
+        `sched`/`sched_tz` go away with the schedule. `vu` does **not**: it is
+        SET to 0 on every fan-out and self-clears on the next materialising
+        pass, which has not run yet at this assertion.
+        """
+        await repo.create_entity("fan-2")
+        await repo.set_limits(
+            "fan-2",
+            [Limit.per_minute("rpm", 1000).with_schedule(self.BUSINESS)],
+            resource="gpt-4",
+        )
+        await self._seed(
+            repo,
+            "fan-2",
+            "gpt-4",
+            [Limit.per_minute("rpm", 1000).with_schedule(self.BUSINESS)],
+        )
+
+        await repo.set_limits("fan-2", [Limit.per_minute("rpm", 1000)], resource="gpt-4")
+
+        item = await self._raw(repo, "fan-2", "gpt-4")
+        assert "sched" not in item
+        assert "sched_tz" not in item
+        assert item[BUCKET_FIELD_VU]["N"] == "0"
+
+    @pytest.mark.asyncio
+    async def test_a_never_scheduled_fan_out_still_expires_vu(self, repo):
+        """The case the unconditional write exists for, and the common one.
+
+        This bucket never had a schedule at all and is shrinking a capacity —
+        literally #469's scenario, and the shape most `set_limits` calls take.
+        Nesting `vu = 0` back inside `if scheduled:` leaves it free to spend
+        its surplus over the lowered ceiling before any refiller trims it.
+        """
+        await repo.create_entity("fan-4")
+        await self._seed(repo, "fan-4", "gpt-4", [Limit.per_minute("rpm", 1000)])
+
+        await repo.set_limits("fan-4", [Limit.per_minute("rpm", 10)], resource="gpt-4")
+
+        item = await self._raw(repo, "fan-4", "gpt-4")
+        assert "sched" not in item
+        assert item[BUCKET_FIELD_VU]["N"] == "0"
+
+    @pytest.mark.asyncio
+    async def test_base_params_stay_undivided_and_unscaled(self, repo):
+        """The schedule never rewrites cp/ra — it applies on top (§2.1)."""
+        await repo.create_entity("fan-3")
+        await self._seed(repo, "fan-3", "gpt-4", [Limit.per_minute("rpm", 1000)])
+
+        await repo.set_limits(
+            "fan-3",
+            [Limit.per_minute("rpm", 1000).with_schedule(self.BUSINESS)],
+            resource="gpt-4",
+        )
+
+        item = await self._raw(repo, "fan-3", "gpt-4")
+        assert item[bucket_attr("rpm", "cp")]["N"] == "1000000"
+        assert item[bucket_attr("rpm", "ra")]["N"] == "1000000"
+
+    # -- the N-surfaces ----------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_every_shard_is_stamped_and_expired(self, repo):
+        """`vu` is per item, so a shard the fan-out skipped keeps a stale
+        schedule *and* keeps fast-pathing against an unclamped surplus. The
+        #468 fan-out exists because keying only shard 0 left 1..N-1 enforcing
+        the limits they were born with."""
+        await repo.create_entity("fan-shard")
+        await self._seed(repo, "fan-shard", "gpt-4", [Limit.per_minute("rpm", 1000)], shards=4)
+
+        await repo.set_limits(
+            "fan-shard",
+            [Limit.per_minute("rpm", 1000).with_schedule(self.BUSINESS)],
+            resource="gpt-4",
+        )
+
+        for shard in range(4):
+            item = await self._raw(repo, "fan-shard", "gpt-4", shard)
+            assert item["sched"]["S"] == "h9-17w1-5s500", f"shard {shard}"
+            assert item[BUCKET_FIELD_VU]["N"] == "0", f"shard {shard}"
+
+    @pytest.mark.asyncio
+    async def test_the_entity_wide_scope_reaches_every_resource(self, repo):
+        """`_default_` is the entity-WIDE scope (#487): one call, N resources,
+        every one of which needs the forced pass."""
+        await repo.create_entity("fan-wide")
+        for resource in ("gpt-4", "claude-3"):
+            await self._seed(repo, "fan-wide", resource, [Limit.per_minute("rpm", 1000)])
+
+        await repo.set_limits("fan-wide", [Limit.per_minute("rpm", 10)])
+
+        for resource in ("gpt-4", "claude-3"):
+            item = await self._raw(repo, "fan-wide", resource)
+            assert item[bucket_attr("rpm", "cp")]["N"] == "10000", resource
+            assert item[BUCKET_FIELD_VU]["N"] == "0", resource
+
+    @pytest.mark.asyncio
+    async def test_a_resource_with_its_own_config_gets_its_own_schedule(self, repo):
+        """Entity(resource) outranks Entity(`_default_`), so the unscoped
+        fan-out must stamp each bucket from the limits resolved for ITS
+        resource — schedule included. Stamping the caller's would push the
+        `_default_` schedule onto a resource that overrode it."""
+        await repo.create_entity("fan-mixed")
+        await repo.set_limits(
+            "fan-mixed",
+            [Limit.per_minute("rpm", 500).with_schedule(self.NIGHTLY)],
+            resource="gpt-4",
+        )
+        for resource in ("gpt-4", "claude-3"):
+            await self._seed(repo, "fan-mixed", resource, [Limit.per_minute("rpm", 1000)])
+
+        await repo.set_limits(
+            "fan-mixed", [Limit.per_minute("rpm", 1000).with_schedule(self.BUSINESS)]
+        )
+
+        overridden = await self._raw(repo, "fan-mixed", "gpt-4")
+        assert overridden["sched"]["S"] == "h0-6s250", "gpt-4 keeps its own schedule"
+        assert overridden[BUCKET_FIELD_VU]["N"] == "0"
+        inherited = await self._raw(repo, "fan-mixed", "claude-3")
+        assert inherited["sched"]["S"] == "h9-17w1-5s500", "claude-3 takes `_default_`"
+        assert inherited[BUCKET_FIELD_VU]["N"] == "0"
+
+    @pytest.mark.asyncio
+    async def test_a_narrowed_per_limit_override_is_removed(self, repo):
+        """Two limits diverge, then converge. Absence means "inherit the item
+        default", so the override left behind by the first write keeps `tpm`
+        on the superseded schedule forever. The `if scheduled:` branch has to
+        REMOVE as well as SET — this is the half the plan's snippet omitted.
+        """
+        await repo.create_entity("fan-narrow")
+        await self._seed(
+            repo,
+            "fan-narrow",
+            "gpt-4",
+            [Limit.per_minute("rpm", 1000), Limit.per_minute("tpm", 5000)],
+        )
+
+        await repo.set_limits(
+            "fan-narrow",
+            [
+                Limit.per_minute("rpm", 1000).with_schedule(self.BUSINESS),
+                Limit.per_minute("tpm", 5000).with_schedule(self.NIGHTLY),
+            ],
+            resource="gpt-4",
+        )
+        assert (await self._raw(repo, "fan-narrow", "gpt-4"))[bucket_attr("tpm", "sched")][
+            "S"
+        ] == "h0-6s250"
+
+        await repo.set_limits(
+            "fan-narrow",
+            [
+                Limit.per_minute("rpm", 1000).with_schedule(self.BUSINESS),
+                Limit.per_minute("tpm", 5000).with_schedule(self.BUSINESS),
+            ],
+            resource="gpt-4",
+        )
+
+        item = await self._raw(repo, "fan-narrow", "gpt-4")
+        assert item["sched"]["S"] == "h9-17w1-5s500"
+        assert bucket_attr("tpm", "sched") not in item
+
+    @pytest.mark.asyncio
+    async def test_a_limit_that_loses_its_schedule_beside_one_that_keeps_it(self, repo):
+        """The other direction into the same trap: the item stays scheduled,
+        so the `else` branch's blanket REMOVE never runs."""
+        await repo.create_entity("fan-drop")
+        await self._seed(
+            repo,
+            "fan-drop",
+            "gpt-4",
+            [Limit.per_minute("rpm", 1000), Limit.per_minute("tpm", 5000)],
+        )
+        await repo.set_limits(
+            "fan-drop",
+            [
+                Limit.per_minute("rpm", 1000).with_schedule(self.BUSINESS),
+                Limit.per_minute("tpm", 5000).with_schedule(self.NIGHTLY),
+            ],
+            resource="gpt-4",
+        )
+
+        await repo.set_limits(
+            "fan-drop",
+            [
+                Limit.per_minute("rpm", 1000).with_schedule(self.BUSINESS),
+                Limit.per_minute("tpm", 5000),
+            ],
+            resource="gpt-4",
+        )
+
+        item = await self._raw(repo, "fan-drop", "gpt-4")
+        assert item["sched"]["S"] == "h9-17w1-5s500"
+        assert bucket_attr("tpm", "sched") not in item
+
+    @pytest.mark.asyncio
+    async def test_a_stale_limits_schedule_override_is_removed_with_it(self, repo):
+        """A dropped limit's `b_{name}_sched` is orphan state that re-attaches
+        the moment a limit of that name is configured again."""
+        await repo.create_entity("fan-stale")
+        await self._seed(
+            repo,
+            "fan-stale",
+            "gpt-4",
+            [Limit.per_minute("rpm", 1000), Limit.per_minute("tpm", 5000)],
+        )
+        await repo.set_limits(
+            "fan-stale",
+            [
+                Limit.per_minute("rpm", 1000).with_schedule(self.BUSINESS),
+                Limit.per_minute("tpm", 5000).with_schedule(self.NIGHTLY),
+            ],
+            resource="gpt-4",
+        )
+
+        await repo.reconcile_bucket_to_defaults(
+            "fan-stale",
+            "gpt-4",
+            [Limit.per_minute("rpm", 1000).with_schedule(self.BUSINESS)],
+            stale_limit_names={"tpm"},
+        )
+
+        item = await self._raw(repo, "fan-stale", "gpt-4")
+        assert bucket_attr("tpm", "sched") not in item
+        assert bucket_attr("tpm", "cp") not in item
+
+    @pytest.mark.asyncio
+    async def test_rejects_limits_that_disagree_on_timezone(self, repo):
+        """`sched_tz` is one attribute per item, exactly as at bucket create."""
+        await repo.create_entity("fan-tz")
+        await self._seed(
+            repo,
+            "fan-tz",
+            "gpt-4",
+            [Limit.per_minute("rpm", 1000), Limit.per_minute("tpm", 5000)],
+        )
+        with pytest.raises(ValueError, match="share a timezone"):
+            repo._build_bucket_param_update(
+                [
+                    Limit.per_minute("rpm", 1000).with_schedule(self.BUSINESS),
+                    Limit.per_minute("tpm", 5000).with_schedule(self.BERLIN),
+                ],
+                None,
+                None,
+            )
+
+    @pytest.mark.asyncio
+    async def test_vu_is_never_set_and_removed_in_one_expression(self, repo):
+        """#488: SET and REMOVE on one attribute is a ValidationException, and
+        the `else` branch below is a REMOVE list `vu` must stay out of. Both
+        branches are checked — moto would reject it, but the expression is the
+        thing under test."""
+        for limits in (
+            [Limit.per_minute("rpm", 1000)],
+            [Limit.per_minute("rpm", 1000).with_schedule(self.BUSINESS)],
+        ):
+            expr, _names, _values = repo._build_bucket_param_update(limits, 0, {"old"})
+            set_clause, remove_clause = expr.split(" REMOVE ")
+            assert "#vu" in set_clause
+            assert "#vu" not in remove_clause
+
+    @pytest.mark.asyncio
+    async def test_no_alias_is_both_set_and_removed(self, repo):
+        """The general form of the check above, over the per-limit schedule
+        aliases the scheduled branch now emits on both sides."""
+        expr, _names, _values = repo._build_bucket_param_update(
+            [
+                Limit.per_minute("rpm", 1000).with_schedule(self.BUSINESS),
+                Limit.per_minute("tpm", 5000).with_schedule(self.NIGHTLY),
+                Limit.per_minute("cpm", 20).with_schedule(self.BUSINESS),
+            ],
+            0,
+            {"old"},
+        )
+        set_clause, remove_clause = expr.split(" REMOVE ")
+        set_aliases = {part.split(" = ")[0].strip() for part in set_clause[4:].split(", ")}
+        remove_aliases = {part.strip() for part in remove_clause.split(", ")}
+        assert not (set_aliases & remove_aliases)
+
+    @pytest.mark.asyncio
+    async def test_a_partial_fan_out_reports_how_many_buckets_were_stamped(self, repo):
+        """The config item is committed before the fan-out, so a half-applied
+        table needs a progress count. `vu = 0` does not change that contract:
+        the buckets past the failure keep their old params AND their old `vu`,
+        and re-running the same call reconciles them."""
+        from zae_limiter.exceptions import FanoutIncomplete
+
+        await repo.create_entity("fan-partial")
+        await self._seed(repo, "fan-partial", "gpt-4", [Limit.per_minute("rpm", 1000)], shards=3)
+
+        calls = {"n": 0}
+        real = repo._sync_one_bucket_shard
+
+        async def flaky(pk, *args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 3:
+                raise RuntimeError("throttled")
+            return await real(pk, *args, **kwargs)
+
+        with patch.object(repo, "_sync_one_bucket_shard", flaky):
+            with pytest.raises(FanoutIncomplete) as exc:
+                await repo.set_limits(
+                    "fan-partial", [Limit.per_minute("rpm", 10)], resource="gpt-4"
+                )
+
+        assert exc.value.stamped == 2
+
+
+class TestAggregatorCannotRefillPastAFanOut:
+    """#508: the `rf` lock alone cannot see a `_sync_bucket_params` fan-out.
+
+    The aggregator guards `try_refill_bucket` with an optimistic lock on the
+    shared `rf` timestamp so a refill computed from a stale stream image
+    cannot land after another writer moved the bucket on. But the fan-out
+    rewrites `cp`/`ra`/`rp`/`sched` on every shard **without touching `rf`**,
+    so the lock cannot tell a pre-fan-out image from a post-fan-out one — and
+    an invocation holding a pre-shrink image passes the condition and refills
+    toward the old, larger capacity.
+
+    Resolved by pinning `vu` in the aggregator's condition rather than by
+    bumping `rf` in the fan-out. Since Task 13 the fan-out SETs `vu = 0` on
+    **every** call, so `vu` is the marker for "the operator changed something
+    here" and covers every attribute that write touches — present and future —
+    for one condition term, and forfeits none of the refill accrued since the
+    last stamp the way moving `rf` would. See the module docstring on
+    `try_refill_bucket`.
+
+    These run the real fan-out against moto and then the real aggregator
+    against the same table, so they test the interaction rather than a
+    restatement of the condition string.
+    """
+
+    @staticmethod
+    def _table(repo):
+        import boto3
+
+        return boto3.resource("dynamodb", region_name="us-east-1").Table(repo.table_name)
+
+    @staticmethod
+    async def _seed(repo, entity_id, limits):
+        now_ms = int(time.time() * 1000)
+        states = [BucketState.from_limit(entity_id, "gpt-4", lim, now_ms) for lim in limits]
+        # Drain the bucket so a refill is worth attempting at all.
+        for state in states:
+            state.tokens_milli = 0
+        await repo.transact_write([repo.build_composite_create(entity_id, "gpt-4", states, now_ms)])
+        return now_ms
+
+    @staticmethod
+    async def _raw(repo, entity_id):
+        from zae_limiter import schema
+
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, "gpt-4", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+        )
+        return response["Item"]
+
+    @staticmethod
+    def _image(repo, entity_id, item, vu_ms):
+        from zae_limiter_aggregator.processor import BucketRefillState, LimitRefillInfo
+
+        return BucketRefillState(
+            namespace_id=repo._namespace_id,
+            entity_id=entity_id,
+            resource="gpt-4",
+            rf_ms=int(item["rf"]["N"]),
+            limits={
+                "rpm": LimitRefillInfo(
+                    # Above the *old* capacity, so `try_refill_bucket` gets
+                    # past its "projected tokens already cover the observed
+                    # consumption" threshold and genuinely attempts the write
+                    # in every case below — including the pre-shrink one,
+                    # which must fail on the condition rather than be skipped
+                    # before it. `test_an_untouched_bucket_refills_with_no_vu`
+                    # is the same image against a bucket no fan-out touched,
+                    # and it writes.
+                    tc_delta=2_000_000,
+                    tk_milli=int(item[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"]),
+                    cp_milli=int(item[bucket_attr("rpm", "cp")]["N"]),
+                    ra_milli=int(item[bucket_attr("rpm", "ra")]["N"]),
+                    rp_ms=int(item[bucket_attr("rpm", "rp")]["N"]),
+                )
+            },
+            vu_ms=vu_ms,
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_pre_shrink_image_cannot_refill_toward_the_old_capacity(self, repo):
+        from zae_limiter_aggregator.processor import try_refill_bucket
+
+        await repo.create_entity("stale-img")
+        now_ms = await self._seed(repo, "stale-img", [Limit.per_minute("rpm", 1000)])
+        image = self._image(repo, "stale-img", await self._raw(repo, "stale-img"), vu_ms=None)
+
+        await repo.set_limits("stale-img", [Limit.per_minute("rpm", 10)], resource="gpt-4")
+
+        assert try_refill_bucket(self._table(repo), image, now_ms + 60_000) is False
+        item = await self._raw(repo, "stale-img")
+        assert item[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"] == "0", "no tokens minted"
+        assert item[BUCKET_FIELD_VU]["N"] == "0", "the forced pass is still owed"
+
+    @pytest.mark.asyncio
+    async def test_a_current_image_still_refills(self, repo):
+        """Discriminates the test above: the pin must not block every refill,
+        only one that raced a fan-out. Same bucket, same call, image read
+        *after* the fan-out instead of before."""
+        from zae_limiter_aggregator.processor import try_refill_bucket
+
+        await repo.create_entity("fresh-img")
+        now_ms = await self._seed(repo, "fresh-img", [Limit.per_minute("rpm", 1000)])
+        await repo.set_limits("fresh-img", [Limit.per_minute("rpm", 10)], resource="gpt-4")
+
+        image = self._image(repo, "fresh-img", await self._raw(repo, "fresh-img"), vu_ms=0)
+
+        assert try_refill_bucket(self._table(repo), image, now_ms + 60_000) is True
+        item = await self._raw(repo, "fresh-img")
+        assert item[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"] == "10000", "the NEW ceiling"
+
+    @pytest.mark.asyncio
+    async def test_an_untouched_bucket_refills_with_no_vu_at_all(self, repo):
+        """The steady state for the unscheduled majority: no fan-out has run,
+        `vu` is absent on both the image and the item, and
+        `attribute_not_exists(#vu)` must hold rather than reject."""
+        from zae_limiter_aggregator.processor import try_refill_bucket
+
+        await repo.create_entity("quiet-img")
+        now_ms = await self._seed(repo, "quiet-img", [Limit.per_minute("rpm", 1000)])
+        image = self._image(repo, "quiet-img", await self._raw(repo, "quiet-img"), vu_ms=None)
+
+        assert try_refill_bucket(self._table(repo), image, now_ms + 60_000) is True
+        item = await self._raw(repo, "quiet-img")
         assert item[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"] == "1000000"
