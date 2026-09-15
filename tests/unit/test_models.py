@@ -1,5 +1,6 @@
 """Tests for models."""
 
+import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -16,6 +17,7 @@ from zae_limiter import (
     LimitName,
     StackOptions,
     ValidationError,
+    models,
 )
 from zae_limiter.models import BucketState, LimitStatus
 from zae_limiter.schedule import ScheduleEntry
@@ -29,6 +31,11 @@ BUSINESS = (ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scal
 #: UTC: the window's edges fall on New York minutes (#222 §3.2).
 TUE_1400 = int(datetime(2026, 9, 15, 14, tzinfo=_NY).timestamp() * 1000)
 TUE_0300 = int(datetime(2026, 9, 15, 3, tzinfo=_NY).timestamp() * 1000)
+
+#: Back to the full daily quota at New York midnight (#222 §3.6). Same zone as
+#: ``BUSINESS`` so the two tuples can be combined without anticipating the
+#: item-level ``sched_tz`` guard.
+DAILY_RESET = (ScheduleEntry.reset("0 0 * * *", "America/New_York"),)
 
 
 def _state(
@@ -103,13 +110,19 @@ class TestLimit:
             Limit.per_minute("rpm", 0)
 
     def test_invalid_refill_amount(self):
-        """Test validation of refill_amount must be positive."""
-        with pytest.raises(ValueError, match="refill_amount must be positive"):
+        """A zero rate is only valid with a reset schedule (ADR-137).
+
+        The message names the pairing, not the field: a caller who wanted a
+        calendar allowance has to be pointed at ``Limit.quota``, not told a
+        number is out of range.
+        """
+        with pytest.raises(ValueError, match="reset_schedule"):
             Limit.custom("rpm", capacity=100, refill_amount=0, refill_period_seconds=60)
 
     def test_invalid_refill_amount_negative(self):
-        """Test validation of negative refill_amount."""
-        with pytest.raises(ValueError, match="refill_amount must be positive"):
+        """Negative is still simply out of range — ADR-137 widened `> 0` to
+        `>= 0`, not to "anything"."""
+        with pytest.raises(ValueError, match="refill_amount must not be negative"):
             Limit.custom("rpm", capacity=100, refill_amount=-1, refill_period_seconds=60)
 
     def test_invalid_refill_period_seconds(self):
@@ -203,6 +216,396 @@ class TestLimit:
         limit = Limit.per_minute("rpm", 1000).with_schedule(BUSINESS)
         assert limit.per_shard(0, TUE_1400).capacity == 500
         assert limit.per_shard(-1, TUE_1400).capacity == 500
+
+
+class TestQuotaFactory:
+    """`Limit.quota` is the only shape ADR-137 leaves standing (#222 §3.6).
+
+    A limit drips **or** resets, never both and never neither, so the amount
+    and the reset have to arrive in the same call. Every chained spelling dies
+    on its intermediate value: `per_day(...).with_reset_schedule(...)` is a
+    rate alongside a reset, and `custom(refill_amount=0, ...)` is a zero rate
+    with no reset. `__post_init__` runs at construction, so neither survives
+    long enough to be repaired.
+    """
+
+    def test_quota_sets_the_zero_refill_and_the_reset_together(self):
+        q = Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York")
+        assert q.capacity == 10_000
+        assert q.refill_amount == 0  # ADR-137: a quota does not drip
+        assert q.reset_schedule[0].cron == "0 0 * * *"
+        assert q.reset_schedule[0].tz == "America/New_York"
+
+    def test_quota_carries_no_parameter_schedule(self):
+        """The reset tuple is populated; the parameter tuple is not."""
+        assert Limit.quota("rpd", 10_000, cron="0 0 * * *").schedule == ()
+
+    def test_quota_defaults_to_utc(self):
+        assert Limit.quota("rpd", 10_000, cron="0 0 * * *").reset_schedule[0].tz == "UTC"
+
+    def test_quota_stores_the_inert_period_constant(self):
+        """`refill_period_seconds` is validated positive and a zero rate has no
+        meaningful denominator, so the field holds a documented constant that
+        reads as "0 per second" rather than a daily rate the limit does not
+        have. It is not a `quota()` keyword: a knob that changes nothing is
+        worse than a constant."""
+        q = Limit.quota("rpd", 10_000, cron="0 0 * * *")
+        assert q.refill_period_seconds == models._QUOTA_REFILL_PERIOD_SECONDS
+        assert q.refill_rate == 0.0
+
+    def test_quota_validates_its_cron(self):
+        """A schedule that stores must be a schedule that evaluates (§3.1)."""
+        with pytest.raises(ValueError):
+            Limit.quota("rpd", 10_000, cron="nonsense")
+
+    def test_quota_validates_its_timezone(self):
+        with pytest.raises(ValueError, match="timezone"):
+            Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="Mars/Olympus_Mons")
+
+    def test_quota_validates_its_name(self):
+        with pytest.raises(InvalidNameError):
+            Limit.quota("not a name", 10_000, cron="0 0 * * *")
+
+    def test_quota_validates_its_amount(self):
+        """`amount` is the capacity, and a zero ceiling is unadmittable."""
+        with pytest.raises(ValueError, match="capacity must be positive"):
+            Limit.quota("rpd", 0, cron="0 0 * * *")
+
+    def test_a_zero_refill_without_a_reset_is_rejected(self):
+        """ADR-137: never neither — the bucket could never recover."""
+        with pytest.raises(ValueError, match="reset_schedule"):
+            Limit.custom("rpd", capacity=10_000, refill_amount=0, refill_period_seconds=86_400)
+
+    def test_a_positive_rate_alongside_a_reset_is_rejected(self):
+        """ADR-137: never both — the drip returns the allowance a second time."""
+        with pytest.raises(ValueError, match="refill_amount"):
+            Limit.per_day("rpd", 10_000).with_reset_schedule(
+                (ScheduleEntry.reset(cron="0 0 * * *", tz="America/New_York"),)
+            )
+
+    def test_the_rejection_names_the_factory_that_works(self):
+        """Both halves of the pairing rule point at `Limit.quota`, because a
+        caller who hit either one wanted a calendar allowance and there is
+        exactly one way to spell it."""
+        with pytest.raises(ValueError, match=r"Limit\.quota"):
+            Limit.custom("rpd", capacity=10_000, refill_amount=0, refill_period_seconds=86_400)
+        with pytest.raises(ValueError, match=r"Limit\.quota"):
+            Limit.per_day("rpd", 10_000).with_reset_schedule(DAILY_RESET)
+
+    def test_per_day_stays_a_drip(self):
+        """`per_day` is a *rate* and must not grow a reset parameter: 10,000 a
+        day at ~7 a minute is a different product from 10,000 at midnight."""
+        rate = Limit.per_day("rpd", 10_000)
+        assert (rate.refill_amount, rate.refill_period_seconds) == (10_000, 86400)
+        assert rate.reset_schedule == ()
+
+    def test_a_quota_may_carry_a_parameter_schedule(self):
+        """`with_schedule` never touches `refill_amount`, so the intermediate
+        value is already a legal quota. Only the *reset* has to arrive with the
+        amount."""
+        q = Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York").with_schedule(
+            BUSINESS
+        )
+        assert q.schedule == BUSINESS
+        assert q.reset_schedule == DAILY_RESET
+        assert q.refill_amount == 0
+
+
+class TestResetSchedule:
+    """`reset_schedule` is a second, independent tuple on `Limit` (#222 §3.6).
+
+    A reset entry names a calendar instant at which the balance goes back to
+    the effective capacity. It overrides no parameters, which is exactly why it
+    cannot live in `schedule`: that tuple is resolved first-match-wins, so an
+    entry supplying nothing would win its window and shadow everything below.
+    """
+
+    def test_defaults_to_empty(self):
+        """Every dripping limit in existence today has no reset schedule."""
+        assert Limit.per_day("rpd", 10_000).reset_schedule == ()
+
+    def test_with_reset_schedule_replaces_one_reset_with_another(self):
+        """The surviving use: swap a quota's schedule, never build one."""
+        quota = Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York")
+        weekly = (ScheduleEntry.reset("0 0 * * SUN", "America/New_York"),)
+        assert quota.with_reset_schedule(weekly).reset_schedule == weekly
+        assert quota.reset_schedule == DAILY_RESET, "must not mutate the base"
+
+    def test_with_reset_schedule_leaves_the_parameter_schedule_alone(self):
+        quota = Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York").with_schedule(
+            BUSINESS
+        )
+        weekly = (ScheduleEntry.reset("0 0 * * SUN", "America/New_York"),)
+        assert quota.with_reset_schedule(weekly).schedule == BUSINESS
+
+    def test_clearing_a_quotas_reset_is_rejected(self):
+        """`with_reset_schedule(())` on a zero-refill limit leaves a bucket that
+        can never recover, so ADR-137 makes it unconstructible rather than
+        silently restoring a drip."""
+        with pytest.raises(ValueError, match="reset_schedule"):
+            Limit.quota("rpd", 10_000, cron="0 0 * * *").with_reset_schedule(())
+
+    def test_attaching_a_reset_to_a_dripping_limit_is_rejected(self):
+        """The chained form the pre-ADR-137 API was built around. It is not
+        verbose, it is impossible — hence the factory."""
+        with pytest.raises(ValueError, match="never both"):
+            Limit.per_minute("rpm", 1000).with_reset_schedule(DAILY_RESET)
+
+    def test_an_empty_reset_tuple_on_a_dripping_limit_is_a_no_op(self):
+        """Only *clearing an existing* reset is rejected. A drip that never had
+        one is already legal and stays legal, so the guard cannot be written as
+        "reset_schedule may not be empty"."""
+        assert Limit.per_minute("rpm", 1000).with_reset_schedule(()).reset_schedule == ()
+
+    def test_carries_many_entries_in_order(self):
+        """Nothing here collapses to a single entry: the tuple is ordered and
+        every entry is a separate edge (a midnight reset and a Sunday-noon
+        top-up are two resets, not one)."""
+        entries = (
+            ScheduleEntry.reset("0 0 * * *", "America/New_York"),
+            ScheduleEntry.reset("0 12 * * SUN", "America/New_York"),
+            ScheduleEntry.reset("30 2 1 JAN,JUL *", "America/New_York"),
+        )
+        quota = Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York")
+        assert quota.with_reset_schedule(entries).reset_schedule == entries
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"scale": 0.5},
+            {"capacity": 100},
+            {"refill_amount": 10},
+            {"refill_period_seconds": 30},
+        ],
+    )
+    def test_rejects_a_parameter_entry_in_the_reset_tuple(self, kwargs):
+        """A reset overrides no parameters; a modifier on one is a category
+        error, and storage (Task 4) has nowhere to put it.
+
+        The entry under test is a *param* entry handed to the reset tuple,
+        which is the only way to construct one — `ScheduleEntry.reset()` takes
+        no modifiers at all.
+        """
+        entry = ScheduleEntry(cron="0 0 * * *", **kwargs)
+        quota = Limit.quota("rpd", 10_000, cron="0 0 * * *")
+        with pytest.raises(ValueError, match="reset"):
+            quota.with_reset_schedule((entry,))
+
+    def test_rejects_a_reset_entry_in_the_parameter_tuple(self):
+        """The dangerous direction, and the one the plan does not name.
+        `effective_params` is first-match-wins: a reset entry matches its
+        window, supplies no override, returns the base, and silently shadows
+        every entry below it for that minute."""
+        with pytest.raises(ValueError, match="reset"):
+            Limit.per_minute("rpm", 1000).with_schedule(
+                (ScheduleEntry.reset("0 0 * * *"), *BUSINESS)
+            )
+
+    def test_a_misplaced_entry_is_diagnosed_as_misplaced_not_as_the_pairing(self):
+        """Ordering pin. A dripping limit handed a *param* entry in the reset
+        tuple violates both rules at once; the structural one is the more
+        specific diagnosis and must win, or the operator is told to use
+        `Limit.quota` when the real problem is an entry in the wrong tuple."""
+        entry = ScheduleEntry(cron="0 0 * * *", scale=0.5)
+        with pytest.raises(ValueError, match="takes reset entries only"):
+            Limit.per_day("rpd", 10_000).with_reset_schedule((entry,))
+
+    def test_validates_every_reset_entry_not_just_the_first(self):
+        """A check written against `reset_schedule[0]` passes this suite
+        everywhere else and lets the second entry through."""
+        mixed = (ScheduleEntry.reset("0 0 * * *"), ScheduleEntry(cron="0 12 * * *", scale=0.5))
+        with pytest.raises(ValueError, match="reset"):
+            Limit.quota("rpd", 10_000, cron="0 0 * * *").with_reset_schedule(mixed)
+
+    def test_validates_every_parameter_entry_not_just_the_first(self):
+        mixed = (*BUSINESS, ScheduleEntry.reset("0 0 * * *", "America/New_York"))
+        with pytest.raises(ValueError, match="reset"):
+            Limit.per_minute("rpm", 1000).with_schedule(mixed)
+
+    def test_counts_the_misplaced_entries_in_the_message(self):
+        """Two of three, not "an entry" — the operator has to find them."""
+        mixed = (
+            ScheduleEntry(cron="0 1 * * *", scale=0.5),
+            ScheduleEntry.reset("0 0 * * *"),
+            ScheduleEntry(cron="0 2 * * *", capacity=5),
+        )
+        with pytest.raises(ValueError, match="2 of 3"):
+            Limit.quota("rpd", 10_000, cron="0 0 * * *").with_reset_schedule(mixed)
+
+    def test_both_tuples_coexist_on_one_limit(self):
+        """The parameter schedule sets the ceiling, the reset schedule sets the
+        balance to it; a quota may carry both."""
+        limit = Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York").with_schedule(
+            BUSINESS
+        )
+        assert limit.schedule == BUSINESS
+        assert limit.reset_schedule == DAILY_RESET
+
+    def test_the_reserved_wcu_carrier_has_no_reset_schedule(self):
+        """`_carrier` bypasses `__init__`, so it sets both tuples explicitly
+        rather than leaning on a class-level default a future
+        `field(default_factory=...)` would remove."""
+        carrier = Limit._carrier(_state())
+        assert carrier.reset_schedule == ()
+        assert carrier.schedule == ()
+
+
+class TestResetScheduleSurvivesNarrowing:
+    """`per_shard` clears `schedule` and keeps `reset_schedule`, deliberately.
+
+    `schedule` is cleared because `per_shard` has just applied it and leaving it
+    attached invites a second application. Nothing applies `reset_schedule`
+    here, so there is nothing to apply twice — and it is the only thing that
+    tells a reported status the balance returns in a lump at a calendar
+    instant rather than dripping back at `refill_amount` (surface Task 5).
+    """
+
+    def test_per_shard_keeps_it_while_dropping_the_parameter_schedule(self):
+        limit = Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York").with_schedule(
+            BUSINESS
+        )
+        shard = limit.per_shard(4, TUE_1400)
+        assert shard.reset_schedule == DAILY_RESET
+        assert shard.schedule == ()
+
+    def test_per_shard_still_scales_and_divides_with_both_tuples_set(self):
+        """The reset tuple must not perturb the parameter arithmetic: 10,000
+        halved by BUSINESS, then quartered by the shard count."""
+        limit = Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York").with_schedule(
+            BUSINESS
+        )
+        assert limit.per_shard(4, TUE_1400).capacity == 1250
+        assert limit.per_shard(4, TUE_0300).capacity == 2500
+
+    def test_a_reset_only_limit_keeps_it_through_the_division(self):
+        """No parameter schedule, so this takes the `replace` path only because
+        of the shard count — the branch where a `reset_schedule=()` slip would
+        hide."""
+        limit = Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York")
+        shard = limit.per_shard(4, TUE_1400)
+        assert shard.reset_schedule == DAILY_RESET
+        assert shard.capacity == 2500
+
+    def test_a_reset_only_limit_takes_the_identity_return_when_unsharded(self):
+        """A reset schedule alone changes no parameter, so it must not cost the
+        unsharded fast return."""
+        limit = Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York")
+        assert limit.per_shard(1, TUE_1400) is limit
+
+    def test_a_quotas_rate_stays_zero_through_the_division(self):
+        """The `max(1, ...)` share floor must not fire on a zero rate (ADR-137).
+
+        Flooring it would invent a drip nobody configured *and* make the result
+        unconstructible, since a positive rate alongside the `reset_schedule`
+        this method carries through is exactly what validation rejects — so the
+        slip raises from inside a rejection path rather than returning a wrong
+        number.
+        """
+        limit = Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York")
+        assert limit.per_shard(4, TUE_1400).refill_amount == 0
+
+    def test_a_scaled_quotas_rate_stays_zero(self):
+        """`effective_params` floors a scaled refill at one *milli*-unit, so the
+        guard has to test the base rate rather than the scheduled one. No drip,
+        scaled by anything, is still no drip."""
+        limit = Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York").with_schedule(
+            BUSINESS
+        )
+        assert limit.per_shard(4, TUE_1400).refill_amount == 0
+        assert limit.per_shard(1, TUE_1400).refill_amount == 0
+
+    def test_a_dripping_limit_still_floors_its_share_at_one(self):
+        """The zero case is carved out; the floor it was carved out of stays."""
+        limit = Limit.per_minute("rpm", 2)
+        assert limit.per_shard(32, TUE_1400).refill_amount == 1
+
+
+class TestResetScheduleSerialisation:
+    """`to_dict()` feeds the audit event `details` for all three setters.
+
+    A field it drops makes the audit record for "attached a daily quota reset"
+    byte-identical to the record for attaching nothing — the defect core plan
+    Task 8 found for `schedule` and fixed there.
+    """
+
+    def test_to_dict_emits_standard_cron_under_its_own_key(self):
+        limit = Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York")
+        assert limit.to_dict()["reset_schedule"] == [
+            {"cron": "0 0 * * *", "tz": "America/New_York"}
+        ]
+
+    def test_to_dict_omits_an_absent_reset_schedule(self):
+        """Every existing audit payload stays byte-identical."""
+        assert "reset_schedule" not in Limit.per_day("rpd", 10_000).to_dict()
+
+    def test_to_dict_keeps_the_two_tuples_apart(self):
+        limit = Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York").with_schedule(
+            BUSINESS
+        )
+        payload = limit.to_dict()
+        assert payload["schedule"] == [
+            {"cron": "* 9-17 * * MON-FRI", "tz": "America/New_York", "scale": 0.5}
+        ]
+        assert payload["reset_schedule"] == [{"cron": "0 0 * * *", "tz": "America/New_York"}]
+
+    def test_to_dict_emits_every_entry(self):
+        entries = (
+            ScheduleEntry.reset("0 0 * * *", "America/New_York"),
+            ScheduleEntry.reset("0 12 * * SUN", "America/New_York"),
+        )
+        quota = Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York")
+        payload = quota.with_reset_schedule(entries).to_dict()
+        assert [e["cron"] for e in payload["reset_schedule"]] == ["0 0 * * *", "0 12 * * SUN"]
+
+    def test_to_dict_emits_the_zero_rate(self):
+        """`refill_amount` is unconditional, so ADR-137's zero reaches storage
+        as a zero rather than being omitted and defaulted back to a drip."""
+        payload = Limit.quota("rpd", 10_000, cron="0 0 * * *").to_dict()
+        assert payload["refill_amount"] == 0
+
+    def test_round_trips_through_from_dict(self):
+        limit = Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York")
+        assert Limit.from_dict(limit.to_dict()) == limit
+
+    def test_from_dict_rebuilds_the_rate_and_the_reset_together(self):
+        """ADR-137 makes the round trip atomic: a `from_dict` that restored the
+        zero rate but dropped the reset (or the reverse) would not merely
+        compare unequal, it would raise."""
+        payload = Limit.quota("rpd", 10_000, cron="0 0 * * *").to_dict()
+        restored = Limit.from_dict(payload)
+        assert (restored.refill_amount, len(restored.reset_schedule)) == (0, 1)
+
+        with pytest.raises(ValueError, match="reset_schedule"):
+            Limit.from_dict({**payload, "reset_schedule": []})
+        with pytest.raises(ValueError, match="never both"):
+            Limit.from_dict({**payload, "refill_amount": 1})
+
+    def test_round_trips_both_tuples_together(self):
+        """`from_dict` must build the reset entries through
+        `ScheduleEntry.reset`: the ordinary constructor requires exactly one
+        modifier and a reset entry has none, so a single shared code path
+        raises rather than round-tripping."""
+        limit = Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York").with_schedule(
+            BUSINESS
+        )
+        restored = Limit.from_dict(limit.to_dict())
+        assert restored == limit
+        assert restored.schedule == BUSINESS
+        assert restored.reset_schedule == DAILY_RESET
+
+    def test_restored_entries_are_still_reset_entries(self):
+        """Equality already covers this, but only because `_reset` is a field.
+        Pinned separately so it survives that field becoming non-comparing."""
+        limit = Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York")
+        restored = Limit.from_dict(limit.to_dict())
+        assert all(entry._reset for entry in restored.reset_schedule)
+        assert restored.with_reset_schedule(restored.reset_schedule).reset_schedule == DAILY_RESET
+
+    def test_survives_a_json_round_trip(self):
+        """Audit `details` is serialised to JSON, so anything that is not a
+        plain type never reaches the stored event."""
+        limit = Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York")
+        assert Limit.from_dict(json.loads(json.dumps(limit.to_dict()))) == limit
 
 
 class TestScheduledStatusCapacity:

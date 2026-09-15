@@ -225,3 +225,71 @@ class TestEffectiveParams:
         """Pins that `entry.tz` reaches `parse_cron` rather than a hardcoded zone."""
         sched = (ScheduleEntry(cron="* 14 * * *", tz=tz, scale=0.5),)
         assert effective_params(*BASE, sched, TUE_1400) == expected
+
+
+class TestScheduleEntryReset:
+    """A reset entry names an instant; it overrides no parameters (§3.6).
+
+    Kept at the ``ScheduleEntry`` level so this module stays free of any
+    ``models`` import, mirroring ``schedule.py``'s own one-way dependency.
+    The ``Limit`` half lives in ``test_models.py``.
+    """
+
+    def test_carries_cron_and_tz_only(self):
+        e = ScheduleEntry.reset("0 0 * * *", "America/New_York")
+        assert (e.cron, e.tz) == ("0 0 * * *", "America/New_York")
+        assert (e.scale, e.capacity, e.refill_amount, e.refill_period_seconds) == (
+            None,
+            None,
+            None,
+            None,
+        )
+        assert e._reset is True
+
+    def test_timezone_defaults_to_utc(self):
+        assert ScheduleEntry.reset("0 0 * * *").tz == "UTC"
+
+    def test_an_ordinary_entry_is_not_a_reset(self):
+        """The flag is opt-in, so every merged call site keeps its meaning."""
+        assert ScheduleEntry(cron="* * * * *", scale=0.5)._reset is False
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"scale": 0.5},
+            {"capacity": 100},
+            {"refill_amount": 10},
+            {"refill_period_seconds": 30},
+        ],
+    )
+    def test_rejects_a_modifier_on_a_reset_entry(self, kwargs):
+        """A modifier on a reset is a category error, not a harmless extra."""
+        with pytest.raises(ValueError, match="reset"):
+            ScheduleEntry(cron="0 0 * * *", _reset=True, **kwargs)
+
+    def test_names_every_modifier_it_rejected(self):
+        with pytest.raises(ValueError, match=r"capacity.*scale|scale.*capacity"):
+            ScheduleEntry(cron="0 0 * * *", _reset=True, scale=0.5, capacity=100)
+
+    def test_a_bare_entry_is_still_invalid_for_the_params_tuple(self):
+        """The same cron is legal as a reset and illegal as a param override."""
+        with pytest.raises(ValueError, match="exactly one"):
+            ScheduleEntry(cron="0 0 * * *")
+
+    @pytest.mark.parametrize("expr", ["nonsense", "* * L * *", "0 0 0 * * *"])
+    def test_a_reset_still_validates_its_cron(self, expr):
+        """The reset branch must not short-circuit past ``parse_cron``: a
+        schedule that stores must be a schedule that evaluates (§3.1), and
+        six fields are rejected exactly as they are for a param entry."""
+        with pytest.raises(ValueError):
+            ScheduleEntry.reset(expr)
+
+    def test_a_reset_still_validates_its_timezone(self):
+        with pytest.raises(ValueError, match="timezone"):
+            ScheduleEntry.reset("0 0 * * *", "Mars/Olympus_Mons")
+
+    def test_is_frozen_and_hashable(self):
+        e = ScheduleEntry.reset("0 0 * * *")
+        with pytest.raises(Exception):
+            e.cron = "x"  # type: ignore[misc]
+        assert hash(e)

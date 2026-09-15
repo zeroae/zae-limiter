@@ -183,6 +183,16 @@ OnUnavailableAction = Literal["allow", "block"]
 # ---------------------------------------------------------------------------
 
 
+#: Denominator stored on a quota, whose numerator is zero (ADR-137).
+#:
+#: ``refill_period_seconds`` is validated ``> 0`` and a rate of zero has no
+#: meaningful denominator, so the field has to hold *something*. ``1`` reads as
+#: "0 per second", which is what the limit does; ``86_400`` would read as a
+#: daily rate, which is what it emphatically does not do. Deliberately not a
+#: ``quota()`` keyword — a knob that changes nothing is worse than a constant.
+_QUOTA_REFILL_PERIOD_SECONDS = 1
+
+
 def _schedule_entry_to_dict(entry: ScheduleEntry) -> dict[str, Any]:
     """One schedule entry as a plain dict, emitting only the fields that are set.
 
@@ -233,12 +243,33 @@ class Limit:
     Attributes:
         name: Unique identifier for this limit type (e.g., "rpm", "tpm")
         capacity: Max tokens in the bucket (ceiling)
-        refill_amount: Numerator of refill rate
-        refill_period_seconds: Denominator of refill rate
+        refill_amount: Numerator of refill rate. ``0`` means the limit does not
+            drip at all, and is valid **only** alongside a non-empty
+            ``reset_schedule`` (ADR-137).
+        refill_period_seconds: Denominator of refill rate. Inert while
+            ``refill_amount`` is 0.
         schedule: Time windows in which different parameters apply (#222).
             The fields above stay the *base* parameters forever; the schedule
             is applied on top of them at read time by
             ``schedule.effective_params()``.
+        reset_schedule: Calendar instants at which the balance goes back to the
+            effective capacity in one lump (#222 §3.6). A second, independent
+            tuple rather than a third kind of entry in ``schedule``, because
+            ``schedule`` is resolved first-match-wins and an entry overriding
+            no parameters would win its window and supply nothing. Entries are
+            built with ``ScheduleEntry.reset()``.
+
+    A limit **drips or resets, never both and never neither** (ADR-137): a
+    positive ``refill_amount`` alongside a ``reset_schedule`` would return the
+    allowance a second time over the period, and a zero one without a reset
+    leaves a bucket that can never recover. Both are rejected at construction,
+    so the amount and the reset have to arrive in the same call — which is what
+    :meth:`quota` is for. A quota may still carry a *parameter* schedule
+    (``Limit.quota(...).with_schedule(...)``): that one sets the ceiling the
+    reset restores to, and never touches ``refill_amount``.
+
+    The reset window is a **fixed calendar window** — every entity on one
+    schedule resets at the same wall-clock instant (ADR-138).
     """
 
     name: str
@@ -246,15 +277,56 @@ class Limit:
     refill_amount: int
     refill_period_seconds: int
     schedule: tuple[ScheduleEntry, ...] = ()
+    reset_schedule: tuple[ScheduleEntry, ...] = ()
 
     def __post_init__(self) -> None:
         validate_name(self.name, "name")
         if self.capacity <= 0:
             raise ValueError("capacity must be positive")
-        if self.refill_amount <= 0:
-            raise ValueError("refill_amount must be positive")
+        if self.refill_amount < 0:
+            raise ValueError("refill_amount must not be negative")
         if self.refill_period_seconds <= 0:
             raise ValueError("refill_period_seconds must be positive")
+        # The two tuples are validated by opposite rules and neither is a
+        # superset of the other, so an entry in the wrong one is checked here
+        # rather than left to whatever reads it. A reset entry in `schedule`
+        # is the dangerous direction: `effective_params` is first-match-wins,
+        # so it would match its window, supply no override, return the base,
+        # and silently shadow every entry below it.
+        misplaced_reset = [entry for entry in self.schedule if entry._reset]
+        if misplaced_reset:
+            raise ValueError(
+                f"`schedule` takes parameter entries only; {len(misplaced_reset)} of "
+                f"{len(self.schedule)} came from `ScheduleEntry.reset()`. Pass them to "
+                f"`with_reset_schedule()` instead — an entry that overrides no parameters "
+                f"would win its window under first-match-wins and shadow the entries below it."
+            )
+        misplaced_param = [entry for entry in self.reset_schedule if not entry._reset]
+        if misplaced_param:
+            raise ValueError(
+                f"`reset_schedule` takes reset entries only, built with "
+                f"`ScheduleEntry.reset(cron, tz)`; {len(misplaced_param)} of "
+                f"{len(self.reset_schedule)} carry a parameter modifier. A reset names the "
+                f"instant the balance goes back to the effective capacity; it overrides "
+                f"no parameters."
+            )
+        # ADR-137: a limit drips or resets, never both and never neither. The
+        # two fields can no longer be validated independently, so the message
+        # has to explain the pairing rather than the field. Checked *after* the
+        # structural checks above: an entry in the wrong tuple is a more
+        # specific diagnosis than the pairing it happens to violate.
+        if self.refill_amount == 0 and not self.reset_schedule:
+            raise ValueError(
+                "refill_amount=0 means the limit does not drip, which is only valid "
+                "with a reset_schedule; otherwise the bucket can never recover. "
+                "Use Limit.quota(name, amount, cron=..., tz=...) (ADR-137)."
+            )
+        if self.refill_amount > 0 and self.reset_schedule:
+            raise ValueError(
+                "a limit drips or resets, never both: a positive refill_amount "
+                "alongside a reset_schedule grants roughly twice the intended "
+                "allowance per period. Use Limit.quota(...) (ADR-137)."
+            )
         if self.schedule:
             zones = {entry.tz for entry in self.schedule}
             if len(zones) > 1:
@@ -361,6 +433,55 @@ class Limit:
         )
 
     @classmethod
+    def quota(
+        cls,
+        name: str,
+        amount: int,
+        *,
+        cron: str,
+        tz: str = "UTC",
+    ) -> "Limit":
+        """An allowance of ``amount`` per calendar window, restored at each edge.
+
+        A quota does not drip: the balance is *set* to the capacity when the
+        window opens and does not recover in between (ADR-137). That is what
+        makes "10,000 a day, and when they are gone you wait for midnight"
+        different from ``per_day("rpd", 10_000)``, which returns roughly seven
+        tokens a minute all day.
+
+        The window is a **fixed calendar window** — every entity on this
+        schedule resets at the same wall-clock instant, in ``tz`` (ADR-138).
+
+        The amount and the reset have to arrive together, which is the whole
+        reason this factory exists. Building the limit first and attaching the
+        reset afterwards cannot work at any spelling: the intermediate value is
+        either a drip with a reset or a zero rate with none, and ``Limit``
+        rejects both. :meth:`with_reset_schedule` is therefore a *replacement*
+        operator on a limit that is already a quota, never the way one is made.
+
+        ``refill_period_seconds`` is stored as
+        ``_QUOTA_REFILL_PERIOD_SECONDS`` and is inert while ``refill_amount``
+        is 0; it exists only because the field is validated positive.
+
+        Args:
+            name: Limit name (e.g., "rpd")
+            amount: The whole allowance for one window (also the ceiling)
+            cron: Standard 5-field cron naming the instant the window opens
+            tz: IANA timezone the expression is read in
+
+        Example: 10,000 a day, back to 10,000 at New York midnight
+            Limit.quota("rpd", 10_000, cron="0 0 * * *",
+                        tz="America/New_York")
+        """
+        return cls(
+            name=name,
+            capacity=amount,
+            refill_amount=0,
+            refill_period_seconds=_QUOTA_REFILL_PERIOD_SECONDS,
+            reset_schedule=(ScheduleEntry.reset(cron=cron, tz=tz),),
+        )
+
+    @classmethod
     def custom(
         cls,
         name: str,
@@ -400,6 +521,28 @@ class Limit:
         """
         return replace(self, schedule=schedule)
 
+    def with_reset_schedule(self, reset_schedule: tuple[ScheduleEntry, ...]) -> "Limit":
+        """Swap one quota's reset schedule for another (#222 §3.6).
+
+        A *replacement* operator on a limit that is already a quota, not the way
+        a quota is built — use :meth:`quota` for that. ADR-137 leaves nothing
+        else standing: this method returns a limit whose ``refill_amount`` is
+        whatever it already was, so calling it on a dripping limit produces a
+        rate alongside a reset and raises, and calling it with ``()`` on a quota
+        produces a zero rate with no reset and raises too. Both are rejected
+        here rather than silently repaired, because either repair would throw
+        away a number the caller explicitly passed.
+
+        Entries must come from :meth:`ScheduleEntry.reset`; a parameter entry is
+        rejected rather than silently stored, since the two mean different
+        things to every reader downstream.
+
+        Independent of :meth:`with_schedule`, which a quota may also carry: the
+        parameter schedule decides what the ceiling is, the reset schedule
+        decides when the balance returns to it.
+        """
+        return replace(self, reset_schedule=reset_schedule)
+
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dictionary for storage."""
         result: dict[str, Any] = {
@@ -413,6 +556,11 @@ class Limit:
         # (#222 §4). Omitted when empty so existing payloads are unchanged.
         if self.schedule:
             result["schedule"] = [_schedule_entry_to_dict(e) for e in self.schedule]
+        # Same reasoning, separate key: a reset schedule that vanished here
+        # would make the audit record for "attached a daily quota reset"
+        # byte-identical to the record for attaching nothing.
+        if self.reset_schedule:
+            result["reset_schedule"] = [_schedule_entry_to_dict(e) for e in self.reset_schedule]
         return result
 
     @classmethod
@@ -424,6 +572,12 @@ class Limit:
             refill_amount=data["refill_amount"],
             refill_period_seconds=data["refill_period_seconds"],
             schedule=tuple(ScheduleEntry(**entry) for entry in data.get("schedule", ())),
+            # `ScheduleEntry.reset`, never `ScheduleEntry(...)`: a reset entry
+            # carries no modifier and the ordinary constructor requires
+            # exactly one.
+            reset_schedule=tuple(
+                ScheduleEntry.reset(**entry) for entry in data.get("reset_schedule", ())
+            ),
         )
 
     @classmethod
@@ -441,6 +595,13 @@ class Limit:
         ``LeaseEntry.limit`` carries, and the slow path already puts the
         undivided config limit there; a pre-divided one would be narrowed a
         second time when the lease builds a status from it.
+
+        No ``reset_schedule``: bucket items do not carry one yet (surface Task
+        5). When they do, the two fields have to move **together** — the
+        ``max(1, ...)`` floor below turns a quota's zero rate into one token,
+        which alongside a reset is precisely what ADR-137 rejects, so adding
+        ``reset_schedule=state.reset_sched`` on its own raises rather than
+        round-trips.
         """
         return cls(
             name=state.limit_name,
@@ -476,11 +637,26 @@ class Limit:
         and leaving the schedule attached would invite a second application
         and read to a caller as "500, which halves to 250".
 
+        ``reset_schedule`` **is** carried through, for the mirror-image reason:
+        nothing here applies it, so there is nothing to apply twice, and it is
+        the only thing that tells a reported status the balance returns in a
+        lump at a calendar instant rather than dripping back at
+        ``refill_amount``. Dropping it would leave a daily-quota rejection
+        quoting a wait computed from the drip alone.
+
         Shares are floored to one whole token because ``Limit`` is whole-token
         and must stay constructible; ``schema.MAX_SHARD_COUNT`` bounds how
         small a real share can get, and a ``0.5x`` window on a share of one
         would otherwise raise from inside a rejection path. Surfacing an
         unadmittable request as an event or metric is tracked in #475.
+
+        That floor is **not** applied to a quota's ``refill_amount``, which is
+        zero and must stay zero (ADR-137). Flooring it to one would both invent
+        a drip the operator never configured and make the result
+        unconstructible, since a positive rate alongside the ``reset_schedule``
+        this carries through is exactly what validation rejects. The test is on
+        the *base* rate rather than the scheduled one: no drip, scaled by
+        anything, is still no drip.
         """
         if shard_count <= 1 and not self.schedule:
             return self
@@ -498,7 +674,7 @@ class Limit:
         return replace(
             self,
             capacity=max(1, (cp_milli // divisor) // 1000),
-            refill_amount=max(1, (ra_milli // divisor) // 1000),
+            refill_amount=(0 if self.refill_amount == 0 else max(1, (ra_milli // divisor) // 1000)),
             refill_period_seconds=max(1, rp_ms // 1000),
             schedule=(),
         )
@@ -522,6 +698,7 @@ class Limit:
         # dataclass default, which a future `field(default_factory=...)` would
         # remove out from under this constructor.
         object.__setattr__(obj, "schedule", ())
+        object.__setattr__(obj, "reset_schedule", ())
         return obj
 
 
