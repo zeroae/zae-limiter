@@ -1845,19 +1845,43 @@ class RateLimiter:
                 (eid, resource, limit.name) in existing_buckets for limit in entity_limits[eid]
             )
 
+            # A quota has no rate for a freshly minted share to amortise
+            # against (ADR-137), so a shard added to a set that already exists
+            # is filled by transfer from its siblings rather than by a mint
+            # (#587). Costs 1 GSI3 KEYS_ONLY query + 1 BatchGetItem, paid only
+            # here — once per shard creation, for a resource that actually
+            # carries a quota, and never on the speculative fast path.
+            quota_transfer = await self._quota_transfer(
+                eid, resource, entity_limits[eid], eid_shard_count, any_existing, now_ms
+            )
+
             for limit in entity_limits[eid]:
                 # Get existing bucket from batch result or create new one
                 bucket_key = (eid, resource, limit.name)
                 existing = existing_buckets.get(bucket_key)
                 if existing is None:
                     is_new = True
-                    # A new shard of a sharded bucket starts at its effective
-                    # per-shard share — capacity_milli // shard_count, exactly
-                    # like the aggregator's propagate_shard_count Path 2 —
-                    # so creating shards never multiplies the entity's total
-                    # capacity (issue #439). Stored cp/ra stay undivided.
+                    # A new shard of a sharded *dripping* bucket starts at its
+                    # effective per-shard share — capacity_milli //
+                    # shard_count, exactly like the aggregator's
+                    # propagate_shard_count Path 2. The stored ra is
+                    # undivided, so the ceilings across all shards still sum
+                    # to the configured capacity and the entity's long-run
+                    # admission rate is unchanged by the doubling (issue
+                    # #439). Stored cp/ra stay undivided.
+                    #
+                    # A quota is the exception: it never drips, so a fresh
+                    # share would be net-new allowance nothing reclaims before
+                    # the next reset edge (#587). It is handed the surplus just
+                    # clamped off its siblings instead, which conserves the
+                    # entity-wide spendable total exactly.
                     state = BucketState.from_limit(
-                        eid, resource, limit, now_ms, shard_count=eid_shard_count
+                        eid,
+                        resource,
+                        limit,
+                        now_ms,
+                        shard_count=eid_shard_count,
+                        reclaimed_milli=quota_transfer.get(limit.name),
                     )
                 else:
                     is_new = False
@@ -1988,6 +2012,72 @@ class RateLimiter:
             (b.entity_id, b.resource, b.limit_name): b for b in buckets
         }
         return entity, bucket_dict
+
+    async def _quota_transfer(
+        self,
+        entity_id: str,
+        resource: str,
+        limits: list[Limit],
+        shard_count: int,
+        any_existing: bool,
+        now_ms: int,
+    ) -> dict[str, int]:
+        """Reclaim the surplus a new quota shard is to be created from (#587).
+
+        A quota has no drip for a freshly minted ``capacity // shard_count`` to
+        amortise against (ADR-137), so a shard added mid-period must be filled
+        by **transfer**: ``Repository.reclaim_quota_surplus`` clamps the shards
+        that already exist to the ceiling the doubling just shrank them to, and
+        what it takes is what this shard is created with. See
+        :func:`~zae_limiter.models.new_shard_starting_tokens_milli` for why that
+        conserves and why zero-filling and blind redistribution do not.
+
+        Returns ``{}`` — costing nothing, and leaving every limit on the full
+        share — in each case that cannot need it:
+
+        * the entity already has a bucket item on the shard being acquired, so
+          nothing is being created;
+        * ``shard_count`` is 1, so there is no sibling to transfer from and the
+          only shard rightly starts full;
+        * no resolved limit is a quota, which is the whole dripping path; or
+        * no shard exists for this (entity, resource) at all, so nothing has
+          been spent and each shard is entitled to its full share.
+
+        Args:
+            entity_id: Entity whose shard is about to be created.
+            resource: Resource the acquire is for.
+            limits: Limits resolved for this entity and resource.
+            shard_count: Shards this bucket is split across.
+            any_existing: Whether a bucket item already exists on the shard
+                being acquired.
+            now_ms: The acquire's single clock reading (#430), so the ceiling
+                clamped to is the one in force at the same instant the new
+                shard's own share is computed from.
+
+        Returns:
+            ``{limit_name: reclaimed_milli}`` for the quota limits only. A name
+            absent from the mapping keeps the full share.
+        """
+        if any_existing or shard_count <= 1:
+            return {}
+        shares_milli = {
+            limit.name: effective_params(
+                limit.capacity * 1000,
+                limit.refill_amount * 1000,
+                limit.refill_period_seconds * 1000,
+                limit.schedule,
+                now_ms,
+            )[0]
+            // shard_count
+            for limit in limits
+            if limit.is_quota
+        }
+        if not shares_milli:
+            return {}
+        shards_found, reclaimed = await self._repository.reclaim_quota_surplus(
+            entity_id, resource, shares_milli
+        )
+        return reclaimed if shards_found else {}
 
     async def _fetch_buckets(
         self,

@@ -1109,6 +1109,83 @@ def _extract_limit_attrs(
     return limits
 
 
+def _is_quota_limit(limit_name: str, image: dict[str, Any]) -> bool:
+    """Is this limit on this item a quota (ADR-137), read off the stored shape?
+
+    The aggregator holds attributes rather than a ``Limit``, so it cannot ask
+    :attr:`Limit.is_quota` directly. This is the same key
+    ``Limit.from_bucket_state`` reconstructs one by: a zero refill rate paired
+    with a reset schedule. Both halves are required — a zero rate on its own is
+    a corrupt item, and granting it a quota's transfer rule would starve a limit
+    that does recover; a reset beside a positive rate is the mirror corruption
+    that ``Limit.__post_init__`` rejects.
+
+    The reset schedule may be the limit's own ``b_{name}_rsched`` override or
+    the item-level ``rsched`` default it inherits, and the reserved
+    ``BUCKET_SCHED_NONE`` marker (#541) means "this limit declares none" and so
+    blocks the inheritance. Only the presence of a schedule is asked here, never
+    its content, so no decode is needed and an undecodable one cannot make this
+    raise.
+    """
+    ra_attr = bucket_attr(limit_name, BUCKET_FIELD_RA)
+    if int(image.get(ra_attr, {}).get("N", "0")) != 0:
+        return False
+    own = image.get(bucket_attr(limit_name, BUCKET_FIELD_RSCHED), {}).get("S")
+    if own == BUCKET_SCHED_NONE:
+        return False
+    if own:
+        return True
+    return bool(image.get(BUCKET_FIELD_RSCHED, {}).get("S"))
+
+
+def _reclaim_quota_surplus(
+    table: Any,
+    namespace_id: str,
+    entity_id: str,
+    resource: str,
+    old_count: int,
+    shares_milli: dict[str, int],
+) -> dict[str, int]:
+    """Clamp the shards a doubling splits from, and report the take (#587).
+
+    The Lambda mirror of ``Repository.reclaim_quota_surplus``. A quota's new
+    shards are filled by **transfer**, never minted: every shard that already
+    exists is trimmed to the ceiling the doubling just shrank it to — the clamp
+    ``bucket.refill_bucket`` would apply on its next pass anyway — and what
+    comes off is what the clones below are created with.
+
+    One conditional ``UpdateItem`` per shard, ``old_count`` of them, once per
+    doubling. The condition means a shard already at or below its new share is
+    not written and contributes nothing, which is the common case for a spent
+    quota. A shard spent below the ceiling between the read and the write fails
+    the condition and is skipped: there is no surplus left to move.
+    """
+    reclaimed: dict[str, int] = dict.fromkeys(shares_milli, 0)
+    for shard in range(old_count):
+        for name, share in shares_milli.items():
+            attr = bucket_attr(name, BUCKET_FIELD_TK)
+            try:
+                response = table.update_item(
+                    Key={
+                        "PK": pk_bucket(namespace_id, entity_id, resource, shard),
+                        "SK": sk_state(),
+                    },
+                    UpdateExpression="SET #tk = :share",
+                    ConditionExpression="attribute_exists(PK) AND #tk > :share",
+                    ExpressionAttributeNames={"#tk": attr},
+                    ExpressionAttributeValues={":share": share},
+                    ReturnValues="UPDATED_OLD",
+                )
+            except ClientError as e:
+                if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                    continue
+                raise
+            previous = response.get("Attributes", {}).get(attr)
+            if previous is not None:
+                reclaimed[name] += int(previous) - share
+    return reclaimed
+
+
 def propagate_shard_count(
     table: Any,
     record: dict[str, Any],
@@ -1197,7 +1274,11 @@ def propagate_shard_count(
         new_image.get(BUCKET_FIELD_SCHED, {}).get("S"), sched_tz
     )
     # Per-limit starting balance, computed once rather than per target shard.
+    # A quota's is decided per target shard instead (#587), so it is held apart
+    # until the pool below is known.
     starting_tokens: dict[str, int] = {}
+    quota_shares: dict[str, int] = {}
+    quota_pool: dict[str, int] = {}
     for limit_name, info in limit_attrs.items():
         if limit_name == WCU_LIMIT_NAME:
             starting_tokens[limit_name] = info["cp_milli"]  # per-partition, not divided
@@ -1230,9 +1311,28 @@ def propagate_shard_count(
             () if declares_none else (limit_sched or item_sched),
             now_ms,
         )
-        starting_tokens[limit_name] = scaled_cp // new_count
+        share = scaled_cp // new_count
+        if _is_quota_limit(limit_name, new_image):
+            quota_shares[limit_name] = share
+        else:
+            starting_tokens[limit_name] = share
+
+    # A quota has no drip to amortise a freshly minted share against (ADR-137),
+    # so its new shards are filled by **transfer** from the surplus the shrunken
+    # ceiling reclaims off the existing shards, never by a mint (#587).
+    if quota_shares:
+        quota_pool = _reclaim_quota_surplus(
+            table, namespace_id, entity_id, resource, old_count, quota_shares
+        )
 
     for target_shard in range(old_count, new_count):
+        # The pool is handed out greedily rather than split evenly: a client
+        # that draws one of these shards first should find it usable, and the
+        # clamp reclaims the same total from the siblings either way.
+        for limit_name, share in quota_shares.items():
+            grant = max(0, min(share, quota_pool[limit_name]))
+            starting_tokens[limit_name] = grant
+            quota_pool[limit_name] -= grant
         try:
             item = dict(base_item)
             item["PK"] = pk_bucket(namespace_id, entity_id, resource, target_shard)
