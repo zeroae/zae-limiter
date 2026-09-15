@@ -27,7 +27,7 @@ from zae_limiter.schema import (
     sk_provisioner,
 )
 
-from .applier import apply_changes
+from .applier import ApplyResult, apply_changes
 from .bucket_sync import DEFAULT_TTL_MULTIPLIER, resolve_effective_limits, sync_bucket_params
 from .differ import Change, compute_diff
 from .fanout import fanout_entity, fanout_resource, resolve_disabled
@@ -95,19 +95,7 @@ def _handle_cli(event: dict[str, Any], context: Any) -> dict[str, Any]:
         return {"status": "planned", "changes": change_dicts}
 
     # Apply
-    result = apply_changes(changes, table_name, namespace_id)
-    _fanout_disabled_changes(table_name, namespace_id, changes)
-    _sync_bucket_param_changes(table_name, namespace_id, changes)
-
-    # Update provisioner state
-    manifest_hash = hashlib.sha256(
-        json.dumps(manifest.to_dict(), sort_keys=True).encode()
-    ).hexdigest()
-
-    new_state = manifest.managed_set()
-    new_state["last_applied"] = datetime.now(UTC).isoformat()
-    new_state["applied_hash"] = f"sha256:{manifest_hash}"
-    _write_provisioner_state(table_name, namespace_id, new_state)
+    result = _apply_and_record(manifest, changes, table_name, namespace_id)
 
     return {
         "status": "applied",
@@ -143,18 +131,7 @@ def _handle_cfn(event: dict[str, Any], context: Any) -> dict[str, Any]:
     previous = _read_provisioner_state(table_name, namespace_id)
     changes = compute_diff(manifest, previous)
 
-    result = apply_changes(changes, table_name, namespace_id)
-    _fanout_disabled_changes(table_name, namespace_id, changes)
-    _sync_bucket_param_changes(table_name, namespace_id, changes)
-
-    manifest_hash = hashlib.sha256(
-        json.dumps(manifest.to_dict(), sort_keys=True).encode()
-    ).hexdigest()
-
-    new_state = manifest.managed_set()
-    new_state["last_applied"] = datetime.now(UTC).isoformat()
-    new_state["applied_hash"] = f"sha256:{manifest_hash}"
-    _write_provisioner_state(table_name, namespace_id, new_state)
+    result = _apply_and_record(manifest, changes, table_name, namespace_id)
 
     return {
         "physical_resource_id": physical_resource_id,
@@ -167,11 +144,66 @@ def _handle_cfn(event: dict[str, Any], context: Any) -> dict[str, Any]:
     }
 
 
+def _apply_and_record(
+    manifest: LimitsManifest,
+    changes: list[Change],
+    table_name: str,
+    namespace_id: str,
+) -> ApplyResult:
+    """Commit the config writes, fan out, then record the managed state (#563).
+
+    The single place both entry points run an apply, so the ordering contract
+    below cannot drift between the CFN and CLI paths again — which is exactly
+    how #563 came to exist in two copies.
+
+    **A post-commit failure reports partial progress; it never abandons the
+    record.** ``apply_changes`` commits the config writes first, so by the time
+    either fan-out runs, "fail cleanly" is no longer on the menu — something is
+    already in the table. An exception escaping a fan-out used to propagate
+    past ``_write_provisioner_state``, leaving the ``#PROVISIONER`` record
+    describing the *previous* apply while the table held this one's config, and
+    (on the CFN path) telling CloudFormation FAILED so it rolled back a stack
+    whose configuration had already been applied.
+
+    Both fan-outs therefore return their failures rather than raising them, and
+    they are appended to ``ApplyResult.errors`` — the mechanism ``apply_changes``
+    already uses for a failed *config write*, which is strictly the more severe
+    failure of the two. The CLI prints them and exits 1; the CFN response
+    carries them in ``Data`` under a SUCCESS status.
+
+    This mirrors the contract of :class:`zae_limiter.exceptions.FanoutIncomplete`
+    on the async side — config committed first, progress reported, every write
+    idempotent so re-running the same apply reconciles the rest — without
+    adopting its delivery mechanism. Out of a Lambda handler an exception *is* a
+    CloudFormation FAILED, which is the outcome #563 exists to remove. See the
+    PR body for the full rationale.
+
+    ``_write_provisioner_state`` is deliberately left unguarded: it is the last
+    step, there is nothing after it to salvage, and a DynamoDB failure there is
+    a genuine infrastructure failure for which a FAILED response and a retry are
+    the right answer.
+    """
+    result = apply_changes(changes, table_name, namespace_id)
+    result.errors.extend(_fanout_disabled_changes(table_name, namespace_id, changes))
+    result.errors.extend(_sync_bucket_param_changes(table_name, namespace_id, changes))
+
+    manifest_hash = hashlib.sha256(
+        json.dumps(manifest.to_dict(), sort_keys=True).encode()
+    ).hexdigest()
+
+    new_state = manifest.managed_set()
+    new_state["last_applied"] = datetime.now(UTC).isoformat()
+    new_state["applied_hash"] = f"sha256:{manifest_hash}"
+    _write_provisioner_state(table_name, namespace_id, new_state)
+
+    return result
+
+
 def _fanout_disabled_changes(
     table_name: str,
     namespace_id: str,
     changes: list[Change],
-) -> None:
+) -> list[str]:
     """Eagerly stamp bucket items for every resource/entity change (ADR-125).
 
     Runs AFTER `apply_changes`, so every level it resolves already reflects
@@ -233,31 +265,43 @@ def _fanout_disabled_changes(
     zero real buckets (`GSI3SK begins_with "BUCKET#_default_#"`) and leave
     every existing bucket un-stamped despite the config being written
     correctly and the apply reporting success.
+
+    Returns a list of human-readable failures, one per change that could not be
+    stamped, rather than raising on the first (#563). Guarding is per change so
+    one unreadable config item cannot abandon every *other* change's fan-out —
+    the direct analogue of ``FanoutIncomplete.stamped`` reporting how far the
+    async fan-out got. See ``_apply_and_record``.
     """
     candidates = [c for c in changes if c.level in ("resource", "entity") and c.target]
     if not candidates:
-        return
+        return []
 
+    errors: list[str] = []
     client = boto3.client("dynamodb")
     for change in sorted(candidates, key=lambda c: 0 if c.level == "resource" else 1):
         data = change.data or {}
-        if change.level == "resource" and change.target:
-            disabled = bool(data.get("disabled"))
-            fanout_resource(client, table_name, namespace_id, change.target, disabled)
-        elif change.level == "entity" and change.target:
-            entity_id, resource = change.target.split("/", 1)
-            disabled = resolve_disabled(client, table_name, namespace_id, entity_id, resource)
-            fanout_resource_arg = None if resource == DEFAULT_RESOURCE else resource
-            fanout_entity(
-                client, table_name, namespace_id, entity_id, fanout_resource_arg, disabled
-            )
+        try:
+            if change.level == "resource" and change.target:
+                disabled = bool(data.get("disabled"))
+                fanout_resource(client, table_name, namespace_id, change.target, disabled)
+            elif change.level == "entity" and change.target:
+                entity_id, resource = change.target.split("/", 1)
+                disabled = resolve_disabled(client, table_name, namespace_id, entity_id, resource)
+                fanout_resource_arg = None if resource == DEFAULT_RESOURCE else resource
+                fanout_entity(
+                    client, table_name, namespace_id, entity_id, fanout_resource_arg, disabled
+                )
+        except Exception as e:
+            logger.warning("disable fan-out failed for %s %s: %s", change.level, change.target, e)
+            errors.append(f"disable fan-out {change.level} {change.target}: {e}")
+    return errors
 
 
 def _sync_bucket_param_changes(
     table_name: str,
     namespace_id: str,
     changes: list[Change],
-) -> None:
+) -> list[str]:
     """Push entity-level limit changes out to existing bucket items (#481).
 
     Runs AFTER ``apply_changes``, so ``resolve_effective_limits`` sees the
@@ -267,9 +311,19 @@ def _sync_bucket_param_changes(
     **Entity level only.** Resource and system defaults deliberately never
     touch buckets: a bucket on defaults carries a TTL and is recreated with
     current params when it expires (#271, #296).
+
+    Returns a list of human-readable failures, one per entity change that could
+    not be synced, rather than raising on the first (#563). ``_decode_limits``
+    raises on a stored compact schedule this provisioner cannot read (PR #549,
+    deliberately — silently dropping the limit was the bug class that change
+    removed), and a config item written by a newer client is a realistic source
+    of one: design §4.1 ships no version marker (#515). Left unguarded, that
+    ``ValueError`` escaped past ``_write_provisioner_state``. See
+    ``_apply_and_record``.
     """
     client = boto3.client("dynamodb")
     now_ms = int(time.time() * 1000)
+    errors: list[str] = []
 
     for change in changes:
         if change.level != "entity" or change.target is None:
@@ -279,34 +333,39 @@ def _sync_bucket_param_changes(
 
         limits: dict[str, Any]
         stale_limit_names: set[str] | None
-        if change.action == "delete":
-            # Reconcile to whatever now applies, and strip the limits that the
-            # deleted config had but the new effective config does not.
-            effective = resolve_effective_limits(
-                client, table_name, namespace_id, entity_id, resource
-            )
-            if not effective:
-                continue
-            stale = set(declared) - set(effective)
-            limits, ttl_multiplier = effective, DEFAULT_TTL_MULTIPLIER
-            stale_limit_names = stale or None
-        else:
-            if not declared:
-                continue
-            limits, ttl_multiplier = declared, 0
-            stale_limit_names = None
+        try:
+            if change.action == "delete":
+                # Reconcile to whatever now applies, and strip the limits that
+                # the deleted config had but the new effective config does not.
+                effective = resolve_effective_limits(
+                    client, table_name, namespace_id, entity_id, resource
+                )
+                if not effective:
+                    continue
+                stale = set(declared) - set(effective)
+                limits, ttl_multiplier = effective, DEFAULT_TTL_MULTIPLIER
+                stale_limit_names = stale or None
+            else:
+                if not declared:
+                    continue
+                limits, ttl_multiplier = declared, 0
+                stale_limit_names = None
 
-        sync_bucket_params(
-            client=client,
-            table_name=table_name,
-            namespace_id=namespace_id,
-            entity_id=entity_id,
-            resource=resource,
-            limits=limits,
-            ttl_multiplier=ttl_multiplier,
-            stale_limit_names=stale_limit_names,
-            now_ms=now_ms,
-        )
+            sync_bucket_params(
+                client=client,
+                table_name=table_name,
+                namespace_id=namespace_id,
+                entity_id=entity_id,
+                resource=resource,
+                limits=limits,
+                ttl_multiplier=ttl_multiplier,
+                stale_limit_names=stale_limit_names,
+                now_ms=now_ms,
+            )
+        except Exception as e:
+            logger.warning("bucket param sync failed for entity %s: %s", change.target, e)
+            errors.append(f"bucket param sync entity {change.target}: {e}")
+    return errors
 
 
 # ---------------------------------------------------------------------------

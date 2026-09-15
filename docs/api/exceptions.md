@@ -259,7 +259,10 @@ The `as_dict()` method returns a dictionary suitable for API responses:
             "entity_id": "user-123",
             "resource": "api",
             "limit_name": "rpm",
+            "kind": "rate",
             "capacity": 100,
+            "refill_amount": 100,
+            "refill_period_seconds": 60,
             "available": -5,
             "requested": 10,
             "exceeded": True,
@@ -268,12 +271,14 @@ The `as_dict()` method returns a dictionary suitable for API responses:
         {
             "entity_id": "user-123",
             "resource": "api",
-            "limit_name": "tpm",
+            "limit_name": "rpd",
+            "kind": "quota",
             "capacity": 10000,
-            "available": 8500,
+            "resets_at_ms": 1789531200000,
+            "available": 0,
             "requested": 500,
-            "exceeded": False,
-            "retry_after_seconds": 0.0,
+            "exceeded": True,
+            "retry_after_seconds": 29000.0,
         },
     ],
 }
@@ -284,3 +289,28 @@ The `as_dict()` method returns a dictionary suitable for API responses:
     returned in a single `limits` array. Limits you did not name in `consume` are
     never reported, since they never gate admission. Use the `exceeded` field to
     distinguish between violations and passed limits.
+
+#### `kind`: how the limit recovers
+
+Each entry carries a `kind`, and the fields describing recovery differ by kind.
+Read `kind` directly — do **not** infer a quota from `refill_amount == 0`.
+
+| `kind` | Recovery fields | Meaning |
+|--------|-----------------|---------|
+| `"rate"` | `refill_amount`, `refill_period_seconds` | Drips back continuously at `refill_amount` per `refill_period_seconds`. |
+| `"quota"` | `resets_at_ms` | Does not drip at all ([ADR-137](https://github.com/zeroae/zae-limiter/blob/main/docs/adr/137-reset-replaces-drip.md)). The whole allowance returns at a calendar instant. |
+
+`capacity`, `available`, `requested`, `exceeded` and `retry_after_seconds` are
+present on both kinds.
+
+`resets_at_ms` is an **absolute** epoch-millisecond instant, so a client can
+schedule a retry without parsing cron and without a reference clock of its own.
+It is `null` when the reset is further out than the scheduler's forward scan can
+see — a monthly or annual reset, most of its cycle. The key is always present on
+a quota entry.
+
+!!! warning "A quota never reports `refill_amount`"
+    A quota's stored `refill_amount` is fixed at 0 and its `refill_period_seconds`
+    is an inert placeholder. Both are omitted rather than serialized, because a
+    client dividing one by the other would compute "0 tokens per second, never
+    recovers" for a limit that in fact returns whole at `resets_at_ms`.

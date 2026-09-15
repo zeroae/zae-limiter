@@ -19,6 +19,7 @@ confirmed by test:
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -36,6 +37,7 @@ __all__ = [
     "effective_params",
     "encode",
     "encode_reset",
+    "entry_params",
     "matches",
     "next_boundary",
     "next_reset_edge",
@@ -204,14 +206,26 @@ class ScheduleEntry:
                 "a schedule entry must set exactly one of `scale` or the absolute "
                 "fields (`capacity`/`refill_amount`/`refill_period_seconds`)"
             )
-        if self.scale is not None and self.scale <= 0:
-            raise ValueError(f"scale must be positive, got {self.scale}")
         for name, value in (
+            ("scale", self.scale),
             ("capacity", self.capacity),
             ("refill_amount", self.refill_amount),
             ("refill_period_seconds", self.refill_period_seconds),
         ):
-            if value is not None and value <= 0:
+            if value is None:
+                continue
+            # Non-finite first, because the positivity test cannot catch it: every
+            # comparison against NaN is False, so `<= 0` *admits* a NaN, and an
+            # infinity is trivially positive. Both then escape into storage and die
+            # far from here — `scale` as "cannot convert float NaN to integer" from
+            # inside `encode`, and an absolute worse still, encoding cleanly as the
+            # byte string `cnan` that no later `decode` can read back. The isinstance
+            # guard is load-bearing: `math.isfinite` converts its argument to a float,
+            # so a bare call would turn an absurd-but-currently-workable integer
+            # capacity of 10**400 into an OverflowError raised from validation.
+            if isinstance(value, float) and not math.isfinite(value):
+                raise ValueError(f"{name} must be a finite number, got {value}")
+            if value <= 0:
                 raise ValueError(f"{name} must be positive, got {value}")
 
 
@@ -235,6 +249,47 @@ def matches(parsed: ParsedCron, now_ms: int) -> bool:
     return (dom_ok and dow_ok) if parsed.day_and else (dom_ok or dow_ok)
 
 
+def entry_params(
+    cp_milli: int,
+    ra_milli: int,
+    rp_ms: int,
+    entry: ScheduleEntry,
+) -> tuple[int, int, int]:
+    """The (capacity, refill_amount, refill_period) ``entry`` puts in force.
+
+    The override arithmetic of §1.1/§1.2 with the *matching* taken out, so that
+    a caller which already knows the entry applies — or which, like
+    :func:`zae_limiter.schema._recovery_seconds`, must consider every window
+    without a clock to pick one — shares this definition rather than restating
+    it. All values are milli-units, matching ``bucket.py``.
+    """
+    if entry.scale is not None:
+        # Scale capacity and refill together so time-to-fill is preserved
+        # (§1.1). Truncate rather than round, so a scaled limit is never
+        # larger than asked for; floor at 1 milli-unit, since a zero
+        # capacity is unadmittable.
+        #
+        # The rate's floor is conditioned on the BASE rate, not on the
+        # scaled result (#556). A quota has `refill_amount = 0` by
+        # definition (ADR-137), and flooring that to 1 invents a drip the
+        # limit is defined not to have: `BucketState.accrues()` then
+        # answers True for a bucket that cannot accrue, and
+        # `retry_after_with_schedule` walks a 1-millitoken-per-period rate
+        # instead of going to the next reset edge. A limit that really
+        # does drip still gets the floor, so a tiny scale cannot round a
+        # live rate away to nothing.
+        return (
+            max(1, int(cp_milli * entry.scale)),
+            0 if ra_milli == 0 else max(1, int(ra_milli * entry.scale)),
+            rp_ms,
+        )
+    return (
+        entry.capacity * 1000 if entry.capacity is not None else cp_milli,
+        entry.refill_amount * 1000 if entry.refill_amount is not None else ra_milli,
+        entry.refill_period_seconds * 1000 if entry.refill_period_seconds is not None else rp_ms,
+    )
+
+
 def effective_params(
     cp_milli: int,
     ra_milli: int,
@@ -254,25 +309,8 @@ def effective_params(
         return cp_milli, ra_milli, rp_ms
 
     for entry in sched:
-        if not matches(parse_cron(entry.cron, entry.tz), now_ms):
-            continue
-        if entry.scale is not None:
-            # Scale capacity and refill together so time-to-fill is preserved
-            # (§1.1). Truncate rather than round, so a scaled limit is never
-            # larger than asked for; floor at 1 milli-unit, since a zero
-            # capacity is unadmittable.
-            return (
-                max(1, int(cp_milli * entry.scale)),
-                max(1, int(ra_milli * entry.scale)),
-                rp_ms,
-            )
-        return (
-            entry.capacity * 1000 if entry.capacity is not None else cp_milli,
-            entry.refill_amount * 1000 if entry.refill_amount is not None else ra_milli,
-            entry.refill_period_seconds * 1000
-            if entry.refill_period_seconds is not None
-            else rp_ms,
-        )
+        if matches(parse_cron(entry.cron, entry.tz), now_ms):
+            return entry_params(cp_milli, ra_milli, rp_ms, entry)
     return cp_milli, ra_milli, rp_ms
 
 
@@ -758,11 +796,12 @@ def retry_after_with_schedule(
         need_ms = (remaining * eff_rp) // rate
         window_end = boundary if boundary is not None else cursor + need_ms
 
-        # The edge still wins over a positive rate when it lands first. That is
-        # not defensive: `effective_params` floors a scaled rate at 1 milli-unit
-        # (#556), so a quota inside a `scale` window arrives here with a phantom
-        # 1-millitoken drip rather than a zero. The walk must not depend on that
-        # floor being either present or absent.
+        # The edge still wins over a positive rate when it lands first. A quota
+        # inside a `scale` window no longer reaches here with a phantom
+        # 1-millitoken drip — `effective_params` conditions that floor on the
+        # base rate since #556 — but a limit that genuinely drips *and* resets
+        # does, and for it the edge can still land before the deficit clears.
+        # The walk must not depend on that floor being either present or absent.
         if edge is not None and edge <= min(window_end, cursor + need_ms):
             return (edge - now_ms + 1) / 1000.0
         if cursor + need_ms <= window_end:

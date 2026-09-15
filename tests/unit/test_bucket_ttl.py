@@ -159,6 +159,112 @@ class TestDrippingLimitsUnchanged:
         assert schema.calculate_bucket_ttl(5_000, [quota], 7) == 5 + DAY * 7
 
 
+class TestAbsoluteScheduleWindows:
+    """A window that overrides parameters outright lengthens the horizon (#557).
+
+    `_recovery_seconds` read a dripping limit's time-to-fill off its **base**
+    parameters, so an absolute `ScheduleEntry` that lowers `refill_amount`
+    (or raises `capacity`, or stretches `refill_period_seconds`) recovered far
+    more slowly inside its window than the TTL allowed for. The bucket was
+    swept while still in debt and recreated at full capacity — the
+    over-admission ADR-136 exempts custom-configured buckets from TTL to avoid.
+
+    The horizon is the worst case across the base parameters **and** every
+    window, since the function holds no clock and cannot know which window the
+    expiry will land in. Rounding up is the safe direction (see
+    `calculate_bucket_ttl_seconds`).
+    """
+
+    def test_night_window_governs_the_horizon(self):
+        # The #557 reproducer verbatim: 60 tokens at 60/min fills in 60s, but
+        # the night window drips 1/min, so it needs 3600s.
+        limit = Limit.per_minute("rpm", 60).with_schedule(
+            (ScheduleEntry(cron="0 0-6 * * *", refill_amount=1),)
+        )
+        assert schema.calculate_bucket_ttl_seconds([limit], 7) == 3_600 * 7  # 25_200
+
+    def test_unscheduled_limit_is_untouched(self):
+        # The overwhelming majority. A schedule-shaped fix must cost them nothing.
+        assert schema.calculate_bucket_ttl_seconds([Limit.per_minute("rpm", 60)], 7) == 420
+
+    def test_scale_window_preserves_time_to_fill(self):
+        # §1.1 scales capacity and refill together, so the horizon is unchanged.
+        # This is the row that proves the walk is not merely "always bigger".
+        scaled = Limit.per_minute("rpm", 60).with_schedule(
+            (ScheduleEntry(cron="0 0-6 * * *", scale=0.5),)
+        )
+        assert schema.calculate_bucket_ttl_seconds([scaled], 7) == 420
+
+    def test_absolute_capacity_raise_lengthens_the_horizon(self):
+        # Ten times the ceiling at the same drip is ten times the time-to-fill.
+        limit = Limit.per_minute("rpm", 60).with_schedule(
+            (ScheduleEntry(cron="0 9-17 * * *", capacity=600),)
+        )
+        assert schema.calculate_bucket_ttl_seconds([limit], 7) == 600 * 7
+
+    def test_absolute_period_stretch_lengthens_the_horizon(self):
+        # The third absolute field: same capacity and amount, slower clock.
+        limit = Limit.per_minute("rpm", 60).with_schedule(
+            (ScheduleEntry(cron="0 9-17 * * *", refill_period_seconds=600),)
+        )
+        assert schema.calculate_bucket_ttl_seconds([limit], 7) == 600 * 7
+
+    def test_a_faster_window_never_shortens_the_horizon(self):
+        # The base still applies outside every window, so the max spans both.
+        # A "use the window instead of the base" fix fails here.
+        limit = Limit.per_minute("rpm", 60).with_schedule(
+            (ScheduleEntry(cron="0 9-17 * * *", refill_amount=600),)
+        )
+        assert schema.calculate_bucket_ttl_seconds([limit], 7) == 420
+
+    def test_widest_window_wins_across_several_entries(self):
+        limit = Limit.per_minute("rpm", 60).with_schedule(
+            (
+                ScheduleEntry(cron="0 9-17 * * *", refill_amount=600),  # 6s
+                ScheduleEntry(cron="0 0-6 * * *", refill_amount=1),  # 3600s
+                ScheduleEntry(cron="0 7-8 * * *", refill_amount=6),  # 600s
+            )
+        )
+        assert schema.calculate_bucket_ttl_seconds([limit], 7) == 3_600 * 7
+
+    def test_scheduled_quota_still_uses_its_reset_period(self):
+        # A quota may carry a parameter schedule: it sets the ceiling the reset
+        # restores to. `is_quota` is structural, so the reset period governs and
+        # the window walk is never reached — dividing by the quota's zero rate
+        # would be #532 all over again.
+        quota = Limit.quota("rpd", 10_000, cron="0 0 * * *").with_schedule(
+            (ScheduleEntry(cron="0 0-6 * * *", scale=0.5),)
+        )
+        assert quota.refill_amount == 0
+        assert schema.calculate_bucket_ttl_seconds([quota], 7) == DAY * 7
+
+    def test_scheduled_quota_with_an_absolute_window_is_not_a_zero_division(self):
+        # The nastier half: an absolute entry could hand the walk a rate the
+        # quota does not have. The reset still bounds recovery from above.
+        quota = Limit.quota("rpd", 10_000, cron="0 0 * * *").with_schedule(
+            (ScheduleEntry(cron="0 0-6 * * *", capacity=500_000),)
+        )
+        assert schema.calculate_bucket_ttl_seconds([quota], 7) == DAY * 7
+
+    def test_mixed_item_max_spans_a_scheduled_drip_and_a_quota(self):
+        # ADR-114 composite item: the `max` must still see both shapes, with
+        # the scheduled window supplying the dripping limit's horizon.
+        scheduled = Limit.per_minute("rpm", 60).with_schedule(
+            (ScheduleEntry(cron="0 0-6 * * *", refill_amount=1),)
+        )  # 3600s
+        hourly = Limit.quota("q", 1_000, cron="0 * * * *")  # 3600s
+        daily = Limit.quota("rpd", 10_000, cron="0 0 * * *")  # 86400s
+        assert schema.calculate_bucket_ttl_seconds([scheduled, hourly], 7) == 3_600 * 7
+        assert schema.calculate_bucket_ttl_seconds([scheduled, daily], 7) == DAY * 7
+
+    def test_a_tiny_scale_cannot_collapse_the_rate_to_zero(self):
+        # `effective_params` floors a live rate at 1 milli-unit, so the walk
+        # must floor identically rather than divide by a truncated zero.
+        limit = Limit.custom("t", capacity=1, refill_amount=1, refill_period_seconds=60)
+        tiny = limit.with_schedule((ScheduleEntry(cron="0 0-6 * * *", scale=0.0001),))
+        assert schema.calculate_bucket_ttl_seconds([tiny], 7) == 420
+
+
 class TestUnrecoverableLimit:
     """A limit that neither drips nor resets reports itself, not ZeroDivision."""
 
