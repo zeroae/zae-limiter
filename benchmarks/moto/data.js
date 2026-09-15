@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789484644835,
+  "lastUpdate": 1789487161779,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -40913,6 +40913,240 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.023039157489673702",
             "extra": "mean: 7.995237536585135 msec\nrounds: 164"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "75612241c400fb4088a2df38c7f50bb7cce41d94",
+          "message": "🐛 fix(provisioner): coerce CloudFormation's stringified scalars (#561)\n\n## Summary\n\nConfirms the #554 premise against a real `aws cloudformation deploy` and\nfixes it at the boundary.\n\n**Measured, not assumed.** CloudFormation stringifies every scalar leaf\nin a custom resource's `ResourceProperties`. Against a real deploy\n(evidence recorded on #554): `Disabled: false` arrives as `'false'`,\n`Capacity: 1000` as `'1000'`, `Scale: 0.5` as `'0.5'`, and `!Ref` of a\n`Type: Number` parameter as `'1000'`. Structure survives — lists stay\nlists, maps stay maps — only leaves are stringified, and template\nquoting is not preserved, so `false` and `\"false\"` are byte-identical on\narrival.\n\n`bool('false')` is `True`, which inverted ADR-125's carve-out. The blast\nradius splits in two, and the dangerous half is silent:\n\n| Entry shape | Outcome before |\n|---|---|\n| `Disabled: false` **with** numeric limit fields | `TypeError` — apply\naborts loudly, nothing written |\n| `Disabled: false` with **no** numeric fields | parses, `bool('false')`\n→ `True`, **silently disables** |\n| `Schedule` with stringified `Scale`/`Capacity` | `TypeError`\n(`_parse_entries` catches only `ValueError`, so it escapes unwrapped,\nnaming no field) |\n\nThe silent row is exactly what a carve-out looks like: an entry granting\naccess and declaring no limits of its own.\n\n**The fix** coerces per-field at the `_cfn_*_to_manifest` boundary in\n`src/zae_limiter_provisioner/handler.py`, dispatching on the **target\nfield** and never on what the value looks like — `Cron` and `Tz` are\nlegitimately strings while `Scale` and `Capacity` are not, so a generic\n\"looks numeric ⇒ int\" pass would corrupt cron expressions. The\ndownstream `bool(disabled)` coercions in `handler.py` and `applier.py`\nare deliberately left unchanged: the boundary is the fix site, not the\nconsumers.\n\nTwo alternatives rejected with evidence: migrating to a CloudFormation\nRegistry resource type does **not** escape this\n(aws-cloudformation/cloudformation-cli#435 — the RPDK ships a\nclient-side `recast.py` that dispatches on declared type hints for\nexactly this reason), and serialising the whole manifest to one JSON\nstring would preserve types but destroy the structured,\nchange-set-diffable template shape #550 and #553 built.\n\nDetails:\n\n- **`Disabled` tri-state preserved.** A case-insensitive allowlist that\n**raises** rather than falling through to `bool(v)`: a quoted `\"True\"`\nin a template would otherwise be truthy by accident, and\n`'1'`/`'yes'`/`''` would be guessed. Coercion converts a present value\nand never invents one, so absent still means \"inherit\".\n- **Every coercer is idempotent** (accepts already-native values), so\nre-invokes are safe and the boundary keeps working if AWS ever delivers\nreal types.\n- `\"\"` drops an optional numeric property (the RPDK's rule, and how a\nCFN `Default: \"\"` parameter spells \"not set\"); `Capacity` is required\nand raises instead.\n- **`Scale` rejects NaN and infinity**: `ScheduleEntry` validates with\n`scale <= 0`, which is `False` for NaN, so one would pass validation and\nthen poison every effective-parameter calculation. `bool` is rejected\nexplicitly too — it is an `int` subclass, so `Scale: true` would\notherwise slip through the numeric branch.\n- A non-string `Cron` is caught at the boundary rather than surfacing as\nan `AttributeError` inside `parse_cron` naming no property at all.\n- **Errors name the full dotted property path** (e.g.\n`Entities.vip.Resources.gpt-4.Disabled`), since a failing apply is read\nin CloudWatch where the message is the only context.\n- **`OldResourceProperties` is stringified too** but is read nowhere in\nthis package — verified, pinned by a regression test, and a module\ncomment records that any future drift logic must run it through the same\ncoercion.\n\n## Test plan\n\n- [x] `uv run pytest tests/unit/ -q` → 4371 passed; pre-push gate re-ran\nwith coverage and passed diff-cover at 100% patch coverage\n- [x] `uv run pytest tests/unit/ -m gevent -n 0 -q` → 26 passed\n- [x] `uv run mypy` → Success, 58 source files; ruff + ruff-format clean\n- [x] 24 new unit tests + 1 new integration test, built from the\n**payload recorded on #554** (new fixture\n`tests/fixtures/cfn_payloads.py`) rather than from native Python types —\nevery existing test used natives, which is precisely why nothing caught\nthis\n- [x] Fully stringified event (`\"1000\"`, `\"60\"`, `\"0.5\"`, `\"false\"`)\nproduces a `LimitsManifest` equal to the native-typed equivalent (AC 5,\n`test_stringified_payload_equals_the_native_typed_equivalent`) — the\nnative side is written out literally rather than derived from the\nrecording, so it is an independent expectation\n- [x] `Disabled` tri-state: absent → key absent; `\"false\"`/`False` →\n`False`; `\"true\"`/`True` → `True`; `\"yes\"`/`\"\"` raise rather than\nproducing a truthy `True`\n- [x] Mutation-checked at the unit level: reverting `_coerce_bool` to\n`bool(value)` fails 7 tests; making the numeric coercers no-ops fails 10\n- [x] `rg 'bool\\(disabled\\)|bool\\(data\\.get\\(\"disabled\"\\)\\)'` still\nfinds the downstream coercions unchanged (AC 3) — `applier.py:193,204`,\n`handler.py:245`, `repository.py:4067`, `sync_repository.py:3303`. The\nboundary is the fix site, not the consumers\n- [x] **AC 6 (was deferred, now done — commit `b1e3d8f6`):**\n`tests/integration/test_provisioner.py::TestHandlerIntegration::test_handler_cfn_create_with_stringified_properties`\ndrives the real wire shape (`\"Capacity\": \"1500\"`, `\"Disabled\": \"false\"`)\nthrough `_handle_cfn` into DynamoDB on LocalStack and reads it back\nthrough the async `Repository`, so the assertions are against **stored\nstate**, not the converter's return value: `rpm.capacity == 1500` and\n`isinstance(..., int)`, and `await test_repo.resolve_disabled(\"anyone\",\n\"gpt-4\") == (False, \"resource\")`\n- [x] `AWS_ENDPOINT_URL=http://localhost:4566 … uv run pytest\ntests/integration/test_provisioner.py -q` → 11 passed (88s) against a\nrunning LocalStack container\n- [x] `uv run pytest tests/unit/test_provisioner_handler.py -q` → 60\npassed\n- [x] Integration test mutation-checked **separately for each half** of\nthe blast radius, because the loud failure would otherwise mask the\nsilent one: with only the numeric coercers reverted it dies with the\noriginal `TypeError: '<=' not supported between instances of 'str' and\n'int'`; with only `_coerce_bool` reverted to `bool(value)` it dies with\n`assert (True, 'resource') == (False, 'resource')` — the ADR-125\ncarve-out inversion, caught against stored DynamoDB state\n\n## Notes for reviewers\n\n- **Behaviour change:** a `Disabled` value outside `true`/`false` (any\ncase) is now a hard failure of the custom resource instead of being\nsilently coerced. Intentional.\n- **Found beyond the brief, not fixed here** (`schedule.py` belongs to\nanother change this cycle): `ScheduleEntry` accepts `scale: nan` /\n`scale: inf` from a YAML manifest — `scale <= 0` is `False` for NaN —\nand they escape validation to fail much later inside `schedule.encode()`\nwith `ValueError: cannot convert float NaN to integer` /\n`OverflowError`, naming no field. Blocked at the CFN boundary by this\nPR; the `limits apply` YAML path is still exposed.\n- **Test-infra hazard found:** `mock.patch` used as a class decorator\nappends its patchings to the *function objects* it finds via `dir()`,\ninherited ones included, so a second test class subclassing one that\nalready carries class-level `@patch` silently re-decorates and breaks\nthe parent's tests. `_setup_client` was moved to module level with a\ncomment recording this.\n\nFixes #554\nRefs #222, #405, #550\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01QdVj8nPhUwTz2aNJzMFqt5",
+          "timestamp": "2026-09-15T11:40:41-04:00",
+          "tree_id": "4fdb2737004b2cd2dc44876a1a9f44042aee03ef",
+          "url": "https://github.com/zeroae/zae-limiter/commit/75612241c400fb4088a2df38c7f50bb7cce41d94"
+        },
+        "date": 1789487160370,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_single_limit_latency",
+            "value": 192.3715796267354,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00014805064240329215",
+            "extra": "mean: 5.1982730606066205 msec\nrounds: 132"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_two_limits_latency",
+            "value": 152.12167779276686,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0014052729397246817",
+            "extra": "mean: 6.573685056000272 msec\nrounds: 125"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_cascade_latency",
+            "value": 95.05292760878396,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000413803958702326",
+            "extra": "mean: 10.520454499999943 msec\nrounds: 8"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_available_check_latency",
+            "value": 143.4785223531743,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00007814740311925917",
+            "extra": "mean: 6.9696842677156 msec\nrounds: 127"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_stored_limits_latency",
+            "value": 193.2623261884918,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00011588474455761552",
+            "extra": "mean: 5.1743142066120225 msec\nrounds: 121"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_baseline_no_cascade",
+            "value": 194.08140356734174,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0001180437444321962",
+            "extra": "mean: 5.15247716483575 msec\nrounds: 182"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_with_cascade",
+            "value": 96.08921730902523,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00016012068690710916",
+            "extra": "mean: 10.406994957446432 msec\nrounds: 94"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_one_limit",
+            "value": 193.20380375011092,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00011609359766892092",
+            "extra": "mean: 5.175881533333558 msec\nrounds: 135"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_two_limits",
+            "value": 162.60651828476333,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00009679387864473989",
+            "extra": "mean: 6.149814967741689 msec\nrounds: 124"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_five_limits",
+            "value": 96.21919210608772,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010661533196629863",
+            "extra": "mean: 10.392936981817902 msec\nrounds: 110"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_single_limit",
+            "value": 191.84753492701887,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00013911623296494836",
+            "extra": "mean: 5.21247250000065 msec\nrounds: 136"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_multiple_limits",
+            "value": 161.72706370388374,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00009728826968775435",
+            "extra": "mean: 6.183257007812637 msec\nrounds: 128"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_available_check",
+            "value": 143.57880254293846,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00008369567748951572",
+            "extra": "mean: 6.964816409448334 msec\nrounds: 127"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_transactional_acquire",
+            "value": 192.99855373076105,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0001258807593455595",
+            "extra": "mean: 5.1813859776122 msec\nrounds: 134"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_without_cascade",
+            "value": 169.92800080118218,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007948034242111494",
+            "extra": "mean: 5.884845318518236 msec\nrounds: 135"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_with_cascade",
+            "value": 94.15639607130166,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0003332970227368217",
+            "extra": "mean: 10.620627399998739 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_cascade_with_stored_limits",
+            "value": 92.71478552906129,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00045123666419609915",
+            "extra": "mean: 10.785766200004332 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_with_cached_config",
+            "value": 193.15118864600024,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00012453913525196724",
+            "extra": "mean: 5.177291462765782 msec\nrounds: 188"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_cold_config",
+            "value": 140.14765945214236,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00009474700515404342",
+            "extra": "mean: 7.135331434782042 msec\nrounds: 92"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_cascade_with_cached_config",
+            "value": 95.26521093957057,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00024314664792074905",
+            "extra": "mean: 10.4970113448269 msec\nrounds: 87"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_sequential_acquisitions",
+            "value": 18.685485511734097,
+            "unit": "iter/sec",
+            "range": "stddev: 0.002454726410699416",
+            "extra": "mean: 53.51747480000029 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_same_entity_sequential",
+            "value": 19.138345395638257,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0003031014544829109",
+            "extra": "mean: 52.2511209473681 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_cache_disabled",
+            "value": 84.81291973797171,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00025360438544552613",
+            "extra": "mean: 11.790656460000264 msec\nrounds: 50"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_cache_enabled",
+            "value": 94.54011242040673,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00037854701360981886",
+            "extra": "mean: 10.577520741176393 msec\nrounds: 85"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_config_resolution_sequential",
+            "value": 79.40296609583712,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00013067359862072974",
+            "extra": "mean: 12.593987972603296 msec\nrounds: 73"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_config_resolution_batched",
+            "value": 122.31734379962477,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00009473706751662594",
+            "extra": "mean: 8.175455490908623 msec\nrounds: 110"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_speculative_cache_cold",
+            "value": 96.80371374520143,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000130098094468213",
+            "extra": "mean: 10.330182193548024 msec\nrounds: 93"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_speculative_cache_warm",
+            "value": 94.1389121239114,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00016379361377649097",
+            "extra": "mean: 10.62259991578975 msec\nrounds: 95"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_stored_limits_cache_disabled",
+            "value": 123.15796296250714,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00012335419810885666",
+            "extra": "mean: 8.119653621621113 msec\nrounds: 111"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_stored_limits_cache_enabled",
+            "value": 108.86190097931559,
+            "unit": "iter/sec",
+            "range": "stddev: 0.02429563858918475",
+            "extra": "mean: 9.185950190140497 msec\nrounds: 142"
           }
         ]
       }
