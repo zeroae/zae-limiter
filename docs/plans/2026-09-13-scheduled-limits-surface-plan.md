@@ -1672,6 +1672,12 @@ EOF
 - Produces: `retry_after_with_schedule(deficit_milli, cp_milli, ra_milli, rp_ms, sched,
   reset_sched=(), *, now_ms, shard_count=1, max_windows=8) -> float`;
   `next_reset_edge(reset_sched, *, now_ms) -> int | None`; `BucketState.reset_sched`
+- Already landed (#530): `bucket.calculate_retry_after` takes `next_reset_ms` (an absolute
+  epoch-ms instant) and `now_ms`, and returns the wait to that instant when the refill rate is
+  0. All four `LimitStatus` sites already call it with `next_reset_ms=None` and a real
+  `now_ms`, each marked `TODO(#222 surface-plan Task 5)`. **Supplying `next_reset_edge(
+  state.reset_sched, now_ms=now_ms)` at those four `TODO`s is the whole of the wiring** — the
+  wait arithmetic is not this task's to write
 
 **The flat estimate is wrong in the direction that matters.** It over-reports when a boundary
 raises the limit and **under**-reports when one lowers it — and lowering is the headline use
@@ -1700,46 +1706,45 @@ suspect. Add `Asia/Kolkata` (+05:30) to the cases below, where a 09:00 local edg
 `next_boundary` rather than against a zone that cannot tell the two apart.
 
 **A reset edge dominates.** If a `reset_schedule` edge falls before the deficit clears by
-refill, that instant *is* the answer. For a daily quota this is the difference between
-reporting eleven hours of drip-refill and reporting "at midnight", and midnight is the only
-useful answer.
+refill, that instant *is* the answer. For a daily quota it is the *entire* answer, since
+ADR-137 leaves such a limit no drip at all: the choice is between reporting "retry now" —
+wrong, repeatedly, for as long as the quota stays exhausted — and reporting "at midnight".
 
-> ### ⚠️ Under ADR-137 a quota's rate is **zero**, and the walk below exits before it looks
+> ### ✅ Under ADR-137 a quota's rate is **zero** — settled by #530, and the walk below honours it
 >
 > ADR-137 was accepted after this task was written: a limit drips **or** resets, so every
 > limit that carries a `reset_schedule` has `refill_amount == 0`. That is not a variant case
-> here — it is the *only* shape a reset can arrive in.
+> here — it is the *only* shape a reset can arrive in. The original Step 3 loop tested the
+> rate before it consulted the reset edge, so every quota left on iteration 1 and fell back to
+> `calculate_retry_after(deficit, 0, rp)`, which returned `0.0` — "retry immediately", forever,
+> until the edge actually passed. The precise opposite of this section's headline, and silent.
 >
-> Step 3's loop tests the rate before it consults the reset edge:
+> **#530 settled both halves of that**, and Step 3's sketch below has been corrected to match:
 >
-> ```python
->         rate = _rate(eff_ra)
->         if rate <= 0:
->             break                       # ← every quota leaves here, on iteration 1
->         ...
->         edge = next_reset_edge(reset_sched, now_ms=cursor)
-> ```
+> 1. **`bucket.calculate_retry_after` now takes the reset instant**, as
+>    `calculate_retry_after(deficit_milli, refill_amount_milli, refill_period_ms,
+>    next_reset_ms=None, *, now_ms=None)`. A positive rate is unchanged arithmetic and ignores
+>    the instant; a zero rate with a known reset returns the wait until it; a zero rate with no
+>    reset still returns `0.0`, a branch ADR-137 makes unreachable for any constructible limit
+>    and which therefore once again means what its comment claims — a corrupt stored item. The
+>    four `LimitStatus` sites in the table below all pass `None` today, because the real value
+>    needs `BucketState.reset_sched`, which **this task adds**. *Task 5's job is therefore to
+>    supply the value, not to re-derive the wait.*
+> 2. **The walk consults the reset edge before the rate gate.** A window whose effective rate
+>    is zero accrues nothing, so the answer is the edge when the edge arrives first, and
+>    otherwise the walk steps to the next boundary where the rate may resume. That covers the
+>    quota (`ra == 0` in every window, and `next_boundary` honours `reset_sched`, so the
+>    boundary *is* the edge) and a `scale=0.0` window on a limit that does drip, with one
+>    branch rather than a quota special case.
 >
-> and the fallback is `calculate_retry_after(deficit, 0, rp)`, which merged `bucket.py:188`
-> **returns `0.0`** for a non-positive rate rather than raising. So as written, every quota
-> reports "retry immediately", forever, until the edge actually passes — the precise opposite
-> of the headline behaviour this section promises, and silent. ADR-137's own Consequences name
-> it: *"The honest 'retry after' for a reset-only limit is the next reset instant, not a rate
-> computation. Until that lands, such a limit has no rate to fall back on at all."* This is
-> where it lands.
->
-> **Deciding the ordering is part of Step 3** — consult the reset edge before the rate gate, or
-> treat `rate <= 0` with a non-empty `reset_sched` as "the edge is the answer", or restructure
-> the loop. Do not leave it to be discovered. Three tests below are written against the
-> pre-ADR-137 shape and will pass or fail for the wrong reason until it is settled:
-> `TestBoundaryAwareRetryAfter.test_a_reset_edge_dominates` and
-> `TestTryConsumeWalksBoundaries.test_a_reset_edge_dominates_the_estimate` both still pass
-> `ra_milli=10_000_000` beside a reset, a `Limit` that can no longer be constructed; and
-> `test_a_reset_edge_after_the_deficit_clears_does_not_win` pairs `self.BASE`'s positive rate
-> with `reset_sched=DAILY`, which is the drip-and-reset combination ADR-137 forbids outright —
-> reachable through this function's raw-integer signature, but not through any limit a caller
-> can configure. Decide what those three should assert *after* the ordering is settled; the
-> values are deliberately left unchanged so the question is not buried.
+> The three tests below that paired a positive `ra_milli` with a `reset_sched` — a combination
+> ADR-137 forbids outright, reachable through this function's raw-integer signature but through
+> no limit a caller can configure — have been rewritten to the quota shape
+> (`ra_milli=0`/`refill_amount_milli=0`). Note that
+> `test_a_reset_edge_after_the_deficit_clears_does_not_win` could not be corrected in place:
+> with `ra == 0` the deficit never clears by refill, so "the reset does not win" is
+> unconstructible for a quota. It is replaced by the discriminator that survives ADR-137 — a
+> quota whose deficit is **already clear** must report no wait rather than its next edge.
 
 **There are four sites that build a `LimitStatus`, not the three the compressed text names.**
 Enumerated against the merged tree rather than recalled:
@@ -1867,15 +1872,15 @@ class TestBoundaryAwareRetryAfter:
         assert got == pytest.approx(20.001, abs=0.002)
 
     def test_a_reset_edge_dominates(self):
-        """A daily quota's answer is 'at midnight', not eleven hours of drip.
-
-        Flat here is (5_000_000 * 86_400_000) // 10_000_000 = 43_200_000 ms,
-        twelve hours. The reset is one hour away and wins.
+        """A daily quota's answer is 'at midnight', and it is the *only*
+        answer: ADR-137 gives a reset-carrying limit `ra_milli == 0`, so there
+        is no drip to fall back on. Before #530 this reported 0.0 — 'retry
+        immediately', an hour early and repeatedly.
         """
         got = retry_after_with_schedule(
             deficit_milli=5_000_000,
             cp_milli=10_000_000,
-            ra_milli=10_000_000,
+            ra_milli=0,  # ADR-137: a limit drips or resets, never both
             rp_ms=86_400_000,
             sched=(),
             reset_sched=DAILY,
@@ -1883,17 +1888,38 @@ class TestBoundaryAwareRetryAfter:
         )
         assert got == pytest.approx(3600.001, abs=0.002)
 
-    def test_a_reset_edge_after_the_deficit_clears_does_not_win(self):
-        """Discriminates the test above against "always return the next reset".
-        Here refill clears the deficit in 30 s and the reset is an hour off."""
+    def test_a_quota_with_no_deficit_does_not_report_its_next_reset(self):
+        """Discriminates the test above against "a quota always returns its
+        next edge". Replaces the pre-ADR-137
+        `test_a_reset_edge_after_the_deficit_clears_does_not_win`, whose
+        premise — refill clearing the deficit before the edge — needs the
+        positive rate beside a reset that ADR-137 forbids, and so cannot be
+        built for a quota at all."""
         got = retry_after_with_schedule(
-            deficit_milli=500_000,
-            **self.BASE,
+            deficit_milli=0,
+            cp_milli=10_000_000,
+            ra_milli=0,
+            rp_ms=86_400_000,
             sched=(),
             reset_sched=DAILY,
             now_ms=_ms("2026-09-15 23:00"),
         )
-        assert got == pytest.approx(30.001, abs=0.002)
+        assert got == 0.0
+
+    def test_a_zero_rate_with_no_reset_is_still_no_wait(self):
+        """The other half of the discrimination: the edge, not the zero rate,
+        is what produces a non-zero answer above. Unreachable through a
+        constructible limit — it guards a corrupt stored item."""
+        got = retry_after_with_schedule(
+            deficit_milli=5_000_000,
+            cp_milli=10_000_000,
+            ra_milli=0,
+            rp_ms=86_400_000,
+            sched=(),
+            reset_sched=(),
+            now_ms=_ms("2026-09-15 23:00"),
+        )
+        assert got == 0.0
 
     def test_unscheduled_matches_calculate_retry_after_exactly(self):
         """Not 'approximately' — the unscheduled path must be the identical
@@ -2031,11 +2057,23 @@ def retry_after_with_schedule(
     for _ in range(max_windows):
         _eff_cp, eff_ra, eff_rp = effective_params(cp_milli, ra_milli, rp_ms, sched, cursor)
         rate = _rate(eff_ra)
-        if rate <= 0:
-            break
-        need_ms = (remaining * eff_rp) // rate
         edge = next_reset_edge(reset_sched, now_ms=cursor)
         boundary = next_boundary(sched, reset_sched, now_ms=cursor)
+
+        # The edge is consulted BEFORE the rate gate (#530). Under ADR-137 a
+        # quota's rate is zero in *every* window, so gating on the rate first
+        # exits on iteration 1 and never reaches the edge that is the answer.
+        if rate <= 0:
+            # Nothing accrues in this window. The edge wins if it lands inside
+            # it; otherwise step to the boundary, where the rate may resume.
+            if edge is not None and (boundary is None or edge <= boundary):
+                return (edge - now_ms + 1) / 1000.0
+            if boundary is None:
+                break  # no rate, no edge, no boundary — no finite wait
+            cursor = boundary  # next_boundary is strictly after cursor, so this advances
+            continue
+
+        need_ms = (remaining * eff_rp) // rate
         window_end = boundary if boundary is not None else cursor + need_ms
 
         if edge is not None and edge <= min(window_end, cursor + need_ms):
@@ -2046,13 +2084,24 @@ def retry_after_with_schedule(
         remaining -= ((window_end - cursor) * rate) // eff_rp
         cursor = window_end
 
-    return calculate_retry_after(deficit_milli, _rate(ra_milli), rp_ms)
+    return calculate_retry_after(
+        deficit_milli,
+        _rate(ra_milli),
+        rp_ms,
+        next_reset_edge(reset_sched, now_ms=now_ms),
+        now_ms=now_ms,
+    )
 ```
 
 `calculate_retry_after` lives in `bucket.py`, which imports `models`, which imports
-`schedule` — so importing it here is a cycle. Inline the same three lines instead, with a
+`schedule` — so importing it here is a cycle. Inline the same arithmetic instead, with a
 comment naming `bucket.calculate_retry_after` as the definition this must stay identical to;
-`test_unscheduled_matches_calculate_retry_after_exactly` is what keeps them so.
+`test_unscheduled_matches_calculate_retry_after_exactly` is what keeps them so. **The inlined
+copy must carry #530's zero-rate branch too** — the `max_windows` fallback is exactly where a
+quota that outran the walk lands, and an inlined copy that stops at the rate arithmetic
+reintroduces the `0.0` this task exists to remove. The fallback recomputes the edge from
+`now_ms`, not from the walk's `cursor`, because the value it returns is a wait measured from
+the caller's instant.
 
 - [ ] **Step 4: Run the walk tests and watch them pass**
 
@@ -2094,15 +2143,19 @@ class TestTryConsumeWalksBoundaries:
         assert result.retry_after_seconds == pytest.approx(30.001, abs=0.002)
 
     def test_a_reset_edge_dominates_the_estimate(self):
+        """`refill_amount_milli=0` is not an edge case here — ADR-137 makes it
+        the only shape a `reset_sched` can arrive in, so this is what every
+        quota rejection on the fast path looks like (#530)."""
         state = self._state(
             limit_name="rpd",
             capacity_milli=10_000_000,
-            refill_amount_milli=10_000_000,
+            refill_amount_milli=0,  # ADR-137: a limit drips or resets
             refill_period_ms=86_400_000,
             last_refill_ms=_ny("2026-09-15 23:00"),
             reset_sched=DAILY,
         )
         result = try_consume(state, 5_000, _ny("2026-09-15 23:00"))
+        assert result.success is False
         assert result.retry_after_seconds == pytest.approx(3600.001, abs=0.002)
 
     def test_a_successful_consume_still_reports_no_wait(self):
@@ -4300,7 +4353,16 @@ class TestE2EScheduleBoundaries:
     @pytest.mark.asyncio(loop_scope="class")
     async def test_check_availability_agrees_with_acquire_at_one_instant(self, sched_repo):
         """§7's reason for wiring the query surface: the display and the
-        rejection must not describe the same bucket differently."""
+        rejection must not describe the same bucket differently.
+
+        Checked against #530: the `Limit.quota` shape is correct and ~3600 is
+        the right expectation, but the test needs **both** `check_availability`
+        (site 4) and `try_consume` (sites 1-2) to pass `next_reset_ms`. Note
+        that the agreement assertion alone does not discriminate — before
+        Task 5 wires them, both sides report `0.0` and
+        `approx(0.0, rel=0.01)` passes. The `approx(3600)` line is the one
+        doing the work.
+        """
         limiter = RateLimiter(repository=sched_repo)
         await self._at(sched_repo, LATE)
         await sched_repo.set_limits(
@@ -4319,7 +4381,7 @@ class TestE2EScheduleBoundaries:
         displayed = check.status("rpd").retry_after_seconds
         rejected = excinfo.value.retry_after_seconds
         assert displayed == pytest.approx(rejected, rel=0.01)
-        assert displayed == pytest.approx(3600, abs=5)  # at midnight, not 12 hours
+        assert displayed == pytest.approx(3600, abs=5)  # at midnight, not "now" (#530)
 
     @pytest.mark.asyncio(loop_scope="class")
     async def test_a_corrupt_stored_schedule_honours_on_unavailable(self, sched_repo):
