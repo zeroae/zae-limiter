@@ -20,8 +20,13 @@ from zae_limiter.models import BucketState
 from zae_limiter.schedule import ScheduleEntry
 from zae_limiter.schema import (
     BUCKET_FIELD_DISABLED,
+    BUCKET_FIELD_RSCHED,
+    BUCKET_FIELD_SCHED,
+    BUCKET_FIELD_SCHED_TZ,
     BUCKET_FIELD_TK,
     BUCKET_FIELD_VU,
+    CONFIG_FIELD_SCHED_TZ,
+    LIMIT_FIELD_RSCHED,
     WCU_LIMIT_NAME,
     bucket_attr,
     calculate_bucket_ttl,
@@ -3664,8 +3669,14 @@ class TestStaleLimitAliasesAreExpressionSafe:
         assert removed == {
             bucket_attr(name, field)
             for name in ("req-min", "tok.sec")
-            for field in ("tk", "cp", "ra", "rp", "tc", "sched")
-        } | {"sched", "sched_tz", bucket_attr("rpm", "sched")}
+            for field in ("tk", "cp", "ra", "rp", "tc", "sched", "rsched")
+        } | {
+            "sched",
+            "rsched",
+            "sched_tz",
+            bucket_attr("rpm", "sched"),
+            bucket_attr("rpm", "rsched"),
+        }
 
     def test_scoped_reconcile_with_a_hyphenated_stale_name(self, repo):
         """The pre-existing #327 reach: `delete_limits` computes stale names."""
@@ -4656,3 +4667,250 @@ class TestAggregatorCannotRefillPastAFanOut:
         assert try_refill_bucket(self._table(repo), image, now_ms + 60000) is True
         item = self._raw(repo, "quiet-img")
         assert item[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"] == "1000000"
+
+
+class TestQuotaConfigRoundTrip:
+    """A quota written through `set_limits` must come back (#538).
+
+    `Limit.quota()` shipped in #531 with no storage leg, so
+    `_serialize_composite_limits` dropped `reset_schedule` and the next read
+    rebuilt a `Limit` with `refill_amount=0` and no reset — which is exactly
+    what `Limit.__post_init__` rejects. The config item was poisoned by the
+    write and every later read raised.
+    """
+
+    QUOTA = Limit.quota("rpd", 10000, cron="0 0 * * *", tz="America/New_York")
+
+    def test_entity_quota_survives_set_and_get(self, repo):
+        repo.set_limits("quota-1", [self.QUOTA], resource="gpt-4")
+        (stored,) = repo.get_limits("quota-1", resource="gpt-4")
+        assert stored == self.QUOTA
+
+    def test_resource_quota_survives_set_and_get(self, repo):
+        repo.set_resource_defaults("gpt-4", [self.QUOTA])
+        (stored,) = repo.get_resource_defaults("gpt-4")
+        assert stored == self.QUOTA
+
+    def test_system_quota_survives_set_and_get(self, repo):
+        repo.set_system_defaults([self.QUOTA])
+        stored_limits, _on_unavailable = repo.get_system_defaults()
+        assert stored_limits == [self.QUOTA]
+
+    def test_resolve_limits_returns_the_reset_schedule(self, repo):
+        """The read `acquire()`'s slow path actually uses. Without this leg
+        `resolve_limits()` raises, and before #531 it would have silently
+        returned a quota with no reset for Task 3's reset to never fire on."""
+        repo.set_limits("quota-2", [self.QUOTA], resource="gpt-4")
+        limits, _on_unavailable, source = repo.resolve_limits("quota-2", "gpt-4")
+        assert source == "entity"
+        assert limits == [self.QUOTA]
+
+
+class TestResetScheduleReachesStorage:
+    """`rsched` on config and bucket items (#222 §3.6, §4.1, surface Task 4)."""
+
+    RESET = (ScheduleEntry.reset(cron="0 0 * * *", tz="America/New_York"),)
+    QUOTA = Limit.quota("rpd", 10000, cron="0 0 * * *", tz="America/New_York")
+
+    @staticmethod
+    def _raw_config(repo, entity_id, resource):
+        from zae_limiter import schema
+
+        client = repo._get_client()
+        response = client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_entity(repo._namespace_id, entity_id)},
+                "SK": {"S": schema.sk_config(resource)},
+            },
+        )
+        return response.get("Item") or {}
+
+    @staticmethod
+    def _raw_bucket(repo, entity_id, resource, shard=0):
+        from zae_limiter import schema
+
+        client = repo._get_client()
+        response = client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, resource, shard)},
+                "SK": {"S": schema.sk_state()},
+            },
+        )
+        return response.get("Item") or {}
+
+    @staticmethod
+    def _seed_bucket(repo, entity_id, resource, limits):
+        now_ms = int(time.time() * 1000)
+        states = [BucketState.from_limit(entity_id, resource, lim, now_ms) for lim in limits]
+        repo.transact_write([repo.build_composite_create(entity_id, resource, states, now_ms)])
+
+    def test_config_round_trips_the_reset_schedule(self, repo):
+        """Without this leg `resolve_limits()` cannot return a quota at all."""
+        repo.set_limits("rs-1", [self.QUOTA], resource="gpt-4")
+        (stored,) = repo.get_limits("rs-1", resource="gpt-4")
+        assert stored.reset_schedule == self.RESET
+
+    def test_config_stores_the_compact_form_under_its_own_attribute(self, repo):
+        """`rsched`, not a tag inside `sched` (§4.1), and four bytes."""
+        repo.set_limits("rs-2", [self.QUOTA], resource="gpt-4")
+        item = self._raw_config(repo, "rs-2", "gpt-4")
+        assert item[limit_attr("rpd", LIMIT_FIELD_RSCHED)]["S"] == "m0h0"
+        assert limit_attr("rpd", "sched") not in item
+        assert item[CONFIG_FIELD_SCHED_TZ]["S"] == "America/New_York"
+
+    def test_a_reset_only_limit_still_writes_the_timezone(self, repo):
+        """The hoisting trap: a quota carries no parameter schedule, so a
+        `sched_tz` derived from `schedule` alone would be absent and the reset
+        would decode as UTC — a New York midnight quota resetting at 19:00."""
+        repo.set_limits("rs-2b", [self.QUOTA], resource="gpt-4")
+        (stored,) = repo.get_limits("rs-2b", resource="gpt-4")
+        assert stored.reset_schedule[0].tz == "America/New_York"
+
+    def test_both_tuples_on_one_limit_round_trip(self, repo):
+        """§1.7: a quota may carry a parameter schedule too. Two attributes,
+        one shared `sched_tz`."""
+        sched = (ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", scale=0.5),)
+        repo.set_limits("rs-2c", [self.QUOTA.with_schedule(sched)], resource="gpt-4")
+        item = self._raw_config(repo, "rs-2c", "gpt-4")
+        assert item[limit_attr("rpd", "sched")]["S"] == "h0-6s500"
+        assert item[limit_attr("rpd", LIMIT_FIELD_RSCHED)]["S"] == "m0h0"
+        assert item[CONFIG_FIELD_SCHED_TZ]["S"] == "America/New_York"
+        (stored,) = repo.get_limits("rs-2c", resource="gpt-4")
+        assert stored.schedule == sched
+        assert stored.reset_schedule == self.RESET
+
+    def test_two_limits_one_quota_one_drip(self, repo):
+        """Many limits per item: each gets its own `l_{name}_rsched`, and the
+        drip gets none."""
+        repo.set_limits("rs-2d", [Limit.per_minute("rpm", 100), self.QUOTA], resource="gpt-4")
+        item = self._raw_config(repo, "rs-2d", "gpt-4")
+        assert item[limit_attr("rpd", LIMIT_FIELD_RSCHED)]["S"] == "m0h0"
+        assert limit_attr("rpm", LIMIT_FIELD_RSCHED) not in item
+        by_name = {lim.name: lim for lim in repo.get_limits("rs-2d", resource="gpt-4")}
+        assert by_name["rpd"].reset_schedule == self.RESET
+        assert by_name["rpm"].reset_schedule == ()
+
+    def test_many_entries_in_one_reset_tuple_round_trip(self, repo):
+        many = (
+            ScheduleEntry.reset("0 0 1 * *", "America/New_York"),
+            ScheduleEntry.reset("0 12 15 * *", "America/New_York"),
+        )
+        repo.set_limits("rs-2e", [self.QUOTA.with_reset_schedule(many)], resource="gpt-4")
+        item = self._raw_config(repo, "rs-2e", "gpt-4")
+        assert item[limit_attr("rpd", LIMIT_FIELD_RSCHED)]["S"] == "m0h0D1;m0h12D15"
+        (stored,) = repo.get_limits("rs-2e", resource="gpt-4")
+        assert stored.reset_schedule == many
+
+    def test_replacing_a_quota_with_a_drip_removes_it(self, repo):
+        """All three setters are full-replace PutItems, so an omitted attribute
+        disappears — confirmed, not assumed."""
+        repo.set_limits("rs-3", [self.QUOTA], resource="gpt-4")
+        repo.set_limits("rs-3", [Limit.per_day("rpd", 10000)], resource="gpt-4")
+        (stored,) = repo.get_limits("rs-3", resource="gpt-4")
+        assert stored.reset_schedule == ()
+        assert LIMIT_FIELD_RSCHED not in str(self._raw_config(repo, "rs-3", "gpt-4"))
+
+    def test_resource_and_system_levels_round_trip_too(self, repo):
+        """All three config levels share one serialiser, but only one of them
+        is exercised by the entity tests above."""
+        repo.set_resource_defaults("gpt-4", [self.QUOTA])
+        repo.set_system_defaults([self.QUOTA])
+        (from_resource,) = repo.get_resource_defaults("gpt-4")
+        system_limits, _on_unavailable = repo.get_system_defaults()
+        assert from_resource.reset_schedule == self.RESET
+        assert system_limits[0].reset_schedule == self.RESET
+
+    def test_a_created_bucket_carries_the_stamp(self, repo):
+        """Both refillers read the schedules off the item, so a quota bucket
+        born without `rsched` has `refill_amount = 0` and nothing to restore
+        it — the one shape that can never recover."""
+        self._seed_bucket(repo, "rs-6", "gpt-4", [self.QUOTA])
+        item = self._raw_bucket(repo, "rs-6", "gpt-4")
+        assert item[BUCKET_FIELD_RSCHED]["S"] == "m0h0"
+        assert item[BUCKET_FIELD_SCHED_TZ]["S"] == "America/New_York"
+        assert BUCKET_FIELD_SCHED not in item, "a quota carries no parameter schedule"
+
+    def test_a_created_bucket_carries_both_stamps(self, repo):
+        sched = (ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", scale=0.5),)
+        self._seed_bucket(repo, "rs-6b", "gpt-4", [self.QUOTA.with_schedule(sched)])
+        item = self._raw_bucket(repo, "rs-6b", "gpt-4")
+        assert item[BUCKET_FIELD_SCHED]["S"] == "h0-6s500"
+        assert item[BUCKET_FIELD_RSCHED]["S"] == "m0h0"
+        assert item[BUCKET_FIELD_SCHED_TZ]["S"] == "America/New_York"
+
+    def test_a_created_bucket_writes_a_per_limit_override(self, repo):
+        """Two limits resetting on different calendars: the first becomes the
+        item default and the second gets `b_{name}_rsched` (§4.1)."""
+        weekly = Limit.quota("rpw", 50000, cron="0 0 * * SUN", tz="America/New_York")
+        self._seed_bucket(repo, "rs-6c", "gpt-4", [self.QUOTA, weekly])
+        item = self._raw_bucket(repo, "rs-6c", "gpt-4")
+        assert item[BUCKET_FIELD_RSCHED]["S"] == "m0h0"
+        assert item[bucket_attr("rpw", BUCKET_FIELD_RSCHED)]["S"] == "m0h0w7"
+        assert bucket_attr("rpd", BUCKET_FIELD_RSCHED) not in item
+
+    def test_an_unscheduled_bucket_carries_neither(self, repo):
+        self._seed_bucket(repo, "rs-6d", "gpt-4", [Limit.per_minute("rpm", 100)])
+        item = self._raw_bucket(repo, "rs-6d", "gpt-4")
+        assert BUCKET_FIELD_RSCHED not in item
+        assert BUCKET_FIELD_SCHED_TZ not in item
+
+    def test_the_fan_out_stamps_rsched_on_an_existing_bucket(self, repo):
+        repo.create_entity("rs-4")
+        repo.set_limits("rs-4", [Limit.per_day("rpd", 10000)], resource="gpt-4")
+        self._seed_bucket(repo, "rs-4", "gpt-4", [Limit.per_day("rpd", 10000)])
+        repo.set_limits("rs-4", [self.QUOTA], resource="gpt-4")
+        item = self._raw_bucket(repo, "rs-4", "gpt-4")
+        assert item[BUCKET_FIELD_RSCHED]["S"] == "m0h0"
+        assert item[BUCKET_FIELD_SCHED_TZ]["S"] == "America/New_York"
+
+    def test_removing_a_reset_schedule_removes_the_stamp(self, repo):
+        """Override, not merge (§1.6): dropping a reset must clear the item, or
+        the bucket keeps resetting after the operator stopped asking it to."""
+        repo.create_entity("rs-5")
+        repo.set_limits("rs-5", [self.QUOTA], resource="gpt-4")
+        self._seed_bucket(repo, "rs-5", "gpt-4", [self.QUOTA])
+        repo.set_limits("rs-5", [Limit.per_day("rpd", 10000)], resource="gpt-4")
+        item = self._raw_bucket(repo, "rs-5", "gpt-4")
+        assert BUCKET_FIELD_RSCHED not in item
+        assert BUCKET_FIELD_SCHED_TZ not in item
+
+    def test_a_reset_only_fan_out_still_writes_sched_tz(self, repo):
+        """The #488 trap this task's restructure exists for. `sched_tz` is
+        shared by both tuples, so deciding it from the parameter branch alone
+        would REMOVE it here while `rsched` was SET — leaving the stored reset
+        to decode as UTC, or raising a ValidationException outright."""
+        repo.create_entity("rs-5b")
+        repo.set_limits("rs-5b", [Limit.per_day("rpd", 10000)], resource="gpt-4")
+        self._seed_bucket(repo, "rs-5b", "gpt-4", [Limit.per_day("rpd", 10000)])
+        expr, names, _values = repo._build_bucket_param_update([self.QUOTA], None, None)
+        set_clause = expr.split("REMOVE")[0]
+        remove_clause = expr.split("REMOVE")[1] if "REMOVE" in expr else ""
+        tz_alias = next((alias for alias, attr in names.items() if attr == BUCKET_FIELD_SCHED_TZ))
+        assert tz_alias in set_clause
+        assert tz_alias not in remove_clause
+        repo.set_limits("rs-5b", [self.QUOTA], resource="gpt-4")
+        item = self._raw_bucket(repo, "rs-5b", "gpt-4")
+        assert item[BUCKET_FIELD_SCHED_TZ]["S"] == "America/New_York"
+
+    def test_no_alias_is_both_set_and_removed(self, repo):
+        """#488: SET and REMOVE on one attribute in one expression is a
+        ValidationException. Checked across all four scheduled/unscheduled
+        combinations of the two tuples, since the aliases are shared."""
+        sched = (ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", scale=0.5),)
+        for limits in (
+            [Limit.per_minute("rpm", 100)],
+            [Limit.per_minute("rpm", 100).with_schedule(sched)],
+            [self.QUOTA],
+            [self.QUOTA.with_schedule(sched)],
+        ):
+            expr, _names, _values = repo._build_bucket_param_update(limits, None, {"gone"})
+            set_aliases = {
+                part.split("=")[0].strip()
+                for part in expr.split("REMOVE")[0].removeprefix("SET").split(",")
+            }
+            remove_aliases = {part.strip() for part in expr.split("REMOVE")[1].split(",")}
+            assert not set_aliases & remove_aliases, (
+                f"{limits[0].name}: {set_aliases & remove_aliases}"
+            )

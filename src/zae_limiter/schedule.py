@@ -32,8 +32,10 @@ __all__ = [
     "ParsedCron",
     "ScheduleEntry",
     "decode",
+    "decode_reset",
     "effective_params",
     "encode",
+    "encode_reset",
     "matches",
     "next_boundary",
     "parse_cron",
@@ -580,6 +582,63 @@ def decode(compact: str, tz: str) -> tuple[ScheduleEntry, ...]:
                 refill_period_seconds=int(tokens["p"]) if "p" in tokens else None,
             )
         )
+    return tuple(entries)
+
+
+def encode_reset(sched: tuple[ScheduleEntry, ...]) -> tuple[str, str | None]:
+    """Encode a reset schedule into its compact storage form and shared timezone.
+
+    The same grammar as ``encode`` **minus the modifier tokens**, because a
+    reset entry overrides no parameters (§3.6): ``0 0 * * *`` is ``m0h0``, four
+    bytes. Reset entries live in their own ``rsched`` / ``b_{name}_rsched``
+    attributes rather than tagged inside ``sched``, which mirrors the separate
+    tuple on ``Limit`` and keeps the decoder from partitioning one list into
+    two meanings (§4.1).
+
+    Returns ``("", None)`` for an empty schedule. Raises ``ValueError`` if the
+    entries disagree on ``tz``: it is hoisted to one item-level attribute —
+    shared with the parameter schedule — so a limit cannot carry two.
+
+    Canonical in exactly the same way ``encode`` is, and losslessly so: a reset
+    entry carries no ``scale``, which is ``encode``'s one quantised dimension,
+    so the reset round trip is exact rather than merely semantic.
+    """
+    if not sched:
+        return "", None
+    timezones = {entry.tz for entry in sched}
+    if len(timezones) > 1:
+        raise ValueError(
+            f"every entry in a reset schedule must share one timezone, since it is "
+            f"hoisted to a single item-level attribute; got {sorted(timezones)}"
+        )
+    return ";".join(_encode_cron(entry.cron) for entry in sched), sched[0].tz
+
+
+def decode_reset(compact: str, tz: str) -> tuple[ScheduleEntry, ...]:
+    """Decode the compact reset form back into schedule entries.
+
+    ``tz`` is the hoisted item-level timezone and is applied to every entry.
+    Entries are built through :meth:`ScheduleEntry.reset`, never
+    ``ScheduleEntry(...)``: a reset entry carries no modifier and the ordinary
+    constructor requires exactly one.
+
+    A modifier tag in this attribute is **rejected rather than ignored**. It
+    means either corruption or a parameter schedule stored under the wrong key,
+    and an entry that silently reset the balance on a schedule meant only to
+    scale it would be the worst available reading.
+    """
+    if not compact:
+        return ()
+    entries = []
+    for part in compact.split(";"):
+        tokens = _tokenise(part)
+        modifiers = sorted(set(tokens) & set(_MODIFIER_TAGS))
+        if modifiers:
+            raise ValueError(
+                f"reset schedule entry {part!r} carries the modifier token(s) "
+                f"{modifiers}; a reset overrides no parameters"
+            )
+        entries.append(ScheduleEntry.reset(cron=_cron_from_tokens(tokens), tz=tz))
     return tuple(entries)
 
 

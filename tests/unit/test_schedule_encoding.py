@@ -18,8 +18,10 @@ import pytest
 from zae_limiter.schedule import (
     ScheduleEntry,
     decode,
+    decode_reset,
     effective_params,
     encode,
+    encode_reset,
     matches,
     parse_cron,
     to_cron,
@@ -479,3 +481,131 @@ class TestSizeBudget:
             separators=(",", ":"),
         )
         assert len(as_json) / (len(compact) + len(tz)) > 3.0
+
+
+class TestResetEncoding:
+    """Reset entries share the field grammar and drop the modifier tokens."""
+
+    def test_encodes_without_a_modifier_token(self):
+        compact, tz = encode_reset((ScheduleEntry.reset("0 0 * * *", "America/New_York"),))
+        assert compact == "m0h0"
+        assert tz == "America/New_York"
+
+    def test_a_daily_reset_is_four_bytes(self):
+        """The size claim in §4.1, asserted exactly rather than as `<= 8` — an
+        encoder that returned the empty string would satisfy a bound."""
+        compact, _ = encode_reset((ScheduleEntry.reset("0 0 * * *"),))
+        assert len(compact) == 4
+
+    def test_joins_entries_with_a_semicolon(self):
+        compact, tz = encode_reset(
+            (
+                ScheduleEntry.reset("0 0 * * *", "America/New_York"),
+                ScheduleEntry.reset("0 12 * * SUN", "America/New_York"),
+            )
+        )
+        assert compact == "m0h0;m0h12w7"
+        assert tz == "America/New_York"
+
+    def test_weekday_names_normalise_exactly_as_the_param_encoder(self):
+        """Storage is canonical (§4.3) so `differ.py` does not read SUN against
+        7 as a change on every apply. Sunday inside a range must be 0, not 7."""
+        compact, _ = encode_reset((ScheduleEntry.reset("0 0 * * SUN-THU"),))
+        assert compact == "m0h0w0-4"
+
+    def test_empty_schedule_encodes_to_nothing(self):
+        assert encode_reset(()) == ("", None)
+
+    def test_rejects_entries_that_disagree_on_timezone(self):
+        with pytest.raises(ValueError, match="one timezone"):
+            encode_reset(
+                (
+                    ScheduleEntry.reset("0 0 * * *", "America/New_York"),
+                    ScheduleEntry.reset("0 0 * * *", "UTC"),
+                )
+            )
+
+    def test_a_reset_is_smaller_than_the_same_cron_as_a_param_entry(self):
+        """The modifier tokens are the whole difference: a param entry must
+        carry one (`__post_init__` requires exactly one), a reset must not."""
+        reset, _ = encode_reset((ScheduleEntry.reset("0 0 * * *"),))
+        param, _ = encode((ScheduleEntry(cron="0 0 * * *", scale=0.5),))
+        assert param.startswith(reset)
+        assert len(param) > len(reset)
+
+
+class TestResetDecoding:
+    def test_decodes_through_the_reset_constructor(self):
+        """A reset entry carries no modifier, so `ScheduleEntry(...)` would
+        raise its "exactly one" rule. `decode_reset` must use the classmethod."""
+        (entry,) = decode_reset("m0h0", "America/New_York")
+        assert entry.cron == "0 0 * * *"
+        assert entry.tz == "America/New_York"
+        assert entry.scale is None
+        assert entry.capacity is None
+        assert entry.refill_amount is None
+        assert entry.refill_period_seconds is None
+        assert entry._reset is True
+
+    def test_a_decoded_entry_is_accepted_by_reset_schedule_and_rejected_by_schedule(self):
+        """`_reset` is what `Limit.__post_init__` sorts the two tuples by, so a
+        decoder that built a plain entry would be caught here even if every
+        field above happened to match."""
+        from zae_limiter.models import Limit
+
+        entries = decode_reset("m0h0", "UTC")
+        assert Limit.quota("rpd", 10, cron="0 0 * * *").with_reset_schedule(entries)
+        with pytest.raises(ValueError, match="parameter entries only"):
+            Limit.per_minute("rpm", 10).with_schedule(entries)
+
+    def test_empty_compact_decodes_to_an_empty_tuple(self):
+        assert decode_reset("", "UTC") == ()
+
+    def test_rejects_a_modifier_token(self):
+        """A reset overrides no parameters, so a stored `s500` is either
+        corruption or a param schedule read out of the wrong attribute. Either
+        way it must not decode into something that silently resets."""
+        with pytest.raises(ValueError, match="modifier"):
+            decode_reset("m0h0s500", "UTC")
+
+    @pytest.mark.parametrize("tag", ["s500", "c2000", "a100", "p60"])
+    def test_rejects_every_modifier_tag(self, tag):
+        """All four, not just `scale` — `c`/`a`/`p` reach the same wrong place."""
+        with pytest.raises(ValueError, match="modifier"):
+            decode_reset(f"m0h0{tag}", "UTC")
+
+    def test_rejects_junk(self):
+        with pytest.raises(ValueError):
+            decode_reset("this is not a schedule", "UTC")
+
+    def test_round_trip_is_byte_identical_and_semantically_equal(self):
+        """Three assertions, because `encode_reset(decode_reset(x)) == x` alone
+        is satisfied by an encoder that throws information away."""
+        entries = (
+            ScheduleEntry.reset("0 0 * * *", "America/New_York"),
+            ScheduleEntry.reset("30 2 1 JAN,JUL *", "America/New_York"),
+        )
+        compact, tz = encode_reset(entries)
+        restored = decode_reset(compact, tz)
+
+        assert len(restored) == len(entries)
+        for original, back in zip(entries, restored, strict=True):
+            assert parse_cron(back.cron, back.tz) == parse_cron(original.cron, original.tz)
+        assert encode_reset(restored) == (compact, tz)
+        assert decode_reset(*encode_reset(restored)) == restored
+
+    def test_the_display_form_re_encodes_unchanged(self):
+        """`to_cron` renders names back; feeding that to a fresh reset entry
+        must produce the same bytes, or the CLI's output is not round-trippable
+        (§4.3)."""
+        compact, tz = encode_reset((ScheduleEntry.reset("0 0 * * 1-5", "UTC"),))
+        rendered = to_cron(compact)
+        assert rendered == "0 0 * * MON-FRI"
+        assert encode_reset((ScheduleEntry.reset(rendered, tz),)) == (compact, tz)
+
+    def test_a_param_schedule_read_out_of_the_reset_attribute_is_caught(self):
+        """The realistic corruption: `sched` and `rsched` swapped. Every param
+        entry carries a modifier, so every one of them is rejected here."""
+        param_compact, tz = encode((BUSINESS, NIGHTS))
+        with pytest.raises(ValueError, match="modifier"):
+            decode_reset(param_compact, tz)

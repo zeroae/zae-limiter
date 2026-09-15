@@ -78,7 +78,14 @@ BUCKET_FIELD_RF = "rf"  # shared refill timestamp (ms) — optimistic lock
 # ``vu`` ("valid until", epoch ms) is the materialisation stamp: the fast path
 # gates on ``vu > now`` so it can honour a schedule without ever evaluating
 # one. ``vu = 0`` forces exactly one materialising pass.
+# ``rsched`` / ``b_{name}_rsched`` carry the **reset** schedule (§3.6) under the
+# same item-level-default rule and the same hoisted ``sched_tz``. A separate
+# attribute rather than a tag inside ``sched``: the two tuples mean opposite
+# things (a reset is edge-triggered and overrides no parameters, a parameter
+# entry is level-triggered and overrides nothing else), and one list the reader
+# has to partition into two meanings is exactly what §4.1 rejected.
 BUCKET_FIELD_SCHED = "sched"  # item-level default schedule, compact-encoded
+BUCKET_FIELD_RSCHED = "rsched"  # item-level default reset schedule (§3.6, §4.1)
 BUCKET_FIELD_SCHED_TZ = "sched_tz"  # IANA name, hoisted out of every entry
 BUCKET_FIELD_VU = "vu"  # valid-until, epoch ms — schedule materialisation stamp
 
@@ -112,12 +119,16 @@ LIMIT_FIELD_CP = "cp"  # capacity (ceiling)
 LIMIT_FIELD_RA = "ra"  # refill_amount
 LIMIT_FIELD_RP = "rp"  # refill_period_seconds
 LIMIT_FIELD_SCHED = "sched"  # compact-encoded schedule (#222 §4.1)
+LIMIT_FIELD_RSCHED = "rsched"  # compact-encoded reset schedule (#222 §4.1)
 
 # IANA timezone name for every schedule on the item, hoisted out of the
 # individual entries (#222 §4.1). One attribute per item, not per limit: it is
 # the same 16-ish bytes for every entry and the design measured that repetition
 # out. The corollary is that all scheduled limits on one config item must agree
 # on a timezone; `models.hoisted_schedule_timezone()` enforces it at the write.
+# It covers **both** tuples: a limit carrying a parameter schedule in one zone
+# and a reset schedule in another has nowhere to store the second one, so
+# `Limit.__post_init__` rejects the pair rather than letting storage pick.
 CONFIG_FIELD_SCHED_TZ = "sched_tz"
 
 
