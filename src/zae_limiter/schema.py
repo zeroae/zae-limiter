@@ -2,7 +2,7 @@
 
 from typing import TYPE_CHECKING, Any
 
-from .schedule import entry_params, parse_cron
+from .schedule import cycle_seconds, entry_params, parse_cron
 
 if TYPE_CHECKING:
     from .models import Limit
@@ -654,48 +654,27 @@ def calculate_ttl(now_ms: int, ttl_seconds: int = 86400) -> int:
 # from the finest field). `0 0 * * *` constrains hour, so it repeats daily;
 # `0 0 1 * *` constrains day-of-month, so it repeats monthly.
 # --------------------------------------------------------------------------
-_MINUTE_SECONDS = 60
-_HOUR_SECONDS = 3_600
-_DAY_SECONDS = 86_400
-_WEEK_SECONDS = 7 * _DAY_SECONDS
-# Long months and leap years, so the horizon is never short of a real gap.
-_MONTH_SECONDS = 31 * _DAY_SECONDS
-_YEAR_SECONDS = 366 * _DAY_SECONDS
 
 
 def _reset_cycle_seconds(entry: "ScheduleEntry") -> int:
     """Upper bound on the gap between two consecutive edges of one reset entry.
 
-    Derived from the coarsest cron field the entry constrains, because that is
-    the cycle over which its firing set repeats. Every branch rounds **up** —
-    31 days for a monthly pattern, 366 for an annual one — since a horizon that
-    is too short is the harmful direction (see
-    :func:`calculate_bucket_ttl_seconds`).
+    A thin wrapper over :func:`schedule.cycle_seconds`, which owns the ladder.
+    Two unrelated callers ask this same question — here, to size a quota
+    bucket's TTL recovery horizon (#532), and ``schedule._reset_scan``, to size
+    a reset edge's scan horizon (#574) — and letting the two answers drift is
+    precisely what #574 was.
 
-    Exact for every pattern whose firing set repeats within its own cycle,
-    which is every practical quota schedule. The one class it understates is a
-    pattern that skips whole years — ``0 0 29 2 *`` fires on Feb 29 and so has
+    Every branch rounds **up** — 31 days for a monthly pattern, 366 for an
+    annual one — since a horizon that is too short is the harmful direction
+    (see :func:`calculate_bucket_ttl_seconds`). The one class it understates is
+    a pattern that skips whole years: ``0 0 29 2 *`` fires on Feb 29 and so has
     a real gap near four years against the one year reported here. The
     multiplier absorbs it: at the default 7 the resulting horizon is seven
     years, comfortably past the real gap, and the operator who writes a
     quadrennial quota has bigger questions than bucket expiry.
-
-    Day-of-month is tested before day-of-week deliberately: when both are
-    constrained cron ORs them, so the answer must be the *wider* of the two
-    cycles, and a month is wider than a week.
     """
-    parsed = parse_cron(entry.cron, entry.tz)
-    if len(parsed.months) < 12:
-        return _YEAR_SECONDS
-    if len(parsed.days) < 31:
-        return _MONTH_SECONDS
-    if len(parsed.weekdays) < 7:
-        return _WEEK_SECONDS
-    if len(parsed.hours) < 24:
-        return _DAY_SECONDS
-    if len(parsed.minutes) < 60:
-        return _HOUR_SECONDS
-    return _MINUTE_SECONDS
+    return cycle_seconds(parse_cron(entry.cron, entry.tz))
 
 
 def _time_to_fill_seconds(name: str, cp_milli: int, ra_milli: int, rp_ms: int) -> float:
