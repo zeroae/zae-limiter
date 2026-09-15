@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789473875640,
+  "lastUpdate": 1789476844360,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -39041,6 +39041,240 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.00022286572126111376",
             "extra": "mean: 7.379707130434531 msec\nrounds: 138"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1df7de34f8e34aa80c514334e2f0cff775cee420",
+          "message": "✨ feat(models): detect reset edges and fold them into vu (#546)\n\n## Summary\n\nSurface-plan Task 2 for #222: `prev_reset_edge`, and `next_boundary`\nstarting to honour the\n`reset_sched` tuple it has accepted since core-plan Task 4.\n\n**No signature change.** `next_boundary(sched, reset_sched=(), *,\nnow_ms)` is untouched, which\nis the whole reason that parameter was taken early — `lease.py` and\n`processor.py` keep working\nunedited. `now_ms` stays keyword-only (#500): the second *positional*\nslot belongs to\n`reset_sched`, so a positional call would silently bind a timestamp to a\nschedule tuple.\n\n`prev_reset_edge(reset_sched, now_ms) -> int | None` is the most recent\nrising edge **at or\nbefore** `now_ms`. Detection is backwards on purpose (design §3.6): the\nmaterialising pass asks\n`prev_reset_edge(reset_sched, now) > rf`, so a bucket idle from 18:00 to\n09:00 has the missed\nmidnight applied at 09:00, and two missed midnights apply once because\nsetting the balance to\ncapacity is idempotent.\n\n## Defects found beyond the plan's text\n\n**1. `next_boundary` skipped a whole matching window when a DST shift\nshortened a local unit —\nfiled as #540, fixed here in its own commit.**\n\nThe coarse probe grid was aligned to the UTC epoch with a fixed step,\nbut the match state is\npiecewise-constant on *local* calendar units. A local unit shortened by\na clock change can fall\nentirely between two probes and be stepped over. Verified against merged\n`main` with a\nbrute-force minute scan:\n\n| Cron / TZ | Returned | Truth | Late by |\n|---|---|---|---|\n| `* * * * SUN` @ `Atlantic/Azores` from 2027-03-24 06:23Z | 2027-04-04\n00:00Z | 2027-03-28 01:00Z | **167 h** |\n| `* 2 * * *` @ `Australia/Lord_Howe` from 2026-10-03 06:23Z |\n2026-10-04 15:00Z | 2026-10-03 15:30Z | 23.5 h |\n\nAzores is UTC-1 and springs forward *at local midnight*, so that Sunday\nruns 01:00Z → 00:00Z —\n23 hours strictly inside a 24-hour UTC grid cell. Lord Howe's DST shift\nis 30 minutes, so local\nhour 2 lasts half an hour, and its +10:30 offset puts local hour starts\non the UTC half hour.\nLate is the unsafe direction: `vu` keeps the fast path spending tokens\nminted under the old\nlimits well inside the new window.\n\nThe minute-resolution refinement was no mitigation — it only runs once a\nchange has been\n*detected* between two probes, and here it never is.\n\nFix: probe **local calendar unit starts** instead of a fixed UTC grid.\nEvery unit contributes\nits own start, so none can be skipped however short the clock made it.\nNo constant step could\npromise that — offset changes of two hours (Antarctica/Troll) and three\n(Antarctica/Casey) also\noccur. `next_boundary`'s own minute refinement is kept as a bounded\nbackstop; the new reset\nhelpers do not need one and do not have one (see below). Minute\ngranularity is provably\nunaffected — every offset in use is a whole number of minutes — so it\nkeeps an integer fast path\nand pays no `datetime` round trip.\n\nThis is not incidental scope: the backwards scan is specified to use the\nsame granularity and\ncaps, so `prev_reset_edge` would have inherited the bug by construction.\n\n**2. The plan's canonical \"never matches\" expression does not exist.**\n§3.6, the surface plan and\nits Step 1 test all use `0 0 30 2 *` (February 30th) for the\nreset-nothing case. `cronsim`\nrejects it — `ScheduleEntry(cron=\"0 0 30 2 *\")` raises `ValueError: Bad\nday-of-month`, so the\ncase is unreachable as written. The test uses `0 0 29 2 *` instead:\nconstructible, and matches\nonly on a leap-year February 29th, so it is outside a seven-day cap on\nall but one day in ~1,461.\n\n**3. croniter is an oracle for matching but not for edge finding.**\n`croniter.get_prev` is a\n*scheduler* API and reschedules a fire skipped by spring-forward: for\n`30 2 * * *` on 2027-03-14\nit reports 03:00, where a reset edge is a fact about the wall clock and\nsimply does not occur\nthat day — which is also what `croniter.match` and our `matches` both\nsay. That expression is\ntherefore excluded from the reset half of the oracle, with the reason\nwritten down, and our\nsemantics are pinned directly instead.\n\n## Design decisions worth flagging\n\n- **The edge is the `max` across entries, not the first match.** Reset\nentries are independent\ninstants, unlike `schedule`'s priority-ordered first-match-wins\noverrides. Asserted in both\n  orderings so a first-entry implementation cannot pass by luck.\n- **Each entry is scanned at its own granularity and cap.** A `0 0 * *\n*` neighbour must not\n  shorten a `* 0 1 * *`'s horizon from 31 days to 7 and hide its edge.\n- **An out-of-reach reset caps rather than returning `None`.** A yearly\n`0 0 1 1 *` scans at\nminute granularity and cannot see its own edge seven days out. `None`\nwould leave `vu` unset\nand the fast path spending pre-reset tokens indefinitely, because only a\nmaterialising pass\nruns the backwards scan that would find it. The cap forces one pass per\nhorizon instead, and\nthe backwards scan then finds the edge from the far side — matching\n`_next_param_change`'s\n  existing contract.\n- **Two backwards searches, not one.** The latest *matching* minute is\nthe inside of the window;\nthe edge is where it opened. `* 0 * * *` at 00:45 must report 00:00, not\n00:45.\n- **Forwards, the current window must be left first.** From inside `* 0\n* * *` at 00:30 the next\nmatching minute is 00:31, which is no edge at all; a `vu` there\nre-materialises the bucket every\n  minute and applies nothing.\n- **The reset helpers carry no minute refinement.** On a unit-aligned\ngrid the answer is exactly\nthe probe going forwards, and exactly `hi - 1` (the last minute of the\nprobe's unit) going\nbackwards — so a refinement loop would be provably unreachable code. The\n100% patch-coverage\ngate is what forced that to be stated rather than written defensively:\nit flagged six\nunreachable lines, and each one turned out to be a claim that was either\nwrong or redundant.\n\n## Test plan\n\n- `uv run pytest tests/unit/ -q` — **4066 passed (0:05:28)**\n- `uv run pytest tests/unit/ -m gevent -n 0 -q` — **26 passed, 4063\ndeselected**\n- `uv run mypy` — clean\n- `pre-commit run --files ...` — clean\n- `diff-cover coverage.xml --compare-branch=origin/main\n--fail-under=100` — **100%**, 96 lines, 0 missing\n- Mutation-checked with 13 mutations, all killed, zero survivors:\nfirst-entry instead of max;\nlatest matching minute instead of the window opening; an always-matching\nexpression reporting\nan edge; `prev_reset_edge` as a no-op; strictly-before instead of\nat-or-before; `reset_sched`\nignored (the old behaviour); reset always winning over a nearer param\nchange; the out-of-reach\ncap; one joint granularity for the whole tuple; skipping the \"leave the\ncurrent window first\"\nstep; and a minute fast path that skips every other minute. The #540 fix\nwas separately\nmutation-checked by reverting `_next_probe` to the UTC grid, which\nkilled 3 tests including one\n  brute-force sweep case.\n\nOne mutation **survived on the first pass** — disabling \"leave the\ncurrent window first\" — and\nthat is the most useful thing the exercise produced: nothing covered\nstanding *inside* a\nmulti-minute reset window, because every `next_boundary` test used the\nsingle-minute\n`0 0 * * *`. `test_standing_inside_a_reset_window_skips_past_it` closes\nit and the mutation now\n  dies.\n- `TestAgainstABruteForceMinuteScan` extended with `Atlantic/Azores` and\nthe Lord Howe\nshifted-hour expression, plus the two switch-day starts, and\n`test_schedule_oracle.py` gains a\n  croniter cross-check of `prev_reset_edge` over 360 comparisons.\n\nRefs #222\nFixes #540\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01QdVj8nPhUwTz2aNJzMFqt5",
+          "timestamp": "2026-09-15T08:48:43-04:00",
+          "tree_id": "72461c436bf91658835da490d19661423f7e0963",
+          "url": "https://github.com/zeroae/zae-limiter/commit/1df7de34f8e34aa80c514334e2f0cff775cee420"
+        },
+        "date": 1789476843238,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_single_limit_latency",
+            "value": 183.03636508083426,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00024562102950750973",
+            "extra": "mean: 5.463395208697301 msec\nrounds: 115"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_two_limits_latency",
+            "value": 151.91017254621005,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0002724634037974493",
+            "extra": "mean: 6.582837628571626 msec\nrounds: 105"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_cascade_latency",
+            "value": 90.77662202867197,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000464147801777162",
+            "extra": "mean: 11.016052125008002 msec\nrounds: 8"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_available_check_latency",
+            "value": 137.8172321409874,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00018701549623175432",
+            "extra": "mean: 7.255986674997199 msec\nrounds: 120"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_stored_limits_latency",
+            "value": 155.27698326344316,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010372211633951954",
+            "extra": "mean: 6.440104508621206 msec\nrounds: 116"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_baseline_no_cascade",
+            "value": 187.1880923634205,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0001786747171074554",
+            "extra": "mean: 5.342220156069157 msec\nrounds: 173"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_with_cascade",
+            "value": 92.32248723990976,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00030931162795522107",
+            "extra": "mean: 10.831597261904287 msec\nrounds: 84"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_one_limit",
+            "value": 185.23819836366815,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00021247975682594107",
+            "extra": "mean: 5.398454578125156 msec\nrounds: 128"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_two_limits",
+            "value": 156.54182907876609,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00016800361015772134",
+            "extra": "mean: 6.388068964601384 msec\nrounds: 113"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_five_limits",
+            "value": 89.15110884723495,
+            "unit": "iter/sec",
+            "range": "stddev: 0.013195636576990376",
+            "extra": "mean: 11.216910399999085 msec\nrounds: 105"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_single_limit",
+            "value": 183.14212803099812,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0002349030686329136",
+            "extra": "mean: 5.46024014655297 msec\nrounds: 116"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_multiple_limits",
+            "value": 151.70388906999943,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00023482244818622715",
+            "extra": "mean: 6.591788820513221 msec\nrounds: 117"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_available_check",
+            "value": 137.36518629737728,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00019541992303769462",
+            "extra": "mean: 7.279864913043787 msec\nrounds: 115"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_transactional_acquire",
+            "value": 174.6275802484847,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0003302141530268585",
+            "extra": "mean: 5.726472293649487 msec\nrounds: 126"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_without_cascade",
+            "value": 186.8069967697037,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0002121978030301407",
+            "extra": "mean: 5.353118551725359 msec\nrounds: 116"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_with_cascade",
+            "value": 91.23272490106226,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000408920715161113",
+            "extra": "mean: 10.960979200001475 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_cascade_with_stored_limits",
+            "value": 90.1085436704035,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0004663866433922545",
+            "extra": "mean: 11.097726799999919 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_with_cached_config",
+            "value": 187.45601620176717,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0001724353478728848",
+            "extra": "mean: 5.334584721589602 msec\nrounds: 176"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_cold_config",
+            "value": 101.70838813888845,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0222287521001536",
+            "extra": "mean: 9.832030752807178 msec\nrounds: 89"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_cascade_with_cached_config",
+            "value": 91.60106800765969,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00035457488218072373",
+            "extra": "mean: 10.916903282354523 msec\nrounds: 85"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_sequential_acquisitions",
+            "value": 18.167076095033707,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0021532345097975223",
+            "extra": "mean: 55.044630999997175 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_same_entity_sequential",
+            "value": 17.981645313819953,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0013985961866489994",
+            "extra": "mean: 55.61226364705576 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_cache_disabled",
+            "value": 82.24858669312435,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00041418116173279134",
+            "extra": "mean: 12.15826362744779 msec\nrounds: 51"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_cache_enabled",
+            "value": 89.86593605548147,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0008720341869438266",
+            "extra": "mean: 11.1276869066675 msec\nrounds: 75"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_config_resolution_sequential",
+            "value": 75.5940958325823,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00025423992589965574",
+            "extra": "mean: 13.228546343284439 msec\nrounds: 67"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_config_resolution_batched",
+            "value": 117.9501477647105,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0002439055560488134",
+            "extra": "mean: 8.478158094340174 msec\nrounds: 106"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_speculative_cache_cold",
+            "value": 93.42671440407308,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0002479206112981892",
+            "extra": "mean: 10.703576663040646 msec\nrounds: 92"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_speculative_cache_warm",
+            "value": 71.90022203012924,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0289162902474667",
+            "extra": "mean: 13.908162892472816 msec\nrounds: 93"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_stored_limits_cache_disabled",
+            "value": 119.56667624725164,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00015027068810921166",
+            "extra": "mean: 8.36353431730512 msec\nrounds: 104"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_stored_limits_cache_enabled",
+            "value": 136.26691257407327,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00057116028833239",
+            "extra": "mean: 7.338538615941785 msec\nrounds: 138"
           }
         ]
       }
