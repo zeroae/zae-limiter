@@ -17,9 +17,11 @@ Both surfaces are pinned here, at every period from six-hourly to annual:
 """
 
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 
+from zae_limiter import schedule
 from zae_limiter.bucket import calculate_time_until_available, try_consume
 from zae_limiter.models import BucketState, Limit
 from zae_limiter.schedule import (
@@ -191,3 +193,75 @@ class TestScanCost:
             next_reset_edge(sched, now_ms=NOW)
         elapsed_ms = (time.perf_counter() - start) * 1000 / 5
         assert elapsed_ms < 25.0, f"{label}: {elapsed_ms:.1f} ms per scan"
+
+
+# Both DST switches, plus one instant per month, in a zone that has them.
+_NY = ZoneInfo("America/New_York")
+_SKIP_CRONS = [
+    "0 0 * * *",  # hour-skip on every probe
+    "30 2 * * *",  # the local hour that does not exist at spring-forward
+    "0 0 * * MON,THU",  # day-skip by weekday
+    "* 1-3 * * *",  # a multi-hour window straddling both switches
+    "0 0 1 * *",  # day-skip by day-of-month
+    "0 0 29 2 *",  # day-skip by month, matching once in four years
+    "* * * * *",  # constrains nothing, so nothing may be skipped
+]
+
+
+def _dst_probe_instants():
+    out = []
+    for switch in (datetime(2027, 3, 13, tzinfo=_NY), datetime(2027, 11, 6, tzinfo=_NY)):
+        base = int(switch.timestamp())
+        out += list(range(base, base + 3 * 86_400, 149 * 60))
+    out += [int(datetime(2027, m, 7, 5, 13, tzinfo=_NY).timestamp()) for m in range(1, 13)]
+    return out
+
+
+def _flat_walk(parsed, want, start_ms, horizon_ms, step):
+    """The exhaustive minute-by-minute walk the skipping scan replaces."""
+    t = -(-start_ms // 60_000) * 60_000 if step > 0 else (start_ms // 60_000) * 60_000
+    while (t <= horizon_ms) if step > 0 else (t >= horizon_ms):
+        if schedule.matches(parsed, t) == want:
+            return t
+        t += step
+    return None
+
+
+@pytest.mark.parametrize("cron", _SKIP_CRONS)
+def test_skipping_agrees_with_an_exhaustive_minute_walk(cron):
+    """The skip is an optimisation, so it must change no answer at all.
+
+    `_unreachable_block` lets a search for a *match* step over whole local days
+    and hours the date and hour fields rule out — which is what keeps #574's
+    widened horizon affordable, and the one part of it that could silently jump
+    an edge. Pinned against the flat walk it replaces, in a zone with DST, over
+    three days around each 2027 switch (`30 2 * * *` never occurs on the
+    spring-forward day) plus one instant a month.
+
+    A three-day window either side, so the brute-force side stays tractable;
+    the horizon itself is covered by the croniter oracle in
+    `test_schedule_oracle.py`.
+    """
+    parsed = schedule.parse_cron(cron, "America/New_York")
+    unit, _cap = schedule._reset_scan(parsed)
+    window = 3 * 86_400_000
+
+    for ts in _dst_probe_instants():
+        now = ts * 1000
+        when = datetime.fromtimestamp(ts, _NY).isoformat()
+        for want in (True, False):
+            assert schedule._earliest_where(parsed, want, now, now + window, unit) == _flat_walk(
+                parsed, want, now, now + window, 60_000
+            ), f"{cron} forward want={want} at {when}"
+
+            got = schedule._latest_where(parsed, want, now, now - window, unit)
+            expected = _flat_walk(parsed, want, now, now - window, -60_000)
+            # `_latest_where` reports the last minute of the found unit, which
+            # for a coarse step is later than the first matching probe; both
+            # readings must agree that it *is* a minute with the wanted state.
+            assert (got is None) == (expected is None), f"{cron} back want={want} at {when}"
+            if got is not None:
+                assert schedule.matches(parsed, got) == want, (
+                    f"{cron} back want={want} at {when} returned a wrong-state minute"
+                )
+                assert got == expected, f"{cron} back want={want} at {when}"
