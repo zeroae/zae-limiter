@@ -1,6 +1,6 @@
 # ADR-100: Centralized Configuration Access Patterns
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-01-18
 **Issue:** [#129](https://github.com/zeroae/zae-limiter/issues/129)
 **Milestone:** v0.5.0
