@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789477731366,
+  "lastUpdate": 1789478298036,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -21845,6 +21845,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.0015109650374541554",
             "extra": "mean: 1.0961791790000064 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "11c7f329bd7092b557036314ecbad70465aba83d",
+          "message": "🐛 fix(schema): give a quota a bucket TTL that does not divide by the rate (#551)\n\n## Summary\n\n`calculate_bucket_ttl_seconds()` derived every bucket's TTL from\ntime-to-fill,\n`(capacity / refill_amount) × refill_period_seconds`. ADR-137 makes\n`refill_amount = 0` the required state for a quota, so a resource- or\nsystem-level quota raised `ZeroDivisionError` inside a **write** path —\nthe\nacquire slow path (`lease._commit_initial`), the #468/#487 limit-change\nfan-out\n(`Repository._sync_bucket_params`), and the provisioner's manifest\napply.\n\nThe rule this PR adopts:\n\n| Limit shape | Recovery horizon |\n|-------------|------------------|\n| Drips (`refill_amount > 0`) | `(capacity / refill_amount) ×\nrefill_period_seconds` — unchanged |\n| Quota (`Limit.is_quota`, ADR-137) | the **reset period** — the cycle\nover which its `reset_schedule` cron repeats |\n\nOne `max` still spans both shapes, so a composite item carrying a quota\nbeside a\ndripping limit expires on whichever recovers more slowly.\n\n**Why not \"no TTL for a quota\".** ADR-136 makes TTL the *propagation\nmechanism*\nfor resource- and system-level limits, which do not fan out on change\nand pick up\nnew parameters only by expiring and being recreated. A quota with no TTL\nwould\nenforce its original allowance forever. (Entity-level buckets already\ncarry no\nTTL, which is what confines the exposure to these two levels.)\n\n**Why the reset period, not the wait to the next edge.** The function\nholds no\nclock and none of its three production callers has one to pass. The\nperiod bounds\nthat wait from above at every instant, so the signature and all three\ncall sites\nare unchanged and no codegen source is touched.\n\n**Every approximation rounds up.** The period is read off the *coarsest*\ncron\nfield the pattern constrains (`_reset_cycle_seconds` — the opposite end\nfrom\n`schedule._granularity`, which picks a scan step from the finest): 31\ndays for a\nmonthly pattern, 366 for an annual one, the tightest cycle where several\nreset\nentries share a limit. The two error directions are not symmetric — too\nlong only\ndelays propagation, too short expires a bucket still carrying debt, and\na bucket\nrecreated in debt comes back at full capacity, which for a quota is an\nunscheduled reset worth up to `capacity`.\n\nThe branch asks `Limit.is_quota`, the structural predicate, not the\ntemporal\n`is_accrual_rate` / `BucketState.accrues`: a TTL is a horizon rather\nthan an\ninstant, and every limit reaching here is an undivided config limit,\nnever a\nper-shard share that could have floored to zero.\n\nA limit that neither drips nor resets stays unconstructible through\n`Limit.__post_init__`; `_recovery_seconds` now states that in a named\n`ValueError` rather than dividing by it, so a future validation bypass\ndoes not\nresurface as this bug.\n\n`schema.py` gains an import of `schedule.py` for `parse_cron`. Both\nLambda stubs\nalready vendor `schedule.py` and both install `cronsim`, so the import\nclosure is\nunchanged; the two builders' stale \"no external deps\" comments are\ncorrected.\n\n## Test plan\n\n- [ ] `uv run pytest tests/unit/test_bucket_ttl.py -v` — new file, 4\nclasses:\n- `TestQuotaTtlHorizon` — the original `ZeroDivisionError` is gone;\nhorizon\ntracks reset cadence across cron shapes, scales with the multiplier,\nignores\n`capacity` and the inert `refill_period`, takes the tightest of several\nreset\n    entries, and is timezone-invariant\n- `TestMixedBucketTakesTheMax` — quota outlasts a fast drip, slow drip\noutlasts\n    a quota, order-independent\n- `TestDrippingLimitsUnchanged` — regression guard on the existing\nformula,\n`multiplier <= 0` / empty-limits short circuits, `calculate_bucket_ttl`\nadds `now`\n- `TestUnrecoverableLimit` — named `ValueError`, not\n`ZeroDivisionError`; public\n    constructors still reject the shape\n- `TestQuotaReachesTheWritePaths` — a resource-level quota through the\nreal\n    write paths that raised\n- [ ] `uv run pytest tests/unit/ -q` — full unit suite (xdist on; gevent\nauto-skipped)\n- [ ] `uv run mypy` and `uv run ruff check .`\n- [ ] Lambda packaging unaffected: both stubs already vendor\n`schedule.py` and\ninstall `cronsim` — confirm `build_lambda_package()` /\n`build_provisioner_package()`\n      still import cleanly\n\nFixes #532\nRefs #222\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01QdVj8nPhUwTz2aNJzMFqt5",
+          "timestamp": "2026-09-15T09:11:57-04:00",
+          "tree_id": "6bf0f3c750f6263c24afa65a1e860a85163e8ec5",
+          "url": "https://github.com/zeroae/zae-limiter/commit/11c7f329bd7092b557036314ecbad70465aba83d"
+        },
+        "date": 1789478296930,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 31.99593066893136,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007704581135005651",
+            "extra": "mean: 31.253974461540462 msec\nrounds: 13"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 23.372957252392037,
+            "unit": "iter/sec",
+            "range": "stddev: 0.011003479540688086",
+            "extra": "mean: 42.784487611111246 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 47.03633944768437,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005832590197557681",
+            "extra": "mean: 21.26015782142738 msec\nrounds: 28"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 50.93861180372134,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004432768707721239",
+            "extra": "mean: 19.6314733478258 msec\nrounds: 23"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 31.66056490540193,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0068826548211660425",
+            "extra": "mean: 31.585033400000384 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 122.4505258242449,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0011022982523583799",
+            "extra": "mean: 8.166563542857423 msec\nrounds: 35"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 25.55750603471306,
+            "unit": "iter/sec",
+            "range": "stddev: 0.04810023873466012",
+            "extra": "mean: 39.12744845454664 msec\nrounds: 22"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 33.8845102603104,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007507015895233949",
+            "extra": "mean: 29.512009833334375 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 34.1239231581417,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005619203553999461",
+            "extra": "mean: 29.30495404545558 msec\nrounds: 44"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 32.08146393132043,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0053221633598236565",
+            "extra": "mean: 31.170647391303174 msec\nrounds: 23"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 36.54556308175791,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006240315445551098",
+            "extra": "mean: 27.363102813954455 msec\nrounds: 43"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 29.17277948496006,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00791226433855299",
+            "extra": "mean: 34.27853011111085 msec\nrounds: 36"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 34.50627567959667,
+            "unit": "iter/sec",
+            "range": "stddev: 0.015599818215749746",
+            "extra": "mean: 28.980235632653145 msec\nrounds: 49"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.939342282273645,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0033611255280866443",
+            "extra": "mean: 515.6387344000052 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9001904562414533,
+            "unit": "iter/sec",
+            "range": "stddev: 0.02858448612357068",
+            "extra": "mean: 526.2630367999975 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9252817786786116,
+            "unit": "iter/sec",
+            "range": "stddev: 0.06533021762952779",
+            "extra": "mean: 1.0807518563999963 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.8461347191483397,
+            "unit": "iter/sec",
+            "range": "stddev: 0.25512951585935895",
+            "extra": "mean: 1.1818448970000077 sec\nrounds: 5"
           }
         ]
       }
