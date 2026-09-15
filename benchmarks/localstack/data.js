@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789507822465,
+  "lastUpdate": 1789509771575,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -24562,6 +24562,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.00339386763842899",
             "extra": "mean: 1.0808930473999907 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "cc7021b43311b6bc973147d575b03f2a84b28926",
+          "message": "📝 docs(adr): accept ADR-135 (#586)\n\n## Summary\n\nTwo commits against `docs/adr/135-scheduled-limits.md`, docs-only, one\nfile.\n\n**1. `1342404e` — accept the record.** Flips ADR-135 (*scheduled limits\nare resolved at read time*) from **Proposed** to **Accepted**. Under\n`.claude/rules/adr-rules.md` only Accepted ADRs are used when enforcing\ndecisions against code, so the scheduled-limits design becomes binding:\n\n- a limit carries its own cron schedule, denormalized onto the bucket\nitem;\n- every refiller resolves base parameters plus schedule to effective\nparameters **at read time**, materializing only the token balance;\n- the fast path evaluates no schedule and is gated solely by the\nitem-level valid-until stamp.\n\n**2. `05cd1962` — correct a factual error in the record's own\nConsequences.** Found by the consistency check below and fixed *before*\nthe record becomes binding, while it is still editable. That ordering is\nthe whole point: an Accepted ADR outranks the code, so freezing the\nsentence would have made deliberate, correct code wrong by definition.\nThe trap has already sprung twice on this project (ADR-133's \"1.5x\ntransient\", ADR-138's two sentences).\n\nBefore:\n\n> Client and aggregator derive the same effective value from the item\nalone, so the two never need to agree on anything beyond the clock.\n\nAfter:\n\n> The item carries its own schedule, so the aggregator refills a\nscheduled bucket without reading configuration at all and needs no\nclient involvement. The slow path instead applies the configuration it\nhas just resolved, which is the fresher of the two; the two readers can\ntherefore disagree for as long as an item is stale, which is by design\nand not a race.\n\nEvidence — the aggregator half was true, the client half was not:\n\n| Claim | Reality |\n|-------|---------|\n| Aggregator derives from the item alone | True. `processor.py` decodes\nthe schedule off the stream image and states it \"evaluates one without\never reading config\". |\n| Client does the same | False. `_do_acquire` overwrites `state.sched`\nwith the schedule from the config it has just resolved\n(`limiter.py:1874`), because an item written before the last\n`set_limits()` still holds the old schedule. The comment there calls\nconfig \"the fresher of the two\", and `_deserialize_composite_bucket`'s\ndocstring calls the ordering deliberate. |\n| \"never need to agree on anything beyond the clock\" | ADR-105's config\ncache means the two sources are routinely out of step — by design, not a\nrace. |\n\nFile is 98 lines, still under ADR-000's 100-line cap.\n\n## Consistency check\n\nRun against all 37 Accepted ADRs (Superseded 012/102/103/119 skipped per\n`adr-rules.md`; Proposed 100/114/115/116 are not binding). **No\nconflicts.**\n\nScheduling vocabulary appears in only three other records:\n\n- **ADR-137** (drip-or-reset) and **ADR-138** (fixed calendar windows) —\nthe two this record deliberately defers to rather than restating. Both\nare already Accepted and both lean on this mechanism, so accepting\ncloses a gap where two Accepted records rested on a Proposed one.\n- **ADR-115** — the fast path this design preserves, itself still\nProposed.\n\nStructural neighbours agree rather than collide:\n\n| ADR | Why it agrees |\n|-----|---------------|\n| 133 | `cp`/`ra` stay undivided on the item — the same \"base stays,\nonly the balance materializes\" rule |\n| 134 | per-call random shard is safe because ADR-138 makes every shard\ncross the same calendar boundary |\n| 136 | TTL as the propagation mechanism for resource-/system-level\nbuckets — exactly the staleness this record books as a negative |\n| 120, 125 | precedent for extending the bucket fan-out and the\nspeculative condition |\n| 113 | the `[lambda]` extra is the declared mechanism carrying tzdata |\n\n## Test plan\n\n- [x] Docs-only; no code change. Diff touches one file.\n- [x] Corrected sentence checked against `processor.py`,\n`limiter.py:1874`, and `_deserialize_composite_bucket`'s docstring.\n- [x] Record is 98 lines, under ADR-000's 100-line cap.\n- [x] Pre-commit and pre-push hooks skipped all checks (no matching\nfiles).\n\nRefs #222\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01QdVj8nPhUwTz2aNJzMFqt5",
+          "timestamp": "2026-09-15T17:56:41-04:00",
+          "tree_id": "2200c57477e0af4e513b8f93fd4078ceb5e19906",
+          "url": "https://github.com/zeroae/zae-limiter/commit/cc7021b43311b6bc973147d575b03f2a84b28926"
+        },
+        "date": 1789509770468,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 31.850797521819455,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007739876764903724",
+            "extra": "mean: 31.396388090908804 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 20.795477383922883,
+            "unit": "iter/sec",
+            "range": "stddev: 0.019393743927862847",
+            "extra": "mean: 48.08737888234806 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 51.375242388637844,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00274604441462402",
+            "extra": "mean: 19.46462836000478 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 40.92206387584105,
+            "unit": "iter/sec",
+            "range": "stddev: 0.019123837447083188",
+            "extra": "mean: 24.436695153842543 msec\nrounds: 26"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 29.881453223043103,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00582489041183632",
+            "extra": "mean: 33.465574533331235 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 107.23314266178666,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0008137593223433597",
+            "extra": "mean: 9.325475083333146 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 25.689864498706527,
+            "unit": "iter/sec",
+            "range": "stddev: 0.04441858271845245",
+            "extra": "mean: 38.925857318178906 msec\nrounds: 22"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 35.935497775135424,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0035289136235810595",
+            "extra": "mean: 27.82763734782387 msec\nrounds: 23"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 32.022431171753546,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006086178990901089",
+            "extra": "mean: 31.228109903225693 msec\nrounds: 31"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 34.15471484390849,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0065084319571529535",
+            "extra": "mean: 29.27853459090877 msec\nrounds: 22"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 38.50315691875535,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003391435240415168",
+            "extra": "mean: 25.971896333333852 msec\nrounds: 39"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 30.630395254064243,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006501138359865643",
+            "extra": "mean: 32.64730969696884 msec\nrounds: 33"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 38.540470667538365,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003100257278690157",
+            "extra": "mean: 25.94675110810917 msec\nrounds: 37"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.875793039574672,
+            "unit": "iter/sec",
+            "range": "stddev: 0.03588873764960422",
+            "extra": "mean: 533.1078530000013 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.937103067677714,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0006493289901550693",
+            "extra": "mean: 516.234792399996 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9465427104773908,
+            "unit": "iter/sec",
+            "range": "stddev: 0.012687000735436965",
+            "extra": "mean: 1.0564763627999922 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9299123836830986,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006461524678178099",
+            "extra": "mean: 1.0753701290000095 sec\nrounds: 5"
           }
         ]
       }
