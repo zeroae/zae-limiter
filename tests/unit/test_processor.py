@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from botocore.exceptions import ClientError
 
-from zae_limiter.schedule import ScheduleEntry, decode
+from zae_limiter.schedule import ScheduleEntry, decode, decode_reset
 from zae_limiter_aggregator.processor import (
     BucketRefillState,
     ConsumptionDelta,
@@ -2355,6 +2355,8 @@ def _sched_record(
     sched: str | None = None,
     sched_tz: str = "America/New_York",
     limit_sched: dict[str, str] | None = None,
+    rsched: str | None = None,
+    limit_rsched: dict[str, str] | None = None,
     vu_ms: int | None = None,
     shard_count: int = 1,
     entity_id: str = "user-1",
@@ -2383,6 +2385,11 @@ def _sched_record(
         new_image["sched_tz"] = {"S": sched_tz}
     for name, compact in (limit_sched or {}).items():
         new_image[f"b_{name}_sched"] = {"S": compact}
+    if rsched is not None:
+        new_image["rsched"] = {"S": rsched}
+        new_image["sched_tz"] = {"S": sched_tz}
+    for name, compact in (limit_rsched or {}).items():
+        new_image[f"b_{name}_rsched"] = {"S": compact}
     if vu_ms is not None:
         new_image["vu"] = {"N": str(vu_ms)}
     return {"eventName": "MODIFY", "dynamodb": {"NewImage": new_image, "OldImage": old_image}}
@@ -2768,3 +2775,295 @@ class TestShardCloneRespectsSchedule:
         table = MagicMock()
         assert propagate_shard_count(table, self._record(sched="not-a-schedule"), TUE_1400) == 0
         table.put_item.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Calendar resets (#222 §3.6) — the aggregator is the second materialising
+# writer and must agree with the client about when an edge has been crossed.
+# ---------------------------------------------------------------------------
+
+DAILY_RESET = (ScheduleEntry.reset(cron="0 0 * * *", tz="America/New_York"),)
+DAILY_RESET_COMPACT = "m0h0"
+
+WED_0030 = int(datetime(2026, 9, 16, 0, 30, tzinfo=NY).timestamp() * 1000)
+TUE_2300 = int(datetime(2026, 9, 15, 23, 0, tzinfo=NY).timestamp() * 1000)
+
+
+def _quota_state(**kwargs) -> BucketRefillState:
+    """A 10,000/day quota bucket, 2,000 tokens left, last refilled at 23:00.
+
+    ``ra_milli=0`` is the quota shape ADR-137 mandates: a limit drips or
+    resets, never both, so the stored rate is zero and ``rp_ms`` is the inert
+    ``_QUOTA_REFILL_PERIOD_SECONDS``. That is what makes the reset the *only*
+    thing that can write to this bucket — an unreset one yields no refill delta
+    at all, whatever the consumption threshold does.
+    """
+    base = dict(
+        namespace_id="ns123",
+        entity_id="user-1",
+        resource="gpt-4",
+        rf_ms=TUE_2300,
+        limits={
+            "rpd": LimitRefillInfo(
+                tc_delta=0,
+                tk_milli=2_000_000,
+                cp_milli=10_000_000,
+                ra_milli=0,
+                rp_ms=1_000,
+            )
+        },
+    )
+    limit_reset = kwargs.pop("limit_reset", None)
+    base.update(kwargs)
+    state = BucketRefillState(**base)
+    if limit_reset is not None:
+        for name, reset in limit_reset.items():
+            state.limits[name].reset_sched = reset
+    return state
+
+
+class TestAggregatorAppliesResets:
+    """The aggregator expresses a reset as the same delta the client writes."""
+
+    def test_expresses_the_reset_as_an_add_to_the_effective_capacity(self) -> None:
+        table = MagicMock()
+        state = _quota_state(reset_sched=DAILY_RESET)
+        assert try_refill_bucket(table, state, now_ms=WED_0030) is True
+        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+        assert values[":rd_rpd"] == 10_000_000 - 2_000_000
+
+    def test_the_same_bucket_without_a_reset_writes_nothing(self) -> None:
+        """Discriminates the test above. A quota's stored rate is 0 (ADR-137),
+        so `refill_bucket` yields no delta and there is nothing to write —
+        the reset is the whole of this bucket's recovery."""
+        table = MagicMock()
+        assert try_refill_bucket(table, _quota_state(), now_ms=WED_0030) is False
+        table.update_item.assert_not_called()
+
+    def test_the_reset_bypasses_the_consumption_threshold(self) -> None:
+        """Explicitly pinned, because the threshold is a `continue` on the
+        positive branch and a reset is usually positive. A hot bucket has the
+        largest tc_delta and is exactly where the aggregator, not the client,
+        is the refiller — gating the reset behind the threshold would turn it
+        off on the buckets it matters most for, the same defect §3.3 records
+        for the negative clamp."""
+        table = MagicMock()
+        state = _quota_state(reset_sched=DAILY_RESET)
+        state.limits["rpd"].tc_delta = 9_000_000  # far above anything refill yields
+        assert try_refill_bucket(table, state, now_ms=WED_0030) is True
+
+    def test_no_edge_since_rf_writes_nothing(self) -> None:
+        """`rf` is already past midnight, so the edge is not new — the same
+        `> rf` comparison, against the same stored `rf`, that the client makes."""
+        table = MagicMock()
+        state = _quota_state(reset_sched=DAILY_RESET, rf_ms=WED_0030 - 60_000)
+        assert try_refill_bucket(table, state, now_ms=WED_0030) is False
+
+    def test_an_edge_exactly_at_rf_does_not_re_fire(self) -> None:
+        """`>` not `>=`, matching `RateLimiter._apply_reset_edge`. A client
+        that applied the reset stamps `rf` *at* the edge when its clock reading
+        was the edge itself; re-firing here would refund what it then spent."""
+        table = MagicMock()
+        midnight = int(datetime(2026, 9, 16, 0, 0, tzinfo=NY).timestamp() * 1000)
+        state = _quota_state(reset_sched=DAILY_RESET, rf_ms=midnight)
+        assert try_refill_bucket(table, state, now_ms=WED_0030) is False
+
+    def test_the_reset_is_per_shard(self) -> None:
+        table = MagicMock()
+        state = _quota_state(reset_sched=DAILY_RESET, shard_count=4)
+        assert try_refill_bucket(table, state, now_ms=WED_0030) is True
+        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+        assert values[":rd_rpd"] == (10_000_000 // 4) - 2_000_000
+
+    def test_the_reset_respects_a_concurrent_param_schedule(self) -> None:
+        """Compute effective params first, then set the balance to the result."""
+        table = MagicMock()
+        night = (ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", scale=0.5),)
+        state = _quota_state(reset_sched=DAILY_RESET, sched=night)
+        assert try_refill_bucket(table, state, now_ms=WED_0030) is True
+        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+        assert values[":rd_rpd"] == 5_000_000 - 2_000_000
+
+    def test_the_reset_never_writes_tc(self) -> None:
+        """`try_refill_bucket` writes only `tk` deltas and `rf`/`vu`. Pinned
+        because a reset is the one refill big enough to tempt an implementer
+        into 'fixing up' the counter."""
+        table = MagicMock()
+        state = _quota_state(reset_sched=DAILY_RESET)
+        assert try_refill_bucket(table, state, now_ms=WED_0030) is True
+        expr = table.update_item.call_args.kwargs["UpdateExpression"]
+        assert "_tc" not in expr
+
+    def test_a_balance_already_at_the_effective_capacity_writes_nothing(self) -> None:
+        """A zero delta is not a write. The edge is real and new, but the
+        balance is already where the reset would put it."""
+        table = MagicMock()
+        state = _quota_state(reset_sched=DAILY_RESET)
+        state.limits["rpd"].tk_milli = 10_000_000
+        assert try_refill_bucket(table, state, now_ms=WED_0030) is False
+
+    def test_a_reset_trims_a_balance_above_the_effective_capacity(self) -> None:
+        """A reset *sets* the balance, so a surplus left by a shrink is removed
+        by the same expression that tops a deficit up — the negative-ADD shape
+        the unconditional clamp already uses."""
+        table = MagicMock()
+        state = _quota_state(reset_sched=DAILY_RESET, shard_count=4)
+        state.limits["rpd"].tk_milli = 10_000_000
+        assert try_refill_bucket(table, state, now_ms=WED_0030) is True
+        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+        assert values[":rd_rpd"] == (10_000_000 // 4) - 10_000_000
+
+    def test_wcu_is_exempt_from_the_item_level_reset(self) -> None:
+        """`rsched` is item-level and applies to every limit by default, but
+        `wcu` is the per-partition write ceiling, not a user limit — the same
+        exemption `effective_params` already has.
+
+        Discriminating: at the base rate this bucket's positive delta is
+        suppressed by the threshold, so anything written here came from the
+        reset.
+        """
+        table = MagicMock()
+        state = _quota_state(
+            reset_sched=DAILY_RESET,
+            limits={
+                "wcu": LimitRefillInfo(
+                    tc_delta=0,
+                    tk_milli=0,
+                    cp_milli=1_000_000,
+                    ra_milli=1_000_000,
+                    rp_ms=60_000,
+                )
+            },
+        )
+        assert try_refill_bucket(table, state, now_ms=WED_0030) is False
+
+    def test_a_per_limit_reset_override_beats_the_item_default(self) -> None:
+        """`b_{name}_rsched` mirrors `b_{name}_sched`. The item-level default
+        is Sunday-only and did not fire since `rf`; the per-limit override is
+        daily and did."""
+        table = MagicMock()
+        state = _quota_state(
+            reset_sched=(ScheduleEntry.reset(cron="0 0 * * SUN", tz="America/New_York"),),
+            limit_reset={"rpd": DAILY_RESET},
+        )
+        assert try_refill_bucket(table, state, now_ms=WED_0030) is True
+
+    def test_the_item_level_default_alone_does_not_fire_here(self) -> None:
+        """Discriminates the override test: without it, the Sunday-only item
+        default has no edge between Tuesday 23:00 and Wednesday 00:30."""
+        table = MagicMock()
+        state = _quota_state(
+            reset_sched=(ScheduleEntry.reset(cron="0 0 * * SUN", tz="America/New_York"),),
+        )
+        assert try_refill_bucket(table, state, now_ms=WED_0030) is False
+
+    def test_only_the_limit_carrying_the_reset_is_restored(self) -> None:
+        """One item, one `rf`, two limits — the reset is decided per limit.
+
+        `rpm` drips, carries no reset of its own and the item has no default,
+        so it must recover only what the elapsed time earns it.
+        """
+        table = MagicMock()
+        state = _quota_state(
+            limit_reset={"rpd": DAILY_RESET},
+            limits={
+                "rpd": LimitRefillInfo(
+                    tc_delta=0, tk_milli=0, cp_milli=10_000_000, ra_milli=0, rp_ms=1_000
+                ),
+                # Same ceiling, but a slow drip: 1,000,000 milli an hour, so
+                # the 90 minutes since `rf` earn 1,500,000 and not the ceiling.
+                "rph": LimitRefillInfo(
+                    tc_delta=5_000_000,
+                    tk_milli=0,
+                    cp_milli=10_000_000,
+                    ra_milli=1_000_000,
+                    rp_ms=3_600_000,
+                ),
+            },
+        )
+        assert try_refill_bucket(table, state, now_ms=WED_0030) is True
+        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+        assert values[":rd_rpd"] == 10_000_000
+        assert values[":rd_rph"] == 1_500_000  # 90 minutes of drip, not a reset
+
+    def test_an_undecodable_schedule_still_skips_the_whole_bucket(self) -> None:
+        """`sched_error` short-circuits before any reset logic runs. Refilling
+        — or resetting — at the base would silently undo a scale-down (§6)."""
+        table = MagicMock()
+        state = _quota_state(reset_sched=DAILY_RESET, sched_error="rsched 'zzz': bad")
+        assert try_refill_bucket(table, state, now_ms=WED_0030) is False
+
+    def test_a_reset_only_item_gets_a_vu(self) -> None:
+        """An expired `vu` is re-stamped from both tuples. With the parameter
+        tuple alone a quota produces no boundary at all, `vu` is never
+        refreshed, and the fast path stays demoted forever."""
+        table = MagicMock()
+        state = _quota_state(reset_sched=DAILY_RESET, vu_ms=WED_0030 - 1)
+        assert try_refill_bucket(table, state, now_ms=WED_0030) is True
+        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+        assert values[":new_vu"] == int(datetime(2026, 9, 17, 0, 0, tzinfo=NY).timestamp() * 1000)
+
+
+class TestResetSchedIsCarriedFromTheStreamImage:
+    """`rsched` / `b_{name}_rsched` reach the refill state."""
+
+    QUOTA = {"rpd": {"tc": 0, "tk": 2_000_000, "cp": 10_000_000, "ra": 0, "rp": 1_000}}
+
+    def test_item_level_rsched_is_decoded(self) -> None:
+        record = _sched_record(
+            limits=self.QUOTA,
+            rf_ms=TUE_2300,
+            rsched=DAILY_RESET_COMPACT,
+            sched_tz="America/New_York",
+        )
+        parsed = _parse_bucket_record(record)
+        assert parsed is not None
+        assert parsed.reset_sched == decode_reset(DAILY_RESET_COMPACT, "America/New_York")
+        assert parsed.limits["rpd"].reset_sched == parsed.reset_sched
+
+    def test_a_per_limit_rsched_overrides_the_item_default(self) -> None:
+        record = _sched_record(
+            limits=self.QUOTA,
+            rf_ms=TUE_2300,
+            rsched="m0h0w0",  # Sunday only
+            limit_rsched={"rpd": DAILY_RESET_COMPACT},
+        )
+        parsed = _parse_bucket_record(record)
+        assert parsed is not None
+        assert parsed.limits["rpd"].reset_sched == decode_reset(
+            DAILY_RESET_COMPACT, "America/New_York"
+        )
+        assert parsed.reset_sched == decode_reset("m0h0w0", "America/New_York")
+
+    def test_no_rsched_leaves_both_tuples_empty(self) -> None:
+        """Discriminates the two above: the overwhelming majority of items."""
+        parsed = _parse_bucket_record(_sched_record(limits=self.QUOTA, rf_ms=TUE_2300))
+        assert parsed is not None
+        assert parsed.reset_sched == ()
+        assert parsed.limits["rpd"].reset_sched == ()
+
+    def test_an_undecodable_rsched_is_reported_not_raised(self) -> None:
+        """Same rule as `sched`: raising inside the stream handler aborts the
+        whole batch, snapshots included, and the record retries until the
+        stream stalls."""
+        record = _sched_record(limits=self.QUOTA, rsched="not-a-schedule")
+        parsed = _parse_bucket_record(record)
+        assert parsed is not None
+        assert parsed.sched_error is not None
+        assert parsed.reset_sched == ()
+
+    def test_an_undecodable_per_limit_rsched_is_reported_not_raised(self) -> None:
+        record = _sched_record(limits=self.QUOTA, limit_rsched={"rpd": "not-a-schedule"})
+        parsed = _parse_bucket_record(record)
+        assert parsed is not None
+        assert parsed.sched_error is not None
+        assert parsed.limits["rpd"].reset_sched == ()
+
+    def test_the_reset_survives_aggregation_across_records(self) -> None:
+        """`aggregate_bucket_states` keeps the last NewImage per key; the reset
+        tuples ride along with `sched` rather than being dropped."""
+        record = _sched_record(limits=self.QUOTA, rf_ms=TUE_2300, rsched=DAILY_RESET_COMPACT)
+        states = aggregate_bucket_states([record, record])
+        state = next(iter(states.values()))
+        assert state.reset_sched == decode_reset(DAILY_RESET_COMPACT, "America/New_York")
+        assert state.limits["rpd"].reset_sched == state.reset_sched
