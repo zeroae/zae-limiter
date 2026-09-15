@@ -67,6 +67,20 @@ commit_parsers = [
 protect_breaking_commits = false
 # filter out the commits that are not matched by commit parsers
 filter_commits = false
+[remote.github]
+# Enables `commit.github.*` in the template: pr_number, pr_title, pr_labels,
+# username, is_first_time. Without this block those fields are empty and every
+# changelog line is a bare commit hash with no route back to its review.
+#
+# NOTE, because it is the obvious next question: this does NOT let git-cliff see
+# issues. Verified against 2.13.1 — `release.github` exposes only `contributors`,
+# and there is no issues collection at any level. git-cliff is a commit-log tool;
+# an issue with no commit of its own is invisible to it. The consequence is in
+# `.claude/rules/commits.md`: a fix to pre-existing behaviour must be its own
+# `fix(scope):` commit, because that is the only thing the changelog keys on.
+owner = "zeroae"
+repo = "zae-limiter"
+
 # regex for matching git tags
 tag_pattern = "v[0-9].*"
 # sort the tags topologically
