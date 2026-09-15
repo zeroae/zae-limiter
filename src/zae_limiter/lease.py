@@ -60,6 +60,14 @@ class LeaseEntry:
     # advances the shared `rf` while crediting refill only to the limits it
     # is handed — but those undeclared entries are write-only carriers.
     _declared: bool = True
+    # Next instant at which this limit's effective params change (#222 §2.1),
+    # or None when it carries no schedule. Computed by the acquire path at the
+    # **same** clock reading that drove `effective_params` for this entry's
+    # refill, never re-derived at commit time: an item whose `tk` was
+    # materialised under one window must not advertise a `vu` belonging to the
+    # next one. `_commit_initial()` takes the minimum across the entries
+    # sharing a bucket item, because `vu` is one item-level attribute.
+    _boundary_ms: int | None = None
 
 
 @dataclass
@@ -356,6 +364,15 @@ class Lease:
             else:
                 ttl_seconds = calculate_bucket_ttl_seconds(limits, multiplier)
 
+            # `vu` is one attribute for the whole item, so the earliest change
+            # across every limit written here is what has to force the next
+            # materialising pass (#222 §2.1). Undeclared entries count: they
+            # are materialised by this same write, and a limit the caller did
+            # not name still gates the fast path for everyone else. `None`
+            # everywhere — the unscheduled majority — leaves `vu` untouched.
+            boundaries = [e._boundary_ms for e in group_entries if e._boundary_ms is not None]
+            vu = min(boundaries) if boundaries else None
+
             if is_new:
                 first_entry = group_entries[0]
                 items.append(
@@ -369,6 +386,7 @@ class Lease:
                         parent_id=first_entry._parent_id,
                         shard_id=shard_id,
                         shard_count=first_entry._shard_count,
+                        vu=vu,
                     )
                 )
             else:
@@ -394,6 +412,7 @@ class Lease:
                         expected_rf=expected_rf,
                         ttl_seconds=ttl_seconds,
                         shard_id=shard_id,
+                        vu=vu,
                     )
                 )
 

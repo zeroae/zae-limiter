@@ -507,6 +507,7 @@ class SyncRepositoryProtocol(Protocol):
         parent_id: str | None = None,
         shard_id: int = 0,
         shard_count: int = 1,
+        vu: int | None = None,
     ) -> dict[str, Any]:
         """Build a PutItem for creating a new composite bucket.
 
@@ -518,6 +519,7 @@ class SyncRepositoryProtocol(Protocol):
             ttl_seconds: TTL in seconds from now, or None to omit TTL
             cascade: Whether the entity has cascade enabled
             parent_id: The entity's parent_id (if any)
+            vu: Valid-until stamp in epoch ms, or None to omit (#222 §2.1)
         """
         ...
 
@@ -531,6 +533,7 @@ class SyncRepositoryProtocol(Protocol):
         expected_rf: int,
         ttl_seconds: int | None = None,
         shard_id: int = 0,
+        vu: int | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -542,6 +545,7 @@ class SyncRepositoryProtocol(Protocol):
             now_ms: Current timestamp in milliseconds
             expected_rf: Expected refill timestamp for optimistic lock
             ttl_seconds: TTL behavior (None=no change, 0=remove, >0=set)
+            vu: Valid-until stamp in epoch ms, or None to leave it untouched
         """
         ...
 

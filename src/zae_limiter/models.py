@@ -799,18 +799,29 @@ class BucketState:
                 starts at its effective share, ``capacity // shard_count``
         """
         capacity_milli = limit.capacity * 1000
-        return cls(
+        state = cls(
             entity_id=entity_id,
             resource=resource,
             limit_name=limit.name,
-            tokens_milli=capacity_milli // shard_count,  # start at full (per-shard) capacity
+            tokens_milli=0,  # replaced below, once `sched` can be consulted
             last_refill_ms=now_ms,
             capacity_milli=capacity_milli,
             refill_amount_milli=limit.refill_amount * 1000,
             refill_period_ms=limit.refill_period_seconds * 1000,
             total_consumed_milli=0,  # initialize counter for new buckets
             shard_count=shard_count,
+            # The stored cp/ra/rp stay the undivided base forever (#222 §2.1);
+            # the schedule rides alongside so every reader can recompute the
+            # effective params at its own instant.
+            sched=limit.schedule,
         )
+        # Start at full capacity *as of now* — the scheduled share, not the
+        # base one. A bucket born inside a `0.5x` window that started at the
+        # base ceiling would hand out a full unscaled allowance before any
+        # refiller trimmed it, which is exactly the window the schedule exists
+        # to narrow.
+        state.tokens_milli = state.effective_capacity_milli(now_ms)
+        return state
 
 
 @dataclass

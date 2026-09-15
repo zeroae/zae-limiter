@@ -1721,6 +1721,36 @@ class SyncRepository:
             }
         return update
 
+    @staticmethod
+    def _stamp_schedule(item: dict[str, Any], states: list[BucketState]) -> None:
+        """Write ``sched`` / ``sched_tz`` / ``b_{name}_sched`` onto a new item.
+
+        §4.1 stores one item-level default schedule plus a per-limit override
+        only where a limit differs, and hoists the timezone out of every entry
+        into a single item-level ``sched_tz`` — so two limits on one item
+        cannot carry different timezones. ``set_limits()`` already rejects that
+        at config-write time (``hoisted_schedule_timezone``); the same check is
+        repeated here because an ``acquire(limits=[...])`` override reaches a
+        bucket create without ever passing through a config write, and silently
+        keeping the first limit's timezone would reinterpret the second limit's
+        cron in the wrong zone.
+        """
+        scheduled = [s for s in states if s.sched]
+        if not scheduled:
+            return
+        zones = {entry.tz for state in scheduled for entry in state.sched}
+        if len(zones) > 1:
+            raise ValueError(
+                f"all scheduled limits on one bucket item must share a timezone, got {sorted(zones)}. The timezone is stored once per item as `sched_tz`, not per limit."
+            )
+        encodings = {state.limit_name: schedule.encode(state.sched) for state in scheduled}
+        default_compact, default_tz = encodings[scheduled[0].limit_name]
+        item[schema.BUCKET_FIELD_SCHED] = {"S": default_compact}
+        item[schema.BUCKET_FIELD_SCHED_TZ] = {"S": default_tz or "UTC"}
+        for name, (compact, _tz) in encodings.items():
+            if compact != default_compact:
+                item[schema.bucket_attr(name, schema.BUCKET_FIELD_SCHED)] = {"S": compact}
+
     def build_composite_create(
         self,
         entity_id: str,
@@ -1732,6 +1762,7 @@ class SyncRepository:
         parent_id: str | None = None,
         shard_id: int = 0,
         shard_count: int = 1,
+        vu: int | None = None,
     ) -> dict[str, Any]:
         """Build a PutItem for creating a new composite bucket.
 
@@ -1748,6 +1779,10 @@ class SyncRepository:
             parent_id: The entity's parent_id (if any)
             shard_id: Shard index for this bucket (default 0)
             shard_count: Total number of shards (default 1)
+            vu: Valid-until stamp in epoch ms (#222 §2.1) — the earliest
+                instant at which any limit on this item changes effective
+                params. ``None`` omits the attribute, which the fast path
+                reads as "no schedule, never expires".
         """
         item: dict[str, Any] = {
             "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)},
@@ -1768,6 +1803,9 @@ class SyncRepository:
             item["parent_id"] = {"S": parent_id}
         if ttl_seconds is not None:
             item["ttl"] = {"N": str(schema.calculate_ttl(now_ms, ttl_seconds))}
+        if vu is not None:
+            item[schema.BUCKET_FIELD_VU] = {"N": str(vu)}
+        self._stamp_schedule(item, states)
         wcu_cp_milli = schema.WCU_LIMIT_CAPACITY * 1000
         wcu_ra_milli = schema.WCU_LIMIT_REFILL_AMOUNT * 1000
         wcu_rp_ms = schema.WCU_LIMIT_REFILL_PERIOD_SECONDS * 1000
@@ -1809,6 +1847,7 @@ class SyncRepository:
         expected_rf: int,
         ttl_seconds: int | None = None,
         shard_id: int = 0,
+        vu: int | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -1827,6 +1866,10 @@ class SyncRepository:
                 - 0: REMOVE ttl (entity has custom limits)
                 - >0: SET ttl to (now + ttl_seconds)
             shard_id: Shard index for this bucket (default 0)
+            vu: Valid-until stamp in epoch ms (#222 §2.1), or ``None`` to
+                leave the attribute untouched. ``None`` is not "no schedule":
+                it means this pass has nothing to say about the boundary, so a
+                `vu` already on the item survives.
         """
         add_parts: list[str] = []
         set_parts: list[str] = ["#rf = :now"]
@@ -1843,6 +1886,10 @@ class SyncRepository:
                 attr_values[":ttl_val"] = {"N": str(schema.calculate_ttl(now_ms, ttl_seconds))}
             else:
                 remove_parts.append("#ttl")
+        if vu is not None:
+            set_parts.append("#vu = :vu")
+            attr_names["#vu"] = schema.BUCKET_FIELD_VU
+            attr_values[":vu"] = {"N": str(vu)}
         condition_parts: list[str] = ["#rf = :expected_rf"]
         for name in consumed:
             c = consumed[name]

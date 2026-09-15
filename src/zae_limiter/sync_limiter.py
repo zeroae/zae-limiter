@@ -44,6 +44,7 @@ from .models import (
     validate_identifier,
     validate_resource,
 )
+from .schedule import next_boundary
 from .schema import DEFAULT_RESOURCE, WCU_LIMIT_NAME
 from .sync_config_cache import ConfigSource
 from .sync_lease import LeaseEntry, SyncLease
@@ -1213,6 +1214,7 @@ class SyncRateLimiter:
             existing = parent_buckets.get(bucket_key)
             if existing is None:
                 return None
+            existing.sched = limit.schedule
             original_tk = existing.tokens_milli
             original_rf = existing.last_refill_ms
             status, consumed = self._admit_limit(
@@ -1233,6 +1235,7 @@ class SyncRateLimiter:
                     _declared=status is not None,
                     _shard_id=parent_shard,
                     _shard_count=parent_shard_count,
+                    _boundary_ms=next_boundary(limit.schedule, now_ms=now_ms),
                 )
             )
         carrier = self._wcu_carrier(
@@ -1353,6 +1356,7 @@ class SyncRateLimiter:
                 else:
                     is_new = False
                     state = existing
+                    state.sched = limit.schedule
                 original_tk = state.tokens_milli
                 original_rf = state.last_refill_ms
                 status, consumed = self._admit_limit(eid, resource, limit, state, consume, now_ms)
@@ -1375,6 +1379,7 @@ class SyncRateLimiter:
                         _cascade=entity.cascade if entity and eid == entity_id else False,
                         _parent_id=entity.parent_id if entity and eid == entity_id else None,
                         _declared=status is not None,
+                        _boundary_ms=next_boundary(limit.schedule, now_ms=now_ms),
                     )
                 )
             carrier = self._wcu_carrier(

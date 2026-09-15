@@ -9368,3 +9368,270 @@ class TestScheduleBoundaryRouting:
         assert calls[0].get("shard_id") == 1, (
             f"the slow path must target the boundary shard, got {calls[0]}"
         )
+
+
+class TestSlowPathMaterialisesVu:
+    """The slow path writes the ``vu`` the fast path gates on (#222, Task 12).
+
+    Task 11 taught the speculative condition to *read* ``vu``; nothing wrote
+    one, so a scheduled bucket fell through to the slow path on every acquire
+    and could never clear its own boundary. These pin the write, on both
+    builder shapes and across the four places the system has **N** of
+    something: many limits on one item, many shards, cascade's two items, and
+    create-versus-update.
+    """
+
+    # 2026-09-15 is a Tuesday. 10:05Z is inside `9-17` and outside `:30`.
+    NOW = int(datetime(2026, 9, 15, 10, 5, tzinfo=UTC).timestamp() * 1000)
+    LATE = int(datetime(2026, 9, 15, 18, 0, tzinfo=UTC).timestamp() * 1000)
+    EARLY = int(datetime(2026, 9, 15, 10, 30, tzinfo=UTC).timestamp() * 1000)
+
+    BUSINESS = (ScheduleEntry(cron="* 9-17 * * *", tz="UTC", scale=0.5),)
+    HALF_HOUR = (ScheduleEntry(cron="30 * * * *", tz="UTC", scale=0.25),)
+
+    RPM = Limit.per_minute("rpm", 1000).with_schedule(BUSINESS)  # boundary: 18:00Z
+    TPM = Limit.per_minute("tpm", 5000).with_schedule(HALF_HOUR)  # boundary: 10:30Z
+
+    @staticmethod
+    def _pin(repo, instant):
+        repo._now_ms = lambda: instant
+        return instant
+
+    @staticmethod
+    async def _raw(repo, entity_id, resource="gpt-4", shard=0):
+        """Read a bucket item straight from DynamoDB, bypassing deserialisation."""
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, resource, shard)},
+                "SK": {"S": sk_state()},
+            },
+        )
+        return response["Item"]
+
+    @staticmethod
+    def _slow(limiter):
+        return RateLimiter(repository=limiter._repository, speculative_writes=False)
+
+    async def test_create_stamps_the_first_boundary(self, limiter):
+        """The create path: no bucket yet, so this is ``build_composite_create``."""
+        repo = limiter._repository
+        self._pin(repo, self.NOW)
+        slow = self._slow(limiter)
+
+        async with slow.acquire("vu-new", "gpt-4", limits=[self.RPM], consume={"rpm": 1}):
+            pass
+
+        item = await self._raw(repo, "vu-new")
+        assert item[BUCKET_FIELD_VU]["N"] == str(self.LATE)
+
+    async def test_update_restamps_the_boundary(self, limiter):
+        """The update path: the bucket now exists, so ``build_composite_normal``."""
+        repo = limiter._repository
+        self._pin(repo, self.NOW)
+        slow = self._slow(limiter)
+
+        async with slow.acquire("vu-upd", "gpt-4", limits=[self.RPM], consume={"rpm": 1}):
+            pass
+        # Wipe the create's stamp so only the second write can put it back.
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, "vu-upd", "gpt-4", 0)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="REMOVE #vu",
+            ExpressionAttributeNames={"#vu": BUCKET_FIELD_VU},
+        )
+        async with slow.acquire("vu-upd", "gpt-4", limits=[self.RPM], consume={"rpm": 1}):
+            pass
+
+        item = await self._raw(repo, "vu-upd")
+        assert item[BUCKET_FIELD_VU]["N"] == str(self.LATE)
+
+    async def test_an_unscheduled_bucket_gets_no_vu(self, limiter):
+        """The overwhelming majority. A stamp here would cost every one of them
+        a slow-path pass per boundary they do not have."""
+        repo = limiter._repository
+        self._pin(repo, self.NOW)
+        slow = self._slow(limiter)
+
+        async with slow.acquire(
+            "vu-plain", "gpt-4", limits=[Limit.per_minute("rpm", 1000)], consume={"rpm": 1}
+        ):
+            pass
+
+        assert BUCKET_FIELD_VU not in await self._raw(repo, "vu-plain")
+
+    async def test_vu_is_the_minimum_across_the_items_limits(self, limiter):
+        """``vu`` is one item-level attribute, so the *earliest* change wins.
+
+        ``rpm`` changes at 18:00Z and ``tpm`` at 10:30Z. Taking the maximum —
+        or the first limit in the list, which is ``rpm`` — leaves the fast
+        path admitting against ``tpm``'s stale ceiling for seven and a half
+        hours.
+        """
+        repo = limiter._repository
+        self._pin(repo, self.NOW)
+        slow = self._slow(limiter)
+
+        async with slow.acquire(
+            "vu-min", "gpt-4", limits=[self.RPM, self.TPM], consume={"rpm": 1, "tpm": 1}
+        ):
+            pass
+
+        item = await self._raw(repo, "vu-min")
+        assert item[BUCKET_FIELD_VU]["N"] == str(self.EARLY)
+
+    async def test_vu_covers_a_limit_the_caller_did_not_declare(self, limiter):
+        """Undeclared limits are materialised by the same write, so they set
+        the boundary too (Issue #455 makes them write-only, not invisible).
+
+        Here the caller names only ``rpm`` (18:00Z) while ``tpm`` (10:30Z) is
+        resolved but undeclared. A ``vu`` computed over declared limits alone —
+        which is what the plan's prose says — would read 18:00Z and leave
+        ``tpm`` unenforced across its own boundary.
+        """
+        repo = limiter._repository
+        self._pin(repo, self.NOW)
+        slow = self._slow(limiter)
+
+        async with slow.acquire(
+            "vu-undecl", "gpt-4", limits=[self.RPM, self.TPM], consume={"rpm": 1}
+        ):
+            pass
+
+        item = await self._raw(repo, "vu-undecl")
+        assert item[BUCKET_FIELD_VU]["N"] == str(self.EARLY)
+
+    async def test_every_shard_of_one_entity_agrees_on_vu(self, limiter):
+        """Shards materialise one at a time, at whatever instant they are next
+        touched. ``vu`` must be a function of the schedule and the window, not
+        of the instant — otherwise two shards of one entity open their fast
+        paths at different times and the entity's ceiling changes piecewise.
+        """
+        repo = limiter._repository
+        self._pin(repo, self.NOW)
+        slow = self._slow(limiter)
+
+        lease = await slow._do_acquire(
+            "vu-shards", "gpt-4", [self.RPM], {"rpm": 1}, shard_id=0, shard_count=2
+        )
+        await lease._commit_initial()
+
+        # A different instant, still inside the same window.
+        self._pin(repo, self.NOW + 90_000)
+        lease = await slow._do_acquire(
+            "vu-shards", "gpt-4", [self.RPM], {"rpm": 1}, shard_id=1, shard_count=2
+        )
+        await lease._commit_initial()
+
+        shard0 = await self._raw(repo, "vu-shards", shard=0)
+        shard1 = await self._raw(repo, "vu-shards", shard=1)
+        assert shard0[BUCKET_FIELD_VU]["N"] == str(self.LATE)
+        assert shard1[BUCKET_FIELD_VU]["N"] == str(self.LATE)
+
+    async def test_child_and_parent_are_stamped_from_their_own_schedules(self, limiter):
+        """Cascade writes two items, and each carries its own ``vu``.
+
+        The parent schedules independently of the child (#474 established the
+        same for shards). A single lease-wide ``vu`` would stamp one of them
+        with the other's boundary.
+        """
+        repo = limiter._repository
+        await limiter.create_entity("vu-parent")
+        await limiter.create_entity("vu-child", parent_id="vu-parent", cascade=True)
+        await limiter.set_limits("vu-child", [self.RPM], resource="gpt-4")
+        await limiter.set_limits("vu-parent", [self.TPM], resource="gpt-4")
+
+        self._pin(repo, self.NOW)
+        slow = self._slow(limiter)
+        async with slow.acquire("vu-child", "gpt-4", consume={"rpm": 1}):
+            pass
+
+        child = await self._raw(repo, "vu-child")
+        parent = await self._raw(repo, "vu-parent")
+        assert child[BUCKET_FIELD_VU]["N"] == str(self.LATE)
+        assert parent[BUCKET_FIELD_VU]["N"] == str(self.EARLY)
+
+    async def test_vu_comes_from_the_refill_instant_not_the_commit_instant(self, limiter):
+        """A boundary crossed *during* the slow path must fail closed.
+
+        ``_do_acquire()`` and ``_commit_initial()`` take separate clock
+        readings — a round trip apart — and the tokens are materialised at the
+        earlier one. Deriving ``vu`` from the later reading would skip the
+        boundary that just passed and point at the one *after* it, advertising
+        a window the balance on the item never belonged to. Derived from the
+        refill instant, the stamp lands at or before ``rf`` and the next
+        acquire simply re-materialises: one extra pass instead of a whole
+        window of stale admissions.
+        """
+        repo = limiter._repository
+        self._pin(repo, self.NOW)
+        slow = self._slow(limiter)
+
+        from zae_limiter.lease import Lease
+
+        original = Lease._commit_initial
+        after = self.EARLY + 60_000  # past tpm's boundary, still inside rpm's
+
+        async def commit_later(lease_self):
+            self._pin(repo, after)
+            return await original(lease_self)
+
+        with patch.object(Lease, "_commit_initial", commit_later):
+            async with slow.acquire("vu-race", "gpt-4", limits=[self.TPM], consume={"tpm": 1}):
+                pass
+
+        item = await self._raw(repo, "vu-race")
+        vu = int(item[BUCKET_FIELD_VU]["N"])
+        rf = int(item["rf"]["N"])
+        assert vu == self.EARLY, "the boundary in force when the tokens were refilled"
+        assert vu <= rf, "a boundary crossed mid-pass must expire the item, not skip"
+
+    async def test_the_slow_path_refills_at_the_scheduled_rate(self, limiter):
+        """``vu`` would be a lie without this: the stamp asserts that ``tk``
+        was materialised under the window it names.
+
+        The bucket is created inside the ``0.5x`` window, so it starts at the
+        scheduled half-capacity rather than the base ceiling — and the stored
+        ``cp``/``ra`` stay the undivided base, which is the only copy from
+        which the next window can be computed.
+        """
+        repo = limiter._repository
+        self._pin(repo, self.NOW)
+        slow = self._slow(limiter)
+
+        async with slow.acquire("vu-scale", "gpt-4", limits=[self.RPM], consume={"rpm": 1}):
+            pass
+
+        item = await self._raw(repo, "vu-scale")
+        assert item[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"] == str(500_000 - 1_000)
+        assert item[bucket_attr("rpm", "cp")]["N"] == "1000000"
+
+    async def test_the_slow_path_trims_a_surplus_left_by_a_closing_window(self, limiter):
+        """Entering a ``0.5x`` window with a full base balance, the very next
+        slow pass must bring ``tk`` down to the scheduled ceiling.
+
+        This is the delta at ``lease.py``'s refill computation going *negative*
+        (#496 clamps inside ``refill_bucket``); an explicit clamp there would
+        double-apply it.
+        """
+        repo = limiter._repository
+        outside = int(datetime(2026, 9, 15, 3, 0, tzinfo=UTC).timestamp() * 1000)
+        self._pin(repo, outside)
+        slow = self._slow(limiter)
+
+        async with slow.acquire("vu-trim", "gpt-4", limits=[self.RPM], consume={"rpm": 0}):
+            pass
+        item = await self._raw(repo, "vu-trim")
+        assert item[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"] == "1000000"
+
+        self._pin(repo, self.NOW)  # inside the 0.5x window
+        async with slow.acquire("vu-trim", "gpt-4", limits=[self.RPM], consume={"rpm": 0}):
+            pass
+
+        item = await self._raw(repo, "vu-trim")
+        assert item[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"] == "500000"

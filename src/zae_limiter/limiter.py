@@ -48,6 +48,7 @@ from .models import (
 )
 from .repository import Repository
 from .repository_protocol import SpeculativeFailureReason
+from .schedule import next_boundary
 from .schema import DEFAULT_RESOURCE, WCU_LIMIT_NAME
 
 _UNSET: Any = object()  # sentinel for detecting explicitly-passed deprecated params
@@ -1549,6 +1550,10 @@ class RateLimiter:
                 # Parent bucket missing for this limit — can't proceed
                 return None
 
+            # See `_do_acquire`: the resolved config, not the item, is what
+            # makes the parent's refill and ceiling schedule-aware here.
+            existing.sched = limit.schedule
+
             original_tk = existing.tokens_milli
             original_rf = existing.last_refill_ms
 
@@ -1574,6 +1579,10 @@ class RateLimiter:
                     _declared=status is not None,
                     _shard_id=parent_shard,
                     _shard_count=parent_shard_count,
+                    # The parent schedules independently of the child: this is
+                    # a different item, so it gets its own `vu` from its own
+                    # limits (#222 §2.2).
+                    _boundary_ms=next_boundary(limit.schedule, now_ms=now_ms),
                 )
             )
 
@@ -1766,6 +1775,16 @@ class RateLimiter:
                 else:
                     is_new = False
                     state = existing
+                    # A bucket item read back carries no schedule of its own
+                    # yet (`_deserialize_composite_bucket` reads the base
+                    # params only), and the config this acquire just resolved
+                    # is the fresher of the two anyway — an item stamped
+                    # before the last `set_limits` would still hold the old
+                    # one. Attaching it here is what makes `effective_params`
+                    # apply on the slow path at all; without it the refill and
+                    # the ceiling below come out at the base rate while `vu`
+                    # claims the window was honoured.
+                    state.sched = limit.schedule
 
                 # Capture original values before try_consume modifies them (ADR-115)
                 original_tk = state.tokens_milli
@@ -1800,6 +1819,15 @@ class RateLimiter:
                         _cascade=entity.cascade if entity and eid == entity_id else False,
                         _parent_id=entity.parent_id if entity and eid == entity_id else None,
                         _declared=status is not None,
+                        # Same `now_ms` that drove `effective_params` for the
+                        # refill above, deliberately not the later reading
+                        # `_commit_initial()` takes: if a boundary falls in
+                        # between, this `vu` lands at or before the item's
+                        # `rf` and the next acquire re-materialises, whereas a
+                        # boundary computed at commit time would point past
+                        # the window just entered and leave the fast path
+                        # spending pre-boundary tokens for a whole window.
+                        _boundary_ms=next_boundary(limit.schedule, now_ms=now_ms),
                     )
                 )
 
