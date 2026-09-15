@@ -5618,9 +5618,12 @@ Read <code>kind</code> directly — do <strong>not</strong> infer a quota from <
 present on both kinds.</p>
 <p><code>resets_at_ms</code> is an <strong>absolute</strong> epoch-millisecond instant, so a client can
 schedule a retry without parsing cron and without a reference clock of its own.
-It is <code>null</code> when the reset is further out than the scheduler's forward scan can
-see — a monthly or annual reset, most of its cycle. The key is always present on
-a quota entry.</p>
+The key is always present on a quota entry, and carries a real instant for every
+practical quota period — session, daily, weekly, monthly, quarterly, annual.</p>
+<p>It is <code>null</code> only when the next reset is further out than the reset pattern's own
+cycle — in practice only a pattern that skips whole years, such as <code>0 0 29 2 *</code>
+firing on a leap day. Treat <code>null</code> as "no scheduled reset in reach", not as
+"never resets", and fall back to <code>retry_after_seconds</code>.</p>
 <div class="admonition warning">
 <p class="admonition-title">A quota never reports <code>refill_amount</code></p>
 <p>A quota's stored <code>refill_amount</code> is fixed at 0 and its <code>refill_period_seconds</code>
