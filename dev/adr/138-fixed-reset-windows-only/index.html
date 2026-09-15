@@ -3313,14 +3313,23 @@ assume this behaviour.</p>
 per calendar month" is a contractual statement about the calendar, not about the caller. A
 per-entity window is what a session cap needs. Real services ship both, often together.</p>
 <p>They are not, however, hard to build in the same way. A per-entity window expressed as a
-<strong>duration</strong> — reset the balance and set the valid-until stamp to <code>now + interval</code> — needs no
-anchor field at all, because the valid-until stamp <em>is</em> the anchor. It is in fact cheaper than
-the calendar form: no cron parsing, no timezone database, no daylight-saving handling, no
-boundary scan. An earlier draft of this record rejected per-entity windows on the grounds that
-they would require per-entity state the fast path could not compute from the item alone. That
-reasoning was wrong: it described a design storing a fixed start instant and projecting
-multiples of the interval from it, and did not hold for the sliding form. The decision below
-therefore rests on scope, not on feasibility.</p>
+<strong>duration</strong> is shallower than the calendar form on evaluation — no cron parsing, no timezone
+database, no daylight-saving handling, no boundary scan, and a recovery horizon that is the
+window length exactly — but it is not cheaper overall, because it costs more in storage, in
+shard coherence (the calendar form gets that free, since every shard shares one clock and one
+cron, whereas a window start has to be propagated across an entity's shards) and in durability.
+It also needs an anchor of its own, and that anchor cannot be the valid-until stamp: beyond
+gating the fast path, <code>vu</code> carries the marker a limit-change fan-out stamps and the staleness
+pin the aggregator adds to its refill condition, and the calendar form escapes that collision
+only because its reset decision is taken from the cron and the last-refill stamp, never from
+<code>vu</code>. A duration window reading its expiry off <code>vu</code> would read every fan-out as an elapsed
+window, so every <code>set_limits()</code> call would silently restore every caller's balance and restart
+every caller's clock. Two earlier drafts of this record misplaced that anchor in opposite
+directions — state the item could not carry, then no anchor at all — and both were wrong in the
+same place: one per-limit attribute carries it, cheap but not free and not <code>vu</code>. The decision
+below therefore rests on scope, not on feasibility, although the durability asymmetry recorded
+under Consequences is the argument that survives closest scrutiny and is what a later record
+will have to answer.</p>
 <h2 id="decision">Decision<a class="headerlink" href="#decision" title="Permanent link">&para;</a></h2>
 <p><code>reset_schedule</code> supports fixed calendar windows only. Duration-based windows anchored to an
 entity's own activity are deferred to a later release on scope grounds, not excluded as
@@ -3348,8 +3357,8 @@ infeasible, and require their own decision record when taken up.</p>
 storage and documentation, and #222 is already long. It remains the answer to the thundering
 herd noted above.</p>
 <h3 id="per-entity-window-storing-a-fixed-start-instant-and-projecting-intervals-from-it">Per-entity window storing a fixed start instant and projecting intervals from it<a class="headerlink" href="#per-entity-window-storing-a-fixed-start-instant-and-projecting-intervals-from-it" title="Permanent link">&para;</a></h3>
-<p>Rejected because: it needs an anchor field the sliding <code>now + interval</code> form does not, for no
-behaviour the sliding form lacks.</p>
+<p>Rejected because: it needs the same anchor the duration form does, and still cannot express "go
+idle long enough and your window restarts", which is what anchoring to the entity is for.</p>
 <h3 id="derive-an-anchor-from-the-entity-identifier-to-stagger-resets">Derive an anchor from the entity identifier to stagger resets<a class="headerlink" href="#derive-an-anchor-from-the-entity-identifier-to-stagger-resets" title="Permanent link">&para;</a></h3>
 <p>Rejected because: it silently gives entities different allowance boundaries than their
 configuration states, and the drift is undiscoverable from the config.</p>
