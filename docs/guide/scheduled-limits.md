@@ -164,7 +164,10 @@ Limit.quota("daily", 10_000, cron="0 0 * * *", tz="America/New_York")     # loca
 ```
 
 A quota has no refill rate: a limit either drips or resets, never both
-([ADR-137](../adr/137-reset-replaces-drip.md)).
+([ADR-137](../adr/137-reset-replaces-drip.md)). Pairing a positive `refill_amount` with a
+`reset_schedule` raises `ValueError` at construction, because the drip running underneath the
+reset hands back roughly twice the intended allowance each period. A zero rate with no reset is
+rejected too — that bucket could never recover.
 
 A reset fires on the **edge**, not across a window: it applies on the transition *into* matching,
 so `0 0 * * *` is right here even though the same expression would be a one-minute window as a
