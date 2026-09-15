@@ -1274,6 +1274,7 @@ class TestWriteOnEnter:
         """Cascade writes both child and parent buckets on enter."""
         sync_limiter.create_entity(entity_id="proj-cascade")
         sync_limiter.create_entity(entity_id="key-cascade", parent_id="proj-cascade", cascade=True)
+        freeze_clock(sync_limiter._repository)
         limits = [Limit.per_minute("rpm", 100)]
         with sync_limiter.acquire(
             entity_id="key-cascade", resource="gpt-4", limits=limits, consume={"rpm": 5}
@@ -1684,6 +1685,7 @@ class TestRateLimiterCapacity:
 
     def test_available(self, sync_limiter):
         """Test checking available capacity."""
+        freeze_clock(sync_limiter._repository)
         limits = [Limit.per_minute("rpm", 100)]
         available = sync_limiter.available(entity_id="key-1", resource="gpt-4", limits=limits)
         assert available["rpm"] == 100
@@ -1696,6 +1698,7 @@ class TestRateLimiterCapacity:
 
     def test_time_until_available(self, sync_limiter):
         """Test calculating time until capacity available."""
+        freeze_clock(sync_limiter._repository)
         limits = [Limit.per_minute("rpm", 100)]
         with sync_limiter.acquire(
             entity_id="key-1", resource="gpt-4", limits=limits, consume={"rpm": 100}
@@ -1727,6 +1730,7 @@ class TestRateLimiterCheckAvailability:
 
     def test_needed_is_optional(self, sync_limiter):
         """Omitting needed answers availability only, with no wait."""
+        freeze_clock(sync_limiter._repository)
         limits = [Limit.per_minute("rpm", 100)]
         with sync_limiter.acquire(
             entity_id="key-1", resource="gpt-4", limits=limits, consume={"rpm": 100}
@@ -1740,6 +1744,7 @@ class TestRateLimiterCheckAvailability:
 
     def test_reports_availability_and_wait_together(self, sync_limiter):
         """One call answers both questions for an exhausted bucket."""
+        freeze_clock(sync_limiter._repository)
         limits = [Limit.per_minute("rpm", 100)]
         with sync_limiter.acquire(
             entity_id="key-1", resource="gpt-4", limits=limits, consume={"rpm": 100}
@@ -1756,6 +1761,7 @@ class TestRateLimiterCheckAvailability:
 
     def test_wait_is_max_across_limits(self, sync_limiter):
         """retry_after_seconds is the slowest limit, and zero amounts are skipped."""
+        freeze_clock(sync_limiter._repository)
         limits = [Limit.per_minute("rpm", 100), Limit.per_minute("tpm", 10000)]
         with sync_limiter.acquire(
             entity_id="key-1", resource="gpt-4", limits=limits, consume={"rpm": 100, "tpm": 10000}
@@ -1817,6 +1823,7 @@ class TestRateLimiterCheckAvailability:
     def test_carries_a_status_per_limit(self, sync_limiter):
         """The UI renders each limit on its own line, so each needs its own
         availability and its own countdown from the same snapshot."""
+        freeze_clock(sync_limiter._repository)
         limits = [
             Limit.custom("rpm", 100, refill_amount=100, refill_period_seconds=3600),
             Limit.custom("tpm", 10000, refill_amount=10000, refill_period_seconds=3600),
@@ -1853,6 +1860,7 @@ class TestRateLimiterCheckAvailability:
 
     def test_available_matches_check_availability(self, sync_limiter):
         """available() delegates, so the two can never disagree."""
+        freeze_clock(sync_limiter._repository)
         limits = [Limit.per_minute("rpm", 100)]
         with sync_limiter.acquire(
             entity_id="key-1", resource="gpt-4", limits=limits, consume={"rpm": 30}
@@ -1864,6 +1872,7 @@ class TestRateLimiterCheckAvailability:
 
     def test_time_until_available_matches_check_availability(self, sync_limiter):
         """time_until_available() delegates, so the two can never disagree."""
+        freeze_clock(sync_limiter._repository)
         limits = [Limit.per_minute("rpm", 100)]
         with sync_limiter.acquire(
             entity_id="key-1", resource="gpt-4", limits=limits, consume={"rpm": 100}
@@ -2141,6 +2150,7 @@ class TestRateLimiterResourceCapacity:
 
     def test_get_resource_capacity_basic_aggregation(self, sync_limiter):
         """Should aggregate capacity across all entities for a resource."""
+        freeze_clock(sync_limiter._repository)
         entities = ["entity-a", "entity-b", "entity-c"]
         for entity_id in entities:
             sync_limiter.create_entity(entity_id)
@@ -2183,6 +2193,7 @@ class TestRateLimiterResourceCapacity:
 
     def test_get_resource_capacity_utilization_calculation(self, sync_limiter):
         """Should calculate utilization percentage correctly."""
+        freeze_clock(sync_limiter._repository)
         sync_limiter.create_entity("entity-1")
         limits = [Limit.per_minute("rpm", 100)]
         with sync_limiter.acquire("entity-1", "api", {"rpm": 30}, limits=limits):
