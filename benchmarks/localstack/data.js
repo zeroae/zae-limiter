@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789449434481,
+  "lastUpdate": 1789450579896,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -19700,6 +19700,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.011417116790606528",
             "extra": "mean: 1.0712569635999671 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d08f3ca2691ce68276ec716b319759821c2db4e1",
+          "message": "🔧 chore(ci): make bug fixes reachable from the changelog (#521)\n\n## The finding, measured not assumed\n\n`git-cliff` builds the changelog from **commit messages and nothing\nelse**. This was verified\nempirically against git-cliff 2.13.1 by dumping the template context\nwith `--context`:\n\n```\nrelease.github  →  { contributors }\ncommit.github   →  { is_first_time, pr_labels, pr_number, pr_title, username }\n```\n\nThere is **no issues collection at any level**. A closed issue with no\ncommit of its own does\nnot reach the changelog, regardless of how it is titled, labelled, or\nmilestoned. The commit\nmessage is the only channel.\n\n## The concrete cost already incurred\n\nDuring #222 the aggregator was found to be dividing the reserved `wcu`\nlimit by `shard_count`,\ncollapsing the per-partition DynamoDB write ceiling on exactly the hot\nbuckets write sharding\nexists to protect — a bug predating #222 entirely.\n\nThat fix was folded into `fa879d2e ✨ feat(aggregator): refill at the\nscheduled rate and\nre-stamp vu`, whose only footer is `Refs #222`. git-cliff therefore\nfiles it under **Features**\nin the v0.14.0 changelog. Issue #519 was filed retroactively and closed,\nwhich changes nothing,\nbecause git-cliff never reads it. The commit is merged and immutable, so\n**this particular fix\nis not recoverable into the Bug Fixes section.**\n\nContrast #518, the same situation handled correctly: the fast-path\n`shard_count²` capacity\nunder-report landed as its own `🐛 fix(models): report the scheduled,\nper-shard capacity in\nrejections` commit, and will appear under **Bug Fixes** — where someone\nauditing their own rate\nlimits would actually look.\n\n## The two changes\n\n1. **`.claude/rules/commits.md`** gains a rule: a fix to pre-existing\nbehaviour discovered\nduring feature work is always its own `fix(scope):` commit with a `Fixes\n#NNN` footer, never\nfolded into the `feat:` commit that exposed it. The `wcu` case is\nwritten into the rule,\nbecause the rule without the reasoning will not survive contact with a\nbusy task.\n\n2. **`cliff.toml`** gains the `[remote.github]` block it never had\n(owner `zeroae`, repo\n`zae-limiter`). This populates `commit.github.{pr_number, pr_title,\npr_labels, username}` so\nchangelog entries can link back to their review rather than being bare\nhashes. The block\ncarries a comment stating plainly that it does **not** give git-cliff\naccess to issues —\n   that is the obvious next assumption and it is wrong.\n\n## Deliberately not done, and why\n\nNo change to the `[changelog] body` template yet. Adding the\n`[remote.github]` block first\nmeans the fields are actually populated and can be verified against a\nreal release before the\ntemplate starts depending on them. Changing both at once would make a\ntemplate failure\nindistinguishable from a configuration failure.\n\n## ⚠️ To-do for whoever cuts v0.14.0\n\nBecause `fa879d2e` cannot be recategorised, the v0.14.0 release notes\nneed a **hand-written\nline for #519 under fixes**. Nothing automated will produce it. Flagging\nhere so it is not\nlost at release time.\n\n## Test plan\n\n- [x] `uvx git-cliff@2.13.1 --unreleased --offline --context` used to\ninspect the template\ncontext and confirm the absence of an issues collection at any level.\n- [x] Config change is additive and does not alter commit parsing —\n`git-cliff --offline`\noutput is byte-identical to the pre-change baseline, so existing\nchangelog output for\n      already-merged commits is unchanged.\n- [x] TOML section membership verified with `tomllib`: `[git]` retains\nall ten keys,\n`[remote.github]` holds only `owner`/`repo` (see second commit below).\n\n## Note on the second commit\n\n`4eb2f9fa` is a follow-up fix found while verifying this PR. The\n`[remote.github]` block was\noriginally inserted between `filter_commits` and `tag_pattern`, and TOML\nscoping silently moved\n`tag_pattern`, `topo_order` and `sort_commits` out of `[git]` into\n`[remote.github]`, where\ngit-cliff ignores unknown keys without warning. Output was unaffected\ntoday only because all\ncurrent tags match the default pattern and the other two values equal\ngit-cliff's defaults — the\nregression would have surfaced the first time a tag stopped matching\n`v[0-9].*`. Moving the block\nto the end of the file restores `[git]`. Drop this commit if you would\nrather handle it separately.\n\nRefs #222\nRefs #519\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01QdVj8nPhUwTz2aNJzMFqt5",
+          "timestamp": "2026-09-15T01:31:58-04:00",
+          "tree_id": "9c340b8d5ff4d3d4917302f57532ee4e13ca434d",
+          "url": "https://github.com/zeroae/zae-limiter/commit/d08f3ca2691ce68276ec716b319759821c2db4e1"
+        },
+        "date": 1789450578551,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 12.13473976099741,
+            "unit": "iter/sec",
+            "range": "stddev: 0.10787319154212378",
+            "extra": "mean: 82.40803014285702 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 12.067818396444098,
+            "unit": "iter/sec",
+            "range": "stddev: 0.09901777644360636",
+            "extra": "mean: 82.86501894117497 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 24.08027786714203,
+            "unit": "iter/sec",
+            "range": "stddev: 0.04646390042604751",
+            "extra": "mean: 41.52776000000058 msec\nrounds: 32"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 12.502702377851644,
+            "unit": "iter/sec",
+            "range": "stddev: 0.10853801975501577",
+            "extra": "mean: 79.98270851999848 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 20.927244539395975,
+            "unit": "iter/sec",
+            "range": "stddev: 0.046952067282529306",
+            "extra": "mean: 47.78459955000187 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 129.16993110914024,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0004919438011777187",
+            "extra": "mean: 7.741739826082781 msec\nrounds: 23"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 15.924082303036021,
+            "unit": "iter/sec",
+            "range": "stddev: 0.07101383347815952",
+            "extra": "mean: 62.79796731578963 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 22.67335110599348,
+            "unit": "iter/sec",
+            "range": "stddev: 0.034649110377802404",
+            "extra": "mean: 44.10464052381123 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 26.892479875591896,
+            "unit": "iter/sec",
+            "range": "stddev: 0.013525415164201207",
+            "extra": "mean: 37.18511660605976 msec\nrounds: 33"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 13.132179945516288,
+            "unit": "iter/sec",
+            "range": "stddev: 0.11382256975264547",
+            "extra": "mean: 76.14881947619286 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 21.4682622393221,
+            "unit": "iter/sec",
+            "range": "stddev: 0.05069420995115297",
+            "extra": "mean: 46.580388708330624 msec\nrounds: 48"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 26.311743373805445,
+            "unit": "iter/sec",
+            "range": "stddev: 0.01873755900182997",
+            "extra": "mean: 38.00584346666843 msec\nrounds: 30"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 27.69919148361841,
+            "unit": "iter/sec",
+            "range": "stddev: 0.01769510617854295",
+            "extra": "mean: 36.10213679310497 msec\nrounds: 29"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.7774408470387628,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0724903461085139",
+            "extra": "mean: 562.606627200006 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.7823343394394262,
+            "unit": "iter/sec",
+            "range": "stddev: 0.07825293543644753",
+            "extra": "mean: 561.061961200005 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9294470237532995,
+            "unit": "iter/sec",
+            "range": "stddev: 0.07297019014053045",
+            "extra": "mean: 1.0759085503999928 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.8723194513679543,
+            "unit": "iter/sec",
+            "range": "stddev: 0.07062669035345519",
+            "extra": "mean: 1.1463690262 sec\nrounds: 5"
           }
         ]
       }
