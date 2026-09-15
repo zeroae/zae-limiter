@@ -229,6 +229,12 @@ Limits for entity 'user-123' on resource 'gpt-4':
 Schedules are set through the Python API or a YAML manifest. The `-l name:rate/period` flag on
 `set-defaults` and `set-limits` does not take a cron expression.
 
+!!! warning "`-l` replaces the whole level"
+    A set writes the level's limits in full, and a limit built from `-l` carries no schedule.
+    Running `entity set-limits user-123 -r gpt-4 -l rpm:1000` against a level whose stored
+    `rpm` is scheduled therefore drops that schedule, and a stored quota becomes a dripping
+    limit. Edit scheduled levels through `limits apply` or the Python API.
+
 ## Disabling Resources and Entities
 
 The `resource` and `entity` command groups include `disable`, `enable`, and `clear-disabled`

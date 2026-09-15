@@ -759,6 +759,7 @@ Bucket items use per-(entity, resource, shard) partition keys: `PK={ns}/BUCKET#{
 - Buckets can go **negative** for post-hoc reconciliation
 - Refill is calculated lazily on each access
 - `capacity` is the bucket ceiling; factory methods accept `burst` to set `capacity > refill_amount`
+- A **quota** (`Limit.quota()`, ADR-137) does not drip at all: `refill_amount` is 0 and the balance is set to the effective capacity at each `reset_schedule` edge. It takes no `burst` — `capacity` *is* the allowance, so headroom above a sustained rate is meaningless. A limit drips or resets, never both and never neither
 
 ### DynamoDB Single Table Design
 - All entities, buckets, limits, usage in one table
@@ -885,7 +886,7 @@ count or shard count. A missing bucket means full capacity and no wait.
 ## Common Tasks
 
 ### Adding a New Limit Type
-1. No code changes needed - `Limit.custom()` supports any configuration
+1. No code changes needed for any **dripping** shape - `Limit.custom()` covers it. A calendar allowance needs `Limit.quota()` (it takes `cron`/`tz`, and `refill_amount=0` without a `reset_schedule` is rejected by `__post_init__` under ADR-137); a cron-varied limit needs `.with_schedule()`
 2. For convenience, add factory method to `Limit` class in `models.py`
 
 ### Modifying the Schema
@@ -1135,6 +1136,8 @@ zae-limiter entity set-limits user-123 --resource gpt-4 -l rpm:1000
 ```
 
 **`-l` flag format:** `name:rate[/period][:burst]` where `period` defaults to `/min`. Supported periods: `/sec`, `/min`, `/hour`, `/day`.
+
+**`-l` cannot express a schedule, and a set is a full replace.** `cli._parse_limit()` builds a `Limit` with `schedule=()` / `reset_schedule=()`, and every config level is written with a full-replace `PutItem`, so `entity set-limits user-123 -r gpt-4 -l rpm:1000` against a level whose stored `rpm` is scheduled silently drops the schedule — and turns a stored quota into a dripping limit. Nothing in the output signals it: `_echo_limit` renders the *new* limit. Deliberate per #222 §1.5 (the flag was not grown a cron mini-syntax; `limits apply` is the CLI path), but the erasure is the sharp edge, not the absence.
 
 ```bash
 # Equivalent: 1000 per minute

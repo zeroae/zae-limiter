@@ -33,6 +33,8 @@ zae-limiter uses a modified token bucket optimized for distributed systems. Here
 |--------|-------------------|-------------|
 | Token storage | Floating-point numbers | Integers (millitokens x1000) |
 | Refill timing | Continuous background process | Lazy (calculated on-demand) |
+| Refill rate | Fixed | Fixed, or varied per cron window |
+| Recovery | Always a drip | A drip, or a whole allowance restored at a calendar instant |
 | Minimum tokens | 0 (never negative) | Can go negative (debt) |
 | Precision | May drift due to float errors | Drift-compensated integers |
 
@@ -46,7 +48,9 @@ These modifications enable:
 
 ### Capacity and Burst
 
-Every limit has a **rate** (sustained throughput) and an optional **burst** (the bucket ceiling):
+A dripping limit has a **rate** (sustained throughput) and an optional **burst** (the bucket
+ceiling). A quota has neither: its capacity is the whole allowance for one window, and it does
+not drip at all.
 
 ```python
 # 10,000 tokens/minute sustained, bucket holds up to 10k
@@ -103,6 +107,9 @@ The refill formula:
 tokens_to_add = elapsed_time × refill_rate
              = elapsed_ms × refill_amount / refill_period
 ```
+
+`refill_amount` here is the value in force at that instant. With a schedule, that is the
+scheduled value rather than the configured base.
 
 ### Negative Buckets (Debt)
 
@@ -199,6 +206,7 @@ except RateLimitExceeded as e:
 | LLM tokens | 10k tpm | 15k | Handle variable response sizes |
 | Database queries | 1k rows/min | 5k | Allow large result sets occasionally |
 | New user onboarding | 10 rpm | 50 | Let users explore, then limit |
+| Plan allowance | 10k/day quota | -- | One allowance per window; when it is gone the caller waits for the reset |
 
 ## Next Steps
 

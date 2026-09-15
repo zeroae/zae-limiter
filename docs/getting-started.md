@@ -278,6 +278,20 @@ Limit.custom("requests", capacity=50, refill_amount=50, refill_period_seconds=30
 | `rate` | Sustained tokens per period (positional) |
 | `burst` | Optional burst ceiling (defaults to `rate`) |
 
+These all **drip**: tokens come back continuously. For an allowance that comes back in one lump
+at a calendar instant, use `Limit.quota()`, which takes the whole allowance and the cron naming
+the instant the next window opens:
+
+```python
+# 10,000 a day, back to 10,000 at New York midnight
+Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York")
+
+# 500 per five-hour window
+Limit.quota("session", 500, cron="0 */5 * * *", tz="America/New_York")
+```
+
+A quota takes no `burst` — the allowance *is* the ceiling.
+
 See [Token Bucket Algorithm](guide/token-bucket.md) for details on how rate, burst, and refill work together.
 
 ## Handling Rate Limit Errors

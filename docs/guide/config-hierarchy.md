@@ -308,7 +308,9 @@ await limiter.set_system_defaults([
 ])
 ```
 
-To add or update a single limit while preserving others, read first:
+To add or update a single limit while preserving others, read first. A limit rebuilt from a
+factory carries no schedule, so carry the stored one across if the limit you are changing has
+one:
 
 ```python
 # Read existing

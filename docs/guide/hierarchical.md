@@ -162,7 +162,9 @@ except RateLimitExceeded as e:
 ### Multi-Tenant SaaS
 
 ```python
-# Tenant has 1M tokens/day
+# Tenant sustains 1M tokens/day, dripping continuously.
+# For an allowance that returns in one lump at midnight, use
+# Limit.quota("tpd", 1_000_000, cron="0 0 * * *", tz=...) instead.
 await limiter.set_limits(
     entity_id="tenant-acme",
     limits=[Limit.per_day("tpd", 1_000_000)],
@@ -171,7 +173,7 @@ await limiter.set_limits(
 # Create user under tenant with cascade enabled
 await limiter.create_entity(entity_id="user-123", parent_id="tenant-acme", cascade=True)
 
-# Each user gets 100k tokens/day
+# Each user sustains 100k tokens/day
 await limiter.set_limits(
     entity_id="user-123",
     limits=[Limit.per_day("tpd", 100_000)],

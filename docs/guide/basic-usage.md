@@ -457,6 +457,8 @@ The speculative path falls back to the normal read-write path when:
 - The bucket does not exist yet (first acquire for an entity)
 - A new limit was added that is not in the bucket
 - Token refill since last access would provide enough capacity
+- The bucket crossed a schedule boundary, so its balance was worked out under parameters no
+  longer in force. One request per bucket per boundary pays this
 
 See [Performance Tuning - Speculative Writes](../performance.md#8-speculative-writes) for detailed cost analysis and guidance on when to disable this feature.
 

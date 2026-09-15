@@ -211,6 +211,7 @@ from zae_limiter import (
 
     # Models
     Limit,
+    ScheduleEntry,
     LimiterInfo,
     LimitName,
     Entity,
