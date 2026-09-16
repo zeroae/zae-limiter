@@ -7313,7 +7313,7 @@ rule, and the walk's <code>_rate</code> helper names it.</p>
   </span>
 
 <a href="#zae_limiter.models.BucketState.from_limit" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">from_limit</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">limit</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="n">shard_count</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">from_limit</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">limit</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="n">shard_count</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">reclaimed_milli</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -7419,6 +7419,27 @@ starts at its effective share, <code>capacity // shard_count</code></p>
             </td>
             <td>
                   <code>1</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>reclaimed_milli</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Millitokens the caller's eager clamp took off
+the shards that already exist for this (entity, resource,
+limit). Only a <strong>quota</strong> reads it, and only to take a transfer
+instead of a mint (#587) — see
+:func:<code>new_shard_starting_tokens_milli</code>. <code>None</code> (the default,
+and every dripping limit) keeps the full share.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
             </td>
           </tr>
       </tbody>

@@ -2022,6 +2022,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.repository.Repository.reclaim_quota_surplus" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;reclaim_quota_surplus
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.repository.Repository.disable_resource" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2588,6 +2599,17 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;bump_shard_count
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.repository_protocol.RepositoryProtocol.reclaim_quota_surplus" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;reclaim_quota_surplus
       
     </span>
   </a>
@@ -5854,6 +5876,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.repository.Repository.reclaim_quota_surplus" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;reclaim_quota_surplus
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.repository.Repository.disable_resource" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6420,6 +6453,17 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;bump_shard_count
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.repository_protocol.RepositoryProtocol.reclaim_quota_surplus" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;reclaim_quota_surplus
       
     </span>
   </a>
@@ -12975,6 +13019,172 @@ the eager fan-out, never on the speculative fast path.</p>
 <div class="doc doc-object doc-function">
 
 
+<h4 id="zae_limiter.repository.Repository.reclaim_quota_surplus" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">reclaim_quota_surplus</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+  </span>
+
+<a href="#zae_limiter.repository.Repository.reclaim_quota_surplus" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">reclaim_quota_surplus</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">shares_milli</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Clamp a quota's existing shards to their new share, and report the take (#587).</p>
+<p>Called once, just before the slow path creates a shard that does not
+exist yet, and only for limits that are quotas. A doubling shrinks every
+shard's ceiling from <code>cp // old_count</code> to <code>cp // new_count</code>, and
+<code>bucket.refill_bucket</code> would trim each shard to the new one on its
+next materialising pass anyway (<code>min(capacity, tokens)</code>, #496 / #222
+§3.3). Doing it here instead makes the trim and the new shard's grant a
+single conserving <strong>transfer</strong>: what comes off the siblings is exactly
+what the new shard is created with, so the entity's spendable total does
+not move across a doubling.</p>
+<p>Eager rather than lazy because the speculative fast path is a pure
+<code>ADD</code> with no ceiling arithmetic (#469 / #222 §3.3). An unclamped
+sibling can spend its surplus at full speed while the new shard holds a
+grant made from that same surplus — the over-admission of #587 in
+transient form. Nothing is destroyed that was not already doomed, so a
+reclaim followed by a rejected acquire costs the entity nothing.</p>
+<p>A <strong>dripping</strong> limit must never be passed here. Its stored <code>ra</code> is
+undivided, so its shards' ceilings still sum to the configured capacity
+and a new shard starting full costs at most one <code>time_to_fill</code> of
+burst, which token-bucket semantics allow; clamping it early would only
+throw away tokens the refill is about to re-add.</p>
+<p>Cost: 1 GSI3 KEYS_ONLY query + 1 <code>BatchGetItem</code> + one conditional
+<code>UpdateItem</code> per shard that actually holds a surplus — none at all in
+the common case of an entity that has already spent down. Paid once per
+shard creation, bounded by <code>MAX_SHARD_COUNT</code> over the life of an
+(entity, resource).</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>entity_id</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Entity owning the shards.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>resource</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Resource the shards belong to.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>shares_milli</code>
+            </td>
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="int">int</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>{limit_name: capacity_milli // shard_count}</code> for
+the quota limits only — the ceiling each shard is clamped to.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(shards_found, {limit_name: reclaimed_milli})</code>. <code>shards_found</code></p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="int">int</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>is 0 when nothing has been materialised for this (entity, resource)</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="tuple">tuple</span>[<span title="int">int</span>, <span title="dict">dict</span>[<span title="str">str</span>, <span title="int">int</span>]]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>at all, which is <strong>not</strong> the same as reclaiming nothing: the caller</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="tuple">tuple</span>[<span title="int">int</span>, <span title="dict">dict</span>[<span title="str">str</span>, <span title="int">int</span>]]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>grants a full share in that case and a capped transfer otherwise.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
 <h4 id="zae_limiter.repository.Repository.disable_resource" class="doc doc-heading">
 <code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">disable_resource</span>
 
@@ -16493,6 +16703,144 @@ cascade logic). None means auto-select from entity cache.</p>
             <td>
               <div class="doc-md-description">
                 <p>The new shard_count, or current_count if another client already doubled.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="zae_limiter.repository_protocol.RepositoryProtocol.reclaim_quota_surplus" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">reclaim_quota_surplus</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+  </span>
+
+<a href="#zae_limiter.repository_protocol.RepositoryProtocol.reclaim_quota_surplus" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">reclaim_quota_surplus</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">shares_milli</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Clamp a quota's existing shards to their new share, and report the take (#587).</p>
+<p>A quota does not drip (ADR-137), so a shard created mid-period at a
+fresh <code>capacity // shard_count</code> is allowance nothing reclaims before
+the next reset edge. The new shard is filled by transfer instead: this
+applies the ceiling the doubling shrank the existing shards to — the
+same clamp <code>refill_bucket</code> would apply on their next pass — and what
+it takes is what the new shard is created with.</p>
+<p>Must be called with quota limits only; a dripping limit's new shard
+rightly starts full.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>entity_id</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Entity owning the shards</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>resource</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Resource the shards belong to</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>shares_milli</code>
+            </td>
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="int">int</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>{limit_name: capacity_milli // shard_count}</code></p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(shards_found, {limit_name: reclaimed_milli})</code>. <code>shards_found</code></p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="int">int</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>is 0 when nothing is materialised for this (entity, resource),</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="tuple">tuple</span>[<span title="int">int</span>, <span title="dict">dict</span>[<span title="str">str</span>, <span title="int">int</span>]]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>which is not the same as reclaiming nothing.</p>
               </div>
             </td>
           </tr>
