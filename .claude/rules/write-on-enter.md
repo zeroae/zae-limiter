@@ -8,13 +8,13 @@ The `acquire()` context manager MUST write initial token consumption to DynamoDB
 
 ```python
 # CORRECT: write on enter
-lease = await self._do_acquire(...)        # READ: fetch buckets, try_consume locally
-await lease._commit_initial()              # WRITE: persist consumption via transact_write()
+lease = await self._do_acquire(...)  # READ: fetch buckets, try_consume locally
+await lease._commit_initial()  # WRITE: persist consumption via transact_write()
 try:
-    yield lease                            # User code runs here
-    await lease._commit_adjustments()      # WRITE: adjustment deltas via write_each() (no-op if none)
+    yield lease  # User code runs here
+    await lease._commit_adjustments()  # WRITE: adjustment deltas via write_each() (no-op if none)
 except Exception:
-    await lease._rollback()                # WRITE: compensating deltas via write_each()
+    await lease._rollback()  # WRITE: compensating deltas via write_each()
     raise
 ```
 
@@ -23,10 +23,10 @@ except Exception:
 ```python
 # WRONG: write on exit (creates phantom consumption window)
 try:
-    yield lease                            # User code runs with stale DynamoDB state
-    await lease._commit()                  # Other callers over-admitted during this window
+    yield lease  # User code runs with stale DynamoDB state
+    await lease._commit()  # Other callers over-admitted during this window
 except Exception:
-    await lease._rollback()                # No-op rollback (nothing was written)
+    await lease._rollback()  # No-op rollback (nothing was written)
     raise
 ```
 

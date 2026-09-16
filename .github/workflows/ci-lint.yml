@@ -28,5 +28,8 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install ruff (needed by verify-sync-generated hook)
-        run: pip install ruff
+        # Must match the pin in pyproject.toml and .pre-commit-config.yaml, or CI
+        # generates the sync twins with one formatter and checks them with another
+        # (#486). The check-ruff-pin hook guards the other three declarations.
+        run: pip install ruff==0.16.6
       - uses: pre-commit/action@v3.0.1

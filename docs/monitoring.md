@@ -258,11 +258,7 @@ Or programmatically:
 ```python
 from zae_limiter import RateLimiter, Repository
 
-repo = await (
-    Repository.builder()
-    .enable_tracing(True)
-    .build()
-)
+repo = await Repository.builder().enable_tracing(True).build()
 limiter = RateLimiter(repository=repo)
 ```
 

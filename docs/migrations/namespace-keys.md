@@ -131,12 +131,14 @@ After the stack update completes, find the opaque ID assigned to the `default` n
     import asyncio
     from zae_limiter import Repository
 
+
     async def main():
         repo = Repository("my-app", "us-east-1", None)
         namespaces = await repo.list_namespaces()
         for ns in namespaces:
             print(f"{ns['name']}: {ns['namespace_id']}")
         await repo.close()
+
 
     asyncio.run(main())
     ```
@@ -189,17 +191,17 @@ GSI_PK_ATTRS = ("GSI1PK", "GSI2PK", "GSI3PK")
 
 # Known PK prefixes (used to detect unprefixed items)
 KNOWN_PK_PREFIXES = (
-    schema.ENTITY_PREFIX,   # "ENTITY#"
-    schema.SYSTEM_PREFIX,   # "SYSTEM#"
-    schema.RESOURCE_PREFIX, # "RESOURCE#"
-    schema.AUDIT_PREFIX,    # "AUDIT#"
+    schema.ENTITY_PREFIX,  # "ENTITY#"
+    schema.SYSTEM_PREFIX,  # "SYSTEM#"
+    schema.RESOURCE_PREFIX,  # "RESOURCE#"
+    schema.AUDIT_PREFIX,  # "AUDIT#"
 )
 
 # Known GSI PK prefixes
 KNOWN_GSI_PREFIXES = (
-    schema.PARENT_PREFIX,        # "PARENT#"
-    schema.RESOURCE_PREFIX,      # "RESOURCE#"
-    schema.ENTITY_CONFIG_PREFIX, # "ENTITY_CONFIG#"
+    schema.PARENT_PREFIX,  # "PARENT#"
+    schema.RESOURCE_PREFIX,  # "RESOURCE#"
+    schema.ENTITY_CONFIG_PREFIX,  # "ENTITY_CONFIG#"
 )
 
 
@@ -214,9 +216,7 @@ def is_unprefixed(pk: str) -> bool:
     return False
 
 
-def determine_namespace(
-    pk: str, sk: str, default_ns_id: str
-) -> str:
+def determine_namespace(pk: str, sk: str, default_ns_id: str) -> str:
     """Determine the target namespace ID for an item.
 
     Version records (SYSTEM# + #VERSION) go to the reserved namespace '_'.
@@ -232,9 +232,7 @@ def prefix_key(namespace_id: str, key: str) -> str:
     return f"{namespace_id}/{key}"
 
 
-def build_new_item(
-    item: dict, namespace_id: str
-) -> dict:
+def build_new_item(item: dict, namespace_id: str) -> dict:
     """Build a new item with namespace-prefixed keys and GSI4 attributes."""
     new_item = dict(item)
     old_pk = item["PK"]["S"]
@@ -255,9 +253,7 @@ def build_new_item(
     return new_item
 
 
-async def scan_unprefixed_items(
-    client, table_name: str
-) -> list[dict]:
+async def scan_unprefixed_items(client, table_name: str) -> list[dict]:
     """Scan all items and return those with unprefixed PKs."""
     items = []
     params: dict = {"TableName": table_name}
@@ -342,23 +338,13 @@ async def delete_unprefixed_items(
 
         # Use BatchWriteItem for efficient deletes
         delete_requests = [
-            {
-                "DeleteRequest": {
-                    "Key": {"PK": item["PK"], "SK": item["SK"]}
-                }
-            }
-            for item in batch
+            {"DeleteRequest": {"Key": {"PK": item["PK"], "SK": item["SK"]}}} for item in batch
         ]
 
         if delete_requests:
-            response = await client.batch_write_item(
-                RequestItems={table_name: delete_requests}
-            )
+            response = await client.batch_write_item(RequestItems={table_name: delete_requests})
             # Handle unprocessed items
-            unprocessed = (
-                response.get("UnprocessedItems", {})
-                .get(table_name, [])
-            )
+            unprocessed = response.get("UnprocessedItems", {}).get(table_name, [])
             deleted += len(delete_requests) - len(unprocessed)
 
             if unprocessed:
@@ -424,17 +410,13 @@ async def migrate(
 
         # 3. Write prefixed copies
         logger.info("Writing namespace-prefixed items...")
-        written = await write_prefixed_items(
-            client, table_name, items, ns_id
-        )
+        written = await write_prefixed_items(client, table_name, items, ns_id)
         logger.info("Wrote %d new prefixed items", written)
 
         # 4. Optionally delete old items
         if delete:
             logger.info("Deleting old unprefixed items...")
-            deleted = await delete_unprefixed_items(
-                client, table_name, items
-            )
+            deleted = await delete_unprefixed_items(client, table_name, items)
             logger.info("Deleted %d unprefixed items", deleted)
         else:
             logger.info(
@@ -448,18 +430,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Migrate zae-limiter DynamoDB items to namespace-prefixed keys"
     )
+    parser.add_argument("--name", required=True, help="Stack/table name")
+    parser.add_argument("--region", required=True, help="AWS region")
     parser.add_argument(
-        "--name", required=True, help="Stack/table name"
-    )
-    parser.add_argument(
-        "--region", required=True, help="AWS region"
-    )
-    parser.add_argument(
-        "--endpoint-url", default=None,
+        "--endpoint-url",
+        default=None,
         help="AWS endpoint URL (for LocalStack)",
     )
     parser.add_argument(
-        "--delete", action="store_true",
+        "--delete",
+        action="store_true",
         help="Delete old unprefixed items after writing prefixed copies",
     )
     args = parser.parse_args()

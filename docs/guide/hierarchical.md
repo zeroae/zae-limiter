@@ -88,7 +88,7 @@ await limiter.set_limits(
 await limiter.set_limits(
     entity_id="key-abc",
     limits=[
-        Limit.per_minute("tpm", 10_000),   # 10k per key
+        Limit.per_minute("tpm", 10_000),  # 10k per key
     ],
 )
 

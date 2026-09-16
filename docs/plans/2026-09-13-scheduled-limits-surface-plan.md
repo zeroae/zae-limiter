@@ -22,7 +22,7 @@
 - Sync codegen, lint rules, and the `pytest tests/unit/` gevent hazard are all as stated in the core plan's Global Constraints — they apply here unchanged. Three of them bite repeatedly below and are worth restating:
   - **`Repository._now_ms()` does not cover the config cache.** `config_cache.py:99` and `:103` still call `time.time()`, so a test that jumps the injected clock across a boundary resolves the **pre**-jump `Limit` — schedule and all — for 60 real seconds. Call `invalidate_config_cache()` after every jump, or build with `config_cache_ttl=0`. This bites Tasks 3, 5 and 11 specifically.
   - **Never `pytest tests/unit/ -o "addopts="`.** It un-skips the gevent tests into the same process as the asyncio ones and hangs with no output. Run `uv run pytest tests/unit/ -q` and `uv run pytest tests/unit/ -m gevent -n 0 -q` separately.
-  - **Never bare `uv run ruff format .`.** The local ruff is newer than pre-commit's pinned 0.9.2 and reformats 34 unrelated files, including the Python blocks inside these plan documents. Scope the formatter to the directories you touched.
+  - ~~**Never bare `uv run ruff format .`**~~ — **retired by #486.** Every ruff declaration is now pinned to one exact version, so the hook and the `uv run` CLI produce identical output and a bare format run on a clean tree reformats nothing. The scoped `pre-commit run --files <paths>` invocations below still work and are still cheaper to run; they are no longer *required*.
 - **Every `file.py:NNN` reference below predates the core plan's merge and has drifted.** The
   core plan is now complete — all 14 tasks are on `main` — so these tasks can and should be
   checked against real merged code rather than against a plan. Treat a line number as a hint
@@ -58,7 +58,7 @@ Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York")
 This is not ergonomic sugar; it is the only shape ADR-137 leaves standing. The chained form
 
 ```python
-Limit.quota("rpd", 10_000).with_reset_schedule(...)        # impossible, not merely verbose
+Limit.quota("rpd", 10_000).with_reset_schedule(...)  # impossible, not merely verbose
 ```
 
 cannot work, because the intermediate value — zero refill, no reset yet — is exactly the state
@@ -107,7 +107,7 @@ class TestQuotaFactory:
     def test_quota_sets_the_zero_refill_and_the_reset_together(self):
         q = Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York")
         assert q.capacity == 10_000
-        assert q.refill_amount == 0          # ADR-137: a quota does not drip
+        assert q.refill_amount == 0  # ADR-137: a quota does not drip
         assert q.reset_schedule[0].cron == "0 0 * * *"
         assert q.reset_schedule[0].tz == "America/New_York"
 
@@ -130,10 +130,15 @@ class TestResetScheduleValidation:
         q = Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York")
         assert q.reset_schedule == (e,)
 
-    @pytest.mark.parametrize("kwargs", [
-        {"scale": 0.5}, {"capacity": 100},
-        {"refill_amount": 10}, {"refill_period_seconds": 30},
-    ])
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"scale": 0.5},
+            {"capacity": 100},
+            {"refill_amount": 10},
+            {"refill_period_seconds": 30},
+        ],
+    )
     def test_rejects_a_reset_entry_carrying_a_modifier(self, kwargs):
         """A reset overrides no parameters; a modifier on one is a category error.
 
@@ -280,7 +285,7 @@ class TestPrevResetEdge:
         assert prev_reset_edge(DAILY, _ms("2026-09-15 09:00")) <= rf
 
     def test_a_never_matching_expression_resets_nothing(self):
-        never = (ScheduleEntry.reset(cron="0 0 30 2 *"),)   # February 30th
+        never = (ScheduleEntry.reset(cron="0 0 30 2 *"),)  # February 30th
         assert prev_reset_edge(never, _ms("2026-09-15 09:00")) is None
 
     def test_empty_reset_schedule(self):
@@ -560,9 +565,7 @@ class TestResetMaterialisationThroughAcquire:
             pass
 
         bucket = next(
-            b
-            for b in await repo.get_buckets("reset-1", resource="gpt-4")
-            if b.limit_name == "rpd"
+            b for b in await repo.get_buckets("reset-1", resource="gpt-4") if b.limit_name == "rpd"
         )
         assert bucket.tokens_milli == 1_000_000
 
@@ -587,15 +590,11 @@ class TestResetMaterialisationThroughAcquire:
             pass
 
         bucket = next(
-            b
-            for b in await repo.get_buckets("reset-2", resource="gpt-4")
-            if b.limit_name == "rpd"
+            b for b in await repo.get_buckets("reset-2", resource="gpt-4") if b.limit_name == "rpd"
         )
         assert bucket.total_consumed_milli == 19_000_000
 
-    async def test_an_idle_bucket_resets_on_wake_not_at_the_edge(
-        self, limiter, slow_path_limiter
-    ):
+    async def test_an_idle_bucket_resets_on_wake_not_at_the_edge(self, limiter, slow_path_limiter):
         """Idle 18:00 -> 09:00 the next morning: the missed midnight is found
         by the backwards scan and applied by the 09:00 pass (§3.6, §9)."""
         repo = limiter._repository
@@ -611,9 +610,7 @@ class TestResetMaterialisationThroughAcquire:
             pass
 
         bucket = next(
-            b
-            for b in await repo.get_buckets("reset-3", resource="gpt-4")
-            if b.limit_name == "rpd"
+            b for b in await repo.get_buckets("reset-3", resource="gpt-4") if b.limit_name == "rpd"
         )
         assert bucket.tokens_milli == 0
 
@@ -741,31 +738,25 @@ and in `_try_parent_only_acquire` (:1517), where every bucket exists by construc
 method returns `None` if one is missing), so no `is_new` guard is needed:
 
 ```python
-            original_tk = existing.tokens_milli
-            original_rf = existing.last_refill_ms
+original_tk = existing.tokens_milli
+original_rf = existing.last_refill_ms
 
-            self._apply_reset_edge(limit, existing, now_ms)
+self._apply_reset_edge(limit, existing, now_ms)
 
-            status, consumed = self._admit_limit(
-                parent_id, resource, limit, existing, consume, now_ms
-            )
+status, consumed = self._admit_limit(parent_id, resource, limit, existing, consume, now_ms)
 ```
 
 Then fix `vu` in `lease.py`, in the computation core plan Task 12 adds — pass the reset tuple
 as the second positional argument, keeping `now_ms` keyword-only (#500):
 
 ```python
-                boundaries = [
-                    b
-                    for entry in group_entries
-                    if (
-                        b := next_boundary(
-                            entry.limit.schedule, entry.limit.reset_schedule, now_ms=now_ms
-                        )
-                    )
-                    is not None
-                ]
-                vu = min(boundaries) if boundaries else None
+boundaries = [
+    b
+    for entry in group_entries
+    if (b := next_boundary(entry.limit.schedule, entry.limit.reset_schedule, now_ms=now_ms))
+    is not None
+]
+vu = min(boundaries) if boundaries else None
 ```
 
 `_wcu_carrier` needs no change: `Limit._carrier()` (:1456) never sets `reset_schedule`, so the
@@ -1017,26 +1008,24 @@ In `try_refill_bucket` (:638), inside the per-limit loop, after the effective pa
 computed and before `refill_bucket` runs:
 
 ```python
-        reset_sched = () if limit_name == WCU_LIMIT_NAME else (
-            info.reset_sched or state.reset_sched
-        )
-        reset_edge = prev_reset_edge(reset_sched, now_ms) if reset_sched else None
-        if reset_edge is not None and reset_edge > state.rf_ms:
-            # A reset is "set the balance to the effective capacity", and as an
-            # ADD that is `eff_cp - tk_observed` — the identical delta shape the
-            # unconditional clamp uses, and safe for the identical commutativity
-            # reason: it removes exactly the surplus (or adds exactly the
-            # shortfall) while concurrent consumption subtracts independently.
-            # It bypasses the consumption threshold below for the same reason
-            # the negative clamp does: a hot bucket is where the aggregator is
-            # the only refiller, so gating the reset there turns it off exactly
-            # where it matters (§3.3, §3.6).
-            refill_delta = effective_cp - info.tk_milli
-            if refill_delta != 0:
-                any_needs_refill = True
-                add_parts.append(f"{bucket_attr(limit_name, BUCKET_FIELD_TK)} :rd_{limit_name}")
-                expr_values[f":rd_{limit_name}"] = refill_delta
-            continue
+reset_sched = () if limit_name == WCU_LIMIT_NAME else (info.reset_sched or state.reset_sched)
+reset_edge = prev_reset_edge(reset_sched, now_ms) if reset_sched else None
+if reset_edge is not None and reset_edge > state.rf_ms:
+    # A reset is "set the balance to the effective capacity", and as an
+    # ADD that is `eff_cp - tk_observed` — the identical delta shape the
+    # unconditional clamp uses, and safe for the identical commutativity
+    # reason: it removes exactly the surplus (or adds exactly the
+    # shortfall) while concurrent consumption subtracts independently.
+    # It bypasses the consumption threshold below for the same reason
+    # the negative clamp does: a hot bucket is where the aggregator is
+    # the only refiller, so gating the reset there turns it off exactly
+    # where it matters (§3.3, §3.6).
+    refill_delta = effective_cp - info.tk_milli
+    if refill_delta != 0:
+        any_needs_refill = True
+        add_parts.append(f"{bucket_attr(limit_name, BUCKET_FIELD_TK)} :rd_{limit_name}")
+        expr_values[f":rd_{limit_name}"] = refill_delta
+    continue
 ```
 
 `wcu` is exempted by the `reset_sched` expression above; `tc` is never in this expression at
@@ -1181,9 +1170,7 @@ class TestResetEncoding:
     """Reset entries share the field grammar and drop the modifier tokens."""
 
     def test_encodes_without_a_modifier_token(self):
-        compact, tz = encode_reset(
-            (ScheduleEntry.reset("0 0 * * *", "America/New_York"),)
-        )
+        compact, tz = encode_reset((ScheduleEntry.reset("0 0 * * *", "America/New_York"),))
         assert compact == "m0h0"
         assert tz == "America/New_York"
 
@@ -1525,10 +1512,8 @@ the tuple through `to_dict`/`from_dict`:
 ```
 
 ```python
-        if self.reset_schedule:
-            result["reset_schedule"] = [
-                {"cron": e.cron, "tz": e.tz} for e in self.reset_schedule
-            ]
+if self.reset_schedule:
+    result["reset_schedule"] = [{"cron": e.cron, "tz": e.tz} for e in self.reset_schedule]
 ```
 
 `repository.py` — in `_serialize_composite_limits` (:4971), beside the `LIMIT_FIELD_SCHED`
@@ -1546,21 +1531,17 @@ stop a limit's two tuples doing it:
 and in `_deserialize_limits` (:5010), beside the `sched_attr` read:
 
 ```python
-            rsched_attr = item.get(
-                schema.limit_attr(name, schema.LIMIT_FIELD_RSCHED), {}
-            ).get("S")
-            limits.append(
-                Limit(
-                    name=name,
-                    capacity=_get(schema.LIMIT_FIELD_CP),
-                    refill_amount=_get(schema.LIMIT_FIELD_RA),
-                    refill_period_seconds=_get(schema.LIMIT_FIELD_RP),
-                    schedule=schedule.decode(sched_attr, sched_tz) if sched_attr else (),
-                    reset_schedule=(
-                        schedule.decode_reset(rsched_attr, sched_tz) if rsched_attr else ()
-                    ),
-                )
-            )
+rsched_attr = item.get(schema.limit_attr(name, schema.LIMIT_FIELD_RSCHED), {}).get("S")
+limits.append(
+    Limit(
+        name=name,
+        capacity=_get(schema.LIMIT_FIELD_CP),
+        refill_amount=_get(schema.LIMIT_FIELD_RA),
+        refill_period_seconds=_get(schema.LIMIT_FIELD_RP),
+        schedule=schedule.decode(sched_attr, sched_tz) if sched_attr else (),
+        reset_schedule=(schedule.decode_reset(rsched_attr, sched_tz) if rsched_attr else ()),
+    )
+)
 ```
 
 In `_build_bucket_param_update` (:3256), mirror the `sched` handling core plan Task 13 adds —
@@ -1570,37 +1551,36 @@ must **not** be duplicated or moved (#488: `SET` and `REMOVE` on one attribute i
 expression is a `ValidationException`):
 
 ```python
-        reset_scheduled = [limit for limit in limits if limit.reset_schedule]
-        if reset_scheduled:
-            encodings = {
-                limit.name: schedule.encode_reset(limit.reset_schedule)
-                for limit in reset_scheduled
-            }
-            default_compact, default_tz = next(iter(encodings.values()))
-            set_parts.append("#rsched = :rsched")
-            expr_names["#rsched"] = schema.BUCKET_FIELD_RSCHED
-            expr_values[":rsched"] = {"S": default_compact}
-            # `sched_tz` is shared with the parameter schedule and the limit's
-            # own validation guarantees they agree, so write it only if the
-            # parameter branch did not.
-            if "#sched_tz" not in expr_names:
-                set_parts.append("#sched_tz = :sched_tz")
-                expr_names["#sched_tz"] = schema.BUCKET_FIELD_SCHED_TZ
-                expr_values[":sched_tz"] = {"S": default_tz or "UTC"}
-            for i, (name, (compact, _tz)) in enumerate(encodings.items()):
-                if compact == default_compact:
-                    continue
-                alias = f"#lrsched{i}"
-                set_parts.append(f"{alias} = :lrsched{i}")
-                expr_names[alias] = schema.bucket_attr(name, schema.BUCKET_FIELD_RSCHED)
-                expr_values[f":lrsched{i}"] = {"S": compact}
-        else:
-            expr_names["#rsched"] = schema.BUCKET_FIELD_RSCHED
-            remove_parts.append("#rsched")
-            for i, limit in enumerate(limits):
-                alias = f"#lrsched{i}"
-                expr_names[alias] = schema.bucket_attr(limit.name, schema.BUCKET_FIELD_RSCHED)
-                remove_parts.append(alias)
+reset_scheduled = [limit for limit in limits if limit.reset_schedule]
+if reset_scheduled:
+    encodings = {
+        limit.name: schedule.encode_reset(limit.reset_schedule) for limit in reset_scheduled
+    }
+    default_compact, default_tz = next(iter(encodings.values()))
+    set_parts.append("#rsched = :rsched")
+    expr_names["#rsched"] = schema.BUCKET_FIELD_RSCHED
+    expr_values[":rsched"] = {"S": default_compact}
+    # `sched_tz` is shared with the parameter schedule and the limit's
+    # own validation guarantees they agree, so write it only if the
+    # parameter branch did not.
+    if "#sched_tz" not in expr_names:
+        set_parts.append("#sched_tz = :sched_tz")
+        expr_names["#sched_tz"] = schema.BUCKET_FIELD_SCHED_TZ
+        expr_values[":sched_tz"] = {"S": default_tz or "UTC"}
+    for i, (name, (compact, _tz)) in enumerate(encodings.items()):
+        if compact == default_compact:
+            continue
+        alias = f"#lrsched{i}"
+        set_parts.append(f"{alias} = :lrsched{i}")
+        expr_names[alias] = schema.bucket_attr(name, schema.BUCKET_FIELD_RSCHED)
+        expr_values[f":lrsched{i}"] = {"S": compact}
+else:
+    expr_names["#rsched"] = schema.BUCKET_FIELD_RSCHED
+    remove_parts.append("#rsched")
+    for i, limit in enumerate(limits):
+        alias = f"#lrsched{i}"
+        expr_names[alias] = schema.bucket_attr(limit.name, schema.BUCKET_FIELD_RSCHED)
+        remove_parts.append(alias)
 ```
 
 In `build_composite_create` (:2079), stamp both schedules onto the new item. The states handed
@@ -1860,9 +1840,7 @@ class TestBoundaryAwareRetryAfter:
         """The over-reporting direction. From 08:59:50 the base 1000/min needs
         30 s; the 09:00 window doubles the rate, so 10 s of base refill leaves
         333_334 to clear at 2000/min = 10.000 s. Total 20.001 s."""
-        doubling = (
-            ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=2.0),
-        )
+        doubling = (ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=2.0),)
         got = retry_after_with_schedule(
             deficit_milli=500_000,
             **self.BASE,
@@ -2175,9 +2153,7 @@ class TestDeserialisedBucketsCarryBothSchedules:
         # A quota may carry a *parameter* schedule as well — `with_schedule`
         # never touches `refill_amount`, so the intermediate value is already a
         # legal quota (Task 1). Only the reset has to arrive with the amount.
-        limit = Limit.quota(
-            "rpd", 10_000, cron="0 0 * * *", tz="America/New_York"
-        ).with_schedule(
+        limit = Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York").with_schedule(
             (ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", scale=0.5),)
         )
         await repo.create_entity("bs-1", parent_id=None, name="bs-1")
@@ -2752,9 +2728,7 @@ class LimitDecl:
         if self.schedule:
             result["schedule"] = [_entry_to_dict(e) for e in self.schedule]
         if self.reset_schedule:
-            result["reset_schedule"] = [
-                {"cron": e.cron, "tz": e.tz} for e in self.reset_schedule
-            ]
+            result["reset_schedule"] = [{"cron": e.cron, "tz": e.tz} for e in self.reset_schedule]
         return result
 ```
 
@@ -2785,9 +2759,9 @@ Expected: PASS
 - [ ] **Step 5: Lint, type check, commit**
 
 ```bash
-# Never bare `uv run ruff format .` (Global Constraints) — it reformats 34
-# unrelated files, these plan documents included. pre-commit runs ruff
-# check and format at the pinned 0.9.2 over exactly these paths.
+# pre-commit runs ruff check and format at the pinned version over exactly
+# these paths. (A bare `uv run ruff format .` is safe since #486 — the pin
+# and the CLI agree — but scoping is still cheaper.)
 pre-commit run --files src/zae_limiter_provisioner/manifest.py tests/unit/test_provisioner_manifest.py tests/unit/test_differ.py
 uv run mypy
 git add src/zae_limiter_provisioner/manifest.py tests/unit/test_provisioner_manifest.py
@@ -2882,9 +2856,7 @@ class TestCfnScheduleRoundTrip:
                     "rpd": {
                         "capacity": 10000,
                         "refill_period": 86400,
-                        "reset_schedule": [
-                            {"cron": "0 0 * * *", "tz": "America/New_York"}
-                        ],
+                        "reset_schedule": [{"cron": "0 0 * * *", "tz": "America/New_York"}],
                     },
                 }
             }
@@ -2904,9 +2876,7 @@ class TestCfnScheduleRoundTrip:
 
     def test_emits_reset_schedule(self):
         limits = self._limits(_render(self.MANIFEST))
-        assert limits["rpd"]["ResetSchedule"] == [
-            {"Cron": "0 0 * * *", "Tz": "America/New_York"}
-        ]
+        assert limits["rpd"]["ResetSchedule"] == [{"Cron": "0 0 * * *", "Tz": "America/New_York"}]
 
     def test_omits_both_properties_when_absent(self):
         """Absent means inherit; an emitted empty list would not round-trip."""
@@ -3022,9 +2992,9 @@ uv run pytest tests/unit/test_limits_cli.py tests/unit/test_provisioner_handler.
 - [ ] **Step 6: Lint, type check, commit**
 
 ```bash
-# Never bare `uv run ruff format .` (Global Constraints) — it reformats 34
-# unrelated files, these plan documents included. pre-commit runs ruff
-# check and format at the pinned 0.9.2 over exactly these paths.
+# pre-commit runs ruff check and format at the pinned version over exactly
+# these paths. (A bare `uv run ruff format .` is safe since #486 — the pin
+# and the CLI agree — but scoping is still cheaper.)
 pre-commit run --files src/zae_limiter_provisioner/bucket_sync.py src/zae_limiter/infra/provisioner_builder.py tests/unit/test_provisioner_bucket_sync.py tests/unit/test_provisioner_builder.py
 uv run mypy
 git add -A
@@ -3131,9 +3101,7 @@ class TestProvisionerStampsSchedules:
             "capacity": 1000,
             "refill_amount": 1000,
             "refill_period": 60,
-            "schedule": [
-                {"cron": "* 9-17 * * MON-FRI", "tz": "America/New_York", "scale": 0.5}
-            ],
+            "schedule": [{"cron": "* 9-17 * * MON-FRI", "tz": "America/New_York", "scale": 0.5}],
         }
     }
 
@@ -3228,44 +3196,40 @@ Expected: FAIL with `KeyError: ':sched'`
 In `build_bucket_param_update`, after the existing `cp`/`ra`/`rp` loop:
 
 ```python
-    scheduled = {
-        name: decl["schedule"] for name, decl in limits.items() if decl.get("schedule")
-    }
-    reset = {
-        name: decl["reset_schedule"]
-        for name, decl in limits.items()
-        if decl.get("reset_schedule")
-    }
+scheduled = {name: decl["schedule"] for name, decl in limits.items() if decl.get("schedule")}
+reset = {
+    name: decl["reset_schedule"] for name, decl in limits.items() if decl.get("reset_schedule")
+}
 
-    if scheduled:
-        entries = [ScheduleEntry(**e) for e in next(iter(scheduled.values()))]
-        compact, tz = encode(tuple(entries))
-        set_parts.append("#sched = :sched")
-        expr_names["#sched"] = BUCKET_FIELD_SCHED
-        expr_values[":sched"] = {"S": compact}
-        set_parts.append("#sched_tz = :sched_tz")
-        expr_names["#sched_tz"] = BUCKET_FIELD_SCHED_TZ
-        expr_values[":sched_tz"] = {"S": tz or "UTC"}
-    if reset:
-        entries = [ScheduleEntry.reset(**e) for e in next(iter(reset.values()))]
-        compact, _tz = encode_reset(tuple(entries))
-        set_parts.append("#rsched = :rsched")
-        expr_names["#rsched"] = BUCKET_FIELD_RSCHED
-        expr_values[":rsched"] = {"S": compact}
+if scheduled:
+    entries = [ScheduleEntry(**e) for e in next(iter(scheduled.values()))]
+    compact, tz = encode(tuple(entries))
+    set_parts.append("#sched = :sched")
+    expr_names["#sched"] = BUCKET_FIELD_SCHED
+    expr_values[":sched"] = {"S": compact}
+    set_parts.append("#sched_tz = :sched_tz")
+    expr_names["#sched_tz"] = BUCKET_FIELD_SCHED_TZ
+    expr_values[":sched_tz"] = {"S": tz or "UTC"}
+if reset:
+    entries = [ScheduleEntry.reset(**e) for e in next(iter(reset.values()))]
+    compact, _tz = encode_reset(tuple(entries))
+    set_parts.append("#rsched = :rsched")
+    expr_names["#rsched"] = BUCKET_FIELD_RSCHED
+    expr_values[":rsched"] = {"S": compact}
 
-    if not scheduled and not reset:
-        # Override, not merge: a limit re-applied without a schedule must lose
-        # the stamp. `#vu` is NOT in this list — core plan Task 13 already SETs
-        # it to 0 unconditionally above, and SET + REMOVE on one attribute is a
-        # ValidationException (#488). The forced materialising pass (§3.4) is
-        # therefore already in place on every fan-out, scheduled or not.
-        for alias, attr in (
-            ("#sched", BUCKET_FIELD_SCHED),
-            ("#sched_tz", BUCKET_FIELD_SCHED_TZ),
-            ("#rsched", BUCKET_FIELD_RSCHED),
-        ):
-            expr_names[alias] = attr
-            remove_parts.append(alias)
+if not scheduled and not reset:
+    # Override, not merge: a limit re-applied without a schedule must lose
+    # the stamp. `#vu` is NOT in this list — core plan Task 13 already SETs
+    # it to 0 unconditionally above, and SET + REMOVE on one attribute is a
+    # ValidationException (#488). The forced materialising pass (§3.4) is
+    # therefore already in place on every fan-out, scheduled or not.
+    for alias, attr in (
+        ("#sched", BUCKET_FIELD_SCHED),
+        ("#sched_tz", BUCKET_FIELD_SCHED_TZ),
+        ("#rsched", BUCKET_FIELD_RSCHED),
+    ):
+        expr_names[alias] = attr
+        remove_parts.append(alias)
 ```
 
 The merged `#vu = :vu_zero` SET stays exactly where it is; do not move it under a
@@ -3285,9 +3249,9 @@ uv run pytest tests/unit/test_provisioner_bucket_sync.py tests/unit/test_provisi
 - [ ] **Step 5: Lint, type check, commit**
 
 ```bash
-# Never bare `uv run ruff format .` (Global Constraints) — it reformats 34
-# unrelated files, these plan documents included. pre-commit runs ruff
-# check and format at the pinned 0.9.2 over exactly these paths.
+# pre-commit runs ruff check and format at the pinned version over exactly
+# these paths. (A bare `uv run ruff format .` is safe since #486 — the pin
+# and the CLI agree — but scoping is still cheaper.)
 pre-commit run --files src/zae_limiter/cli.py tests/unit/test_cli.py
 uv run mypy
 git add -A
@@ -3435,9 +3399,7 @@ def _format_schedule_lines(limit: Limit) -> list[str]:
     if limit.reset_schedule:
         lines.append("    Reset:")
         for entry in limit.reset_schedule:
-            lines.append(
-                f"      {to_cron_display(entry)}  {entry.tz}  → refill to capacity"
-            )
+            lines.append(f"      {to_cron_display(entry)}  {entry.tz}  → refill to capacity")
     return lines
 ```
 
@@ -3463,9 +3425,9 @@ Expected: PASS (5 tests)
 - [ ] **Step 5: Lint, type check, commit**
 
 ```bash
-# Never bare `uv run ruff format .` (Global Constraints) — it reformats 34
-# unrelated files, these plan documents included. pre-commit runs ruff
-# check and format at the pinned 0.9.2 over exactly these paths.
+# pre-commit runs ruff check and format at the pinned version over exactly
+# these paths. (A bare `uv run ruff format .` is safe since #486 — the pin
+# and the CLI agree — but scoping is still cheaper.)
 pre-commit run --files src/zae_limiter/repository.py tests/unit/test_repository.py tests/unit/test_limiter.py tests/unit/test_schedule_encoding.py tests/integration/test_schedule_failure.py
 uv run mypy
 uv run pytest tests/unit/test_cli.py -q
@@ -3847,39 +3809,38 @@ inventing work to make a red phase.
 One helper in `repository.py`, used at both decode sites:
 
 ```python
-    def _decode_stored_schedule(
-        self, attr_name: str, compact: str, tz: str, *, reset: bool = False
-    ) -> tuple[schedule.ScheduleEntry, ...]:
-        """Decode a stored schedule, or declare the limiter unavailable (§6).
+def _decode_stored_schedule(
+    self, attr_name: str, compact: str, tz: str, *, reset: bool = False
+) -> tuple[schedule.ScheduleEntry, ...]:
+    """Decode a stored schedule, or declare the limiter unavailable (§6).
 
-        A limiter that cannot determine the limit is definitionally
-        unavailable, and ``on_unavailable`` is the knob that already exists for
-        that — in ``allow`` mode it degrades exactly the way the operator asked.
-        The alternative, treating an unreadable schedule as *no* schedule, runs
-        at the **base** limit: a parse error would then double a customer's
-        limit when the schedule said ``0.5x``, and with ``vu`` left expired the
-        bucket would be pinned to the slow path permanently.
+    A limiter that cannot determine the limit is definitionally
+    unavailable, and ``on_unavailable`` is the knob that already exists for
+    that — in ``allow`` mode it degrades exactly the way the operator asked.
+    The alternative, treating an unreadable schedule as *no* schedule, runs
+    at the **base** limit: a parse error would then double a customer's
+    limit when the schedule said ``0.5x``, and with ``vu`` left expired the
+    bucket would be pinned to the slow path permanently.
 
-        The parser keeps raising ``ValueError`` and is not touched: it is pure
-        stdlib plus cronsim so that ``models`` can import it without a cycle and
-        both Lambdas can vendor it, and the aggregator's ``_decode_schedule``
-        catches ``ValueError`` specifically — raising an ``InfrastructureError``
-        there would slip through that catch and poison a whole stream batch.
+    The parser keeps raising ``ValueError`` and is not touched: it is pure
+    stdlib plus cronsim so that ``models`` can import it without a cycle and
+    both Lambdas can vendor it, and the aggregator's ``_decode_schedule``
+    catches ``ValueError`` specifically — raising an ``InfrastructureError``
+    there would slip through that catch and poison a whole stream batch.
 
-        The message carries the attribute name and the stored value because
-        there is no version marker to say whether a newer client wrote this;
-        see Task 10's Decision 1.
-        """
-        decoder = schedule.decode_reset if reset else schedule.decode
-        try:
-            return decoder(compact, tz)
-        except ValueError as exc:
-            raise RateLimiterUnavailable(
-                f"stored schedule in {attr_name} could not be decoded: "
-                f"{compact!r} ({tz}): {exc}",
-                cause=exc,
-                stack_name=self.stack_name,
-            ) from exc
+    The message carries the attribute name and the stored value because
+    there is no version marker to say whether a newer client wrote this;
+    see Task 10's Decision 1.
+    """
+    decoder = schedule.decode_reset if reset else schedule.decode
+    try:
+        return decoder(compact, tz)
+    except ValueError as exc:
+        raise RateLimiterUnavailable(
+            f"stored schedule in {attr_name} could not be decoded: {compact!r} ({tz}): {exc}",
+            cause=exc,
+            stack_name=self.stack_name,
+        ) from exc
 ```
 
 Route `_deserialize_limits` (:5010) and `_deserialize_composite_bucket` (:4878) through it.
@@ -4044,10 +4005,10 @@ BUSINESS = (ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scal
 NIGHT_DOUBLE = (ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", capacity=2000),)
 DAILY_RESET = (ScheduleEntry.reset(cron="0 0 * * *", tz="America/New_York"),)
 
-BEFORE = _ny("2026-09-15 08:00")   # outside every window above
-INSIDE = _ny("2026-09-15 10:00")   # inside BUSINESS
-NIGHT = _ny("2026-09-16 03:00")    # inside NIGHT_DOUBLE
-LATE = _ny("2026-09-15 23:00")     # before the daily reset
+BEFORE = _ny("2026-09-15 08:00")  # outside every window above
+INSIDE = _ny("2026-09-15 10:00")  # inside BUSINESS
+NIGHT = _ny("2026-09-16 03:00")  # inside NIGHT_DOUBLE
+LATE = _ny("2026-09-15 23:00")  # before the daily reset
 AFTER_RESET = _ny("2026-09-16 00:30")
 
 
@@ -4219,7 +4180,8 @@ class TestE2EScheduleBoundaries:
         assert sum(results) <= 10
 
         bucket = next(
-            b for b in await sched_repo.get_buckets("race-1", resource="gpt-4")
+            b
+            for b in await sched_repo.get_buckets("race-1", resource="gpt-4")
             if b.limit_name == "rpm"
         )
         assert bucket.tokens_milli >= 0
@@ -4238,9 +4200,7 @@ class TestE2EScheduleBoundaries:
             [Limit.per_minute("rpm", 1000).with_schedule(BUSINESS)],
             resource="gpt-4",
         )
-        await sched_repo.set_limits(
-            "casc-key", [Limit.per_minute("rpm", 1000)], resource="gpt-4"
-        )
+        await sched_repo.set_limits("casc-key", [Limit.per_minute("rpm", 1000)], resource="gpt-4")
         async with limiter.acquire("casc-key", "gpt-4", consume={"rpm": 1}):
             pass
 
@@ -4270,18 +4230,15 @@ class TestE2EScheduleBoundaries:
             pass
         await sched_repo.bump_shard_count("shard-1", "gpt-4", 1)
         for shard in (0, 1):
-            await sched_repo.speculative_consume(
-                "shard-1", "gpt-4", {"rpm": 1}, shard_id=shard
-            )
+            await sched_repo.speculative_consume("shard-1", "gpt-4", {"rpm": 1}, shard_id=shard)
 
         await self._at(sched_repo, INSIDE)
         for shard in (0, 1):
-            await sched_repo.speculative_consume(
-                "shard-1", "gpt-4", {"rpm": 1}, shard_id=shard
-            )
+            await sched_repo.speculative_consume("shard-1", "gpt-4", {"rpm": 1}, shard_id=shard)
 
         buckets = [
-            b for b in await sched_repo.get_buckets("shard-1", resource="gpt-4")
+            b
+            for b in await sched_repo.get_buckets("shard-1", resource="gpt-4")
             if b.limit_name == "rpm"
         ]
         assert len(buckets) == 2
@@ -4313,7 +4270,8 @@ class TestE2EScheduleBoundaries:
             pass
 
         bucket = next(
-            b for b in await sched_repo.get_buckets("quota-1", resource="gpt-4")
+            b
+            for b in await sched_repo.get_buckets("quota-1", resource="gpt-4")
             if b.limit_name == "rpd"
         )
         assert bucket.tokens_milli == 1_000_000
@@ -4336,7 +4294,8 @@ class TestE2EScheduleBoundaries:
 
         await self._at(sched_repo, AFTER_RESET)
         idle = next(
-            b for b in await sched_repo.get_buckets("idle-1", resource="gpt-4")
+            b
+            for b in await sched_repo.get_buckets("idle-1", resource="gpt-4")
             if b.limit_name == "rpd"
         )
         assert idle.tokens_milli == 0  # the edge passed; nothing applied it
@@ -4345,7 +4304,8 @@ class TestE2EScheduleBoundaries:
         async with limiter.acquire("idle-1", "gpt-4", consume={"rpd": 1}):
             pass
         woken = next(
-            b for b in await sched_repo.get_buckets("idle-1", resource="gpt-4")
+            b
+            for b in await sched_repo.get_buckets("idle-1", resource="gpt-4")
             if b.limit_name == "rpd"
         )
         assert woken.tokens_milli == 9_999_000
@@ -4470,9 +4430,7 @@ class TestE2EScheduleThroughTheProvisioner:
 
         limiter = RateLimiter(repository=prov_repo)
         prov_repo._now_ms = lambda: _ny("2026-09-15 08:00")
-        await prov_repo.set_limits(
-            "prov-1", [Limit.per_minute("rpm", 1000)], resource="gpt-4"
-        )
+        await prov_repo.set_limits("prov-1", [Limit.per_minute("rpm", 1000)], resource="gpt-4")
         async with limiter.acquire("prov-1", "gpt-4", consume={"rpm": 1}):
             pass
 
@@ -4603,7 +4561,8 @@ class TestE2EScheduleWithTheAggregator:
         await asyncio.sleep(15)  # stream + Lambda
 
         bucket = next(
-            b for b in await aggr_repo.get_buckets("aggr-sched", resource="gpt-4")
+            b
+            for b in await aggr_repo.get_buckets("aggr-sched", resource="gpt-4")
             if b.limit_name == "rpm"
         )
         now_ms = aggr_repo._now_ms()
@@ -4671,7 +4630,8 @@ class TestE2EScheduleWithTheAggregator:
                     pass
 
             bucket = next(
-                b for b in await scoped.get_buckets("noaggr-sched", resource="gpt-4")
+                b
+                for b in await scoped.get_buckets("noaggr-sched", resource="gpt-4")
                 if b.limit_name == "rpm"
             )
             assert bucket.tokens_milli <= bucket.effective_capacity_milli(scoped._now_ms())
@@ -4949,7 +4909,8 @@ the core plan's SDD ledger. Each is fixed in the task named, not papered over.
     `tests/unit/test_processor.py`, not `test_aggregator_processor.py`; and `uv run ruff format .`
     must never be run bare in this repo (local ruff reformats 34 unrelated files including these
     plan documents — core plan Task 4's ledger). Every expanded step scopes the formatter to the
-    directories it touched.
+    directories it touched. **The second half is retired by #486**: every ruff declaration is now
+    pinned to one exact version, so a bare format run on a clean tree reformats nothing.
 
 ## Corrected after ADR-137 / ADR-138 (2026-09-15)
 
@@ -5001,8 +4962,8 @@ above was written. This pass reconciled the document with both.
 
 26. **Four steps still ran the formatter bare**, contradicting ledger entry 19's own claim that
     "every expanded step scopes the formatter". Tasks 6, 8, 9 and 10 now run
-    `pre-commit run --files <paths>`, which applies ruff check and format at the pinned 0.9.2
-    over exactly the files that task touches.
+    `pre-commit run --files <paths>`, which applies ruff check and format at the pinned version
+    over exactly the files that task touches. (Since #486 the bare run is harmless either way.)
 
 27. **Every line reference in the document has drifted** past the core plan's merge. Recorded
     in the Global Constraints with the offsets spot-checked during this pass, rather than
