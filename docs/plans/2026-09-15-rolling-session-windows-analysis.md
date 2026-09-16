@@ -658,7 +658,7 @@ A rolling window's cycle is **`reset_after`, exactly and by construction** — n
 ```python
 if limit.is_quota:
     if limit.reset_after is not None:
-        return float(limit.reset_after)          # required, not optional — see below
+        return float(limit.reset_after)  # required, not optional — see below
     return float(min(_reset_cycle_seconds(entry) for entry in limit.reset_schedule))
 ```
 
@@ -700,8 +700,11 @@ is a constant that dominates on iteration one exactly as a quota's does today.
 `RateLimitExceeded._limit_shape()` (exceptions.py:162-166) does:
 
 ```python
-return {"kind": "quota", "capacity": limit.capacity,
-        "resets_at_ms": next_reset_edge(limit.reset_schedule, now_ms=now_ms)}
+return {
+    "kind": "quota",
+    "capacity": limit.capacity,
+    "resets_at_ms": next_reset_edge(limit.reset_schedule, now_ms=now_ms),
+}
 ```
 
 A calendar edge is recoverable from the clock plus the config, so a `Limit` suffices. A rolling
