@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789516273819,
+  "lastUpdate": 1789519736298,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -45827,6 +45827,240 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.00022229409203997297",
             "extra": "mean: 5.771170803468666 msec\nrounds: 173"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a42198b77f5a949dd57eb9d9671a40baa48ea21a",
+          "message": "🔧 chore(ci): pin every ruff declaration to one exact version (#598)\n\n## Summary\n\nFive places named a ruff version and none was constrained against any\nother, so the lint command documented in `CLAUDE.md` formatted with\n**0.16.6** while the commit hook that gates the commit formatted with\n**0.9.2**:\n\n| Declaration | Was | Now |\n|---|---|---|\n| `[build-system] requires` | `ruff>=0.9.0` | `ruff==0.16.6` |\n| `[dev]` extra | `ruff>=0.1.0` (resolved 0.16.6) | `ruff==0.16.6` |\n| `.pre-commit-config.yaml` rev | `v0.9.2` | `v0.16.6` |\n| `.github/workflows/ci-lint.yml` | `pip install ruff` (unpinned) |\npinned |\n| hatch default env | named none — handed `generate-sync` whatever was\non `PATH` | pinned |\n\nNew `scripts/check_ruff_pin.py`, wired as the `check-ruff-pin`\npre-commit hook, reads all five and fails if any disagrees or is not an\nexact pin. An exact pin rather than a compatible range, because a range\nstill lets `uv sync` and the hook resolve to different versions inside\nit — which is the bug.\n\nThe expensive half of the trap was not the local churn.\n`generate_sync.py` shells out to `shutil.which(\"ruff\")` while the\n`verify-sync-generated` hook checks the result with the pinned one, so a\nconstruct the two versions disagree on leaves the generated sync twin\nreported permanently out of date, with nothing in the output naming the\ncause. Observed on #513, where a multi-line `lambda` had to be rewritten\nas a `def` to land.\n\nv0.16.6's `ruff-format` hook declares `types_or: [python, pyi, jupyter,\nmarkdown]`, so the hook now covers the Markdown the documented command\nalready globbed. The issue's \"bumping the hook fixes the `.py` file but\nnot the 33 Markdown files\" asymmetry was a property of intermediate revs\nand does not apply at this version.\n\n## How to review this — 34 of the 42 files are mechanical\n\nThe diff is large (~1,600 insertions) but the size is not substance:\n\n| Commit | Files | What |\n|---|---|---|\n| `1d93eebc` 🔧 chore(ci) | 5 (+156/−5) | **Review this.** The pin, and\nthe `check-ruff-pin` hook that holds it. |\n| `87100c32` 🎨 style | 34 (+1419/−1246) | **Skim this.** Pure `ruff\nformat` output, isolated so the commit above stays reviewable. 33\nMarkdown files whose Python code blocks ruff only began formatting after\n0.9.2, plus `tests/unit/test_cfn_iam_parity.py` — 0.16.6 parenthesises a\nmulti-line conditional `lambda` body where 0.9.2 did not, the same\nconstruct that blocked #513. No prose, no code semantics changed. No\ngenerated file is among the 34. |\n| `53db9982` 📝 docs | 3 (+39/−16) | **Review this.** Retires the \"never\nrun bare `ruff format .`\" workaround. |\n\nThe workaround was never in `CLAUDE.md` or `.claude/rules/lint-rules.md`\n— it lived in `docs/plans/2026-09-13-scheduled-limits-surface-plan.md`,\nin its Global Constraints and echoed verbatim in four task steps and two\nledger entries, which is why it kept being copied into agent briefs. All\nseven are updated; the scoped `pre-commit run --files <paths>`\ninvocations still work and are still cheaper, they are simply no longer\nrequired.\n\n## Test plan\n\n- [x] `uv run ruff format --check .` on a clean tree — **before:** 34\nfiles would be reformatted / 326 already formatted; **after:** 0 / 361\nalready formatted\n- [x] `uv run ruff check .` — All checks passed\n- [x] `uv run mypy` — Success: no issues found in 58 source files\n- [x] `uv run pytest tests/unit/ -q` — 4831 passed\n- [x] `uv run pytest tests/unit/ -m gevent -n 0 -q` — 26 passed\n- [x] `uv run pytest tests/doctest/ -q` — 352 passed, 227 skipped\n(relevant: docs code blocks were reformatted)\n- [x] `pre-commit run --all-files` — all 7 hooks pass\n- [x] `uv run python scripts/generate_sync.py` then `git diff\n--exit-code` over the sync twins — clean\n- [x] `uv build` — sdist and wheel both build; the isolated build env's\npinned ruff regenerated the sync twins identically (\"All files up to\ndate\")\n- [x] **Drift demo** (issue acceptance criterion \"demonstrate in the\nPR\"): editing the hook `rev` back to `v0.9.2` makes `pre-commit run\ncheck-ruff-pin` fail with exit 1, printing all five declarations and\nwhich one disagrees\n- [x] No `# noqa`, no `# type: ignore`, no new\n`[tool.ruff.lint.per-file-ignores]` entry, no `--ignore` flag anywhere\nin the diff (`.claude/rules/lint-rules.md`)\n\nDependabot groups `ruff`, so it will bump `pyproject.toml` without the\nhook `rev` — that PR failing `check-ruff-pin` is the intended behaviour,\nnot a false positive.\n\nRefs #486 — the closing keyword lives on commit `1d93eebc`, not in this\nbody, so it is not duplicated here.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01QdVj8nPhUwTz2aNJzMFqt5",
+          "timestamp": "2026-09-15T20:47:31-04:00",
+          "tree_id": "3ed43421f20b7de9823a6129e14de40e995572ec",
+          "url": "https://github.com/zeroae/zae-limiter/commit/a42198b77f5a949dd57eb9d9671a40baa48ea21a"
+        },
+        "date": 1789519735106,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_single_limit_latency",
+            "value": 188.91617497204447,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00020015420986328075",
+            "extra": "mean: 5.293352991865193 msec\nrounds: 123"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_two_limits_latency",
+            "value": 155.27281210126006,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000532048854087621",
+            "extra": "mean: 6.440277511995191 msec\nrounds: 125"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_cascade_latency",
+            "value": 75.61912319919013,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0002107150984488716",
+            "extra": "mean: 13.224168142837048 msec\nrounds: 7"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_available_check_latency",
+            "value": 117.34175805133354,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000701374729952606",
+            "extra": "mean: 8.522115371430942 msec\nrounds: 105"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyBenchmarks::test_acquire_with_stored_limits_latency",
+            "value": 148.08416527275054,
+            "unit": "iter/sec",
+            "range": "stddev: 0.011079915144382385",
+            "extra": "mean: 6.75291647934226 msec\nrounds: 121"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_baseline_no_cascade",
+            "value": 188.18976640707933,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00030997257355760277",
+            "extra": "mean: 5.313785223777089 msec\nrounds: 143"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_with_cascade",
+            "value": 93.6418843146732,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0003981836905608686",
+            "extra": "mean: 10.67898203158333 msec\nrounds: 95"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_one_limit",
+            "value": 190.859428378191,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00015491017245076246",
+            "extra": "mean: 5.239458215386058 msec\nrounds: 130"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_two_limits",
+            "value": 144.08327141140964,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0006632034081794783",
+            "extra": "mean: 6.94043097581148 msec\nrounds: 124"
+          },
+          {
+            "name": "tests/benchmark/test_latency.py::TestLatencyComparison::test_five_limits",
+            "value": 81.10503645624836,
+            "unit": "iter/sec",
+            "range": "stddev: 0.01683543250381139",
+            "extra": "mean: 12.329690530864188 msec\nrounds: 81"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_single_limit",
+            "value": 190.87079399972006,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00016798674283379894",
+            "extra": "mean: 5.239146225804807 msec\nrounds: 124"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestAcquireReleaseBenchmarks::test_acquire_release_multiple_limits",
+            "value": 159.76481445937668,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00018154197469142307",
+            "extra": "mean: 6.2592004590239085 msec\nrounds: 122"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_available_check",
+            "value": 130.82235993552663,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0009433434040283582",
+            "extra": "mean: 7.643953223996505 msec\nrounds: 125"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestTransactionOverheadBenchmarks::test_transactional_acquire",
+            "value": 155.1101050778678,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0007038320342191371",
+            "extra": "mean: 6.4470332187447354 msec\nrounds: 96"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_without_cascade",
+            "value": 190.70785496820554,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00016936381012295395",
+            "extra": "mean: 5.243622503995539 msec\nrounds: 125"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_acquire_with_cascade",
+            "value": 88.84484080148981,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0014636972641150175",
+            "extra": "mean: 11.25557759999083 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestCascadeOverheadBenchmarks::test_cascade_with_stored_limits",
+            "value": 94.36840678616113,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00045974301072757923",
+            "extra": "mean: 10.596766799994839 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_with_cached_config",
+            "value": 189.92713865043763,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0003459687411048681",
+            "extra": "mean: 5.265176988953157 msec\nrounds: 181"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_cold_config",
+            "value": 78.21733077820423,
+            "unit": "iter/sec",
+            "range": "stddev: 0.03372719206116412",
+            "extra": "mean: 12.784890382358286 msec\nrounds: 68"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConfigLookupBenchmarks::test_acquire_cascade_with_cached_config",
+            "value": 94.88417725698585,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00031505157814863775",
+            "extra": "mean: 10.539164999993451 msec\nrounds: 85"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_sequential_acquisitions",
+            "value": 18.818831782648772,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0007513983205373625",
+            "extra": "mean: 53.138261266675116 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestConcurrentThroughputBenchmarks::test_same_entity_sequential",
+            "value": 16.18480960468544,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006058132665105537",
+            "extra": "mean: 61.78633078948942 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_cache_disabled",
+            "value": 86.32667093779067,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00016770177539570402",
+            "extra": "mean: 11.583905520005828 msec\nrounds: 50"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_cache_enabled",
+            "value": 94.89293354232733,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0002457426297272319",
+            "extra": "mean: 10.53819249411176 msec\nrounds: 85"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_config_resolution_sequential",
+            "value": 46.95343801216513,
+            "unit": "iter/sec",
+            "range": "stddev: 0.03229096510442282",
+            "extra": "mean: 21.29769495773474 msec\nrounds: 71"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_config_resolution_batched",
+            "value": 118.90058386685487,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000360216924808084",
+            "extra": "mean: 8.41038763207254 msec\nrounds: 106"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_speculative_cache_cold",
+            "value": 94.60141109318846,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0002242702232837546",
+            "extra": "mean: 10.570666847822553 msec\nrounds: 92"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_cascade_speculative_cache_warm",
+            "value": 89.53582738687942,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0011286382098492855",
+            "extra": "mean: 11.16871345454881 msec\nrounds: 77"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_stored_limits_cache_disabled",
+            "value": 118.62060604810179,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0003468970953898959",
+            "extra": "mean: 8.430238499999657 msec\nrounds: 106"
+          },
+          {
+            "name": "tests/benchmark/test_operations.py::TestOptimizationComparison::test_stored_limits_cache_enabled",
+            "value": 122.93441451011076,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0015324040599400818",
+            "extra": "mean: 8.134418697847662 msec\nrounds: 139"
           }
         ]
       }
