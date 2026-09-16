@@ -12,13 +12,13 @@
         <meta name="author" content="ZeroAE">
       
       
-        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/dev/adr/008-security-audit-logging/">
+        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/dev/guide/scheduled-limits/">
       
       
-        <link rel="prev" href="../007-input-validation/">
+        <link rel="prev" href="../config-hierarchy/">
       
       
-        <link rel="next" href="../009-version-migration-system/">
+        <link rel="next" href="../hierarchical/">
       
       
         
@@ -29,7 +29,7 @@
     
     
       
-        <title>ADR-008 Audit Logging - zae-limiter</title>
+        <title>Scheduled (Cron) Limits - zae-limiter</title>
       
     
     
@@ -84,7 +84,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#adr-008-security-audit-logging" class="md-skip">
+        <a href="#scheduled-cron-limits" class="md-skip">
           Skip to content
         </a>
       
@@ -123,7 +123,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              ADR-008 Audit Logging
+              Scheduled (Cron) Limits
             
           </span>
         </div>
@@ -294,18 +294,20 @@
       
   
   
+    
   
   
+  
     
     
     
     
     
-    <li class="md-nav__item md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" checked>
         
           
           <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
@@ -326,7 +328,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_2">
             <span class="md-nav__icon md-icon"></span>
             
@@ -372,7 +374,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../guide/token-bucket/" class="md-nav__link">
+      <a href="../token-bucket/" class="md-nav__link">
         
   
   
@@ -400,7 +402,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../guide/basic-usage/" class="md-nav__link">
+      <a href="../basic-usage/" class="md-nav__link">
         
   
   
@@ -428,7 +430,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../guide/config-hierarchy/" class="md-nav__link">
+      <a href="../config-hierarchy/" class="md-nav__link">
         
   
   
@@ -453,10 +455,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../../guide/scheduled-limits/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Scheduled (Cron) Limits
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -472,6 +501,169 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#when-to-use-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When to use it
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-mental-model-a-pattern-not-a-timer" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The mental model: a pattern, not a timer
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#scaling-a-limit-during-a-window" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scaling a limit during a window
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#absolute-values" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Absolute values
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#several-windows-first-match-wins" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Several windows: first match wins
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#timezones" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Timezones
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#quotas" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quotas
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#precedence-override-not-merge" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Precedence: override, not merge
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#declarative-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Declarative configuration
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#viewing-a-schedule" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Viewing a schedule
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-happens-at-a-boundary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What happens at a boundary
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#limitations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Limitations
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#see-also" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        See also
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -484,7 +676,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../guide/hierarchical/" class="md-nav__link">
+      <a href="../hierarchical/" class="md-nav__link">
         
   
   
@@ -512,7 +704,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../guide/llm-integration/" class="md-nav__link">
+      <a href="../llm-integration/" class="md-nav__link">
         
   
   
@@ -540,7 +732,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../guide/usage-snapshots/" class="md-nav__link">
+      <a href="../usage-snapshots/" class="md-nav__link">
         
   
   
@@ -568,7 +760,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../guide/unavailability/" class="md-nav__link">
+      <a href="../unavailability/" class="md-nav__link">
         
   
   
@@ -1460,20 +1652,18 @@
       
   
   
-    
   
   
-  
     
     
     
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
         
           
           <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
@@ -1494,7 +1684,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_6">
             <span class="md-nav__icon md-icon"></span>
             
@@ -1512,7 +1702,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../000-adr-format-standard/" class="md-nav__link">
+      <a href="../../adr/000-adr-format-standard/" class="md-nav__link">
         
   
   
@@ -1537,20 +1727,18 @@
                 
   
   
-    
   
   
-  
     
     
     
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_2" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_2" >
         
           
           <label class="md-nav__link" for="__nav_6_2" id="__nav_6_2_label" tabindex="0">
@@ -1571,7 +1759,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_2_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_2_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_6_2">
             <span class="md-nav__icon md-icon"></span>
             
@@ -1589,7 +1777,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../001-single-table-dynamodb/" class="md-nav__link">
+      <a href="../../adr/001-single-table-dynamodb/" class="md-nav__link">
         
   
   
@@ -1617,7 +1805,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../002-integer-arithmetic-millitokens/" class="md-nav__link">
+      <a href="../../adr/002-integer-arithmetic-millitokens/" class="md-nav__link">
         
   
   
@@ -1645,7 +1833,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../003-cloudformation-infrastructure/" class="md-nav__link">
+      <a href="../../adr/003-cloudformation-infrastructure/" class="md-nav__link">
         
   
   
@@ -1673,7 +1861,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../004-declarative-stack-options/" class="md-nav__link">
+      <a href="../../adr/004-declarative-stack-options/" class="md-nav__link">
         
   
   
@@ -1701,7 +1889,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../005-exception-hierarchy/" class="md-nav__link">
+      <a href="../../adr/005-exception-hierarchy/" class="md-nav__link">
         
   
   
@@ -1729,7 +1917,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../006-flat-schema-snapshots/" class="md-nav__link">
+      <a href="../../adr/006-flat-schema-snapshots/" class="md-nav__link">
         
   
   
@@ -1757,7 +1945,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../007-input-validation/" class="md-nav__link">
+      <a href="../../adr/007-input-validation/" class="md-nav__link">
         
   
   
@@ -1782,37 +1970,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    ADR-008 Audit Logging
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../../adr/008-security-audit-logging/" class="md-nav__link">
         
   
   
@@ -1828,70 +1989,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#context" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Context
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#decision" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Decision
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#consequences" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Consequences
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#alternatives-considered" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Alternatives Considered
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -1904,7 +2001,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../009-version-migration-system/" class="md-nav__link">
+      <a href="../../adr/009-version-migration-system/" class="md-nav__link">
         
   
   
@@ -1932,7 +2029,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../010-total-consumed-counter/" class="md-nav__link">
+      <a href="../../adr/010-total-consumed-counter/" class="md-nav__link">
         
   
   
@@ -1960,7 +2057,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../011-api-cli-parity/" class="md-nav__link">
+      <a href="../../adr/011-api-cli-parity/" class="md-nav__link">
         
   
   
@@ -1988,7 +2085,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../012-cloudformation-docs-parity/" class="md-nav__link">
+      <a href="../../adr/012-cloudformation-docs-parity/" class="md-nav__link">
         
   
   
@@ -2016,7 +2113,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../013-module-documentation-parity/" class="md-nav__link">
+      <a href="../../adr/013-module-documentation-parity/" class="md-nav__link">
         
   
   
@@ -2099,7 +2196,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../100-centralized-config/" class="md-nav__link">
+      <a href="../../adr/100-centralized-config/" class="md-nav__link">
         
   
   
@@ -2127,7 +2224,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../101-flat-schema-config/" class="md-nav__link">
+      <a href="../../adr/101-flat-schema-config/" class="md-nav__link">
         
   
   
@@ -2155,7 +2252,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../102-config-hierarchy/" class="md-nav__link">
+      <a href="../../adr/102-config-hierarchy/" class="md-nav__link">
         
   
   
@@ -2183,7 +2280,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../103-config-caching/" class="md-nav__link">
+      <a href="../../adr/103-config-caching/" class="md-nav__link">
         
   
   
@@ -2211,7 +2308,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../104-stored-limits-default/" class="md-nav__link">
+      <a href="../../adr/104-stored-limits-default/" class="md-nav__link">
         
   
   
@@ -2239,7 +2336,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../105-eventual-consistency/" class="md-nav__link">
+      <a href="../../adr/105-eventual-consistency/" class="md-nav__link">
         
   
   
@@ -2267,7 +2364,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../106-audit-entity-ids-for-config/" class="md-nav__link">
+      <a href="../../adr/106-audit-entity-ids-for-config/" class="md-nav__link">
         
   
   
@@ -2295,7 +2392,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../107-iam-roles-for-application-access/" class="md-nav__link">
+      <a href="../../adr/107-iam-roles-for-application-access/" class="md-nav__link">
         
   
   
@@ -2378,7 +2475,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../108-repository-protocol/" class="md-nav__link">
+      <a href="../../adr/108-repository-protocol/" class="md-nav__link">
         
   
   
@@ -2406,7 +2503,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../109-backend-capability-matrix/" class="md-nav__link">
+      <a href="../../adr/109-backend-capability-matrix/" class="md-nav__link">
         
   
   
@@ -2434,7 +2531,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../110-deprecation-constructor/" class="md-nav__link">
+      <a href="../../adr/110-deprecation-constructor/" class="md-nav__link">
         
   
   
@@ -2517,7 +2614,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../111-flatten-all-records/" class="md-nav__link">
+      <a href="../../adr/111-flatten-all-records/" class="md-nav__link">
         
   
   
@@ -2545,7 +2642,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../112-cascade-per-entity/" class="md-nav__link">
+      <a href="../../adr/112-cascade-per-entity/" class="md-nav__link">
         
   
   
@@ -2573,7 +2670,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../113-lambda-packaging/" class="md-nav__link">
+      <a href="../../adr/113-lambda-packaging/" class="md-nav__link">
         
   
   
@@ -2656,7 +2753,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../114-composite-bucket-items/" class="md-nav__link">
+      <a href="../../adr/114-composite-bucket-items/" class="md-nav__link">
         
   
   
@@ -2684,7 +2781,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../115-add-based-writes-lazy-refill/" class="md-nav__link">
+      <a href="../../adr/115-add-based-writes-lazy-refill/" class="md-nav__link">
         
   
   
@@ -2767,7 +2864,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../116-iam-role-naming/" class="md-nav__link">
+      <a href="../../adr/116-iam-role-naming/" class="md-nav__link">
         
   
   
@@ -2795,7 +2892,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../117-managed-policies-by-default/" class="md-nav__link">
+      <a href="../../adr/117-managed-policies-by-default/" class="md-nav__link">
         
   
   
@@ -2823,7 +2920,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../124-policy-rename-clarity/" class="md-nav__link">
+      <a href="../../adr/124-policy-rename-clarity/" class="md-nav__link">
         
   
   
@@ -2906,7 +3003,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../118-four-level-config-hierarchy/" class="md-nav__link">
+      <a href="../../adr/118-four-level-config-hierarchy/" class="md-nav__link">
         
   
   
@@ -2934,7 +3031,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../119-bucket-ttl-strategy/" class="md-nav__link">
+      <a href="../../adr/119-bucket-ttl-strategy/" class="md-nav__link">
         
   
   
@@ -2962,7 +3059,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../120-bucket-param-sync/" class="md-nav__link">
+      <a href="../../adr/120-bucket-param-sync/" class="md-nav__link">
         
   
   
@@ -3045,7 +3142,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../121-native-sync-unasync/" class="md-nav__link">
+      <a href="../../adr/121-native-sync-unasync/" class="md-nav__link">
         
   
   
@@ -3073,7 +3170,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../122-resolve-limits-on-repository/" class="md-nav__link">
+      <a href="../../adr/122-resolve-limits-on-repository/" class="md-nav__link">
         
   
   
@@ -3156,7 +3253,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../123-local-secondary-indexes/" class="md-nav__link">
+      <a href="../../adr/123-local-secondary-indexes/" class="md-nav__link">
         
   
   
@@ -3184,7 +3281,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../125-resource-disable/" class="md-nav__link">
+      <a href="../../adr/125-resource-disable/" class="md-nav__link">
         
   
   
@@ -3212,7 +3309,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../133-client-shard-creation/" class="md-nav__link">
+      <a href="../../adr/133-client-shard-creation/" class="md-nav__link">
         
   
   
@@ -3240,7 +3337,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../134-random-shard-selection/" class="md-nav__link">
+      <a href="../../adr/134-random-shard-selection/" class="md-nav__link">
         
   
   
@@ -3268,7 +3365,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../135-scheduled-limits/" class="md-nav__link">
+      <a href="../../adr/135-scheduled-limits/" class="md-nav__link">
         
   
   
@@ -3296,7 +3393,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../136-entity-config-bucket-ttl/" class="md-nav__link">
+      <a href="../../adr/136-entity-config-bucket-ttl/" class="md-nav__link">
         
   
   
@@ -3324,7 +3421,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../137-reset-replaces-drip/" class="md-nav__link">
+      <a href="../../adr/137-reset-replaces-drip/" class="md-nav__link">
         
   
   
@@ -3352,7 +3449,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../138-fixed-reset-windows-only/" class="md-nav__link">
+      <a href="../../adr/138-fixed-reset-windows-only/" class="md-nav__link">
         
   
   
@@ -3415,10 +3512,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#context" class="md-nav__link">
+  <a href="#when-to-use-it" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Context
+        When to use it
       
     </span>
   </a>
@@ -3426,10 +3523,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#decision" class="md-nav__link">
+  <a href="#the-mental-model-a-pattern-not-a-timer" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Decision
+        The mental model: a pattern, not a timer
       
     </span>
   </a>
@@ -3437,10 +3534,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#consequences" class="md-nav__link">
+  <a href="#scaling-a-limit-during-a-window" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Consequences
+        Scaling a limit during a window
       
     </span>
   </a>
@@ -3448,10 +3545,109 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#alternatives-considered" class="md-nav__link">
+  <a href="#absolute-values" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Alternatives Considered
+        Absolute values
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#several-windows-first-match-wins" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Several windows: first match wins
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#timezones" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Timezones
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#quotas" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quotas
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#precedence-override-not-merge" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Precedence: override, not merge
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#declarative-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Declarative configuration
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#viewing-a-schedule" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Viewing a schedule
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-happens-at-a-boundary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What happens at a boundary
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#limitations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Limitations
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#see-also" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        See also
       
     </span>
   </a>
@@ -3477,7 +3673,7 @@
 
 
   
-    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/adr/008-security-audit-logging.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/guide/scheduled-limits.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -3485,71 +3681,299 @@
   
 
 
-<h1 id="adr-008-security-audit-logging">ADR-008: Security Audit Logging<a class="headerlink" href="#adr-008-security-audit-logging" title="Permanent link">&para;</a></h1>
-<p><strong>Status:</strong> Accepted
-<strong>Date:</strong> 2026-01-12
-<strong>PR:</strong> <a href="https://github.com/zeroae/zae-limiter/pull/76">#76</a>
-<strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/47">#47</a>
-<strong>Milestone:</strong> v0.2.0</p>
-<h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
-<p>Rate limiting systems control access to resources, making them security-sensitive. Compliance requirements (SOC 2, HIPAA) and security best practices require audit trails for:</p>
-<ul>
-<li>Who changed rate limits and when</li>
-<li>Entity lifecycle (creation, deletion)</li>
-<li>Configuration modifications</li>
-</ul>
-<p>Without audit logging, investigating security incidents or proving compliance is difficult.</p>
-<h2 id="decision">Decision<a class="headerlink" href="#decision" title="Permanent link">&para;</a></h2>
-<p>Store audit events in DynamoDB alongside rate limiting data, with automatic TTL-based expiration.</p>
-<p><strong>Audit events logged:</strong></p>
+<h1 id="scheduled-cron-limits">Scheduled (Cron) Limits<a class="headerlink" href="#scheduled-cron-limits" title="Permanent link">&para;</a></h1>
+<p>Rate limits that change with the clock — halve throughput during business hours, raise it
+overnight, close a maintenance window, or hand back a quota at the start of each period.</p>
+<p>Without scheduling, a limit holds until someone calls <code>set_limits()</code>. The usual workaround is an
+external cron job that swaps capacity at each tick, which means extra infrastructure, no
+atomicity, and a window at every boundary where the old limit is still in force. Scheduled limits
+move that into the library: the schedule travels with the limit, and every reader works out the
+effective value for the current instant.</p>
+<div class="admonition info">
+<p class="admonition-title">Added in v0.14.0</p>
+<p><code>ScheduleEntry</code>, <code>Limit.with_schedule()</code> and <code>Limit.quota()</code> are new in v0.14.0.</p>
+</div>
+<h2 id="when-to-use-it">When to use it<a class="headerlink" href="#when-to-use-it" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
 <tr>
-<th>Action</th>
-<th>Trigger</th>
-<th>Details</th>
+<th>Pattern</th>
+<th>Example</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>entity_created</code></td>
-<td><code>create_entity()</code></td>
-<td>name, parent_id, metadata</td>
+<td><strong>Peak / off-peak</strong></td>
+<td>Half the throughput 9–5 on weekdays, full rate overnight</td>
 </tr>
 <tr>
-<td><code>entity_deleted</code></td>
-<td><code>delete_entity()</code></td>
-<td>records_deleted count</td>
+<td><strong>Maintenance window</strong></td>
+<td>Drop to a trickle during a nightly batch job</td>
 </tr>
 <tr>
-<td><code>limits_set</code></td>
-<td><code>set_limits()</code></td>
-<td>resource, limits config</td>
+<td><strong>Quota</strong></td>
+<td>10,000 requests per calendar month, back to full on the 1st</td>
 </tr>
 <tr>
-<td><code>limits_deleted</code></td>
-<td><code>delete_limits()</code></td>
-<td>resource</td>
+<td><strong>Weekend capacity</strong></td>
+<td>Raise limits Saturday and Sunday when traffic is lighter</td>
 </tr>
 </tbody>
 </table>
-<p><strong>Key structure:</strong> <code>PK=AUDIT#{entity_id}, SK=#AUDIT#{timestamp}</code></p>
-<p><strong>Optional <code>principal</code> parameter</strong> tracks who performed the action.</p>
-<h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>
-<p><strong>Positive:</strong>
-- Full audit trail without external dependencies
-- Same access patterns as other data (single table)
-- Automatic cleanup via DynamoDB TTL (default 90 days)
-- Principal tracking enables accountability</p>
-<p><strong>Negative:</strong>
-- Storage cost for audit records (mitigated by TTL)
-- No real-time alerting (would require separate system)
-- Audit records deleted with TTL, not archived (see <a href="https://github.com/zeroae/zae-limiter/issues/77">#77</a> for S3 archival)</p>
-<h2 id="alternatives-considered">Alternatives Considered<a class="headerlink" href="#alternatives-considered" title="Permanent link">&para;</a></h2>
+<h2 id="the-mental-model-a-pattern-not-a-timer">The mental model: a pattern, not a timer<a class="headerlink" href="#the-mental-model-a-pattern-not-a-timer" title="Permanent link">&para;</a></h2>
+<p>This is the one thing worth reading twice.</p>
+<p>In a cron <em>daemon</em>, <code>* 9-17 * * MON-FRI</code> means "fire every minute between 9 and 5 on weekdays" —
+it is a list of instants. Here it means something different: <strong>an entry is active for as long as
+the current minute matches the pattern.</strong> It describes a <em>window</em>, not a firing.</p>
+<div class="mermaid">gantt
+    title  "* 9-17 * * MON-FRI" with scale 0.5
+    dateFormat HH:mm
+    axisFormat %H:%M
+    section Tuesday
+    base limit (1000/min)   :done, a1, 00:00, 09:00
+    scaled to 500/min       :crit, a2, 09:00, 18:00
+    base limit (1000/min)   :done, a3, 18:00, 24:00</div>
+<p>So <code>* 9-17 * * MON-FRI</code> covers every minute of the nine-hour span, and <code>0 9 * * MON-FRI</code> — which a
+cron daemon would fire once a day — describes a window exactly <strong>one minute long</strong>. That is almost
+never what you want for a limit. As a rule of thumb, leave the minute field as <code>*</code> unless you
+genuinely mean a sub-hour window.</p>
+<p>The one place a single instant <em>is</em> what you want is a quota reset — see <a href="#quotas">Quotas</a>.</p>
+<h2 id="scaling-a-limit-during-a-window">Scaling a limit during a window<a class="headerlink" href="#scaling-a-limit-during-a-window" title="Permanent link">&para;</a></h2>
+<p>The common case. <code>scale</code> is a multiplier on the base limit:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">zae_limiter</span><span class="w"> </span><span class="kn">import</span> <span class="n">Limit</span><span class="p">,</span> <span class="n">RateLimiter</span><span class="p">,</span> <span class="n">Repository</span><span class="p">,</span> <span class="n">ScheduleEntry</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">repo</span> <span class="o">=</span> <span class="k">await</span> <span class="n">Repository</span><span class="o">.</span><span class="n">open</span><span class="p">()</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span><span class="n">repository</span><span class="o">=</span><span class="n">repo</span><span class="p">)</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="s2">"user-123"</span><span class="p">,</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>        <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">"rpm"</span><span class="p">,</span> <span class="mi">1000</span><span class="p">)</span><span class="o">.</span><span class="n">with_schedule</span><span class="p">(</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>            <span class="p">(</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>                <span class="n">ScheduleEntry</span><span class="p">(</span>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>                    <span class="n">cron</span><span class="o">=</span><span class="s2">"* 9-17 * * MON-FRI"</span><span class="p">,</span>
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>                    <span class="n">tz</span><span class="o">=</span><span class="s2">"America/New_York"</span><span class="p">,</span>
+</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>                    <span class="n">scale</span><span class="o">=</span><span class="mf">0.5</span><span class="p">,</span>
+</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>                <span class="p">),</span>
+</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>            <span class="p">)</span>
+</span><span id="__span-0-17"><a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>        <span class="p">),</span>
+</span><span id="__span-0-18"><a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>    <span class="p">],</span>
+</span><span id="__span-0-19"><a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>    <span class="n">resource</span><span class="o">=</span><span class="s2">"gpt-4"</span><span class="p">,</span>
+</span><span id="__span-0-20"><a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a><span class="p">)</span>
+</span></code></pre></div>
+<p>Outside the window the limit is 1000/min. Inside it, 500/min.</p>
+<div class="admonition note">
+<p class="admonition-title"><code>scale</code> moves capacity and refill together</p>
+<p>A scale of <code>0.5</code> halves <strong>both</strong> the bucket ceiling and the refill amount, so the time to
+refill from empty is unchanged.</p>
+</div>
+<h2 id="absolute-values">Absolute values<a class="headerlink" href="#absolute-values" title="Permanent link">&para;</a></h2>
+<p>When a window should have its own number rather than a multiple of the base, set <code>capacity</code>
+directly. <code>refill_amount</code> and <code>refill_period_seconds</code> are optional and fall back to the base:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">"rpm"</span><span class="p">,</span> <span class="mi">1000</span><span class="p">)</span><span class="o">.</span><span class="n">with_schedule</span><span class="p">(</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>    <span class="p">(</span><span class="n">ScheduleEntry</span><span class="p">(</span><span class="n">cron</span><span class="o">=</span><span class="s2">"* 0-6 * * *"</span><span class="p">,</span> <span class="n">tz</span><span class="o">=</span><span class="s2">"America/New_York"</span><span class="p">,</span> <span class="n">capacity</span><span class="o">=</span><span class="mi">2000</span><span class="p">),)</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="p">)</span>
+</span></code></pre></div>
+<p>An entry sets <strong>either</strong> <code>scale</code> <strong>or</strong> the absolute fields — never both. Mixing them raises
+<code>ValueError</code> at construction.</p>
+<h2 id="several-windows-first-match-wins">Several windows: first match wins<a class="headerlink" href="#several-windows-first-match-wins" title="Permanent link">&para;</a></h2>
+<p>Entries are checked in order and the first one matching the current minute supplies the limit.
+Nothing merges, and nothing accumulates:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">"rpm"</span><span class="p">,</span> <span class="mi">1000</span><span class="p">)</span><span class="o">.</span><span class="n">with_schedule</span><span class="p">(</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>    <span class="p">(</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>        <span class="c1"># Weekends are quiet — most specific first.</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>        <span class="n">ScheduleEntry</span><span class="p">(</span><span class="n">cron</span><span class="o">=</span><span class="s2">"* * * * SAT,SUN"</span><span class="p">,</span> <span class="n">tz</span><span class="o">=</span><span class="s2">"America/New_York"</span><span class="p">,</span> <span class="n">scale</span><span class="o">=</span><span class="mf">2.0</span><span class="p">),</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>        <span class="c1"># Business hours on the remaining days.</span>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>        <span class="n">ScheduleEntry</span><span class="p">(</span><span class="n">cron</span><span class="o">=</span><span class="s2">"* 9-17 * * MON-FRI"</span><span class="p">,</span> <span class="n">tz</span><span class="o">=</span><span class="s2">"America/New_York"</span><span class="p">,</span> <span class="n">scale</span><span class="o">=</span><span class="mf">0.5</span><span class="p">),</span>
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>        <span class="c1"># Everything else falls through to the base limit.</span>
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>    <span class="p">)</span>
+</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="p">)</span>
+</span></code></pre></div>
+<p>If no entry matches, the base limit applies. Order the specific before the general.</p>
+<h2 id="timezones">Timezones<a class="headerlink" href="#timezones" title="Permanent link">&para;</a></h2>
+<p>Every entry carries its own IANA timezone, defaulting to <code>UTC</code>:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="n">ScheduleEntry</span><span class="p">(</span><span class="n">cron</span><span class="o">=</span><span class="s2">"* 9-17 * * MON-FRI"</span><span class="p">,</span> <span class="n">tz</span><span class="o">=</span><span class="s2">"Europe/Berlin"</span><span class="p">,</span> <span class="n">scale</span><span class="o">=</span><span class="mf">0.5</span><span class="p">)</span>
+</span></code></pre></div>
+<div class="admonition warning">
+<p class="admonition-title">The default is UTC, not your local time</p>
+<p><code>tz</code> defaults to <code>"UTC"</code>. "Business hours" almost never means business hours in UTC — set it
+explicitly unless you really mean UTC.</p>
+</div>
+<p>Daylight saving is handled for you. A <code>9-17 America/New_York</code> window stays 9 a.m. to 5 p.m. local
+on both sides of a transition; only the corresponding UTC instant shifts. You do not need to
+adjust anything twice a year, and the 23-hour and 25-hour days are counted correctly.</p>
+<div class="admonition warning">
+<p class="admonition-title">One timezone per limit, and per configuration level</p>
+<p>Every entry on one limit must name the same <code>tz</code>, and so must every scheduled limit written
+to the same configuration level — one <code>set_limits()</code>, one <code>set_resource_defaults()</code>, one
+<code>limits:</code> block in a manifest. Through the Python API, mixing zones raises <code>ValueError</code>
+before anything is written.</p>
+<p>So an entity whose <code>rpm</code> follows New York and whose <code>tpm</code> follows Berlin needs them on
+separate resources. Limits without a schedule can sit alongside any zone.</p>
+</div>
+<h2 id="quotas">Quotas<a class="headerlink" href="#quotas" title="Permanent link">&para;</a></h2>
+<p>A token bucket drips: tokens come back gradually, at the refill rate. That is right for a rate
+limit and wrong for an allowance. A <strong>quota</strong> hands back its whole balance at a calendar instant
+and does not recover in between — spend it, and you wait for the reset.</p>
+<p><code>Limit.quota()</code> builds one. The period is whatever the cron expression says:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">zae_limiter</span><span class="w"> </span><span class="kn">import</span> <span class="n">Limit</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>    <span class="s2">"user-123"</span><span class="p">,</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span>
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>        <span class="c1"># 10,000 requests per calendar month, back to full at midnight on the 1st.</span>
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>        <span class="n">Limit</span><span class="o">.</span><span class="n">quota</span><span class="p">(</span><span class="s2">"monthly"</span><span class="p">,</span> <span class="mi">10_000</span><span class="p">,</span> <span class="n">cron</span><span class="o">=</span><span class="s2">"0 0 1 * *"</span><span class="p">,</span> <span class="n">tz</span><span class="o">=</span><span class="s2">"America/New_York"</span><span class="p">),</span>
+</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>    <span class="p">],</span>
+</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>    <span class="n">resource</span><span class="o">=</span><span class="s2">"gpt-4"</span><span class="p">,</span>
+</span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="p">)</span>
+</span></code></pre></div>
+<p>Any other period is the same call with a different expression:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="n">Limit</span><span class="o">.</span><span class="n">quota</span><span class="p">(</span><span class="s2">"session"</span><span class="p">,</span> <span class="mi">500</span><span class="p">,</span> <span class="n">cron</span><span class="o">=</span><span class="s2">"0 */5 * * *"</span><span class="p">,</span> <span class="n">tz</span><span class="o">=</span><span class="s2">"America/New_York"</span><span class="p">)</span>  <span class="c1"># every five hours</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="n">Limit</span><span class="o">.</span><span class="n">quota</span><span class="p">(</span><span class="s2">"weekly"</span><span class="p">,</span> <span class="mi">50_000</span><span class="p">,</span> <span class="n">cron</span><span class="o">=</span><span class="s2">"0 0 * * MON"</span><span class="p">,</span> <span class="n">tz</span><span class="o">=</span><span class="s2">"America/New_York"</span><span class="p">)</span>  <span class="c1"># Monday midnight</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="n">Limit</span><span class="o">.</span><span class="n">quota</span><span class="p">(</span><span class="s2">"daily"</span><span class="p">,</span> <span class="mi">10_000</span><span class="p">,</span> <span class="n">cron</span><span class="o">=</span><span class="s2">"0 0 * * *"</span><span class="p">,</span> <span class="n">tz</span><span class="o">=</span><span class="s2">"America/New_York"</span><span class="p">)</span>  <span class="c1"># local midnight</span>
+</span></code></pre></div>
+<p>A quota has no refill rate: a limit either drips or resets, never both
+(<a href="../../adr/137-reset-replaces-drip/">ADR-137</a>). Pairing a positive <code>refill_amount</code> with a
+<code>reset_schedule</code> raises <code>ValueError</code> at construction, because the drip running underneath the
+reset hands back roughly twice the intended allowance each period. A zero rate with no reset is
+rejected too — that bucket could never recover.</p>
+<p>A reset fires on the <strong>edge</strong>, not across a window: it applies on the transition <em>into</em> matching,
+so <code>0 0 * * *</code> is right here even though the same expression would be a one-minute window as a
+<code>schedule</code> entry.</p>
+<div class="admonition note">
+<p class="admonition-title">Idle buckets reset when they wake</p>
+<p>A reset applies on the first request after its edge, not at the edge itself. A bucket idle
+from 18:00 to 09:00 the next morning gets its reset on that 09:00 request. Several missed
+edges apply once — setting the balance to the allowance is idempotent.</p>
+</div>
+<div class="admonition tip">
+<p class="admonition-title">Usage history is unaffected</p>
+<p>A reset restores tokens without touching the total-consumed counter, so
+<a href="../usage-snapshots/">usage snapshots</a> stay continuous across it. Resets do not create gaps or
+resets in your usage reporting.</p>
+</div>
+<h2 id="precedence-override-not-merge">Precedence: override, not merge<a class="headerlink" href="#precedence-override-not-merge" title="Permanent link">&para;</a></h2>
+<p>Schedules travel with the limit they belong to, through the normal
+<a href="../config-hierarchy/">configuration hierarchy</a>. The level that wins supplies <strong>everything</strong> —
+numbers and schedule together.</p>
+<p>That has one consequence people trip over: an entity-level <code>rpm</code> with <strong>no</strong> schedule <em>removes</em>
+the resource-level schedule for that entity, exactly as it already replaces the numbers.</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># Resource level: everyone gets the business-hours reduction.</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_resource_defaults</span><span class="p">(</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>    <span class="s2">"gpt-4"</span><span class="p">,</span>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>        <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">"rpm"</span><span class="p">,</span> <span class="mi">1000</span><span class="p">)</span><span class="o">.</span><span class="n">with_schedule</span><span class="p">(</span>
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>            <span class="p">(</span><span class="n">ScheduleEntry</span><span class="p">(</span><span class="n">cron</span><span class="o">=</span><span class="s2">"* 9-17 * * MON-FRI"</span><span class="p">,</span> <span class="n">tz</span><span class="o">=</span><span class="s2">"America/New_York"</span><span class="p">,</span> <span class="n">scale</span><span class="o">=</span><span class="mf">0.5</span><span class="p">),)</span>
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>        <span class="p">),</span>
+</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>    <span class="p">],</span>
+</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a><span class="p">)</span>
+</span><span id="__span-6-10"><a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a>
+</span><span id="__span-6-11"><a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a><span class="c1"># This entity is now UNSCHEDULED at 2000/min — the resource schedule does not carry over.</span>
+</span><span id="__span-6-12"><a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span><span class="s2">"enterprise-1"</span><span class="p">,</span> <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">"rpm"</span><span class="p">,</span> <span class="mi">2000</span><span class="p">)],</span> <span class="n">resource</span><span class="o">=</span><span class="s2">"gpt-4"</span><span class="p">)</span>
+</span><span id="__span-6-13"><a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a>
+</span><span id="__span-6-14"><a id="__codelineno-6-14" name="__codelineno-6-14" href="#__codelineno-6-14"></a><span class="c1"># To keep a schedule for this entity, state it.</span>
+</span><span id="__span-6-15"><a id="__codelineno-6-15" name="__codelineno-6-15" href="#__codelineno-6-15"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span>
+</span><span id="__span-6-16"><a id="__codelineno-6-16" name="__codelineno-6-16" href="#__codelineno-6-16"></a>    <span class="s2">"enterprise-1"</span><span class="p">,</span>
+</span><span id="__span-6-17"><a id="__codelineno-6-17" name="__codelineno-6-17" href="#__codelineno-6-17"></a>    <span class="n">resource</span><span class="o">=</span><span class="s2">"gpt-4"</span><span class="p">,</span>
+</span><span id="__span-6-18"><a id="__codelineno-6-18" name="__codelineno-6-18" href="#__codelineno-6-18"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span>
+</span><span id="__span-6-19"><a id="__codelineno-6-19" name="__codelineno-6-19" href="#__codelineno-6-19"></a>        <span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">"rpm"</span><span class="p">,</span> <span class="mi">2000</span><span class="p">)</span><span class="o">.</span><span class="n">with_schedule</span><span class="p">(</span>
+</span><span id="__span-6-20"><a id="__codelineno-6-20" name="__codelineno-6-20" href="#__codelineno-6-20"></a>            <span class="p">(</span><span class="n">ScheduleEntry</span><span class="p">(</span><span class="n">cron</span><span class="o">=</span><span class="s2">"* 9-17 * * MON-FRI"</span><span class="p">,</span> <span class="n">tz</span><span class="o">=</span><span class="s2">"America/New_York"</span><span class="p">,</span> <span class="n">scale</span><span class="o">=</span><span class="mf">0.5</span><span class="p">),)</span>
+</span><span id="__span-6-21"><a id="__codelineno-6-21" name="__codelineno-6-21" href="#__codelineno-6-21"></a>        <span class="p">),</span>
+</span><span id="__span-6-22"><a id="__codelineno-6-22" name="__codelineno-6-22" href="#__codelineno-6-22"></a>    <span class="p">],</span>
+</span><span id="__span-6-23"><a id="__codelineno-6-23" name="__codelineno-6-23" href="#__codelineno-6-23"></a><span class="p">)</span>
+</span></code></pre></div>
+<h2 id="declarative-configuration">Declarative configuration<a class="headerlink" href="#declarative-configuration" title="Permanent link">&para;</a></h2>
+<p>Schedules round-trip through <a href="../../infra/deployment/">YAML manifests</a> and the
+<code>Custom::ZaeLimiterLimits</code> CloudFormation resource:</p>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="nt">namespace</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">default</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="nt">resources</span><span class="p">:</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span><span class="nt">gpt-4</span><span class="p">:</span>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">    </span><span class="nt">limits</span><span class="p">:</span>
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">      </span><span class="nt">rpm</span><span class="p">:</span>
+</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="w">        </span><span class="nt">capacity</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1000</span>
+</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="w">        </span><span class="nt">schedule</span><span class="p">:</span>
+</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="w">          </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">cron</span><span class="p">:</span><span class="w"> </span><span class="s">"*</span><span class="nv"> </span><span class="s">9-17</span><span class="nv"> </span><span class="s">*</span><span class="nv"> </span><span class="s">*</span><span class="nv"> </span><span class="s">MON-FRI"</span>
+</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="w">            </span><span class="nt">tz</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">America/New_York</span>
+</span><span id="__span-7-10"><a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a><span class="w">            </span><span class="nt">scale</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.5</span>
+</span><span id="__span-7-11"><a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a><span class="w">          </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">cron</span><span class="p">:</span><span class="w"> </span><span class="s">"*</span><span class="nv"> </span><span class="s">0-6</span><span class="nv"> </span><span class="s">*</span><span class="nv"> </span><span class="s">*</span><span class="nv"> </span><span class="s">*"</span>
+</span><span id="__span-7-12"><a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a><span class="w">            </span><span class="nt">tz</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">America/New_York</span>
+</span><span id="__span-7-13"><a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a><span class="w">            </span><span class="nt">capacity</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2000</span>
+</span><span id="__span-7-14"><a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a><span class="w">      </span><span class="nt">rpd</span><span class="p">:</span>
+</span><span id="__span-7-15"><a id="__codelineno-7-15" name="__codelineno-7-15" href="#__codelineno-7-15"></a><span class="w">        </span><span class="nt">capacity</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10000</span>
+</span><span id="__span-7-16"><a id="__codelineno-7-16" name="__codelineno-7-16" href="#__codelineno-7-16"></a><span class="w">        </span><span class="nt">reset_schedule</span><span class="p">:</span>
+</span><span id="__span-7-17"><a id="__codelineno-7-17" name="__codelineno-7-17" href="#__codelineno-7-17"></a><span class="w">          </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">cron</span><span class="p">:</span><span class="w"> </span><span class="s">"0</span><span class="nv"> </span><span class="s">0</span><span class="nv"> </span><span class="s">*</span><span class="nv"> </span><span class="s">*</span><span class="nv"> </span><span class="s">*"</span>
+</span><span id="__span-7-18"><a id="__codelineno-7-18" name="__codelineno-7-18" href="#__codelineno-7-18"></a><span class="w">            </span><span class="nt">tz</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">America/New_York</span>
+</span></code></pre></div>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>zae-limiter<span class="w"> </span>limits<span class="w"> </span>plan<span class="w"> </span>-n<span class="w"> </span>my-app<span class="w"> </span>-f<span class="w"> </span>limits.yaml<span class="w">    </span><span class="c1"># preview</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>zae-limiter<span class="w"> </span>limits<span class="w"> </span>apply<span class="w"> </span>-n<span class="w"> </span>my-app<span class="w"> </span>-f<span class="w"> </span>limits.yaml
+</span></code></pre></div>
+<p>A <code>reset_schedule</code> makes the limit a quota, so <code>refill_amount</code> defaults to <code>0</code> and you do not
+write it. Giving a quota a non-zero <code>refill_amount</code> is an error.</p>
+<p>Invalid cron expressions, unknown timezones and a rate beside a reset are rejected at <strong>parse</strong>
+time, so <code>limits plan</code> catches them before anything is written.</p>
+<h2 id="viewing-a-schedule">Viewing a schedule<a class="headerlink" href="#viewing-a-schedule" title="Permanent link">&para;</a></h2>
+<p>The CLI shows schedules but does not set them — use the Python API or a manifest:</p>
+<div class="language-console highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="gp">$ </span>zae-limiter<span class="w"> </span>entity<span class="w"> </span>get-limits<span class="w"> </span>user-123<span class="w"> </span>--resource<span class="w"> </span>gpt-4
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="go">Limits for user-123 (gpt-4):</span>
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="go">  rpm: 1,000/min</span>
+</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="go">    Schedule:</span>
+</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="go">      "* 9-17 * * MON-FRI" America/New_York  → scale 50%</span>
+</span><span id="__span-9-6"><a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="go">      "* 0-6 * * *" America/New_York  → capacity 2,000</span>
+</span><span id="__span-9-7"><a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="go">  rpd: 10,000 quota (resets "0 0 * * *" America/New_York)</span>
+</span></code></pre></div>
+<div class="admonition note">
+<p class="admonition-title">Weekdays and months display as names</p>
+<p>A schedule written as <code>1-5</code> comes back as <code>MON-FRI</code>, and <code>1,7</code> as <code>JAN,JUL</code>. The meaning is
+identical — the stored form is canonical and renders with names for readability.</p>
+</div>
+<div class="admonition note">
+<p class="admonition-title">A quota renders as an allowance, not a rate</p>
+<p>A quota has no refill rate, so its line names the whole allowance and the cron that hands it
+back. The indented <code>Schedule:</code> block is for windows that override parameters; a reset
+overrides nothing, so it stays on the headline.</p>
+</div>
+<h2 id="what-happens-at-a-boundary">What happens at a boundary<a class="headerlink" href="#what-happens-at-a-boundary" title="Permanent link">&para;</a></h2>
+<p>Normal requests are unaffected by scheduling: the cost and latency of an <code>acquire()</code> inside a
+window are exactly what they are without one.</p>
+<p>At the moment a window opens or closes, the <strong>first</strong> request to arrive takes the slow path while
+the bucket is brought up to date: three round trips instead of one, and roughly twice the
+DynamoDB cost for that one request. Requests already in flight at that instant pay it too. After
+that the cost returns to normal until the next boundary. For a typical peak/off-peak schedule
+that is two such requests per bucket per day.</p>
+<p>Idle buckets do nothing at a boundary, correctly — they update on their next request.</p>
+<p><code>RateLimitExceeded.retry_after_seconds</code> walks boundaries rather than assuming the rate in force
+right now holds forever: if the limit rises in ten minutes, the wait reflects that. For a quota,
+which has no rate to divide by, the wait is the time to the next reset edge — exhaust a
+<code>0 0 * * *</code> quota at 18:00 in New York and it reports six hours.</p>
+<h2 id="limitations">Limitations<a class="headerlink" href="#limitations" title="Permanent link">&para;</a></h2>
 <ul>
-<li><strong>CloudTrail only</strong>: Rejected; doesn't capture application-level details (which limits changed)</li>
-<li><strong>External audit service</strong>: Rejected; adds dependency, latency, cost</li>
-<li><strong>Separate audit table</strong>: Rejected; loses transactional consistency with entity operations</li>
+<li><strong>A quota period is a fixed calendar window, shared by everyone on it.</strong> The cron expression
+  names wall-clock instants, so <code>0 */5 * * *</code> resets at 00:00, 05:00, 10:00 … for <strong>every</strong>
+  entity alike — not five hours after each caller's own first request. A window anchored to each
+  caller's own activity is not supported; it may arrive in a later release
+  (<a href="../../adr/138-fixed-reset-windows-only/">ADR-138</a>). Note also that resetting every entity at
+  the same instant concentrates load at the boundary.</li>
+<li><strong>One time-varying mechanism per bucket.</strong> A bucket uses cron scheduling or another dynamic
+  mechanism, not both. This keeps "why is my limit this number" answerable.</li>
+<li><strong>Extended cron syntax is not supported.</strong> <code>L</code> (last), <code>W</code> (weekday) and <code>#</code> (nth weekday) are
+  rejected at construction. Standard ranges, lists, steps and names — <code>1-5</code>, <code>1,3</code>, <code>*/15</code>,
+  <code>MON-FRI</code>, <code>JAN,JUL</code> — all work.</li>
+<li><strong>Sunday is <code>0</code> inside a range or a step.</strong> On its own or in a list, Sunday may be written
+  <code>0</code>, <code>7</code> or <code>SUN</code> and all three store identically. In a range or a step it must be <code>0</code> —
+  <code>SUN-THU</code> is <code>0-4</code>, <code>SUN/2</code> is <code>0/2</code> — and a range that <em>ends</em> at Sunday (<code>MON-SUN</code>,
+  <code>SAT-SUN</code>, <code>7-4</code>) runs backwards and is rejected; write <code>*</code> or a list instead.</li>
+<li><strong>Seconds are not addressable.</strong> The finest granularity is one minute, and an expression must
+  have exactly five fields. The six-field form some schedulers accept, with a leading <em>seconds</em>
+  field, raises <code>ValueError</code> at construction.</li>
+<li><strong>Resource- and system-level schedule changes reach existing buckets when those buckets expire</strong>
+  rather than immediately, consistent with how default-derived limits already behave. Entity-level
+  changes take effect immediately.</li>
+</ul>
+<h2 id="see-also">See also<a class="headerlink" href="#see-also" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="../config-hierarchy/">Configuration Hierarchy</a> — how schedules resolve across levels</li>
+<li><a href="../token-bucket/">Token Bucket Algorithm</a> — why a quota reset is not the same as a refill</li>
+<li><a href="../basic-usage/">Basic Usage</a> — <code>acquire()</code>, leases, and handling <code>RateLimitExceeded</code></li>
 </ul>
 
 
@@ -3587,7 +4011,7 @@
       <nav class="md-footer__inner md-grid" aria-label="Footer" >
         
           
-          <a href="../007-input-validation/" class="md-footer__link md-footer__link--prev" aria-label="Previous: ADR-007 Input Validation">
+          <a href="../config-hierarchy/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Configuration Hierarchy">
             <div class="md-footer__button md-icon">
               
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
@@ -3597,20 +4021,20 @@
                 Previous
               </span>
               <div class="md-ellipsis">
-                ADR-007 Input Validation
+                Configuration Hierarchy
               </div>
             </div>
           </a>
         
         
           
-          <a href="../009-version-migration-system/" class="md-footer__link md-footer__link--next" aria-label="Next: ADR-009 Version Migration">
+          <a href="../hierarchical/" class="md-footer__link md-footer__link--next" aria-label="Next: Hierarchical Limits">
             <div class="md-footer__title">
               <span class="md-footer__direction">
                 Next
               </span>
               <div class="md-ellipsis">
-                ADR-009 Version Migration
+                Hierarchical Limits
               </div>
             </div>
             <div class="md-footer__button md-icon">
