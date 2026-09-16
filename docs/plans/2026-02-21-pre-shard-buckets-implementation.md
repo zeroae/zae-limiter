@@ -27,8 +27,10 @@ def test_pk_bucket():
     assert schema.pk_bucket("ns1", "user-1", "gpt-4", 0) == "ns1/BUCKET#user-1#gpt-4#0"
     assert schema.pk_bucket("ns1", "user-1", "gpt-4", 3) == "ns1/BUCKET#user-1#gpt-4#3"
 
+
 def test_sk_state():
     assert schema.sk_state() == "#STATE"
+
 
 def test_parse_bucket_pk():
     ns, entity, resource, shard = schema.parse_bucket_pk("ns1/BUCKET#user-1#gpt-4#0")
@@ -37,12 +39,15 @@ def test_parse_bucket_pk():
     assert resource == "gpt-4"
     assert shard == 0
 
+
 def test_parse_bucket_pk_invalid():
     with pytest.raises(ValueError):
         schema.parse_bucket_pk("ns1/ENTITY#user-1")
 
+
 def test_gsi3_pk_entity():
     assert schema.gsi3_pk_entity("ns1", "user-1") == "ns1/ENTITY#user-1"
+
 
 def test_gsi3_sk_bucket():
     assert schema.gsi3_sk_bucket("gpt-4", 0) == "BUCKET#gpt-4#0"
@@ -91,7 +96,7 @@ def parse_bucket_pk(pk: str) -> tuple[str, str, str, int]:
     namespace_id, remainder = parse_namespace(pk)
     if not remainder.startswith(BUCKET_PREFIX):
         raise ValueError(f"Not a bucket PK: {pk}")
-    rest = remainder[len(BUCKET_PREFIX):]
+    rest = remainder[len(BUCKET_PREFIX) :]
     # Split from the right: last # is shard_id
     parts = rest.rsplit("#", 1)
     if len(parts) != 2:
@@ -151,6 +156,7 @@ def test_validate_name_rejects_reserved_wcu():
     with pytest.raises(InvalidNameError, match="reserved"):
         validate_name("wcu", "limit_name")
 
+
 def test_validate_name_allows_normal_names():
     validate_name("rpm", "limit_name")  # should not raise
     validate_name("tpm", "limit_name")  # should not raise
@@ -173,10 +179,8 @@ RESERVED_LIMIT_NAMES = frozenset({"wcu"})
 In `validate_name()` after the `FORBIDDEN_CHAR` check (line 92):
 
 ```python
-    if value in RESERVED_LIMIT_NAMES:
-        raise InvalidNameError(
-            field_name, value, f"'{value}' is a reserved limit name"
-        )
+if value in RESERVED_LIMIT_NAMES:
+    raise InvalidNameError(field_name, value, f"'{value}' is a reserved limit name")
 ```
 
 **Step 4: Run tests to verify they pass**
@@ -571,9 +575,7 @@ Expected: FAIL
 Add `bump_shard_count()` to repository:
 
 ```python
-async def bump_shard_count(
-    self, entity_id: str, resource: str, current_count: int
-) -> int:
+async def bump_shard_count(self, entity_id: str, resource: str, current_count: int) -> int:
     """Double shard_count on shard 0 (conditional write).
 
     Returns the new shard_count, or the current if another client already doubled.
@@ -906,6 +908,7 @@ Expected: FAIL
 ```python
 WCU_PROACTIVE_THRESHOLD = 0.8  # Shard when wcu consumption >= 80% of capacity
 
+
 def try_proactive_shard(
     table: Any,
     state: BucketRefillState,
@@ -980,7 +983,8 @@ for state in bucket_states.values():
     if wcu_info:
         try:
             try_proactive_shard(
-                table, state,
+                table,
+                state,
                 wcu_tc_delta=wcu_info.tc_delta,
                 wcu_capacity_milli=wcu_info.cp_milli,
             )
@@ -1228,6 +1232,7 @@ def test_rate_limit_exceeded_hides_wcu(mock_limiter):
     # Setup: entity where only wcu is exhausted but rpm has tokens
     # This should trigger doubling, not raise with wcu violation
 
+
 def test_get_status_hides_wcu(mock_limiter):
     """get_status omits wcu from returned limit statuses."""
     status = await limiter.get_status("user-1", "gpt-4")
@@ -1462,6 +1467,7 @@ In `tests/unit/test_repository.py`:
 ```python
 from zae_limiter.repository_protocol import SpeculativeFailureReason
 
+
 def test_speculative_failure_reason_wcu_exhausted():
     """Failure reason is WCU_EXHAUSTED when wcu tokens < 1000 milli."""
     # Setup: bucket with wcu at 0, rpm has tokens
@@ -1469,16 +1475,22 @@ def test_speculative_failure_reason_wcu_exhausted():
     assert not result.success
     assert result.failure_reason == SpeculativeFailureReason.WCU_EXHAUSTED
 
+
 def test_speculative_failure_reason_app_limit_exhausted():
     """Failure reason is APP_LIMIT_EXHAUSTED when user limit exhausted but wcu has tokens."""
     # Setup: bucket with rpm at 0, wcu full
-    result = await repo.speculative_consume(entity_id="user-1", resource="api", consume={"rpm": 100})
+    result = await repo.speculative_consume(
+        entity_id="user-1", resource="api", consume={"rpm": 100}
+    )
     assert not result.success
     assert result.failure_reason == SpeculativeFailureReason.APP_LIMIT_EXHAUSTED
 
+
 def test_speculative_failure_reason_bucket_missing():
     """Failure reason is BUCKET_MISSING when no bucket exists."""
-    result = await repo.speculative_consume(entity_id="no-bucket", resource="api", consume={"rpm": 1})
+    result = await repo.speculative_consume(
+        entity_id="no-bucket", resource="api", consume={"rpm": 1}
+    )
     assert not result.success
     assert result.failure_reason == SpeculativeFailureReason.BUCKET_MISSING
 ```
@@ -1504,12 +1516,14 @@ In `repository_protocol.py` before `SpeculativeResult`:
 ```python
 from enum import Enum
 
+
 class SpeculativeFailureReason(Enum):
     """Classifies why a speculative write failed (GHSA-76rv).
 
     Used by the limiter to decide the recovery path without
     inspecting individual BucketState token values.
     """
+
     APP_LIMIT_EXHAUSTED = "app_limit_exhausted"
     WCU_EXHAUSTED = "wcu_exhausted"
     BOTH_EXHAUSTED = "both_exhausted"
@@ -1533,12 +1547,10 @@ if old_item:
 
     # Classify failure reason
     wcu_exhausted = any(
-        b.limit_name == WCU_LIMIT_NAME and b.tokens_milli < 1000
-        for b in old_buckets
+        b.limit_name == WCU_LIMIT_NAME and b.tokens_milli < 1000 for b in old_buckets
     )
     app_exhausted = any(
-        b.limit_name != WCU_LIMIT_NAME
-        and b.tokens_milli < consume.get(b.limit_name, 0) * 1000
+        b.limit_name != WCU_LIMIT_NAME and b.tokens_milli < consume.get(b.limit_name, 0) * 1000
         for b in old_buckets
     )
     if wcu_exhausted and app_exhausted:
@@ -1745,11 +1757,11 @@ In `tests/unit/test_schema.py`, add to `TestBucketPKBuilders`:
 @pytest.mark.parametrize(
     "resource",
     [
-        "gpt-4",                   # hyphen
-        "gpt_4",                   # underscore
-        "gpt-3.5-turbo",           # dot
-        "openai/gpt-4",            # slash (provider/model)
-        "anthropic/claude-3/opus", # nested slash
+        "gpt-4",  # hyphen
+        "gpt_4",  # underscore
+        "gpt-3.5-turbo",  # dot
+        "openai/gpt-4",  # slash (provider/model)
+        "anthropic/claude-3/opus",  # nested slash
     ],
 )
 def test_parse_bucket_pk_round_trip(self, resource):
@@ -1781,9 +1793,7 @@ def test_unreachable_at_batch_size_100(self) -> None:
     max_tc_delta_at_batch_100 = 100 * 1000
     wcu_capacity_milli = 1000_000
 
-    result = try_proactive_shard(
-        mock_table, state, max_tc_delta_at_batch_100, wcu_capacity_milli
-    )
+    result = try_proactive_shard(mock_table, state, max_tc_delta_at_batch_100, wcu_capacity_milli)
 
     assert result is False  # 10% < 80% threshold
     mock_table.update_item.assert_not_called()
@@ -1933,7 +1943,8 @@ async def test_get_resource_capacity_sharded_entity_deduplication(self, limiter)
     shard1_item["GSI3SK"] = {"S": schema.gsi3_sk_bucket("gpt-4", 1)}
     shard1_item["shard_count"] = {"N": "2"}
     await client.update_item(
-        TableName=repo.table_name, Key=shard0_key,
+        TableName=repo.table_name,
+        Key=shard0_key,
         UpdateExpression="SET shard_count = :sc",
         ExpressionAttributeValues={":sc": {"N": "2"}},
     )
@@ -1983,9 +1994,7 @@ for entity_id, entity_bucket_list in entity_buckets.items():
             entity_id=entity_id,
             capacity=capacity,
             available=available,
-            utilization_pct=(
-                ((capacity - available) / capacity * 100) if capacity > 0 else 0
-            ),
+            utilization_pct=(((capacity - available) / capacity * 100) if capacity > 0 else 0),
         )
     )
 ```
@@ -2044,12 +2053,14 @@ def test_speculative_consume_handles_provisioned_throttle():
     assert not result.success
     assert result.failure_reason == SpeculativeFailureReason.PARTITION_THROTTLED
 
+
 def test_speculative_consume_handles_on_demand_throttle():
     """ThrottlingException with KeyRangeThroughputExceeded returns throttled result."""
     # Mock client to raise ThrottlingException with ThrottlingReason
     result = await repo.speculative_consume("user-1", "api", {"rpm": 1})
     assert not result.success
     assert result.failure_reason == SpeculativeFailureReason.PARTITION_THROTTLED
+
 
 def test_speculative_consume_reraises_non_partition_throttle():
     """ThrottlingException without KeyRange reason is re-raised."""
@@ -2423,6 +2434,7 @@ def test_proactive_shard_triggers_at_low_token_level(self) -> None:
     assert result is True
     mock_table.update_item.assert_called_once()
 
+
 def test_proactive_shard_skips_above_threshold(self) -> None:
     """No sharding when wcu tokens >= 20% of capacity."""
     mock_table = MagicMock()
@@ -2437,6 +2449,7 @@ def test_proactive_shard_skips_above_threshold(self) -> None:
     assert result is False
     mock_table.update_item.assert_not_called()
 
+
 def test_proactive_shard_triggers_at_zero_tokens(self) -> None:
     """Proactive sharding triggers when wcu tokens are completely exhausted."""
     mock_table = MagicMock()
@@ -2445,6 +2458,7 @@ def test_proactive_shard_triggers_at_zero_tokens(self) -> None:
     result = try_proactive_shard(mock_table, state, 0, 1_000_000)
 
     assert result is True
+
 
 def test_proactive_shard_boundary_at_exactly_20_percent(self) -> None:
     """At exactly 20% remaining, no sharding (threshold is strictly less than)."""
@@ -2457,6 +2471,7 @@ def test_proactive_shard_boundary_at_exactly_20_percent(self) -> None:
     result = try_proactive_shard(mock_table, state, wcu_tk_milli, wcu_capacity_milli)
 
     assert result is False  # Not strictly less than 20%
+
 
 def test_proactive_shard_negative_tokens(self) -> None:
     """Negative tokens (overdrawn wcu) trigger sharding."""

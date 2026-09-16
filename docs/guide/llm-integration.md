@@ -21,8 +21,8 @@ async with limiter.acquire(
     entity_id="api-key-123",
     resource="gpt-4",
     limits=[
-        Limit.per_minute("rpm", 100),       # Requests per minute
-        Limit.per_minute("tpm", 10_000),    # Tokens per minute
+        Limit.per_minute("rpm", 100),  # Requests per minute
+        Limit.per_minute("tpm", 10_000),  # Tokens per minute
     ],
     consume={"rpm": 1, "tpm": 500},  # Estimate 500 tokens
 ) as lease:
@@ -43,7 +43,7 @@ async with limiter.acquire(
 Simple but may over/under-estimate:
 
 ```python
-consume={"tpm": 500}  # Always estimate 500 tokens
+consume = {"tpm": 500}  # Always estimate 500 tokens
 ```
 
 ### Input-Based Estimate
@@ -148,6 +148,7 @@ MODEL_LIMITS = {
         Limit.per_minute("tpm", 90_000),
     ],
 }
+
 
 async def rate_limited_completion(
     entity_id: str,

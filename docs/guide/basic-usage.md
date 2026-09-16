@@ -8,9 +8,9 @@ The `acquire()` method is the primary API for rate limiting:
 
 ```python
 async with limiter.acquire(
-    entity_id="user-123",      # Who is being rate limited
-    resource="gpt-4",          # What resource they're accessing
-    consume={"rpm": 1},        # How much to consume
+    entity_id="user-123",  # Who is being rate limited
+    resource="gpt-4",  # What resource they're accessing
+    consume={"rpm": 1},  # How much to consume
 ) as lease:
     # Your code here - limits resolved from stored config
     pass
@@ -55,8 +55,8 @@ When using stored config, configure multiple limits at setup time:
     await limiter.set_resource_defaults(
         resource="gpt-4",
         limits=[
-            Limit.per_minute("rpm", 100),       # 100 requests/minute
-            Limit.per_minute("tpm", 10_000),    # 10,000 tokens/minute
+            Limit.per_minute("rpm", 100),  # 100 requests/minute
+            Limit.per_minute("tpm", 10_000),  # 10,000 tokens/minute
         ],
     )
     ```
@@ -181,8 +181,9 @@ else:
 
 # Per-limit detail: each limit gets its own count and its own countdown
 for status in check.statuses:
-    print(f"{status.limit_name}: {status.available} left, "
-          f"resets in {status.retry_after_seconds:.0f}s")
+    print(
+        f"{status.limit_name}: {status.available} left, resets in {status.retry_after_seconds:.0f}s"
+    )
 ```
 
 The returned [`Availability`](../api/models.md#availability) carries one
@@ -243,8 +244,8 @@ await limiter.set_limits(
     entity_id="user-premium",
     resource="gpt-4",
     limits=[
-        Limit.per_minute("rpm", 500),        # 5x normal
-        Limit.per_minute("tpm", 50_000),     # 5x normal
+        Limit.per_minute("rpm", 500),  # 5x normal
+        Limit.per_minute("tpm", 50_000),  # 5x normal
     ],
 )
 
@@ -371,8 +372,8 @@ These methods live on `Repository` (not `RateLimiter`) — the same object
 returned by `Repository.open()` that you passed to `RateLimiter(repository=repo)`:
 
 ```python
-await repo.disable_resource("gpt-4")                  # off for everyone
-await repo.enable_entity("vip-1", resource="gpt-4")    # carve out one entity
+await repo.disable_resource("gpt-4")  # off for everyone
+await repo.enable_entity("vip-1", resource="gpt-4")  # carve out one entity
 ```
 
 Disabling is **eager**: the call stamps every existing bucket for the
