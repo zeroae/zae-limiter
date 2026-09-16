@@ -47,6 +47,13 @@ commit_preprocessors = [
 ]
 # regex for parsing and grouping commits
 commit_parsers = [
+  # Skip PR merge commits. Squash is disabled repo-wide, so every PR contributes
+  # both its branch commits and a merge commit — and GitHub writes the PR title
+  # as the merge subject, so `feat(x): thing (#N)` parses as a valid conventional
+  # commit and duplicates the entry beside the commit it merges (#459). Keyed on
+  # the trailing `(#N)`, since the subject carries no "Merge" marker. Must stay
+  # first: git-cliff uses the first matching parser.
+  { message = "(?m)^.*\\(#[0-9]+\\)$", skip = true },
   { message = "^feat", group = "<!-- 0 -->Features" },
   { message = "^fix", group = "<!-- 1 -->Bug Fixes" },
   { message = "^docs", group = "<!-- 2 -->Documentation" },
