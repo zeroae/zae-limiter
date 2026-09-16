@@ -1092,16 +1092,85 @@ def retry_after_with_schedule(
 # only in storage, because DynamoDB bills a WCU per 1 KB and a bucket item that
 # crosses 1 KB doubles the write cost of every acquire on it forever.
 #
-# Wildcard fields are omitted, the rest are letter-tagged `m h D M w`, names are
+# The string opens with the encoding **version** as decimal digits, then
+# wildcard fields are omitted, the rest are letter-tagged `m h D M w`, names are
 # normalised to numbers, `scale` is an integer per-mille tagged `s`, the absolute
 # overrides are `c`/`a`/`p`, and entries are joined with `;`. The timezone is
 # hoisted to a single item-level attribute, so every entry in one schedule must
-# agree on it. Example: `h9-17w1-5s500;h0-6c2000`.
+# agree on it. Example: `1h9-17w1-5s500;h0-6c2000`.
 #
 # Decoding rebuilds a canonical 5-field cron string and hands it to
 # `ScheduleEntry`, so cronsim remains the only parser and the §3.1 oracle test
 # covers this path unchanged.
+#
+# --- The version marker (#515) ---
+#
+# It exists so §6 can tell "written by a newer client" from "corrupt". Without
+# it the only discriminator is the *shape* of the failure, and §6.5 shows that
+# is both unsound and incomplete: `_tokenise` reports `cannot parse from offset
+# N` only when the unrecognised byte stands where a tag is expected, i.e. at the
+# start of an entry. Its value pattern is "anything that is not a known tag
+# letter", so an unknown tag appearing *after* a value — the realistic shape of
+# a new modifier a newer encoder appends — is swallowed into that value and
+# surfaces as `invalid cron expression ...` or a bare `invalid literal for
+# int()`, naming neither the tag nor an offset and indistinguishable from a
+# genuinely corrupt field. Reading the version first makes the diagnosis
+# independent of where the unknown token sits.
+#
+# **One byte, no delimiter.** The version is decimal digits at the head of the
+# whole attribute. No legal entry can begin with a digit — `_encode_cron`
+# always emits `tag + spec` and every tag is a letter — so the digits are
+# unambiguous without a separator, and `1h9-17w1-5s500` costs one byte against
+# the 1 KB WCU boundary §4.2 exists to defend. Per *entry* it would cost a byte
+# per `;` for no extra information: one attribute is written by one encoder at
+# one version. Two bytes (`1:`) would buy a weak checksum on the marker itself;
+# the byte is worth more, and that budget is shared with work landing after
+# this.
+#
+# **An unversioned string is rejected, not read as v1.** §4.1 assumed a
+# later-added marker would have to treat absence as v1, because by then unmarked
+# items would exist. None do — the encoding is unreleased — so that concession
+# would serve an empty population forever, and it is what keeps the invariant
+# "every stored schedule begins with a marker" checkable at offset 0.
 # ---------------------------------------------------------------------------
+
+# The version this build writes, and the highest it can read.
+ENCODING_VERSION = 1
+
+_VERSION_RE = re.compile(r"\A([0-9]+)")
+
+
+def _strip_version(compact: str, what: str) -> str:
+    """Check and remove the leading version marker, returning the entry stream.
+
+    Raises ``ValueError`` — like every other failure in this module (§6.1), so
+    the aggregator's ``except ValueError`` still catches it — with one of three
+    deliberately distinct, greppable messages: no marker, a marker this build
+    does not know, or a marker with nothing after it.
+    """
+    match = _VERSION_RE.match(compact)
+    if match is None:
+        raise ValueError(
+            f"{what} {compact!r} carries no version marker. Every stored schedule "
+            f"begins with its encoding version (this build writes {ENCODING_VERSION}); "
+            f"a string that does not is corrupt or was written by a build predating "
+            f"the marker, which never shipped."
+        )
+    marker = match.group(1)
+    body = compact[match.end() :]
+    if not body:
+        raise ValueError(f"{what} {compact!r} is a version marker with no entries after it.")
+    version = int(marker)
+    if version < 1:
+        raise ValueError(f"{what} {compact!r} has an invalid version marker {marker!r}.")
+    if version > ENCODING_VERSION:
+        raise ValueError(
+            f"{what} {compact!r} is encoding version {version}; this build reads up "
+            f"to version {ENCODING_VERSION}. It was written by a newer client — "
+            f"upgrade zae-limiter rather than repairing the stored value."
+        )
+    return body
+
 
 # Field tags, in cron field order.
 _FIELD_TAGS = ("m", "h", "D", "M", "w")
@@ -1237,6 +1306,9 @@ def encode(sched: tuple[ScheduleEntry, ...]) -> tuple[str, str | None]:
     entries disagree on ``tz``: it is hoisted to one item-level attribute, so a
     schedule cannot carry two.
 
+    The result opens with the one-byte encoding version (#515); an empty
+    schedule has no version because it has no attribute.
+
     The encoding is **canonical** — weekday and month names normalise to numbers
     and Sunday to a single spelling — so re-encoding a decoded schedule is
     byte-identical, and `differ.py` does not read ``MON-FRI`` against ``1-5`` as
@@ -1251,7 +1323,8 @@ def encode(sched: tuple[ScheduleEntry, ...]) -> tuple[str, str | None]:
             f"every entry in a schedule must share one timezone, since it is hoisted "
             f"to a single item-level attribute; got {sorted(timezones)}"
         )
-    return ";".join(_encode_entry(entry) for entry in sched), sched[0].tz
+    body = ";".join(_encode_entry(entry) for entry in sched)
+    return f"{ENCODING_VERSION}{body}", sched[0].tz
 
 
 def _tokenise(compact_entry: str) -> dict[str, str]:
@@ -1284,11 +1357,15 @@ def decode(compact: str, tz: str) -> tuple[ScheduleEntry, ...]:
     ``tz`` is the hoisted item-level timezone and is applied to every entry.
     Each entry is rebuilt as a canonical 5-field cron string and handed to
     ``ScheduleEntry``, so cronsim stays the only cron parser in the codebase.
+
+    The version marker is checked **first** (#515), so a schedule written by a
+    newer client is reported as such rather than as whatever its unfamiliar
+    body happens to fail as.
     """
     if not compact:
         return ()
     entries = []
-    for part in compact.split(";"):
+    for part in _strip_version(compact, "compact schedule").split(";"):
         tokens = _tokenise(part)
         scale = int(tokens["s"]) / 1000 if "s" in tokens else None
         entries.append(
@@ -1308,8 +1385,9 @@ def encode_reset(sched: tuple[ScheduleEntry, ...]) -> tuple[str, str | None]:
     """Encode a reset schedule into its compact storage form and shared timezone.
 
     The same grammar as ``encode`` **minus the modifier tokens**, because a
-    reset entry overrides no parameters (§3.6): ``0 0 * * *`` is ``m0h0``, four
-    bytes. Reset entries live in their own ``rsched`` / ``b_{name}_rsched``
+    reset entry overrides no parameters (§3.6): ``0 0 * * *`` is ``m0h0`` plus
+    the one-byte version marker, five bytes. Reset entries live in their own
+    ``rsched`` / ``b_{name}_rsched``
     attributes rather than tagged inside ``sched``, which mirrors the separate
     tuple on ``Limit`` and keeps the decoder from partitioning one list into
     two meanings (§4.1).
@@ -1330,7 +1408,8 @@ def encode_reset(sched: tuple[ScheduleEntry, ...]) -> tuple[str, str | None]:
             f"every entry in a reset schedule must share one timezone, since it is "
             f"hoisted to a single item-level attribute; got {sorted(timezones)}"
         )
-    return ";".join(_encode_cron(entry.cron) for entry in sched), sched[0].tz
+    body = ";".join(_encode_cron(entry.cron) for entry in sched)
+    return f"{ENCODING_VERSION}{body}", sched[0].tz
 
 
 def decode_reset(compact: str, tz: str) -> tuple[ScheduleEntry, ...]:
@@ -1349,7 +1428,7 @@ def decode_reset(compact: str, tz: str) -> tuple[ScheduleEntry, ...]:
     if not compact:
         return ()
     entries = []
-    for part in compact.split(";"):
+    for part in _strip_version(compact, "compact reset schedule").split(";"):
         tokens = _tokenise(part)
         modifiers = sorted(set(tokens) & set(_MODIFIER_TAGS))
         if modifiers:
@@ -1383,8 +1462,14 @@ def to_cron(compact_entry: str) -> str:
     Weekday and month always come back as **names**, so an operator who typed
     ``1-5`` is shown ``MON-FRI``. That is semantically identical and re-encodes
     byte-for-byte, so it is safe to feed the result back into ``encode``.
+
+    Takes the string ``encode`` produced for a single entry, **version marker
+    included** — which is exactly what ``cli._format_cron_entry`` hands it. The
+    marker is checked here too rather than skipped: rendering an entry this
+    build may not understand as though it did is the one thing a display helper
+    must not do.
     """
-    tokens = _tokenise(compact_entry)
+    tokens = _tokenise(_strip_version(compact_entry, "compact schedule entry"))
     fields = []
     for tag in _FIELD_TAGS:
         spec = tokens.get(tag, "*")

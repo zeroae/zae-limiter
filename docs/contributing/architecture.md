@@ -124,7 +124,7 @@ See [ADR-111](../adr/111-flatten-all-records.md).
     "b_wcu_cp": 1000000,                    # wcu capacity (1000 WCU/sec)
     "b_wcu_tc": 1000,                       # wcu total consumed
     "rf": 1704067200000,                    # last_refill_ms (shared across limits)
-    "sched": "h9-17w1-5s500",               # item-level schedule, compact encoding (#222)
+    "sched": "1h9-17w1-5s500",              # item-level schedule, compact encoding (#222, #515)
     "sched_tz": "America/New_York",         # IANA zone shared by every schedule here
     "vu": 1704088800000,                    # valid_until_ms: next boundary on this item
     "cascade": False,
@@ -192,8 +192,8 @@ See: [Issue #168](https://github.com/zeroae/zae-limiter/issues/168)
     "l_tpm_cp": 100000,               # capacity for tpm limit
     "l_tpm_ra": 100000,               # refill_amount for tpm limit
     "l_tpm_rp": 60,                   # refill_period_seconds for tpm limit
-    "l_tpm_sched": "h9-17w1-5s500",   # tpm's schedule, compact encoding (#222)
-    "l_rpd_rsched": "m0h0",           # rpd's reset schedule ("0 0 * * *")
+    "l_tpm_sched": "1h9-17w1-5s500",  # tpm's schedule, compact encoding (#222, #515)
+    "l_rpd_rsched": "1m0h0",          # rpd's reset schedule ("0 0 * * *")
     "sched_tz": "America/New_York",   # one zone per item, hoisted out of the entries
     "config_version": 1               # Atomic counter for cache invalidation
 }

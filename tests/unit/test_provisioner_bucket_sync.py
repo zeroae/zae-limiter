@@ -624,11 +624,11 @@ class TestEntityWideScopeWidensDiscovery:
 # --- #222: schedules become manifest-expressible -----------------------------
 
 BIZ = [{"cron": "* 9-17 * * MON-FRI", "tz": "America/New_York", "scale": 0.5}]
-BIZ_COMPACT = "h9-17w1-5s500"
+BIZ_COMPACT = "1h9-17w1-5s500"
 WEEKEND = [{"cron": "* * * * SAT,SUN", "tz": "America/New_York", "scale": 0.25}]
-WEEKEND_COMPACT = "w6,7s250"
+WEEKEND_COMPACT = "1w6,7s250"
 MIDNIGHT = [{"cron": "0 0 * * *", "tz": "America/New_York"}]
-MIDNIGHT_COMPACT = "m0h0"
+MIDNIGHT_COMPACT = "1m0h0"
 
 SCHEDULED = {"rpm": {"capacity": 1000, "refill_amount": 1000, "refill_period": 60, "schedule": BIZ}}
 QUOTA = {

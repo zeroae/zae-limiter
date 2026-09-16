@@ -840,6 +840,35 @@ The pieces are documented where they live — `vu` and `SCHEDULE_BOUNDARY` under
 write pattern, `sched`/`rsched`/`sched_tz` under the config attribute format and the writer
 table, the quota TTL horizon under ADR-136, and the boundary walk under Exception Design.
 
+**The compact encoding is versioned (#515).** Every stored `sched` / `rsched` /
+`b_{name}_sched` / `l_{name}_sched` value opens with its encoding version as decimal digits —
+`1h9-17w1-5s500;h0-6c2000`, `1m0h0` — emitted once per attribute by `schedule.encode` /
+`encode_reset` and checked first by `decode` / `decode_reset` / `to_cron`. **One byte**: no
+legal entry can begin with a digit (`_encode_cron` always emits `tag + spec`, every tag a
+letter), so no delimiter is needed, and the 1 KB WCU boundary §4.2 defends is shared with
+everything else on the item.
+
+**An unversioned string is rejected, not read as v1.** The usual tolerant-reader concession
+would serve an empty population: the encoding is unreleased, so no unmarked item exists.
+Rejecting keeps the invariant checkable and is what lets a newer-client value be diagnosed at
+offset 0. Three distinct greppable messages — `carries no version marker`, `is encoding version
+N; this build reads up to version M`, and the pre-existing `cannot parse from offset N` /
+`invalid cron expression` — all still plain `ValueError` (§6.1), so the aggregator's
+`except ValueError` still catches them and `_decode_stored_schedule` still converts to
+`RateLimiterUnavailable`.
+
+What this buys is a **log line, not behaviour**, which is why it was deferrable at all: design
+§6.5's table had a newer client's appended modifier tag (`h9-17s500q42`) failing as
+`invalid literal for int()`, indistinguishable from corruption, because `_tokenise`'s value
+pattern absorbs an unknown tag that does not sit at an entry boundary. The version is now read
+before the body, so that diagnosis no longer depends on where the unknown token sits. The
+tokeniser heuristic survives as a statement about corruption *within* a version.
+
+Measured: the §4.2 worst shared case (6 limits x 4 entries, one shared schedule) is **846 B**,
+**178 B** under the boundary, pinned exactly by
+`TestSizeBudget.test_the_worst_shared_case_stays_under_one_kb`. That headroom is shared with
+unlanded work — see the design doc's headroom note.
+
 **Magnitude bounds on every numeric modifier (#570).** `schedule.py` names three ceilings —
 `MAX_TOKENS = 10**15`, `MAX_PERIOD_SECONDS = 10**9`, `MAX_SCALE = 10**6` — enforced by
 `ScheduleEntry.__post_init__` on `scale` / `capacity` / `refill_amount` /
@@ -1088,7 +1117,7 @@ All PK and GSI PK values are prefixed with `{ns}/` where `{ns}` is the opaque na
 - A failure tripping `vu` classifies as `SpeculativeFailureReason.SCHEDULE_BOUNDARY`, **ahead of `DISABLED`'s successor checks and every exhausted reason** — a closed window is not a rejection, and reading it as one would raise `RateLimitExceeded` against limits the new window may have just raised, or (worse) read as `WCU_EXHAUSTED` and double `shard_count` at every boundary. `DISABLED` still outranks it: no re-materialisation admits a disabled bucket. The limiter routes `SCHEDULE_BOUNDARY` to the slow path — the only place that re-materialises — never to a fast rejection and never to a shard retry, since every shard crosses the same boundary. A *probed* shard that reports it (the transient where shards re-materialise one at a time) is handed to the slow path exactly as a `BUCKET_MISSING` probe is. On the cascade path a boundary-expired **parent** refunds the child's speculative debit and falls back to the full slow path rather than the parent-only one, costing one extra compensating write per crossing
 - **The slow path is the only client that writes `vu` (#222 §2.1).** `_commit_initial()` takes the minimum `next_boundary()` across **every** limit sharing the bucket item — including the ones the caller did not name in `consume`, since the same write materialises them and `vu` is one item-level attribute — and passes it to `build_composite_normal(vu=...)` / `build_composite_create(vu=...)`. `None` (the unscheduled majority) omits the attribute on a create and leaves an existing one untouched on an update — **except** when the group resolved no boundary at all, where it is `REMOVE`d (`clear_vu`): that group covers every limit sharing the item, so no boundary means nothing on the item is scheduled, and leaving the `vu = 0` the fan-out stamps on every call would fail the fast-path guard forever rather than once; `vu` is only ever `SET`, never `REMOVE`d in the same expression (#488). Each boundary is computed by the acquire path at the **same clock reading that drove `effective_params` for that entry's refill**, not at `_commit_initial()`'s own later reading: the two are a round trip apart, and a boundary crossed in between must land `vu` at or before `rf` so the next acquire re-materialises — deriving it from the commit instant would skip the boundary just crossed and leave the fast path spending pre-boundary tokens for a whole window
 - **A bucket created by the slow path carries its schedules** (`sched` / `rsched` / `sched_tz` / `b_{name}_sched` / `b_{name}_rsched`, design §2.2, §3.6), and its balance starts at the *scheduled* per-shard share rather than the base ceiling. The aggregator reads the item and nothing else, so an item with `vu` but no `sched` would be refilled toward the base ceiling — the schedule silently unenforced until the next admin fan-out. All scheduled limits on one item must agree on a timezone (`sched_tz` is one attribute per item), the same rule `set_limits()` enforces at config-write time
-- **An unscheduled limit is recorded as unscheduled, not left to inherit (#541).** A bucket item carries one hoisted `sched` / `rsched` pair plus the per-limit `b_{name}_*` overrides, and absence of an override means "inherit the item default" — which is what keeps a shared schedule down to one attribute. It cannot *also* mean "this limit has none", so every unscheduled limit on an item that carries a default is stamped with the reserved marker `schema.BUCKET_SCHED_NONE` (`"-"`, not a legal compact encoding: `schedule._tokenise` rejects it at offset 0). Without it the contamination ran **both** ways on a mixed item — a `0.5x` rate limit took the quota's midnight reset (its balance hard-`SET` at the edge, its drip skipped that pass) and the quota took the rate limit's `0.5x` window (half its allowance, silently) — and it reached the aggregator's refill and shard clone, the slow path's `BucketState`, and every fast-path `RateLimitExceeded` status through `Limit.per_shard`. One encoder (`Repository._encode_one_tuple`) serves both writers, mirrored in `zae_limiter_provisioner/bucket_sync.py`; the readers are `Repository._deserialize_composite_bucket`, `processor._parse_bucket_record` and `processor.propagate_shard_count`. The reserved `wcu` limit never carries either tuple and so is never marked
+- **An unscheduled limit is recorded as unscheduled, not left to inherit (#541).** A bucket item carries one hoisted `sched` / `rsched` pair plus the per-limit `b_{name}_*` overrides, and absence of an override means "inherit the item default" — which is what keeps a shared schedule down to one attribute. It cannot *also* mean "this limit has none", so every unscheduled limit on an item that carries a default is stamped with the reserved marker `schema.BUCKET_SCHED_NONE` (`"-"`, not a legal compact encoding: it carries no version marker, so the decoders reject it before the tokeniser, #515). Without it the contamination ran **both** ways on a mixed item — a `0.5x` rate limit took the quota's midnight reset (its balance hard-`SET` at the edge, its drip skipped that pass) and the quota took the rate limit's `0.5x` window (half its allowance, silently) — and it reached the aggregator's refill and shard clone, the slow path's `BucketState`, and every fast-path `RateLimitExceeded` status through `Limit.per_shard`. One encoder (`Repository._encode_one_tuple`) serves both writers, mirrored in `zae_limiter_provisioner/bucket_sync.py`; the readers are `Repository._deserialize_composite_bucket`, `processor._parse_bucket_record` and `processor.propagate_shard_count`. The reserved `wcu` limit never carries either tuple and so is never marked
 - **The slow path's `BucketState.sched` comes from the resolved config, not from the item.** `_deserialize_composite_bucket()` reads the base params only; `_do_acquire()` and `_try_parent_only_acquire()` attach `limit.schedule` to each state before admission, so `effective_params` applies to the refill, the ceiling and the `Limit.per_shard()` in any rejection. Config is also the fresher of the two — an item stamped before the last `set_limits()` still holds the old schedule
 
 **Entity metadata cache (issue #318, GHSA-76rv):**

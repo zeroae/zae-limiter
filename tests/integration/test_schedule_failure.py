@@ -20,7 +20,7 @@ independently of the client boundary.
 import pytest
 
 from zae_limiter import Limit, OnUnavailable, RateLimiter, RateLimiterUnavailable
-from zae_limiter.schedule import ScheduleEntry
+from zae_limiter.schedule import ENCODING_VERSION, ScheduleEntry, decode
 from zae_limiter.schema import (
     BUCKET_FIELD_SCHED,
     BUCKET_FIELD_VU,
@@ -61,6 +61,20 @@ async def _raw_bucket(repo, entity_id, shard_id=0):
         TableName=repo.table_name, Key=await _bucket_key(repo, entity_id, shard_id)
     )
     return response.get("Item") or {}
+
+
+def _modify_record(item: dict) -> dict:
+    """A MODIFY stream record for a real bucket item.
+
+    The `OldImage` carries a zero `tc` for every limit on the item, because
+    `_parse_bucket_record` skips any limit with no consumption counter to diff
+    against and returns `None` once every limit is skipped.
+    """
+    old_image = {"PK": item["PK"], "SK": item["SK"]}
+    for attr in item:
+        if attr.startswith("b_") and attr.endswith("_tc"):
+            old_image[attr] = {"N": "0"}
+    return {"eventName": "MODIFY", "dynamodb": {"NewImage": item, "OldImage": old_image}}
 
 
 async def _corrupt_config(repo, entity_id, limit_name="rpm"):
@@ -226,3 +240,130 @@ class TestUnreadableScheduleIntegration:
         assert await repo.get_buckets(healthy, resource=RESOURCE)
         with pytest.raises(RateLimiterUnavailable):
             await repo.get_buckets(broken, resource=RESOURCE)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+class TestVersionMarkerSurvivesTheRealRoundTrip:
+    """#515 against a real table and both Lambda packages' vendored reader.
+
+    Unit tests pin `encode`/`decode` against each other, which cannot catch the
+    failure this actually guards: the marker reaching storage but not reaching
+    one of the two Lambda-side readers, or a DynamoDB attribute round trip
+    mangling a leading digit. Both Lambda packages vendor `schedule.py` and call
+    it through their own walk (`processor._parse_bucket_record`,
+    `bucket_sync.resolve_bucket_limits`), so the assertions below run their
+    code against bytes the client really wrote.
+    """
+
+    SCHEDULED = Limit.per_minute("rpm", 1000).with_schedule(ALWAYS)
+
+    async def _seed(self, limiter, entity_id):
+        await limiter.create_entity(entity_id)
+        await limiter.set_limits(entity_id, [self.SCHEDULED], resource=RESOURCE)
+        async with limiter.acquire(entity_id, RESOURCE, {"rpm": 1}):
+            pass
+
+    async def test_the_stored_config_and_bucket_both_carry_the_marker(
+        self, localstack_limiter, unique_name
+    ):
+        limiter = localstack_limiter
+        repo = limiter._repository
+        entity_id = f"sched-ver-store-{unique_name}"
+        await self._seed(limiter, entity_id)
+
+        client = await repo._get_client()
+        config = (
+            await client.get_item(
+                TableName=repo.table_name,
+                Key={
+                    "PK": {"S": pk_entity(repo._namespace_id, entity_id)},
+                    "SK": {"S": sk_config(RESOURCE)},
+                },
+            )
+        )["Item"]
+        stored_config = config[limit_attr("rpm", "sched")]["S"]
+        bucket = await _raw_bucket(repo, entity_id)
+        stored_bucket = bucket[BUCKET_FIELD_SCHED]["S"]
+
+        assert stored_config.startswith(str(ENCODING_VERSION))
+        assert stored_bucket.startswith(str(ENCODING_VERSION))
+        # And the client reads back exactly what it wrote.
+        assert decode(stored_config, "America/New_York") == ALWAYS
+        assert decode(stored_bucket, "America/New_York") == ALWAYS
+        assert (await limiter.get_limits(entity_id, RESOURCE))[0].schedule == ALWAYS
+
+    async def test_the_aggregators_reader_accepts_the_stored_bucket(
+        self, localstack_limiter, unique_name
+    ):
+        """`processor` reads the item and nothing else, so a marker it could not
+        read would silently drop the schedule and refill at the base rate."""
+        from zae_limiter_aggregator.processor import _parse_bucket_record
+
+        limiter = localstack_limiter
+        repo = limiter._repository
+        entity_id = f"sched-ver-aggr-{unique_name}"
+        await self._seed(limiter, entity_id)
+        item = await _raw_bucket(repo, entity_id)
+
+        parsed = _parse_bucket_record(_modify_record(item))
+        assert parsed is not None
+        assert parsed.sched_error is None
+        assert parsed.sched == ALWAYS
+
+    async def test_the_provisioners_reader_accepts_the_stored_config(
+        self, localstack_limiter, unique_name
+    ):
+        """The provisioner's walk raises out of the whole item on a schedule it
+        cannot read (§6.1), so this is the sync boto3 mirror of the assertion
+        above, one layer up at the config item."""
+        import boto3
+
+        from zae_limiter_provisioner.bucket_sync import resolve_bucket_limits
+
+        limiter = localstack_limiter
+        repo = limiter._repository
+        entity_id = f"sched-ver-prov-{unique_name}"
+        await self._seed(limiter, entity_id)
+
+        sync_client = boto3.client(
+            "dynamodb", endpoint_url=repo.endpoint_url, region_name=repo.region
+        )
+        limits, level = resolve_bucket_limits(
+            sync_client, repo.table_name, repo._namespace_id, entity_id, RESOURCE
+        )
+        assert level == "entity"
+        assert limits["rpm"]["schedule"] == ALWAYS
+
+    async def test_a_newer_marker_is_diagnosed_rather_than_misread(
+        self, localstack_limiter, unique_name
+    ):
+        """The case the marker exists for, end to end: a value this build cannot
+        read is named as such at the client boundary instead of failing as
+        whatever its unfamiliar body happens to be."""
+        from zae_limiter_aggregator.processor import _parse_bucket_record
+
+        limiter = localstack_limiter
+        repo = limiter._repository
+        entity_id = f"sched-ver-newer-{unique_name}"
+        await self._seed(limiter, entity_id)
+
+        newer = f"{ENCODING_VERSION + 1}h9-17s500q42"
+        await _write_attr(
+            repo, await _bucket_key(repo, entity_id), BUCKET_FIELD_SCHED, {"S": newer}
+        )
+        await _write_attr(repo, await _bucket_key(repo, entity_id), BUCKET_FIELD_VU, {"N": "1"})
+
+        with pytest.raises(RateLimiterUnavailable) as exc:
+            async with limiter.acquire(
+                entity_id, RESOURCE, {"rpm": 1}, on_unavailable=OnUnavailable.BLOCK
+            ):
+                pass
+        assert f"encoding version {ENCODING_VERSION + 1}" in str(exc.value)
+
+        # The aggregator's half: reported, not raised, so the batch survives.
+        item = await _raw_bucket(repo, entity_id)
+        parsed = _parse_bucket_record(_modify_record(item))
+        assert parsed is not None
+        assert parsed.sched_error is not None
+        assert f"encoding version {ENCODING_VERSION + 1}" in parsed.sched_error

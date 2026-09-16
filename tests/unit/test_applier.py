@@ -327,7 +327,7 @@ class TestScheduleReachesTheConfigItem:
                 }
             }
         )
-        assert item["l_rpm_sched"] == {"S": "h9-17w1-5s500"}
+        assert item["l_rpm_sched"] == {"S": "1h9-17w1-5s500"}
         assert item["sched_tz"] == {"S": "America/New_York"}
         # cp/ra stay the BASE params; the schedule applies on top (§2.1).
         assert item["l_rpm_cp"] == {"N": "1000"}
@@ -343,7 +343,7 @@ class TestScheduleReachesTheConfigItem:
                 }
             }
         )
-        assert item["l_rpd_rsched"] == {"S": "m0h0"}
+        assert item["l_rpd_rsched"] == {"S": "1m0h0"}
         assert item["sched_tz"] == {"S": "America/New_York"}
         assert "l_rpd_sched" not in item
 
@@ -368,7 +368,7 @@ class TestScheduleReachesTheConfigItem:
                 "tpm": {"capacity": 50, "refill_amount": 50, "refill_period": 60},
             }
         )
-        assert item["l_rpm_sched"] == {"S": "h9-17w1-5s500"}
+        assert item["l_rpm_sched"] == {"S": "1h9-17w1-5s500"}
         assert "l_tpm_sched" not in item
         assert item["sched_tz"] == {"S": "America/New_York"}
 
@@ -435,4 +435,4 @@ class TestScheduleReachesTheConfigItem:
             client=client,
         )
         item = client.put_item.call_args.kwargs["Item"]
-        assert item["l_rpm_sched"] == {"S": "h9-17w1-5s500"}
+        assert item["l_rpm_sched"] == {"S": "1h9-17w1-5s500"}
