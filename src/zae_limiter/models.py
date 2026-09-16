@@ -6,7 +6,12 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 from .exceptions import InvalidIdentifierError, InvalidNameError
-from .schedule import ScheduleEntry, effective_params
+from .schedule import (
+    MAX_PERIOD_SECONDS,
+    MAX_TOKENS,
+    ScheduleEntry,
+    effective_params,
+)
 
 # ---------------------------------------------------------------------------
 # Validation Constants
@@ -404,6 +409,25 @@ class Limit:
             raise ValueError("refill_amount must not be negative")
         if self.refill_period_seconds <= 0:
             raise ValueError("refill_period_seconds must be positive")
+        # Upper bounds, for the same reason `ScheduleEntry` has them (#570).
+        # Bounding `scale` alone proves nothing: the quantity that has to stay
+        # inside DynamoDB's 38 significant digits is the *product*
+        # `capacity x 1000 x scale`, so the base has to be bounded too or the
+        # overflow threshold stays data-dependent — the same entry raising on a
+        # large `tpm` and returning cleanly on a small `rpm`. The ceilings and
+        # their derivation live in `schedule.py`, beside the one hard limit they
+        # respect, because that module may not import this one.
+        for field_name, value, bound in (
+            ("capacity", self.capacity, MAX_TOKENS),
+            ("refill_amount", self.refill_amount, MAX_TOKENS),
+            ("refill_period_seconds", self.refill_period_seconds, MAX_PERIOD_SECONDS),
+        ):
+            if value > bound:
+                raise ValueError(
+                    f"{field_name} must be at most {bound}, got {value!r}. Above this "
+                    f"the limit cannot be stored exactly as a DynamoDB Number, and a "
+                    f"schedule applied on top of it overflows (#570)."
+                )
         # The two tuples are validated by opposite rules and neither is a
         # superset of the other, so an entry in the wrong one is checked here
         # rather than left to whatever reads it. A reset entry in `schedule`

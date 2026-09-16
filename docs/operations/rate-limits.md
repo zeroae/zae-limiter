@@ -295,10 +295,10 @@ use the `b_{limit_name}_{field}` naming convention:
 | Refill timestamp | `rf` | Last refill (epoch ms) | `1705312800000` |
 | Shard count | `shard_count` | Number of shards for this bucket | `2` |
 | Valid until | `vu` | Next instant the effective parameters change (epoch ms). Absent means nothing here is scheduled. `vu` at or before now is why a bucket is taking the slow path | `1705334400000` |
-| Schedule | `sched` | Item-level schedule, compact encoding | `h9-17w1-5s500` |
-| Reset schedule | `rsched` | Item-level reset schedule, compact encoding | `m0h0` |
+| Schedule | `sched` | Item-level schedule, compact encoding (leading digits are the encoding version) | `1h9-17w1-5s500` |
+| Reset schedule | `rsched` | Item-level reset schedule, compact encoding | `1m0h0` |
 | Timezone | `sched_tz` | IANA zone shared by every schedule on this item | `America/New_York` |
-| Per-limit overrides | `b_rpm_sched`, `b_rpm_rsched` | That limit's own schedule, when it differs from the item default. A literal `-` means that limit has **no** schedule; a missing attribute means it inherits the item default | `h0-6c2000` or `-` |
+| Per-limit overrides | `b_rpm_sched`, `b_rpm_rsched` | That limit's own schedule, when it differs from the item default. A literal `-` means that limit has **no** schedule; a missing attribute means it inherits the item default | `1h0-6c2000` or `-` |
 
 The ceiling actually enforced is **not** `b_rpm_cp`. The schedule in force at the current
 instant is applied to the base first, and the result is then divided by `shard_count`. An
