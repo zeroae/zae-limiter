@@ -3735,14 +3735,14 @@ use the <code>b_{limit_name}_{field}</code> naming convention:</p>
 <tr>
 <td>Schedule</td>
 <td><code>sched</code></td>
-<td>Item-level schedule, compact encoding</td>
-<td><code>h9-17w1-5s500</code></td>
+<td>Item-level schedule, compact encoding (leading digits are the encoding version)</td>
+<td><code>1h9-17w1-5s500</code></td>
 </tr>
 <tr>
 <td>Reset schedule</td>
 <td><code>rsched</code></td>
 <td>Item-level reset schedule, compact encoding</td>
-<td><code>m0h0</code></td>
+<td><code>1m0h0</code></td>
 </tr>
 <tr>
 <td>Timezone</td>
@@ -3754,7 +3754,7 @@ use the <code>b_{limit_name}_{field}</code> naming convention:</p>
 <td>Per-limit overrides</td>
 <td><code>b_rpm_sched</code>, <code>b_rpm_rsched</code></td>
 <td>That limit's own schedule, when it differs from the item default. A literal <code>-</code> means that limit has <strong>no</strong> schedule; a missing attribute means it inherits the item default</td>
-<td><code>h0-6c2000</code> or <code>-</code></td>
+<td><code>1h0-6c2000</code> or <code>-</code></td>
 </tr>
 </tbody>
 </table>
