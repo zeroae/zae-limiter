@@ -47,6 +47,61 @@ __all__ = [
     "to_cron",
 ]
 
+# ---------------------------------------------------------------------------
+# Magnitude bounds (#570)
+# ---------------------------------------------------------------------------
+#
+# `scale` and the three absolute overrides are validated for sign, for
+# finiteness (#564) and for integrality (#569), but nothing bounded their
+# *magnitude* — so `scale=1e300` (positive, finite, and not an `int` field)
+# passed construction and died somewhere else entirely: `OverflowError` from
+# `round(scale * 1000)` inside `encode` above ~1.8e305, `OverflowError` from
+# `int(cp_milli * scale)` inside `effective_params` — the acquire slow path,
+# where it is a 500 — from ~1e303, a `decimal.Inexact` out of boto3 between
+# 1e33 and 1e120, and, quietest of all, nothing at all below 1e33, where it
+# encodes a 35-character token and enforces a limit nobody meant.
+#
+# There is exactly one *derived* ceiling here, and it is the one below.
+# DynamoDB Numbers carry 38 significant digits; boto3 runs every value through
+# a `decimal` context that traps `Rounded`/`Inexact`, so `10**38 - 1`
+# serializes and `10**38` raises before the request is ever sent. Every
+# quantity that reaches a bucket item — `cp`, `ra`, `tk`, `ttl` — is a
+# milli-unit integer that has to land inside it.
+MAX_STORED_MILLI = 10**38 - 1
+
+# The three per-field ceilings below are *not* derived, and saying otherwise
+# would be dishonest: no arithmetic picks 10**15 over 10**14. What is derived
+# is the constraint they respect, and the reason there has to be one per field
+# rather than one on the product.
+#
+# `scale` multiplies into the same product the absolutes set:
+#
+#     effective capacity (milli) = capacity x 1000 x scale
+#
+# Bounding only that product is what the system does implicitly today, and it
+# is why `effective_params`' overflow threshold is **data-dependent**: the same
+# `ScheduleEntry` raises against a `tpm` of 10,000,000 and returns cleanly
+# against an `rpm` of 10. A threshold that moves with the limit an entry is
+# attached to cannot be reported at construction, which is the whole point. So
+# each factor is bounded on its own, and the ceilings are chosen so that no
+# product of them can reach `MAX_STORED_MILLI`:
+#
+#     10**15 (capacity) x 1000 (milli) x 10**6 (scale) = 10**24
+#
+# — fourteen orders of magnitude of headroom, which is what pays for the other
+# quantities derived from these. A bucket's `ttl`
+# (`capacity / refill_amount x refill_period x multiplier`) tops out near 7e30
+# for a scaled limit at these ceilings, and is likewise inside.
+#
+# Each number is then "comfortably above any real configuration" rather than
+# derived: a quadrillion tokens per window, a ~31-year refill period, a
+# millionfold window. `Limit` carries the same two token/period ceilings,
+# because the product only closes if the base is bounded as well — a bound on
+# `scale` alone leaves `cp_milli` free and proves nothing.
+MAX_TOKENS = 10**15
+MAX_PERIOD_SECONDS = 10**9
+MAX_SCALE = 10**6
+
 # cronsim's sentinels for the extended tokens we do not support.
 _SENTINELS = {CronSim.LAST, CronSim.LAST_WEEKDAY}
 
@@ -206,11 +261,11 @@ class ScheduleEntry:
                 "a schedule entry must set exactly one of `scale` or the absolute "
                 "fields (`capacity`/`refill_amount`/`refill_period_seconds`)"
             )
-        for name, value, is_absolute in (
-            ("scale", self.scale, False),
-            ("capacity", self.capacity, True),
-            ("refill_amount", self.refill_amount, True),
-            ("refill_period_seconds", self.refill_period_seconds, True),
+        for name, value, is_absolute, bound in (
+            ("scale", self.scale, False, MAX_SCALE),
+            ("capacity", self.capacity, True, MAX_TOKENS),
+            ("refill_amount", self.refill_amount, True, MAX_TOKENS),
+            ("refill_period_seconds", self.refill_period_seconds, True, MAX_PERIOD_SECONDS),
         ):
             if value is None:
                 continue
@@ -249,6 +304,24 @@ class ScheduleEntry:
                 )
             if value <= 0:
                 raise ValueError(f"{name} must be positive, got {value}")
+            # Magnitude last: it is the upper half of the range check the line
+            # above opens, so a negative astronomical value keeps the message
+            # #564's and #569's callers already match. The two guards above have
+            # also established that this comparison is int-to-int (absolutes) or
+            # finite-float-to-int (`scale`) — and the isinstance guard on the
+            # finiteness check stays load-bearing for exactly that reason: a bare
+            # `math.isfinite` would have turned `capacity=10**400` into an
+            # `OverflowError` before it could be reported as a bound (#570).
+            if value > bound:
+                raise ValueError(
+                    f"{name} must be at most {bound}, got {value!r}. Above this the "
+                    f"effective limit (capacity x 1000 x scale) leaves the range "
+                    f"DynamoDB stores exactly ({MAX_STORED_MILLI}), and a large enough "
+                    f"value saturates the float multiply to infinity and raises "
+                    f"OverflowError from inside `encode` or `effective_params` — the "
+                    f"latter on the acquire path, where it is a 500 rather than a "
+                    f"configuration error (#570)."
+                )
 
 
 def matches(parsed: ParsedCron, now_ms: int) -> bool:

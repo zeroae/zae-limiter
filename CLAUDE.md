@@ -840,6 +840,26 @@ The pieces are documented where they live — `vu` and `SCHEDULE_BOUNDARY` under
 write pattern, `sched`/`rsched`/`sched_tz` under the config attribute format and the writer
 table, the quota TTL horizon under ADR-136, and the boundary walk under Exception Design.
 
+**Magnitude bounds on every numeric modifier (#570).** `schedule.py` names three ceilings —
+`MAX_TOKENS = 10**15`, `MAX_PERIOD_SECONDS = 10**9`, `MAX_SCALE = 10**6` — enforced by
+`ScheduleEntry.__post_init__` on `scale` / `capacity` / `refill_amount` /
+`refill_period_seconds` and by `Limit.__post_init__` on the base `capacity` /
+`refill_amount` / `refill_period_seconds`. Each raises a plain `ValueError` naming the field,
+the value and the bound, so `manifest._parse_entries` reports it as `schedule[i]: …` and
+`zae-limiter limits plan` fails before anything is written.
+
+Only one number here is derived: `MAX_STORED_MILLI = 10**38 - 1`, DynamoDB's largest exactly
+storable integer (38 significant digits — boto3's serializer raises `decimal.Rounded` at
+`10**38`, before the request is sent). The three ceilings are judgement calls chosen so that no
+product of them can reach it: `10**15 × 1000 × 10**6 = 10**24`, fourteen orders inside.
+**Bounding `scale` alone would not have worked**, which is why `Limit` is narrowed too: the
+quantity that must stay storable is the product `capacity × 1000 × scale`, so with an unbounded
+base the overflow threshold stays data-dependent — the same `ScheduleEntry` raising
+`OverflowError` on a `tpm` of 10,000,000 and returning cleanly on an `rpm` of 10, on the acquire
+slow path, as a 500. The check is ordered **after** #564's finiteness and #569's integrality
+guards (so a NaN or a `1.5` still reports its own message) and after the positivity test, whose
+upper half it is.
+
 See [ADR-135](docs/adr/135-scheduled-limits.md) for the decision and the alternatives
 considered, and `docs/plans/2026-09-13-scheduled-limits-design.md` for the full design.
 
