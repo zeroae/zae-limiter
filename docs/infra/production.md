@@ -194,23 +194,28 @@ ns_ids = ["a7x3kq2m", "b9y4lr3n"]  # resolved namespace IDs
 response = sts.assume_role(
     RoleArn="arn:aws:iam::123456789012:role/shared-table-base-role",
     RoleSessionName="multi-tenant-session",
-    Policy=json.dumps({
-        "Version": "2012-10-17",
-        "Statement": [{
-            "Effect": "Allow",
-            "Action": [
-                "dynamodb:GetItem", "dynamodb:BatchGetItem",
-                "dynamodb:Query", "dynamodb:UpdateItem",
-            ],
-            "Resource": "arn:aws:dynamodb:us-east-1:123456789012:table/shared-table",
-            "Condition": {
-                "ForAllValues:StringLike": {
-                    "dynamodb:LeadingKeys":
-                        [f"{ns}/*" for ns in ns_ids] + ["_/*"]
+    Policy=json.dumps(
+        {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Action": [
+                        "dynamodb:GetItem",
+                        "dynamodb:BatchGetItem",
+                        "dynamodb:Query",
+                        "dynamodb:UpdateItem",
+                    ],
+                    "Resource": "arn:aws:dynamodb:us-east-1:123456789012:table/shared-table",
+                    "Condition": {
+                        "ForAllValues:StringLike": {
+                            "dynamodb:LeadingKeys": [f"{ns}/*" for ns in ns_ids] + ["_/*"]
+                        }
+                    },
                 }
-            }
-        }]
-    })
+            ],
+        }
+    ),
 )
 # Use response["Credentials"] for scoped access
 ```

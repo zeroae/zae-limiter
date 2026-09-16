@@ -28,6 +28,7 @@ class TestProvisionerKey:
 
     def test_sk_provisioner(self):
         from zae_limiter.schema import sk_provisioner
+
         assert sk_provisioner() == "#PROVISIONER"
 ```
 
@@ -179,19 +180,16 @@ async def get_provisioner_state(self) -> dict[str, Any]:
     managed_entities: dict[str, list[str]] = {}
     raw_entities = item.get("managed_entities", {}).get("M", {})
     for entity_id, resources_attr in raw_entities.items():
-        managed_entities[entity_id] = [
-            r["S"] for r in resources_attr.get("L", [])
-        ]
+        managed_entities[entity_id] = [r["S"] for r in resources_attr.get("L", [])]
 
     return {
         "managed_system": item.get("managed_system", {}).get("BOOL", False),
-        "managed_resources": [
-            r["S"] for r in item.get("managed_resources", {}).get("L", [])
-        ],
+        "managed_resources": [r["S"] for r in item.get("managed_resources", {}).get("L", [])],
         "managed_entities": managed_entities,
         "last_applied": item.get("last_applied", {}).get("S"),
         "applied_hash": item.get("applied_hash", {}).get("S"),
     }
+
 
 async def put_provisioner_state(self, state: dict[str, Any]) -> None:
     """Write the provisioner state record for this namespace.
@@ -206,9 +204,7 @@ async def put_provisioner_state(self, state: dict[str, Any]) -> None:
         "SK": {"S": schema.sk_provisioner()},
         "GSI4PK": {"S": self._namespace_id},
         "managed_system": {"BOOL": state["managed_system"]},
-        "managed_resources": {
-            "L": [{"S": r} for r in state["managed_resources"]]
-        },
+        "managed_resources": {"L": [{"S": r} for r in state["managed_resources"]]},
         "managed_entities": {
             "M": {
                 entity_id: {"L": [{"S": r} for r in resources]}
@@ -516,10 +512,7 @@ class SystemDecl:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> SystemDecl:
-        limits = {
-            name: LimitDecl.from_dict(val)
-            for name, val in d.get("limits", {}).items()
-        }
+        limits = {name: LimitDecl.from_dict(val) for name, val in d.get("limits", {}).items()}
         return cls(limits=limits, on_unavailable=d.get("on_unavailable"))
 
     def to_dict(self) -> dict[str, Any]:
@@ -539,10 +532,7 @@ class ResourceDecl:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> ResourceDecl:
-        limits = {
-            name: LimitDecl.from_dict(val)
-            for name, val in d.get("limits", {}).items()
-        }
+        limits = {name: LimitDecl.from_dict(val) for name, val in d.get("limits", {}).items()}
         return cls(limits=limits)
 
     def to_dict(self) -> dict[str, Any]:
@@ -557,10 +547,7 @@ class EntityResourceDecl:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> EntityResourceDecl:
-        limits = {
-            name: LimitDecl.from_dict(val)
-            for name, val in d.get("limits", {}).items()
-        }
+        limits = {name: LimitDecl.from_dict(val) for name, val in d.get("limits", {}).items()}
         return cls(limits=limits)
 
     def to_dict(self) -> dict[str, Any]:
@@ -576,16 +563,13 @@ class EntityDecl:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> EntityDecl:
         resources = {
-            name: EntityResourceDecl.from_dict(val)
-            for name, val in d.get("resources", {}).items()
+            name: EntityResourceDecl.from_dict(val) for name, val in d.get("resources", {}).items()
         }
         return cls(resources=resources)
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "resources": {
-                name: res.to_dict() for name, res in self.resources.items()
-            },
+            "resources": {name: res.to_dict() for name, res in self.resources.items()},
         }
 
 
@@ -607,14 +591,10 @@ class LimitsManifest:
         system = SystemDecl.from_dict(d["system"]) if "system" in d else None
 
         resources = {
-            name: ResourceDecl.from_dict(val)
-            for name, val in d.get("resources", {}).items()
+            name: ResourceDecl.from_dict(val) for name, val in d.get("resources", {}).items()
         }
 
-        entities = {
-            name: EntityDecl.from_dict(val)
-            for name, val in d.get("entities", {}).items()
-        }
+        entities = {name: EntityDecl.from_dict(val) for name, val in d.get("entities", {}).items()}
 
         return cls(
             namespace=namespace,
@@ -635,13 +615,9 @@ class LimitsManifest:
         if self.system is not None:
             result["system"] = self.system.to_dict()
         if self.resources:
-            result["resources"] = {
-                name: res.to_dict() for name, res in self.resources.items()
-            }
+            result["resources"] = {name: res.to_dict() for name, res in self.resources.items()}
         if self.entities:
-            result["entities"] = {
-                name: ent.to_dict() for name, ent in self.entities.items()
-            }
+            result["entities"] = {name: ent.to_dict() for name, ent in self.entities.items()}
         return result
 
     def managed_set(self) -> dict[str, Any]:
@@ -711,14 +687,16 @@ class TestComputeDiff:
 
     def test_first_apply_creates_everything(self):
         """First apply (empty previous state) creates all items."""
-        manifest = LimitsManifest.from_dict({
-            "namespace": "ns",
-            "system": {"limits": {"rpm": {"capacity": 1000}}},
-            "resources": {"gpt-4": {"limits": {"tpm": {"capacity": 50000}}}},
-            "entities": {
-                "user-1": {"resources": {"gpt-4": {"limits": {"rpm": {"capacity": 500}}}}},
-            },
-        })
+        manifest = LimitsManifest.from_dict(
+            {
+                "namespace": "ns",
+                "system": {"limits": {"rpm": {"capacity": 1000}}},
+                "resources": {"gpt-4": {"limits": {"tpm": {"capacity": 50000}}}},
+                "entities": {
+                    "user-1": {"resources": {"gpt-4": {"limits": {"rpm": {"capacity": 500}}}}},
+                },
+            }
+        )
         previous = {
             "managed_system": False,
             "managed_resources": [],
@@ -734,11 +712,13 @@ class TestComputeDiff:
 
     def test_no_changes_on_same_state(self):
         """Re-applying same manifest produces update actions (idempotent overwrites)."""
-        manifest = LimitsManifest.from_dict({
-            "namespace": "ns",
-            "system": {"limits": {"rpm": {"capacity": 1000}}},
-            "resources": {"gpt-4": {"limits": {"tpm": {"capacity": 50000}}}},
-        })
+        manifest = LimitsManifest.from_dict(
+            {
+                "namespace": "ns",
+                "system": {"limits": {"rpm": {"capacity": 1000}}},
+                "resources": {"gpt-4": {"limits": {"tpm": {"capacity": 50000}}}},
+            }
+        )
         previous = {
             "managed_system": True,
             "managed_resources": ["gpt-4"],
@@ -795,10 +775,12 @@ class TestComputeDiff:
 
     def test_unmanaged_items_not_touched(self):
         """Items never in previous managed set produce no changes."""
-        manifest = LimitsManifest.from_dict({
-            "namespace": "ns",
-            "resources": {"gpt-4": {"limits": {"rpm": {"capacity": 1}}}},
-        })
+        manifest = LimitsManifest.from_dict(
+            {
+                "namespace": "ns",
+                "resources": {"gpt-4": {"limits": {"rpm": {"capacity": 1}}}},
+            }
+        )
         previous = {
             "managed_system": False,
             "managed_resources": [],
@@ -882,10 +864,14 @@ def compute_diff(
     prev_system = previous.get("managed_system", False)
     if manifest.system is not None:
         action = "update" if prev_system else "create"
-        changes.append(Change(
-            action=action, level="system", target=None,
-            data=manifest.system.to_dict(),
-        ))
+        changes.append(
+            Change(
+                action=action,
+                level="system",
+                target=None,
+                data=manifest.system.to_dict(),
+            )
+        )
     elif prev_system:
         changes.append(Change(action="delete", level="system", target=None))
 
@@ -895,10 +881,14 @@ def compute_diff(
 
     for resource in curr_resources:
         action = "update" if resource in prev_resources else "create"
-        changes.append(Change(
-            action=action, level="resource", target=resource,
-            data=manifest.resources[resource].to_dict(),
-        ))
+        changes.append(
+            Change(
+                action=action,
+                level="resource",
+                target=resource,
+                data=manifest.resources[resource].to_dict(),
+            )
+        )
 
     for resource in prev_resources - curr_resources:
         changes.append(Change(action="delete", level="resource", target=resource))
@@ -918,10 +908,14 @@ def compute_diff(
     for entity_id, resource in curr_entity_resources:
         target = f"{entity_id}/{resource}"
         action = "update" if (entity_id, resource) in prev_entity_resources else "create"
-        changes.append(Change(
-            action=action, level="entity", target=target,
-            data=manifest.entities[entity_id].resources[resource].to_dict(),
-        ))
+        changes.append(
+            Change(
+                action=action,
+                level="entity",
+                target=target,
+                data=manifest.entities[entity_id].resources[resource].to_dict(),
+            )
+        )
 
     for entity_id, resource in prev_entity_resources - curr_entity_resources:
         target = f"{entity_id}/{resource}"
@@ -982,10 +976,23 @@ class TestApplyChanges:
     def test_apply_create_system(self):
         """Create system defaults calls put_item with correct keys."""
         result = apply_changes(
-            [Change(
-                action="create", level="system", target=None,
-                data={"limits": {"rpm": {"capacity": 1000, "burst": 1000, "refill_amount": 1000, "refill_period": 60}}},
-            )],
+            [
+                Change(
+                    action="create",
+                    level="system",
+                    target=None,
+                    data={
+                        "limits": {
+                            "rpm": {
+                                "capacity": 1000,
+                                "burst": 1000,
+                                "refill_amount": 1000,
+                                "refill_period": 60,
+                            }
+                        }
+                    },
+                )
+            ],
             table_name="test",
             namespace_id="ns123",
         )
@@ -1003,10 +1010,23 @@ class TestApplyChanges:
     def test_apply_create_entity(self):
         """Create entity limits calls put_item with entity/resource keys."""
         result = apply_changes(
-            [Change(
-                action="create", level="entity", target="user-1/gpt-4",
-                data={"limits": {"rpm": {"capacity": 500, "burst": 500, "refill_amount": 500, "refill_period": 60}}},
-            )],
+            [
+                Change(
+                    action="create",
+                    level="entity",
+                    target="user-1/gpt-4",
+                    data={
+                        "limits": {
+                            "rpm": {
+                                "capacity": 500,
+                                "burst": 500,
+                                "refill_amount": 500,
+                                "refill_period": 60,
+                            }
+                        }
+                    },
+                )
+            ],
             table_name="test",
             namespace_id="ns123",
         )
@@ -1015,10 +1035,36 @@ class TestApplyChanges:
     def test_apply_mixed_changes(self):
         """Mixed create/update/delete produces correct counts."""
         changes = [
-            Change(action="create", level="system", target=None,
-                   data={"limits": {"rpm": {"capacity": 1000, "burst": 1000, "refill_amount": 1000, "refill_period": 60}}}),
-            Change(action="update", level="resource", target="gpt-4",
-                   data={"limits": {"tpm": {"capacity": 50000, "burst": 50000, "refill_amount": 50000, "refill_period": 60}}}),
+            Change(
+                action="create",
+                level="system",
+                target=None,
+                data={
+                    "limits": {
+                        "rpm": {
+                            "capacity": 1000,
+                            "burst": 1000,
+                            "refill_amount": 1000,
+                            "refill_period": 60,
+                        }
+                    }
+                },
+            ),
+            Change(
+                action="update",
+                level="resource",
+                target="gpt-4",
+                data={
+                    "limits": {
+                        "tpm": {
+                            "capacity": 50000,
+                            "burst": 50000,
+                            "refill_amount": 50000,
+                            "refill_period": 60,
+                        }
+                    }
+                },
+            ),
             Change(action="delete", level="resource", target="claude-3"),
             Change(action="delete", level="entity", target="user-1/gpt-4"),
         ]
@@ -1083,7 +1129,11 @@ class ApplyResult:
 
 
 def _build_limit_item(
-    pk: str, sk: str, namespace_id: str, limits: dict[str, Any], extra: dict[str, Any] | None = None,
+    pk: str,
+    sk: str,
+    namespace_id: str,
+    limits: dict[str, Any],
+    extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a DynamoDB item for a config record with composite limit attributes."""
     item: dict[str, Any] = {
@@ -1144,7 +1194,10 @@ def apply_changes(
 
 
 def _apply_set(
-    client: Any, table_name: str, namespace_id: str, change: Change,
+    client: Any,
+    table_name: str,
+    namespace_id: str,
+    change: Change,
 ) -> None:
     """Apply a create or update change (PutItem)."""
     data = change.data or {}
@@ -1180,7 +1233,10 @@ def _apply_set(
 
 
 def _apply_delete(
-    client: Any, table_name: str, namespace_id: str, change: Change,
+    client: Any,
+    table_name: str,
+    namespace_id: str,
+    change: Change,
 ) -> None:
     """Apply a delete change (DeleteItem)."""
     if change.level == "system":
@@ -1369,10 +1425,7 @@ def _handle_cli(event: dict[str, Any], context: Any) -> dict[str, Any]:
     previous = _read_provisioner_state(table_name, namespace_id)
     changes = compute_diff(manifest, previous)
 
-    change_dicts = [
-        {"action": c.action, "level": c.level, "target": c.target}
-        for c in changes
-    ]
+    change_dicts = [{"action": c.action, "level": c.level, "target": c.target} for c in changes]
 
     if action == "plan":
         return {"status": "planned", "changes": change_dicts}
@@ -1432,10 +1485,7 @@ def _handle_cfn(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     return {
         "status": "applied",
-        "changes": [
-            {"action": c.action, "level": c.level, "target": c.target}
-            for c in changes
-        ],
+        "changes": [{"action": c.action, "level": c.level, "target": c.target} for c in changes],
         "created": result.created,
         "updated": result.updated,
         "deleted": result.deleted,
@@ -1523,15 +1573,15 @@ def _read_provisioner_state(table_name: str, namespace_id: str) -> dict[str, Any
 
     return {
         "managed_system": item.get("managed_system", {}).get("BOOL", False),
-        "managed_resources": [
-            r["S"] for r in item.get("managed_resources", {}).get("L", [])
-        ],
+        "managed_resources": [r["S"] for r in item.get("managed_resources", {}).get("L", [])],
         "managed_entities": managed_entities,
     }
 
 
 def _write_provisioner_state(
-    table_name: str, namespace_id: str, state: dict[str, Any],
+    table_name: str,
+    namespace_id: str,
+    state: dict[str, Any],
 ) -> None:
     """Write the #PROVISIONER state record to DynamoDB."""
     from zae_limiter.schema import pk_system, sk_provisioner
@@ -1542,9 +1592,7 @@ def _write_provisioner_state(
         "SK": {"S": sk_provisioner()},
         "GSI4PK": {"S": namespace_id},
         "managed_system": {"BOOL": state.get("managed_system", False)},
-        "managed_resources": {
-            "L": [{"S": r} for r in state.get("managed_resources", [])]
-        },
+        "managed_resources": {"L": [{"S": r} for r in state.get("managed_resources", [])]},
         "managed_entities": {
             "M": {
                 eid: {"L": [{"S": r} for r in resources]}
@@ -1797,12 +1845,19 @@ class TestLimitsPlan:
                         {"action": "create", "level": "system", "target": None},
                     ],
                 }
-                result = runner.invoke(cli, [
-                    "limits", "plan",
-                    "--name", "test-app",
-                    "--region", "us-east-1",
-                    "-f", f.name,
-                ])
+                result = runner.invoke(
+                    cli,
+                    [
+                        "limits",
+                        "plan",
+                        "--name",
+                        "test-app",
+                        "--region",
+                        "us-east-1",
+                        "-f",
+                        f.name,
+                    ],
+                )
                 assert result.exit_code == 0
                 assert "create" in result.output
                 assert "system" in result.output
@@ -1833,12 +1888,19 @@ class TestLimitsApply:
                     "deleted": 0,
                     "errors": [],
                 }
-                result = runner.invoke(cli, [
-                    "limits", "apply",
-                    "--name", "test-app",
-                    "--region", "us-east-1",
-                    "-f", f.name,
-                ])
+                result = runner.invoke(
+                    cli,
+                    [
+                        "limits",
+                        "apply",
+                        "--name",
+                        "test-app",
+                        "--region",
+                        "us-east-1",
+                        "-f",
+                        f.name,
+                    ],
+                )
                 assert result.exit_code == 0
                 assert "applied" in result.output.lower() or "create" in result.output.lower()
 
@@ -1857,11 +1919,17 @@ class TestLimitsCfnTemplate:
             f.flush()
 
             runner = CliRunner()
-            result = runner.invoke(cli, [
-                "limits", "cfn-template",
-                "--name", "test-app",
-                "-f", f.name,
-            ])
+            result = runner.invoke(
+                cli,
+                [
+                    "limits",
+                    "cfn-template",
+                    "--name",
+                    "test-app",
+                    "-f",
+                    f.name,
+                ],
+            )
             assert result.exit_code == 0
             assert "Custom::ZaeLimiterLimits" in result.output
             assert "ServiceToken" in result.output
@@ -1906,8 +1974,17 @@ def limits() -> None:
 @click.option("--region", help="AWS region.")
 @click.option("--endpoint-url", help="AWS endpoint URL (e.g., LocalStack).")
 @click.option("--namespace", "-N", default="default", help="Namespace.")
-@click.option("--file", "-f", "file_path", required=True, type=click.Path(exists=True), help="YAML limits file.")
-def limits_plan(name: str, region: str | None, endpoint_url: str | None, namespace: str, file_path: str) -> None:
+@click.option(
+    "--file",
+    "-f",
+    "file_path",
+    required=True,
+    type=click.Path(exists=True),
+    help="YAML limits file.",
+)
+def limits_plan(
+    name: str, region: str | None, endpoint_url: str | None, namespace: str, file_path: str
+) -> None:
     """Preview changes without applying (like terraform plan)."""
     manifest_data = _load_yaml(file_path)
     result = _invoke_provisioner(name, region, endpoint_url, "plan", manifest_data)
@@ -1929,8 +2006,17 @@ def limits_plan(name: str, region: str | None, endpoint_url: str | None, namespa
 @click.option("--region", help="AWS region.")
 @click.option("--endpoint-url", help="AWS endpoint URL (e.g., LocalStack).")
 @click.option("--namespace", "-N", default="default", help="Namespace.")
-@click.option("--file", "-f", "file_path", required=True, type=click.Path(exists=True), help="YAML limits file.")
-def limits_apply(name: str, region: str | None, endpoint_url: str | None, namespace: str, file_path: str) -> None:
+@click.option(
+    "--file",
+    "-f",
+    "file_path",
+    required=True,
+    type=click.Path(exists=True),
+    help="YAML limits file.",
+)
+def limits_apply(
+    name: str, region: str | None, endpoint_url: str | None, namespace: str, file_path: str
+) -> None:
     """Apply limits from YAML file (like terraform apply)."""
     manifest_data = _load_yaml(file_path)
     result = _invoke_provisioner(name, region, endpoint_url, "apply", manifest_data)
@@ -1964,8 +2050,17 @@ def limits_apply(name: str, region: str | None, endpoint_url: str | None, namesp
 @click.option("--region", help="AWS region.")
 @click.option("--endpoint-url", help="AWS endpoint URL (e.g., LocalStack).")
 @click.option("--namespace", "-N", default="default", help="Namespace.")
-@click.option("--file", "-f", "file_path", required=True, type=click.Path(exists=True), help="YAML limits file.")
-def limits_diff(name: str, region: str | None, endpoint_url: str | None, namespace: str, file_path: str) -> None:
+@click.option(
+    "--file",
+    "-f",
+    "file_path",
+    required=True,
+    type=click.Path(exists=True),
+    help="YAML limits file.",
+)
+def limits_diff(
+    name: str, region: str | None, endpoint_url: str | None, namespace: str, file_path: str
+) -> None:
     """Show drift between YAML and live DynamoDB state."""
     manifest_data = _load_yaml(file_path)
     result = _invoke_provisioner(name, region, endpoint_url, "plan", manifest_data)
@@ -1984,7 +2079,14 @@ def limits_diff(name: str, region: str | None, endpoint_url: str | None, namespa
 
 @limits.command("cfn-template")
 @click.option("--name", "-n", required=True, help="Stack identifier (for ImportValue).")
-@click.option("--file", "-f", "file_path", required=True, type=click.Path(exists=True), help="YAML limits file.")
+@click.option(
+    "--file",
+    "-f",
+    "file_path",
+    required=True,
+    type=click.Path(exists=True),
+    help="YAML limits file.",
+)
 def limits_cfn_template(name: str, file_path: str) -> None:
     """Generate a CloudFormation template from YAML file."""
     manifest_data = _load_yaml(file_path)
@@ -2009,9 +2111,7 @@ def limits_cfn_template(name: str, file_path: str) -> None:
     if "resources" in manifest_data:
         resources_props = {}
         for res_name, res_data in manifest_data["resources"].items():
-            resources_props[res_name] = {
-                "Limits": _limits_to_cfn(res_data.get("limits", {}))
-            }
+            resources_props[res_name] = {"Limits": _limits_to_cfn(res_data.get("limits", {}))}
         properties["Resources"] = resources_props
 
     if "entities" in manifest_data:
@@ -2019,9 +2119,7 @@ def limits_cfn_template(name: str, file_path: str) -> None:
         for ent_id, ent_data in manifest_data["entities"].items():
             ent_resources = {}
             for res_name, res_data in ent_data.get("resources", {}).items():
-                ent_resources[res_name] = {
-                    "Limits": _limits_to_cfn(res_data.get("limits", {}))
-                }
+                ent_resources[res_name] = {"Limits": _limits_to_cfn(res_data.get("limits", {}))}
             entities_props[ent_id] = {"Resources": ent_resources}
         properties["Entities"] = entities_props
 
@@ -2090,7 +2188,9 @@ def _invoke_provisioner(
     # Resolve namespace to get namespace_id
     async def _resolve() -> str:
         repo = await Repository.connect(
-            name, region=region, endpoint_url=endpoint_url,
+            name,
+            region=region,
+            endpoint_url=endpoint_url,
             namespace=manifest_data.get("namespace", "default"),
         )
         try:
@@ -2190,16 +2290,18 @@ class TestProvisionerIntegration:
     @pytest.mark.asyncio
     async def test_apply_creates_and_reads_back(self, test_repo):
         """Apply creates limits that are readable via Repository API."""
-        manifest = LimitsManifest.from_dict({
-            "namespace": "test",
-            "system": {
-                "on_unavailable": "allow",
-                "limits": {"rpm": {"capacity": 1000}},
-            },
-            "resources": {
-                "gpt-4": {"limits": {"tpm": {"capacity": 50000}}},
-            },
-        })
+        manifest = LimitsManifest.from_dict(
+            {
+                "namespace": "test",
+                "system": {
+                    "on_unavailable": "allow",
+                    "limits": {"rpm": {"capacity": 1000}},
+                },
+                "resources": {
+                    "gpt-4": {"limits": {"tpm": {"capacity": 50000}}},
+                },
+            }
+        )
         previous = {"managed_system": False, "managed_resources": [], "managed_entities": {}}
         changes = compute_diff(manifest, previous)
 
@@ -2217,10 +2319,12 @@ class TestProvisionerIntegration:
     @pytest.mark.asyncio
     async def test_idempotent_apply(self, test_repo):
         """Applying the same manifest twice produces update actions (idempotent)."""
-        manifest = LimitsManifest.from_dict({
-            "namespace": "test",
-            "resources": {"gpt-4": {"limits": {"rpm": {"capacity": 1000}}}},
-        })
+        manifest = LimitsManifest.from_dict(
+            {
+                "namespace": "test",
+                "resources": {"gpt-4": {"limits": {"rpm": {"capacity": 1000}}}},
+            }
+        )
 
         # First apply
         previous = {"managed_system": False, "managed_resources": [], "managed_entities": {}}
@@ -2242,10 +2346,12 @@ class TestProvisionerIntegration:
         await test_repo.set_resource_defaults("claude-3", [Limit.per_minute("rpm", 500)])
 
         # Apply manifest with gpt-4 only
-        manifest = LimitsManifest.from_dict({
-            "namespace": "test",
-            "resources": {"gpt-4": {"limits": {"rpm": {"capacity": 1000}}}},
-        })
+        manifest = LimitsManifest.from_dict(
+            {
+                "namespace": "test",
+                "resources": {"gpt-4": {"limits": {"rpm": {"capacity": 1000}}}},
+            }
+        )
         previous = {"managed_system": False, "managed_resources": [], "managed_entities": {}}
         changes = compute_diff(manifest, previous)
         apply_changes(changes, test_repo.table_name, test_repo._namespace_id)

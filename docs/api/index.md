@@ -195,7 +195,6 @@ The following are exported from `zae_limiter`:
 from zae_limiter import (
     # Version
     __version__,
-
     # Main classes
     RateLimiter,
     SyncRateLimiter,
@@ -208,7 +207,6 @@ from zae_limiter import (
     StackManager,
     SyncStackManager,
     SyncConfigCache,
-
     # Models
     Limit,
     ScheduleEntry,
@@ -226,31 +224,24 @@ from zae_limiter import (
     Status,
     CacheStats,
     ConfigSource,
-
     # Audit
     AuditEvent,
     AuditAction,
-
     # Enums
     OnUnavailable,
-
     # Exceptions - Base
     ZAELimiterError,
-
     # Exceptions - Categories
     RateLimitError,
     InfrastructureError,
     EntityError,
     VersionError,
-
     # Exceptions - Rate Limit
     RateLimitExceeded,
     LeaseExpiredError,
-
     # Exceptions - Entity
     EntityNotFoundError,
     EntityExistsError,
-
     # Exceptions - Infrastructure
     RateLimiterUnavailable,
     StackOperationError,
@@ -258,16 +249,13 @@ from zae_limiter import (
     InfrastructureNotFoundError,
     NamespaceNotFoundError,
     NamespaceStateError,
-
     # Exceptions - Version
     VersionMismatchError,
     IncompatibleSchemaError,
-
     # Exceptions - Validation
     ValidationError,
     InvalidIdentifierError,
     InvalidNameError,
-
     # Exceptions - Configuration State
     ResourceDisabled,
 )

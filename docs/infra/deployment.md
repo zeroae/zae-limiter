@@ -299,12 +299,9 @@ For rapid iteration, declare infrastructure with cleanup:
 ```python
 from zae_limiter import Repository, RateLimiter
 
+
 async def dev_session():
-    repo = await (
-        Repository.builder()
-        .enable_aggregator(False)
-        .build()
-    )
+    repo = await Repository.builder().enable_aggregator(False).build()
     limiter = RateLimiter(repository=repo)
 
     try:
@@ -364,11 +361,7 @@ Create infrastructure directly from your application:
 ```python
 from zae_limiter import Repository, RateLimiter
 
-repo = await (
-    Repository.builder()
-    .usage_retention_days(90)
-    .build()
-)
+repo = await Repository.builder().usage_retention_days(90).build()
 limiter = RateLimiter(repository=repo)
 ```
 
@@ -442,11 +435,7 @@ Enable X-Ray tracing to gain visibility into Lambda aggregator performance and t
     ```python
     from zae_limiter import Repository, RateLimiter
 
-    repo = await (
-        Repository.builder()
-        .enable_tracing(True)
-        .build()
-    )
+    repo = await Repository.builder().enable_tracing(True).build()
     limiter = RateLimiter(repository=repo)
     ```
 
@@ -516,18 +505,10 @@ The stack creates three managed IAM policies by default for different access pat
     repo = await Repository.builder().build()
 
     # With managed policies AND IAM roles
-    repo = await (
-        Repository.builder()
-        .create_iam_roles(True)
-        .build()
-    )
+    repo = await Repository.builder().create_iam_roles(True).build()
 
     # Without any IAM resources
-    repo = await (
-        Repository.builder()
-        .create_iam(False)
-        .build()
-    )
+    repo = await Repository.builder().create_iam(False).build()
     ```
 
 ### Viewing Policy ARNs

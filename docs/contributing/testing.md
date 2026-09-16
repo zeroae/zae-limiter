@@ -58,6 +58,7 @@ tests/
 import os
 import pytest
 
+
 @pytest.fixture
 def localstack_endpoint():
     """Get LocalStack endpoint from environment."""
@@ -70,6 +71,7 @@ def localstack_endpoint():
 import uuid
 import pytest
 from zae_limiter import Repository, RateLimiter
+
 
 @pytest.fixture(scope="function")
 async def limiter(localstack_endpoint):

@@ -351,8 +351,7 @@ import pytest
 
 # Skip if LocalStack not available
 pytestmark = pytest.mark.skipif(
-    not os.environ.get("AWS_ENDPOINT_URL"),
-    reason="LocalStack not available"
+    not os.environ.get("AWS_ENDPOINT_URL"), reason="LocalStack not available"
 )
 
 
@@ -489,6 +488,7 @@ aws dynamodb restore-table-to-point-in-time \
 ```python
 from zae_limiter.migrations import get_migrations
 from zae_limiter.repository import Repository
+
 
 async def emergency_rollback():
     repo = await Repository.open(stack="limiter", region="us-east-1")
@@ -815,20 +815,20 @@ The version record is stored in DynamoDB:
 
 ```python
 from zae_limiter.migrations import (
-    Migration,           # Migration dataclass
+    Migration,  # Migration dataclass
     register_migration,  # Register a migration
-    get_migrations,      # Get all registered migrations
+    get_migrations,  # Get all registered migrations
     get_migrations_between,  # Get migrations between versions
-    apply_migrations,    # Apply migrations
+    apply_migrations,  # Apply migrations
 )
 
 from zae_limiter.version import (
     CURRENT_SCHEMA_VERSION,  # Current schema version constant
-    parse_version,           # Parse version string
-    check_compatibility,     # Check client/infra compatibility
-    get_schema_version,      # Get current schema version
-    InfrastructureVersion,   # Version info dataclass
-    CompatibilityResult,     # Compatibility check result
+    parse_version,  # Parse version string
+    check_compatibility,  # Check client/infra compatibility
+    get_schema_version,  # Get current schema version
+    InfrastructureVersion,  # Version info dataclass
+    CompatibilityResult,  # Compatibility check result
 )
 ```
 
