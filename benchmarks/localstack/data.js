@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789558826361,
+  "lastUpdate": 1789560377819,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -26135,6 +26135,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.006199889357629303",
             "extra": "mean: 1.0850753260000148 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5acb6032dd79869cb6e44a0d200dfe639a354c53",
+          "message": "🐛 fix(ci): skip PR merge commits when generating the changelog (#603)\n\n## Summary\n\nSquash merging is disabled repo-wide, so every pull request contributes\ntwo kinds of commit to `main`: its own branch commits, and the merge\ncommit that brings them in. GitHub writes the PR title as the merge\ncommit's subject, which means a merge subject like `feat(x): thing (#N)`\nparses as a perfectly valid conventional commit. git-cliff has no way to\ntell it apart from the commit it merges, so every single-commit PR lands\nin the changelog twice.\n\nFor the v0.14.0 range this is not a rounding error: **98 merge commits\ninflate the changelog from a true 164 entries to 251**. That changelog\nis generated at tag time and becomes the GitHub Release body, so the\nduplication would be baked into the published release notes permanently.\n\n## Approach\n\nThere is no \"Merge\" marker to key on — GitHub's merge subject is just\nthe PR title — and git-cliff 2.13.1 has no `--no-merge-commits` flag.\nWhat a merge commit reliably *does* carry is the trailing `(#N)` GitHub\nappends to the title. So the new parser matches a trailing `(#N)` and\nskips the commit.\n\nThe anchor has to be multiline (`(?m)`): git-cliff matches against the\nfull commit message, which for a merge commit spans the PR body, so a\nbare `$` never matches the subject line.\n\nThe rule must stay **first** in `commit_parsers`. git-cliff takes the\nfirst matching parser and stops, so `^feat` placed ahead of it would\nclaim the merge commit and the skip would never fire.\n\n## Known cost\n\nThree commits in this range put an issue number in their own\nhand-written subject and are therefore skipped too: one test pin and two\n`docs(plans)` entries. That is an acceptable trade against 98\nduplicates, and it implies a convention worth keeping going forward: **a\ntrailing `(#N)` belongs to a merge commit, not to a hand-written\nsubject.** Reference issues in the footer (`Fixes #N`, `Refs #N`)\ninstead.\n\n## Test plan\n\nVerification here is the generated changelog, not CI — `cliff.toml` is\noutside `ci-tests.yml`'s path filters.\n\n```bash\nuvx git-cliff --unreleased --tag v0.14.0 | grep -cE '^- '\nuvx git-cliff --unreleased --tag v0.14.0 | grep -c 'retry_after across schedule boundaries'\n```\n\n- [x] Entry count is **165** on this branch — the true 164 for the\nrange, plus this branch's own `fix(ci)` commit.\n- [x] `retry_after across schedule boundaries` appears **once**, not\ntwice.\n- [x] Still present exactly once each: `reset to its own cycle`,\n`unscheduled limit as unscheduled`, `double shard_count`, `never by\nmint`, and `Refill at the scheduled rate` (the #519 fix, filed under\nFeatures because it was folded into a `feat` commit — the release notes\nneed it).\n\nRefs #222",
+          "timestamp": "2026-09-16T08:00:01-04:00",
+          "tree_id": "b18e87e65d25c3a9fe5c2e99aeed6dc91792a256",
+          "url": "https://github.com/zeroae/zae-limiter/commit/5acb6032dd79869cb6e44a0d200dfe639a354c53"
+        },
+        "date": 1789560375611,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 21.855604994638632,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007076954862291077",
+            "extra": "mean: 45.75485328570445 msec\nrounds: 7"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 16.562310309789755,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008147180321485991",
+            "extra": "mean: 60.37804999999992 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 33.75618997680794,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004559668901080547",
+            "extra": "mean: 29.62419635293693 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 35.979959162755094,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00441020741089228",
+            "extra": "mean: 27.793249999993243 msec\nrounds: 13"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 21.971419244614534,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009500645998277142",
+            "extra": "mean: 45.513673416664346 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 69.77439441914593,
+            "unit": "iter/sec",
+            "range": "stddev: 0.002092568396526069",
+            "extra": "mean: 14.3319051111048 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 23.418079459886588,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005254196076429502",
+            "extra": "mean: 42.70204999999786 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 26.372660927227795,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006424324907145805",
+            "extra": "mean: 37.918054714288424 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 21.460920839814058,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0371152586484041",
+            "extra": "mean: 46.59632303124717 msec\nrounds: 32"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 26.313775301334907,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006720950288675026",
+            "extra": "mean: 38.002908687499115 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 26.81062531561912,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005680001537721202",
+            "extra": "mean: 37.298645153846074 msec\nrounds: 26"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 23.844110418362067,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007395675029930489",
+            "extra": "mean: 41.93907772000216 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 27.722809746689542,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00429897393133054",
+            "extra": "mean: 36.07137981818069 msec\nrounds: 33"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9292133411282344,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0011883294688383712",
+            "extra": "mean: 518.345990399996 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.923279223202015,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009450444782595581",
+            "extra": "mean: 519.9453038000001 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9477184241409672,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0021145581958300426",
+            "extra": "mean: 1.055165727000002 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9198111379899875,
+            "unit": "iter/sec",
+            "range": "stddev: 0.02157663419103661",
+            "extra": "mean: 1.0871797031999904 sec\nrounds: 5"
           }
         ]
       }
