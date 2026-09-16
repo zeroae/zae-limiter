@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789527211946,
+  "lastUpdate": 1789558053706,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -25849,6 +25849,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.005543057199496667",
             "extra": "mean: 1.0790109321999979 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d99d019589972f6b5c8e15c397d2332fbd751573",
+          "message": "📝 docs(guide): add the scheduled (cron) limits user guide (#483)\n\n> [!CAUTION]\n> ## 🚨 DO NOT MERGE UNTIL v0.14.0 SHIPS 🚨\n>\n> **This documents a feature that does not exist yet.** Merging it early\npublishes a\n> user guide (and an API reference for `ScheduleEntry` / `Limit.quota`)\ndescribing\n> an API that a v0.13.0 user cannot call.\n>\n> Pushing to `main` runs:\n>\n> ```\n> mike deploy --push --update-aliases dev latest\n> mike set-default --push latest\n> ```\n>\n> So `latest` — the version a visitor lands on by default — would\nimmediately start\n> serving docs for an unimplemented surface. There is no staging step to\ncatch this.\n>\n> **Merge this either:**\n> 1. as part of the scheduled-limits surface work (that plan's **Task\n12** covers docs), or\n> 2. immediately before the `v0.14.0` tag.\n>\n> **Depends on:** #222 implementation landing first.\n\n---\n\n## Summary\n\nA single new user guide, `docs/guide/scheduled-limits.md`, plus its\n`mkdocs.yml` nav entry.\nNo source changes.\n\nThe guide leads with the mental model most likely to be got wrong:\n**cron here is a match\npattern describing a window, not a timer describing instants.** `0 9 * *\nMON-FRI` is not\n\"fires at 9am\" — it is a *one-minute-wide window*, matching only\n09:00–09:00:59. Readers\narriving from crontab intuition will write exactly that expression and\nwonder why the limit\nsnaps back a minute later, so the guide addresses it before anything\nelse.\n\nSections, in order:\n\n- **When to use it** — the cases scheduling is for, and the cases it is\nnot.\n- **The mental model: a pattern, not a timer** — window-vs-instant, with\nthe `0 9 * * MON-FRI`\n  trap worked through explicitly.\n- **Scaling a limit during a window** vs. **Absolute values** — the two\nways to express a\n  scheduled entry, and when each reads better.\n- **Several windows: first match wins** — ordering is significant;\noverlapping entries do not\n  combine.\n- **Timezones** — including DST, where a local-time window can be\nskipped or repeated.\n- **Quotas** — `Limit.quota(name, amount, cron=..., tz=...)`: an\nallowance that is handed back\nwhole at a calendar instant instead of dripping. The period is whatever\nthe cron expression\nsays — a session cap every few hours, a monthly plan on the 1st, a\nweekly cap — not a\n  midnight-only feature.\n- **Precedence: override, not merge** — a matching schedule entry\n*replaces* the limit; it does\n  not merge field-by-field into it.\n- **Declarative configuration** — YAML manifest and the CloudFormation\nround trip.\n- **Viewing a schedule** — CLI display.\n- **What happens at a boundary** — the cost of a window transition.\n- **Limitations** — the known sharp edges, stated up front rather than\ndiscovered.\n\n## Addresses #524\n\nThe guide was written before ADR-137 and ADR-138 were accepted, and its\nheadline quota example\n(`Limit.per_day(...).with_reset_schedule(...)`) is the one configuration\nADR-137 rejects at\nconstruction. Fixed here:\n\n- Quotas are built with `Limit.quota()` (surface-plan Task 1) — a limit\ndrips or resets, never both.\n- `## Limitations` now states ADR-138's exclusion: a quota period is a\nfixed calendar window shared\nby every entity on it; a window anchored to each caller's own first use\nis not supported.\n- The YAML form is documented (surface-plan Task 6): a `reset_schedule`\nmakes the limit a quota, so\n  `refill_amount` defaults to 0 and is not written.\n- The claim that `retry_after_seconds` reports the time until a quota's\nreset is removed — #530 shows\n  it reports zero — and stated as a limitation instead.\n\nA second commit fixes four further defects found reading the whole guide\nagainst merged `main`:\nthe one-timezone-per-limit/per-config-item rule (absent entirely),\nSunday's two spellings (`0` inside\nranges and steps, `MON-SUN`/`SAT-SUN`/`7-4` rejected as backwards), the\nCLI sample's invented output\nformat (`_format_limit` renders `rpm: 1,000/min`), and a boundary\ncosting two extra round trips rather\nthan one.\n\n`Limit.quota()` does not exist yet (surface-plan Group A). Every Python\nblock in the guide is tagged\n`.lint-only` — they also failed `tests/doctest/test_docs_run.py` on the\nold text, because\n`ScheduleEntry` is not exported from the `zae_limiter` package root.\n**That export is a release\nblocker for v0.14.0 and is not fixable from a docs PR.** The\n`.lint-only` tags should come off when\nGroup A lands and the export exists.\n\n## Test plan\n\n- [x] Branch rebased onto current `main` (the entire #222 core plan, 14\ntasks, plus ADR-137/138) — no conflicts.\n- [x] `uv run --extra docs mkdocs build --strict` exits 0; no warnings\nattributable to this page, and the renamed `## Quotas` heading resolves\nthe in-page `#quotas` link.\n- [x] `uv run pytest tests/doctest/ -k scheduled` — 7 passed (lint), 14\nskipped. Previously 6 of 6 Python blocks **failed**.\n- [ ] Remove the `.lint-only` tags and re-run `tests/doctest/` once\nsurface-plan Group A lands and `ScheduleEntry` is exported from the\npackage root.\n\nRefs #222\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01QdVj8nPhUwTz2aNJzMFqt5",
+          "timestamp": "2026-09-16T07:20:56-04:00",
+          "tree_id": "038ec87a274ef821acf60030c63610c5260417b6",
+          "url": "https://github.com/zeroae/zae-limiter/commit/d99d019589972f6b5c8e15c397d2332fbd751573"
+        },
+        "date": 1789558052625,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 17.83852663445783,
+            "unit": "iter/sec",
+            "range": "stddev: 0.012441968112696553",
+            "extra": "mean: 56.05844139999476 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 14.519741960581456,
+            "unit": "iter/sec",
+            "range": "stddev: 0.04406965457640542",
+            "extra": "mean: 68.87174735713789 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 39.84952851589476,
+            "unit": "iter/sec",
+            "range": "stddev: 0.014146152860712342",
+            "extra": "mean: 25.094399789476316 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 43.20784154056033,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00953898798853537",
+            "extra": "mean: 23.143947124997528 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 15.775514429665385,
+            "unit": "iter/sec",
+            "range": "stddev: 0.04243629419183939",
+            "extra": "mean: 63.389375000001884 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 110.71108970719256,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0009063908949777327",
+            "extra": "mean: 9.032518807689353 msec\nrounds: 26"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 7.0873836870283355,
+            "unit": "iter/sec",
+            "range": "stddev: 0.12625687444321534",
+            "extra": "mean: 141.09578994999907 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 16.564015062060324,
+            "unit": "iter/sec",
+            "range": "stddev: 0.05862367508849759",
+            "extra": "mean: 60.37183594999789 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 21.15641124665192,
+            "unit": "iter/sec",
+            "range": "stddev: 0.027198397330547512",
+            "extra": "mean: 47.26699572727646 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 8.578071293814352,
+            "unit": "iter/sec",
+            "range": "stddev: 0.07564557071802111",
+            "extra": "mean: 116.57632185000608 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 11.554640590641759,
+            "unit": "iter/sec",
+            "range": "stddev: 0.038683243867948726",
+            "extra": "mean: 86.54531416666582 msec\nrounds: 6"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 5.564444161562907,
+            "unit": "iter/sec",
+            "range": "stddev: 0.06932121216273825",
+            "extra": "mean: 179.71246920000112 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 4.811132307770791,
+            "unit": "iter/sec",
+            "range": "stddev: 0.11488277012540349",
+            "extra": "mean: 207.8512782499935 msec\nrounds: 8"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.3120687264537865,
+            "unit": "iter/sec",
+            "range": "stddev: 0.16606652214564394",
+            "extra": "mean: 762.1551980000049 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.8520495231553313,
+            "unit": "iter/sec",
+            "range": "stddev: 0.02716426367209575",
+            "extra": "mean: 539.9423651999882 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.7219494604911381,
+            "unit": "iter/sec",
+            "range": "stddev: 0.13857568738597106",
+            "extra": "mean: 1.3851385100000015 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.6332406745900385,
+            "unit": "iter/sec",
+            "range": "stddev: 0.3154193742289058",
+            "extra": "mean: 1.579178407400002 sec\nrounds: 5"
           }
         ]
       }
