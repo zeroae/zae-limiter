@@ -4761,20 +4761,17 @@ counterpart is available with the same signature.</p>
 <p>For rapid iteration, declare infrastructure with cleanup:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">zae_limiter</span><span class="w"> </span><span class="kn">import</span> <span class="n">Repository</span><span class="p">,</span> <span class="n">RateLimiter</span>
 </span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>
-</span><span id="__span-13-3"><a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">dev_session</span><span class="p">():</span>
-</span><span id="__span-13-4"><a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a>    <span class="n">repo</span> <span class="o">=</span> <span class="k">await</span> <span class="p">(</span>
-</span><span id="__span-13-5"><a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a>        <span class="n">Repository</span><span class="o">.</span><span class="n">builder</span><span class="p">()</span>
-</span><span id="__span-13-6"><a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a>        <span class="o">.</span><span class="n">enable_aggregator</span><span class="p">(</span><span class="kc">False</span><span class="p">)</span>
-</span><span id="__span-13-7"><a id="__codelineno-13-7" name="__codelineno-13-7" href="#__codelineno-13-7"></a>        <span class="o">.</span><span class="n">build</span><span class="p">()</span>
-</span><span id="__span-13-8"><a id="__codelineno-13-8" name="__codelineno-13-8" href="#__codelineno-13-8"></a>    <span class="p">)</span>
-</span><span id="__span-13-9"><a id="__codelineno-13-9" name="__codelineno-13-9" href="#__codelineno-13-9"></a>    <span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span><span class="n">repository</span><span class="o">=</span><span class="n">repo</span><span class="p">)</span>
-</span><span id="__span-13-10"><a id="__codelineno-13-10" name="__codelineno-13-10" href="#__codelineno-13-10"></a>
-</span><span id="__span-13-11"><a id="__codelineno-13-11" name="__codelineno-13-11" href="#__codelineno-13-11"></a>    <span class="k">try</span><span class="p">:</span>
-</span><span id="__span-13-12"><a id="__codelineno-13-12" name="__codelineno-13-12" href="#__codelineno-13-12"></a>        <span class="c1"># Development work...</span>
-</span><span id="__span-13-13"><a id="__codelineno-13-13" name="__codelineno-13-13" href="#__codelineno-13-13"></a>        <span class="k">pass</span>
-</span><span id="__span-13-14"><a id="__codelineno-13-14" name="__codelineno-13-14" href="#__codelineno-13-14"></a>    <span class="k">finally</span><span class="p">:</span>
-</span><span id="__span-13-15"><a id="__codelineno-13-15" name="__codelineno-13-15" href="#__codelineno-13-15"></a>        <span class="c1"># Clean up development stack</span>
-</span><span id="__span-13-16"><a id="__codelineno-13-16" name="__codelineno-13-16" href="#__codelineno-13-16"></a>        <span class="k">await</span> <span class="n">repo</span><span class="o">.</span><span class="n">delete_stack</span><span class="p">()</span>
+</span><span id="__span-13-3"><a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a>
+</span><span id="__span-13-4"><a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">dev_session</span><span class="p">():</span>
+</span><span id="__span-13-5"><a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a>    <span class="n">repo</span> <span class="o">=</span> <span class="k">await</span> <span class="n">Repository</span><span class="o">.</span><span class="n">builder</span><span class="p">()</span><span class="o">.</span><span class="n">enable_aggregator</span><span class="p">(</span><span class="kc">False</span><span class="p">)</span><span class="o">.</span><span class="n">build</span><span class="p">()</span>
+</span><span id="__span-13-6"><a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a>    <span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span><span class="n">repository</span><span class="o">=</span><span class="n">repo</span><span class="p">)</span>
+</span><span id="__span-13-7"><a id="__codelineno-13-7" name="__codelineno-13-7" href="#__codelineno-13-7"></a>
+</span><span id="__span-13-8"><a id="__codelineno-13-8" name="__codelineno-13-8" href="#__codelineno-13-8"></a>    <span class="k">try</span><span class="p">:</span>
+</span><span id="__span-13-9"><a id="__codelineno-13-9" name="__codelineno-13-9" href="#__codelineno-13-9"></a>        <span class="c1"># Development work...</span>
+</span><span id="__span-13-10"><a id="__codelineno-13-10" name="__codelineno-13-10" href="#__codelineno-13-10"></a>        <span class="k">pass</span>
+</span><span id="__span-13-11"><a id="__codelineno-13-11" name="__codelineno-13-11" href="#__codelineno-13-11"></a>    <span class="k">finally</span><span class="p">:</span>
+</span><span id="__span-13-12"><a id="__codelineno-13-12" name="__codelineno-13-12" href="#__codelineno-13-12"></a>        <span class="c1"># Clean up development stack</span>
+</span><span id="__span-13-13"><a id="__codelineno-13-13" name="__codelineno-13-13" href="#__codelineno-13-13"></a>        <span class="k">await</span> <span class="n">repo</span><span class="o">.</span><span class="n">delete_stack</span><span class="p">()</span>
 </span></code></pre></div>
 <h4 id="production">Production<a class="headerlink" href="#production" title="Permanent link">&para;</a></h4>
 <p>For production deployments, see the <a href="../production/">Production Guide</a> covering:</p>
@@ -4840,12 +4837,8 @@ counterpart is available with the same signature.</p>
 <p>Create infrastructure directly from your application:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">zae_limiter</span><span class="w"> </span><span class="kn">import</span> <span class="n">Repository</span><span class="p">,</span> <span class="n">RateLimiter</span>
 </span><span id="__span-15-2"><a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>
-</span><span id="__span-15-3"><a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a><span class="n">repo</span> <span class="o">=</span> <span class="k">await</span> <span class="p">(</span>
-</span><span id="__span-15-4"><a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a>    <span class="n">Repository</span><span class="o">.</span><span class="n">builder</span><span class="p">()</span>
-</span><span id="__span-15-5"><a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a>    <span class="o">.</span><span class="n">usage_retention_days</span><span class="p">(</span><span class="mi">90</span><span class="p">)</span>
-</span><span id="__span-15-6"><a id="__codelineno-15-6" name="__codelineno-15-6" href="#__codelineno-15-6"></a>    <span class="o">.</span><span class="n">build</span><span class="p">()</span>
-</span><span id="__span-15-7"><a id="__codelineno-15-7" name="__codelineno-15-7" href="#__codelineno-15-7"></a><span class="p">)</span>
-</span><span id="__span-15-8"><a id="__codelineno-15-8" name="__codelineno-15-8" href="#__codelineno-15-8"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span><span class="n">repository</span><span class="o">=</span><span class="n">repo</span><span class="p">)</span>
+</span><span id="__span-15-3"><a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a><span class="n">repo</span> <span class="o">=</span> <span class="k">await</span> <span class="n">Repository</span><span class="o">.</span><span class="n">builder</span><span class="p">()</span><span class="o">.</span><span class="n">usage_retention_days</span><span class="p">(</span><span class="mi">90</span><span class="p">)</span><span class="o">.</span><span class="n">build</span><span class="p">()</span>
+</span><span id="__span-15-4"><a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span><span class="n">repository</span><span class="o">=</span><span class="n">repo</span><span class="p">)</span>
 </span></code></pre></div>
 <p>The builder declares the desired infrastructure state. CloudFormation ensures the
 actual infrastructure matches your declaration—creating, updating, or leaving unchanged
@@ -4935,12 +4928,8 @@ use CLI deployment or CloudFormation template export. See the
 <div class="tabbed-block">
 <div class="language-python highlight"><pre><span></span><code><span id="__span-19-1"><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">zae_limiter</span><span class="w"> </span><span class="kn">import</span> <span class="n">Repository</span><span class="p">,</span> <span class="n">RateLimiter</span>
 </span><span id="__span-19-2"><a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a>
-</span><span id="__span-19-3"><a id="__codelineno-19-3" name="__codelineno-19-3" href="#__codelineno-19-3"></a><span class="n">repo</span> <span class="o">=</span> <span class="k">await</span> <span class="p">(</span>
-</span><span id="__span-19-4"><a id="__codelineno-19-4" name="__codelineno-19-4" href="#__codelineno-19-4"></a>    <span class="n">Repository</span><span class="o">.</span><span class="n">builder</span><span class="p">()</span>
-</span><span id="__span-19-5"><a id="__codelineno-19-5" name="__codelineno-19-5" href="#__codelineno-19-5"></a>    <span class="o">.</span><span class="n">enable_tracing</span><span class="p">(</span><span class="kc">True</span><span class="p">)</span>
-</span><span id="__span-19-6"><a id="__codelineno-19-6" name="__codelineno-19-6" href="#__codelineno-19-6"></a>    <span class="o">.</span><span class="n">build</span><span class="p">()</span>
-</span><span id="__span-19-7"><a id="__codelineno-19-7" name="__codelineno-19-7" href="#__codelineno-19-7"></a><span class="p">)</span>
-</span><span id="__span-19-8"><a id="__codelineno-19-8" name="__codelineno-19-8" href="#__codelineno-19-8"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span><span class="n">repository</span><span class="o">=</span><span class="n">repo</span><span class="p">)</span>
+</span><span id="__span-19-3"><a id="__codelineno-19-3" name="__codelineno-19-3" href="#__codelineno-19-3"></a><span class="n">repo</span> <span class="o">=</span> <span class="k">await</span> <span class="n">Repository</span><span class="o">.</span><span class="n">builder</span><span class="p">()</span><span class="o">.</span><span class="n">enable_tracing</span><span class="p">(</span><span class="kc">True</span><span class="p">)</span><span class="o">.</span><span class="n">build</span><span class="p">()</span>
+</span><span id="__span-19-4"><a id="__codelineno-19-4" name="__codelineno-19-4" href="#__codelineno-19-4"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span><span class="n">repository</span><span class="o">=</span><span class="n">repo</span><span class="p">)</span>
 </span></code></pre></div>
 </div>
 </div>
@@ -5039,18 +5028,10 @@ use CLI deployment or CloudFormation template export. See the
 </span><span id="__span-21-4"><a id="__codelineno-21-4" name="__codelineno-21-4" href="#__codelineno-21-4"></a><span class="n">repo</span> <span class="o">=</span> <span class="k">await</span> <span class="n">Repository</span><span class="o">.</span><span class="n">builder</span><span class="p">()</span><span class="o">.</span><span class="n">build</span><span class="p">()</span>
 </span><span id="__span-21-5"><a id="__codelineno-21-5" name="__codelineno-21-5" href="#__codelineno-21-5"></a>
 </span><span id="__span-21-6"><a id="__codelineno-21-6" name="__codelineno-21-6" href="#__codelineno-21-6"></a><span class="c1"># With managed policies AND IAM roles</span>
-</span><span id="__span-21-7"><a id="__codelineno-21-7" name="__codelineno-21-7" href="#__codelineno-21-7"></a><span class="n">repo</span> <span class="o">=</span> <span class="k">await</span> <span class="p">(</span>
-</span><span id="__span-21-8"><a id="__codelineno-21-8" name="__codelineno-21-8" href="#__codelineno-21-8"></a>    <span class="n">Repository</span><span class="o">.</span><span class="n">builder</span><span class="p">()</span>
-</span><span id="__span-21-9"><a id="__codelineno-21-9" name="__codelineno-21-9" href="#__codelineno-21-9"></a>    <span class="o">.</span><span class="n">create_iam_roles</span><span class="p">(</span><span class="kc">True</span><span class="p">)</span>
-</span><span id="__span-21-10"><a id="__codelineno-21-10" name="__codelineno-21-10" href="#__codelineno-21-10"></a>    <span class="o">.</span><span class="n">build</span><span class="p">()</span>
-</span><span id="__span-21-11"><a id="__codelineno-21-11" name="__codelineno-21-11" href="#__codelineno-21-11"></a><span class="p">)</span>
-</span><span id="__span-21-12"><a id="__codelineno-21-12" name="__codelineno-21-12" href="#__codelineno-21-12"></a>
-</span><span id="__span-21-13"><a id="__codelineno-21-13" name="__codelineno-21-13" href="#__codelineno-21-13"></a><span class="c1"># Without any IAM resources</span>
-</span><span id="__span-21-14"><a id="__codelineno-21-14" name="__codelineno-21-14" href="#__codelineno-21-14"></a><span class="n">repo</span> <span class="o">=</span> <span class="k">await</span> <span class="p">(</span>
-</span><span id="__span-21-15"><a id="__codelineno-21-15" name="__codelineno-21-15" href="#__codelineno-21-15"></a>    <span class="n">Repository</span><span class="o">.</span><span class="n">builder</span><span class="p">()</span>
-</span><span id="__span-21-16"><a id="__codelineno-21-16" name="__codelineno-21-16" href="#__codelineno-21-16"></a>    <span class="o">.</span><span class="n">create_iam</span><span class="p">(</span><span class="kc">False</span><span class="p">)</span>
-</span><span id="__span-21-17"><a id="__codelineno-21-17" name="__codelineno-21-17" href="#__codelineno-21-17"></a>    <span class="o">.</span><span class="n">build</span><span class="p">()</span>
-</span><span id="__span-21-18"><a id="__codelineno-21-18" name="__codelineno-21-18" href="#__codelineno-21-18"></a><span class="p">)</span>
+</span><span id="__span-21-7"><a id="__codelineno-21-7" name="__codelineno-21-7" href="#__codelineno-21-7"></a><span class="n">repo</span> <span class="o">=</span> <span class="k">await</span> <span class="n">Repository</span><span class="o">.</span><span class="n">builder</span><span class="p">()</span><span class="o">.</span><span class="n">create_iam_roles</span><span class="p">(</span><span class="kc">True</span><span class="p">)</span><span class="o">.</span><span class="n">build</span><span class="p">()</span>
+</span><span id="__span-21-8"><a id="__codelineno-21-8" name="__codelineno-21-8" href="#__codelineno-21-8"></a>
+</span><span id="__span-21-9"><a id="__codelineno-21-9" name="__codelineno-21-9" href="#__codelineno-21-9"></a><span class="c1"># Without any IAM resources</span>
+</span><span id="__span-21-10"><a id="__codelineno-21-10" name="__codelineno-21-10" href="#__codelineno-21-10"></a><span class="n">repo</span> <span class="o">=</span> <span class="k">await</span> <span class="n">Repository</span><span class="o">.</span><span class="n">builder</span><span class="p">()</span><span class="o">.</span><span class="n">create_iam</span><span class="p">(</span><span class="kc">False</span><span class="p">)</span><span class="o">.</span><span class="n">build</span><span class="p">()</span>
 </span></code></pre></div>
 </div>
 </div>

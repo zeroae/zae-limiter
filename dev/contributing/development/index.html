@@ -3515,6 +3515,11 @@
 </span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="c1"># Type checking</span>
 </span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>mypy
 </span></code></pre></div>
+<p>Ruff is pinned to one exact version across <code>pyproject.toml</code> (build requirements, the <code>dev</code>
+extra, and the hatch default env), <code>.pre-commit-config.yaml</code> and the CI lint workflow, so the
+formatter you run locally and the one the commit hook runs agree byte for byte. Running
+<code>ruff format .</code> over the whole tree is therefore safe: on a clean tree it reformats nothing.
+The <code>check-ruff-pin</code> hook fails the commit if those declarations ever drift apart.</p>
 <h2 id="commit-messages">Commit Messages<a class="headerlink" href="#commit-messages" title="Permanent link">&para;</a></h2>
 <p>Follow the ZeroAE <a href="https://github.com/zeroae/.claude/blob/main/commits.md">commit conventions</a>:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c1"># Examples</span>
