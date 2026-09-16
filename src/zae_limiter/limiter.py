@@ -825,11 +825,25 @@ class RateLimiter:
                     entity_id=result.parent_id, resource=resource, level="bucket"
                 )
 
-            # Shard doubling: if wcu exhausted, double shard_count and update cache
+            # Shard doubling: if wcu exhausted, double shard_count and update
+            # cache — but only once the acquire is going to proceed, exactly as
+            # the cascade parent path does (issue #474, `_handle_nested_parent_
+            # failure`). `BOTH_EXHAUSTED` means a declared limit is drained too,
+            # so this may be on its way to a RateLimitExceeded; doubling there
+            # is a pure side effect (nothing creates or reads the shard it hands
+            # back) and one doubling per rejection walks an entity sitting at
+            # its limit to MAX_SHARD_COUNT, shrinking every shard's share for
+            # good (issue #480). A plain `WCU_EXHAUSTED` passes the gate by
+            # construction — `consume` never names wcu, so the declared limits
+            # are all satisfiable — which keeps the GHSA-76rv mitigation and
+            # ADR-133's wcu-refill route intact: see
+            # `test_wcu_exhaustion_with_room_to_admit_still_doubles` and
+            # `test_exhausted_wcu_that_would_refill_does_not_double`.
             if result.failure_reason in (
                 SpeculativeFailureReason.WCU_EXHAUSTED,
                 SpeculativeFailureReason.BOTH_EXHAUSTED,
             ):
+                self._check_speculative_failure(result, consume, now_ms)
                 new_shard, new_count = await self._shard_after_wcu_exhaustion(
                     entity_id, resource, result, now_ms
                 )

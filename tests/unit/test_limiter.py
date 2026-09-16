@@ -8491,6 +8491,63 @@ class TestClientShardCreation:
         )
         assert self._n(item, "rpm", schema.BUCKET_FIELD_TK) == self.CAPACITY * 1000 - 1000
 
+    async def test_rejected_acquire_never_doubles_the_shard_count(self, limiter):
+        """The non-cascade twin of #474 (issue #480): a doubling on the way to a
+        rejection is a pure side effect. `BOTH_EXHAUSTED` means the reserved wcu
+        *and* a declared limit are drained, so the acquire is about to raise —
+        nothing then creates or reads the shard the doubling hands back. Repeat
+        it once per rejection and an entity sitting at its limit walks from 1 to
+        MAX_SHARD_COUNT (``_learn_shard_count`` is monotonic, nothing shrinks
+        it), after which every shard's share is `capacity // 32` forever and any
+        request above that is unadmittable on every shard (#475)."""
+        from zae_limiter import schema
+        from zae_limiter.exceptions import RateLimitExceeded
+
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        now_ms = int(time.time() * 1000)
+        # rpm drained and refilling once an hour, wcu likewise: this is
+        # BOTH_EXHAUSTED with no refill in reach on either limit.
+        repo = await self._seed_shards(limiter, 1, limit, tokens_milli=0, rf_ms=now_ms)
+        ns = repo._namespace_id
+        await self._slow_wcu_refill(repo)
+        await self._drain_wcu(repo, 0, now_ms)
+
+        for _ in range(3):
+            with pytest.raises(RateLimitExceeded):
+                async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+                    pass
+
+        assert repo._entity_cache[(ns, "user-1")][2]["gpt-4"] == 1
+        item = await self._raw_item(repo, 0)
+        assert item["shard_count"]["N"] == "1", "a rejected acquire must not shard the entity"
+        assert await self._raw_item(repo, 1) is None
+        assert self._n(item, schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK) == 0
+
+    async def test_wcu_exhaustion_with_room_to_admit_still_doubles(self, limiter):
+        """The other half of the #480 gate, and the GHSA-76rv mitigation itself:
+        the *same* drained wcu on an entity whose declared limit can still admit
+        must double and move off the hot shard. Differs from the test above in
+        one input — the rpm balance."""
+        from zae_limiter import schema
+
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        now_ms = int(time.time() * 1000)
+        repo = await self._seed_shards(
+            limiter, 1, limit, tokens_milli=self.CAPACITY * 1000, rf_ms=now_ms
+        )
+        ns = repo._namespace_id
+        await self._slow_wcu_refill(repo)
+        await self._drain_wcu(repo, 0, now_ms)
+
+        async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+            assert {e._shard_id for e in lease.entries} == {1}
+
+        assert repo._entity_cache[(ns, "user-1")][2]["gpt-4"] == 2
+        shard1 = await self._raw_item(repo, 1)
+        assert shard1 is not None, "the hot shard's wcu must still spread the entity"
+        assert shard1["shard_count"]["N"] == "2"
+        assert self._n(shard1, "rpm", schema.BUCKET_FIELD_TK) == self.CAPACITY * 1000 // 2 - 1000
+
     async def test_create_race_lost_to_aggregator_consumes_once(self, limiter):
         """If the aggregator's Path 2 wins the create, the client retries as a
         consumption-only conditional write on that shard: one debit, no

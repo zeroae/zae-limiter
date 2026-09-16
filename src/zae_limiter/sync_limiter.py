@@ -678,6 +678,7 @@ class SyncRateLimiter:
                 SpeculativeFailureReason.WCU_EXHAUSTED,
                 SpeculativeFailureReason.BOTH_EXHAUSTED,
             ):
+                self._check_speculative_failure(result, consume, now_ms)
                 new_shard, new_count = self._shard_after_wcu_exhaustion(
                     entity_id, resource, result, now_ms
                 )
