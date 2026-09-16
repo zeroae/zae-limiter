@@ -1899,7 +1899,7 @@ class TestE2EScheduleThroughTheProvisioner:
         assert result["errors"] == []
 
         item = await _raw_bucket_item(prov_repo, "prov-1", "gpt-4", shard=0)
-        assert item[schema.BUCKET_FIELD_SCHED]["S"] == "h9-17w1-5s500"
+        assert item[schema.BUCKET_FIELD_SCHED]["S"] == "1h9-17w1-5s500"
         assert item[schema.BUCKET_FIELD_SCHED_TZ]["S"] == "America/New_York"
         assert item[schema.BUCKET_FIELD_VU]["N"] == "0"
 
