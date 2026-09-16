@@ -34,7 +34,7 @@ NIGHTS = ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", capacity=2000)
 class TestEncode:
     def test_compact_shape(self):
         compact, tz = encode((BUSINESS, NIGHTS))
-        assert compact == "h9-17w1-5s500;h0-6c2000"
+        assert compact == "1h9-17w1-5s500;h0-6c2000"
         assert tz == "America/New_York"
 
     def test_is_much_smaller_than_json(self):
@@ -59,22 +59,22 @@ class TestEncode:
     def test_an_all_wildcard_entry_encodes_to_its_modifiers_alone(self):
         """No field survives, but the entry must still be addressable."""
         compact, _ = encode((ScheduleEntry(cron="* * * * *", tz="UTC", scale=0.5),))
-        assert compact == "s500"
+        assert compact == "1s500"
 
     def test_absolute_fields_encode_in_a_fixed_order(self):
         """Canonical output: the tag order cannot follow dataclass iteration luck."""
         entry = ScheduleEntry(
             cron="* * * * *", tz="UTC", capacity=7, refill_amount=3, refill_period_seconds=30
         )
-        assert encode((entry,))[0] == "c7a3p30"
+        assert encode((entry,))[0] == "1c7a3p30"
 
     @pytest.mark.parametrize(
         "kwargs,expected",
         [
-            ({"capacity": 500}, "c500"),
-            ({"refill_amount": 9}, "a9"),
-            ({"refill_period_seconds": 86400}, "p86400"),
-            ({"capacity": 4, "refill_period_seconds": 60}, "c4p60"),
+            ({"capacity": 500}, "1c500"),
+            ({"refill_amount": 9}, "1a9"),
+            ({"refill_period_seconds": 86400}, "1p86400"),
+            ({"capacity": 4, "refill_period_seconds": 60}, "1c4p60"),
         ],
     )
     def test_absolute_subsets_omit_what_is_unset(self, kwargs, expected):
@@ -112,7 +112,8 @@ class TestEncode:
         ],
     )
     def test_field_normalisation(self, cron, expected):
-        assert encode((ScheduleEntry(cron=cron, tz="UTC", scale=0.5),))[0] == expected + "s500"
+        entry = ScheduleEntry(cron=cron, tz="UTC", scale=0.5)
+        assert encode((entry,))[0] == "1" + expected + "s500"
 
     def test_sunday_spellings_all_converge(self):
         """`differ.py` must not read SUN vs 0 vs 7 as a change on every apply."""
@@ -125,23 +126,23 @@ class TestEncode:
 
 class TestScaleQuantisation:
     def test_scale_is_stored_as_integer_per_mille(self):
-        assert encode((ScheduleEntry(cron="* * * * *", tz="UTC", scale=0.25),))[0] == "s250"
+        assert encode((ScheduleEntry(cron="* * * * *", tz="UTC", scale=0.25),))[0] == "1s250"
 
     def test_scale_rounds_rather_than_truncates(self):
         """`int(2.3 * 1000)` is 2299: 2.3 has no exact binary representation."""
-        assert encode((ScheduleEntry(cron="* * * * *", tz="UTC", scale=2.3),))[0] == "s2300"
+        assert encode((ScheduleEntry(cron="* * * * *", tz="UTC", scale=2.3),))[0] == "1s2300"
 
     def test_scale_below_one_per_mille_floors_at_one(self):
         """`encode` must stay total: `s0` would decode to a scale of 0, which
         `ScheduleEntry` rejects."""
         compact, _ = encode((ScheduleEntry(cron="* * * * *", tz="UTC", scale=0.0004),))
-        assert compact == "s1"
+        assert compact == "1s1"
         assert decode(compact, "UTC")[0].scale == 0.001
 
     def test_a_scale_that_is_not_a_whole_per_mille_is_quantised(self):
         """The one lossy dimension of the encoding, pinned so it is not a surprise."""
         compact, _ = encode((ScheduleEntry(cron="* * * * *", tz="UTC", scale=1 / 3),))
-        assert compact == "s333"
+        assert compact == "1s333"
         assert decode(compact, "UTC")[0].scale == 0.333
 
 
@@ -266,7 +267,7 @@ class TestRoundTrip:
         )
 
     def test_the_hoisted_timezone_reaches_every_entry(self):
-        restored = decode("h9-17s500;h0-6c2000", "Asia/Kolkata")
+        restored = decode("1h9-17s500;h0-6c2000", "Asia/Kolkata")
         assert [e.tz for e in restored] == ["Asia/Kolkata", "Asia/Kolkata"]
 
 
@@ -317,11 +318,11 @@ class TestDecodeRejectsCorruption:
     @pytest.mark.parametrize(
         "compact",
         [
-            "9h",  # value before any tag
-            "h",  # tag with no value
-            "h9-17!",  # trailing junk
-            "?",  # nothing recognisable
-            "h9-17w",  # trailing tag with no value
+            "19h",  # value before any tag
+            "1h",  # tag with no value
+            "1h9-17!",  # trailing junk
+            "1?",  # nothing recognisable
+            "1h9-17w",  # trailing tag with no value
         ],
     )
     def test_rejects_unparseable_entries(self, compact):
@@ -332,40 +333,40 @@ class TestDecodeRejectsCorruption:
         """The tokeniser must consume the whole string, not scan for tags inside
         it: a leading corrupt byte would otherwise be silently dropped and the
         schedule would decode as if nothing were wrong."""
-        assert decode("h9-17s500", "UTC")  # the same entry, uncorrupted
+        assert decode("1h9-17s500", "UTC")  # the same entry, uncorrupted
         with pytest.raises(ValueError, match="offset 0"):
-            decode("Xh9-17s500", "UTC")
+            decode("1Xh9-17s500", "UTC")
 
     def test_rejects_a_duplicated_tag(self):
         with pytest.raises(ValueError, match="duplicate"):
-            decode("h9-17h0-6c10", "UTC")
+            decode("1h9-17h0-6c10", "UTC")
 
     def test_rejects_a_field_that_is_not_valid_cron(self):
         """The tokeniser accepts the shape; cronsim rejects the content."""
         with pytest.raises(ValueError, match="invalid cron"):
-            decode("h99c10", "UTC")
+            decode("1h99c10", "UTC")
 
     def test_rejects_an_entry_with_no_modifier(self):
         with pytest.raises(ValueError, match="exactly one"):
-            decode("h9-17", "UTC")
+            decode("1h9-17", "UTC")
 
     def test_rejects_both_kinds_of_modifier(self):
         with pytest.raises(ValueError, match="exactly one"):
-            decode("h9-17s500c10", "UTC")
+            decode("1h9-17s500c10", "UTC")
 
     def test_rejects_an_unknown_timezone(self):
         with pytest.raises(ValueError, match="timezone"):
-            decode("h9-17s500", "Mars/Olympus_Mons")
+            decode("1h9-17s500", "Mars/Olympus_Mons")
 
 
 class TestDisplay:
     @pytest.mark.parametrize(
         "compact,expected",
         [
-            ("h9-17w1-5s500", "* 9-17 * * MON-FRI"),
-            ("h0-6c2000", "* 0-6 * * *"),
-            ("m*/15w6,7s250", "*/15 * * * SAT,SUN"),
-            ("m0h0D1M1,7c5000", "0 0 1 JAN,JUL *"),
+            ("1h9-17w1-5s500", "* 9-17 * * MON-FRI"),
+            ("1h0-6c2000", "* 0-6 * * *"),
+            ("1m*/15w6,7s250", "*/15 * * * SAT,SUN"),
+            ("1m0h0D1M1,7c5000", "0 0 1 JAN,JUL *"),
         ],
     )
     def test_renders_canonical_cron_with_names(self, compact, expected):
@@ -375,11 +376,11 @@ class TestDisplay:
 
     def test_a_step_divisor_is_not_a_weekday(self):
         """`1-5/2` is every other weekday, not `MON-FRI/TUE`."""
-        assert to_cron("w1-5/2s500") == "* * * * MON-FRI/2"
-        assert to_cron("w*/2s500") == "* * * * */2"
+        assert to_cron("1w1-5/2s500") == "* * * * MON-FRI/2"
+        assert to_cron("1w*/2s500") == "* * * * */2"
 
     def test_an_all_wildcard_entry_renders_as_all_wildcards(self):
-        assert to_cron("c2000") == "* * * * *"
+        assert to_cron("1c2000") == "* * * * *"
 
     @pytest.mark.parametrize(
         "cron",
@@ -410,7 +411,7 @@ class TestDisplay:
 
     def test_display_does_not_crash_on_an_out_of_range_number(self):
         """A corrupt attribute must render, not raise, on a read path."""
-        assert to_cron("w9c10") == "* * * * 9"
+        assert to_cron("1w9c10") == "* * * * 9"
 
 
 def _ddb_item_size(item: dict[str, dict[str, object]]) -> int:
@@ -481,8 +482,17 @@ class TestSizeBudget:
     )
 
     def test_the_worst_shared_case_stays_under_one_kb(self):
-        """§4.2's last row: 6 limits x 4 entries, one schedule shared item-wide."""
-        assert _ddb_item_size(_bucket_item(6, self.WORST_SHARED)) < 1024
+        """§4.2's last row: 6 limits x 4 entries, one schedule shared item-wide.
+
+        Pinned as an exact figure, not just `< 1024`, because the headroom is
+        the number that matters and it is **shared**: the v0.15.0 session-quota
+        work adds ~30 B per rolling limit to this same item, outside the string
+        this module encodes. A bound tells a later reader nothing about how much
+        of the budget is left.
+        """
+        measured = _ddb_item_size(_bucket_item(6, self.WORST_SHARED))
+        assert measured == 846, "update §4.2 and the headroom note if this moves"
+        assert 1024 - measured == 178
 
     def test_six_limits_already_cost_most_of_the_budget_before_any_schedule(self):
         """Why there is no write-time size gate: the limits dominate, not us."""
@@ -508,14 +518,16 @@ class TestResetEncoding:
 
     def test_encodes_without_a_modifier_token(self):
         compact, tz = encode_reset((ScheduleEntry.reset("0 0 * * *", "America/New_York"),))
-        assert compact == "m0h0"
+        assert compact == "1m0h0"
         assert tz == "America/New_York"
 
-    def test_a_daily_reset_is_four_bytes(self):
+    def test_a_daily_reset_is_five_bytes(self):
         """The size claim in §4.1, asserted exactly rather than as `<= 8` — an
-        encoder that returned the empty string would satisfy a bound."""
+        encoder that returned the empty string would satisfy a bound. Four bytes
+        of cron plus the one-byte version marker (#515)."""
         compact, _ = encode_reset((ScheduleEntry.reset("0 0 * * *"),))
-        assert len(compact) == 4
+        assert compact == "1m0h0"
+        assert len(compact) == 5
 
     def test_joins_entries_with_a_semicolon(self):
         compact, tz = encode_reset(
@@ -524,14 +536,14 @@ class TestResetEncoding:
                 ScheduleEntry.reset("0 12 * * SUN", "America/New_York"),
             )
         )
-        assert compact == "m0h0;m0h12w7"
+        assert compact == "1m0h0;m0h12w7"
         assert tz == "America/New_York"
 
     def test_weekday_names_normalise_exactly_as_the_param_encoder(self):
         """Storage is canonical (§4.3) so `differ.py` does not read SUN against
         7 as a change on every apply. Sunday inside a range must be 0, not 7."""
         compact, _ = encode_reset((ScheduleEntry.reset("0 0 * * SUN-THU"),))
-        assert compact == "m0h0w0-4"
+        assert compact == "1m0h0w0-4"
 
     def test_empty_schedule_encodes_to_nothing(self):
         assert encode_reset(()) == ("", None)
@@ -558,7 +570,7 @@ class TestResetDecoding:
     def test_decodes_through_the_reset_constructor(self):
         """A reset entry carries no modifier, so `ScheduleEntry(...)` would
         raise its "exactly one" rule. `decode_reset` must use the classmethod."""
-        (entry,) = decode_reset("m0h0", "America/New_York")
+        (entry,) = decode_reset("1m0h0", "America/New_York")
         assert entry.cron == "0 0 * * *"
         assert entry.tz == "America/New_York"
         assert entry.scale is None
@@ -573,7 +585,7 @@ class TestResetDecoding:
         field above happened to match."""
         from zae_limiter.models import Limit
 
-        entries = decode_reset("m0h0", "UTC")
+        entries = decode_reset("1m0h0", "UTC")
         assert Limit.quota("rpd", 10, cron="0 0 * * *").with_reset_schedule(entries)
         with pytest.raises(ValueError, match="parameter entries only"):
             Limit.per_minute("rpm", 10).with_schedule(entries)
@@ -586,13 +598,13 @@ class TestResetDecoding:
         corruption or a param schedule read out of the wrong attribute. Either
         way it must not decode into something that silently resets."""
         with pytest.raises(ValueError, match="modifier"):
-            decode_reset("m0h0s500", "UTC")
+            decode_reset("1m0h0s500", "UTC")
 
     @pytest.mark.parametrize("tag", ["s500", "c2000", "a100", "p60"])
     def test_rejects_every_modifier_tag(self, tag):
         """All four, not just `scale` — `c`/`a`/`p` reach the same wrong place."""
         with pytest.raises(ValueError, match="modifier"):
-            decode_reset(f"m0h0{tag}", "UTC")
+            decode_reset(f"1m0h0{tag}", "UTC")
 
     def test_rejects_junk(self):
         with pytest.raises(ValueError):
@@ -646,13 +658,13 @@ class TestDecodeRaisesValueErrorForTheAggregatorsSake:
     """
 
     @pytest.mark.parametrize(
-        "compact", ["this is not a schedule", "Xh9-17s500", "h9-17s500s600", "v9:h9-17"]
+        "compact", ["this is not a schedule", "1Xh9-17s500", "1h9-17s500s600", "1v9:h9-17"]
     )
     def test_decode_raises_value_error(self, compact):
         with pytest.raises(ValueError):
             decode(compact, "UTC")
 
-    @pytest.mark.parametrize("compact", ["this is not a schedule", "m0h0s500", "zzz"])
+    @pytest.mark.parametrize("compact", ["this is not a schedule", "1m0h0s500", "zzz"])
     def test_decode_reset_raises_value_error(self, compact):
         """The reset decoder is the second parser and fails into the same
         channel — including for a modifier token, which it rejects rather than
@@ -698,37 +710,197 @@ class TestDecodeRaisesValueErrorForTheAggregatorsSake:
         assert imported == set(), f"schedule.py must import nothing from zae_limiter: {imported}"
 
     def test_an_unknown_tag_only_reaches_the_tokeniser_at_an_entry_boundary(self):
-        """The heuristic that replaces the version marker (#515) is *weaker*
-        than Task 10's Decision 1 claims, and this is where that is pinned.
+        """The heuristic the version marker replaced (#515), kept as the record
+        of *why* it was not enough on its own.
 
-        Decision 1 says a newer client's unknown tag "lands there with a precise
-        offset", so the log can tell a forward-compatibility problem from
-        corruption. It only does so when the unknown tag stands where a *tag* is
-        expected — the start of an entry. `_TOKEN_RE` takes a value as "anything
-        that is not a known tag letter", so an unknown tag anywhere *after* a
-        value is swallowed into that value and fails downstream instead, as a
-        cronsim rejection or a bare `int()` error that names neither the tag nor
-        the offset. That covers the realistic shape of a new modifier tag, which
-        a newer encoder would append after the cron fields.
+        Surface plan Task 10's Decision 1 argued a marker was unnecessary
+        because a newer client's unknown tag "lands [in `_tokenise`] with a
+        precise offset", so the log could tell a forward-compatibility problem
+        from corruption. It only does so when the unknown tag stands where a
+        *tag* is expected — the start of an entry. `_TOKEN_RE` takes a value as
+        "anything that is not a known tag letter", so an unknown tag anywhere
+        *after* a value is swallowed into that value and fails downstream
+        instead, as a cronsim rejection or a bare `int()` error that names
+        neither the tag nor the offset. That is the realistic shape of a new
+        modifier tag, which a newer encoder would append after the cron fields.
 
-        So the distinction is not merely "not a proof" (corruption can fail at
-        an offset too); it is also incomplete in the other direction. The §6
-        text says so rather than overselling it.
+        So the distinction was not merely "not a proof" (corruption can fail at
+        an offset too); it was also incomplete in the other direction. Within a
+        single version that is all still true, which is what this pins. Across
+        versions it no longer decides anything — see
+        `TestVersionMarker.test_a_newer_version_is_reported_even_when_the_body_is_unreadable`,
+        where the same two strings are diagnosed identically because the marker
+        is read before the body.
         """
         # Entry-initial: the tokeniser sees it and reports the offset.
         with pytest.raises(ValueError, match="cannot parse from offset 0"):
-            decode("q42h9-17s500", "UTC")
+            decode("1q42h9-17s500", "UTC")
         with pytest.raises(ValueError, match="cannot parse from offset 0"):
-            decode("h9-17s500;q42m0", "UTC")
+            decode("1h9-17s500;q42m0", "UTC")
 
         # Mid-entry: absorbed into the preceding value. Neither message
         # mentions a tag or an offset.
         with pytest.raises(ValueError, match="invalid cron expression"):
-            decode("h9-17q42s500", "UTC")
+            decode("1h9-17q42s500", "UTC")
         with pytest.raises(ValueError, match="invalid literal for int"):
-            decode("h9-17s500q42", "UTC")
+            decode("1h9-17s500q42", "UTC")
 
-        # And a genuinely bad cron field reads the same way as that third case,
-        # which is the collision the heuristic cannot see through.
-        with pytest.raises(ValueError, match="invalid cron expression"):
-            decode("h99", "UTC")
+
+class TestVersionMarker:
+    """The compact form carries its encoding version (#515, design §4.1).
+
+    Design §4.1 promised a ~6 B marker so §6 could tell "written by a newer
+    client" from "corrupt"; core plan Task 5 shipped without one and surface
+    plan Task 10 decided to defer, on the argument that a marker cannot
+    classify anything already written. That argument expires the day the
+    encoding ships — which has not happened — so the cost of adding it is the
+    fixture churn in this file and **one byte** on the stored attribute, rather
+    than a migration against live `sched` / `rsched` values.
+
+    One byte, not six: the marker is the version as decimal digits at the head
+    of the whole attribute, with no delimiter, because no legal compact entry
+    can begin with a digit (`_encode_cron` always emits `tag + spec`, and every
+    tag is a letter). It is emitted once per attribute, not per entry.
+    """
+
+    def test_encode_emits_the_marker(self):
+        compact, _ = encode((BUSINESS, NIGHTS))
+        assert compact == "1h9-17w1-5s500;h0-6c2000"
+
+    def test_encode_reset_emits_the_marker(self):
+        compact, _ = encode_reset((ScheduleEntry.reset("0 0 * * *"),))
+        assert compact == "1m0h0"
+
+    def test_the_marker_costs_exactly_one_byte(self):
+        """The 1 KB WCU boundary §4.2 defends is shared with everything else on
+        the item, so the marker's cost is asserted exactly rather than bounded."""
+        body = "h9-17w1-5s500;h0-6c2000"
+        compact, _ = encode((BUSINESS, NIGHTS))
+        assert len(compact) - len(body) == 1
+
+    def test_the_marker_is_emitted_once_for_the_whole_attribute(self):
+        """Per entry it would cost a byte per `;`, for no extra information:
+        one attribute is written by one encoder at one version."""
+        compact, _ = encode((BUSINESS, NIGHTS, BUSINESS))
+        assert compact.count("1h9-17") == 1
+        assert sum(part[:1].isdigit() for part in compact.split(";")) == 1
+
+    def test_the_empty_schedule_still_encodes_to_nothing(self):
+        """An absent attribute is absent; there is no version of "no schedule"."""
+        assert encode(()) == ("", None)
+        assert encode_reset(()) == ("", None)
+
+    def test_an_unversioned_string_is_rejected_rather_than_read_as_v1(self):
+        """The decision that shapes the rest of this: **no legacy tolerance**.
+
+        Treating absence as v1 is the standard tolerant-reader move, and it is
+        what §4.1 assumed a later marker would have to do — because by then
+        unmarked items would exist. None do: the encoding is unreleased, so the
+        population this concession would serve is empty by construction, and
+        spending the marker's discriminating power on it buys nothing. Rejecting
+        instead makes the invariant checkable — *every* stored `sched` begins
+        with a marker — which is what lets the newer-client case below be
+        reported at offset 0 rather than absorbed into a value.
+        """
+        with pytest.raises(ValueError, match="no version marker"):
+            decode("h9-17w1-5s500", "UTC")
+
+    def test_an_unversioned_reset_string_is_rejected_too(self):
+        with pytest.raises(ValueError, match="no version marker"):
+            decode_reset("m0h0", "UTC")
+
+    def test_a_newer_version_reports_itself_as_such(self):
+        """The whole point: a distinct, greppable message, separate from
+        `cannot parse from offset` and `invalid cron expression`."""
+        with pytest.raises(ValueError, match="encoding version 2"):
+            decode("2h9-17w1-5s500", "UTC")
+        with pytest.raises(ValueError, match="encoding version 2"):
+            decode_reset("2m0h0", "UTC")
+
+    def test_a_newer_version_is_reported_even_when_the_body_is_unreadable(self):
+        """This is the case §6.5 tabulates as unfixable without a marker.
+
+        A newer encoder appending a new modifier tag produces `h9-17s500q42`,
+        which the tokeniser swallows into the preceding value and reports as
+        `invalid literal for int()` — indistinguishable from corruption. With
+        the marker the version is read first, so the diagnosis no longer
+        depends on where in the string the unknown token happens to sit.
+        """
+        with pytest.raises(ValueError, match="encoding version 2"):
+            decode("2h9-17s500q42", "UTC")
+        with pytest.raises(ValueError, match="encoding version 2"):
+            decode("2q42h9-17s500", "UTC")
+
+    def test_the_three_diagnoses_are_distinct_strings(self):
+        """An operator greps one of these out of a log; they must not collide."""
+        messages = []
+        for compact in ("h9-17s500", "2h9-17s500", "1Xh9-17s500", "1h99c10"):
+            with pytest.raises(ValueError) as exc:
+                decode(compact, "UTC")
+            messages.append(str(exc.value))
+        assert "no version marker" in messages[0]
+        assert "encoding version 2" in messages[1]
+        assert "cannot parse from offset 0" in messages[2]
+        assert "invalid cron expression" in messages[3]
+        assert len({m.split(":")[0] for m in messages}) == len(messages)
+
+    def test_a_marker_with_no_entries_is_rejected(self):
+        """`"1"` is a version and nothing else. Left to fall through, the
+        tokeniser would return no tokens, rebuild `* * * * *`, and fail with a
+        message about modifier fields that names nothing an operator could act
+        on."""
+        with pytest.raises(ValueError, match="version marker"):
+            decode("1", "UTC")
+        with pytest.raises(ValueError, match="version marker"):
+            decode_reset("1", "UTC")
+
+    @pytest.mark.parametrize("compact", ["0h9-17s500", "00m0h0"])
+    def test_version_zero_is_rejected(self, compact):
+        """There is no version 0: the marker starts at 1, so a zero is
+        corruption rather than an older writer, and it must not be reported as
+        "written by a newer client" (which `version > ENCODING_VERSION` would
+        not say) nor silently accepted as v1 by an `int()` that only checks the
+        upper end."""
+        with pytest.raises(ValueError, match="invalid version marker"):
+            decode(compact, "UTC")
+        with pytest.raises(ValueError, match="invalid version marker"):
+            decode_reset(compact.replace("h9-17s500", "m0h0"), "UTC")
+
+    def test_the_no_schedule_sentinel_is_still_not_a_legal_encoding(self):
+        """#541's `BUCKET_SCHED_NONE` must stay unmistakable for a schedule."""
+        from zae_limiter.schema import BUCKET_SCHED_NONE
+
+        with pytest.raises(ValueError):
+            decode(BUCKET_SCHED_NONE, "UTC")
+        with pytest.raises(ValueError):
+            decode_reset(BUCKET_SCHED_NONE, "UTC")
+
+    def test_every_round_trip_still_holds_with_the_marker(self):
+        """Canonicalisation makes `decode(encode(x)) == x` false for a name form
+        (`MON-FRI` stores as `1-5`), which `TestRoundTrip` covers; what the
+        marker must not break is that re-encoding is byte-identical, marker
+        included, so `differ.py` sees no change on every apply."""
+        for entries in ((BUSINESS,), (BUSINESS, NIGHTS), (NIGHTS,)):
+            compact, tz = encode(entries)
+            assert compact.startswith(str(1))
+            assert encode(decode(compact, tz or "UTC")) == (compact, tz)
+        for resets in (
+            (ScheduleEntry.reset("0 0 * * *"),),
+            (ScheduleEntry.reset("0 0 1 * *"), ScheduleEntry.reset("0 12 15 * *")),
+        ):
+            compact, tz = encode_reset(resets)
+            assert encode_reset(decode_reset(compact, tz or "UTC")) == (compact, tz)
+
+    def test_to_cron_reads_the_marker_the_encoder_wrote(self):
+        """`to_cron` takes what `encode` produced for one entry — `cli`'s
+        `_format_cron_entry` hands it exactly that — so it must accept the
+        marker rather than treat it as a cron field."""
+        compact, _ = encode((BUSINESS,))
+        assert to_cron(compact) == "* 9-17 * * MON-FRI"
+
+    def test_the_version_is_reported_before_the_body_is_parsed(self):
+        """Ordering, so a forward-compatibility problem is never misreported as
+        corruption just because the newer body also fails to tokenise."""
+        with pytest.raises(ValueError) as exc:
+            decode("99!!!not a schedule at all", "UTC")
+        assert "encoding version 99" in str(exc.value)

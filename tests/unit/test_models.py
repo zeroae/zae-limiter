@@ -20,7 +20,7 @@ from zae_limiter import (
     models,
 )
 from zae_limiter.models import BucketState, LimitStatus
-from zae_limiter.schedule import ScheduleEntry
+from zae_limiter.schedule import MAX_PERIOD_SECONDS, MAX_TOKENS, ScheduleEntry
 
 _NY = ZoneInfo("America/New_York")
 
@@ -136,6 +136,61 @@ class TestLimit:
         """Test validation of negative refill_period_seconds."""
         with pytest.raises(ValueError, match="refill_period_seconds must be positive"):
             Limit.custom("rpm", capacity=100, refill_amount=100, refill_period_seconds=-1)
+
+    @pytest.mark.parametrize(
+        ("field_name", "bound"),
+        [
+            ("capacity", MAX_TOKENS),
+            ("refill_amount", MAX_TOKENS),
+            ("refill_period_seconds", MAX_PERIOD_SECONDS),
+        ],
+    )
+    def test_rejects_an_unstorable_magnitude(self, field_name, bound):
+        """#570. `Limit.per_minute("rpm", 10**40)` constructed on main and could
+        not be written: `cp_milli` has 44 digits against DynamoDB's 38. Bounding
+        `ScheduleEntry.scale` alone would not have closed it — the product
+        `capacity x 1000 x scale` is what has to stay storable."""
+        kwargs = {"capacity": 100, "refill_amount": 100, "refill_period_seconds": 60}
+        kwargs[field_name] = bound + 1
+        with pytest.raises(ValueError, match=f"{field_name} must be at most"):
+            Limit.custom("rpm", **kwargs)
+
+    @pytest.mark.parametrize(
+        ("field_name", "bound"),
+        [
+            ("capacity", MAX_TOKENS),
+            ("refill_amount", MAX_TOKENS),
+            ("refill_period_seconds", MAX_PERIOD_SECONDS),
+        ],
+    )
+    def test_the_bound_itself_is_accepted(self, field_name, bound):
+        kwargs = {"capacity": 100, "refill_amount": 100, "refill_period_seconds": 60}
+        kwargs[field_name] = bound
+        assert getattr(Limit.custom("rpm", **kwargs), field_name) == bound
+
+    def test_the_scaled_capacity_of_the_largest_limit_is_storable(self):
+        """The property the two bounds exist to buy: no constructible
+        (limit, entry) pair can produce a value DynamoDB refuses."""
+        from boto3.dynamodb.types import TypeSerializer
+
+        from zae_limiter.schedule import MAX_SCALE, effective_params
+
+        limit = Limit.custom(
+            "tpm",
+            capacity=MAX_TOKENS,
+            refill_amount=MAX_TOKENS,
+            refill_period_seconds=MAX_PERIOD_SECONDS,
+        ).with_schedule((ScheduleEntry(cron="* * * * *", scale=MAX_SCALE),))
+        cp, ra, rp = effective_params(
+            limit.capacity * 1000,
+            limit.refill_amount * 1000,
+            limit.refill_period_seconds * 1000,
+            limit.schedule,
+            0,
+        )
+        serializer = TypeSerializer()
+        for value in (cp, ra, rp):
+            serializer.serialize(value)
 
     def test_to_dict_from_dict(self):
         """Test serialization round-trip."""

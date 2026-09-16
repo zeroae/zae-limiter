@@ -5185,12 +5185,13 @@ class Repository:
         core plan Task 14 fixed. Each boundary converts instead: the aggregator
         skips the bucket, and this is the client's conversion.
 
-        The message carries the attribute name and the stored value because no
-        version marker says whether a newer client wrote this (#515).
-        ``_tokenise`` does discriminate structurally — an unknown tag reads
-        ``cannot parse from offset N`` where a cronsim rejection reads ``invalid
-        cron expression`` — but that is a heuristic, not a proof: corruption can
-        fail at an offset too.
+        The message carries the attribute name, the stored value, the timezone
+        it was read in, and the parser's own message — which since #515 names
+        which of three things happened: the value carries no version marker, it
+        carries one this build cannot read (a newer client wrote it), or it is
+        a same-version failure. Only the last is ambiguous between corruption
+        and a mistake; ``_tokenise``'s structural discrimination applies there
+        and remains a heuristic rather than a proof.
         """
         try:
             if reset:

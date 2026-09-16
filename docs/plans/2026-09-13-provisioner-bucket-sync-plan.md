@@ -129,7 +129,9 @@ class TestBuildBucketParamUpdate:
         """Limit names may contain hyphens, which are illegal in expression names."""
         expr, names, _values = build_bucket_param_update(
             {"req-per-min": {"capacity": 5, "refill_amount": 5, "refill_period": 1}},
-            ttl_multiplier=None, stale_limit_names=None, now_ms=0,
+            ttl_multiplier=None,
+            stale_limit_names=None,
+            now_ms=0,
         )
         assert bucket_attr("req-per-min", "cp") in names.values()
         assert "-" not in expr
@@ -333,8 +335,15 @@ class TestSyncBucketParams:
             {"Items": [{"PK": {"S": _pk(shard=0)}}, {"PK": {"S": _pk(shard=1)}}]}
         )
         written = sync_bucket_params(
-            client, "tbl", "ns123", "user-1", "gpt-4", LIMITS,
-            ttl_multiplier=0, stale_limit_names=None, now_ms=0,
+            client,
+            "tbl",
+            "ns123",
+            "user-1",
+            "gpt-4",
+            LIMITS,
+            ttl_multiplier=0,
+            stale_limit_names=None,
+            now_ms=0,
         )
         assert written == 2
         keys = {c.kwargs["Key"]["PK"]["S"] for c in client.update_item.call_args_list}
@@ -347,12 +356,21 @@ class TestSyncBucketParams:
         client = _make_client()
         client.query.side_effect = _query_pages({"Items": []})
         sync_bucket_params(
-            client, "tbl", "ns123", "user-1", "gpt-4", LIMITS,
-            ttl_multiplier=0, stale_limit_names=None, now_ms=0,
+            client,
+            "tbl",
+            "ns123",
+            "user-1",
+            "gpt-4",
+            LIMITS,
+            ttl_multiplier=0,
+            stale_limit_names=None,
+            now_ms=0,
         )
         params = client.query.call_args.kwargs
         assert params["IndexName"] == "GSI3"
-        assert params["ExpressionAttributeValues"][":pk"] == {"S": gsi3_pk_entity("ns123", "user-1")}
+        assert params["ExpressionAttributeValues"][":pk"] == {
+            "S": gsi3_pk_entity("ns123", "user-1")
+        }
         assert params["ExpressionAttributeValues"][":sk"] == {"S": "BUCKET#gpt-4#"}
 
     def test_runs_two_passes_without_double_writing(self):
@@ -363,8 +381,15 @@ class TestSyncBucketParams:
             {"Items": [{"PK": {"S": _pk(shard=0)}}, {"PK": {"S": _pk(shard=1)}}]},
         )
         written = sync_bucket_params(
-            client, "tbl", "ns123", "user-1", "gpt-4", LIMITS,
-            ttl_multiplier=0, stale_limit_names=None, now_ms=0,
+            client,
+            "tbl",
+            "ns123",
+            "user-1",
+            "gpt-4",
+            LIMITS,
+            ttl_multiplier=0,
+            stale_limit_names=None,
+            now_ms=0,
         )
         assert written == 2
         assert client.update_item.call_count == 2
@@ -375,17 +400,34 @@ class TestSyncBucketParams:
         client.query.side_effect = _query_pages({"Items": [{"PK": {"S": _pk()}}]})
         client.update_item.side_effect = ConditionalCheckFailedException()
         written = sync_bucket_params(
-            client, "tbl", "ns123", "user-1", "gpt-4", LIMITS,
-            ttl_multiplier=0, stale_limit_names=None, now_ms=0,
+            client,
+            "tbl",
+            "ns123",
+            "user-1",
+            "gpt-4",
+            LIMITS,
+            ttl_multiplier=0,
+            stale_limit_names=None,
+            now_ms=0,
         )
         assert written == 0
 
     def test_no_limits_is_a_noop(self):
         client = _make_client()
-        assert sync_bucket_params(
-            client, "tbl", "ns123", "user-1", "gpt-4", {},
-            ttl_multiplier=0, stale_limit_names=None, now_ms=0,
-        ) == 0
+        assert (
+            sync_bucket_params(
+                client,
+                "tbl",
+                "ns123",
+                "user-1",
+                "gpt-4",
+                {},
+                ttl_multiplier=0,
+                stale_limit_names=None,
+                now_ms=0,
+            )
+            == 0
+        )
         client.query.assert_not_called()
 
     def test_paginates_discovery(self):
@@ -395,8 +437,15 @@ class TestSyncBucketParams:
             {"Items": [{"PK": {"S": _pk(shard=1)}}]},
         )
         written = sync_bucket_params(
-            client, "tbl", "ns123", "user-1", "gpt-4", LIMITS,
-            ttl_multiplier=0, stale_limit_names=None, now_ms=0,
+            client,
+            "tbl",
+            "ns123",
+            "user-1",
+            "gpt-4",
+            LIMITS,
+            ttl_multiplier=0,
+            stale_limit_names=None,
+            now_ms=0,
         )
         assert written == 2
 ```
@@ -559,25 +608,32 @@ def _levels(mapping):
     def _get_item(**kwargs):
         key = (kwargs["Key"]["PK"]["S"], kwargs["Key"]["SK"]["S"])
         return {"Item": mapping[key]} if key in mapping else {}
+
     return _get_item
 
 
 class TestResolveEffectiveLimits:
     def test_entity_default_wins_over_resource(self):
         client = _make_client()
-        client.get_item.side_effect = _levels({
-            (pk_entity("ns123", "user-1"), sk_config("_default_")): _limits_item(rpm=(50, 50, 60)),
-            (pk_resource("ns123", "gpt-4"), sk_config()): _limits_item(rpm=(999, 999, 60)),
-        })
+        client.get_item.side_effect = _levels(
+            {
+                (pk_entity("ns123", "user-1"), sk_config("_default_")): _limits_item(
+                    rpm=(50, 50, 60)
+                ),
+                (pk_resource("ns123", "gpt-4"), sk_config()): _limits_item(rpm=(999, 999, 60)),
+            }
+        )
         assert resolve_effective_limits(client, "tbl", "ns123", "user-1", "gpt-4") == {
             "rpm": {"capacity": 50, "refill_amount": 50, "refill_period": 60}
         }
 
     def test_falls_through_to_resource_then_system(self):
         client = _make_client()
-        client.get_item.side_effect = _levels({
-            (pk_system("ns123"), sk_config()): _limits_item(rpm=(10, 10, 60)),
-        })
+        client.get_item.side_effect = _levels(
+            {
+                (pk_system("ns123"), sk_config()): _limits_item(rpm=(10, 10, 60)),
+            }
+        )
         assert resolve_effective_limits(client, "tbl", "ns123", "user-1", "gpt-4") == {
             "rpm": {"capacity": 10, "refill_amount": 10, "refill_period": 60}
         }
@@ -749,10 +805,14 @@ from zae_limiter_provisioner.handler import _sync_bucket_param_changes
 class TestSyncBucketParamChanges:
     def test_entity_set_syncs_with_ttl_removed(self):
         """Entity custom limits mean the bucket must persist: multiplier 0."""
-        changes = [Change(
-            action="update", level="entity", target="user-1/gpt-4",
-            data={"limits": {"rpm": {"capacity": 5, "refill_amount": 5, "refill_period": 60}}},
-        )]
+        changes = [
+            Change(
+                action="update",
+                level="entity",
+                target="user-1/gpt-4",
+                data={"limits": {"rpm": {"capacity": 5, "refill_amount": 5, "refill_period": 60}}},
+            )
+        ]
         with patch("zae_limiter_provisioner.handler.sync_bucket_params") as sync:
             _sync_bucket_param_changes("tbl", "ns123", changes)
         assert sync.call_count == 1
@@ -762,10 +822,14 @@ class TestSyncBucketParamChanges:
         assert kwargs["stale_limit_names"] is None
 
     def test_entity_delete_reconciles_to_defaults_with_ttl(self):
-        changes = [Change(
-            action="delete", level="entity", target="user-1/gpt-4",
-            data={"limits": {"rpm": {"capacity": 5, "refill_amount": 5, "refill_period": 60}}},
-        )]
+        changes = [
+            Change(
+                action="delete",
+                level="entity",
+                target="user-1/gpt-4",
+                data={"limits": {"rpm": {"capacity": 5, "refill_amount": 5, "refill_period": 60}}},
+            )
+        ]
         with (
             patch("zae_limiter_provisioner.handler.sync_bucket_params") as sync,
             patch(
@@ -779,13 +843,19 @@ class TestSyncBucketParamChanges:
         assert kwargs["limits"] == {"rpm": {"capacity": 1, "refill_amount": 1, "refill_period": 60}}
 
     def test_delete_strips_limits_absent_from_the_new_effective_config(self):
-        changes = [Change(
-            action="delete", level="entity", target="user-1/gpt-4",
-            data={"limits": {
-                "rpm": {"capacity": 5, "refill_amount": 5, "refill_period": 60},
-                "tpm": {"capacity": 9, "refill_amount": 9, "refill_period": 60},
-            }},
-        )]
+        changes = [
+            Change(
+                action="delete",
+                level="entity",
+                target="user-1/gpt-4",
+                data={
+                    "limits": {
+                        "rpm": {"capacity": 5, "refill_amount": 5, "refill_period": 60},
+                        "tpm": {"capacity": 9, "refill_amount": 9, "refill_period": 60},
+                    }
+                },
+            )
+        ]
         with (
             patch("zae_limiter_provisioner.handler.sync_bucket_params") as sync,
             patch(
@@ -807,10 +877,14 @@ class TestSyncBucketParamChanges:
         sync.assert_not_called()
 
     def test_entity_id_containing_a_slash_splits_once(self):
-        changes = [Change(
-            action="update", level="entity", target="org/team/gpt-4",
-            data={"limits": {"rpm": {"capacity": 5, "refill_amount": 5, "refill_period": 60}}},
-        )]
+        changes = [
+            Change(
+                action="update",
+                level="entity",
+                target="org/team/gpt-4",
+                data={"limits": {"rpm": {"capacity": 5, "refill_amount": 5, "refill_period": 60}}},
+            )
+        ]
         with patch("zae_limiter_provisioner.handler.sync_bucket_params") as sync:
             _sync_bucket_param_changes("tbl", "ns123", changes)
         kwargs = sync.call_args.kwargs
@@ -818,8 +892,9 @@ class TestSyncBucketParamChanges:
 
     def test_delete_with_no_effective_limits_is_a_noop(self):
         """Nothing left to reconcile to; leave the bucket for its TTL/recreate."""
-        changes = [Change(action="delete", level="entity", target="user-1/gpt-4",
-                          data={"limits": {}})]
+        changes = [
+            Change(action="delete", level="entity", target="user-1/gpt-4", data={"limits": {}})
+        ]
         with (
             patch("zae_limiter_provisioner.handler.sync_bucket_params") as sync,
             patch("zae_limiter_provisioner.handler.resolve_effective_limits", return_value={}),
@@ -982,7 +1057,7 @@ class TestProvisionerReachesLiveBuckets:
             "          rpm:\n"
             "            capacity: 10\n"
         )
-        await apply_manifest(e2e_repo, manifest)   # invokes the provisioner Lambda
+        await apply_manifest(e2e_repo, manifest)  # invokes the provisioner Lambda
 
         # 3. The EXISTING bucket item must now carry the new capacity.
         after = await e2e_repo.get_buckets("user-1")

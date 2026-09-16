@@ -34,11 +34,7 @@ event = AuditEvent(
     entity_id="api-key-123",
     principal="admin@example.com",
     resource="gpt-4",
-    details={
-        "limits": [
-            {"name": "rpm", "capacity": 100}
-        ]
-    }
+    details={"limits": [{"name": "rpm", "capacity": 100}]},
 )
 ```
 
@@ -361,7 +357,7 @@ for event in events:
     print(f"""
     Time: {event.timestamp}
     Action: {event.action}
-    By: {event.principal or 'unknown'}
+    By: {event.principal or "unknown"}
     Details: {event.details}
     """)
 ```
@@ -378,10 +374,15 @@ limiter = RateLimiter(repository=repo)
 
 # Filter for limit changes
 events = await limiter.get_audit_events(entity_id="api-key-123")
-limit_changes = [e for e in events if e.action in (
-    AuditAction.LIMITS_SET,
-    AuditAction.LIMITS_DELETED,
-)]
+limit_changes = [
+    e
+    for e in events
+    if e.action
+    in (
+        AuditAction.LIMITS_SET,
+        AuditAction.LIMITS_DELETED,
+    )
+]
 
 for event in limit_changes:
     print(f"{event.timestamp}: {event.action}")
@@ -401,10 +402,7 @@ repo = await Repository.open()
 limiter = RateLimiter(repository=repo)
 
 events = await limiter.get_audit_events(entity_id="compromised-key")
-deletions = [
-    e for e in events
-    if e.action == AuditAction.ENTITY_DELETED
-]
+deletions = [e for e in events if e.action == AuditAction.ENTITY_DELETED]
 
 for event in deletions:
     print(f"Deleted at {event.timestamp} by {event.principal}")

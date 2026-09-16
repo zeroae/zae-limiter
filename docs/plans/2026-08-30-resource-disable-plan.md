@@ -443,9 +443,7 @@ from zae_limiter.repository import Repository
 @pytest.fixture
 async def disable_repo(mock_dynamodb):
     """Moto-backed repository for disable tests."""
-    repo = Repository(
-        name="test-disable", region="us-east-1", _skip_deprecation_warning=True
-    )
+    repo = Repository(name="test-disable", region="us-east-1", _skip_deprecation_warning=True)
     await repo.create_table()
     await repo._register_namespace("default")
     yield repo
@@ -514,46 +512,47 @@ _PRESERVE_DISABLED: Any = object()
 Then add the two getters alongside the other config reads:
 
 ```python
-    async def get_resource_disabled(self, resource: str) -> bool | None:
-        """Read the tri-state disabled flag from a resource config item.
+async def get_resource_disabled(self, resource: str) -> bool | None:
+    """Read the tri-state disabled flag from a resource config item.
 
-        Returns:
-            True or False when explicitly set, None when unset (inherit).
-        """
-        validate_resource(resource)
-        client = await self._get_client()
-        response = await client.get_item(
-            TableName=self.table_name,
-            Key={
-                "PK": {"S": schema.pk_resource(self._namespace_id, resource)},
-                "SK": {"S": schema.sk_config()},
-            },
-            ConsistentRead=False,
-        )
-        item = response.get("Item")
-        if not item:
-            return None
-        return schema.decode_disabled(item)
+    Returns:
+        True or False when explicitly set, None when unset (inherit).
+    """
+    validate_resource(resource)
+    client = await self._get_client()
+    response = await client.get_item(
+        TableName=self.table_name,
+        Key={
+            "PK": {"S": schema.pk_resource(self._namespace_id, resource)},
+            "SK": {"S": schema.sk_config()},
+        },
+        ConsistentRead=False,
+    )
+    item = response.get("Item")
+    if not item:
+        return None
+    return schema.decode_disabled(item)
 
-    async def get_entity_disabled(self, entity_id: str, resource: str) -> bool | None:
-        """Read the tri-state disabled flag from an entity config item.
 
-        Returns:
-            True or False when explicitly set, None when unset (inherit).
-        """
-        client = await self._get_client()
-        response = await client.get_item(
-            TableName=self.table_name,
-            Key={
-                "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
-                "SK": {"S": schema.sk_config(resource)},
-            },
-            ConsistentRead=False,
-        )
-        item = response.get("Item")
-        if not item:
-            return None
-        return schema.decode_disabled(item)
+async def get_entity_disabled(self, entity_id: str, resource: str) -> bool | None:
+    """Read the tri-state disabled flag from an entity config item.
+
+    Returns:
+        True or False when explicitly set, None when unset (inherit).
+    """
+    client = await self._get_client()
+    response = await client.get_item(
+        TableName=self.table_name,
+        Key={
+            "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
+            "SK": {"S": schema.sk_config(resource)},
+        },
+        ConsistentRead=False,
+    )
+    item = response.get("Item")
+    if not item:
+        return None
+    return schema.decode_disabled(item)
 ```
 
 - [ ] **Step 4: Thread `disabled` through the setters**
@@ -706,67 +705,65 @@ Expected: FAIL with `AttributeError: 'Repository' object has no attribute 'resol
 Add to `src/zae_limiter/repository.py` in the "Config resolution (ADR-122)" section:
 
 ```python
-    async def resolve_disabled(
-        self,
-        entity_id: str,
-        resource: str,
-    ) -> tuple[bool, str | None]:
-        """Resolve the effective disabled state for an entity+resource (ADR-125).
+async def resolve_disabled(
+    self,
+    entity_id: str,
+    resource: str,
+) -> tuple[bool, str | None]:
+    """Resolve the effective disabled state for an entity+resource (ADR-125).
 
-        Walks entity(resource) -> entity(_default_) -> resource and returns the
-        first level that sets `disabled` explicitly. This walk is independent of
-        the limits walk in resolve_limits(): a level that sets `disabled` but
-        defines no limits still decides the outcome, which is what lets an
-        entity-level `disabled: false` re-admit one entity to a disabled resource.
+    Walks entity(resource) -> entity(_default_) -> resource and returns the
+    first level that sets `disabled` explicitly. This walk is independent of
+    the limits walk in resolve_limits(): a level that sets `disabled` but
+    defines no limits still decides the outcome, which is what lets an
+    entity-level `disabled: false` re-admit one entity to a disabled resource.
 
-        Deliberately uncached — see ADR-125. Called only on the slow path and by
-        the eager fan-out, never on the speculative fast path.
+    Deliberately uncached — see ADR-125. Called only on the slow path and by
+    the eager fan-out, never on the speculative fast path.
 
-        Args:
-            entity_id: Entity to resolve for
-            resource: Resource being accessed
+    Args:
+        entity_id: Entity to resolve for
+        resource: Resource being accessed
 
-        Returns:
-            (effective_disabled, deciding_level) where deciding_level is
-            "entity", "entity_default", "resource", or None if nothing set it.
-        """
-        ns = self._namespace_id
-        levels: list[tuple[str, str, str]] = [
-            ("entity", schema.pk_entity(ns, entity_id), schema.sk_config(resource)),
-        ]
-        if resource != schema.DEFAULT_RESOURCE:
-            levels.append(
-                (
-                    "entity_default",
-                    schema.pk_entity(ns, entity_id),
-                    schema.sk_config(schema.DEFAULT_RESOURCE),
-                )
+    Returns:
+        (effective_disabled, deciding_level) where deciding_level is
+        "entity", "entity_default", "resource", or None if nothing set it.
+    """
+    ns = self._namespace_id
+    levels: list[tuple[str, str, str]] = [
+        ("entity", schema.pk_entity(ns, entity_id), schema.sk_config(resource)),
+    ]
+    if resource != schema.DEFAULT_RESOURCE:
+        levels.append(
+            (
+                "entity_default",
+                schema.pk_entity(ns, entity_id),
+                schema.sk_config(schema.DEFAULT_RESOURCE),
             )
-        levels.append(("resource", schema.pk_resource(ns, resource), schema.sk_config()))
-
-        client = await self._get_client()
-        response = await client.batch_get_item(
-            RequestItems={
-                self.table_name: {
-                    "Keys": [{"PK": {"S": pk}, "SK": {"S": sk}} for _, pk, sk in levels],
-                    "ConsistentRead": False,
-                }
-            }
         )
-        items = response.get("Responses", {}).get(self.table_name, [])
-        by_key = {
-            (i.get("PK", {}).get("S", ""), i.get("SK", {}).get("S", "")): i for i in items
+    levels.append(("resource", schema.pk_resource(ns, resource), schema.sk_config()))
+
+    client = await self._get_client()
+    response = await client.batch_get_item(
+        RequestItems={
+            self.table_name: {
+                "Keys": [{"PK": {"S": pk}, "SK": {"S": sk}} for _, pk, sk in levels],
+                "ConsistentRead": False,
+            }
         }
+    )
+    items = response.get("Responses", {}).get(self.table_name, [])
+    by_key = {(i.get("PK", {}).get("S", ""), i.get("SK", {}).get("S", "")): i for i in items}
 
-        for level, pk, sk in levels:
-            item = by_key.get((pk, sk))
-            if item is None:
-                continue
-            value = schema.decode_disabled(item)
-            if value is not None:
-                return value, level
+    for level, pk, sk in levels:
+        item = by_key.get((pk, sk))
+        if item is None:
+            continue
+        value = schema.decode_disabled(item)
+        if value is not None:
+            return value, level
 
-        return False, None
+    return False, None
 ```
 
 - [ ] **Step 4: Add it to the protocol**
@@ -933,329 +930,331 @@ Add to `src/zae_limiter/repository.py`:
 - [ ] **Step 4: Implement bucket discovery for both scopes**
 
 ```python
-    async def _discover_resource_bucket_pks(self, resource: str) -> list[tuple[str, str]]:
-        """Find every bucket PK for a resource, across entities and shards.
+async def _discover_resource_bucket_pks(self, resource: str) -> list[tuple[str, str]]:
+    """Find every bucket PK for a resource, across entities and shards.
 
-        Uses GSI2 (GSI2PK={ns}/RESOURCE#{name}, GSI2SK begins_with BUCKET#),
-        the same access pattern used for resource capacity aggregation.
+    Uses GSI2 (GSI2PK={ns}/RESOURCE#{name}, GSI2SK begins_with BUCKET#),
+    the same access pattern used for resource capacity aggregation.
 
-        Returns:
-            List of (bucket_pk, entity_id) tuples.
-        """
-        client = await self._get_client()
-        results: list[tuple[str, str]] = []
-        start_key: dict[str, Any] | None = None
+    Returns:
+        List of (bucket_pk, entity_id) tuples.
+    """
+    client = await self._get_client()
+    results: list[tuple[str, str]] = []
+    start_key: dict[str, Any] | None = None
 
-        while True:
-            params: dict[str, Any] = {
-                "TableName": self.table_name,
-                "IndexName": schema.GSI2_NAME,
-                "KeyConditionExpression": "GSI2PK = :pk AND begins_with(GSI2SK, :sk)",
-                "ExpressionAttributeValues": {
-                    ":pk": {"S": schema.gsi2_pk_resource(self._namespace_id, resource)},
-                    ":sk": {"S": "BUCKET#"},
-                },
-            }
-            if start_key:
-                params["ExclusiveStartKey"] = start_key
-            response = await client.query(**params)
-            for item in response.get("Items", []):
-                pk = item.get("PK", {}).get("S", "")
-                if not pk:
-                    continue
-                _ns, entity_id, _res, _shard = schema.parse_bucket_pk(pk)
-                results.append((pk, entity_id))
-            start_key = response.get("LastEvaluatedKey")
-            if not start_key:
-                break
+    while True:
+        params: dict[str, Any] = {
+            "TableName": self.table_name,
+            "IndexName": schema.GSI2_NAME,
+            "KeyConditionExpression": "GSI2PK = :pk AND begins_with(GSI2SK, :sk)",
+            "ExpressionAttributeValues": {
+                ":pk": {"S": schema.gsi2_pk_resource(self._namespace_id, resource)},
+                ":sk": {"S": "BUCKET#"},
+            },
+        }
+        if start_key:
+            params["ExclusiveStartKey"] = start_key
+        response = await client.query(**params)
+        for item in response.get("Items", []):
+            pk = item.get("PK", {}).get("S", "")
+            if not pk:
+                continue
+            _ns, entity_id, _res, _shard = schema.parse_bucket_pk(pk)
+            results.append((pk, entity_id))
+        start_key = response.get("LastEvaluatedKey")
+        if not start_key:
+            break
 
-        return results
+    return results
 
-    async def _discover_entity_bucket_pks(
-        self, entity_id: str, resource: str | None
-    ) -> list[str]:
-        """Find every bucket PK for an entity, optionally scoped to one resource.
 
-        Uses GSI3 (GSI3PK={ns}/ENTITY#{id}, GSI3SK begins_with BUCKET#{resource}#),
-        the KEYS_ONLY discovery index added for GHSA-76rv.
+async def _discover_entity_bucket_pks(self, entity_id: str, resource: str | None) -> list[str]:
+    """Find every bucket PK for an entity, optionally scoped to one resource.
 
-        Returns:
-            List of bucket PKs.
-        """
-        client = await self._get_client()
-        pks: list[str] = []
-        start_key: dict[str, Any] | None = None
-        sk_prefix = f"BUCKET#{resource}#" if resource else "BUCKET#"
+    Uses GSI3 (GSI3PK={ns}/ENTITY#{id}, GSI3SK begins_with BUCKET#{resource}#),
+    the KEYS_ONLY discovery index added for GHSA-76rv.
 
-        while True:
-            params: dict[str, Any] = {
-                "TableName": self.table_name,
-                "IndexName": schema.GSI3_NAME,
-                "KeyConditionExpression": "GSI3PK = :pk AND begins_with(GSI3SK, :sk)",
-                "ExpressionAttributeValues": {
-                    ":pk": {"S": schema.gsi3_pk_entity(self._namespace_id, entity_id)},
-                    ":sk": {"S": sk_prefix},
-                },
-            }
-            if start_key:
-                params["ExclusiveStartKey"] = start_key
-            response = await client.query(**params)
-            for item in response.get("Items", []):
-                pk = item.get("PK", {}).get("S", "")
-                if pk:
-                    pks.append(pk)
-            start_key = response.get("LastEvaluatedKey")
-            if not start_key:
-                break
+    Returns:
+        List of bucket PKs.
+    """
+    client = await self._get_client()
+    pks: list[str] = []
+    start_key: dict[str, Any] | None = None
+    sk_prefix = f"BUCKET#{resource}#" if resource else "BUCKET#"
 
-        return pks
+    while True:
+        params: dict[str, Any] = {
+            "TableName": self.table_name,
+            "IndexName": schema.GSI3_NAME,
+            "KeyConditionExpression": "GSI3PK = :pk AND begins_with(GSI3SK, :sk)",
+            "ExpressionAttributeValues": {
+                ":pk": {"S": schema.gsi3_pk_entity(self._namespace_id, entity_id)},
+                ":sk": {"S": sk_prefix},
+            },
+        }
+        if start_key:
+            params["ExclusiveStartKey"] = start_key
+        response = await client.query(**params)
+        for item in response.get("Items", []):
+            pk = item.get("PK", {}).get("S", "")
+            if pk:
+                pks.append(pk)
+        start_key = response.get("LastEvaluatedKey")
+        if not start_key:
+            break
+
+    return pks
 ```
 
 - [ ] **Step 5: Implement the two fan-out drivers**
 
 ```python
-    async def _fanout_resource(self, resource: str, disabled: bool) -> int:
-        """Stamp every bucket for a resource, honoring per-entity overrides.
+async def _fanout_resource(self, resource: str, disabled: bool) -> int:
+    """Stamp every bucket for a resource, honoring per-entity overrides.
 
-        An entity whose own config resolves to a different value than the
-        resource-level one is skipped — that is what makes an entity-level
-        `disabled: false` a carve-out from a disabled resource (ADR-125).
+    An entity whose own config resolves to a different value than the
+    resource-level one is skipped — that is what makes an entity-level
+    `disabled: false` a carve-out from a disabled resource (ADR-125).
 
-        Runs the discovery query twice: the second pass catches buckets created
-        by an acquire that was already in flight during the first pass.
+    Runs the discovery query twice: the second pass catches buckets created
+    by an acquire that was already in flight during the first pass.
 
-        Returns:
-            Number of bucket items stamped.
-        """
-        stamped: set[str] = set()
-        effective_by_entity: dict[str, bool] = {}
+    Returns:
+        Number of bucket items stamped.
+    """
+    stamped: set[str] = set()
+    effective_by_entity: dict[str, bool] = {}
 
-        for _pass in range(2):
-            for pk, entity_id in await self._discover_resource_bucket_pks(resource):
-                if pk in stamped:
-                    continue
-                if entity_id not in effective_by_entity:
-                    effective, _level = await self.resolve_disabled(entity_id, resource)
-                    effective_by_entity[entity_id] = effective
-                if effective_by_entity[entity_id] != disabled:
-                    # This entity overrides the resource-level value; leave it alone.
-                    continue
-                await self._stamp_bucket_disabled(pk, disabled)
-                stamped.add(pk)
+    for _pass in range(2):
+        for pk, entity_id in await self._discover_resource_bucket_pks(resource):
+            if pk in stamped:
+                continue
+            if entity_id not in effective_by_entity:
+                effective, _level = await self.resolve_disabled(entity_id, resource)
+                effective_by_entity[entity_id] = effective
+            if effective_by_entity[entity_id] != disabled:
+                # This entity overrides the resource-level value; leave it alone.
+                continue
+            await self._stamp_bucket_disabled(pk, disabled)
+            stamped.add(pk)
 
-        return len(stamped)
+    return len(stamped)
 
-    async def _fanout_entity(
-        self, entity_id: str, resource: str | None, disabled: bool
-    ) -> int:
-        """Stamp every bucket for an entity (optionally scoped to one resource).
 
-        Returns:
-            Number of bucket items stamped.
-        """
-        stamped: set[str] = set()
-        for _pass in range(2):
-            for pk in await self._discover_entity_bucket_pks(entity_id, resource):
-                if pk in stamped:
-                    continue
-                await self._stamp_bucket_disabled(pk, disabled)
-                stamped.add(pk)
-        return len(stamped)
+async def _fanout_entity(self, entity_id: str, resource: str | None, disabled: bool) -> int:
+    """Stamp every bucket for an entity (optionally scoped to one resource).
+
+    Returns:
+        Number of bucket items stamped.
+    """
+    stamped: set[str] = set()
+    for _pass in range(2):
+        for pk in await self._discover_entity_bucket_pks(entity_id, resource):
+            if pk in stamped:
+                continue
+            await self._stamp_bucket_disabled(pk, disabled)
+            stamped.add(pk)
+    return len(stamped)
 ```
 
 - [ ] **Step 6: Implement the resource-level public API**
 
 ```python
-    async def disable_resource(self, resource: str, principal: str | None = None) -> int:
-        """Disable a resource for all entities without an explicit override (ADR-125).
+async def disable_resource(self, resource: str, principal: str | None = None) -> int:
+    """Disable a resource for all entities without an explicit override (ADR-125).
 
-        Writes config first, then eagerly stamps every existing bucket so the
-        change takes effect on the speculative fast path immediately.
+    Writes config first, then eagerly stamps every existing bucket so the
+    change takes effect on the speculative fast path immediately.
 
-        Args:
-            resource: Resource to disable
-            principal: Caller identity for audit logging
+    Args:
+        resource: Resource to disable
+        principal: Caller identity for audit logging
 
-        Returns:
-            Number of bucket items stamped.
-        """
-        return await self._set_resource_disabled(resource, True, principal)
+    Returns:
+        Number of bucket items stamped.
+    """
+    return await self._set_resource_disabled(resource, True, principal)
 
-    async def enable_resource(self, resource: str, principal: str | None = None) -> int:
-        """Explicitly enable a resource (stores `disabled: false`).
 
-        Returns:
-            Number of bucket items unstamped.
-        """
-        return await self._set_resource_disabled(resource, False, principal)
+async def enable_resource(self, resource: str, principal: str | None = None) -> int:
+    """Explicitly enable a resource (stores `disabled: false`).
 
-    async def clear_resource_disabled(
-        self, resource: str, principal: str | None = None
-    ) -> int:
-        """Remove the resource's explicit disabled value, reverting to inherit.
+    Returns:
+        Number of bucket items unstamped.
+    """
+    return await self._set_resource_disabled(resource, False, principal)
 
-        Returns:
-            Number of bucket items unstamped.
-        """
-        return await self._set_resource_disabled(resource, None, principal)
 
-    async def _set_resource_disabled(
-        self, resource: str, value: bool | None, principal: str | None
-    ) -> int:
-        validate_resource(resource)
-        client = await self._get_client()
+async def clear_resource_disabled(self, resource: str, principal: str | None = None) -> int:
+    """Remove the resource's explicit disabled value, reverting to inherit.
 
-        # 1. Write config first, so any acquire starting from now resolves the
-        #    new value on the slow path.
-        key = {
-            "PK": {"S": schema.pk_resource(self._namespace_id, resource)},
-            "SK": {"S": schema.sk_config()},
-        }
-        common: dict[str, Any] = {
-            "TableName": self.table_name,
-            "Key": key,
-            "ExpressionAttributeNames": {"#disabled": schema.CONFIG_FIELD_DISABLED},
-            "ConditionExpression": "attribute_exists(PK)",
-        }
-        if value is None:
-            await client.update_item(UpdateExpression="REMOVE #disabled", **common)
-        else:
-            await client.update_item(
-                UpdateExpression="SET #disabled = :v",
-                ExpressionAttributeValues={":v": {"BOOL": value}},
-                **common,
-            )
+    Returns:
+        Number of bucket items unstamped.
+    """
+    return await self._set_resource_disabled(resource, None, principal)
 
-        await self.invalidate_config_cache()
 
-        # 2. Fan out to existing buckets. For a clear, the effective value is
-        #    whatever the resource now inherits, which with no system-level
-        #    disable is always False.
-        count = await self._fanout_resource(resource, disabled=bool(value))
+async def _set_resource_disabled(
+    self, resource: str, value: bool | None, principal: str | None
+) -> int:
+    validate_resource(resource)
+    client = await self._get_client()
 
-        await self._log_audit_event(
-            action=AuditAction.LIMITS_SET,
-            entity_id=f"$RESOURCE:{resource}",
-            principal=principal,
-            resource=resource,
-            details={"disabled": value, "buckets_stamped": count},
+    # 1. Write config first, so any acquire starting from now resolves the
+    #    new value on the slow path.
+    key = {
+        "PK": {"S": schema.pk_resource(self._namespace_id, resource)},
+        "SK": {"S": schema.sk_config()},
+    }
+    common: dict[str, Any] = {
+        "TableName": self.table_name,
+        "Key": key,
+        "ExpressionAttributeNames": {"#disabled": schema.CONFIG_FIELD_DISABLED},
+        "ConditionExpression": "attribute_exists(PK)",
+    }
+    if value is None:
+        await client.update_item(UpdateExpression="REMOVE #disabled", **common)
+    else:
+        await client.update_item(
+            UpdateExpression="SET #disabled = :v",
+            ExpressionAttributeValues={":v": {"BOOL": value}},
+            **common,
         )
-        return count
+
+    await self.invalidate_config_cache()
+
+    # 2. Fan out to existing buckets. For a clear, the effective value is
+    #    whatever the resource now inherits, which with no system-level
+    #    disable is always False.
+    count = await self._fanout_resource(resource, disabled=bool(value))
+
+    await self._log_audit_event(
+        action=AuditAction.LIMITS_SET,
+        entity_id=f"$RESOURCE:{resource}",
+        principal=principal,
+        resource=resource,
+        details={"disabled": value, "buckets_stamped": count},
+    )
+    return count
 ```
 
 - [ ] **Step 7: Implement the entity-level public API**
 
 ```python
-    async def disable_entity(
-        self,
-        entity_id: str,
-        resource: str | None = None,
-        principal: str | None = None,
-    ) -> int:
-        """Disable an entity, for one resource or across all of them (ADR-125).
+async def disable_entity(
+    self,
+    entity_id: str,
+    resource: str | None = None,
+    principal: str | None = None,
+) -> int:
+    """Disable an entity, for one resource or across all of them (ADR-125).
 
-        Args:
-            entity_id: Entity to disable
-            resource: Resource to scope to. None targets the entity's
-                `_default_` config, disabling it for every resource.
-            principal: Caller identity for audit logging
+    Args:
+        entity_id: Entity to disable
+        resource: Resource to scope to. None targets the entity's
+            `_default_` config, disabling it for every resource.
+        principal: Caller identity for audit logging
 
-        Returns:
-            Number of bucket items stamped.
-        """
-        return await self._set_entity_disabled(entity_id, resource, True, principal)
+    Returns:
+        Number of bucket items stamped.
+    """
+    return await self._set_entity_disabled(entity_id, resource, True, principal)
 
-    async def enable_entity(
-        self,
-        entity_id: str,
-        resource: str | None = None,
-        principal: str | None = None,
-    ) -> int:
-        """Explicitly enable an entity, overriding a disabled resource.
 
-        Returns:
-            Number of bucket items unstamped.
-        """
-        return await self._set_entity_disabled(entity_id, resource, False, principal)
+async def enable_entity(
+    self,
+    entity_id: str,
+    resource: str | None = None,
+    principal: str | None = None,
+) -> int:
+    """Explicitly enable an entity, overriding a disabled resource.
 
-    async def clear_entity_disabled(
-        self,
-        entity_id: str,
-        resource: str | None = None,
-        principal: str | None = None,
-    ) -> int:
-        """Remove the entity's explicit disabled value, reverting to inherit.
+    Returns:
+        Number of bucket items unstamped.
+    """
+    return await self._set_entity_disabled(entity_id, resource, False, principal)
 
-        Returns:
-            Number of bucket items restamped to match the inherited value.
-        """
-        return await self._set_entity_disabled(entity_id, resource, None, principal)
 
-    async def _set_entity_disabled(
-        self,
-        entity_id: str,
-        resource: str | None,
-        value: bool | None,
-        principal: str | None,
-    ) -> int:
-        target_resource = resource if resource is not None else schema.DEFAULT_RESOURCE
-        client = await self._get_client()
+async def clear_entity_disabled(
+    self,
+    entity_id: str,
+    resource: str | None = None,
+    principal: str | None = None,
+) -> int:
+    """Remove the entity's explicit disabled value, reverting to inherit.
 
-        key = {
-            "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
-            "SK": {"S": schema.sk_config(target_resource)},
-        }
-        if value is None:
-            await client.update_item(
-                TableName=self.table_name,
-                Key=key,
-                UpdateExpression="REMOVE #disabled",
-                ExpressionAttributeNames={"#disabled": schema.CONFIG_FIELD_DISABLED},
-                ConditionExpression="attribute_exists(PK)",
-            )
-        else:
-            # The entity may have no config item yet — create a minimal one so
-            # the override is durable even with no entity-level limits.
-            await client.update_item(
-                TableName=self.table_name,
-                Key=key,
-                UpdateExpression=(
-                    "SET #disabled = :v,"
-                    " entity_id = if_not_exists(entity_id, :eid),"
-                    " #resource = if_not_exists(#resource, :res),"
-                    " GSI4PK = if_not_exists(GSI4PK, :ns)"
-                ),
-                ExpressionAttributeNames={
-                    "#disabled": schema.CONFIG_FIELD_DISABLED,
-                    "#resource": "resource",
-                },
-                ExpressionAttributeValues={
-                    ":v": {"BOOL": value},
-                    ":eid": {"S": entity_id},
-                    ":res": {"S": target_resource},
-                    ":ns": {"S": self._namespace_id},
-                },
-            )
+    Returns:
+        Number of bucket items restamped to match the inherited value.
+    """
+    return await self._set_entity_disabled(entity_id, resource, None, principal)
 
-        self._config_cache.evict_entity(entity_id, target_resource)
 
-        # For an explicit value the effective state is that value. For a clear,
-        # recompute what the entity now inherits.
-        if value is None:
-            effective, _level = await self.resolve_disabled(entity_id, target_resource)
-        else:
-            effective = value
+async def _set_entity_disabled(
+    self,
+    entity_id: str,
+    resource: str | None,
+    value: bool | None,
+    principal: str | None,
+) -> int:
+    target_resource = resource if resource is not None else schema.DEFAULT_RESOURCE
+    client = await self._get_client()
 
-        count = await self._fanout_entity(entity_id, resource, disabled=effective)
-
-        await self._log_audit_event(
-            action=AuditAction.LIMITS_SET,
-            entity_id=entity_id,
-            principal=principal,
-            resource=target_resource,
-            details={"disabled": value, "buckets_stamped": count},
+    key = {
+        "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
+        "SK": {"S": schema.sk_config(target_resource)},
+    }
+    if value is None:
+        await client.update_item(
+            TableName=self.table_name,
+            Key=key,
+            UpdateExpression="REMOVE #disabled",
+            ExpressionAttributeNames={"#disabled": schema.CONFIG_FIELD_DISABLED},
+            ConditionExpression="attribute_exists(PK)",
         )
-        return count
+    else:
+        # The entity may have no config item yet — create a minimal one so
+        # the override is durable even with no entity-level limits.
+        await client.update_item(
+            TableName=self.table_name,
+            Key=key,
+            UpdateExpression=(
+                "SET #disabled = :v,"
+                " entity_id = if_not_exists(entity_id, :eid),"
+                " #resource = if_not_exists(#resource, :res),"
+                " GSI4PK = if_not_exists(GSI4PK, :ns)"
+            ),
+            ExpressionAttributeNames={
+                "#disabled": schema.CONFIG_FIELD_DISABLED,
+                "#resource": "resource",
+            },
+            ExpressionAttributeValues={
+                ":v": {"BOOL": value},
+                ":eid": {"S": entity_id},
+                ":res": {"S": target_resource},
+                ":ns": {"S": self._namespace_id},
+            },
+        )
+
+    self._config_cache.evict_entity(entity_id, target_resource)
+
+    # For an explicit value the effective state is that value. For a clear,
+    # recompute what the entity now inherits.
+    if value is None:
+        effective, _level = await self.resolve_disabled(entity_id, target_resource)
+    else:
+        effective = value
+
+    count = await self._fanout_entity(entity_id, resource, disabled=effective)
+
+    await self._log_audit_event(
+        action=AuditAction.LIMITS_SET,
+        entity_id=entity_id,
+        principal=principal,
+        resource=target_resource,
+        details={"disabled": value, "buckets_stamped": count},
+    )
+    return count
 ```
 
 - [ ] **Step 8: Add the six methods to the protocol**
@@ -1322,9 +1321,7 @@ class TestEnforcement:
         assert exc_info.value.resource == "gpt-4"
         assert exc_info.value.entity_id == "user-1"
 
-    async def test_slow_path_raises_before_creating_a_bucket(
-        self, disable_limiter, disable_repo
-    ):
+    async def test_slow_path_raises_before_creating_a_bucket(self, disable_limiter, disable_repo):
         # No bucket exists, so the fast-path guard cannot fire.
         await disable_repo.set_resource_defaults(
             "gpt-4", [Limit.per_minute("rpm", 100)], disabled=True
@@ -1463,11 +1460,9 @@ immediately after the parent-compensation block and **before** the wcu shard-dou
 branch (between the current lines 737 and 739):
 
 ```python
-            # Disabled: no shard retry or doubling can help (ADR-125).
-            if result.failure_reason == SpeculativeFailureReason.DISABLED:
-                raise ResourceDisabled(
-                    entity_id=entity_id, resource=resource, level="bucket"
-                )
+# Disabled: no shard retry or doubling can help (ADR-125).
+if result.failure_reason == SpeculativeFailureReason.DISABLED:
+    raise ResourceDisabled(entity_id=entity_id, resource=resource, level="bucket")
 ```
 
 Add `ResourceDisabled` to the existing `from .exceptions import (...)` block in `limiter.py`.
@@ -1478,14 +1473,12 @@ In `_handle_nested_parent_failure`, after the existing child-compensation call (
 child's tokens are returned before the exception propagates), add:
 
 ```python
-        if (
-            result.parent_result is not None
-            and result.parent_result.failure_reason == SpeculativeFailureReason.DISABLED
-        ):
-            assert result.parent_id is not None
-            raise ResourceDisabled(
-                entity_id=result.parent_id, resource=resource, level="bucket"
-            )
+if (
+    result.parent_result is not None
+    and result.parent_result.failure_reason == SpeculativeFailureReason.DISABLED
+):
+    assert result.parent_id is not None
+    raise ResourceDisabled(entity_id=result.parent_id, resource=resource, level="bucket")
 ```
 
 - [ ] **Step 8: Add the slow-path gate**
@@ -1494,13 +1487,11 @@ In `_do_acquire`, immediately after `child_limits` are resolved (around line 121
 **before** any bucket is fetched or created, add:
 
 ```python
-        # Slow path gate (ADR-125). Covers first acquire — no bucket exists yet,
-        # so the fast-path guard cannot fire — and every fallback path.
-        disabled, level = await self._repository.resolve_disabled(entity_id, resource)
-        if disabled:
-            raise ResourceDisabled(
-                entity_id=entity_id, resource=resource, level=level or "resource"
-            )
+# Slow path gate (ADR-125). Covers first acquire — no bucket exists yet,
+# so the fast-path guard cannot fire — and every fallback path.
+disabled, level = await self._repository.resolve_disabled(entity_id, resource)
+if disabled:
+    raise ResourceDisabled(entity_id=entity_id, resource=resource, level=level or "resource")
 ```
 
 Apply the same check for `parent_id` in `_acquire_parent_slow_path` before consuming from
@@ -1578,13 +1569,9 @@ async def test_fanout_covers_every_shard(localstack_limiter, test_repo):
             pass
 
 
-async def test_first_acquire_on_disabled_resource_creates_no_bucket(
-    localstack_limiter, test_repo
-):
+async def test_first_acquire_on_disabled_resource_creates_no_bucket(localstack_limiter, test_repo):
     """The slow-path gate must fire before a bucket is created."""
-    await test_repo.set_resource_defaults(
-        "gpt-4", [Limit.per_minute("rpm", 100)], disabled=True
-    )
+    await test_repo.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 100)], disabled=True)
     with pytest.raises(ResourceDisabled):
         async with localstack_limiter.acquire("brand-new", "gpt-4", {"rpm": 1}):
             pass
@@ -1592,9 +1579,7 @@ async def test_first_acquire_on_disabled_resource_creates_no_bucket(
     assert await test_repo.get_buckets("brand-new") == []
 
 
-async def test_carve_out_survives_resource_disable_across_shards(
-    localstack_limiter, test_repo
-):
+async def test_carve_out_survives_resource_disable_across_shards(localstack_limiter, test_repo):
     """An entity-level enable must not be stamped by a resource-level disable."""
     await test_repo.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 1000)])
     await test_repo.set_limits(
@@ -1838,9 +1823,7 @@ class TestManifestDisabled:
         m = LimitsManifest.from_dict(
             {
                 "namespace": "default",
-                "resources": {
-                    "gpt-4": {"disabled": True, "limits": {"rpm": {"capacity": 10}}}
-                },
+                "resources": {"gpt-4": {"disabled": True, "limits": {"rpm": {"capacity": 10}}}},
             }
         )
         assert m.resources["gpt-4"].disabled is True

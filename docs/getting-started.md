@@ -81,10 +81,12 @@ For production, configure limits once and keep application code simple.
     repo = await Repository.open()
     limiter = RateLimiter(repository=repo)
 
-    await limiter.set_system_defaults(limits=[
-        Limit.per_minute("rpm", 1000),
-        Limit.per_minute("tpm", 100000),
-    ])
+    await limiter.set_system_defaults(
+        limits=[
+            Limit.per_minute("rpm", 1000),
+            Limit.per_minute("tpm", 100000),
+        ]
+    )
     ```
 
 **Step 2: Use in your application**
@@ -238,7 +240,7 @@ Each entity has **separate buckets per resource**. A user rate limited on `"gpt-
 # User 123 accessing GPT-4 - tracked separately from GPT-3.5
 async with limiter.acquire(
     entity_id="user-123",
-    resource="gpt-4",        # Bucket: user-123 + gpt-4
+    resource="gpt-4",  # Bucket: user-123 + gpt-4
     consume={"rpm": 1},
     limits=[Limit.per_minute("rpm", 10)],
 ) as lease:

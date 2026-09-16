@@ -2310,11 +2310,11 @@ NY = ZoneInfo("America/New_York")
 TUE_1400 = int(datetime(2026, 9, 15, 14, 0, tzinfo=NY).timestamp() * 1000)
 # Business hours at half rate. The window closes at 18:00 local.
 BUSINESS = (ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.5),)
-BUSINESS_COMPACT = "h9-17w1-5s500"
+BUSINESS_COMPACT = "1h9-17w1-5s500"
 # The 14:00 hour at a quarter rate. Its window closes at 15:00 local — three
 # hours *before* BUSINESS does, which is what makes it useful as an override.
 HOUR_14 = (ScheduleEntry(cron="* 14 * * *", tz="America/New_York", scale=0.25),)
-HOUR_14_COMPACT = "h14s250"
+HOUR_14_COMPACT = "1h14s250"
 # What comes back off the wire. `decode` normalises weekday names to numbers
 # (Task 5), so `MON-FRI` round-trips as `1-5` — the same schedule, spelled
 # canonically. Comparing against the literal above would be asserting that
@@ -2697,7 +2697,7 @@ class TestUndecodableSchedule:
         assert parsed.limits["rpm"].tc_delta == 10_000_000  # usage data still usable
 
     def test_usage_deltas_are_still_extracted(self) -> None:
-        deltas = extract_deltas(_sched_record(limits=self.LIMITS, sched="h99-nope"))
+        deltas = extract_deltas(_sched_record(limits=self.LIMITS, sched="1h99-nope"))
         assert [d.tokens_delta for d in deltas] == [10_000_000]
 
     def test_refill_is_skipped_entirely(self) -> None:
@@ -2790,7 +2790,7 @@ class TestShardCloneRespectsSchedule:
 # ---------------------------------------------------------------------------
 
 DAILY_RESET = (ScheduleEntry.reset(cron="0 0 * * *", tz="America/New_York"),)
-DAILY_RESET_COMPACT = "m0h0"
+DAILY_RESET_COMPACT = "1m0h0"
 
 WED_0030 = int(datetime(2026, 9, 16, 0, 30, tzinfo=NY).timestamp() * 1000)
 TUE_2300 = int(datetime(2026, 9, 15, 23, 0, tzinfo=NY).timestamp() * 1000)
@@ -3036,7 +3036,7 @@ class TestResetSchedIsCarriedFromTheStreamImage:
         record = _sched_record(
             limits=self.QUOTA,
             rf_ms=TUE_2300,
-            rsched="m0h0w0",  # Sunday only
+            rsched="1m0h0w0",  # Sunday only
             limit_rsched={"rpd": DAILY_RESET_COMPACT},
         )
         parsed = _parse_bucket_record(record)
@@ -3044,7 +3044,7 @@ class TestResetSchedIsCarriedFromTheStreamImage:
         assert parsed.limits["rpd"].reset_sched == decode_reset(
             DAILY_RESET_COMPACT, "America/New_York"
         )
-        assert parsed.reset_sched == decode_reset("m0h0w0", "America/New_York")
+        assert parsed.reset_sched == decode_reset("1m0h0w0", "America/New_York")
 
     def test_no_rsched_leaves_both_tuples_empty(self) -> None:
         """Discriminates the two above: the overwhelming majority of items."""
