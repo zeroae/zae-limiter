@@ -198,3 +198,7 @@ nav:
           - ADR-125 Resource and Entity Disable: adr/125-resource-disable.md
           - ADR-133 Client-Side Shard Creation: adr/133-client-shard-creation.md
           - ADR-134 Random Shard Selection: adr/134-random-shard-selection.md
+          - ADR-135 Scheduled limits are resolved at read time: adr/135-scheduled-limits.md
+          - ADR-136 Entity Configuration Determines Bucket TTL: adr/136-entity-config-bucket-ttl.md
+          - ADR-137 A limit drips or resets, never both: adr/137-reset-replaces-drip.md
+          - ADR-138 Calendar reset covers fixed windows only: adr/138-fixed-reset-windows-only.md
