@@ -164,7 +164,10 @@ Limit.quota("daily", 10_000, cron="0 0 * * *", tz="America/New_York")     # loca
 ```
 
 A quota has no refill rate: a limit either drips or resets, never both
-([ADR-137](../adr/137-reset-replaces-drip.md)).
+([ADR-137](../adr/137-reset-replaces-drip.md)). Pairing a positive `refill_amount` with a
+`reset_schedule` raises `ValueError` at construction, because the drip running underneath the
+reset hands back roughly twice the intended allowance each period. A zero rate with no reset is
+rejected too — that bucket could never recover.
 
 A reset fires on the **edge**, not across a window: it applies on the transition *into* matching,
 so `0 0 * * *` is right here even though the same expression would be a one-minute window as a
@@ -255,20 +258,19 @@ $ zae-limiter entity get-limits user-123 --resource gpt-4
 Limits for user-123 (gpt-4):
   rpm: 1,000/min
     Schedule:
-      * 9-17 * * MON-FRI  America/New_York  → 50%
-      * 0-6 * * *         America/New_York  → capacity 2000
-  rpd: 0/sec (burst: 10,000)
-    Reset:
-      0 0 * * *           America/New_York  → refill to capacity
+      "* 9-17 * * MON-FRI" America/New_York  → scale 50%
+      "* 0-6 * * *" America/New_York  → capacity 2,000
+  rpd: 10,000 quota (resets "0 0 * * *" America/New_York)
 ```
 
 !!! note "Weekdays and months display as names"
     A schedule written as `1-5` comes back as `MON-FRI`, and `1,7` as `JAN,JUL`. The meaning is
     identical — the stored form is canonical and renders with names for readability.
 
-!!! note "A quota shows a zero rate"
-    A quota has no refill rate, so its first line reads `0/sec` and the burst figure is the
-    allowance. The `Reset:` line underneath says when it comes back.
+!!! note "A quota renders as an allowance, not a rate"
+    A quota has no refill rate, so its line names the whole allowance and the cron that hands it
+    back. The indented `Schedule:` block is for windows that override parameters; a reset
+    overrides nothing, so it stays on the headline.
 
 ## What happens at a boundary
 
@@ -283,9 +285,10 @@ that is two such requests per bucket per day.
 
 Idle buckets do nothing at a boundary, correctly — they update on their next request.
 
-`RateLimitExceeded.retry_after_seconds` accounts for boundaries on a limit that drips: if the
-limit rises in ten minutes, the wait reflects that rather than assuming the current, lower rate
-holds forever. A **quota** is the exception — see the limitation below.
+`RateLimitExceeded.retry_after_seconds` walks boundaries rather than assuming the rate in force
+right now holds forever: if the limit rises in ten minutes, the wait reflects that. For a quota,
+which has no rate to divide by, the wait is the time to the next reset edge — exhaust a
+`0 0 * * *` quota at 18:00 in New York and it reports six hours.
 
 ## Limitations
 
@@ -295,11 +298,6 @@ holds forever. A **quota** is the exception — see the limitation below.
   caller's own activity is not supported; it may arrive in a later release
   ([ADR-138](../adr/138-fixed-reset-windows-only.md)). Note also that resetting every entity at
   the same instant concentrates load at the boundary.
-- **A quota reports no `retry_after_seconds`.** The wait estimate is computed from a refill
-  rate, and a quota has none, so an exhausted quota reports a wait of zero rather than the time
-  until its reset. Do not build a client backoff on it for a quota — compute the next reset
-  instant yourself. Tracked in
-  [#530](https://github.com/zeroae/zae-limiter/issues/530); limits that drip are unaffected.
 - **One time-varying mechanism per bucket.** A bucket uses cron scheduling or another dynamic
   mechanism, not both. This keeps "why is my limit this number" answerable.
 - **Extended cron syntax is not supported.** `L` (last), `W` (weekday) and `#` (nth weekday) are
