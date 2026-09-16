@@ -12,8 +12,12 @@ from typing import Any
 
 import boto3
 
+from zae_limiter.schedule import encode, encode_reset
 from zae_limiter.schema import (
     CONFIG_FIELD_DISABLED,
+    CONFIG_FIELD_SCHED_TZ,
+    LIMIT_FIELD_RSCHED,
+    LIMIT_FIELD_SCHED,
     limit_attr,
     pk_entity,
     pk_resource,
@@ -22,6 +26,7 @@ from zae_limiter.schema import (
 )
 
 from .differ import Change
+from .manifest import entries_from_manifest
 
 logger = logging.getLogger(__name__)
 
@@ -53,12 +58,66 @@ def _build_limit_item(
         for k, v in extra.items():
             item[k] = v
 
+    # Raises before anything is written, so a rejected item is never
+    # half-serialized — mirroring `Repository._serialize_composite_limits`.
+    hoisted_tz = _hoisted_timezone(limits)
+
     for name, decl in limits.items():
         item[limit_attr(name, "cp")] = {"N": str(decl["capacity"])}
         item[limit_attr(name, "ra")] = {"N": str(decl["refill_amount"])}
         item[limit_attr(name, "rp")] = {"N": str(decl["refill_period"])}
+        # #222: manifests learned to express schedules in #543, and without
+        # this leg the schedule reached the bucket fan-out but never the config
+        # item — so it survived only until a bucket expired and was recreated
+        # from config, unscheduled and silently. Written only when declared:
+        # config items are full-replace `PutItem`, so absence is both "no
+        # schedule" and how one is removed.
+        for attr_field, entries, encoder in (
+            (LIMIT_FIELD_SCHED, entries_from_manifest(decl.get("schedule"), reset=False), encode),
+            (
+                LIMIT_FIELD_RSCHED,
+                entries_from_manifest(decl.get("reset_schedule"), reset=True),
+                encode_reset,
+            ),
+        ):
+            if entries:
+                item[limit_attr(name, attr_field)] = {"S": encoder(entries)[0]}
+
+    if hoisted_tz is not None:
+        item[CONFIG_FIELD_SCHED_TZ] = {"S": hoisted_tz}
 
     return item
+
+
+def _hoisted_timezone(limits: dict[str, Any]) -> str | None:
+    """The one timezone every schedule on this config item shares (#222 §4.1).
+
+    ``sched_tz`` is a single item-level attribute covering **both** tuples, so
+    an item cannot carry two. Silently keeping the first limit's zone would
+    reinterpret the second limit's cron in the wrong one — a New York daily
+    quota read as UTC resets at 19:00 local, forever, with no error anywhere.
+
+    Returns None when nothing on the item is scheduled.
+
+    Raises:
+        ValueError: the scheduled limits disagree. ``apply_changes`` records it
+            against that change rather than writing a wrong item.
+    """
+    zones = {
+        entry.tz
+        for decl in limits.values()
+        for entry in (
+            *entries_from_manifest(decl.get("schedule"), reset=False),
+            *entries_from_manifest(decl.get("reset_schedule"), reset=True),
+        )
+    }
+    if len(zones) > 1:
+        raise ValueError(
+            f"all scheduled limits on one config item must share a timezone, got "
+            f"{sorted(zones)}. The timezone is stored once per item as `sched_tz`, "
+            f"not per limit."
+        )
+    return zones.pop() if zones else None
 
 
 def apply_changes(

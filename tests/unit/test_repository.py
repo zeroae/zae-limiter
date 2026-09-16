@@ -9,15 +9,25 @@ import pytest
 from botocore.exceptions import ClientError
 
 from zae_limiter import AuditAction, Limit
-from zae_limiter.exceptions import EntityExistsError, InvalidIdentifierError
+from zae_limiter.exceptions import (
+    EntityExistsError,
+    InvalidIdentifierError,
+    RateLimiterUnavailable,
+)
 from zae_limiter.models import BucketState
 from zae_limiter.repository import Repository
 from zae_limiter.repository_protocol import SpeculativeFailureReason
 from zae_limiter.schedule import ScheduleEntry
 from zae_limiter.schema import (
     BUCKET_FIELD_DISABLED,
+    BUCKET_FIELD_RSCHED,
+    BUCKET_FIELD_SCHED,
+    BUCKET_FIELD_SCHED_TZ,
     BUCKET_FIELD_TK,
     BUCKET_FIELD_VU,
+    BUCKET_SCHED_NONE,
+    CONFIG_FIELD_SCHED_TZ,
+    LIMIT_FIELD_RSCHED,
     WCU_LIMIT_NAME,
     bucket_attr,
     calculate_bucket_ttl,
@@ -4780,15 +4790,22 @@ class TestStaleLimitAliasesAreExpressionSafe:
             for bad in self.ILLEGAL_IN_ALIAS:
                 assert bad not in alias, f"{alias!r} is not a legal expression alias"
         # The aliases must still resolve to the right attributes. The stale
-        # names lose their schedule override along with everything else, and
-        # the unscheduled `else` branch clears the item-level `sched` pair
-        # plus the surviving limit's own override (#222 Task 13).
+        # names lose both schedule overrides along with everything else, and
+        # the unscheduled branch clears the item-level `sched` / `rsched` pair
+        # and `sched_tz` plus the surviving limit's own overrides (#222 Task
+        # 13 for `sched`, surface Task 4 for `rsched`).
         removed = {names[alias] for alias in aliases}
         assert removed == {
             bucket_attr(name, field)
             for name in ("req-min", "tok.sec")
-            for field in ("tk", "cp", "ra", "rp", "tc", "sched")
-        } | {"sched", "sched_tz", bucket_attr("rpm", "sched")}
+            for field in ("tk", "cp", "ra", "rp", "tc", "sched", "rsched")
+        } | {
+            "sched",
+            "rsched",
+            "sched_tz",
+            bucket_attr("rpm", "sched"),
+            bucket_attr("rpm", "rsched"),
+        }
 
     @pytest.mark.asyncio
     async def test_scoped_reconcile_with_a_hyphenated_stale_name(self, repo):
@@ -5319,12 +5336,16 @@ class TestCreateStampsSchedule:
         assert bucket_attr("tpm", "sched") not in item
         assert item[bucket_attr("cpm", "sched")]["S"] == "h0-6s250"
 
-    def test_an_unscheduled_limit_beside_a_scheduled_one_gets_no_override(self, repo):
-        """Absence means "use the item default", so an unscheduled limit on a
-        scheduled item would silently inherit the schedule. Recorded rather
-        than fixed here: §4.1 has no encoding for "explicitly unscheduled",
-        and the config hierarchy makes the mix unreachable through
-        ``set_limits``."""
+    def test_an_unscheduled_limit_beside_a_scheduled_one_is_marked_unscheduled(self, repo):
+        """#541. Absence means "use the item default", so an unscheduled limit
+        on a scheduled item silently inherited the schedule until §4.1 grew an
+        encoding for "explicitly unscheduled" (``BUCKET_SCHED_NONE``).
+
+        The mix is reachable through ``set_limits``, contrary to the claim this
+        test used to carry: ``models.hoisted_schedule_timezone`` documents that
+        "limits without one do not vote", so an unscheduled limit clears the one
+        write-time check a mixed list has to pass, and the config hierarchy
+        resolves the whole list from one level."""
         item = self._item(
             repo,
             [
@@ -5332,7 +5353,10 @@ class TestCreateStampsSchedule:
                 Limit.per_minute("tpm", 5000),
             ],
         )
-        assert bucket_attr("tpm", "sched") not in item
+        assert item[bucket_attr("tpm", "sched")]["S"] == BUCKET_SCHED_NONE
+        # ...and the scheduled limit that supplied the default still needs no
+        # copy of its own, so this is not "an override for every limit".
+        assert bucket_attr("rpm", "sched") not in item
 
     def test_rejects_limits_that_disagree_on_timezone(self, repo):
         """``sched_tz`` is one attribute per item, so keeping the first limit's
@@ -5613,7 +5637,12 @@ class TestFanOutStampsSchedule:
     @pytest.mark.asyncio
     async def test_a_limit_that_loses_its_schedule_beside_one_that_keeps_it(self, repo):
         """The other direction into the same trap: the item stays scheduled,
-        so the `else` branch's blanket REMOVE never runs."""
+        so the `else` branch's blanket REMOVE never runs.
+
+        The superseded `b_tpm_sched` is replaced rather than removed (#541):
+        removal would put `tpm` back on the item default, which is exactly the
+        schedule it just lost. `BUCKET_SCHED_NONE` is the only value that says
+        "unscheduled" without saying "inherit"."""
         await repo.create_entity("fan-drop")
         await self._seed(
             repo,
@@ -5641,7 +5670,9 @@ class TestFanOutStampsSchedule:
 
         item = await self._raw(repo, "fan-drop", "gpt-4")
         assert item["sched"]["S"] == "h9-17w1-5s500"
-        assert bucket_attr("tpm", "sched") not in item
+        assert item[bucket_attr("tpm", "sched")]["S"] == BUCKET_SCHED_NONE
+        buckets = {b.limit_name: b for b in repo._deserialize_composite_bucket(item)}
+        assert buckets["tpm"].sched == ()
 
     @pytest.mark.asyncio
     async def test_a_stale_limits_schedule_override_is_removed_with_it(self, repo):
@@ -5885,3 +5916,882 @@ class TestAggregatorCannotRefillPastAFanOut:
         assert try_refill_bucket(self._table(repo), image, now_ms + 60_000) is True
         item = await self._raw(repo, "quiet-img")
         assert item[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"] == "1000000"
+
+
+class TestQuotaConfigRoundTrip:
+    """A quota written through `set_limits` must come back (#538).
+
+    `Limit.quota()` shipped in #531 with no storage leg, so
+    `_serialize_composite_limits` dropped `reset_schedule` and the next read
+    rebuilt a `Limit` with `refill_amount=0` and no reset — which is exactly
+    what `Limit.__post_init__` rejects. The config item was poisoned by the
+    write and every later read raised.
+    """
+
+    QUOTA = Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York")
+
+    async def test_entity_quota_survives_set_and_get(self, repo):
+        await repo.set_limits("quota-1", [self.QUOTA], resource="gpt-4")
+        (stored,) = await repo.get_limits("quota-1", resource="gpt-4")
+        assert stored == self.QUOTA
+
+    async def test_resource_quota_survives_set_and_get(self, repo):
+        await repo.set_resource_defaults("gpt-4", [self.QUOTA])
+        (stored,) = await repo.get_resource_defaults("gpt-4")
+        assert stored == self.QUOTA
+
+    async def test_system_quota_survives_set_and_get(self, repo):
+        await repo.set_system_defaults([self.QUOTA])
+        stored_limits, _on_unavailable = await repo.get_system_defaults()
+        assert stored_limits == [self.QUOTA]
+
+    async def test_resolve_limits_returns_the_reset_schedule(self, repo):
+        """The read `acquire()`'s slow path actually uses. Without this leg
+        `resolve_limits()` raises, and before #531 it would have silently
+        returned a quota with no reset for Task 3's reset to never fire on."""
+        await repo.set_limits("quota-2", [self.QUOTA], resource="gpt-4")
+        limits, _on_unavailable, source = await repo.resolve_limits("quota-2", "gpt-4")
+        assert source == "entity"
+        assert limits == [self.QUOTA]
+
+
+class TestResetScheduleReachesStorage:
+    """`rsched` on config and bucket items (#222 §3.6, §4.1, surface Task 4)."""
+
+    RESET = (ScheduleEntry.reset(cron="0 0 * * *", tz="America/New_York"),)
+    QUOTA = Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York")
+
+    @staticmethod
+    async def _raw_config(repo, entity_id, resource):
+        from zae_limiter import schema
+
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_entity(repo._namespace_id, entity_id)},
+                "SK": {"S": schema.sk_config(resource)},
+            },
+        )
+        return response.get("Item") or {}
+
+    @staticmethod
+    async def _raw_bucket(repo, entity_id, resource, shard=0):
+        from zae_limiter import schema
+
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, resource, shard)},
+                "SK": {"S": schema.sk_state()},
+            },
+        )
+        return response.get("Item") or {}
+
+    @staticmethod
+    async def _seed_bucket(repo, entity_id, resource, limits):
+        now_ms = int(time.time() * 1000)
+        states = [BucketState.from_limit(entity_id, resource, lim, now_ms) for lim in limits]
+        await repo.transact_write(
+            [repo.build_composite_create(entity_id, resource, states, now_ms)]
+        )
+
+    # -- config item -------------------------------------------------------
+
+    async def test_config_round_trips_the_reset_schedule(self, repo):
+        """Without this leg `resolve_limits()` cannot return a quota at all."""
+        await repo.set_limits("rs-1", [self.QUOTA], resource="gpt-4")
+        (stored,) = await repo.get_limits("rs-1", resource="gpt-4")
+        assert stored.reset_schedule == self.RESET
+
+    async def test_config_stores_the_compact_form_under_its_own_attribute(self, repo):
+        """`rsched`, not a tag inside `sched` (§4.1), and four bytes."""
+        await repo.set_limits("rs-2", [self.QUOTA], resource="gpt-4")
+        item = await self._raw_config(repo, "rs-2", "gpt-4")
+
+        assert item[limit_attr("rpd", LIMIT_FIELD_RSCHED)]["S"] == "m0h0"
+        assert limit_attr("rpd", "sched") not in item
+        assert item[CONFIG_FIELD_SCHED_TZ]["S"] == "America/New_York"
+
+    async def test_a_reset_only_limit_still_writes_the_timezone(self, repo):
+        """The hoisting trap: a quota carries no parameter schedule, so a
+        `sched_tz` derived from `schedule` alone would be absent and the reset
+        would decode as UTC — a New York midnight quota resetting at 19:00."""
+        await repo.set_limits("rs-2b", [self.QUOTA], resource="gpt-4")
+        (stored,) = await repo.get_limits("rs-2b", resource="gpt-4")
+        assert stored.reset_schedule[0].tz == "America/New_York"
+
+    async def test_both_tuples_on_one_limit_round_trip(self, repo):
+        """§1.7: a quota may carry a parameter schedule too. Two attributes,
+        one shared `sched_tz`."""
+        sched = (ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", scale=0.5),)
+        await repo.set_limits("rs-2c", [self.QUOTA.with_schedule(sched)], resource="gpt-4")
+        item = await self._raw_config(repo, "rs-2c", "gpt-4")
+
+        assert item[limit_attr("rpd", "sched")]["S"] == "h0-6s500"
+        assert item[limit_attr("rpd", LIMIT_FIELD_RSCHED)]["S"] == "m0h0"
+        assert item[CONFIG_FIELD_SCHED_TZ]["S"] == "America/New_York"
+
+        (stored,) = await repo.get_limits("rs-2c", resource="gpt-4")
+        assert stored.schedule == sched
+        assert stored.reset_schedule == self.RESET
+
+    async def test_two_limits_one_quota_one_drip(self, repo):
+        """Many limits per item: each gets its own `l_{name}_rsched`, and the
+        drip gets none."""
+        await repo.set_limits("rs-2d", [Limit.per_minute("rpm", 100), self.QUOTA], resource="gpt-4")
+        item = await self._raw_config(repo, "rs-2d", "gpt-4")
+        assert item[limit_attr("rpd", LIMIT_FIELD_RSCHED)]["S"] == "m0h0"
+        assert limit_attr("rpm", LIMIT_FIELD_RSCHED) not in item
+
+        by_name = {lim.name: lim for lim in await repo.get_limits("rs-2d", resource="gpt-4")}
+        assert by_name["rpd"].reset_schedule == self.RESET
+        assert by_name["rpm"].reset_schedule == ()
+
+    async def test_many_entries_in_one_reset_tuple_round_trip(self, repo):
+        many = (
+            ScheduleEntry.reset("0 0 1 * *", "America/New_York"),
+            ScheduleEntry.reset("0 12 15 * *", "America/New_York"),
+        )
+        await repo.set_limits("rs-2e", [self.QUOTA.with_reset_schedule(many)], resource="gpt-4")
+        item = await self._raw_config(repo, "rs-2e", "gpt-4")
+        assert item[limit_attr("rpd", LIMIT_FIELD_RSCHED)]["S"] == "m0h0D1;m0h12D15"
+
+        (stored,) = await repo.get_limits("rs-2e", resource="gpt-4")
+        assert stored.reset_schedule == many
+
+    async def test_replacing_a_quota_with_a_drip_removes_it(self, repo):
+        """All three setters are full-replace PutItems, so an omitted attribute
+        disappears — confirmed, not assumed."""
+        await repo.set_limits("rs-3", [self.QUOTA], resource="gpt-4")
+        await repo.set_limits("rs-3", [Limit.per_day("rpd", 10_000)], resource="gpt-4")
+
+        (stored,) = await repo.get_limits("rs-3", resource="gpt-4")
+        assert stored.reset_schedule == ()
+        assert LIMIT_FIELD_RSCHED not in str(await self._raw_config(repo, "rs-3", "gpt-4"))
+
+    async def test_resource_and_system_levels_round_trip_too(self, repo):
+        """All three config levels share one serialiser, but only one of them
+        is exercised by the entity tests above."""
+        await repo.set_resource_defaults("gpt-4", [self.QUOTA])
+        await repo.set_system_defaults([self.QUOTA])
+
+        (from_resource,) = await repo.get_resource_defaults("gpt-4")
+        system_limits, _on_unavailable = await repo.get_system_defaults()
+        assert from_resource.reset_schedule == self.RESET
+        assert system_limits[0].reset_schedule == self.RESET
+
+    # -- bucket items ------------------------------------------------------
+
+    async def test_a_created_bucket_carries_the_stamp(self, repo):
+        """Both refillers read the schedules off the item, so a quota bucket
+        born without `rsched` has `refill_amount = 0` and nothing to restore
+        it — the one shape that can never recover."""
+        await self._seed_bucket(repo, "rs-6", "gpt-4", [self.QUOTA])
+        item = await self._raw_bucket(repo, "rs-6", "gpt-4")
+
+        assert item[BUCKET_FIELD_RSCHED]["S"] == "m0h0"
+        assert item[BUCKET_FIELD_SCHED_TZ]["S"] == "America/New_York"
+        assert BUCKET_FIELD_SCHED not in item, "a quota carries no parameter schedule"
+
+    async def test_a_created_bucket_carries_both_stamps(self, repo):
+        sched = (ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", scale=0.5),)
+        await self._seed_bucket(repo, "rs-6b", "gpt-4", [self.QUOTA.with_schedule(sched)])
+        item = await self._raw_bucket(repo, "rs-6b", "gpt-4")
+
+        assert item[BUCKET_FIELD_SCHED]["S"] == "h0-6s500"
+        assert item[BUCKET_FIELD_RSCHED]["S"] == "m0h0"
+        assert item[BUCKET_FIELD_SCHED_TZ]["S"] == "America/New_York"
+
+    async def test_a_created_bucket_writes_a_per_limit_override(self, repo):
+        """Two limits resetting on different calendars: the first becomes the
+        item default and the second gets `b_{name}_rsched` (§4.1)."""
+        weekly = Limit.quota("rpw", 50_000, cron="0 0 * * SUN", tz="America/New_York")
+        await self._seed_bucket(repo, "rs-6c", "gpt-4", [self.QUOTA, weekly])
+        item = await self._raw_bucket(repo, "rs-6c", "gpt-4")
+
+        assert item[BUCKET_FIELD_RSCHED]["S"] == "m0h0"
+        assert item[bucket_attr("rpw", BUCKET_FIELD_RSCHED)]["S"] == "m0h0w7"
+        assert bucket_attr("rpd", BUCKET_FIELD_RSCHED) not in item
+
+    async def test_an_unscheduled_bucket_carries_neither(self, repo):
+        await self._seed_bucket(repo, "rs-6d", "gpt-4", [Limit.per_minute("rpm", 100)])
+        item = await self._raw_bucket(repo, "rs-6d", "gpt-4")
+        assert BUCKET_FIELD_RSCHED not in item
+        assert BUCKET_FIELD_SCHED_TZ not in item
+
+    async def test_the_fan_out_stamps_rsched_on_an_existing_bucket(self, repo):
+        await repo.create_entity("rs-4")
+        await repo.set_limits("rs-4", [Limit.per_day("rpd", 10_000)], resource="gpt-4")
+        await self._seed_bucket(repo, "rs-4", "gpt-4", [Limit.per_day("rpd", 10_000)])
+
+        await repo.set_limits("rs-4", [self.QUOTA], resource="gpt-4")
+
+        item = await self._raw_bucket(repo, "rs-4", "gpt-4")
+        assert item[BUCKET_FIELD_RSCHED]["S"] == "m0h0"
+        assert item[BUCKET_FIELD_SCHED_TZ]["S"] == "America/New_York"
+
+    async def test_removing_a_reset_schedule_removes_the_stamp(self, repo):
+        """Override, not merge (§1.6): dropping a reset must clear the item, or
+        the bucket keeps resetting after the operator stopped asking it to."""
+        await repo.create_entity("rs-5")
+        await repo.set_limits("rs-5", [self.QUOTA], resource="gpt-4")
+        await self._seed_bucket(repo, "rs-5", "gpt-4", [self.QUOTA])
+
+        await repo.set_limits("rs-5", [Limit.per_day("rpd", 10_000)], resource="gpt-4")
+
+        item = await self._raw_bucket(repo, "rs-5", "gpt-4")
+        assert BUCKET_FIELD_RSCHED not in item
+        assert BUCKET_FIELD_SCHED_TZ not in item
+
+    async def test_a_reset_only_fan_out_still_writes_sched_tz(self, repo):
+        """The #488 trap this task's restructure exists for. `sched_tz` is
+        shared by both tuples, so deciding it from the parameter branch alone
+        would REMOVE it here while `rsched` was SET — leaving the stored reset
+        to decode as UTC, or raising a ValidationException outright."""
+        await repo.create_entity("rs-5b")
+        await repo.set_limits("rs-5b", [Limit.per_day("rpd", 10_000)], resource="gpt-4")
+        await self._seed_bucket(repo, "rs-5b", "gpt-4", [Limit.per_day("rpd", 10_000)])
+
+        expr, names, _values = repo._build_bucket_param_update([self.QUOTA], None, None)
+        set_clause = expr.split("REMOVE")[0]
+        remove_clause = expr.split("REMOVE")[1] if "REMOVE" in expr else ""
+        tz_alias = next(alias for alias, attr in names.items() if attr == BUCKET_FIELD_SCHED_TZ)
+        assert tz_alias in set_clause
+        assert tz_alias not in remove_clause
+
+        await repo.set_limits("rs-5b", [self.QUOTA], resource="gpt-4")
+        item = await self._raw_bucket(repo, "rs-5b", "gpt-4")
+        assert item[BUCKET_FIELD_SCHED_TZ]["S"] == "America/New_York"
+
+    async def test_no_alias_is_both_set_and_removed(self, repo):
+        """#488: SET and REMOVE on one attribute in one expression is a
+        ValidationException. Checked across all four scheduled/unscheduled
+        combinations of the two tuples, since the aliases are shared."""
+        sched = (ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", scale=0.5),)
+        for limits in (
+            [Limit.per_minute("rpm", 100)],
+            [Limit.per_minute("rpm", 100).with_schedule(sched)],
+            [self.QUOTA],
+            [self.QUOTA.with_schedule(sched)],
+        ):
+            expr, _names, _values = repo._build_bucket_param_update(limits, None, {"gone"})
+            set_aliases = {
+                part.split("=")[0].strip()
+                for part in expr.split("REMOVE")[0].removeprefix("SET").split(",")
+            }
+            remove_aliases = {part.strip() for part in expr.split("REMOVE")[1].split(",")}
+            assert not (set_aliases & remove_aliases), (
+                f"{limits[0].name}: {set_aliases & remove_aliases}"
+            )
+
+
+class TestDeserialisedBucketsCarryBothSchedules:
+    """`_deserialize_composite_bucket` reads `sched` / `rsched` off the item.
+
+    Every `BucketState` the client builds from a stored item comes from here,
+    including the `ALL_OLD` / `ALL_NEW` images behind the speculative path. An
+    empty `sched` there makes every schedule-aware number computed from a
+    `BucketState` — the refill ceiling, `Limit.from_bucket_state`, the
+    rejection's `LimitStatus` — silently flat inside a window that has already
+    changed the parameters.
+
+    The slow path overwrites `state.sched` from the config it just resolved
+    (`_do_acquire`), which is the fresher of the two; these tests are about the
+    paths that have no config in hand.
+    """
+
+    NIGHT = (ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", scale=0.5),)
+    RESET = (ScheduleEntry.reset(cron="0 0 * * *", tz="America/New_York"),)
+    QUOTA = Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York")
+
+    @staticmethod
+    async def _seed(repo, entity_id, resource, limits):
+        """Write a real bucket item through the real create path."""
+        now_ms = int(time.time() * 1000)
+        states = [BucketState.from_limit(entity_id, resource, lim, now_ms) for lim in limits]
+        await repo.transact_write(
+            [repo.build_composite_create(entity_id, resource, states, now_ms)]
+        )
+
+    async def test_the_parameter_schedule_reaches_bucket_state(self, repo):
+        await repo.create_entity("ds-1")
+        limit = Limit.per_minute("rpm", 1000).with_schedule(self.NIGHT)
+        await self._seed(repo, "ds-1", "gpt-4", [limit])
+
+        (bucket,) = [
+            b for b in await repo.get_buckets("ds-1", resource="gpt-4") if b.limit_name == "rpm"
+        ]
+        assert bucket.sched == self.NIGHT
+
+    async def test_the_reset_schedule_reaches_bucket_state(self, repo):
+        """The second tuple decodes independently of the first, and a quota
+        carries only this one."""
+        await repo.create_entity("ds-2")
+        await self._seed(repo, "ds-2", "gpt-4", [self.QUOTA])
+
+        (bucket,) = [
+            b for b in await repo.get_buckets("ds-2", resource="gpt-4") if b.limit_name == "rpd"
+        ]
+        assert bucket.reset_sched == self.RESET
+        assert bucket.sched == ()
+
+    async def test_both_tuples_on_one_limit(self, repo):
+        await repo.create_entity("ds-3")
+        await self._seed(repo, "ds-3", "gpt-4", [self.QUOTA.with_schedule(self.NIGHT)])
+
+        (bucket,) = [
+            b for b in await repo.get_buckets("ds-3", resource="gpt-4") if b.limit_name == "rpd"
+        ]
+        assert bucket.sched == self.NIGHT
+        assert bucket.reset_sched == self.RESET
+
+    async def test_a_per_limit_override_beats_the_item_default(self, repo):
+        """Absence means "inherit"; `b_{name}_sched` is written only where a
+        limit differs from the item default. Reading the default for every
+        limit would refill the overridden one at the wrong rate — over-refilling
+        whenever the override is the tighter of the two."""
+        tighter = (ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", scale=0.25),)
+        await repo.create_entity("ds-4")
+        await self._seed(
+            repo,
+            "ds-4",
+            "gpt-4",
+            [
+                Limit.per_minute("rpm", 1000).with_schedule(self.NIGHT),
+                Limit.per_minute("tpm", 100_000).with_schedule(tighter),
+            ],
+        )
+
+        by_name = {b.limit_name: b for b in await repo.get_buckets("ds-4", resource="gpt-4")}
+        assert by_name["rpm"].sched == self.NIGHT
+        assert by_name["tpm"].sched == tighter
+
+    async def test_a_per_limit_reset_override_beats_the_item_default(self, repo):
+        # `7`, not `SUN`: the compact form normalises names to numbers so that
+        # re-encoding a decoded schedule is byte-identical (`schedule.encode`).
+        weekly = (ScheduleEntry.reset(cron="0 0 * * 7", tz="America/New_York"),)
+        await repo.create_entity("ds-5")
+        await self._seed(
+            repo,
+            "ds-5",
+            "gpt-4",
+            [self.QUOTA, Limit.quota("rpw", 50_000, cron="0 0 * * SUN", tz="America/New_York")],
+        )
+
+        by_name = {b.limit_name: b for b in await repo.get_buckets("ds-5", resource="gpt-4")}
+        assert by_name["rpd"].reset_sched == self.RESET
+        assert by_name["rpw"].reset_sched == weekly
+
+    async def test_an_unscheduled_item_yields_empty_tuples(self, repo):
+        """Discriminates against "always return the item default": every bucket
+        written before scheduling existed must still deserialise to `()`, not
+        to a UTC schedule invented from a missing attribute."""
+        await repo.create_entity("ds-6")
+        await self._seed(repo, "ds-6", "gpt-4", [Limit.per_minute("rpm", 1000)])
+
+        for bucket in await repo.get_buckets("ds-6", resource="gpt-4"):
+            assert bucket.sched == ()
+            assert bucket.reset_sched == ()
+
+    async def test_wcu_never_carries_the_item_schedule(self, repo):
+        """`wcu` tracks partition write pressure, not a user limit. Scaling it
+        by a 0.5x window would halve the write ceiling on exactly the hot
+        buckets sharding exists to protect (#519 is the aggregator's version of
+        that bug). The user limit on the same item still gets it, so this
+        discriminates against "never attach a schedule at all"."""
+        await repo.create_entity("ds-7")
+        await self._seed(
+            repo, "ds-7", "gpt-4", [Limit.per_minute("rpm", 1000).with_schedule(self.NIGHT)]
+        )
+
+        buckets = repo._deserialize_composite_bucket(await self._raw_item(repo, "ds-7", "gpt-4"))
+        by_name = {b.limit_name: b for b in buckets}
+        assert by_name[WCU_LIMIT_NAME].sched == ()
+        assert by_name[WCU_LIMIT_NAME].reset_sched == ()
+        assert by_name["rpm"].sched == self.NIGHT
+
+    async def test_an_unscheduled_limit_does_not_inherit_the_item_default(self, repo):
+        """#541. "Unscheduled" and "same as the default" used to be the same
+        byte pattern — absence — so this reader gave an unscheduled limit a
+        window it never declared. The writer now spells the first case
+        ``BUCKET_SCHED_NONE``; this reader honours it, and the aggregator's
+        parser applies the identical rule."""
+        await repo.create_entity("ds-8")
+        await self._seed(
+            repo,
+            "ds-8",
+            "gpt-4",
+            [Limit.per_minute("rpm", 1000).with_schedule(self.NIGHT), Limit.per_minute("tpm", 10)],
+        )
+
+        by_name = {b.limit_name: b for b in await repo.get_buckets("ds-8", resource="gpt-4")}
+        assert by_name["tpm"].sched == ()
+        # The scheduled limit on the same item still gets it, so this does not
+        # pass by never attaching a schedule at all.
+        assert by_name["rpm"].sched == self.NIGHT
+
+    async def test_the_speculative_failure_image_carries_the_schedule(self, repo):
+        """The path that matters most: a fast rejection builds its statuses
+        from these states and has no config in hand."""
+        await repo.create_entity("ds-9")
+        limit = Limit.per_minute("rpm", 10).with_schedule(self.NIGHT)
+        await self._seed(repo, "ds-9", "gpt-4", [limit])
+
+        result = await repo.speculative_consume("ds-9", "gpt-4", {"rpm": 5_000}, shard_id=0)
+        assert result.success is False
+        by_name = {b.limit_name: b for b in result.old_buckets}
+        assert by_name["rpm"].sched == self.NIGHT
+
+    async def test_the_speculative_success_image_carries_the_schedule(self, repo):
+        await repo.create_entity("ds-10")
+        limit = Limit.per_minute("rpm", 1000).with_schedule(self.NIGHT)
+        await self._seed(repo, "ds-10", "gpt-4", [limit])
+
+        result = await repo.speculative_consume("ds-10", "gpt-4", {"rpm": 1}, shard_id=0)
+        assert result.success is True
+        by_name = {b.limit_name: b for b in result.buckets}
+        assert by_name["rpm"].sched == self.NIGHT
+
+    async def test_the_timezone_comes_from_the_item_not_utc(self, repo):
+        """`sched_tz` is hoisted once per item. Defaulting to UTC when it is
+        present would shift every window by the offset — silent, and wrong by
+        five hours here."""
+        await repo.create_entity("ds-11")
+        await self._seed(
+            repo, "ds-11", "gpt-4", [Limit.per_minute("rpm", 1000).with_schedule(self.NIGHT)]
+        )
+
+        by_name = {b.limit_name: b for b in await repo.get_buckets("ds-11", resource="gpt-4")}
+        assert by_name["rpm"].sched[0].tz == "America/New_York"
+
+    @staticmethod
+    async def _raw_item(repo, entity_id, resource, shard=0):
+        from zae_limiter import schema
+
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, resource, shard)},
+                "SK": {"S": schema.sk_state()},
+            },
+        )
+        return response.get("Item") or {}
+
+
+async def _corrupt_config_sched(repo, entity_id, resource, limit_name, value, field="sched"):
+    """Overwrite one stored schedule attribute with an undecodable string.
+
+    No public API can produce one — `set_limits` encodes from a validated
+    `Limit` — so the only way to reach the read path's failure branch is to
+    write the attribute directly, exactly as a newer client or a corrupted
+    write would leave it.
+    """
+    from zae_limiter import schema
+
+    client = await repo._get_client()
+    await client.update_item(
+        TableName=repo.table_name,
+        Key={
+            "PK": {"S": schema.pk_entity(repo._namespace_id, entity_id)},
+            "SK": {"S": schema.sk_config(resource)},
+        },
+        UpdateExpression="SET #a = :v",
+        ExpressionAttributeNames={"#a": limit_attr(limit_name, field)},
+        ExpressionAttributeValues={":v": {"S": value}},
+    )
+
+
+async def _corrupt_bucket_sched(
+    repo, entity_id, resource, value, shard=0, field=BUCKET_FIELD_SCHED
+):
+    from zae_limiter import schema
+
+    client = await repo._get_client()
+    await client.update_item(
+        TableName=repo.table_name,
+        Key={
+            "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, resource, shard)},
+            "SK": {"S": schema.sk_state()},
+        },
+        UpdateExpression="SET #a = :v",
+        ExpressionAttributeNames={"#a": field},
+        ExpressionAttributeValues={":v": {"S": value}},
+    )
+
+
+class TestUnreadableStoredSchedule:
+    """A schedule the client cannot read makes the limiter unavailable (#222 §6).
+
+    Not "no schedule": that runs at the *base* limit, so a parse error would
+    double a customer's limit when the schedule said 0.5x, and with `vu` left
+    expired it would pin the bucket to the slow path forever.
+    """
+
+    # `1-5`, not `MON-FRI`: the compact storage form normalises names to
+    # numbers, so this is what a round trip returns (`schedule.encode`).
+    BUSINESS = (ScheduleEntry(cron="* 9-17 * * 1-5", tz="America/New_York", scale=0.5),)
+    QUOTA = Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York")
+
+    async def _seed(self, repo, entity_id, limits=None):
+        await repo.set_limits(
+            entity_id,
+            limits or [Limit.per_minute("rpm", 1000).with_schedule(self.BUSINESS)],
+            resource="gpt-4",
+        )
+
+    async def _seed_bucket(self, repo, entity_id, limits=None):
+        """Create the bucket item through the real create path.
+
+        `speculative_consume` is a conditional UpdateItem on an item that must
+        already exist, so a bucket-side test has to create one first.
+        """
+        limits = limits or [Limit.per_minute("rpm", 1000).with_schedule(self.BUSINESS)]
+        await repo.create_entity(entity_id)
+        await self._seed(repo, entity_id, limits)
+        now_ms = int(time.time() * 1000)
+        states = [BucketState.from_limit(entity_id, "gpt-4", lim, now_ms) for lim in limits]
+        await repo.transact_write([repo.build_composite_create(entity_id, "gpt-4", states, now_ms)])
+
+    async def test_get_limits_raises_unavailable(self, repo):
+        await self._seed(repo, "corrupt-1")
+        await _corrupt_config_sched(repo, "corrupt-1", "gpt-4", "rpm", "not-a-schedule")
+        await repo.invalidate_config_cache()
+
+        with pytest.raises(RateLimiterUnavailable, match="schedule"):
+            await repo.get_limits("corrupt-1", resource="gpt-4")
+
+    async def test_it_is_not_a_bare_value_error(self, repo):
+        """The whole point of the conversion: `acquire()`'s handler re-raises
+        `ValidationError` and friends but routes `RateLimiterUnavailable`
+        through `on_unavailable`. A `ValueError` would escape uncontrolled."""
+        await self._seed(repo, "corrupt-1b")
+        await _corrupt_config_sched(repo, "corrupt-1b", "gpt-4", "rpm", "not-a-schedule")
+        await repo.invalidate_config_cache()
+
+        with pytest.raises(RateLimiterUnavailable) as excinfo:
+            await repo.get_limits("corrupt-1b", resource="gpt-4")
+        assert not isinstance(excinfo.value, ValueError)
+
+    async def test_the_message_names_the_attribute_and_the_value(self, repo):
+        """An operator debugging a mixed-version fleet has only this line, now
+        that no version marker is being added (#515)."""
+        await self._seed(repo, "corrupt-2")
+        await _corrupt_config_sched(repo, "corrupt-2", "gpt-4", "rpm", "q42h9-17")
+        await repo.invalidate_config_cache()
+
+        with pytest.raises(RateLimiterUnavailable) as excinfo:
+            await repo.get_limits("corrupt-2", resource="gpt-4")
+        message = str(excinfo.value)
+        assert "l_rpm_sched" in message
+        assert "q42h9-17" in message
+        assert "America/New_York" in message, "the zone the entries were decoded in"
+        assert isinstance(excinfo.value.cause, ValueError)
+
+    async def test_resolve_limits_raises_too(self, repo):
+        """`resolve_limits` is what `acquire()`'s slow path calls; if only
+        `get_limits` converted, the path that matters would still surface a
+        bare ValueError. It reaches the item through `batch_get_configs`, a
+        different call site from `get_limits`."""
+        await self._seed(repo, "corrupt-3")
+        await _corrupt_config_sched(repo, "corrupt-3", "gpt-4", "rpm", "not-a-schedule")
+        await repo.invalidate_config_cache()
+
+        with pytest.raises(RateLimiterUnavailable):
+            await repo.resolve_limits("corrupt-3", "gpt-4")
+
+    async def test_an_unreadable_reset_schedule_raises_the_same_way(self, repo):
+        """The two tuples decode independently, so `rsched` needs its own
+        coverage — and a quota has no `sched` at all to fail first."""
+        await self._seed(repo, "corrupt-4", [self.QUOTA])
+        await _corrupt_config_sched(repo, "corrupt-4", "gpt-4", "rpd", "zzz", field="rsched")
+        await repo.invalidate_config_cache()
+
+        with pytest.raises(RateLimiterUnavailable, match="l_rpd_rsched"):
+            await repo.get_limits("corrupt-4", resource="gpt-4")
+
+    async def test_a_modifier_smuggled_into_a_reset_attribute_raises(self, repo):
+        """`decode_reset` rejects a modifier rather than ignoring it — an entry
+        that silently reset a balance on a schedule meant only to scale it is
+        the worst available reading. That rejection must reach the caller as
+        unavailability, not as a `ValueError`."""
+        await self._seed(repo, "corrupt-4b", [self.QUOTA])
+        await _corrupt_config_sched(repo, "corrupt-4b", "gpt-4", "rpd", "m0h0s500", field="rsched")
+        await repo.invalidate_config_cache()
+
+        with pytest.raises(RateLimiterUnavailable, match="overrides no parameters"):
+            await repo.get_limits("corrupt-4b", resource="gpt-4")
+
+    async def test_a_corrupt_timezone_raises(self, repo):
+        """`sched_tz` is hoisted once per item, so one bad value takes every
+        scheduled limit on it down. It fails inside `parse_cron`, which wraps
+        `ZoneInfoNotFoundError` — a `KeyError` subclass — into a `ValueError`;
+        without that wrapping this guard would not catch it at all."""
+        from zae_limiter import schema
+
+        await self._seed(repo, "corrupt-4c")
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_entity(repo._namespace_id, "corrupt-4c")},
+                "SK": {"S": schema.sk_config("gpt-4")},
+            },
+            UpdateExpression="SET #a = :v",
+            ExpressionAttributeNames={"#a": CONFIG_FIELD_SCHED_TZ},
+            ExpressionAttributeValues={":v": {"S": "Mars/Olympus_Mons"}},
+        )
+        await repo.invalidate_config_cache()
+
+        with pytest.raises(RateLimiterUnavailable, match="Mars/Olympus_Mons"):
+            await repo.get_limits("corrupt-4c", resource="gpt-4")
+
+    async def test_one_corrupt_limit_fails_the_whole_item(self, repo):
+        """Item granularity, deliberately. Returning the readable limits would
+        drop the unreadable one from the level, and precedence is per *level*:
+        no lower level would supply it, so it would go unenforced — worse than
+        the over-admission this guard exists to prevent. Both other readers
+        already fail at item granularity."""
+        await self._seed(
+            repo,
+            "corrupt-4d",
+            [
+                Limit.per_minute("rpm", 1000).with_schedule(self.BUSINESS),
+                Limit.per_minute("tpm", 100_000),
+            ],
+        )
+        await _corrupt_config_sched(repo, "corrupt-4d", "gpt-4", "rpm", "not-a-schedule")
+        await repo.invalidate_config_cache()
+
+        with pytest.raises(RateLimiterUnavailable):
+            await repo.get_limits("corrupt-4d", resource="gpt-4")
+
+    async def test_a_stored_reset_beside_a_positive_rate_raises_unavailable(self, repo):
+        """The failure a decode guard alone would miss: both attributes parse,
+        and `Limit.__post_init__` then rejects the combination (ADR-137, never
+        both). Same class — the stored schedule leaves the limit
+        undeterminable — so it converts the same way."""
+        await self._seed(repo, "corrupt-4e", [Limit.per_minute("rpm", 1000)])
+        await _corrupt_config_sched(repo, "corrupt-4e", "gpt-4", "rpm", "m0h0", field="rsched")
+        await repo.invalidate_config_cache()
+
+        with pytest.raises(RateLimiterUnavailable, match="cannot be reconstructed"):
+            await repo.get_limits("corrupt-4e", resource="gpt-4")
+
+    async def test_an_unscheduled_limit_that_will_not_reconstruct_still_raises_value_error(
+        self, repo
+    ):
+        """The scoping decision, from the other side.
+
+        `#538`'s shape — a stored zero rate with no reset — is a config item
+        the client cannot turn into a `Limit` either, but no schedule decides
+        it, so it keeps raising the `ValueError` it always has. Widening the
+        conversion to every validation failure in the read path would make the
+        exception type say less, not more.
+        """
+        from zae_limiter import schema
+
+        await self._seed(repo, "corrupt-4f", [Limit.per_minute("rpm", 1000)])
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_entity(repo._namespace_id, "corrupt-4f")},
+                "SK": {"S": schema.sk_config("gpt-4")},
+            },
+            UpdateExpression="SET #a = :v",
+            ExpressionAttributeNames={"#a": limit_attr("rpm", "ra")},
+            ExpressionAttributeValues={":v": {"N": "0"}},
+        )
+        await repo.invalidate_config_cache()
+
+        with pytest.raises(ValueError, match="reset_schedule") as excinfo:
+            await repo.get_limits("corrupt-4f", resource="gpt-4")
+        assert not isinstance(excinfo.value, RateLimiterUnavailable)
+
+    async def test_an_unreadable_bucket_schedule_raises(self, repo):
+        """`_deserialize_composite_bucket` is the other decode site, and it is
+        the one behind the speculative path's ALL_OLD / ALL_NEW states."""
+        await self._seed_bucket(repo, "corrupt-5")
+        await _corrupt_bucket_sched(repo, "corrupt-5", "gpt-4", "not-a-schedule")
+
+        with pytest.raises(RateLimiterUnavailable, match="sched"):
+            await repo.get_buckets("corrupt-5", resource="gpt-4")
+
+    async def test_an_unreadable_bucket_reset_schedule_raises(self, repo):
+        await self._seed_bucket(repo, "corrupt-5b", [self.QUOTA])
+        await _corrupt_bucket_sched(repo, "corrupt-5b", "gpt-4", "zzz", field=BUCKET_FIELD_RSCHED)
+
+        with pytest.raises(RateLimiterUnavailable, match="rsched"):
+            await repo.get_buckets("corrupt-5b", resource="gpt-4")
+
+    async def test_a_corrupt_per_limit_override_names_its_own_attribute(self, repo):
+        """The item default and a per-limit override are different attributes
+        to repair, so the message must distinguish them."""
+        await self._seed_bucket(repo, "corrupt-5c")
+        await _corrupt_bucket_sched(
+            repo, "corrupt-5c", "gpt-4", "not-a-schedule", field=bucket_attr("rpm", "sched")
+        )
+
+        with pytest.raises(RateLimiterUnavailable, match=bucket_attr("rpm", "sched")):
+            await repo.get_buckets("corrupt-5c", resource="gpt-4")
+
+    async def test_the_speculative_failure_image_converts_too(self, repo):
+        """A fast rejection deserialises the ALL_OLD image; an unconverted
+        ValueError would escape `acquire()`'s handler from inside the fast
+        path, where no config was ever read."""
+        await self._seed_bucket(
+            repo, "corrupt-6", [Limit.per_minute("rpm", 1).with_schedule(self.BUSINESS)]
+        )
+        await _corrupt_bucket_sched(repo, "corrupt-6", "gpt-4", "not-a-schedule")
+
+        with pytest.raises(RateLimiterUnavailable):
+            await repo.speculative_consume("corrupt-6", "gpt-4", {"rpm": 5_000}, shard_id=0)
+
+    async def test_an_unscheduled_limit_still_reads_normally(self, repo):
+        """The guard must not turn every ValueError in the read path into an
+        infrastructure error — only a schedule decides this."""
+        await repo.set_limits("plain-1", [Limit.per_minute("rpm", 1000)], resource="gpt-4")
+        (stored,) = await repo.get_limits("plain-1", resource="gpt-4")
+        assert stored.capacity == 1000
+
+    async def test_an_unscheduled_bucket_still_reads_normally(self, repo):
+        await self._seed_bucket(repo, "plain-2", [Limit.per_minute("rpm", 1000)])
+        buckets = await repo.get_buckets("plain-2", resource="gpt-4")
+        assert [b.limit_name for b in buckets] == ["rpm"]
+
+    async def test_a_readable_schedule_still_reads_normally(self, repo):
+        """Discriminates every test above against "raise whenever scheduled"."""
+        await self._seed(repo, "plain-3")
+        (stored,) = await repo.get_limits("plain-3", resource="gpt-4")
+        assert stored.schedule == self.BUSINESS
+
+
+class TestAMixedItemAttributesEachScheduleToItsOwnLimit:
+    """#541: a limit with no schedule of its own must not inherit the item's.
+
+    One bucket item carries one hoisted ``sched`` / ``rsched`` pair plus the
+    per-limit ``b_{name}_*`` overrides, and absence of an override means
+    "inherit the item default". That rule has no spelling for "this limit is
+    explicitly unscheduled", so before #541 the two were the same byte pattern
+    and every reader picked inheritance.
+
+    The mix below is the shape that makes the defect bite in **both**
+    directions at once:
+
+    * ``rpm`` is scaled to ``0.5x`` during business hours and has no reset;
+    * ``tpm`` is a plain rate limit with neither;
+    * ``rpd`` is a daily quota (ADR-137) with a reset and no parameter schedule.
+
+    Contaminated, ``rpm`` acquires ``rpd``'s midnight reset — its balance is
+    hard-SET at the edge and its drip skipped that pass — while ``rpd``
+    acquires ``rpm``'s ``0.5x`` window and silently serves half its allowance
+    between 09:00 and 17:00. ``tpm`` gets both.
+
+    Reached through ``set_limits``, deliberately: the deferral on record
+    claimed "the config hierarchy makes the mix unreachable through
+    ``set_limits``", and it is not so — ``models.hoisted_schedule_timezone``
+    documents that "limits without one do not vote", so an unscheduled limit
+    passes the one write-time check a mixed list has to clear.
+    """
+
+    ZONE = "America/New_York"
+    BUSINESS = (ScheduleEntry(cron="* 9-17 * * 1-5", tz=ZONE, scale=0.5),)
+    MIDNIGHT = (ScheduleEntry.reset(cron="0 0 * * *", tz=ZONE),)
+
+    def _limits(self):
+        return [
+            Limit.per_minute("rpm", 1000).with_schedule(self.BUSINESS),
+            Limit.per_minute("tpm", 100_000),
+            Limit.quota("rpd", 10_000, cron="0 0 * * *", tz=self.ZONE),
+        ]
+
+    @staticmethod
+    async def _seed(repo, entity_id, resource, limits):
+        now_ms = int(time.time() * 1000)
+        states = [BucketState.from_limit(entity_id, resource, lim, now_ms) for lim in limits]
+        await repo.transact_write(
+            [repo.build_composite_create(entity_id, resource, states, now_ms)]
+        )
+
+    @staticmethod
+    async def _raw(repo, entity_id, resource, shard=0):
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, resource, shard)},
+                "SK": {"S": sk_state()},
+            },
+        )
+        return response.get("Item") or {}
+
+    @pytest.mark.asyncio
+    async def test_the_bucket_create_stamp_attributes_each_schedule(self, repo):
+        await repo.create_entity("mix-1")
+        await self._seed(repo, "mix-1", "gpt-4", self._limits())
+
+        by_name = {b.limit_name: b for b in await repo.get_buckets("mix-1", resource="gpt-4")}
+        assert by_name["rpm"].sched == self.BUSINESS
+        assert by_name["rpm"].reset_sched == ()
+        assert by_name["tpm"].sched == ()
+        assert by_name["tpm"].reset_sched == ()
+        assert by_name["rpd"].sched == ()
+        assert by_name["rpd"].reset_sched == self.MIDNIGHT
+
+    @pytest.mark.asyncio
+    async def test_the_set_limits_fan_out_attributes_each_schedule(self, repo):
+        """The other writer of these attributes. It must agree with the create
+        stamp byte for byte, or which schedule a limit runs under would depend
+        on whether an admin had touched the entity since the bucket was born."""
+        await repo.create_entity("mix-2")
+        # Seeded unscheduled, so the schedules on the item can only have come
+        # from the fan-out. Every limit is present up front because the fan-out
+        # rewrites parameters, never balances — it does not add a limit's `tk`.
+        await self._seed(
+            repo,
+            "mix-2",
+            "gpt-4",
+            [
+                Limit.per_minute("rpm", 1000),
+                Limit.per_minute("tpm", 100_000),
+                Limit.per_minute("rpd", 10_000),
+            ],
+        )
+
+        await repo.set_limits("mix-2", self._limits(), resource="gpt-4")
+
+        by_name = {b.limit_name: b for b in await repo.get_buckets("mix-2", resource="gpt-4")}
+        assert by_name["rpm"].sched == self.BUSINESS
+        assert by_name["rpm"].reset_sched == ()
+        assert by_name["tpm"].sched == ()
+        assert by_name["tpm"].reset_sched == ()
+        assert by_name["rpd"].sched == ()
+        assert by_name["rpd"].reset_sched == self.MIDNIGHT
+
+    @pytest.mark.asyncio
+    async def test_both_writers_produce_the_same_attributes(self, repo):
+        """One encoder, two writers (#541 acceptance criteria). Compared as a
+        set of schedule attributes rather than whole items, which differ in
+        balances and timestamps by construction."""
+        await repo.create_entity("mix-3")
+        await repo.create_entity("mix-4")
+        await self._seed(repo, "mix-3", "gpt-4", self._limits())
+        await self._seed(repo, "mix-4", "gpt-4", [Limit.per_minute("rpm", 1000)])
+        await repo.set_limits("mix-4", self._limits(), resource="gpt-4")
+
+        def _sched_attrs(item):
+            return {
+                k: v["S"]
+                for k, v in item.items()
+                if k.endswith(("sched", "rsched", "sched_tz")) and "S" in v
+            }
+
+        created = _sched_attrs(await self._raw(repo, "mix-3", "gpt-4"))
+        fanned = _sched_attrs(await self._raw(repo, "mix-4", "gpt-4"))
+        assert created == fanned
+        assert created["sched"] == "h9-17w1-5s500"
+        assert created["rsched"] == "m0h0"
+        assert created["sched_tz"] == self.ZONE

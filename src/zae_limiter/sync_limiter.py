@@ -20,7 +20,6 @@ if TYPE_CHECKING:
     from .sync_repository_protocol import SpeculativeResult, SyncRepositoryProtocol
 from .bucket import (
     calculate_available,
-    calculate_retry_after,
     declared_statuses,
     force_consume,
     try_consume,
@@ -44,7 +43,7 @@ from .models import (
     validate_identifier,
     validate_resource,
 )
-from .schedule import next_boundary
+from .schedule import effective_params, next_boundary, prev_reset_edge, retry_after_with_schedule
 from .schema import DEFAULT_RESOURCE, WCU_LIMIT_NAME
 from .sync_config_cache import ConfigSource
 from .sync_lease import LeaseEntry, SyncLease
@@ -1099,6 +1098,73 @@ class SyncRateLimiter:
         return frozenset(unknown)
 
     @staticmethod
+    def _apply_reset_edge(limit: Limit, state: BucketState, now_ms: int) -> bool:
+        """Restore the balance if a calendar reset edge was crossed (#222 §3.6).
+
+        Detection is **backwards**: "was there a rising edge since this item was
+        last refilled?", not "is a reset due?". That makes idle buckets correct
+        for free — a bucket idle from 18:00 to 09:00 has its ``rf`` sitting at
+        18:00, and the 09:00 pass sees the missed midnight and applies it then.
+        Two missed midnights apply once, because setting the balance to the
+        capacity is idempotent.
+
+        The comparison is strictly ``>``: the pass that applies a reset stamps
+        ``rf`` at or after the edge, so ``>=`` would re-fire on every later
+        request and refund everything spent since — an unbounded quota.
+
+        The target is the **shard's share** of the capacity *in force at*
+        ``now_ms``: ``effective_capacity_milli`` applies the parameter schedule
+        and then divides by ``shard_count``. Resetting every shard to the
+        undivided capacity would multiply the entity's quota by ``shard_count``.
+
+        Must be called **before** :meth:`_admit_limit`, so the restored balance
+        gates the request that crossed the edge rather than the one after it.
+        Mutates ``state`` in place and returns whether it did;
+        ``_original_tokens_milli`` and ``_original_rf_ms`` must already have
+        been captured, because they are the *stored* values the ``ADD`` delta
+        and the ``rf`` lock are built from. ``tc`` is never touched: the
+        counter has to stay monotonic (``.claude/rules/design-validation.md``),
+        which is what makes this safer than #471's ``reset_bucket()``.
+        """
+        if not limit.reset_schedule:
+            return False
+        edge = prev_reset_edge(limit.reset_schedule, now_ms)
+        if edge is None or edge <= state.last_refill_ms:
+            return False
+        state.tokens_milli = state.effective_capacity_milli(now_ms)
+        return True
+
+    @staticmethod
+    def _materialisation_stamps(limit: Limit, now_ms: int) -> tuple[int | None, int | None]:
+        """``(vu, next reset edge)`` for one limit at one clock reading (#222).
+
+        ``vu`` is the minimum of the two futures — the next parameter change and
+        the next reset edge — because either invalidates the materialised
+        ``tk``. A limit carrying a ``reset_schedule`` and **no** ``schedule`` is
+        the daily-quota shape, and it must still produce a ``vu``: without one
+        the speculative condition never fails, the slow path never runs, and the
+        reset fires only when something unrelated forces a materialising pass.
+
+        The reset half is returned separately because the commit needs the two
+        apart. ``_commit_initial()`` takes a *second* clock reading a round trip
+        later, and only a reset edge crossed in that gap can invalidate the
+        reset decision taken here — a parameter boundary crossed in the same gap
+        is handled by ``vu <= rf`` forcing one extra pass, which for a reset is
+        not enough (the next pass would compare the edge against an ``rf`` that
+        has already moved past it).
+
+        Both halves are computed here rather than through one
+        ``next_boundary(schedule, reset_schedule, ...)`` call so that neither
+        cron scan runs twice.
+        """
+        param_ms = next_boundary(limit.schedule, now_ms=now_ms) if limit.schedule else None
+        reset_ms = (
+            next_boundary((), limit.reset_schedule, now_ms=now_ms) if limit.reset_schedule else None
+        )
+        candidates = [b for b in (param_ms, reset_ms) if b is not None]
+        return (min(candidates) if candidates else None, reset_ms)
+
+    @staticmethod
     def _admit_limit(
         entity_id: str,
         resource: str,
@@ -1215,13 +1281,16 @@ class SyncRateLimiter:
             if existing is None:
                 return None
             existing.sched = limit.schedule
+            existing.reset_sched = limit.reset_schedule
             original_tk = existing.tokens_milli
             original_rf = existing.last_refill_ms
+            self._apply_reset_edge(limit, existing, now_ms)
             status, consumed = self._admit_limit(
                 parent_id, resource, limit, existing, consume, now_ms
             )
             if status is not None:
                 statuses.append(status)
+            parent_boundary_ms, parent_reset_edge_ms = self._materialisation_stamps(limit, now_ms)
             parent_entries.append(
                 LeaseEntry(
                     entity_id=parent_id,
@@ -1235,7 +1304,8 @@ class SyncRateLimiter:
                     _declared=status is not None,
                     _shard_id=parent_shard,
                     _shard_count=parent_shard_count,
-                    _boundary_ms=next_boundary(limit.schedule, now_ms=now_ms),
+                    _boundary_ms=parent_boundary_ms,
+                    _reset_edge_ms=parent_reset_edge_ms,
                 )
             )
         carrier = self._wcu_carrier(
@@ -1345,24 +1415,36 @@ class SyncRateLimiter:
             any_existing = any(
                 (eid, resource, limit.name) in existing_buckets for limit in entity_limits[eid]
             )
+            quota_transfer = self._quota_transfer(
+                eid, resource, entity_limits[eid], eid_shard_count, any_existing, now_ms
+            )
             for limit in entity_limits[eid]:
                 bucket_key = (eid, resource, limit.name)
                 existing = existing_buckets.get(bucket_key)
                 if existing is None:
                     is_new = True
                     state = BucketState.from_limit(
-                        eid, resource, limit, now_ms, shard_count=eid_shard_count
+                        eid,
+                        resource,
+                        limit,
+                        now_ms,
+                        shard_count=eid_shard_count,
+                        reclaimed_milli=quota_transfer.get(limit.name),
                     )
                 else:
                     is_new = False
                     state = existing
                     state.sched = limit.schedule
+                    state.reset_sched = limit.reset_schedule
                 original_tk = state.tokens_milli
                 original_rf = state.last_refill_ms
+                if not is_new:
+                    self._apply_reset_edge(limit, state, now_ms)
                 status, consumed = self._admit_limit(eid, resource, limit, state, consume, now_ms)
                 if status is not None:
                     statuses.append(status)
                 has_custom_config = _is_custom_config(entity_config_sources.get(eid))
+                boundary_ms, reset_edge_ms = self._materialisation_stamps(limit, now_ms)
                 entries.append(
                     LeaseEntry(
                         entity_id=eid,
@@ -1379,7 +1461,8 @@ class SyncRateLimiter:
                         _cascade=entity.cascade if entity and eid == entity_id else False,
                         _parent_id=entity.parent_id if entity and eid == entity_id else None,
                         _declared=status is not None,
-                        _boundary_ms=next_boundary(limit.schedule, now_ms=now_ms),
+                        _boundary_ms=boundary_ms,
+                        _reset_edge_ms=reset_edge_ms,
                     )
                 )
             carrier = self._wcu_carrier(
@@ -1426,6 +1509,72 @@ class SyncRateLimiter:
             (b.entity_id, b.resource, b.limit_name): b for b in buckets
         }
         return (entity, bucket_dict)
+
+    def _quota_transfer(
+        self,
+        entity_id: str,
+        resource: str,
+        limits: list[Limit],
+        shard_count: int,
+        any_existing: bool,
+        now_ms: int,
+    ) -> dict[str, int]:
+        """Reclaim the surplus a new quota shard is to be created from (#587).
+
+        A quota has no drip for a freshly minted ``capacity // shard_count`` to
+        amortise against (ADR-137), so a shard added mid-period must be filled
+        by **transfer**: ``SyncRepository.reclaim_quota_surplus`` clamps the shards
+        that already exist to the ceiling the doubling just shrank them to, and
+        what it takes is what this shard is created with. See
+        :func:`~zae_limiter.models.new_shard_starting_tokens_milli` for why that
+        conserves and why zero-filling and blind redistribution do not.
+
+        Returns ``{}`` — costing nothing, and leaving every limit on the full
+        share — in each case that cannot need it:
+
+        * the entity already has a bucket item on the shard being acquired, so
+          nothing is being created;
+        * ``shard_count`` is 1, so there is no sibling to transfer from and the
+          only shard rightly starts full;
+        * no resolved limit is a quota, which is the whole dripping path; or
+        * no shard exists for this (entity, resource) at all, so nothing has
+          been spent and each shard is entitled to its full share.
+
+        Args:
+            entity_id: Entity whose shard is about to be created.
+            resource: Resource the acquire is for.
+            limits: Limits resolved for this entity and resource.
+            shard_count: Shards this bucket is split across.
+            any_existing: Whether a bucket item already exists on the shard
+                being acquired.
+            now_ms: The acquire's single clock reading (#430), so the ceiling
+                clamped to is the one in force at the same instant the new
+                shard's own share is computed from.
+
+        Returns:
+            ``{limit_name: reclaimed_milli}`` for the quota limits only. A name
+            absent from the mapping keeps the full share.
+        """
+        if any_existing or shard_count <= 1:
+            return {}
+        shares_milli = {
+            limit.name: effective_params(
+                limit.capacity * 1000,
+                limit.refill_amount * 1000,
+                limit.refill_period_seconds * 1000,
+                limit.schedule,
+                now_ms,
+            )[0]
+            // shard_count
+            for limit in limits
+            if limit.is_quota
+        }
+        if not shares_milli:
+            return {}
+        shards_found, reclaimed = self._repository.reclaim_quota_surplus(
+            entity_id, resource, shares_milli
+        )
+        return reclaimed if shards_found else {}
 
     def _fetch_buckets(
         self, entity_ids: list[str], resource: str, shard_id: int
@@ -1522,6 +1671,35 @@ class SyncRateLimiter:
         on_unavailable_action = self._repository.resolve_on_unavailable()
         return OnUnavailable(on_unavailable_action)
 
+    @staticmethod
+    def _readable_balance(bucket: BucketState, limit: Limit | None, now_ms: int) -> int:
+        """One shard's balance as a *reader* should see it (#222 §3.6, §7).
+
+        `check_availability` writes nothing, so a bucket that crossed a reset
+        edge and has not been touched by a request since still holds the burnt
+        balance on disk — the slow path applies the edge at admission time
+        (`_apply_reset_edge`), and nothing has admitted yet. Reporting the disk
+        value makes the display read "0 remaining, resets at midnight
+        tomorrow" while the very next `acquire()` restores the quota
+        immediately.
+
+        Computed per **shard**, not per limit name: a sharded entity can have
+        some shards past the edge and some not, and collapsing that to "the
+        limit is pending" would report the whole entity restored on the
+        strength of one stale shard.
+
+        The reset schedule comes from the resolved config rather than from
+        `bucket.reset_sched`, because the `rf` it is compared against lives on
+        the item — the same pairing `_apply_reset_edge` uses on the slow path,
+        so the two agree by construction. Costs one backwards cron scan per
+        shard, and only for a limit that actually carries a reset.
+        """
+        if limit is not None and limit.reset_schedule:
+            edge = prev_reset_edge(limit.reset_schedule, now_ms)
+            if edge is not None and edge > bucket.last_refill_ms:
+                return bucket.effective_capacity_milli(now_ms) // 1000
+        return calculate_available(bucket, now_ms)
+
     def check_availability(
         self,
         entity_id: str,
@@ -1568,9 +1746,22 @@ class SyncRateLimiter:
         configured limit, so ``acquire()`` can reject an amount this call
         reports as available.
 
+        **Schedules.** Everything reported is the value in force at
+        ``checked_at_ms``, not the stored base (#222 §7): the ceiling comes
+        from ``effective_params``, so a ``scale: 0.5`` window reports 500 and
+        not 1000, and the wait walks forward across boundaries instead of
+        dividing by the rate that happens to apply right now. A limit with a
+        ``reset_schedule`` reports the wait to its next edge — for a daily
+        quota, whose ``refill_amount`` is 0 by ADR-137, that is the only finite
+        answer there is. A bucket that crossed a reset edge and has not been
+        written to since reports the balance the next ``acquire()`` will
+        restore, per shard, rather than the burnt one still on disk.
+
         Cost: 1 GSI3 query (KEYS_ONLY) + 1 ``BatchGetItem``, plus config
         resolution (free on a cache hit), regardless of limit count or shard
-        count.
+        count. A limit carrying a ``reset_schedule`` adds one backwards cron
+        scan per shard and the forward walk adds up to eight per exceeded
+        limit; an unscheduled limit adds neither.
 
         Args:
             entity_id: Entity to check
@@ -1603,35 +1794,41 @@ class SyncRateLimiter:
         now_ms = self._repository._now_ms()
         needed = needed or {}
         resolved_limits, _ = self._resolve_limits(entity_id, resource, limits)
+        resolved_by_name = {limit.name: limit for limit in resolved_limits}
         totals: dict[str, int] = {}
-        refill_milli: dict[str, int] = {}
-        undivided_refill_milli: dict[str, int] = {}
-        period_ms: dict[str, int] = {}
         for bucket in self._repository.get_buckets(entity_id):
             if bucket.resource != resource:
                 continue
             name = bucket.limit_name
-            totals[name] = totals.get(name, 0) + calculate_available(bucket, now_ms)
-            refill_milli[name] = refill_milli.get(name, 0) + bucket.effective_refill_amount_milli(
-                now_ms
+            totals[name] = totals.get(name, 0) + self._readable_balance(
+                bucket, resolved_by_name.get(name), now_ms
             )
-            undivided_refill_milli.setdefault(name, bucket.retry_refill_amount_milli(now_ms))
-            period_ms.setdefault(name, bucket.effective_refill_period_ms(now_ms))
         statuses: list[LimitStatus] = []
         for limit in resolved_limits:
+            eff_cp, _eff_ra, _eff_rp = effective_params(
+                limit.capacity * 1000,
+                limit.refill_amount * 1000,
+                limit.refill_period_seconds * 1000,
+                limit.schedule,
+                now_ms,
+            )
+            ceiling = max(1, eff_cp // 1000)
             if limit.name in totals:
-                available = min(totals[limit.name], limit.capacity)
+                available = min(totals[limit.name], ceiling)
             else:
-                available = limit.capacity
+                available = ceiling
             requested = needed.get(limit.name, 0)
             exceeded = requested > 0 and available < requested
             wait = 0.0
-            if exceeded and limit.name in period_ms:
-                wait = calculate_retry_after(
+            if exceeded:
+                wait = retry_after_with_schedule(
                     deficit_milli=(requested - available) * 1000,
-                    refill_amount_milli=refill_milli[limit.name]
-                    or undivided_refill_milli[limit.name],
-                    refill_period_ms=period_ms[limit.name],
+                    cp_milli=limit.capacity * 1000,
+                    ra_milli=limit.refill_amount * 1000,
+                    rp_ms=limit.refill_period_seconds * 1000,
+                    sched=limit.schedule,
+                    reset_sched=limit.reset_schedule,
+                    now_ms=now_ms,
                 )
             statuses.append(
                 LimitStatus(

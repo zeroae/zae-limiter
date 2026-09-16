@@ -4198,6 +4198,90 @@ class TestLimitParsing:
         limit = Limit(name="rpm", capacity=100, refill_amount=100, refill_period_seconds=300)
         assert _format_limit(limit) == "rpm: 100/5min"
 
+    # --- Quota formatting tests (issue #539) ---
+
+    def test_format_limit_quota(self) -> None:
+        """A quota names its allowance and its reset, never a rate."""
+        from zae_limiter.cli import _format_limit
+        from zae_limiter.models import Limit
+
+        limit = Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York")
+
+        assert _format_limit(limit) == 'rpd: 10,000 quota (resets "0 0 * * *" America/New_York)'
+
+    def test_format_limit_quota_omits_rate_and_burst(self) -> None:
+        """None of ADR-137's internal encoding leaks into the line."""
+        from zae_limiter.cli import _format_limit
+        from zae_limiter.models import Limit
+
+        formatted = _format_limit(Limit.quota("rpd", 10_000, cron="0 0 * * *"))
+
+        # `refill_amount=0` is how "does not drip" is stored, not a fact to print,
+        # and `_QUOTA_REFILL_PERIOD_SECONDS = 1` is an inert placeholder.
+        assert "0/sec" not in formatted
+        assert "/sec" not in formatted
+        assert "burst" not in formatted
+        assert formatted == 'rpd: 10,000 quota (resets "0 0 * * *" UTC)'
+
+    def test_format_limit_quotas_with_different_resets_are_distinguishable(self) -> None:
+        """Two quotas of the same size must not render identically."""
+        from zae_limiter.cli import _format_limit
+        from zae_limiter.models import Limit
+
+        daily = _format_limit(Limit.quota("rpd", 10_000, cron="0 0 * * *"))
+        monthly = _format_limit(Limit.quota("rpd", 10_000, cron="0 0 1 * *"))
+
+        assert daily == 'rpd: 10,000 quota (resets "0 0 * * *" UTC)'
+        assert monthly == 'rpd: 10,000 quota (resets "0 0 1 * *" UTC)'
+        assert daily != monthly
+
+    def test_format_limit_quota_renders_weekday_as_names(self) -> None:
+        """Canonical cron at the user-facing boundary: ``1-5`` comes back ``MON-FRI``."""
+        from zae_limiter.cli import _format_limit
+        from zae_limiter.models import Limit
+
+        limit = Limit.quota("rpd", 500, cron="0 0 * * 1-5", tz="Europe/Berlin")
+
+        assert _format_limit(limit) == 'rpd: 500 quota (resets "0 0 * * MON-FRI" Europe/Berlin)'
+
+    def test_format_limit_zero_rate_without_reset_is_not_a_quota(self) -> None:
+        """The branch is structural (``is_quota``), not ``refill_amount == 0``.
+
+        A per-shard share that floors to zero also has no rate but carries no
+        ``reset_schedule``, and must not be advertised as a quota.
+        """
+        from zae_limiter.cli import _format_limit
+        from zae_limiter.models import Limit
+
+        limit = Limit.per_minute("rpm", 1000)
+        object.__setattr__(limit, "refill_amount", 0)
+
+        assert "quota" not in _format_limit(limit)
+
+    def test_parse_limit_zero_rate_is_a_usage_error(self) -> None:
+        """ADR-137's cross-field guard stays inside Click's error boundary.
+
+        ``-l rpd:0:10000`` is exactly what an operator reading the old
+        ``rpd: 0/sec (burst: 10,000)`` would type back; it must not traceback.
+        """
+        import click
+
+        from zae_limiter.cli import _parse_limit
+
+        with pytest.raises(click.BadParameter) as exc_info:
+            _parse_limit("rpd:0:10000")
+
+        assert "rpd:0:10000" in str(exc_info.value)
+        assert "Limit.quota" in str(exc_info.value)
+
+    def test_system_set_defaults_zero_rate_exits_cleanly(self, runner: CliRunner) -> None:
+        """The same input through a real command fails like any other bad ``-l``."""
+        result = runner.invoke(cli, ["system", "set-defaults", "-l", "rpd:0:10000"])
+
+        assert result.exit_code == 1
+        assert "Traceback" not in result.output
+        assert "Limit.quota" in result.output
+
     # --- CLI invocation with period ---
 
     @patch("zae_limiter.repository.Repository")
@@ -6765,3 +6849,309 @@ class TestDisableCommands:
 
         assert result.exit_code == 0
         assert "Status:" not in result.output
+
+
+class TestScheduleDisplay:
+    """`get-*` renders a limit's parameter schedule; it does not set one (§5.4).
+
+    The **reset** schedule is deliberately not rendered here. It stays in the
+    headline that PR #542 shipped — see `_format_limit`'s docstring for why.
+    `test_a_quota_keeps_its_reset_in_the_headline` pins that decision.
+    """
+
+    @staticmethod
+    def _business_hours():
+        from zae_limiter.models import Limit
+        from zae_limiter.schedule import ScheduleEntry
+
+        return Limit.per_minute("rpm", 1000).with_schedule(
+            (
+                ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.5),
+                ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", capacity=2000),
+            )
+        )
+
+    @staticmethod
+    def _entity(mock_repo_class, runner, limits):
+        mock_repo = Mock()
+        mock_repo.get_limits = AsyncMock(return_value=limits)
+        mock_repo.get_entity_disabled = AsyncMock(return_value=None)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        return runner.invoke(cli, ["entity", "get-limits", "user-123", "-r", "gpt-4"])
+
+    @staticmethod
+    def _resource(mock_repo_class, runner, limits):
+        mock_repo = Mock()
+        mock_repo.get_resource_defaults = AsyncMock(return_value=limits)
+        mock_repo.get_resource_disabled = AsyncMock(return_value=None)
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        return runner.invoke(cli, ["resource", "get-defaults", "gpt-4"])
+
+    @staticmethod
+    def _system(mock_repo_class, runner, limits):
+        mock_repo = Mock()
+        mock_repo.get_system_defaults = AsyncMock(return_value=(limits, None))
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        return runner.invoke(cli, ["system", "get-defaults"])
+
+    # --- the block itself ---
+
+    @patch("zae_limiter.repository.Repository")
+    def test_renders_the_whole_block_verbatim(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Pinned as an exact string: indent, cron, timezone, arrow and gloss."""
+        result = self._entity(mock_repo_class, runner, [self._business_hours()])
+
+        assert result.exit_code == 0
+        assert (
+            "  rpm: 1,000/min\n"
+            "    Schedule:\n"
+            '      "* 9-17 * * MON-FRI" America/New_York  → scale 50%\n'
+            '      "* 0-6 * * *" America/New_York  → capacity 2,000\n'
+        ) in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_numeric_weekday_renders_as_names(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """The one visible normalisation of canonical storage (§4.3).
+
+        The entry is built with ``1-5``; the round trip through the compact
+        encoding must hand back ``MON-FRI``, so echoing ``entry.cron`` fails.
+        """
+        from zae_limiter.models import Limit
+        from zae_limiter.schedule import ScheduleEntry
+
+        limit = Limit.per_minute("rpm", 1000).with_schedule(
+            (ScheduleEntry(cron="* 9-17 * * 1-5", tz="America/New_York", scale=0.5),)
+        )
+        result = self._entity(mock_repo_class, runner, [limit])
+
+        assert '"* 9-17 * * MON-FRI" America/New_York' in result.output
+        assert "1-5" not in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_an_absolute_entry_names_every_field_it_overrides(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """An entry may set several absolutes at once; none may be dropped.
+
+        ``__post_init__`` requires *one of* ``scale`` or the absolutes, not one
+        absolute, so ``capacity`` + ``refill_amount`` + ``refill_period_seconds``
+        is a legal entry and a renderer that reports only the first silently
+        loses two thirds of the override.
+        """
+        from zae_limiter.models import Limit
+        from zae_limiter.schedule import ScheduleEntry
+
+        limit = Limit.per_minute("rpm", 1000).with_schedule(
+            (
+                ScheduleEntry(
+                    cron="0 0 * * *",
+                    capacity=2000,
+                    refill_amount=500,
+                    refill_period_seconds=30,
+                ),
+            )
+        )
+        result = self._entity(mock_repo_class, runner, [limit])
+
+        assert (
+            '      "0 0 * * *" UTC  → capacity 2,000, refill_amount 500, refill_period_seconds 30\n'
+        ) in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_a_period_only_override_is_still_named(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """A lone ``refill_period_seconds`` must not degrade to a generic gloss."""
+        from zae_limiter.models import Limit
+        from zae_limiter.schedule import ScheduleEntry
+
+        limit = Limit.per_minute("rpm", 1000).with_schedule(
+            (ScheduleEntry(cron="0 0 * * *", refill_period_seconds=30),)
+        )
+        result = self._entity(mock_repo_class, runner, [limit])
+
+        assert "→ refill_period_seconds 30\n" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_a_fractional_scale_keeps_its_precision(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Storage quantises ``scale`` to per-mille, so display must show tenths.
+
+        ``{scale:.0%}`` would render 0.125 as ``12%`` — a different limit.
+        """
+        from zae_limiter.models import Limit
+        from zae_limiter.schedule import ScheduleEntry
+
+        limit = Limit.per_minute("rpm", 1000).with_schedule(
+            (ScheduleEntry(cron="0 0 * * *", scale=0.125),)
+        )
+        result = self._entity(mock_repo_class, runner, [limit])
+
+        assert "→ scale 12.5%\n" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_a_scale_above_one_renders_as_an_increase(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        from zae_limiter.models import Limit
+        from zae_limiter.schedule import ScheduleEntry
+
+        limit = Limit.per_minute("rpm", 1000).with_schedule(
+            (ScheduleEntry(cron="0 0 * * *", scale=2.5),)
+        )
+        result = self._entity(mock_repo_class, runner, [limit])
+
+        assert "→ scale 250%\n" in result.output
+
+    # --- N surfaces ---
+
+    @patch("zae_limiter.repository.Repository")
+    def test_three_windows_each_get_their_own_line(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """No truncation: `get-limits` is the command whose job is showing config."""
+        from zae_limiter.models import Limit
+        from zae_limiter.schedule import ScheduleEntry
+
+        limit = Limit.per_minute("rpm", 1000).with_schedule(
+            (
+                ScheduleEntry(cron="* 0-7 * * *", scale=0.25),
+                ScheduleEntry(cron="* 8-17 * * *", scale=1.0),
+                ScheduleEntry(cron="* 18-23 * * *", scale=0.5),
+            )
+        )
+        result = self._entity(mock_repo_class, runner, [limit])
+
+        assert (
+            "    Schedule:\n"
+            '      "* 0-7 * * *" UTC  → scale 25%\n'
+            '      "* 8-17 * * *" UTC  → scale 100%\n'
+            '      "* 18-23 * * *" UTC  → scale 50%\n'
+        ) in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_the_block_attaches_to_its_own_limit_among_several(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Only the scheduled limit gets a block, and it sits under that limit."""
+        from zae_limiter.models import Limit
+        from zae_limiter.schedule import ScheduleEntry
+
+        scheduled = Limit.per_minute("tpm", 10_000).with_schedule(
+            (ScheduleEntry(cron="* 9-17 * * *", tz="America/New_York", scale=0.5),)
+        )
+        result = self._entity(
+            mock_repo_class,
+            runner,
+            [Limit.per_minute("rpm", 500), scheduled, Limit.per_hour("tph", 100)],
+        )
+
+        assert (
+            "  rpm: 500/min\n"
+            "  tpm: 10,000/min\n"
+            "    Schedule:\n"
+            '      "* 9-17 * * *" America/New_York  → scale 50%\n'
+            "  tph: 100/hour\n"
+        ) in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_a_quota_may_carry_a_parameter_schedule_too(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Both tuples on one limit: reset in the headline, schedule in the block."""
+        from zae_limiter.models import Limit
+        from zae_limiter.schedule import ScheduleEntry
+
+        limit = Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York").with_schedule(
+            (ScheduleEntry(cron="* * * * SAT,SUN", tz="America/New_York", scale=0.5),)
+        )
+        result = self._entity(mock_repo_class, runner, [limit])
+
+        assert (
+            '  rpd: 10,000 quota (resets "0 0 * * *" America/New_York)\n'
+            "    Schedule:\n"
+            '      "* * * * SAT,SUN" America/New_York  → scale 50%\n'
+        ) in result.output
+
+    # --- the reset stays in the headline ---
+
+    @patch("zae_limiter.repository.Repository")
+    def test_a_quota_keeps_its_reset_in_the_headline(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """The reset is constitutive of a quota, not a modifier of one.
+
+        `_format_limit` renders what a limit allows and how it recovers — a rate
+        limit's ``/min``, a quota's reset cron. So the reset is *not* pulled out
+        into a second block: the cron appears exactly once, on the headline.
+        """
+        from zae_limiter.models import Limit
+
+        result = self._entity(
+            mock_repo_class,
+            runner,
+            [Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York")],
+        )
+
+        assert '  rpd: 10,000 quota (resets "0 0 * * *" America/New_York)\n' in result.output
+        assert "Reset:" not in result.output
+        assert "Schedule:" not in result.output
+        assert result.output.count("0 0 * * *") == 1
+
+    @patch("zae_limiter.repository.Repository")
+    def test_an_unscheduled_limit_shows_no_block(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        from zae_limiter.models import Limit
+
+        result = self._entity(mock_repo_class, runner, [Limit.per_minute("rpm", 1000)])
+
+        assert "  rpm: 1,000/min\n" in result.output
+        assert "Schedule:" not in result.output
+        assert "Reset:" not in result.output
+
+    # --- all three config levels ---
+
+    @patch("zae_limiter.repository.Repository")
+    def test_resource_get_defaults_renders_the_block(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        result = self._resource(mock_repo_class, runner, [self._business_hours()])
+
+        assert result.exit_code == 0
+        assert (
+            "  rpm: 1,000/min\n"
+            "    Schedule:\n"
+            '      "* 9-17 * * MON-FRI" America/New_York  → scale 50%\n'
+        ) in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_system_get_defaults_renders_the_block_at_its_own_indent(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """`system get-defaults` nests its limits under a `Limits:` header.
+
+        Its limit lines are indented four spaces, not two, so a block with a
+        hardcoded indent would sit level with the limit it belongs to instead of
+        under it.
+        """
+        result = self._system(mock_repo_class, runner, [self._business_hours()])
+
+        assert result.exit_code == 0
+        assert (
+            "  Limits:\n"
+            "    rpm: 1,000/min\n"
+            "      Schedule:\n"
+            '        "* 9-17 * * MON-FRI" America/New_York  → scale 50%\n'
+        ) in result.output

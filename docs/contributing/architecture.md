@@ -124,6 +124,9 @@ See [ADR-111](../adr/111-flatten-all-records.md).
     "b_wcu_cp": 1000000,                    # wcu capacity (1000 WCU/sec)
     "b_wcu_tc": 1000,                       # wcu total consumed
     "rf": 1704067200000,                    # last_refill_ms (shared across limits)
+    "sched": "h9-17w1-5s500",               # item-level schedule, compact encoding (#222)
+    "sched_tz": "America/New_York",         # IANA zone shared by every schedule here
+    "vu": 1704088800000,                    # valid_until_ms: next boundary on this item
     "cascade": False,
     "GSI2PK": "{ns}/RESOURCE#gpt-4",
     "GSI2SK": "BUCKET#user-1#0",
@@ -132,6 +135,17 @@ See [ADR-111](../adr/111-flatten-all-records.md).
     "ttl": 1234567890
 }
 ```
+
+`sched` / `rsched` / `sched_tz` are the schedule denormalized onto the item (#222, ADR-135).
+They are absent on an unscheduled bucket, and a limit whose schedule differs from the item
+default is stamped with `b_{name}_sched` / `b_{name}_rsched`. On an item that carries a default,
+a limit with **no** schedule is stamped with the reserved marker `-`
+(`schema.BUCKET_SCHED_NONE`), because a missing override already means "inherit the default" and
+cannot also mean "unscheduled" — that is what keeps a quota and a rate limit sharing one item
+from acquiring each other's windows. `cp` / `ra` / `rp` stay the
+**base** parameters: every refiller applies the schedule on top of them at read time and
+materialises only `tk`. `vu` is the earliest instant at which any limit here changes effective
+parameters — the fast path's condition compares against it and nothing else.
 
 The `wcu` (write capacity unit) limit is a reserved infrastructure limit auto-injected on every bucket. It tracks per-partition write pressure and is hidden from user-facing output (get_buckets, RateLimitExceeded, usage snapshots). When exhausted, the client doubles `shard_count` to spread writes across more DynamoDB partitions.
 
@@ -178,6 +192,9 @@ See: [Issue #168](https://github.com/zeroae/zae-limiter/issues/168)
     "l_tpm_cp": 100000,               # capacity for tpm limit
     "l_tpm_ra": 100000,               # refill_amount for tpm limit
     "l_tpm_rp": 60,                   # refill_period_seconds for tpm limit
+    "l_tpm_sched": "h9-17w1-5s500",   # tpm's schedule, compact encoding (#222)
+    "l_rpd_rsched": "m0h0",           # rpd's reset schedule ("0 0 * * *")
+    "sched_tz": "America/New_York",   # one zone per item, hoisted out of the entries
     "config_version": 1               # Atomic counter for cache invalidation
 }
 ```
@@ -217,7 +234,8 @@ The algorithm is implemented in [`bucket.py`](https://github.com/zeroae/zae-limi
 | `refill_bucket()` | Calculate refilled tokens with drift compensation |
 | `try_consume()` | Atomic check-and-consume operation |
 | `force_consume()` | Force consume (can go negative) |
-| `calculate_retry_after()` | Calculate wait time for deficit |
+| `calculate_retry_after()` | Wait time for a deficit at a single fixed rate — the reference definition the boundary walk is pinned against |
+| `schedule.retry_after_with_schedule()` | Wait time across schedule boundaries and reset edges; what every `LimitStatus.retry_after_seconds` reports |
 | `calculate_available()` | Calculate currently available tokens |
 | `build_limit_status()` | Build a LimitStatus for a bucket check |
 | `would_refill_satisfy()` | Check if refilling would allow a request to succeed (speculative writes) |
@@ -239,12 +257,17 @@ new_last_refill = last_refill_ms + time_used_ms
 
 The inverse calculation ensures we only "consume" the time that corresponds to whole tokens, preventing drift over many refill cycles.
 
-**Retry-after calculation**:
+**Retry-after calculation** (a single fixed rate — an unscheduled limit):
 
 ```
 time_ms = (deficit_milli × refill_period_ms) // refill_amount_milli
 retry_seconds = (time_ms + 1) / 1000.0  # +1ms rounds up
 ```
+
+With a schedule, the estimate walks forward window by window instead, accumulating tokens at
+each window's own rate until the deficit clears (capped at eight windows, then the formula
+above). A `reset_schedule` edge landing before the deficit clears is the answer outright: a
+quota has no refill rate at all, so its next reset instant is the only finite wait.
 
 ### Integer Arithmetic for Precision
 
@@ -397,13 +420,20 @@ state including denormalized `cascade` and `parent_id` fields.
 Speculative flow (first acquire — sequential, populates entity cache):
 1. Pick shard: random.randrange(shard_count) from entity cache (shard 0 if no cache)
 2. UpdateItem on PK={ns}/BUCKET#{id}#{resource}#{shard} with condition:
-   attribute_exists(PK) AND all app limits tk >= consumed AND wcu tk >= 1000
+   attribute_exists(PK)
+   AND attribute_not_exists(disabled)
+   AND (attribute_not_exists(vu) OR vu > now_ms)
+   AND all app limits tk >= consumed AND wcu tk >= 1000
    +- SUCCESS -> Populate entity cache (cascade, parent_id, shard_counts), Lease pre-committed
    |  +- cascade=False -> DONE
    |  +- cascade=True -> Speculative UpdateItem on parent (sequential)
    |     +- SUCCESS -> DONE (child + parent both speculative)
    |     +- FAIL -> [parent failure handling]
    +- FAIL -> Check ALL_OLD
+      +- disabled stamped -> ResourceDisabled
+      +- vu passed (schedule boundary) -> Fall back to normal path to re-materialise
+      |  (never a shard retry — every shard crosses the same boundary — and never a
+      |   fast rejection, since the new window may have raised the limit)
       +- No item (bucket missing) -> Fall back to normal path
       +- wcu exhausted -> Double shard_count (conditional write on shard 0), fall back
       +- App limits: Refill would help -> Fall back to normal path

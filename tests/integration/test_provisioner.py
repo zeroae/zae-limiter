@@ -15,6 +15,7 @@ To run these tests locally:
 import pytest
 
 from zae_limiter.models import Limit
+from zae_limiter.schema import LIMIT_FIELD_SCHED, limit_attr, pk_system, sk_config
 from zae_limiter_provisioner.applier import apply_changes
 from zae_limiter_provisioner.differ import compute_diff
 from zae_limiter_provisioner.handler import _handle_cfn, _handle_cli
@@ -273,6 +274,65 @@ class TestHandlerIntegration:
         assert r2["deleted"] == 2
 
     @pytest.mark.asyncio
+    async def test_handler_cfn_create_with_stringified_properties(self, test_repo):
+        """The same Create event as delivered by real CloudFormation (#554).
+
+        Every other custom-resource test in this file (and every unit test
+        before #554) builds `ResourceProperties` out of native Python types —
+        `{"Capacity": 1500, "Disabled": False}` — which is a shape CloudFormation
+        cannot produce. It stringifies every scalar leaf, so `'1500' <= 0` raised
+        `TypeError` and `bool('false')` was `True`, silently disabling the
+        resource an operator was explicitly re-admitting (ADR-125 carve-out).
+
+        This drives the stringified payload all the way into DynamoDB and reads
+        the result back through the async `Repository`, so the assertions are
+        against stored state rather than against the converter's return value.
+        """
+        cfn_create = {
+            "RequestType": "Create",
+            "ResourceProperties": {
+                "TableName": test_repo.table_name,
+                "NamespaceId": test_repo._namespace_id,
+                "Namespace": "test",
+                "System": {
+                    "OnUnavailable": "block",
+                    "Limits": {"rpm": {"Capacity": "1500", "RefillPeriod": "60"}},
+                },
+                "Resources": {
+                    # The carve-out shape: an explicit re-admission carrying no
+                    # numeric field of its own, so nothing trips a TypeError and
+                    # the inversion is silent.
+                    "gpt-4": {
+                        "Disabled": "false",
+                        "Limits": {"tpm": {"Capacity": "60000", "RefillAmount": "60000"}},
+                    },
+                    "legacy": {"Disabled": "true"},
+                },
+            },
+        }
+        result = _handle_cfn(cfn_create, None)
+        assert result["errors"] == []
+        assert result["created"] == 3
+
+        system_limits, on_unavailable = await test_repo.get_system_defaults()
+        assert on_unavailable == "block"
+        rpm = next(limit for limit in system_limits if limit.name == "rpm")
+        assert rpm.capacity == 1500
+        assert isinstance(rpm.capacity, int)
+        assert rpm.refill_period_seconds == 60
+
+        tpm = next(
+            limit for limit in await test_repo.get_resource_defaults("gpt-4") if limit.name == "tpm"
+        )
+        assert tpm.capacity == 60000
+        assert isinstance(tpm.capacity, int)
+
+        # The headline assertion: `'false'` resolved to a real False, so the
+        # resource is enabled. Before the fix this stored disabled=True.
+        assert await test_repo.resolve_disabled("anyone", "gpt-4") == (False, "resource")
+        assert await test_repo.resolve_disabled("anyone", "legacy") == (True, "resource")
+
+    @pytest.mark.asyncio
     async def test_handler_on_unavailable_persisted(self, test_repo):
         """System on_unavailable setting is persisted and readable."""
         manifest = {
@@ -354,3 +414,65 @@ class TestHandlerIntegration:
             "so managed state has drifted from what apply_changes wrote"
         )
         assert "gpt-4" in state.get("managed_resources", [])
+
+    @pytest.mark.asyncio
+    async def test_undecodable_stored_schedule_still_records_state(self, test_repo):
+        """#563: a post-commit fan-out failure must not lose `#PROVISIONER`.
+
+        `bucket_sync._decode_limits` raises on a stored compact schedule this
+        provisioner cannot read (PR #549, deliberately). Reaching that from the
+        handler needs a level the apply does NOT rewrite, or `apply_changes`'
+        own `put_item` overwrites the corrupt item before the sync reads it and
+        the whole scenario passes for the wrong reason. System is such a level:
+        an apply that drops an entity's config reconciles that entity down
+        through entity(`_default_`) -> resource -> system, and rewrites none of
+        them.
+
+        Against moto this is pinned in `tests/unit/test_provisioner_handler.py`;
+        here the config item, the walk and the `#PROVISIONER` record are all
+        real DynamoDB.
+        """
+        client = await test_repo._get_client()
+        ns = test_repo._namespace_id
+
+        await test_repo.set_system_defaults([Limit.per_minute("rpm", 1_000)])
+        await client.update_item(
+            TableName=test_repo.table_name,
+            Key={"PK": {"S": pk_system(ns)}, "SK": {"S": sk_config()}},
+            UpdateExpression="SET #a = :v",
+            ExpressionAttributeNames={"#a": limit_attr("rpm", LIMIT_FIELD_SCHED)},
+            ExpressionAttributeValues={":v": {"S": "zz!!garbage"}},
+        )
+
+        # Apply 1: takes ownership of an entity config. Scoped to "gpt-4", so
+        # the sync plans from the manifest and never walks up to system.
+        first = self._cli_event(
+            "apply",
+            test_repo.table_name,
+            ns,
+            {
+                "namespace": "test",
+                "entities": {
+                    "user-1": {"resources": {"gpt-4": {"limits": {"rpm": {"capacity": 2000}}}}}
+                },
+            },
+        )
+        r1 = _handle_cli(first, None)
+        assert r1["errors"] == []
+        assert (await test_repo.get_provisioner_state())["managed_entities"] == {
+            "user-1": ["gpt-4"]
+        }
+
+        # Apply 2: drops it. The delete commits, then the reconciliation walk
+        # reaches the corrupt system item and raises.
+        second = self._cli_event("apply", test_repo.table_name, ns, {"namespace": "test"})
+        r2 = _handle_cli(second, None)
+
+        assert r2["status"] == "applied"
+        assert r2["deleted"] == 1
+        assert any("user-1/gpt-4" in e for e in r2["errors"]), r2["errors"]
+
+        # The config write committed...
+        assert await test_repo.get_limits("user-1", "gpt-4") == []
+        # ...so the record must describe it, not the previous apply.
+        assert (await test_repo.get_provisioner_state())["managed_entities"] == {}

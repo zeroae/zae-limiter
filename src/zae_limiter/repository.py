@@ -6,6 +6,7 @@ import logging
 import random
 import time
 import warnings
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 
 from aiobotocore.session import AioSession, get_session
@@ -2077,10 +2078,48 @@ class Repository:
     # -------------------------------------------------------------------------
 
     @staticmethod
-    def _encode_item_schedule(
-        named_schedules: list[tuple[str, tuple[schedule.ScheduleEntry, ...] | None]],
-    ) -> tuple[str, str, dict[str, str]] | None:
-        """Resolve §4.1's item-level default plus per-limit overrides.
+    def _encode_one_tuple(
+        named_schedules: list[tuple[str, tuple[schedule.ScheduleEntry, ...]]],
+        encoder: Callable[[tuple[schedule.ScheduleEntry, ...]], tuple[str, str | None]],
+    ) -> tuple[str, dict[str, str]] | None:
+        """§4.1's item-level default plus per-limit overrides, for one tuple.
+
+        Returns ``(default_compact, overrides)``, where ``overrides`` names
+        only the limits whose encoding differs from the default, or ``None``
+        when no limit on the item carries this kind of schedule. The timezone
+        is resolved once for the whole item by the caller, not here.
+
+        A limit with **no** schedule of this kind is an override too, spelled
+        ``schema.BUCKET_SCHED_NONE`` (#541). Absence still means "inherit the
+        item default", which is what keeps a shared schedule down to one
+        attribute — but it can no longer *also* mean "unscheduled", because
+        both readings applied to the same byte pattern and every reader picked
+        the wrong one. The contamination ran both ways on a mixed item: a rate
+        limit acquired the quota's midnight reset, and the quota acquired the
+        rate limit's ``0.5x`` window.
+        """
+        scheduled = [(name, encoder(sched)[0]) for name, sched in named_schedules if sched]
+        if not scheduled:
+            return None
+        # Order decides the item-level default, as it always has: a different
+        # pick would relabel which limits need an override.
+        default_compact = scheduled[0][1]
+        encodings = dict(scheduled)
+        overrides = {}
+        for name, _sched in named_schedules:
+            compact = encodings.get(name, schema.BUCKET_SCHED_NONE)
+            if compact != default_compact:
+                overrides[name] = compact
+        return default_compact, overrides
+
+    @classmethod
+    def _encode_item_schedules(
+        cls,
+        named: list[
+            tuple[str, tuple[schedule.ScheduleEntry, ...], tuple[schedule.ScheduleEntry, ...]]
+        ],
+    ) -> tuple[str, tuple[str, dict[str, str]] | None, tuple[str, dict[str, str]] | None] | None:
+        """Encode **both** schedule tuples for one bucket item, under one zone.
 
         One encoder for both writers of these attributes — the bucket-create
         stamp (`_stamp_schedule`) and the `set_limits` fan-out
@@ -2090,15 +2129,23 @@ class Repository:
         default, which limits get an override, and what counts as a timezone
         conflict.
 
+        The two tuples are resolved **together** rather than by two independent
+        calls, because `sched_tz` is a single item-level attribute they share
+        (§4.1). Two calls would each be internally consistent and jointly
+        wrong — and on the fan-out, one of them would `SET` the attribute while
+        the other `REMOVE`d it in the same expression, which is the #488
+        `ValidationException`.
+
         Args:
-            named_schedules: ``(limit_name, schedule)`` for every limit on the
-                item, scheduled or not. Order decides the item-level default.
+            named: ``(limit_name, schedule, reset_schedule)`` for every limit
+                on the item, scheduled or not. Order decides the item-level
+                default, independently per tuple.
 
         Returns:
-            ``(default_compact, tz, overrides)`` where ``overrides`` maps a
-            limit name to its own compact encoding — present only for limits
-            that differ from the default. ``None`` when nothing on the item is
-            scheduled.
+            ``(tz, param, reset)`` where each of ``param``/``reset`` is
+            ``(default_compact, overrides)`` or ``None`` when no limit carries
+            that kind. ``None`` overall when nothing on the item is scheduled
+            at all — in which case there is no timezone to report either.
 
         Raises:
             ValueError: The scheduled limits disagree on a timezone. It is
@@ -2110,40 +2157,50 @@ class Repository:
                 silently keeping the first limit's zone would reinterpret the
                 second limit's cron in the wrong one.
         """
-        scheduled = [(name, sched) for name, sched in named_schedules if sched]
-        if not scheduled:
-            return None
-
-        zones = {entry.tz for _name, sched in scheduled for entry in sched}
+        zones = {
+            entry.tz for _name, sched, reset in named for entry in (*(sched or ()), *(reset or ()))
+        }
         if len(zones) > 1:
             raise ValueError(
                 f"all scheduled limits on one bucket item must share a timezone, got "
                 f"{sorted(zones)}. The timezone is stored once per item as "
                 f"`sched_tz`, not per limit."
             )
+        if not zones:
+            return None
 
-        encodings = [(name, schedule.encode(sched)) for name, sched in scheduled]
-        default_compact, default_tz = encodings[0][1]
-        overrides = {
-            name: compact for name, (compact, _tz) in encodings if compact != default_compact
-        }
-        return default_compact, default_tz or "UTC", overrides
+        param = cls._encode_one_tuple(
+            [(name, sched or ()) for name, sched, _reset in named], schedule.encode
+        )
+        reset = cls._encode_one_tuple(
+            [(name, reset or ()) for name, _sched, reset in named], schedule.encode_reset
+        )
+        return zones.pop(), param, reset
 
     def _stamp_schedule(self, item: dict[str, Any], states: list[BucketState]) -> None:
-        """Write ``sched`` / ``sched_tz`` / ``b_{name}_sched`` onto a new item.
+        """Write ``sched`` / ``rsched`` / ``sched_tz`` / overrides onto a new item.
 
         A fresh item carries no stale override to strip, so this is the SET
         half of what `_build_bucket_param_update` does; both go through
-        `_encode_item_schedule` so the two cannot drift.
+        `_encode_item_schedules` so the two cannot drift.
         """
-        encoded = self._encode_item_schedule([(s.limit_name, s.sched) for s in states])
+        encoded = self._encode_item_schedules(
+            [(s.limit_name, s.sched, s.reset_sched) for s in states]
+        )
         if encoded is None:
             return
-        default_compact, tz, overrides = encoded
-        item[schema.BUCKET_FIELD_SCHED] = {"S": default_compact}
+        tz, param, reset = encoded
         item[schema.BUCKET_FIELD_SCHED_TZ] = {"S": tz}
-        for name, compact in overrides.items():
-            item[schema.bucket_attr(name, schema.BUCKET_FIELD_SCHED)] = {"S": compact}
+        for field, part in (
+            (schema.BUCKET_FIELD_SCHED, param),
+            (schema.BUCKET_FIELD_RSCHED, reset),
+        ):
+            if part is None:
+                continue
+            default_compact, overrides = part
+            item[field] = {"S": default_compact}
+            for name, compact in overrides.items():
+                item[schema.bucket_attr(name, field)] = {"S": compact}
 
     def build_composite_create(
         self,
@@ -2204,13 +2261,15 @@ class Repository:
         if vu is not None:
             item[schema.BUCKET_FIELD_VU] = {"N": str(vu)}
 
-        # The schedule is stamped at bucket creation and re-stamped by the
+        # Both schedules are stamped at bucket creation and re-stamped by the
         # `set_limits` fan-out (§2.2). Without it here, a bucket first seen by
         # the slow path inside a `0.5x` window would reach the aggregator
         # carrying `vu` but no `sched`: the aggregator reads the item and
         # nothing else, so it would refill toward the *base* ceiling and the
         # fast path would spend the surplus — the scheduled limit silently not
-        # enforced until the next admin fan-out.
+        # enforced until the next admin fan-out. `rsched` is the same argument
+        # one step further: a quota bucket born without it is a bucket whose
+        # `refill_amount` is 0 and which nothing ever refills.
         self._stamp_schedule(item, states)
 
         # Auto-inject wcu infrastructure limit
@@ -3450,43 +3509,60 @@ class Repository:
             expr_names[f"#rp{i}"] = rp_attr
             expr_values[f":rp{i}"] = {"N": str(limit.refill_period_seconds * 1000)}
 
-        # Re-stamp the schedule (#222 §2.2). The aggregator reads the item and
-        # nothing else, so a bucket left holding a superseded `sched` is
-        # refilled toward a ceiling the operator has already changed.
-        encoded = self._encode_item_schedule([(limit.name, limit.schedule) for limit in limits])
-        if encoded is not None:
-            default_compact, default_tz, overrides = encoded
-            set_parts.append("#sched = :sched")
-            expr_names["#sched"] = schema.BUCKET_FIELD_SCHED
-            expr_values[":sched"] = {"S": default_compact}
-            set_parts.append("#sched_tz = :sched_tz")
-            expr_names["#sched_tz"] = schema.BUCKET_FIELD_SCHED_TZ
-            expr_values[":sched_tz"] = {"S": default_tz}
+        # Re-stamp both schedules (#222 §2.2, §3.6). The aggregator reads the
+        # item and nothing else, so a bucket left holding a superseded `sched`
+        # is refilled toward a ceiling the operator has already changed, and
+        # one left holding a superseded `rsched` keeps resetting on a calendar
+        # nobody asked for any more.
+        encoded = self._encode_item_schedules(
+            [(limit.name, limit.schedule, limit.reset_schedule) for limit in limits]
+        )
+        # `sched_tz` is shared by both tuples, so it is decided once, from
+        # whether *anything* on the item is scheduled. Deciding it inside the
+        # parameter branch would REMOVE it for a quota carrying only a reset —
+        # and the stored `rsched` would then decode as UTC forever — or, worse,
+        # SET and REMOVE it in one expression (#488).
+        expr_names["#sched_tz"] = schema.BUCKET_FIELD_SCHED_TZ
+        if encoded is None:
+            tz, param, reset = None, None, None
+            remove_parts.append("#sched_tz")
         else:
-            overrides = {}
-            for alias, attr in (
-                ("#sched", schema.BUCKET_FIELD_SCHED),
-                ("#sched_tz", schema.BUCKET_FIELD_SCHED_TZ),
-            ):
-                expr_names[alias] = attr
-                remove_parts.append(alias)
+            tz, param, reset = encoded
+            set_parts.append("#sched_tz = :sched_tz")
+            expr_values[":sched_tz"] = {"S": tz}
 
         # Per-limit overrides are SET where a limit differs from the item
         # default and REMOVEd everywhere else — including on the scheduled
-        # branch, which is the half the plan's snippet left out. Absence means
-        # "inherit the item default", so a limit that used to carry its own
-        # schedule and now shares the default (or has none at all) keeps
-        # enforcing the superseded one forever unless its override is stripped.
-        # Each alias lands in exactly one of the two lists, never both (#488).
-        for i, limit in enumerate(limits):
-            alias = f"#lsched{i}"
-            expr_names[alias] = schema.bucket_attr(limit.name, schema.BUCKET_FIELD_SCHED)
-            compact = overrides.get(limit.name)
-            if compact is None:
-                remove_parts.append(alias)
+        # branch. Absence means "inherit the item default", so a limit that
+        # used to carry its own schedule and now shares the default keeps
+        # enforcing the superseded one forever unless its override is
+        # stripped. A limit that now has *no* schedule is not in that class:
+        # it gets `BUCKET_SCHED_NONE` SET rather than its override REMOVEd
+        # (#541), because removing it would make it inherit the default
+        # instead. Each alias lands in exactly one of the two lists, never
+        # both (#488).
+        for prefix, field, part in (
+            ("sched", schema.BUCKET_FIELD_SCHED, param),
+            ("rsched", schema.BUCKET_FIELD_RSCHED, reset),
+        ):
+            item_alias = f"#{prefix}"
+            expr_names[item_alias] = field
+            if part is None:
+                overrides: dict[str, str] = {}
+                remove_parts.append(item_alias)
             else:
-                set_parts.append(f"{alias} = :lsched{i}")
-                expr_values[f":lsched{i}"] = {"S": compact}
+                default_compact, overrides = part
+                set_parts.append(f"{item_alias} = :{prefix}")
+                expr_values[f":{prefix}"] = {"S": default_compact}
+            for i, limit in enumerate(limits):
+                alias = f"#l{prefix}{i}"
+                expr_names[alias] = schema.bucket_attr(limit.name, field)
+                compact = overrides.get(limit.name)
+                if compact is None:
+                    remove_parts.append(alias)
+                else:
+                    set_parts.append(f"{alias} = :l{prefix}{i}")
+                    expr_values[f":l{prefix}{i}"] = {"S": compact}
 
         # Outside both branches, so it runs on EVERY fan-out, scheduled or
         # not: force exactly one materialising pass, which clamps any surplus
@@ -3537,10 +3613,11 @@ class Repository:
                     schema.BUCKET_FIELD_RA,
                     schema.BUCKET_FIELD_RP,
                     schema.BUCKET_FIELD_TC,
-                    # A dropped limit's own schedule override goes with it.
-                    # Left behind it is orphan state that re-attaches the
+                    # A dropped limit's own schedule overrides go with it.
+                    # Left behind they are orphan state that re-attaches the
                     # moment a limit of that name is configured again.
                     schema.BUCKET_FIELD_SCHED,
+                    schema.BUCKET_FIELD_RSCHED,
                 )
             ):
                 alias = f"#stale{i}_{j}"
@@ -5085,12 +5162,63 @@ class Repository:
             total_consumed_milli=total_consumed_milli,
         )
 
+    def _decode_stored_schedule(
+        self, attr_name: str, compact: str, tz: str, *, reset: bool = False
+    ) -> tuple[schedule.ScheduleEntry, ...]:
+        """Decode a stored schedule, or declare the limiter unavailable (#222 §6).
+
+        A limiter that cannot determine which limit is in force is definitionally
+        unavailable, and ``on_unavailable`` is the knob that already exists for
+        that — under ``allow`` it degrades exactly the way the operator asked,
+        under ``block`` it raises. The alternative, treating an unreadable
+        schedule as *no* schedule, runs at the **base** limit: a parse error
+        would then double a customer's limit when the schedule said ``0.5x``,
+        and with ``vu`` left expired the bucket would be pinned to the slow path
+        permanently.
+
+        The parser keeps raising ``ValueError`` and is deliberately not touched.
+        ``schedule.py`` is pure stdlib plus cronsim with no ``zae_limiter``
+        imports, so that ``models`` can import it without a cycle and both
+        Lambdas can vendor it; and the aggregator's ``_decode_schedule`` catches
+        ``ValueError`` *specifically*, so raising an ``InfrastructureError``
+        there would slip through that catch and re-arm the poison-pill failure
+        core plan Task 14 fixed. Each boundary converts instead: the aggregator
+        skips the bucket, and this is the client's conversion.
+
+        The message carries the attribute name and the stored value because no
+        version marker says whether a newer client wrote this (#515).
+        ``_tokenise`` does discriminate structurally — an unknown tag reads
+        ``cannot parse from offset N`` where a cronsim rejection reads ``invalid
+        cron expression`` — but that is a heuristic, not a proof: corruption can
+        fail at an offset too.
+        """
+        try:
+            if reset:
+                return schedule.decode_reset(compact, tz)
+            return schedule.decode(compact, tz)
+        except ValueError as exc:
+            raise RateLimiterUnavailable(
+                f"stored schedule in {attr_name} could not be decoded: {compact!r} ({tz}): {exc}",
+                cause=exc,
+                stack_name=self.stack_name,
+            ) from exc
+
     def _deserialize_composite_bucket(self, item: dict[str, Any]) -> list[BucketState]:
         """Deserialize a composite DynamoDB item to a list of BucketStates.
 
         A composite bucket item stores all limits for an entity+resource in a
         single DynamoDB item. Per-limit attributes use the prefix b_{name}_{field}
         with a shared rf (refill timestamp). See ADR-114.
+
+        Both schedule tuples are decoded off the item (#222 §4.1) under the
+        same item-level-default-plus-per-limit-override rule the aggregator
+        applies, so the ``ALL_OLD`` / ``ALL_NEW`` images behind the speculative
+        path carry the schedule that was in force for the write. Without them
+        every fast-path ``LimitStatus`` reports the base capacity, flat, inside
+        a window that has already halved it. The slow path overwrites
+        ``state.sched`` from the config it just resolved (``_do_acquire``),
+        which is the fresher of the two — that ordering is deliberate and this
+        does not change it.
         """
         entity_id = item.get("entity_id", {}).get("S", "")
         resource = item.get("resource", {}).get("S", "")
@@ -5098,6 +5226,53 @@ class Repository:
         # Carried so refill math uses this shard's effective share (ADR-133).
         # The reserved wcu limit is per-partition and stays undivided.
         shard_count = int(item.get("shard_count", {}).get("N", "1"))
+
+        # One hoisted zone for the whole item, covering both tuples (#222
+        # §4.1). Absent on every item written before scheduling existed, where
+        # UTC is harmless: it is only ever consulted alongside a compact
+        # string, and those items carry none.
+        sched_tz = item.get(schema.BUCKET_FIELD_SCHED_TZ, {}).get("S") or "UTC"
+        item_sched = item.get(schema.BUCKET_FIELD_SCHED, {}).get("S")
+        item_rsched = item.get(schema.BUCKET_FIELD_RSCHED, {}).get("S")
+        # Keyed by (compact, reset) rather than by limit: the item-level
+        # default is shared by every limit that has no override of its own, so
+        # a 20-limit item decodes it once.
+        decoded: dict[tuple[str, bool], tuple[schedule.ScheduleEntry, ...]] = {}
+
+        def _schedule_for(
+            name: str, field: str, item_compact: str | None, reset: bool
+        ) -> tuple[schedule.ScheduleEntry, ...]:
+            """One limit's tuple: its own override if it has one, else the item default.
+
+            Absence means "inherit the default" — the write side only emits
+            `b_{name}_{field}` where a limit's encoding *differs* from it — so
+            this is the exact inverse of `_encode_one_tuple`, and the same rule
+            `processor._parse_bucket_record` applies.
+
+            `BUCKET_SCHED_NONE` is the third reading (#541): an override that
+            says "this limit has none of this kind", written for every
+            unscheduled limit on an item that carries a default. Without it
+            "unscheduled" and "same as the default" are one byte pattern, and
+            an unscheduled limit sharing an item with a scheduled one inherits
+            a window it never declared.
+            """
+            attr = schema.bucket_attr(name, field)
+            override = item.get(attr, {}).get("S")
+            if override == schema.BUCKET_SCHED_NONE:
+                return ()
+            compact = override or item_compact
+            if not compact:
+                return ()
+            key = (compact, reset)
+            if key not in decoded:
+                # The attribute that actually carried the string, not the one
+                # this limit would have used: an operator reading the message
+                # has to know whether to repair the item default or one
+                # limit's override.
+                decoded[key] = self._decode_stored_schedule(
+                    attr if override else field, compact, sched_tz, reset=reset
+                )
+            return decoded[key]
 
         # Discover limit names by scanning for b_{name}_tk attributes
         limit_names: list[str] = []
@@ -5118,6 +5293,23 @@ class Repository:
             tc_attr = item.get(schema.bucket_attr(name, schema.BUCKET_FIELD_TC), {})
             total_consumed = int(tc_attr["N"]) if "N" in tc_attr else None
 
+            # `wcu` is never scheduled — it tracks partition write pressure,
+            # not a user limit, and is the one limit `effective_params` must
+            # not scale (a 0.5x window would halve the write ceiling on
+            # exactly the hot buckets sharding exists to protect). The
+            # aggregator reaches the same place by exempting it at each
+            # consumer instead; doing it here keeps every client consumer of
+            # `state.sched` — refill, ceiling, retry estimate — covered at
+            # once. Mirrors `Limit._carrier` and `BucketState.for_wcu`, which
+            # both set the tuples to `()` explicitly on the write side.
+            is_wcu = name == schema.WCU_LIMIT_NAME
+            sched = (
+                () if is_wcu else _schedule_for(name, schema.BUCKET_FIELD_SCHED, item_sched, False)
+            )
+            reset_sched = (
+                () if is_wcu else _schedule_for(name, schema.BUCKET_FIELD_RSCHED, item_rsched, True)
+            )
+
             buckets.append(
                 BucketState(
                     entity_id=entity_id,
@@ -5129,7 +5321,9 @@ class Repository:
                     refill_amount_milli=_get(schema.BUCKET_FIELD_RA),
                     refill_period_ms=_get(schema.BUCKET_FIELD_RP),
                     total_consumed_milli=total_consumed,
-                    shard_count=1 if name == schema.WCU_LIMIT_NAME else shard_count,
+                    shard_count=1 if is_wcu else shard_count,
+                    sched=sched,
+                    reset_sched=reset_sched,
                 )
             )
 
@@ -5179,6 +5373,12 @@ class Repository:
             if limit.schedule:
                 compact, _tz = schedule.encode(limit.schedule)
                 base_item[schema.limit_attr(name, schema.LIMIT_FIELD_SCHED)] = {"S": compact}
+            # Without this leg a quota round-trips to `refill_amount=0` with no
+            # reset, which `Limit.__post_init__` rejects — so the write poisons
+            # the config item and every later read raises (#538).
+            if limit.reset_schedule:
+                compact, _tz = schedule.encode_reset(limit.reset_schedule)
+                base_item[schema.limit_attr(name, schema.LIMIT_FIELD_RSCHED)] = {"S": compact}
 
         if hoisted_tz is not None:
             base_item[schema.CONFIG_FIELD_SCHED_TZ] = {"S": hoisted_tz}
@@ -5189,11 +5389,30 @@ class Repository:
 
         Discovers limit names by scanning for l_{name}_cp attributes.
 
+        A stored schedule that will not decode raises ``RateLimiterUnavailable``
+        (#222 §6) and takes **the whole item** with it, not just its own limit.
+        Returning the other limits would drop the unreadable one from the level
+        entirely, and config precedence is per *level*, not per limit — a level
+        that still defines anything wins outright — so the dropped limit would
+        not fall back to the resource or system value, it would go unenforced.
+        That is strictly worse than the over-admission this guard exists to
+        prevent. It would also amplify: ``_sync_bucket_params`` resolves limits
+        and stamps them onto every bucket, so a partial read would erase the
+        limit from the items enforcing it. Both other readers of these
+        attributes already fail at item granularity — the aggregator skips the
+        whole bucket on one bad limit (``processor.try_refill_bucket``), and the
+        provisioner's ``_decode_limits`` raises out of the whole item.
+
         Args:
             item: DynamoDB item with l_{name}_{field} attributes
 
         Returns:
             List of Limit objects reconstructed from composite attributes
+
+        Raises:
+            RateLimiterUnavailable: A stored schedule on this item cannot be
+                decoded, or a limit carrying one cannot be reconstructed from
+                what is stored.
         """
         # Discover limit names by scanning for l_{name}_cp attributes
         limit_names: list[str] = []
@@ -5217,16 +5436,50 @@ class Repository:
                 attr = schema.limit_attr(name, field)
                 return int(item.get(attr, {}).get("N", "0"))
 
-            sched_attr = item.get(schema.limit_attr(name, schema.LIMIT_FIELD_SCHED), {}).get("S")
-            limits.append(
-                Limit(
-                    name=name,
-                    capacity=_get(schema.LIMIT_FIELD_CP),
-                    refill_amount=_get(schema.LIMIT_FIELD_RA),
-                    refill_period_seconds=_get(schema.LIMIT_FIELD_RP),
-                    schedule=schedule.decode(sched_attr, sched_tz) if sched_attr else (),
-                )
+            sched_name = schema.limit_attr(name, schema.LIMIT_FIELD_SCHED)
+            rsched_name = schema.limit_attr(name, schema.LIMIT_FIELD_RSCHED)
+            sched_attr = item.get(sched_name, {}).get("S")
+            rsched_attr = item.get(rsched_name, {}).get("S")
+            # Both tuples decode independently — either can be corrupt on its
+            # own, and `rsched` is the only one a quota has.
+            sched = (
+                self._decode_stored_schedule(sched_name, sched_attr, sched_tz) if sched_attr else ()
             )
+            reset_sched = (
+                self._decode_stored_schedule(rsched_name, rsched_attr, sched_tz, reset=True)
+                if rsched_attr
+                else ()
+            )
+            try:
+                limits.append(
+                    Limit(
+                        name=name,
+                        capacity=_get(schema.LIMIT_FIELD_CP),
+                        refill_amount=_get(schema.LIMIT_FIELD_RA),
+                        refill_period_seconds=_get(schema.LIMIT_FIELD_RP),
+                        schedule=sched,
+                        reset_schedule=reset_sched,
+                    )
+                )
+            except ValueError as exc:
+                # A schedule can also defeat reconstruction *after* it parses:
+                # a stored `rsched` beside a positive stored rate is rejected
+                # by `Limit.__post_init__` (ADR-137: never both). Same class as
+                # a decode failure — the stored schedule leaves the limit
+                # undeterminable — so it converts the same way, and for the
+                # same reason: "no schedule" would silently run at the base
+                # limit. Scoped to limits that actually carry one; an
+                # unscheduled limit that will not reconstruct (a stored zero
+                # rate with no reset, #538's shape) still surfaces as the
+                # ValueError it has always been, since nothing about a schedule
+                # is involved in deciding it.
+                if not sched and not reset_sched:
+                    raise
+                raise RateLimiterUnavailable(
+                    f"stored limit {name!r} carries a schedule but cannot be reconstructed: {exc}",
+                    cause=exc,
+                    stack_name=self.stack_name,
+                ) from exc
 
         return limits
 
@@ -5569,6 +5822,103 @@ class Repository:
                 break
 
         return pks
+
+    async def reclaim_quota_surplus(
+        self,
+        entity_id: str,
+        resource: str,
+        shares_milli: dict[str, int],
+    ) -> tuple[int, dict[str, int]]:
+        """Clamp a quota's existing shards to their new share, and report the take (#587).
+
+        Called once, just before the slow path creates a shard that does not
+        exist yet, and only for limits that are quotas. A doubling shrinks every
+        shard's ceiling from ``cp // old_count`` to ``cp // new_count``, and
+        ``bucket.refill_bucket`` would trim each shard to the new one on its
+        next materialising pass anyway (``min(capacity, tokens)``, #496 / #222
+        §3.3). Doing it here instead makes the trim and the new shard's grant a
+        single conserving **transfer**: what comes off the siblings is exactly
+        what the new shard is created with, so the entity's spendable total does
+        not move across a doubling.
+
+        Eager rather than lazy because the speculative fast path is a pure
+        ``ADD`` with no ceiling arithmetic (#469 / #222 §3.3). An unclamped
+        sibling can spend its surplus at full speed while the new shard holds a
+        grant made from that same surplus — the over-admission of #587 in
+        transient form. Nothing is destroyed that was not already doomed, so a
+        reclaim followed by a rejected acquire costs the entity nothing.
+
+        A **dripping** limit must never be passed here. Its stored ``ra`` is
+        undivided, so its shards' ceilings still sum to the configured capacity
+        and a new shard starting full costs at most one ``time_to_fill`` of
+        burst, which token-bucket semantics allow; clamping it early would only
+        throw away tokens the refill is about to re-add.
+
+        Cost: 1 GSI3 KEYS_ONLY query + 1 ``BatchGetItem`` + one conditional
+        ``UpdateItem`` per shard that actually holds a surplus — none at all in
+        the common case of an entity that has already spent down. Paid once per
+        shard creation, bounded by ``MAX_SHARD_COUNT`` over the life of an
+        (entity, resource).
+
+        Args:
+            entity_id: Entity owning the shards.
+            resource: Resource the shards belong to.
+            shares_milli: ``{limit_name: capacity_milli // shard_count}`` for
+                the quota limits only — the ceiling each shard is clamped to.
+
+        Returns:
+            ``(shards_found, {limit_name: reclaimed_milli})``. ``shards_found``
+            is 0 when nothing has been materialised for this (entity, resource)
+            at all, which is **not** the same as reclaiming nothing: the caller
+            grants a full share in that case and a capped transfer otherwise.
+        """
+        reclaimed: dict[str, int] = dict.fromkeys(shares_milli, 0)
+        if not shares_milli:
+            return 0, reclaimed
+
+        pks = await self._discover_entity_bucket_pks(entity_id, resource)
+        if not pks:
+            return 0, reclaimed
+
+        client = await self._get_client()
+        keys = [{"PK": {"S": pk}, "SK": {"S": schema.sk_state()}} for pk in pks]
+        items: list[dict[str, Any]] = []
+        for start in range(0, len(keys), 100):
+            items.extend(
+                await self._batch_get_all(
+                    keys[start : start + 100],
+                    context=f"quota shards for entity {entity_id!r}",
+                    entity_id=entity_id,
+                )
+            )
+
+        for item in items:
+            pk = item["PK"]["S"]
+            for name, share in shares_milli.items():
+                attr = schema.bucket_attr(name, schema.BUCKET_FIELD_TK)
+                raw = item.get(attr, {}).get("N")
+                if raw is None or int(raw) <= share:
+                    continue
+                try:
+                    response = await client.update_item(
+                        TableName=self.table_name,
+                        Key={"PK": {"S": pk}, "SK": {"S": schema.sk_state()}},
+                        UpdateExpression="SET #tk = :share",
+                        ConditionExpression="#tk > :share",
+                        ExpressionAttributeNames={"#tk": attr},
+                        ExpressionAttributeValues={":share": {"N": str(share)}},
+                        ReturnValues="UPDATED_OLD",
+                    )
+                except ClientError as e:
+                    if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                        # Spent below the new ceiling since the read. There is
+                        # no surplus left to move, which is the right answer.
+                        continue
+                    raise
+                previous = int(response["Attributes"][attr]["N"])
+                reclaimed[name] += previous - share
+
+        return len(pks), reclaimed
 
     async def _fanout_resource(self, resource: str, disabled: bool) -> int:
         """Stamp every bucket for a resource, honoring per-entity overrides.

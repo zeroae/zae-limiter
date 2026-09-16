@@ -1,6 +1,6 @@
 # ADR-116: IAM Role Naming Convention
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-01-30
 **Issue:** [#252](https://github.com/zeroae/zae-limiter/issues/252)
 
@@ -15,7 +15,7 @@ With enterprise environments using permission boundaries (e.g., `role_name_forma
 
 ## Decision
 
-IAM role names must follow the pattern: `{format}.replace("{}", f"{stack_name}-{component}")` where component is one of: `aggr` (4 chars), `app` (3 chars), `admin` (5 chars), `read` (4 chars). All component names must be ≤ 8 characters to ensure users who choose valid stack names today won't break on library upgrades.
+IAM role names must follow the pattern: `{format}.replace("{}", f"{stack_name}-{component}")` where component is one of: `aggr` (4 chars), `app` (3 chars), `admin` (5 chars), `read` (4 chars), and — added with the declarative-limits provisioner — `prov` (4 chars). All component names must be ≤ 8 characters to ensure users who choose valid stack names today won't break on library upgrades.
 
 ## Consequences
 

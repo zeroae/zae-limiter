@@ -3,7 +3,7 @@ name: issue
 description: Use when user says "/issue", "create issue", "file issue", "report bug", "request feature", "update issue", "check off", "verify issue", "view issue", or needs to manage GitHub issues.
 allowed-tools: Bash(gh:*), AskUserQuestion, Grep, Read, Edit, Write, TodoWrite
 user-invocable: true
-argument-hint: view <number> | verify <number> [--all] [--dry-run] | ralph-loop <number> [--max-iterations <n>] | scan [--milestone <name>] [--fix]
+argument-hint: view <number> | comment <number> | verify <number> [--all] [--dry-run] | ralph-loop <number> [--max-iterations <n>] | scan [--milestone <name>] [--fix]
 context: fork
 ---
 
@@ -18,6 +18,7 @@ Create, update, and manage GitHub issues following ZeroAE conventions. Infer as 
 | **View** | "view issue", "view #123", `/issue view <number>` | Display full issue details (body, criteria, deps, comments) |
 | **Create** | "create issue", "file issue", "new issue", "report bug", "request feature" | Create new issue |
 | **Update** | "update issue", "add to issue", "update #123" | Modify existing issue |
+| **Comment** | `/issue comment <number>`, "comment on #123", "post findings on #123" | Post a new comment (never touches the body) |
 | **Progress** | "check off", "mark complete", "done with", "finished" | Check checkboxes based on work done |
 | **Verify** | `/issue verify <number> [--all] [--dry-run]` | Validate unchecked criteria, prompt to check off |
 | **Ralph Loop** | `/issue ralph-loop <number> [--max-iterations <n>]` | Iteratively work until all criteria pass |
@@ -35,6 +36,7 @@ When this skill is invoked, arguments follow the skill name (e.g., `/issue view 
 | `ralph-loop <number>` | Ralph Loop | Read `ralph-loop.md` |
 | `scan [--milestone <name>]` | Scan | Read `scan.md` |
 | `verify <number>` | Verify | Read `verify.md` |
+| `comment <number>` | Comment | Read `comment.md` |
 | update phrases ("update issue", "add to #123") | Update | Read `update.md` |
 | progress phrases ("check off", "mark complete") | Progress | Read `progress.md` |
 | (none) or create phrases | Create | Read `create.md` |
@@ -63,6 +65,7 @@ See [conventions.md](conventions.md) for full gitmoji-to-type mapping.
 - [view.md](view.md) - View issue mode
 - [create.md](create.md) - Create issue mode
 - [update.md](update.md) - Update issue mode
+- [comment.md](comment.md) - Comment mode (post a comment; never edits the body)
 - [progress.md](progress.md) - Progress tracking mode
 - [verify.md](verify.md) - Acceptance criteria verification mode
 - [ralph-loop.md](ralph-loop.md) - Ralph Loop mode (iterative issue resolution)

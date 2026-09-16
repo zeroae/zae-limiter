@@ -1004,3 +1004,128 @@ class TestCascadeParentSharding:
         assert after[0] > before[0] and after[1] > before[1], (
             f"parent writes must reach both shards: {before} -> {after}"
         )
+
+
+class TestQuotaShardCreationIsATransfer:
+    """A quota's new shard is filled from its siblings, never minted (#587).
+
+    Exercises the round trip the moto unit tests stub out: the GSI3 KEYS_ONLY
+    discovery, the ``BatchGetItem``, and the conditional ``SET tk = :share``
+    with ``ReturnValues=UPDATED_OLD`` that reports what the clamp took.
+    """
+
+    CAPACITY = 1_000
+    CRON = "0 0 * * *"
+
+    @staticmethod
+    async def _tokens(repo, entity_id: str, shard_id: int, limit_name: str) -> int | None:
+        client = await repo._get_client()
+        resp = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "gpt-4", shard_id)},
+                "SK": {"S": sk_state()},
+            },
+        )
+        item = resp.get("Item") or {}
+        raw = item.get(bucket_attr(limit_name, BUCKET_FIELD_TK))
+        return None if raw is None else int(raw["N"])
+
+    async def _seed(self, limiter, entity_id, limit):
+        """Shard 0 holding the whole allowance, then a real doubling to 2."""
+        from zae_limiter import RateLimiter
+        from zae_limiter.models import BucketState
+
+        repo = limiter._repository
+        await limiter.create_entity(entity_id)
+        await limiter.set_system_defaults([limit])
+        now_ms = repo._now_ms()
+        state = BucketState.from_limit(entity_id, "gpt-4", limit, now_ms)
+        vu, _reset = RateLimiter._materialisation_stamps(limit, now_ms)
+        await repo.transact_write(
+            [
+                repo.build_composite_create(
+                    entity_id, "gpt-4", [state], now_ms, shard_id=0, shard_count=1, vu=vu
+                )
+            ]
+        )
+        repo._entity_cache[(repo._namespace_id, entity_id)] = (False, None, {"gpt-4": 1})
+        assert await repo.bump_shard_count(entity_id, "gpt-4", 1) == 2
+        return repo
+
+    async def test_reclaim_clamps_shard_zero_and_reports_the_take(
+        self, localstack_limiter, unique_name
+    ):
+        from zae_limiter.models import Limit
+
+        limiter = localstack_limiter
+        entity_id = f"quota-reclaim-{unique_name}"
+        limit = Limit.quota("rpd", self.CAPACITY, cron=self.CRON)
+        repo = await self._seed(limiter, entity_id, limit)
+
+        shares = {"rpd": 500_000}
+        found, reclaimed = await repo.reclaim_quota_surplus(entity_id, "gpt-4", shares)
+        assert found == 1
+        assert reclaimed == {"rpd": 500_000}
+        assert await self._tokens(repo, entity_id, 0, "rpd") == 500_000
+
+        # Idempotent: nothing left above the share, so nothing more is taken.
+        assert await repo.reclaim_quota_surplus(entity_id, "gpt-4", {"rpd": 500_000}) == (
+            1,
+            {"rpd": 0},
+        )
+
+    async def test_a_spent_quota_creates_its_new_shard_empty(
+        self, localstack_limiter, monkeypatch, unique_name
+    ):
+        """#587: 998 of 1000 spent, and the doubling must not hand back 499."""
+        import random as _random
+
+        from zae_limiter import RateLimitExceeded
+        from zae_limiter.models import Limit
+
+        limiter = localstack_limiter
+        entity_id = f"quota-spent-{unique_name}"
+        limit = Limit.quota("rpd", self.CAPACITY, cron=self.CRON)
+        repo = await self._seed(limiter, entity_id, limit)
+
+        # Spend shard 0 down to 2 tokens through the real fast path.
+        await repo._speculative_consume_single(
+            entity_id, "gpt-4", {"rpd": self.CAPACITY - 2}, shard_id=0
+        )
+        assert await self._tokens(repo, entity_id, 0, "rpd") == 2_000
+
+        monkeypatch.setattr(_random, "randrange", lambda *a: 1)
+        monkeypatch.setattr(_random, "choice", lambda seq: 1 if 1 in seq else seq[0])
+        with pytest.raises(RateLimitExceeded):
+            async with limiter.acquire(entity_id, "gpt-4", {"rpd": 1}):
+                pass
+
+        # Shard 0 keeps its 2; nothing was minted onto shard 1.
+        assert await self._tokens(repo, entity_id, 0, "rpd") == 2_000
+        assert (await self._tokens(repo, entity_id, 1, "rpd") or 0) == 0
+
+    async def test_a_dripping_limit_still_mints_a_full_share(
+        self, localstack_limiter, monkeypatch, unique_name
+    ):
+        """The regression pin, against real DynamoDB."""
+        import random as _random
+
+        from zae_limiter.models import Limit
+
+        limiter = localstack_limiter
+        entity_id = f"drip-mint-{unique_name}"
+        # 1 token/hour keeps refill out of the assertion
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        repo = await self._seed(limiter, entity_id, limit)
+
+        await repo._speculative_consume_single(
+            entity_id, "gpt-4", {"rpm": self.CAPACITY - 2}, shard_id=0
+        )
+        monkeypatch.setattr(_random, "randrange", lambda *a: 1)
+        monkeypatch.setattr(_random, "choice", lambda seq: 1 if 1 in seq else seq[0])
+        async with limiter.acquire(entity_id, "gpt-4", {"rpm": 1}):
+            pass
+
+        assert await self._tokens(repo, entity_id, 0, "rpm") == 2_000  # not clamped early
+        assert await self._tokens(repo, entity_id, 1, "rpm") == 499_000  # full share, less one

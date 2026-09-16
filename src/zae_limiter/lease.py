@@ -6,9 +6,10 @@ import warnings
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from .bucket import calculate_available, calculate_retry_after, force_consume, try_consume
+from .bucket import calculate_available, force_consume, try_consume
 from .exceptions import LeaseExpiredError, RateLimitExceeded
 from .models import BucketState, Limit, LimitStatus
+from .schedule import retry_after_with_schedule
 from .schema import calculate_bucket_ttl_seconds
 
 # TransactionConflict retry constants (Issue #332)
@@ -68,6 +69,13 @@ class LeaseEntry:
     # next one. `_commit_initial()` takes the minimum across the entries
     # sharing a bucket item, because `vu` is one item-level attribute.
     _boundary_ms: int | None = None
+    # The next `reset_schedule` edge after that same clock reading, or None
+    # when this limit carries no reset schedule (#222 §3.6). The reset half of
+    # `_boundary_ms`, kept separate because `_commit_initial()` needs the two
+    # apart: an edge crossed between the acquire path's reading and the
+    # commit's is the one case `RateLimiter._apply_reset_edge()` cannot have
+    # seen, and `rf` is stamped at the *later* reading.
+    _reset_edge_ms: int | None = None
 
 
 @dataclass
@@ -401,6 +409,33 @@ class Lease:
                     refill_amounts[name] = (
                         entry.state.tokens_milli - entry._original_tokens_milli + consumed_milli
                     )
+                    # No reset code is needed for an edge the acquire path
+                    # already saw: it put `effective_capacity` on the state
+                    # before `try_consume`, so the line above resolves to
+                    # `eff_cp - stored_tk + consumed` on its own, and
+                    # `build_composite_normal` turns that into the identical
+                    # `ADD (eff_cp - tk_observed)` the aggregator writes.
+                    #
+                    # An edge crossed *between* the two clock readings is the
+                    # exception, and it is silent rather than merely late.
+                    # `_apply_reset_edge()` ran at the earlier reading and saw
+                    # nothing, yet `rf` below is stamped at this one — so the
+                    # next pass compares the edge against an `rf` already past
+                    # it and never applies it either. A whole period's quota
+                    # disappears, and the aggregator cannot rescue it: it reads
+                    # the same poisoned `rf` off the stream image.
+                    #
+                    # Re-expressing it here cannot double-apply: the acquire
+                    # path covers every edge at or before its own reading, and
+                    # `_reset_edge_ms` is strictly after it. Admission was
+                    # gated against the pre-reset balance, which is the
+                    # conservative direction — one request may be rejected at
+                    # the boundary, rather than a whole period silently lost.
+                    if entry._reset_edge_ms is not None and entry._reset_edge_ms <= now_ms:
+                        refill_amounts[name] = (
+                            entry.state.effective_capacity_milli(now_ms)
+                            - entry._original_tokens_milli
+                        )
 
                 items.append(
                     repo.build_composite_normal(
@@ -714,11 +749,26 @@ def _build_retry_failure_statuses(entries: list[LeaseEntry], now_ms: int) -> lis
             continue
         deficit_milli = max(0, entry.consumed * 1000 - entry.state.tokens_milli)
         # A sharded bucket refills at its share (GHSA-76rv); the undivided
-        # rate would under-report the wait by shard_count.
-        retry_after = calculate_retry_after(
+        # rate would under-report the wait by shard_count. The walk takes the
+        # undivided base and does both narrowings — schedule, then shard —
+        # itself (#222 §7), and returns the next reset edge outright when one
+        # lands before the deficit clears.
+        #
+        # Both schedules come off the **state**, not off `entry.limit`. In
+        # production they are the same tuples — `_do_acquire` attaches the
+        # resolved config's schedules to each state before admission, and
+        # `BucketState.from_limit` stamps them onto a new one — but the state
+        # is the single source `try_consume` also reads, so the fast and slow
+        # paths cannot answer the same question from different fields.
+        retry_after = retry_after_with_schedule(
             deficit_milli=deficit_milli,
-            refill_amount_milli=entry.state.retry_refill_amount_milli(now_ms),
-            refill_period_ms=entry.state.effective_refill_period_ms(now_ms),
+            cp_milli=entry.state.capacity_milli,
+            ra_milli=entry.state.refill_amount_milli,
+            rp_ms=entry.state.refill_period_ms,
+            sched=entry.state.sched,
+            reset_sched=entry.state.reset_sched,
+            now_ms=now_ms,
+            shard_count=entry.state.shard_count,
         )
         statuses.append(
             LimitStatus(

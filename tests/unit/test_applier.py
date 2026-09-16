@@ -285,3 +285,154 @@ class TestApplyChanges:
         )
         assert len(result.errors) == 1
         assert "DynamoDB error" in result.errors[0]
+
+
+class TestScheduleReachesTheConfigItem:
+    """A manifest schedule must be stored, not merely fanned out (#222).
+
+    `LimitDecl` learned to parse `schedule` / `reset_schedule` in #543, but the
+    applier wrote cp/ra/rp and nothing else, so the schedule survived only as
+    long as the bucket items the fan-out stamped. The next `acquire()` that
+    recreated a bucket resolved its limits from config, found no schedule, and
+    created the bucket unscheduled — silently, with no error anywhere.
+    """
+
+    BIZ = [{"cron": "* 9-17 * * MON-FRI", "tz": "America/New_York", "scale": 0.5}]
+    MIDNIGHT = [{"cron": "0 0 * * *", "tz": "America/New_York"}]
+
+    @staticmethod
+    def _item(limits):
+        client = MagicMock()
+        result = apply_changes(
+            [
+                Change(
+                    action="update", level="entity", target="user-1/gpt-4", data={"limits": limits}
+                )
+            ],
+            table_name="test",
+            namespace_id="ns123",
+            client=client,
+        )
+        assert result.errors == []
+        return client.put_item.call_args.kwargs["Item"]
+
+    def test_a_parameter_schedule_is_stored_compact(self):
+        item = self._item(
+            {
+                "rpm": {
+                    "capacity": 1000,
+                    "refill_amount": 1000,
+                    "refill_period": 60,
+                    "schedule": self.BIZ,
+                }
+            }
+        )
+        assert item["l_rpm_sched"] == {"S": "h9-17w1-5s500"}
+        assert item["sched_tz"] == {"S": "America/New_York"}
+        # cp/ra stay the BASE params; the schedule applies on top (§2.1).
+        assert item["l_rpm_cp"] == {"N": "1000"}
+
+    def test_a_reset_schedule_is_stored_compact(self):
+        item = self._item(
+            {
+                "rpd": {
+                    "capacity": 10000,
+                    "refill_amount": 0,
+                    "refill_period": 86400,
+                    "reset_schedule": self.MIDNIGHT,
+                }
+            }
+        )
+        assert item["l_rpd_rsched"] == {"S": "m0h0"}
+        assert item["sched_tz"] == {"S": "America/New_York"}
+        assert "l_rpd_sched" not in item
+
+    def test_an_unscheduled_limit_writes_neither_attribute(self):
+        """Absence is how "no schedule" is stored; PutItem is full-replace, so
+        an omitted attribute is also how a schedule is removed."""
+        item = self._item({"rpm": {"capacity": 1000, "refill_amount": 1000, "refill_period": 60}})
+        assert "l_rpm_sched" not in item
+        assert "l_rpm_rsched" not in item
+        assert "sched_tz" not in item
+
+    def test_only_the_scheduled_limit_on_a_shared_item_is_stamped(self):
+        """N limits per config item: `sched_tz` is item-level, `sched` is not."""
+        item = self._item(
+            {
+                "rpm": {
+                    "capacity": 1000,
+                    "refill_amount": 1000,
+                    "refill_period": 60,
+                    "schedule": self.BIZ,
+                },
+                "tpm": {"capacity": 50, "refill_amount": 50, "refill_period": 60},
+            }
+        )
+        assert item["l_rpm_sched"] == {"S": "h9-17w1-5s500"}
+        assert "l_tpm_sched" not in item
+        assert item["sched_tz"] == {"S": "America/New_York"}
+
+    def test_limits_disagreeing_on_a_timezone_are_reported_not_written(self):
+        """One item, one `sched_tz`. Keeping the first limit's zone would
+        reinterpret the second limit's cron in the wrong one."""
+        client = MagicMock()
+        result = apply_changes(
+            [
+                Change(
+                    action="update",
+                    level="resource",
+                    target="gpt-4",
+                    data={
+                        "limits": {
+                            "rpm": {
+                                "capacity": 1,
+                                "refill_amount": 1,
+                                "refill_period": 60,
+                                "schedule": self.BIZ,
+                            },
+                            "tpm": {
+                                "capacity": 1,
+                                "refill_amount": 1,
+                                "refill_period": 60,
+                                "schedule": [
+                                    {"cron": "* 9-17 * * *", "tz": "Europe/London", "scale": 0.5}
+                                ],
+                            },
+                        }
+                    },
+                )
+            ],
+            table_name="test",
+            namespace_id="ns123",
+            client=client,
+        )
+        assert len(result.errors) == 1
+        assert "timezone" in result.errors[0]
+        client.put_item.assert_not_called()
+
+    def test_the_system_level_carries_schedules_too(self):
+        client = MagicMock()
+        apply_changes(
+            [
+                Change(
+                    action="create",
+                    level="system",
+                    target=None,
+                    data={
+                        "limits": {
+                            "rpm": {
+                                "capacity": 1000,
+                                "refill_amount": 1000,
+                                "refill_period": 60,
+                                "schedule": self.BIZ,
+                            }
+                        }
+                    },
+                )
+            ],
+            table_name="test",
+            namespace_id="ns123",
+            client=client,
+        )
+        item = client.put_item.call_args.kwargs["Item"]
+        assert item["l_rpm_sched"] == {"S": "h9-17w1-5s500"}

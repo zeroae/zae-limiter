@@ -625,3 +625,392 @@ class TestInvokeProvisioner:
                     ["limits", "plan", "--name", "test-app", "-f", f.name],
                 )
                 assert result.exit_code != 0
+
+
+class TestLimitsCfnTemplateSchedules:
+    """`schedule` / `reset_schedule` (#222) -> CFN `Schedule` / `ResetSchedule`.
+
+    The generator walks raw YAML dicts, so nothing here is validated by
+    ``LimitDecl``; a key-name or case mistake would produce a template that
+    deploys and then fails inside the provisioner Lambda, or worse, silently
+    drops the schedule. Every assertion below is therefore an exact match on
+    the emitted structure rather than a containment check.
+    """
+
+    def _render(self, yaml_content: dict) -> dict:
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            yaml.dump(yaml_content, f)
+            f.flush()
+
+            result = CliRunner().invoke(
+                cli,
+                ["limits", "cfn-template", "--name", "test-app", "-f", f.name],
+            )
+        assert result.exit_code == 0, result.output
+        parsed: dict = yaml.safe_load(result.output)
+        return parsed
+
+    def _props(self, yaml_content: dict) -> dict:
+        props: dict = self._render(yaml_content)["Resources"]["TenantLimits"]["Properties"]
+        return props
+
+    def _resource_limits(self, yaml_content: dict, resource: str = "gpt-4") -> dict:
+        limits: dict = self._props(yaml_content)["Resources"][resource]["Limits"]
+        return limits
+
+    MANIFEST = {
+        "namespace": "test-ns",
+        "resources": {
+            "gpt-4": {
+                "limits": {
+                    "rpm": {
+                        "capacity": 1000,
+                        "schedule": [
+                            {
+                                "cron": "* 9-17 * * MON-FRI",
+                                "tz": "America/New_York",
+                                "scale": 0.5,
+                            },
+                            {
+                                "cron": "* 0-6 * * *",
+                                "tz": "America/New_York",
+                                "capacity": 2000,
+                            },
+                        ],
+                    },
+                    "rpd": {
+                        "capacity": 10000,
+                        "refill_period": 86400,
+                        "reset_schedule": [{"cron": "0 0 * * *", "tz": "America/New_York"}],
+                    },
+                }
+            }
+        },
+    }
+
+    def test_emits_every_schedule_entry_in_order(self):
+        """Two entries, two shapes — a table keyed on the first entry only, or
+        one that reorders, fails here."""
+        limits = self._resource_limits(self.MANIFEST)
+        assert limits["rpm"]["Schedule"] == [
+            {"Cron": "* 9-17 * * MON-FRI", "Tz": "America/New_York", "Scale": 0.5},
+            {"Cron": "* 0-6 * * *", "Tz": "America/New_York", "Capacity": 2000},
+        ]
+
+    def test_emits_reset_schedule(self):
+        limits = self._resource_limits(self.MANIFEST)
+        assert limits["rpd"]["ResetSchedule"] == [{"Cron": "0 0 * * *", "Tz": "America/New_York"}]
+
+    def test_schedule_and_reset_schedule_coexist_on_one_limit(self):
+        """A quota may also carry a scaling schedule (ADR-137 allows `scale`
+        on a reset limit — scaling a zero rate leaves it zero). Emitting one
+        tuple into the other's property, or letting the second overwrite the
+        first, fails here."""
+        limits = self._resource_limits(
+            {
+                "namespace": "test-ns",
+                "resources": {
+                    "gpt-4": {
+                        "limits": {
+                            "rpd": {
+                                "capacity": 10000,
+                                "refill_period": 86400,
+                                "schedule": [{"cron": "* * * * SAT,SUN", "scale": 0.5}],
+                                "reset_schedule": [{"cron": "0 0 * * *", "tz": "UTC"}],
+                            }
+                        }
+                    }
+                },
+            }
+        )
+        assert limits["rpd"]["Schedule"] == [{"Cron": "* * * * SAT,SUN", "Scale": 0.5}]
+        assert limits["rpd"]["ResetSchedule"] == [{"Cron": "0 0 * * *", "Tz": "UTC"}]
+
+    def test_every_entry_field_is_emitted(self):
+        """All six allowlisted entry fields, including the two whose CFN
+        spelling is not a naive title-case of the snake_case name."""
+        limits = self._resource_limits(
+            {
+                "namespace": "test-ns",
+                "resources": {
+                    "gpt-4": {
+                        "limits": {
+                            "rpm": {
+                                "capacity": 1000,
+                                "schedule": [
+                                    {
+                                        "cron": "* * * * *",
+                                        "tz": "Europe/Paris",
+                                        "capacity": 5,
+                                        "refill_amount": 6,
+                                        "refill_period_seconds": 7,
+                                    }
+                                ],
+                            }
+                        }
+                    }
+                },
+            }
+        )
+        assert limits["rpm"]["Schedule"] == [
+            {
+                "Cron": "* * * * *",
+                "Tz": "Europe/Paris",
+                "Capacity": 5,
+                "RefillAmount": 6,
+                "RefillPeriodSeconds": 7,
+            }
+        ]
+
+    def test_schedules_emitted_at_system_resource_and_entity_levels(self):
+        """`_limits_to_cfn` is called from three places; a change wired into
+        only the resource branch passes a resource-only test."""
+        props = self._props(
+            {
+                "namespace": "test-ns",
+                "system": {
+                    "limits": {
+                        "rpm": {"capacity": 1, "schedule": [{"cron": "* * * * *", "scale": 2.0}]}
+                    }
+                },
+                "resources": {
+                    "gpt-4": {
+                        "limits": {
+                            "rpm": {
+                                "capacity": 2,
+                                "schedule": [{"cron": "1 * * * *", "scale": 3.0}],
+                            }
+                        }
+                    }
+                },
+                "entities": {
+                    "vip-1": {
+                        "resources": {
+                            "gpt-4": {
+                                "limits": {
+                                    "rpm": {
+                                        "capacity": 3,
+                                        "schedule": [{"cron": "2 * * * *", "scale": 4.0}],
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+            }
+        )
+        assert props["System"]["Limits"]["rpm"]["Schedule"] == [{"Cron": "* * * * *", "Scale": 2.0}]
+        assert props["Resources"]["gpt-4"]["Limits"]["rpm"]["Schedule"] == [
+            {"Cron": "1 * * * *", "Scale": 3.0}
+        ]
+        assert props["Entities"]["vip-1"]["Resources"]["gpt-4"]["Limits"]["rpm"]["Schedule"] == [
+            {"Cron": "2 * * * *", "Scale": 4.0}
+        ]
+
+    def test_omits_both_properties_when_absent(self):
+        """Absent means "no schedule"; an emitted empty list would make the
+        template of an unscheduled manifest differ from what it was before
+        schedules existed."""
+        limits = self._resource_limits(
+            {
+                "namespace": "test-ns",
+                "resources": {"gpt-4": {"limits": {"rpm": {"capacity": 1000}}}},
+            }
+        )
+        assert limits["rpm"] == {"Capacity": 1000}
+
+    def test_unscheduled_manifest_template_is_unchanged_by_this_feature(self):
+        """The whole template, not just one limit — pins the no-schedule wire
+        shape that ``LimitDecl.to_dict()`` also preserves."""
+        template = self._render(
+            {
+                "namespace": "test-ns",
+                "system": {"on_unavailable": "block", "limits": {"rpm": {"capacity": 9}}},
+                "resources": {"gpt-4": {"limits": {"rpm": {"capacity": 1000}}}},
+                "entities": {
+                    "vip-1": {"resources": {"gpt-4": {"limits": {"rpm": {"capacity": 5}}}}}
+                },
+            }
+        )
+        assert template["Resources"]["TenantLimits"]["Properties"] == {
+            "ServiceToken": {"Fn::ImportValue": "test-app-ProvisionerArn"},
+            "TableName": "test-app",
+            "Namespace": "test-ns",
+            "System": {"OnUnavailable": "block", "Limits": {"rpm": {"Capacity": 9}}},
+            "Resources": {"gpt-4": {"Limits": {"rpm": {"Capacity": 1000}}}},
+            "Entities": {"vip-1": {"Resources": {"gpt-4": {"Limits": {"rpm": {"Capacity": 5}}}}}},
+        }
+
+    def test_empty_schedule_list_is_treated_as_absent(self):
+        """`LimitDecl.to_dict()` emits the key only when the tuple is
+        non-empty; the CFN generator has to agree or the two wire formats the
+        provisioner accepts diverge for the same manifest."""
+        limits = self._resource_limits(
+            {
+                "namespace": "test-ns",
+                "resources": {
+                    "gpt-4": {
+                        "limits": {"rpm": {"capacity": 1000, "schedule": [], "reset_schedule": []}}
+                    }
+                },
+            }
+        )
+        assert limits["rpm"] == {"Capacity": 1000}
+
+    def test_null_schedule_is_treated_as_absent(self):
+        """`schedule:` with nothing under it is YAML null, not a list —
+        ``_parse_entries`` accepts it as "none", so the generator must too
+        rather than raising TypeError out of a Click command."""
+        limits = self._resource_limits(
+            {
+                "namespace": "test-ns",
+                "resources": {
+                    "gpt-4": {
+                        "limits": {
+                            "rpm": {"capacity": 1000, "schedule": None, "reset_schedule": None}
+                        }
+                    }
+                },
+            }
+        )
+        assert limits["rpm"] == {"Capacity": 1000}
+
+    def test_non_list_schedule_is_a_clean_cli_error(self):
+        """The manifest parser rejects this with a ValueError naming the key;
+        the generator must not emit a template or dump a traceback."""
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            yaml.dump(
+                {
+                    "namespace": "test-ns",
+                    "resources": {
+                        "gpt-4": {"limits": {"rpm": {"capacity": 1, "schedule": "0 0 * * *"}}}
+                    },
+                },
+                f,
+            )
+            f.flush()
+            result = CliRunner().invoke(
+                cli, ["limits", "cfn-template", "--name", "test-app", "-f", f.name]
+            )
+        assert result.exit_code != 0
+        assert "schedule" in result.output
+        assert "Traceback" not in result.output
+
+    def test_non_mapping_schedule_entry_is_a_clean_cli_error(self):
+        """Same contract one level down: `_parse_entries` rejects a non-mapping
+        entry by index, so the generator must too rather than raising
+        TypeError while subscripting a string."""
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            yaml.dump(
+                {
+                    "namespace": "test-ns",
+                    "resources": {
+                        "gpt-4": {
+                            "limits": {"rpm": {"capacity": 1, "reset_schedule": ["0 0 * * *"]}}
+                        }
+                    },
+                },
+                f,
+            )
+            f.flush()
+            result = CliRunner().invoke(
+                cli, ["limits", "cfn-template", "--name", "test-app", "-f", f.name]
+            )
+        assert result.exit_code != 0
+        assert "reset_schedule[0]" in result.output
+        assert "Traceback" not in result.output
+
+    def test_cron_stays_standard_never_compact(self):
+        """CloudFormation is user-facing IaC — the compact storage encoding
+        must never reach a template (project rule, design §4)."""
+        template = self._render(self.MANIFEST)
+        dumped = yaml.dump(template)
+        limits = self._resource_limits(self.MANIFEST)
+        crons = [entry["Cron"] for entry in limits["rpm"]["Schedule"]] + [
+            entry["Cron"] for entry in limits["rpd"]["ResetSchedule"]
+        ]
+        assert crons == ["* 9-17 * * MON-FRI", "* 0-6 * * *", "0 0 * * *"]
+        for cron in crons:
+            assert len(cron.split()) == 5, cron
+        assert "h9-17" not in dumped
+
+    def test_pascal_case_table_covers_exactly_the_manifest_allowlist(self):
+        """``_parse_entries`` validates against a strict six-key allowlist. A
+        seventh CFN property, or one this table spells differently, becomes a
+        ValueError inside the Lambda at deploy time — pin the two together."""
+        from zae_limiter.limits_cli import _SCHEDULE_KEYS
+        from zae_limiter_provisioner.manifest import _ENTRY_FIELDS, _RESET_ENTRY_FIELDS
+
+        assert tuple(snake for snake, _ in _SCHEDULE_KEYS) == _ENTRY_FIELDS
+        assert set(_RESET_ENTRY_FIELDS) <= set(_ENTRY_FIELDS)
+        assert "_reset" not in dict(_SCHEDULE_KEYS)
+
+    def test_full_round_trip_through_cfn_is_lossless(self):
+        """YAML -> template -> provisioner -> ``LimitsManifest`` must land on
+        exactly the manifest ``limits apply`` would have sent directly. This is
+        the only assertion that fails if the two key tables drift apart."""
+        from zae_limiter_provisioner.handler import _cfn_properties_to_manifest
+        from zae_limiter_provisioner.manifest import LimitsManifest
+
+        source = {
+            "namespace": "test-ns",
+            "system": {
+                "on_unavailable": "block",
+                "limits": {
+                    "rpm": {
+                        "capacity": 100,
+                        "schedule": [
+                            {"cron": "* 9-17 * * MON-FRI", "scale": 0.5},
+                            {
+                                "cron": "0 3 * * *",
+                                "tz": "Europe/Paris",
+                                "capacity": 10,
+                                "refill_amount": 11,
+                                "refill_period_seconds": 12,
+                            },
+                        ],
+                    }
+                },
+            },
+            "resources": {
+                "gpt-4": {
+                    "disabled": False,
+                    "limits": {
+                        "rpd": {
+                            "capacity": 10000,
+                            "refill_period": 86400,
+                            "schedule": [
+                                {"cron": "* * * * SAT,SUN", "tz": "UTC", "scale": 0.25},
+                                {
+                                    "cron": "0 0 1 * *",
+                                    "tz": "America/New_York",
+                                    "capacity": 50000,
+                                },
+                            ],
+                            "reset_schedule": [{"cron": "0 0 * * *", "tz": "America/New_York"}],
+                        },
+                        "rpm": {"capacity": 60},
+                    },
+                }
+            },
+            "entities": {
+                "vip-1": {
+                    "resources": {
+                        "gpt-4": {
+                            "limits": {
+                                "rpd": {
+                                    "capacity": 99999,
+                                    "reset_schedule": [{"cron": "30 4 * * MON", "tz": "UTC"}],
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+        }
+
+        direct = LimitsManifest.from_dict(source).to_dict()
+        via_cfn = LimitsManifest.from_dict(
+            _cfn_properties_to_manifest(self._props(source))
+        ).to_dict()
+        assert via_cfn == direct

@@ -103,6 +103,136 @@ class TestScheduleEntry:
         with pytest.raises(ValueError):
             ScheduleEntry(cron="* * * * *", **kwargs)
 
+    @pytest.mark.parametrize("scale", [float("nan"), float("inf"), float("-inf")])
+    def test_rejects_non_finite_scale(self, scale):
+        """NaN slips past `<= 0` (every NaN comparison is False) and `inf` is positive.
+
+        Both then die much later, inside `encode` ("cannot convert float NaN to
+        integer") or `effective_params`, naming no field (#564).
+        """
+        with pytest.raises(ValueError, match="scale must be a finite number"):
+            ScheduleEntry(cron="* * * * *", scale=scale)
+
+    @pytest.mark.parametrize("field", ["capacity", "refill_amount", "refill_period_seconds"])
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+    def test_rejects_non_finite_absolutes(self, field, value):
+        """Worse than `scale`: these encode *cleanly*, as the byte string `cnan`.
+
+        Nothing raises at write time, so the corrupt value reaches the config item
+        and every later `decode` of it fails (#564).
+        """
+        with pytest.raises(ValueError, match=f"{field} must be a finite number"):
+            ScheduleEntry(cron="* * * * *", **{field: value})
+
+    def test_finite_values_still_pass(self):
+        """The guard must not narrow anything that was already valid."""
+        e = ScheduleEntry(cron="* * * * *", scale=0.5)
+        assert e.scale == 0.5
+        e = ScheduleEntry(cron="* * * * *", capacity=10, refill_amount=5, refill_period_seconds=60)
+        assert (e.capacity, e.refill_amount, e.refill_period_seconds) == (10, 5, 60)
+
+    def test_non_finite_is_rejected_before_positivity(self):
+        """Ordering matters: a NaN must not fall through to `scale must be positive`."""
+        with pytest.raises(ValueError, match="finite"):
+            ScheduleEntry(cron="* * * * *", scale=float("nan"))
+
+    def test_huge_integer_capacity_is_not_swept_up(self):
+        """`math.isfinite` casts to float, so a bare call would OverflowError here."""
+        assert ScheduleEntry(cron="* * * * *", capacity=10**400).capacity == 10**400
+
+
+class TestAbsolutesAreIntegers:
+    """The three absolute fields are `int | None` and nothing enforced it (#569).
+
+    A non-integral float passes #564's finiteness guard (`math.isfinite(1.5)` is
+    True), encodes cleanly as the byte string `c1.5`, and then dies at `decode`'s
+    bare `int(tokens["c"])` — the same "bytes no later read can decode" failure
+    class, arriving through the type system rather than through finiteness.
+    """
+
+    @pytest.mark.parametrize("field", ["capacity", "refill_amount", "refill_period_seconds"])
+    @pytest.mark.parametrize("value", [1.5, 0.5, 2.5])
+    def test_rejects_a_non_integral_float(self, field, value):
+        with pytest.raises(ValueError, match=f"{field} must be a whole number"):
+            ScheduleEntry(cron="* * * * *", **{field: value})
+
+    @pytest.mark.parametrize("field", ["capacity", "refill_amount", "refill_period_seconds"])
+    def test_rejects_an_integral_float_too(self, field):
+        """`2.0` is rejected rather than coerced, agreeing with `_coerce_int`.
+
+        The field is declared `int`; accepting a float that happens to be whole
+        would widen the documented contract, and would leave a YAML author with
+        an arbitrary line to reason about (2.0 fine, 1.5 not).
+        """
+        with pytest.raises(ValueError, match=f"{field} must be a whole number"):
+            ScheduleEntry(cron="* * * * *", **{field: 2.0})
+
+    @pytest.mark.parametrize("field", ["capacity", "refill_amount", "refill_period_seconds"])
+    @pytest.mark.parametrize("value", [True, False])
+    def test_rejects_a_boolean(self, field, value):
+        """`bool` is an `int` subclass, so a bare `isinstance(x, int)` admits it.
+
+        `ScheduleEntry(capacity=True)` encoded as `cTrue`, which `decode` cannot
+        read either.
+        """
+        with pytest.raises(ValueError, match=f"{field} must be a whole number"):
+            ScheduleEntry(cron="* * * * *", **{field: value})
+
+    @pytest.mark.parametrize("field", ["capacity", "refill_amount", "refill_period_seconds"])
+    def test_rejects_a_string(self, field):
+        """Previously a `TypeError` from `value <= 0`, naming no field."""
+        with pytest.raises(ValueError, match=f"{field} must be a whole number"):
+            ScheduleEntry(cron="* * * * *", **{field: "5"})
+
+    def test_integers_still_pass(self):
+        e = ScheduleEntry(cron="* * * * *", capacity=10, refill_amount=5, refill_period_seconds=60)
+        assert (e.capacity, e.refill_amount, e.refill_period_seconds) == (10, 5, 60)
+
+    def test_scale_is_still_a_float_field(self):
+        """`scale` is a float by design; the integer rule is only for the absolutes."""
+        assert ScheduleEntry(cron="* * * * *", scale=0.5).scale == 0.5
+        assert ScheduleEntry(cron="* * * * *", scale=2).scale == 2
+
+    @pytest.mark.parametrize("field", ["capacity", "refill_amount", "refill_period_seconds"])
+    def test_non_finite_still_reports_finiteness_not_integrality(self, field):
+        """Ordering: #564's message is the specific one, so it stays first."""
+        with pytest.raises(ValueError, match=f"{field} must be a finite number"):
+            ScheduleEntry(cron="* * * * *", **{field: float("nan")})
+
+    @pytest.mark.parametrize("value", [1.5, 2.0, True, "1.5"])
+    def test_agrees_with_the_cloudformation_boundary(self, value):
+        """#561 already rejected these at `Custom::ZaeLimiterLimits`; the direct
+        API and the YAML manifest did not. The two boundaries now agree."""
+        from zae_limiter_provisioner.handler import _coerce_int
+
+        with pytest.raises(ValueError):
+            _coerce_int(value, "Capacity")
+        with pytest.raises(ValueError):
+            ScheduleEntry(cron="* * * * *", capacity=value)
+
+    def test_the_one_deliberate_divergence_is_the_cfn_string(self):
+        """`_coerce_int` parses `"5"` because CloudFormation delivers every
+        property as a string. That concession belongs to that boundary only —
+        the Python field is `int`, so a string is not an integer here."""
+        from zae_limiter_provisioner.handler import _coerce_int
+
+        assert _coerce_int("5", "Capacity") == 5
+        with pytest.raises(ValueError, match="whole number"):
+            ScheduleEntry(cron="* * * * *", capacity="5")
+
+    @pytest.mark.parametrize("field", ["capacity", "refill_amount", "refill_period_seconds"])
+    @pytest.mark.parametrize("value", [1, 7, 1000, 10**9, 1.5, 2.0, True, False, 0, -1, "5"])
+    def test_every_constructible_entry_stays_in_integer_milli_units(self, field, value):
+        """`entry_params` multiplies the absolute by 1000 with no int conversion,
+        so a float field produced a float milli-unit (`2500.0`) in the in-memory
+        path before storage came into it at all. Constructibility is the gate."""
+        try:
+            entry = ScheduleEntry(cron="* * * * *", **{field: value})
+        except ValueError:
+            return  # rejected at the gate; nothing downstream ever sees it
+        cp, ra, rp = effective_params(1_000, 1_000, 60_000, (entry,), 1_768_000_000_000)
+        assert all(isinstance(v, int) and not isinstance(v, bool) for v in (cp, ra, rp))
+
     @pytest.mark.parametrize("expr", ["* * L * *", "nonsense"])
     def test_rejects_unusable_cron(self, expr):
         """A schedule that stores must be a schedule that evaluates (§3.1)."""
@@ -165,6 +295,31 @@ class TestEffectiveParams:
         # Exact, not `>= 1`: `>= 1` is also satisfied by returning the base untouched.
         assert effective_params(1000, 500, 60_000, sched, TUE_1400) == (1, 1, 60_000)
 
+    def test_scaling_a_quota_does_not_invent_a_drip(self):
+        """A quota has `refill_amount = 0` by ADR-137; the floor must not raise it.
+
+        Flooring the *scaled* rate at 1 gives a quota a phantom 1-millitoken drip
+        (#556) — a rate the limit is defined not to have. The floor is conditioned
+        on the base rate instead.
+        """
+        sched = (ScheduleEntry(cron="* * * * *", scale=0.5),)
+        assert effective_params(10_000_000, 0, 60_000, sched, TUE_1400) == (5_000_000, 0, 60_000)
+
+    @pytest.mark.parametrize("scale", [0.5, 2.0, 0.0000001])
+    def test_a_quota_stays_a_quota_at_every_scale(self, scale):
+        """Including a boost window and a scale small enough to floor a live rate."""
+        sched = (ScheduleEntry(cron="* * * * *", scale=scale),)
+        assert effective_params(10_000_000, 0, 60_000, sched, TUE_1400)[1] == 0
+
+    def test_the_floor_still_protects_a_limit_that_really_drips(self):
+        """The #556 guard must key on the base rate, not on "is the result zero?".
+
+        Keying on the result would drop a live drip to zero whenever the scale
+        truncated it away, which is the thing the floor exists to prevent.
+        """
+        sched = (ScheduleEntry(cron="* * * * *", scale=0.0000001),)
+        assert effective_params(10_000_000, 1, 60_000, sched, TUE_1400)[1] == 1
+
     def test_absolute_capacity_only_overrides_capacity(self):
         sched = (ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", capacity=2000),)
         assert effective_params(*BASE, sched, TUE_0300) == (2_000_000, 200_000, 60_000)
@@ -225,3 +380,71 @@ class TestEffectiveParams:
         """Pins that `entry.tz` reaches `parse_cron` rather than a hardcoded zone."""
         sched = (ScheduleEntry(cron="* 14 * * *", tz=tz, scale=0.5),)
         assert effective_params(*BASE, sched, TUE_1400) == expected
+
+
+class TestScheduleEntryReset:
+    """A reset entry names an instant; it overrides no parameters (§3.6).
+
+    Kept at the ``ScheduleEntry`` level so this module stays free of any
+    ``models`` import, mirroring ``schedule.py``'s own one-way dependency.
+    The ``Limit`` half lives in ``test_models.py``.
+    """
+
+    def test_carries_cron_and_tz_only(self):
+        e = ScheduleEntry.reset("0 0 * * *", "America/New_York")
+        assert (e.cron, e.tz) == ("0 0 * * *", "America/New_York")
+        assert (e.scale, e.capacity, e.refill_amount, e.refill_period_seconds) == (
+            None,
+            None,
+            None,
+            None,
+        )
+        assert e._reset is True
+
+    def test_timezone_defaults_to_utc(self):
+        assert ScheduleEntry.reset("0 0 * * *").tz == "UTC"
+
+    def test_an_ordinary_entry_is_not_a_reset(self):
+        """The flag is opt-in, so every merged call site keeps its meaning."""
+        assert ScheduleEntry(cron="* * * * *", scale=0.5)._reset is False
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"scale": 0.5},
+            {"capacity": 100},
+            {"refill_amount": 10},
+            {"refill_period_seconds": 30},
+        ],
+    )
+    def test_rejects_a_modifier_on_a_reset_entry(self, kwargs):
+        """A modifier on a reset is a category error, not a harmless extra."""
+        with pytest.raises(ValueError, match="reset"):
+            ScheduleEntry(cron="0 0 * * *", _reset=True, **kwargs)
+
+    def test_names_every_modifier_it_rejected(self):
+        with pytest.raises(ValueError, match=r"capacity.*scale|scale.*capacity"):
+            ScheduleEntry(cron="0 0 * * *", _reset=True, scale=0.5, capacity=100)
+
+    def test_a_bare_entry_is_still_invalid_for_the_params_tuple(self):
+        """The same cron is legal as a reset and illegal as a param override."""
+        with pytest.raises(ValueError, match="exactly one"):
+            ScheduleEntry(cron="0 0 * * *")
+
+    @pytest.mark.parametrize("expr", ["nonsense", "* * L * *", "0 0 0 * * *"])
+    def test_a_reset_still_validates_its_cron(self, expr):
+        """The reset branch must not short-circuit past ``parse_cron``: a
+        schedule that stores must be a schedule that evaluates (§3.1), and
+        six fields are rejected exactly as they are for a param entry."""
+        with pytest.raises(ValueError):
+            ScheduleEntry.reset(expr)
+
+    def test_a_reset_still_validates_its_timezone(self):
+        with pytest.raises(ValueError, match="timezone"):
+            ScheduleEntry.reset("0 0 * * *", "Mars/Olympus_Mons")
+
+    def test_is_frozen_and_hashable(self):
+        e = ScheduleEntry.reset("0 0 * * *")
+        with pytest.raises(Exception):
+            e.cron = "x"  # type: ignore[misc]
+        assert hash(e)

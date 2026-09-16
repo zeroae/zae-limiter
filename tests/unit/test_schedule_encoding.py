@@ -18,8 +18,10 @@ import pytest
 from zae_limiter.schedule import (
     ScheduleEntry,
     decode,
+    decode_reset,
     effective_params,
     encode,
+    encode_reset,
     matches,
     parse_cron,
     to_cron,
@@ -220,6 +222,26 @@ class TestRoundTrip:
         """The encoding is canonical, so storage never churns on a rewrite."""
         compact, tz = encode(entries)
         assert encode(decode(compact, tz or "UTC")) == (compact, tz)
+
+    @pytest.mark.parametrize("field", ["capacity", "refill_amount", "refill_period_seconds"])
+    @pytest.mark.parametrize(
+        "value", [1, 7, 1000, 10**9, 10**400, 1.5, 2.0, 0.5, True, False, 0, -1, "5", "1.5"]
+    )
+    def test_encode_is_total_over_the_constructible_domain(self, field, value):
+        """#569: every entry that constructs must survive `decode(*encode(...))`.
+
+        Constructibility is the only gate between an operator's value and bytes
+        on a DynamoDB item, so the two sets have to coincide: anything the
+        constructor admits, the decoder must read back. `capacity=1.5` used to
+        construct, encode as `c1.5`, and then raise `invalid literal for int()`
+        on every subsequent read of that config item.
+        """
+        try:
+            entry = ScheduleEntry(cron="* 9-17 * * MON-FRI", **{field: value})
+        except ValueError:
+            return  # rejected at the gate: no bytes were ever written
+        compact, tz = encode((entry,))
+        _assert_same_entry(decode(compact, tz or "UTC")[0], entry)
 
     def test_the_empty_schedule_round_trips(self):
         compact, tz = encode(())
@@ -479,3 +501,234 @@ class TestSizeBudget:
             separators=(",", ":"),
         )
         assert len(as_json) / (len(compact) + len(tz)) > 3.0
+
+
+class TestResetEncoding:
+    """Reset entries share the field grammar and drop the modifier tokens."""
+
+    def test_encodes_without_a_modifier_token(self):
+        compact, tz = encode_reset((ScheduleEntry.reset("0 0 * * *", "America/New_York"),))
+        assert compact == "m0h0"
+        assert tz == "America/New_York"
+
+    def test_a_daily_reset_is_four_bytes(self):
+        """The size claim in §4.1, asserted exactly rather than as `<= 8` — an
+        encoder that returned the empty string would satisfy a bound."""
+        compact, _ = encode_reset((ScheduleEntry.reset("0 0 * * *"),))
+        assert len(compact) == 4
+
+    def test_joins_entries_with_a_semicolon(self):
+        compact, tz = encode_reset(
+            (
+                ScheduleEntry.reset("0 0 * * *", "America/New_York"),
+                ScheduleEntry.reset("0 12 * * SUN", "America/New_York"),
+            )
+        )
+        assert compact == "m0h0;m0h12w7"
+        assert tz == "America/New_York"
+
+    def test_weekday_names_normalise_exactly_as_the_param_encoder(self):
+        """Storage is canonical (§4.3) so `differ.py` does not read SUN against
+        7 as a change on every apply. Sunday inside a range must be 0, not 7."""
+        compact, _ = encode_reset((ScheduleEntry.reset("0 0 * * SUN-THU"),))
+        assert compact == "m0h0w0-4"
+
+    def test_empty_schedule_encodes_to_nothing(self):
+        assert encode_reset(()) == ("", None)
+
+    def test_rejects_entries_that_disagree_on_timezone(self):
+        with pytest.raises(ValueError, match="one timezone"):
+            encode_reset(
+                (
+                    ScheduleEntry.reset("0 0 * * *", "America/New_York"),
+                    ScheduleEntry.reset("0 0 * * *", "UTC"),
+                )
+            )
+
+    def test_a_reset_is_smaller_than_the_same_cron_as_a_param_entry(self):
+        """The modifier tokens are the whole difference: a param entry must
+        carry one (`__post_init__` requires exactly one), a reset must not."""
+        reset, _ = encode_reset((ScheduleEntry.reset("0 0 * * *"),))
+        param, _ = encode((ScheduleEntry(cron="0 0 * * *", scale=0.5),))
+        assert param.startswith(reset)
+        assert len(param) > len(reset)
+
+
+class TestResetDecoding:
+    def test_decodes_through_the_reset_constructor(self):
+        """A reset entry carries no modifier, so `ScheduleEntry(...)` would
+        raise its "exactly one" rule. `decode_reset` must use the classmethod."""
+        (entry,) = decode_reset("m0h0", "America/New_York")
+        assert entry.cron == "0 0 * * *"
+        assert entry.tz == "America/New_York"
+        assert entry.scale is None
+        assert entry.capacity is None
+        assert entry.refill_amount is None
+        assert entry.refill_period_seconds is None
+        assert entry._reset is True
+
+    def test_a_decoded_entry_is_accepted_by_reset_schedule_and_rejected_by_schedule(self):
+        """`_reset` is what `Limit.__post_init__` sorts the two tuples by, so a
+        decoder that built a plain entry would be caught here even if every
+        field above happened to match."""
+        from zae_limiter.models import Limit
+
+        entries = decode_reset("m0h0", "UTC")
+        assert Limit.quota("rpd", 10, cron="0 0 * * *").with_reset_schedule(entries)
+        with pytest.raises(ValueError, match="parameter entries only"):
+            Limit.per_minute("rpm", 10).with_schedule(entries)
+
+    def test_empty_compact_decodes_to_an_empty_tuple(self):
+        assert decode_reset("", "UTC") == ()
+
+    def test_rejects_a_modifier_token(self):
+        """A reset overrides no parameters, so a stored `s500` is either
+        corruption or a param schedule read out of the wrong attribute. Either
+        way it must not decode into something that silently resets."""
+        with pytest.raises(ValueError, match="modifier"):
+            decode_reset("m0h0s500", "UTC")
+
+    @pytest.mark.parametrize("tag", ["s500", "c2000", "a100", "p60"])
+    def test_rejects_every_modifier_tag(self, tag):
+        """All four, not just `scale` — `c`/`a`/`p` reach the same wrong place."""
+        with pytest.raises(ValueError, match="modifier"):
+            decode_reset(f"m0h0{tag}", "UTC")
+
+    def test_rejects_junk(self):
+        with pytest.raises(ValueError):
+            decode_reset("this is not a schedule", "UTC")
+
+    def test_round_trip_is_byte_identical_and_semantically_equal(self):
+        """Three assertions, because `encode_reset(decode_reset(x)) == x` alone
+        is satisfied by an encoder that throws information away."""
+        entries = (
+            ScheduleEntry.reset("0 0 * * *", "America/New_York"),
+            ScheduleEntry.reset("30 2 1 JAN,JUL *", "America/New_York"),
+        )
+        compact, tz = encode_reset(entries)
+        restored = decode_reset(compact, tz)
+
+        assert len(restored) == len(entries)
+        for original, back in zip(entries, restored, strict=True):
+            assert parse_cron(back.cron, back.tz) == parse_cron(original.cron, original.tz)
+        assert encode_reset(restored) == (compact, tz)
+        assert decode_reset(*encode_reset(restored)) == restored
+
+    def test_the_display_form_re_encodes_unchanged(self):
+        """`to_cron` renders names back; feeding that to a fresh reset entry
+        must produce the same bytes, or the CLI's output is not round-trippable
+        (§4.3)."""
+        compact, tz = encode_reset((ScheduleEntry.reset("0 0 * * 1-5", "UTC"),))
+        rendered = to_cron(compact)
+        assert rendered == "0 0 * * MON-FRI"
+        assert encode_reset((ScheduleEntry.reset(rendered, tz),)) == (compact, tz)
+
+    def test_a_param_schedule_read_out_of_the_reset_attribute_is_caught(self):
+        """The realistic corruption: `sched` and `rsched` swapped. Every param
+        entry carries a modifier, so every one of them is rejected here."""
+        param_compact, tz = encode((BUSINESS, NIGHTS))
+        with pytest.raises(ValueError, match="modifier"):
+            decode_reset(param_compact, tz)
+
+
+class TestDecodeRaisesValueErrorForTheAggregatorsSake:
+    """`processor._decode_schedule` catches `ValueError` specifically (#222 §6).
+
+    Raising anything else from the parser slips through that catch and aborts
+    the whole stream batch — `aggregate_bucket_states` is outside any try —
+    which is the poison pill core plan Task 14 fixed, and it would take usage
+    snapshots down with it. The client-side conversion to
+    `RateLimiterUnavailable` belongs at the Repository boundary, not here, and
+    `schedule.py` must stay free of any `zae_limiter` import so `models` can use
+    it without a cycle and both Lambdas can vendor it.
+
+    A regression guard, so it passes on the day it is written.
+    """
+
+    @pytest.mark.parametrize(
+        "compact", ["this is not a schedule", "Xh9-17s500", "h9-17s500s600", "v9:h9-17"]
+    )
+    def test_decode_raises_value_error(self, compact):
+        with pytest.raises(ValueError):
+            decode(compact, "UTC")
+
+    @pytest.mark.parametrize("compact", ["this is not a schedule", "m0h0s500", "zzz"])
+    def test_decode_reset_raises_value_error(self, compact):
+        """The reset decoder is the second parser and fails into the same
+        channel — including for a modifier token, which it rejects rather than
+        ignores."""
+        with pytest.raises(ValueError):
+            decode_reset(compact, "UTC")
+
+    def test_decode_does_not_raise_an_infrastructure_error(self):
+        """Explicit, because `RateLimiterUnavailable` is not a `ValueError`:
+        the aggregator's `except ValueError` would not catch it and the failure
+        would be invisible until a stream stalled in production."""
+        from zae_limiter.exceptions import InfrastructureError
+
+        with pytest.raises(ValueError) as excinfo:
+            decode("this is not a schedule", "UTC")
+        assert not isinstance(excinfo.value, InfrastructureError)
+
+    def test_schedule_module_imports_nothing_from_the_package(self):
+        """The other half of why the conversion cannot live here: importing
+        `exceptions` would end the one-way dependency that lets `models` import
+        `ScheduleEntry` and both Lambda stubs vendor this file."""
+        import ast
+        import inspect
+        import pathlib
+
+        # Located through a symbol this module already imports, rather than by
+        # importing `zae_limiter.schedule` a second way: the file's own style
+        # is `from ... import ...`, and mixing the two forms is what the
+        # repository's lint bot flags.
+        source = inspect.getsourcefile(decode)
+        assert source is not None
+        tree = ast.parse(pathlib.Path(source).read_text())
+        imported = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.level:
+                imported.add(node.module or "")
+            elif isinstance(node, ast.ImportFrom) and (node.module or "").startswith("zae_limiter"):
+                imported.add(node.module or "")
+            elif isinstance(node, ast.Import):
+                imported.update(
+                    alias.name for alias in node.names if alias.name.startswith("zae_limiter")
+                )
+        assert imported == set(), f"schedule.py must import nothing from zae_limiter: {imported}"
+
+    def test_an_unknown_tag_only_reaches_the_tokeniser_at_an_entry_boundary(self):
+        """The heuristic that replaces the version marker (#515) is *weaker*
+        than Task 10's Decision 1 claims, and this is where that is pinned.
+
+        Decision 1 says a newer client's unknown tag "lands there with a precise
+        offset", so the log can tell a forward-compatibility problem from
+        corruption. It only does so when the unknown tag stands where a *tag* is
+        expected — the start of an entry. `_TOKEN_RE` takes a value as "anything
+        that is not a known tag letter", so an unknown tag anywhere *after* a
+        value is swallowed into that value and fails downstream instead, as a
+        cronsim rejection or a bare `int()` error that names neither the tag nor
+        the offset. That covers the realistic shape of a new modifier tag, which
+        a newer encoder would append after the cron fields.
+
+        So the distinction is not merely "not a proof" (corruption can fail at
+        an offset too); it is also incomplete in the other direction. The §6
+        text says so rather than overselling it.
+        """
+        # Entry-initial: the tokeniser sees it and reports the offset.
+        with pytest.raises(ValueError, match="cannot parse from offset 0"):
+            decode("q42h9-17s500", "UTC")
+        with pytest.raises(ValueError, match="cannot parse from offset 0"):
+            decode("h9-17s500;q42m0", "UTC")
+
+        # Mid-entry: absorbed into the preceding value. Neither message
+        # mentions a tag or an offset.
+        with pytest.raises(ValueError, match="invalid cron expression"):
+            decode("h9-17q42s500", "UTC")
+        with pytest.raises(ValueError, match="invalid literal for int"):
+            decode("h9-17s500q42", "UTC")
+
+        # And a genuinely bad cron field reads the same way as that third case,
+        # which is the collision the heuristic cannot see through.
+        with pytest.raises(ValueError, match="invalid cron expression"):
+            decode("h99", "UTC")

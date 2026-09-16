@@ -24,6 +24,7 @@ from zae_limiter.schema import (
     BUCKET_FIELD_TC,
     BUCKET_FIELD_TK,
     BUCKET_FIELD_VU,
+    BUCKET_SCHED_NONE,
     bucket_attr,
     get_table_definition,
     pk_bucket,
@@ -672,3 +673,82 @@ class TestScheduledRefillIntegration:
         item = _get_bucket(dynamodb_table, entity_id, resource)
         assert item["b_tpm_tk"] == 2_500_000
         assert item[BUCKET_FIELD_VU] > now_ms
+
+
+@pytest.mark.integration
+class TestMixedScheduleItemIntegration:
+    """#541 against real DynamoDB: the marker round-trips and is honoured.
+
+    ``BUCKET_SCHED_NONE`` is a reserved string attribute value, so this is the
+    part a MagicMock cannot validate — that DynamoDB stores ``"-"`` and returns
+    it unchanged in a stream image, and that the refill it drives lands.
+
+    ``tpm`` is unscheduled and ``spm`` shares the item's always-on ``0.5x``
+    window. Both are empty, both have consumed their whole capacity, and both
+    are 30 seconds stale — half a refill period, which keeps each projection
+    below the consumption estimate so neither is skipped by the threshold. The
+    two deltas then separate the readings exactly: half of 10,000,000 at the
+    base rate, half of the halved 5,000,000 at the scheduled one.
+    """
+
+    LIMITS = {
+        "tpm": {"tk": 0, "cp": 10_000_000, "ra": 10_000_000, "rp": 60_000, "tc": 10_000_000},
+        "spm": {"tk": 0, "cp": 10_000_000, "ra": 10_000_000, "rp": 60_000, "tc": 10_000_000},
+    }
+
+    def test_an_unscheduled_limit_refills_at_its_base_rate(self, dynamodb_table) -> None:
+        entity_id = f"entity-{uuid.uuid4().hex[:8]}"
+        resource = "gpt-4"
+        now_ms = int(time.time() * 1000)
+        old_rf_ms = now_ms - 30_000
+
+        _seed_bucket(dynamodb_table, entity_id, resource, limits=self.LIMITS, rf_ms=old_rf_ms)
+        dynamodb_table.update_item(
+            Key={"PK": pk_bucket("default", entity_id, resource, 0), "SK": sk_state()},
+            UpdateExpression="SET #sched = :s, #tz = :tz, #none = :n",
+            ExpressionAttributeNames={
+                "#sched": BUCKET_FIELD_SCHED,
+                "#tz": BUCKET_FIELD_SCHED_TZ,
+                "#none": bucket_attr("tpm", BUCKET_FIELD_SCHED),
+            },
+            ExpressionAttributeValues={
+                ":s": ALWAYS_HALF_COMPACT,
+                ":tz": "UTC",
+                ":n": BUCKET_SCHED_NONE,
+            },
+        )
+
+        # The marker survives the round trip as an ordinary string attribute.
+        assert _get_bucket(dynamodb_table, entity_id, resource)["b_tpm_sched"] == BUCKET_SCHED_NONE
+
+        state = BucketRefillState(
+            namespace_id="default",
+            entity_id=entity_id,
+            resource=resource,
+            rf_ms=old_rf_ms,
+            limits={
+                "tpm": LimitRefillInfo(
+                    tc_delta=10_000_000,
+                    tk_milli=0,
+                    cp_milli=10_000_000,
+                    ra_milli=10_000_000,
+                    rp_ms=60_000,
+                    sched=(),  # what the marker parses to
+                ),
+                "spm": LimitRefillInfo(
+                    tc_delta=10_000_000,
+                    tk_milli=0,
+                    cp_milli=10_000_000,
+                    ra_milli=10_000_000,
+                    rp_ms=60_000,
+                    sched=ALWAYS_HALF,
+                ),
+            },
+            sched=ALWAYS_HALF,
+            sched_compact=ALWAYS_HALF_COMPACT,
+        )
+        assert try_refill_bucket(dynamodb_table, state, now_ms) is True
+
+        item = _get_bucket(dynamodb_table, entity_id, resource)
+        assert int(item["b_tpm_tk"]) == 5_000_000  # 30s at the base rate
+        assert int(item["b_spm_tk"]) == 2_500_000  # the 0.5x sibling on the same item

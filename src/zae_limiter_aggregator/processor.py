@@ -12,23 +12,28 @@ from boto3.dynamodb.types import TypeDeserializer
 from botocore.exceptions import ClientError
 
 from zae_limiter.bucket import refill_bucket
+from zae_limiter.models import is_accrual_rate
 from zae_limiter.schedule import (
     ScheduleEntry,
     decode,
+    decode_reset,
     effective_params,
     next_boundary,
+    prev_reset_edge,
 )
 from zae_limiter.schema import (
     BUCKET_ATTR_PREFIX,
     BUCKET_FIELD_CP,
     BUCKET_FIELD_RA,
     BUCKET_FIELD_RP,
+    BUCKET_FIELD_RSCHED,
     BUCKET_FIELD_SCHED,
     BUCKET_FIELD_SCHED_TZ,
     BUCKET_FIELD_TC,
     BUCKET_FIELD_TK,
     BUCKET_FIELD_VU,
     BUCKET_PREFIX,
+    BUCKET_SCHED_NONE,
     SK_BUCKET,
     WCU_LIMIT_NAME,
     WCU_SHARD_WARN_THRESHOLD,
@@ -117,6 +122,10 @@ class LimitRefillInfo:
     # Schedule in force for *this* limit (#222): the item-level default unless
     # the item carries a `b_{name}_sched` override. Empty means unscheduled.
     sched: tuple[ScheduleEntry, ...] = ()
+    # Reset schedule in force for *this* limit (#222 §3.6), resolved the same
+    # way from `rsched` / `b_{name}_rsched`. Empty means the balance only ever
+    # drips back.
+    reset_sched: tuple[ScheduleEntry, ...] = ()
 
 
 @dataclass
@@ -140,6 +149,10 @@ class BucketRefillState:
     # schedule has since changed.
     sched: tuple[ScheduleEntry, ...] = ()
     sched_compact: str | None = None
+    # Item-level default reset schedule (#222 §3.6). Applies to every limit on
+    # the item that carries no `b_{name}_rsched` override of its own — except
+    # `wcu`, which is exempted where it is read.
+    reset_sched: tuple[ScheduleEntry, ...] = ()
     # Item-level materialisation stamp. None when the attribute is absent.
     vu_ms: int | None = None
     # Set when a stored schedule could not be decoded (§6 — realistically a
@@ -203,18 +216,22 @@ def process_stream_records(
             )
             errors.append(error_msg)
 
-    if not deltas:
-        processing_time_ms = (time_module.perf_counter() - start_time) * 1000
-        logger.info(
-            "Batch processing completed",
-            processed_count=len(records),
-            deltas_extracted=0,
-            snapshots_updated=0,
-            refills_written=0,
-            error_count=len(errors),
-            processing_time_ms=round(processing_time_ms, 2),
-        )
-        return ProcessResult(len(records), 0, 0, errors)
+    # No early return on an empty `deltas`, deliberately. Usage aggregation was
+    # this function's only job when that short-circuit was written; refill
+    # (#317), the negative clamp and reset edge (#222 §3.3/§3.6), the `vu`
+    # re-stamp (§2.1) and proactive sharding all landed *below* it afterwards,
+    # and every one of them reads the bucket image rather than a consumption
+    # delta. Returning here skipped all of them for any batch that carried no
+    # consumption — which is exactly the batch a `_sync_bucket_params` fan-out
+    # produces: it rewrites `cp`/`ra`/`sched` and stamps `vu = 0` without
+    # touching `tc`. The bucket was then left above its new ceiling with `vu`
+    # expired, pinned to the client slow path, until some client happened to
+    # acquire against it. A shard_count propagation and an ADR-125 disable
+    # stamp have the same shape.
+    #
+    # The snapshot loop below is a no-op on an empty list, so the cost of
+    # falling through is `aggregate_bucket_states()` over records that parse to
+    # nothing.
 
     # Update snapshots
     snapshots_updated = 0
@@ -313,6 +330,7 @@ class ParsedBucketLimit:
     ra_milli: int  # refill_amount from NewImage
     rp_ms: int  # refill_period from NewImage
     sched: tuple[ScheduleEntry, ...] = ()  # per-limit schedule (#222)
+    reset_sched: tuple[ScheduleEntry, ...] = ()  # per-limit reset schedule (#222 §3.6)
 
 
 @dataclass
@@ -328,6 +346,7 @@ class ParsedBucketRecord:
     shard_count: int = 1
     sched: tuple[ScheduleEntry, ...] = ()  # item-level default schedule (#222)
     sched_compact: str | None = None  # raw stored form of ``sched``
+    reset_sched: tuple[ScheduleEntry, ...] = ()  # item-level default reset schedule (§3.6)
     vu_ms: int | None = None  # materialisation stamp, None when absent
     sched_error: str | None = None  # set when a stored schedule would not decode
 
@@ -346,6 +365,25 @@ def _decode_schedule(compact: str | None, tz: str) -> tuple[tuple[ScheduleEntry,
         return (), None
     try:
         return decode(compact, tz), None
+    except ValueError as e:
+        return (), f"{compact!r} ({tz}): {e}"
+
+
+def _decode_reset_schedule(
+    compact: str | None, tz: str
+) -> tuple[tuple[ScheduleEntry, ...], str | None]:
+    """Decode a stored compact *reset* schedule into ``(schedule, error)``.
+
+    Reported rather than raised, for the identical reason
+    :func:`_decode_schedule` is: ``aggregate_bucket_states`` runs outside any
+    try block, so a raise here is a poison pill for the whole batch — usage
+    snapshots included. The error folds into the same ``sched_error`` channel,
+    which makes the bucket untouchable rather than resettable-at-the-base.
+    """
+    if not compact:
+        return (), None
+    try:
+        return decode_reset(compact, tz), None
     except ValueError as e:
         return (), f"{compact!r} ({tz}): {e}"
 
@@ -419,6 +457,13 @@ def _parse_bucket_record(record: dict[str, Any]) -> ParsedBucketRecord | None:
     sched, decode_error = _decode_schedule(sched_compact, sched_tz)
     sched_error = f"item schedule {decode_error}" if decode_error else None
 
+    # The reset schedule rides in its own attribute pair and shares `sched_tz`
+    # (§4.1), so it decodes the same way and fails into the same channel.
+    rsched_compact = new_image.get(BUCKET_FIELD_RSCHED, {}).get("S")
+    reset_sched, reset_decode_error = _decode_reset_schedule(rsched_compact, sched_tz)
+    if reset_decode_error and sched_error is None:
+        sched_error = f"item reset schedule {reset_decode_error}"
+
     vu_raw = new_image.get(BUCKET_FIELD_VU, {}).get("N")
     vu_ms = int(vu_raw) if vu_raw is not None else None
 
@@ -459,14 +504,33 @@ def _parse_bucket_record(record: dict[str, Any]) -> ParsedBucketRecord | None:
         # `b_{name}_sched` overrides the item-level default for this limit
         # only (§4.1). Ignoring it would refill an overridden limit at the
         # item default's rate — over-refilling whenever the override is the
-        # tighter of the two.
+        # tighter of the two. `BUCKET_SCHED_NONE` is the override that says
+        # "this limit has none" (#541): absence still means "inherit", so
+        # without an explicit spelling an unscheduled limit beside a scheduled
+        # one is refilled toward `0.5 x capacity` at `0.5 x` its rate.
         limit_sched = sched
         sched_attr = f"{BUCKET_ATTR_PREFIX}{limit_name}_{BUCKET_FIELD_SCHED}"
         limit_compact = new_image.get(sched_attr, {}).get("S")
-        if limit_compact and limit_compact != sched_compact:
+        if limit_compact == BUCKET_SCHED_NONE:
+            limit_sched = ()
+        elif limit_compact and limit_compact != sched_compact:
             limit_sched, decode_error = _decode_schedule(limit_compact, sched_tz)
             if decode_error:
                 sched_error = f"{limit_name} schedule {decode_error}"
+
+        # `b_{name}_rsched` overrides the item-level reset default for this
+        # limit only, mirroring `b_{name}_sched` above — the `NONE` marker
+        # included, and it matters more here: an inherited reset hard-SETs a
+        # balance on a calendar the limit never declared.
+        limit_reset_sched = reset_sched
+        rsched_attr = f"{BUCKET_ATTR_PREFIX}{limit_name}_{BUCKET_FIELD_RSCHED}"
+        limit_rcompact = new_image.get(rsched_attr, {}).get("S")
+        if limit_rcompact == BUCKET_SCHED_NONE:
+            limit_reset_sched = ()
+        elif limit_rcompact and limit_rcompact != rsched_compact:
+            limit_reset_sched, reset_decode_error = _decode_reset_schedule(limit_rcompact, sched_tz)
+            if reset_decode_error:
+                sched_error = f"{limit_name} reset schedule {reset_decode_error}"
 
         limits[limit_name] = ParsedBucketLimit(
             tc_delta=tc_delta,
@@ -475,6 +539,7 @@ def _parse_bucket_record(record: dict[str, Any]) -> ParsedBucketRecord | None:
             ra_milli=int(new_image.get(ra_attr, {}).get("N", "0")),
             rp_ms=int(new_image.get(rp_attr, {}).get("N", "0")),
             sched=limit_sched,
+            reset_sched=limit_reset_sched,
         )
 
     if not limits:
@@ -499,6 +564,7 @@ def _parse_bucket_record(record: dict[str, Any]) -> ParsedBucketRecord | None:
         shard_count=shard_count,
         sched=sched,
         sched_compact=sched_compact,
+        reset_sched=reset_sched,
         vu_ms=vu_ms,
         sched_error=sched_error,
     )
@@ -561,11 +627,27 @@ def aggregate_bucket_states(
     """
     bucket_states: dict[tuple[str, str, str, int], BucketRefillState] = {}
 
-    for record in records:
+    for idx, record in enumerate(records):
         if record.get("eventName") != "MODIFY":
             continue
 
-        parsed = _parse_bucket_record(record)
+        # Per record, not per batch. `_parse_bucket_record` reads attributes
+        # straight off the stream image and raises on a malformed one (a `tc`
+        # that is not a number, say); letting that out of here would fail the
+        # whole invocation, and the event source would redrive the same batch
+        # until it aged out — the poison-pill shape the `extract_deltas` loop
+        # above already guards against one record at a time, and that core
+        # plan Task 14 closed for an undecodable schedule. Every other reader
+        # of these attributes fails at item granularity; so does this one.
+        try:
+            parsed = _parse_bucket_record(record)
+        except Exception as exc:
+            logger.warning(
+                f"Skipping unparseable bucket record: {exc}",
+                exc_info=True,
+                record_index=idx,
+            )
+            continue
         if not parsed:
             continue
 
@@ -581,6 +663,7 @@ def aggregate_bucket_states(
                 shard_count=parsed.shard_count,
                 sched=parsed.sched,
                 sched_compact=parsed.sched_compact,
+                reset_sched=parsed.reset_sched,
                 vu_ms=parsed.vu_ms,
                 sched_error=parsed.sched_error,
             )
@@ -591,6 +674,7 @@ def aggregate_bucket_states(
             bucket_states[key].rf_ms = parsed.rf_ms
             bucket_states[key].sched = parsed.sched
             bucket_states[key].sched_compact = parsed.sched_compact
+            bucket_states[key].reset_sched = parsed.reset_sched
             bucket_states[key].vu_ms = parsed.vu_ms
             bucket_states[key].sched_error = parsed.sched_error
 
@@ -605,6 +689,7 @@ def aggregate_bucket_states(
                 existing.ra_milli = parsed_limit.ra_milli
                 existing.rp_ms = parsed_limit.rp_ms
                 existing.sched = parsed_limit.sched
+                existing.reset_sched = parsed_limit.reset_sched
             else:
                 state.limits[limit_name] = LimitRefillInfo(
                     tc_delta=parsed_limit.tc_delta,
@@ -613,6 +698,7 @@ def aggregate_bucket_states(
                     ra_milli=parsed_limit.ra_milli,
                     rp_ms=parsed_limit.rp_ms,
                     sched=parsed_limit.sched,
+                    reset_sched=parsed_limit.reset_sched,
                 )
 
     return bucket_states
@@ -628,10 +714,28 @@ def _item_next_boundary(state: BucketRefillState, now_ms: int) -> int | None:
     override turns over first, and a late ``vu`` is the unsafe direction: it
     leaves the fast path admitting at the previous window's rate.
 
+    Both tuples vote. A limit carrying a ``reset_schedule`` and **no**
+    ``schedule`` is the daily-quota shape (ADR-137), and with the parameter
+    tuple alone it would produce no boundary at all: ``vu`` would be left
+    unstamped, the fast path would never yield, and the reset would fire only
+    when something unrelated forced a materialising pass (#222 §3.6).
+
     Returns None when nothing on the item is scheduled.
+
+    The item-level pair is a member in its own right, not a fall-back for the
+    per-limit ones (#541). A limit recorded as explicitly unscheduled
+    contributes no boundary of its own, but the default still does — some limit
+    on the item carries it, and `vu` is one item-level attribute, so the
+    earliest change *anywhere* is the one that has to force the pass.
     """
-    scheds = {state.sched} | {info.sched for info in state.limits.values()}
-    boundaries = [b for s in scheds if s and (b := next_boundary(s, now_ms=now_ms)) is not None]
+    pairs = {(state.sched, state.reset_sched)} | {
+        (info.sched, info.reset_sched) for info in state.limits.values()
+    }
+    boundaries = [
+        b
+        for sched, reset in pairs
+        if (sched or reset) and (b := next_boundary(sched, reset, now_ms=now_ms)) is not None
+    ]
     return min(boundaries) if boundaries else None
 
 
@@ -684,9 +788,6 @@ def try_refill_bucket(
     any_needs_refill = False
 
     for limit_name, info in state.limits.items():
-        if info.rp_ms <= 0 or info.ra_milli <= 0:
-            continue
-
         if limit_name == WCU_LIMIT_NAME:
             # `wcu` is the per-partition DynamoDB write ceiling, not a user
             # limit: it is never divided by shard_count (every shard is its own
@@ -695,18 +796,64 @@ def try_refill_bucket(
             effective_cp = info.cp_milli
             effective_ra = info.ra_milli
             effective_rp = info.rp_ms
+            # `rsched` is item-level and applies to every limit on the item by
+            # default, so without this a user's daily reset would hand `wcu`
+            # its ceiling back on every batch that crossed midnight. The client
+            # gets the same exemption for free: `wcu` rides as a carrier built
+            # by `Limit._carrier()`, which never sets `reset_schedule`.
+            reset_sched: tuple[ScheduleEntry, ...] = ()
         else:
             # Scale first, THEN divide by shard_count: the schedule applies to
             # the whole limit, the shard split to what is left of it.
-            # `info.sched` is the item-level default unless the item carried a
-            # per-limit override; falling back keeps a state assembled without
-            # the per-limit copy (a hand-built one, or a future caller) from
-            # silently refilling at the unscheduled base rate.
+            #
+            # `info.sched` is authoritative and there is deliberately no
+            # fall-back to `state.sched` (#541): the parser already resolves
+            # every limit against the item default, so an empty tuple here
+            # means the limit is *explicitly* unscheduled — `b_{name}_sched`
+            # held `BUCKET_SCHED_NONE` — and falling back would hand it the
+            # window it was recorded as not having.
             scaled_cp, scaled_ra, effective_rp = effective_params(
-                info.cp_milli, info.ra_milli, info.rp_ms, info.sched or state.sched, now_ms
+                info.cp_milli, info.ra_milli, info.rp_ms, info.sched, now_ms
             )
             effective_cp = scaled_cp // state.shard_count
             effective_ra = scaled_ra // state.shard_count
+            reset_sched = info.reset_sched
+
+        # A reset edge crossed since this item was last refilled sets the
+        # balance to the effective capacity, which as an `ADD` is
+        # `eff_cp - tk_observed` — the identical delta shape the unconditional
+        # clamp uses, and safe for the identical commutativity reason: it
+        # removes exactly the surplus (or adds exactly the shortfall) while
+        # concurrent consumption subtracts independently. It is the same
+        # `> rf` comparison, against the same stored `rf`, that
+        # `RateLimiter._apply_reset_edge()` makes on the client, so whichever
+        # writer gets there first stamps `rf` past the edge and the other one
+        # skips — they agree by construction rather than by coincidence.
+        #
+        # Evaluated **before** the accrual-rate guard below, not after it: a
+        # quota's stored rate is 0 since ADR-137, so that guard would skip
+        # exactly the limits a reset exists for. It also bypasses the
+        # consumption threshold further down, for the same reason the negative
+        # clamp does — a hot bucket has the largest `tc_delta` and is precisely
+        # where the aggregator, not the client, is the refiller (§3.3, §3.6).
+        if reset_sched:
+            reset_edge = prev_reset_edge(reset_sched, now_ms)
+            if reset_edge is not None and reset_edge > state.rf_ms:
+                reset_delta = effective_cp - info.tk_milli
+                if reset_delta != 0:
+                    any_needs_refill = True
+                    add_parts.append(f"{bucket_attr(limit_name, BUCKET_FIELD_TK)} :rd_{limit_name}")
+                    expr_values[f":rd_{limit_name}"] = reset_delta
+                continue
+
+        # A stored rate that is not an accrual rate has nothing to refill. That
+        # is the *normal* state of a quota since ADR-137 — it recovers only at
+        # the `reset_schedule` edge handled above — and otherwise means a
+        # corrupt or unparsed item. Either way, skipping is right:
+        # `refill_bucket` would add nothing and the `rp_ms` half of the guard
+        # exists to keep its drift division off a zero denominator.
+        if info.rp_ms <= 0 or not is_accrual_rate(info.ra_milli):
+            continue
 
         result = refill_bucket(
             tokens_milli=info.tk_milli,
@@ -962,6 +1109,83 @@ def _extract_limit_attrs(
     return limits
 
 
+def _is_quota_limit(limit_name: str, image: dict[str, Any]) -> bool:
+    """Is this limit on this item a quota (ADR-137), read off the stored shape?
+
+    The aggregator holds attributes rather than a ``Limit``, so it cannot ask
+    :attr:`Limit.is_quota` directly. This is the same key
+    ``Limit.from_bucket_state`` reconstructs one by: a zero refill rate paired
+    with a reset schedule. Both halves are required — a zero rate on its own is
+    a corrupt item, and granting it a quota's transfer rule would starve a limit
+    that does recover; a reset beside a positive rate is the mirror corruption
+    that ``Limit.__post_init__`` rejects.
+
+    The reset schedule may be the limit's own ``b_{name}_rsched`` override or
+    the item-level ``rsched`` default it inherits, and the reserved
+    ``BUCKET_SCHED_NONE`` marker (#541) means "this limit declares none" and so
+    blocks the inheritance. Only the presence of a schedule is asked here, never
+    its content, so no decode is needed and an undecodable one cannot make this
+    raise.
+    """
+    ra_attr = bucket_attr(limit_name, BUCKET_FIELD_RA)
+    if int(image.get(ra_attr, {}).get("N", "0")) != 0:
+        return False
+    own = image.get(bucket_attr(limit_name, BUCKET_FIELD_RSCHED), {}).get("S")
+    if own == BUCKET_SCHED_NONE:
+        return False
+    if own:
+        return True
+    return bool(image.get(BUCKET_FIELD_RSCHED, {}).get("S"))
+
+
+def _reclaim_quota_surplus(
+    table: Any,
+    namespace_id: str,
+    entity_id: str,
+    resource: str,
+    old_count: int,
+    shares_milli: dict[str, int],
+) -> dict[str, int]:
+    """Clamp the shards a doubling splits from, and report the take (#587).
+
+    The Lambda mirror of ``Repository.reclaim_quota_surplus``. A quota's new
+    shards are filled by **transfer**, never minted: every shard that already
+    exists is trimmed to the ceiling the doubling just shrank it to — the clamp
+    ``bucket.refill_bucket`` would apply on its next pass anyway — and what
+    comes off is what the clones below are created with.
+
+    One conditional ``UpdateItem`` per shard, ``old_count`` of them, once per
+    doubling. The condition means a shard already at or below its new share is
+    not written and contributes nothing, which is the common case for a spent
+    quota. A shard spent below the ceiling between the read and the write fails
+    the condition and is skipped: there is no surplus left to move.
+    """
+    reclaimed: dict[str, int] = dict.fromkeys(shares_milli, 0)
+    for shard in range(old_count):
+        for name, share in shares_milli.items():
+            attr = bucket_attr(name, BUCKET_FIELD_TK)
+            try:
+                response = table.update_item(
+                    Key={
+                        "PK": pk_bucket(namespace_id, entity_id, resource, shard),
+                        "SK": sk_state(),
+                    },
+                    UpdateExpression="SET #tk = :share",
+                    ConditionExpression="attribute_exists(PK) AND #tk > :share",
+                    ExpressionAttributeNames={"#tk": attr},
+                    ExpressionAttributeValues={":share": share},
+                    ReturnValues="UPDATED_OLD",
+                )
+            except ClientError as e:
+                if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                    continue
+                raise
+            previous = response.get("Attributes", {}).get(attr)
+            if previous is not None:
+                reclaimed[name] += int(previous) - share
+    return reclaimed
+
+
 def propagate_shard_count(
     table: Any,
     record: dict[str, Any],
@@ -1050,7 +1274,11 @@ def propagate_shard_count(
         new_image.get(BUCKET_FIELD_SCHED, {}).get("S"), sched_tz
     )
     # Per-limit starting balance, computed once rather than per target shard.
+    # A quota's is decided per target shard instead (#587), so it is held apart
+    # until the pool below is known.
     starting_tokens: dict[str, int] = {}
+    quota_shares: dict[str, int] = {}
+    quota_pool: dict[str, int] = {}
     for limit_name, info in limit_attrs.items():
         if limit_name == WCU_LIMIT_NAME:
             starting_tokens[limit_name] = info["cp_milli"]  # per-partition, not divided
@@ -1058,7 +1286,14 @@ def propagate_shard_count(
         limit_compact = new_image.get(
             f"{BUCKET_ATTR_PREFIX}{limit_name}_{BUCKET_FIELD_SCHED}", {}
         ).get("S")
-        limit_sched, limit_error = _decode_schedule(limit_compact, sched_tz)
+        # `BUCKET_SCHED_NONE` means this limit declares no schedule (#541), so
+        # it takes neither its own nor the item's: seeded from the item
+        # default, an unscheduled limit's new shard would start at half its
+        # share for the life of the window.
+        declares_none = limit_compact == BUCKET_SCHED_NONE
+        limit_sched, limit_error = (
+            ((), None) if declares_none else _decode_schedule(limit_compact, sched_tz)
+        )
         error = sched_error or limit_error
         if error is not None:
             logger.warning(
@@ -1073,12 +1308,31 @@ def propagate_shard_count(
             info["cp_milli"],
             info["ra_milli"],
             info["rp_ms"],
-            limit_sched or item_sched,
+            () if declares_none else (limit_sched or item_sched),
             now_ms,
         )
-        starting_tokens[limit_name] = scaled_cp // new_count
+        share = scaled_cp // new_count
+        if _is_quota_limit(limit_name, new_image):
+            quota_shares[limit_name] = share
+        else:
+            starting_tokens[limit_name] = share
+
+    # A quota has no drip to amortise a freshly minted share against (ADR-137),
+    # so its new shards are filled by **transfer** from the surplus the shrunken
+    # ceiling reclaims off the existing shards, never by a mint (#587).
+    if quota_shares:
+        quota_pool = _reclaim_quota_surplus(
+            table, namespace_id, entity_id, resource, old_count, quota_shares
+        )
 
     for target_shard in range(old_count, new_count):
+        # The pool is handed out greedily rather than split evenly: a client
+        # that draws one of these shards first should find it usable, and the
+        # clamp reclaims the same total from the siblings either way.
+        for limit_name, share in quota_shares.items():
+            grant = max(0, min(share, quota_pool[limit_name]))
+            starting_tokens[limit_name] = grant
+            quota_pool[limit_name] -= grant
         try:
             item = dict(base_item)
             item["PK"] = pk_bucket(namespace_id, entity_id, resource, target_shard)

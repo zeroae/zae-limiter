@@ -257,6 +257,11 @@ aws dynamodb put-item --table-name <name> \
 
 Reset a bucket to restore full capacity (will be recreated on next acquire):
 
+!!! warning "This is an unscheduled reset for a quota"
+    For a limit with a `reset_schedule`, deleting the item grants a fresh full allowance in the
+    middle of the current window — a second month's worth for a monthly quota. Harmless for a
+    dripping limit; not for a quota.
+
 ```bash
 # v0.9.0+ bucket key format: PK={ns}/BUCKET#{entity}#{resource}#{shard}, SK=#STATE
 aws dynamodb delete-item --table-name <name> \
@@ -286,9 +291,50 @@ use the `b_{limit_name}_{field}` naming convention:
 | Field | Attribute | Description | Example |
 |-------|-----------|-------------|---------|
 | Tokens | `b_rpm_tk` | Current available tokens × 1000 | `50000` = 50 tokens |
-| Capacity | `b_rpm_cp` | Maximum bucket size × 1000 | `100000` = 100 tokens |
+| Capacity | `b_rpm_cp` | **Base** bucket size × 1000, before schedule scaling and shard division | `100000` = 100 tokens |
 | Refill timestamp | `rf` | Last refill (epoch ms) | `1705312800000` |
 | Shard count | `shard_count` | Number of shards for this bucket | `2` |
+| Valid until | `vu` | Next instant the effective parameters change (epoch ms). Absent means nothing here is scheduled. `vu` at or before now is why a bucket is taking the slow path | `1705334400000` |
+| Schedule | `sched` | Item-level schedule, compact encoding | `h9-17w1-5s500` |
+| Reset schedule | `rsched` | Item-level reset schedule, compact encoding | `m0h0` |
+| Timezone | `sched_tz` | IANA zone shared by every schedule on this item | `America/New_York` |
+| Per-limit overrides | `b_rpm_sched`, `b_rpm_rsched` | That limit's own schedule, when it differs from the item default. A literal `-` means that limit has **no** schedule; a missing attribute means it inherits the item default | `h0-6c2000` or `-` |
+
+The ceiling actually enforced is **not** `b_rpm_cp`. The schedule in force at the current
+instant is applied to the base first, and the result is then divided by `shard_count`. An
+entity on a `scale: 0.5` window across 2 shards admits `cp × 0.5 / 2` per shard. Compare
+observed rejections against that, not against the stored number.
+
+### Bucket Expiry
+
+Bucket items carry a DynamoDB TTL, and whether they do depends on where their limits came
+from:
+
+| Limits resolved from | TTL |
+|----------------------|-----|
+| Entity config, for that resource | None — the item persists |
+| Entity config, entity-wide `_default_` | None — the item persists |
+| Resource defaults | `recovery_horizon × multiplier` |
+| System defaults | `recovery_horizon × multiplier` |
+| A `limits=` override passed to `acquire()` | `recovery_horizon × multiplier` |
+
+The multiplier is `bucket_ttl_refill_multiplier`, default 7; set it to 0 to disable expiry
+everywhere.
+
+For resource- and system-level limits this expiry is also the **propagation mechanism**:
+changing those defaults does not rewrite live buckets, so a bucket picks up the new numbers
+when it expires and is recreated. Entity-level changes fan out immediately and need no expiry.
+
+The recovery horizon is the longest a limit could need to come back:
+
+- A limit that drips uses time-to-fill, `(capacity / refill_amount) × refill_period_seconds`,
+  taken at its **slowest** across the base parameters and every schedule window. An entry that
+  overrides `refill_amount` or `refill_period_seconds` to something slower therefore lengthens
+  the TTL for the whole item.
+- A quota uses its **reset period** — the cycle its reset cron repeats on, rounded up (31 days
+  for a monthly pattern, 366 for an annual one).
+
+Across limits sharing one item the largest horizon wins.
 
 ### Verification After Changes
 

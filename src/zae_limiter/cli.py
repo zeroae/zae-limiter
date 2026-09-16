@@ -21,6 +21,7 @@ from .naming import DEFAULT_STACK_NAME
 if TYPE_CHECKING:
     from .models import Limit
     from .repository import Repository
+    from .schedule import ScheduleEntry
 
 
 def namespace_option(func: Callable[..., Any]) -> Callable[..., Any]:
@@ -2189,21 +2190,133 @@ def _parse_limit(limit_str: str) -> Limit:
         refill_period = 60  # default: per minute
 
     capacity = burst if burst is not None else rate
-    return LimitModel(
-        name=name,
-        capacity=capacity,
-        refill_amount=rate,
-        refill_period_seconds=refill_period,
+    try:
+        return LimitModel(
+            name=name,
+            capacity=capacity,
+            refill_amount=rate,
+            refill_period_seconds=refill_period,
+        )
+    except ValueError as e:
+        # `Limit.__post_init__` enforces cross-field rules `_parse_limit` cannot
+        # anticipate — most visibly ADR-137's "a zero rate is only valid with a
+        # reset_schedule". Those are operator input errors, so they belong inside
+        # Click's error boundary as a usage message, not as a traceback.
+        raise click.BadParameter(f"Invalid limit '{limit_str}': {e}") from e
+
+
+def _format_cron_entry(entry: ScheduleEntry) -> str:
+    """Render one schedule entry as canonical cron plus its timezone, for display.
+
+    Round-tripped through the compact encoding so weekday and month come back as
+    names (``MON-FRI``, not ``1-5``) no matter whether the entry was built in
+    process or decoded from storage. Canonical cron is the rule at every
+    user-facing boundary; the compact form is storage only.
+
+    Serves both tuples on a ``Limit``. ``encode`` rather than ``encode_reset``
+    because it is total over both: the modifier tokens a parameter entry adds
+    are ignored by ``to_cron``, and a reset entry carries none to begin with.
+    """
+    from . import schedule
+
+    compact, tz = schedule.encode((entry,))
+    return f'"{schedule.to_cron(compact)}" {tz or entry.tz}'
+
+
+def _format_schedule_effect(entry: ScheduleEntry) -> str:
+    """The gloss after the arrow: what this window does to the limit.
+
+    ``__post_init__`` requires *one of* ``scale`` or the absolute fields — one
+    of the **group**, not one field — so ``capacity`` + ``refill_amount`` +
+    ``refill_period_seconds`` is a single legal entry and every field it sets
+    is named. Reporting only the first would silently drop the rest, and
+    collapsing "some absolute field" into one generic word would tell an
+    operator nothing about which.
+
+    ``scale`` renders as a percentage with its tenths intact: storage quantises
+    it to per-mille (``schedule.encode``), so ``0.125`` is a value the system
+    can really hold and a whole-percent format would show it as ``12%``.
+    """
+    if entry.scale is not None:
+        return f"scale {entry.scale * 100:g}%"
+    parts = [
+        f"{field} {value:,}"
+        for field, value in (
+            ("capacity", entry.capacity),
+            ("refill_amount", entry.refill_amount),
+            ("refill_period_seconds", entry.refill_period_seconds),
+        )
+        if value is not None
+    ]
+    # Unreachable through `ScheduleEntry`, which rejects an entry that overrides
+    # nothing — but this is a display helper and must not raise on a value that
+    # reached it some other way.
+    return ", ".join(parts) if parts else "no override"
+
+
+def _format_schedule_lines(limit: Limit, indent: str) -> list[str]:
+    """Render a limit's parameter schedule as lines beneath its own line.
+
+    ``indent`` is the indent of the limit's line, not a constant: `system
+    get-defaults` nests its limits under a ``Limits:`` header and prints them
+    two spaces deeper than `entity get-limits` and `resource get-defaults` do.
+
+    The **reset** schedule is deliberately absent. It is rendered inline by
+    :func:`_format_limit`, for the reasons in that function's docstring.
+
+    Renders exactly what this ``Limit`` carries, and resolves nothing. Config
+    items store one ``l_{name}_sched`` per limit with no item-level default, so
+    a limit that declares no schedule has none to show — and since #541 the
+    same is true on bucket items, where an unscheduled limit beside a scheduled
+    one is stamped ``BUCKET_SCHED_NONE`` rather than left to inherit.
+    """
+    if not limit.schedule:
+        return []
+    block = indent + "  "
+    lines = [f"{block}Schedule:"]
+    lines.extend(
+        f"{block}  {_format_cron_entry(entry)}  → {_format_schedule_effect(entry)}"
+        for entry in limit.schedule
     )
+    return lines
 
 
 def _format_limit(limit: Limit) -> str:
     """Format a limit for display."""
+    if limit.is_quota:
+        # A quota does not drip (ADR-137): `refill_amount` is 0 and
+        # `refill_period_seconds` is an inert placeholder, so neither belongs on
+        # the line. The two facts an operator needs are the whole allowance and
+        # the instant it comes back. `capacity` is the allowance, so "burst" —
+        # headroom above a sustained rate — is meaningless here too.
+        #
+        # The reset stays *here*, on the headline, rather than moving into the
+        # indented block beside the parameter schedule. This line renders what a
+        # limit allows and how it recovers — a rate limit's `/min`, a quota's
+        # reset cron — and `Limit.is_quota` is literally `bool(reset_schedule)`,
+        # so the word "quota" and the cron that justifies it belong together.
+        # The block is for *modifiers*, whose per-entry gloss differs entry by
+        # entry; a reset overrides nothing, so a reset block's only payload
+        # would be the cron this line already carries.
+        resets = ", ".join(_format_cron_entry(entry) for entry in limit.reset_schedule)
+        return f"{limit.name}: {limit.capacity:,} quota (resets {resets})"
     suffix = _format_period(limit.refill_period_seconds)
     base = f"{limit.name}: {limit.refill_amount:,}{suffix}"
     if limit.capacity != limit.refill_amount:
         return f"{base} (burst: {limit.capacity:,})"
     return base
+
+
+def _echo_limit(limit: Limit, indent: str = "  ") -> None:
+    """Print one limit and the schedule block that belongs under it.
+
+    The single place a limit reaches a terminal, so a change to the rendering
+    reaches `system`, `resource` and `entity` at once — the property that made
+    #542 a one-function fix and that this keeps.
+    """
+    click.echo(f"{indent}{_format_limit(limit)}")
+    for line in _format_schedule_lines(limit, indent):
+        click.echo(line)
 
 
 @cli.group()
@@ -2296,7 +2409,7 @@ def resource_set_defaults(
             await repo.set_resource_defaults(resource_name, parsed_limits)
             click.echo(f"Set {len(parsed_limits)} default(s) for resource '{resource_name}':")
             for limit in parsed_limits:
-                click.echo(f"  {_format_limit(limit)}")
+                _echo_limit(limit)
         except ValidationError as e:
             click.echo(f"Error: {e.reason}", err=True)
             sys.exit(1)
@@ -2373,7 +2486,7 @@ def resource_get_defaults(
             else:
                 click.echo(f"Defaults for resource '{resource_name}':")
                 for limit in limits:
-                    click.echo(f"  {_format_limit(limit)}")
+                    _echo_limit(limit)
 
             # Read the disabled flag regardless of whether limits exist:
             # disable_resource() deliberately works on a resource with no
@@ -2833,7 +2946,7 @@ def system_set_defaults(
             n_limits = len(parsed_limits)
             click.echo(f"Set {n_limits} system-wide default(s):")
             for limit in parsed_limits:
-                click.echo(f"  {_format_limit(limit)}")
+                _echo_limit(limit)
             if on_unavailable:
                 click.echo(f"  on_unavailable: {on_unavailable}")
         except ValidationError as e:
@@ -2913,7 +3026,7 @@ def system_get_defaults(
             if limits:
                 click.echo("  Limits:")
                 for limit in limits:
-                    click.echo(f"    {_format_limit(limit)}")
+                    _echo_limit(limit, indent="    ")
             if on_unavailable:
                 click.echo(f"  on_unavailable: {on_unavailable}")
         except ValidationError as e:
@@ -3295,7 +3408,7 @@ def entity_set_limits(
                 f"on resource '{resource_name}':"
             )
             for limit in parsed_limits:
-                click.echo(f"  {_format_limit(limit)}")
+                _echo_limit(limit)
         except ValidationError as e:
             click.echo(f"Error: {e.reason}", err=True)
             sys.exit(1)
@@ -3382,7 +3495,7 @@ def entity_get_limits(
             else:
                 click.echo(f"Limits for entity '{entity_id}' on resource '{resource_name}':")
                 for limit in limits:
-                    click.echo(f"  {_format_limit(limit)}")
+                    _echo_limit(limit)
 
             # Read the disabled flag regardless of whether limits exist:
             # disable_entity() deliberately works on an entity with no config,

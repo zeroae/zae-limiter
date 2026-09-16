@@ -742,7 +742,8 @@ Instead of the normal read-then-write flow (BatchGetItem + UpdateItem), the spec
 ```
 acquire(entity_id, resource, consume)
 |
-+- Speculative UpdateItem (condition: bucket exists AND has enough tokens)
++- Speculative UpdateItem (condition: bucket exists, is not disabled, has not
+|  crossed a schedule boundary, and has enough tokens)
    |
    +- SUCCEEDS -> read cascade/parent_id from ALL_NEW, populate entity cache
    |  +- cascade=False -> DONE (1 RT, 0 RCU, 1 WCU)
@@ -753,6 +754,7 @@ acquire(entity_id, resource, consume)
    +- FAILS (ConditionalCheckFailedException)
       +- No ALL_OLD (bucket missing) -> SLOW PATH (creates bucket)
       +- Missing limit in ALL_OLD -> SLOW PATH
+      +- Schedule boundary crossed (vu passed) -> SLOW PATH (re-materialises)
       +- Refill would help -> SLOW PATH
       +- Refill won't help -> RateLimitExceeded (0 RCU, 0 WCU)
 ```
@@ -793,11 +795,17 @@ The `ReturnValuesOnConditionCheckFailure=ALL_OLD` response provides the current 
 | **Speculative success** (non-cascade) | 1 | 0 | 1 | $0.625 |
 | **Speculative fast rejection** (exhausted) | 1 | 0 | 0 | $0.00 |
 | **Speculative fallback** (refill helps) | 3 | 1 | 2 | $1.375 |
+| **Speculative fallback** (schedule boundary) | 3 | 1 | 2 | $1.375 |
 | **Normal path** (cascade) | 3 | 2 | 4 | $1.75 |
 | **Speculative success** (cascade, sequential) | 2 | 0 | 2 | $1.25 |
 | **Speculative success** (cascade, parallel) | 1 | 0 | 2 | $1.25 |
 | **Speculative cascade fallback** (parent refill helps) | 2+ | 0.5 | 3 | $2.00 |
 | **Speculative cascade fast rejection** (parent exhausted) | 1 | 0 | 2 | $1.25 |
+
+A scheduled limit pays the boundary fallback once per bucket per boundary — every request in
+flight at that instant fails the condition together, then serialises on the refill lock — so
+four boundaries a day across 10,000 active buckets is roughly 40,000 extra slow-path passes,
+about $0.05.
 
 !!! note "When speculative writes save money"
     The speculative path is cheaper than the normal path when most requests succeed without needing refill. If a high percentage of requests fall back to the slow path (new entities, near-capacity buckets, frequent config changes), the extra WCU from the failed speculative write makes it more expensive.

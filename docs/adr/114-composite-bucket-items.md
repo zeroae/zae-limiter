@@ -1,6 +1,6 @@
 # ADR-114: Composite Bucket Items
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-01-28
 **Issue:** [#248](https://github.com/zeroae/zae-limiter/issues/248)
 
@@ -28,6 +28,13 @@ item with SK `#BUCKET#{resource}`. Per-limit attributes must use the prefix
 `b_{limit_name}_{field}` with short field names: `tk` (tokens), `cp` (capacity),
 `ra` (refill amount), `rp` (refill period), `tc` (total consumed).
 GSI2SK must be per-entity (`BUCKET#{entity_id}`), not per-limit.
+
+> **Note (v0.9.0, GHSA-76rv-2r9v-c5m6):** pre-shard buckets moved the resource and a shard
+> index into the partition key, so the item is now keyed `PK={ns}/BUCKET#{entity_id}#{resource}#{shard}`,
+> `SK=#STATE`, with `GSI2SK=BUCKET#{entity_id}#{shard_id}` — one composite item per
+> entity+resource+**shard**. One item holding every limit, and the `b_{limit_name}_{field}`
+> attribute prefix, are unchanged. See [ADR-133](133-client-shard-creation.md) and
+> [ADR-134](134-random-shard-selection.md).
 
 ## Consequences
 

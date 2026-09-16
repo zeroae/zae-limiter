@@ -520,10 +520,13 @@ scheduled bucket item forever and the 1 KB boundary §4.2 exists to defend.
 
 What is lost is a log line, not behaviour: both readings produce the identical action
 (`RateLimiterUnavailable` on the client, skip-the-bucket in the aggregator), so nothing
-downstream branches on it. `_tokenise` already discriminates *structurally* — an unknown tag
-raises `malformed compact schedule entry ...: cannot parse from offset N` where a cronsim
-rejection reads `invalid cron expression ...` — which is a heuristic, not a proof, since
-corruption can also fail at an offset. Adding a marker later is not a break provided the reader
+downstream branches on it. `_tokenise` discriminates *structurally* — an unknown tag at the
+start of an entry raises `malformed compact schedule entry ...: cannot parse from offset N`
+where a cronsim rejection reads `invalid cron expression ...` — which is a heuristic, not a
+proof, since corruption can also fail at an offset. It is also **weaker than it sounds**: an
+unknown tag appearing after a value is absorbed into that value and fails as a cron or `int()`
+error instead, which is the realistic shape of a new modifier tag. §6.5 tabulates what the log
+actually says. Adding a marker later is not a break provided the reader
 treats its absence as v1, which it must do regardless for every item written before one exists.
 Tracked as #515.
 
@@ -642,8 +645,105 @@ exists, is already documented, and in `allow` mode degrades exactly the way the 
 asked, rather than inventing a fourth behaviour.
 
 The realistic trigger is forward-compatibility, not corruption — a newer client writing an
-encoding an older one cannot read — which is why §4.1 carries a version marker, so the log
-distinguishes the two.
+encoding an older one cannot read. §4.1 was to have carried a version marker so the log could
+distinguish the two; it does not, and the cost of that is a log line rather than behaviour
+(#515). See "What the log can actually say" below, which is weaker than §4.1 claims.
+
+### 6.1 The rule: the parser raises `ValueError`, and each boundary converts
+
+`schedule.decode` / `decode_reset` raise `ValueError` and **are not changed**, for two reasons
+that are both hard constraints rather than preferences:
+
+- `schedule.py` is pure stdlib plus `cronsim` with no `zae_limiter` imports, which is what lets
+  `models.py` import `ScheduleEntry` without a cycle and both Lambdas vendor the file.
+  Importing `exceptions.py` would end that.
+- The aggregator's `_decode_schedule` catches `ValueError` **specifically**.
+  `RateLimiterUnavailable` is an `InfrastructureError`, not a `ValueError`, so raising it from
+  the parser would slip through that catch and re-arm the poison pill: a raise inside
+  `aggregate_bucket_states` aborts the whole stream batch, usage snapshots included, and the
+  record retries until the stream stalls.
+
+Each boundary therefore converts for itself:
+
+| Boundary | Behaviour on an undecodable stored schedule |
+|----------|---------------------------------------------|
+| `schedule.decode` / `decode_reset` | raises `ValueError` |
+| `Repository._deserialize_composite_limits` / `_deserialize_composite_bucket` (client) | `RateLimiterUnavailable`, via `_decode_stored_schedule` |
+| `zae_limiter_aggregator.processor._decode_schedule` | catches, reports on `sched_error`; `try_refill_bucket` skips that bucket and usage extraction continues |
+| `zae_limiter_provisioner.bucket_sync._decode_limits` | raises `ValueError` out of the whole item (PR #549) |
+
+The aggregator's choice is deliberate and stays: skipping the bucket is right, and refilling at
+the *base* rate instead would silently undo a scale-down — the same failure the client guard
+exists to prevent, one layer down. The provisioner's raise is likewise deliberate: silence
+there **removes a limit** from the bucket it stamps.
+
+### 6.2 Granularity: the item fails, not the limit
+
+One undecodable limit fails the **whole config or bucket item**, not just itself. Returning the
+readable limits and dropping the unreadable one looks gentler and is strictly worse:
+
+- Config precedence is per **level**, not per limit (§1.6). A level that still defines anything
+  wins outright, so the dropped limit does not fall back to the resource or system value — it
+  goes unenforced entirely. Unlimited is a worse answer than the doubling this guard exists to
+  prevent.
+- It amplifies. `_sync_bucket_params` resolves limits and stamps them onto every bucket, so a
+  partial read would erase the limit from the items currently enforcing it, converting a read
+  error into permanent data loss.
+
+All three readers already agree on item granularity: the aggregator skips the whole bucket when
+any limit on it fails to decode, and the provisioner's `_decode_limits` raises out of the whole
+item. The client matches them.
+
+### 6.3 What the client converts, exactly
+
+`_decode_stored_schedule(attr_name, compact, tz, *, reset=False)` wraps both decoders and is
+used at both client read sites. Beyond a decode failure, one further case converts: a limit
+that carries a schedule and then fails `Limit.__post_init__` — a stored `rsched` beside a
+positive stored rate, which ADR-137 rejects ("never both"). The stored schedule is what leaves
+the limit undeterminable, so it converts for the same reason.
+
+Scoped deliberately: a limit with **no** schedule that fails to reconstruct (a stored zero rate
+with no reset, #538's shape) still raises `ValueError`. Nothing about a schedule decides it,
+and widening the guard to every validation failure in the read path would make the exception
+type say less, not more.
+
+The message names the attribute that carried the string — the item-level `sched` / `rsched` or
+the per-limit `b_{name}_sched` / `l_{name}_sched` override — the stored value, and the timezone
+it was decoded in, because those are the three things an operator needs in order to repair it
+and there is no version marker to say who wrote it.
+
+### 6.4 `acquire()` honours `on_unavailable` with no new code
+
+`RateLimiter.acquire()`'s `except Exception` handler yields a degraded lease under `ALLOW` and
+re-wraps under `BLOCK`. Its re-raise tuple is `(RateLimitExceeded, ValidationError,
+ResourceDisabled, Warning)` and `RateLimiterUnavailable` is deliberately not in it. So the
+operator's existing knob applies as soon as the boundary raises the right type — which is the
+finding rather than a gap, and the reason this section is one exception type and not a new
+mode. The degraded lease is constructed with `degraded=True`, never inferred from
+`entries == []`.
+
+### 6.5 What the log can actually say
+
+Without a version marker the only discriminator is the shape of the failure, and it is weaker
+than §4.1 states. `_tokenise` reports `cannot parse from offset N` only when the unrecognised
+byte stands where a **tag** is expected — the start of an entry. Its value pattern is "anything
+that is not a known tag letter", so an unknown tag appearing *after* a value (the realistic
+shape of a new modifier a newer encoder appends) is swallowed into that value and surfaces
+downstream as `invalid cron expression ...` or as a bare `invalid literal for int()`, naming
+neither the tag nor an offset:
+
+| Stored | Message |
+|--------|---------|
+| `q42h9-17s500` | `malformed compact schedule entry ...: cannot parse from offset 0` |
+| `h9-17q42s500` | `invalid cron expression '* 9-17q42 * * *': Bad hour` |
+| `h9-17s500q42` | `invalid literal for int() with base 10: '500q42'` |
+| `h99` (genuinely bad field) | `invalid cron expression '* 99 * * *': Bad hour` |
+
+Rows two and four are indistinguishable, which is the collision the marker would have removed.
+So the heuristic is not merely "not a proof" (corruption can fail at an offset too) — it is
+also incomplete in the other direction. Pinned by
+`TestDecodeRaisesValueErrorForTheAggregatorsSake.test_an_unknown_tag_only_reaches_the_tokeniser_at_an_entry_boundary`,
+so #515 has a concrete statement of what it would buy.
 
 ## 7. `retry_after_seconds` across a boundary
 
@@ -734,6 +834,32 @@ Plus the generated sync counterparts throughout.
   landing inside a `scale: 0.5` window restores half. That is the intended reading of
   "reset to the current limit", but it is worth stating because the alternative reading —
   reset to the base — is equally defensible and was not chosen.
+- **An undecodable schedule on the system config item downgrades `on_unavailable` to `block`.**
+  `RateLimiter.acquire()` resolves the mode *before* its try block, and
+  `Repository.resolve_on_unavailable()` swallows every exception and falls back to its cached
+  value or `"block"`. So an operator who configured `allow` gets `block` for exactly that one
+  item, unless the value was already cached from an earlier successful read. Entity- and
+  resource-level corruption is unaffected: the mode still resolves and `allow` applies (§6.4).
+  Fixing it means teaching `resolve_on_unavailable` to distinguish "cannot reach DynamoDB" from
+  "read a config item I cannot parse", which is wider than §6 needs. The blast radius is pinned
+  by `TestSystemLevelCorruptionDowngradesTheMode` so it cannot widen silently.
+- ~~**The provisioner commits before it can fail on an undecodable schedule.**~~ **Resolved by
+  #563.** `apply_changes` still commits before the fan-outs run — that ordering is required, the
+  fan-outs resolve the config this apply has just written — but a `ValueError` out of
+  `bucket_sync._decode_limits` no longer escapes. Both fan-outs now guard **per change** and
+  return their failures; `handler._apply_and_record` appends them to `ApplyResult.errors` and
+  writes `#PROVISIONER` unconditionally, so the record always describes what was committed. The
+  CLI prints the errors and exits 1 (it already did, for a failed config write); the
+  CloudFormation `Custom::ZaeLimiterLimits` response is **SUCCESS carrying the errors** rather
+  than FAILED, because a rollback of a stack whose configuration is already applied is the worst
+  available outcome — and FAILED on an Update would re-invoke the resource with the previous
+  properties, hit the same undecodable item, and strand the stack in
+  `UPDATE_ROLLBACK_FAILED`. This is the contract of `FanoutIncomplete` (§5.2, #468/#487) —
+  config committed first, progress reported, every write idempotent so re-running reconciles —
+  expressed through the provisioner's existing `ApplyResult.errors` channel rather than an
+  exception, since out of a Lambda handler an exception *is* a CloudFormation FAILED. The
+  residual limitation is that the operator must read the errors: a drifted bucket is not
+  self-healing at entity level (no TTL), exactly as `FanoutIncomplete` already documents.
 
 ## Related
 

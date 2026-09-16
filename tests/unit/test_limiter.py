@@ -19,6 +19,7 @@ from zae_limiter import (
     RateLimitExceeded,
     ValidationError,
 )
+from zae_limiter.bucket import calculate_available
 from zae_limiter.exceptions import (
     InvalidIdentifierError,
     InvalidNameError,
@@ -27,7 +28,7 @@ from zae_limiter.exceptions import (
 from zae_limiter.infra.discovery import InfrastructureDiscovery
 from zae_limiter.models import BucketState
 from zae_limiter.repository_protocol import SpeculativeResult
-from zae_limiter.schedule import ScheduleEntry
+from zae_limiter.schedule import ScheduleEntry, retry_after_with_schedule
 from zae_limiter.schema import (
     BUCKET_FIELD_TK,
     BUCKET_FIELD_VU,
@@ -761,7 +762,14 @@ class TestLeaseRetryPath:
         state.tokens_milli = 50_000
         state.retry_refill_amount_milli.return_value = 100_000
         state.effective_refill_period_ms.return_value = 60_000
+        # The boundary walk reads the undivided base and both schedule tuples
+        # off the state and narrows them itself (#222 §7), so a mock has to
+        # supply real integers here rather than MagicMocks.
+        state.capacity_milli = 100_000
+        state.refill_amount_milli = 100_000
         state.refill_period_ms = 60_000
+        state.sched = ()
+        state.reset_sched = ()
         state.shard_count = 1
         entry = LeaseEntry(
             entity_id="e1",
@@ -9785,3 +9793,653 @@ class TestFanOutVuSelfClears:
 
         assert BUCKET_FIELD_VU not in await self._raw(repo, "vu-shards", shard=0)
         assert (await self._raw(repo, "vu-shards", shard=1))[BUCKET_FIELD_VU]["N"] == "0"
+
+
+# ---------------------------------------------------------------------------
+# Calendar resets (#222 §3.6) — a crossed reset edge sets the balance back to
+# the effective capacity, before admission, without ever touching `tc`.
+# ---------------------------------------------------------------------------
+
+RESET_NY = ZoneInfo("America/New_York")
+
+
+def _ny(s: str) -> int:
+    """An ISO local time in America/New_York, as epoch milliseconds."""
+    return int(datetime.fromisoformat(s).replace(tzinfo=RESET_NY).timestamp() * 1000)
+
+
+# ADR-137: a quota is built in one call. `per_day(...).with_reset_schedule(...)`
+# raises, because the intermediate value is a positive rate beside a reset.
+RPD = Limit.quota("rpd", 10_000, cron="0 0 * * *", tz="America/New_York")
+
+
+class TestApplyResetEdge:
+    """The reset decision, isolated from DynamoDB (#222 §3.6).
+
+    ``_apply_reset_edge`` answers one question — "has a rising reset edge been
+    crossed since this item was last refilled?" — and, when it has, sets the
+    balance to the shard's share of the capacity in force *at that instant*.
+    """
+
+    @staticmethod
+    def _state(**kwargs) -> BucketState:
+        base = dict(
+            entity_id="user-1",
+            resource="gpt-4",
+            limit_name="rpd",
+            tokens_milli=0,
+            last_refill_ms=_ny("2026-09-15 18:00"),
+            capacity_milli=10_000_000,
+            # A quota does not drip (ADR-137), so the stored rate is zero and
+            # the period is the inert `_QUOTA_REFILL_PERIOD_SECONDS`.
+            refill_amount_milli=0,
+            refill_period_ms=1_000,
+        )
+        base.update(kwargs)
+        return BucketState(**base)
+
+    def test_sets_tokens_to_the_effective_capacity(self):
+        state = self._state()
+        assert RateLimiter._apply_reset_edge(RPD, state, _ny("2026-09-16 09:00")) is True
+        assert state.tokens_milli == 10_000_000
+
+    def test_uses_the_shards_share(self):
+        """Resetting every shard to the undivided capacity multiplies the
+        entity's quota by shard_count (§3.6)."""
+        state = self._state(shard_count=4)
+        assert RateLimiter._apply_reset_edge(RPD, state, _ny("2026-09-16 09:00")) is True
+        assert state.tokens_milli == 2_500_000
+
+    def test_respects_a_concurrent_param_schedule(self):
+        """A reset landing inside a 0.5x window restores half — the limit in
+        force, not the base. Effective params first, balance second."""
+        limit = RPD.with_schedule(
+            (ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", scale=0.5),)
+        )
+        state = self._state(sched=limit.schedule)
+        assert RateLimiter._apply_reset_edge(limit, state, _ny("2026-09-16 03:00")) is True
+        assert state.tokens_milli == 5_000_000
+
+    def test_no_edge_since_the_last_refill_changes_nothing(self):
+        state = self._state(tokens_milli=42, last_refill_ms=_ny("2026-09-16 01:00"))
+        assert RateLimiter._apply_reset_edge(RPD, state, _ny("2026-09-16 09:00")) is False
+        assert state.tokens_milli == 42
+
+    def test_an_edge_exactly_at_the_last_refill_does_not_re_fire(self):
+        """``> rf``, not ``>= rf``. The pass that applies a reset stamps ``rf``
+        at or after the edge, so ``>=`` would re-apply it on every subsequent
+        request and refund everything spent since — an unbounded quota."""
+        state = self._state(tokens_milli=42, last_refill_ms=_ny("2026-09-16 00:00"))
+        assert RateLimiter._apply_reset_edge(RPD, state, _ny("2026-09-16 09:00")) is False
+        assert state.tokens_milli == 42
+
+    def test_two_missed_edges_apply_once(self):
+        """Setting the balance to the capacity is idempotent, so one edge is
+        enough and ``prev_reset_edge`` reporting only the latest is sufficient.
+        An implementation that *added* a window's worth per missed edge would
+        hand back 20,000 here."""
+        state = self._state(last_refill_ms=_ny("2026-09-14 18:00"))
+        assert RateLimiter._apply_reset_edge(RPD, state, _ny("2026-09-16 09:00")) is True
+        assert state.tokens_milli == 10_000_000
+
+    def test_a_limit_without_a_reset_schedule_is_untouched(self):
+        state = self._state(tokens_milli=7)
+        plain = Limit.per_day("rpd", 10_000)
+        assert RateLimiter._apply_reset_edge(plain, state, _ny("2026-09-16 09:00")) is False
+        assert state.tokens_milli == 7
+
+    def test_a_never_matching_expression_resets_nothing(self):
+        """A leap day, out of reach of the scan. ``prev_reset_edge`` returns
+        None and nothing happens — the contract Task 2 pins from the other
+        side."""
+        limit = Limit.quota("rpd", 10_000, cron="0 0 29 2 *", tz="America/New_York")
+        state = self._state(tokens_milli=7)
+        assert RateLimiter._apply_reset_edge(limit, state, _ny("2026-09-16 09:00")) is False
+        assert state.tokens_milli == 7
+
+    def test_debt_is_cleared_rather_than_carried(self):
+        """A reset *sets* the balance; it does not add to it. An entity that
+        overdrew via adjust() starts the new day whole. This is what makes the
+        aggregator's ``ADD (eff_cp - tk_observed)`` the same operation."""
+        state = self._state(tokens_milli=-3_000_000)
+        assert RateLimiter._apply_reset_edge(RPD, state, _ny("2026-09-16 09:00")) is True
+        assert state.tokens_milli == 10_000_000
+
+    def test_the_wcu_carrier_is_exempt(self):
+        """``rsched`` is an item-level attribute that applies to every limit on
+        the item by default, and the aggregator has to exempt ``wcu`` by hand.
+        On the client it is free — ``Limit._carrier()`` never sets a reset
+        schedule — but "free" is a property to pin, not to assume."""
+        wcu_state = self._state(
+            limit_name="wcu",
+            capacity_milli=1_000_000,
+            refill_amount_milli=1_000_000,
+            refill_period_ms=60_000,
+        )
+        carrier = Limit._carrier(wcu_state)
+        assert carrier.reset_schedule == ()
+        assert RateLimiter._apply_reset_edge(carrier, wcu_state, _ny("2026-09-16 09:00")) is False
+        assert wcu_state.tokens_milli == 0
+
+
+class TestResetMaterialisationThroughAcquire:
+    """The reset must gate admission, not just the write that follows it."""
+
+    @staticmethod
+    def _slow(limiter):
+        """The same moto repository, forced onto the slow path.
+
+        The speculative fast path is a conditional UpdateItem that never
+        evaluates a schedule; in production it reaches the slow path because
+        `vu` expires at the reset edge. Here we go straight there.
+        """
+        return RateLimiter(repository=limiter._repository, speculative_writes=False)
+
+    @staticmethod
+    async def _raw(repo, entity_id, resource="gpt-4", shard=0):
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, resource, shard)},
+                "SK": {"S": sk_state()},
+            },
+        )
+        return response["Item"]
+
+    @staticmethod
+    async def _bucket(repo, entity_id, limit_name="rpd", resource="gpt-4"):
+        return next(
+            b
+            for b in await repo.get_buckets(entity_id, resource=resource)
+            if b.limit_name == limit_name
+        )
+
+    async def test_the_quota_comes_back_in_one_lump(self, limiter):
+        """Burn 10,000 at 23:00, cross midnight, spend 9,000 at 00:30.
+
+        Without the reset the second acquire raises outright: a quota does not
+        drip (ADR-137), so the 90 minutes between the two calls return exactly
+        nothing and the balance is still 0. That is what makes this
+        discriminating rather than a restatement of the balance — and it is
+        also why the final assertion is an exact 1_000_000 with no drip term.
+        """
+        repo = limiter._repository
+        slow = self._slow(limiter)
+        await repo.set_limits("reset-1", [RPD], resource="gpt-4")
+
+        repo._now_ms = lambda: _ny("2026-09-15 23:00")
+        async with slow.acquire("reset-1", "gpt-4", consume={"rpd": 10_000}):
+            pass
+
+        repo._now_ms = lambda: _ny("2026-09-16 00:30")
+        # The clock seam does not reach config_cache.py, which still calls
+        # time.time(), so without this the resolved Limit — and its
+        # reset_schedule — is the one cached before the jump.
+        await repo.invalidate_config_cache()
+
+        async with slow.acquire("reset-1", "gpt-4", consume={"rpd": 9_000}):
+            pass
+
+        assert (await self._bucket(repo, "reset-1")).tokens_milli == 1_000_000
+
+    async def test_the_reset_never_touches_tc(self, limiter):
+        """The total-consumed counter must stay monotonic across the edge.
+
+        19,000 tokens were consumed across the two calls and `tc` must say so.
+        An implementation that expressed the reset by rewriting the item, or by
+        crediting `tc`, fails here — the failure mode #471's `reset_bucket()`
+        had, and the reason `.claude/rules/design-validation.md` exists.
+        """
+        repo = limiter._repository
+        slow = self._slow(limiter)
+        await repo.set_limits("reset-2", [RPD], resource="gpt-4")
+
+        repo._now_ms = lambda: _ny("2026-09-15 23:00")
+        async with slow.acquire("reset-2", "gpt-4", consume={"rpd": 10_000}):
+            pass
+
+        repo._now_ms = lambda: _ny("2026-09-16 00:30")
+        await repo.invalidate_config_cache()
+        async with slow.acquire("reset-2", "gpt-4", consume={"rpd": 9_000}):
+            pass
+
+        assert (await self._bucket(repo, "reset-2")).total_consumed_milli == 19_000_000
+
+    async def test_the_reset_gates_admission_not_just_the_write(self, limiter):
+        """The whole point of the seam's position.
+
+        The quota is burnt to exactly 0 before midnight and the post-midnight
+        request asks for the *entire* allowance. Applied after `_admit_limit`
+        the balance would be right in DynamoDB and the request still rejected;
+        applied before it, the request is admitted against the restored quota.
+        """
+        repo = limiter._repository
+        slow = self._slow(limiter)
+        await repo.set_limits("reset-gate", [RPD], resource="gpt-4")
+
+        repo._now_ms = lambda: _ny("2026-09-15 23:00")
+        async with slow.acquire("reset-gate", "gpt-4", consume={"rpd": 10_000}):
+            pass
+        assert (await self._bucket(repo, "reset-gate")).tokens_milli == 0
+
+        repo._now_ms = lambda: _ny("2026-09-16 00:30")
+        await repo.invalidate_config_cache()
+        async with slow.acquire("reset-gate", "gpt-4", consume={"rpd": 10_000}):
+            pass
+        assert (await self._bucket(repo, "reset-gate")).tokens_milli == 0
+
+    async def test_an_idle_bucket_resets_on_wake_not_at_the_edge(self, limiter):
+        """Idle 18:00 -> 09:00 the next morning: the missed midnight is found
+        by the backwards scan and applied by the 09:00 pass (§3.6)."""
+        repo = limiter._repository
+        slow = self._slow(limiter)
+        await repo.set_limits("reset-3", [RPD], resource="gpt-4")
+
+        repo._now_ms = lambda: _ny("2026-09-15 18:00")
+        async with slow.acquire("reset-3", "gpt-4", consume={"rpd": 10_000}):
+            pass
+
+        repo._now_ms = lambda: _ny("2026-09-16 09:00")
+        await repo.invalidate_config_cache()
+        async with slow.acquire("reset-3", "gpt-4", consume={"rpd": 10_000}):
+            pass
+
+        assert (await self._bucket(repo, "reset-3")).tokens_milli == 0
+
+    async def test_two_missed_midnights_still_hand_back_one_allowance(self, limiter):
+        """Idle across *two* edges. Setting the balance is idempotent, so the
+        entity gets one day's quota back, not two."""
+        repo = limiter._repository
+        slow = self._slow(limiter)
+        await repo.set_limits("reset-idle2", [RPD], resource="gpt-4")
+
+        repo._now_ms = lambda: _ny("2026-09-14 18:00")
+        async with slow.acquire("reset-idle2", "gpt-4", consume={"rpd": 10_000}):
+            pass
+
+        repo._now_ms = lambda: _ny("2026-09-16 09:00")
+        await repo.invalidate_config_cache()
+        async with slow.acquire("reset-idle2", "gpt-4", consume={"rpd": 1_000}):
+            pass
+
+        assert (await self._bucket(repo, "reset-idle2")).tokens_milli == 9_000_000
+
+    async def test_only_the_limit_carrying_the_reset_is_restored(self, limiter):
+        """One item, two limits, one `rf` — but the reset is decided per limit.
+
+        `rpm` drips and carries no reset; `rpd` is a quota that does. Crossing
+        midnight must not hand `rpm` its ceiling back, which an item-level
+        reset would.
+        """
+        repo = limiter._repository
+        slow = self._slow(limiter)
+        # Ceiling 100, but only 10 a minute, so 90 seconds of drip is visibly
+        # short of the ceiling an item-level reset would have restored.
+        rpm = Limit.custom("rpm", capacity=100, refill_amount=10, refill_period_seconds=60)
+        await repo.set_limits("reset-multi", [RPD, rpm], resource="gpt-4")
+
+        repo._now_ms = lambda: _ny("2026-09-15 23:59")
+        async with slow.acquire("reset-multi", "gpt-4", consume={"rpd": 10_000, "rpm": 100}):
+            pass
+        assert (await self._bucket(repo, "reset-multi", "rpm")).tokens_milli == 0
+
+        # 30 seconds past midnight, 90 seconds after the burn: the daily quota
+        # resets in full, while `rpm` has earned 15 tokens of drip and no more.
+        repo._now_ms = lambda: _ny("2026-09-16 00:00:30")
+        await repo.invalidate_config_cache()
+        async with slow.acquire("reset-multi", "gpt-4", consume={"rpd": 0, "rpm": 0}):
+            pass
+
+        assert (await self._bucket(repo, "reset-multi", "rpd")).tokens_milli == 10_000_000
+        assert (await self._bucket(repo, "reset-multi", "rpm")).tokens_milli == 15_000
+
+    async def test_a_cascading_child_resets_both_items(self, limiter):
+        """Child and parent are separate items with separate `rf` stamps, and
+        each is reset from its own resolved limits.
+
+        Both items' `vu` expire at the edge, so this runs through the *full*
+        slow path — `_try_parent_only_acquire` is covered separately below,
+        because a boundary-expired parent is routed away from it by design.
+        """
+        repo = limiter._repository
+        await limiter.create_entity("org-1")
+        await limiter.create_entity("key-1", parent_id="org-1", cascade=True)
+        await repo.set_limits("org-1", [RPD], resource="gpt-4")
+        await repo.set_limits("key-1", [RPD], resource="gpt-4")
+
+        repo._now_ms = lambda: _ny("2026-09-15 23:00")
+        async with limiter.acquire("key-1", "gpt-4", consume={"rpd": 10_000}):
+            pass
+
+        repo._now_ms = lambda: _ny("2026-09-16 00:30")
+        await repo.invalidate_config_cache()
+        async with limiter.acquire("key-1", "gpt-4", consume={"rpd": 9_000}):
+            pass
+
+        assert (await self._bucket(repo, "org-1")).tokens_milli == 1_000_000
+        assert (await self._bucket(repo, "key-1")).tokens_milli == 1_000_000
+
+    async def test_the_parent_only_slow_path_also_resets(self, limiter):
+        """`_try_parent_only_acquire` builds its own LeaseEntry list and is a
+        second, easily-missed seam.
+
+        Driven directly, because the fast path routes a *boundary-expired*
+        parent to the full slow path rather than here — this seam is reached
+        only when the parent's `vu` is intact (an item predating the schedule,
+        or one whose other limits forced the fallback) while a reset edge has
+        still been crossed since its `rf`. Without the reset here, the parent
+        is exhausted and the method returns None, which the caller reads as a
+        rejection and compensates the child for.
+        """
+        repo = limiter._repository
+        slow = self._slow(limiter)
+        await repo.set_limits("po-org", [RPD], resource="gpt-4")
+
+        repo._now_ms = lambda: _ny("2026-09-15 23:00")
+        async with slow.acquire("po-org", "gpt-4", consume={"rpd": 10_000}):
+            pass
+        assert (await self._bucket(repo, "po-org")).tokens_milli == 0
+
+        repo._now_ms = lambda: _ny("2026-09-16 00:30")
+        await repo.invalidate_config_cache()
+        lease = await limiter._try_parent_only_acquire("po-org", "gpt-4", {"rpd": 9_000}, [], 0, 1)
+
+        assert lease is not None, "the restored quota must admit the request"
+        assert (await self._bucket(repo, "po-org")).tokens_milli == 1_000_000
+
+    async def test_vu_is_stamped_for_a_reset_only_limit(self, limiter):
+        """A limit with a reset schedule and no parameter schedule still needs
+        `vu`, or the fast path never yields and the reset never fires.
+
+        This is the whole daily-quota shape.
+        """
+        repo = limiter._repository
+        slow = self._slow(limiter)
+        await repo.set_limits("reset-4", [RPD], resource="gpt-4")
+
+        repo._now_ms = lambda: _ny("2026-09-15 23:00")
+        async with slow.acquire("reset-4", "gpt-4", consume={"rpd": 1}):
+            pass
+
+        item = await self._raw(repo, "reset-4")
+        assert int(item[BUCKET_FIELD_VU]["N"]) == _ny("2026-09-16 00:00")
+
+    async def test_vu_is_the_earlier_of_a_param_boundary_and_a_reset_edge(self, limiter):
+        """Both tuples vote. The 0.5x window closes at 07:00, three hours
+        before the reset would fire again, so `vu` is the window's edge —
+        a `vu` taken from the reset alone would be 17 hours late."""
+        repo = limiter._repository
+        slow = self._slow(limiter)
+        night = RPD.with_schedule(
+            (ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", scale=0.5),)
+        )
+        await repo.set_limits("reset-5", [night], resource="gpt-4")
+
+        repo._now_ms = lambda: _ny("2026-09-16 03:00")
+        async with slow.acquire("reset-5", "gpt-4", consume={"rpd": 1}):
+            pass
+
+        item = await self._raw(repo, "reset-5")
+        assert int(item[BUCKET_FIELD_VU]["N"]) == _ny("2026-09-16 07:00")
+
+    async def test_an_edge_crossed_between_the_two_clock_readings_is_not_lost(self, limiter):
+        """The acquire path and `_commit_initial()` read the clock a round trip
+        apart, and `rf` is stamped at the *later* reading.
+
+        An edge that falls in that gap is invisible to `_apply_reset_edge`,
+        which ran at the earlier one — and the `rf` it then stamps is already
+        past the edge, so the *next* pass skips it too, and the aggregator,
+        reading the same `rf` off the stream image, skips it as well. A whole
+        period's quota disappears with no error anywhere. The commit
+        re-expresses the delta rather than letting that happen.
+        """
+        repo = limiter._repository
+        slow = self._slow(limiter)
+        await repo.set_limits("reset-race", [RPD], resource="gpt-4")
+
+        repo._now_ms = lambda: _ny("2026-09-15 23:00")
+        async with slow.acquire("reset-race", "gpt-4", consume={"rpd": 10_000}):
+            pass
+        assert (await self._bucket(repo, "reset-race")).tokens_milli == 0
+
+        from zae_limiter.lease import Lease
+
+        original = Lease._commit_initial
+
+        async def commit_after_midnight(lease_self):
+            repo._now_ms = lambda: _ny("2026-09-16 00:00:01")
+            return await original(lease_self)
+
+        repo._now_ms = lambda: _ny("2026-09-15 23:59:59")
+        await repo.invalidate_config_cache()
+        with patch.object(Lease, "_commit_initial", commit_after_midnight):
+            async with slow.acquire("reset-race", "gpt-4", consume={"rpd": 0}):
+                pass
+
+        bucket = await self._bucket(repo, "reset-race")
+        assert bucket.tokens_milli == 10_000_000, "the edge crossed mid-pass still applies"
+        assert bucket.total_consumed_milli == 10_000_000, "and `tc` is still monotonic"
+
+
+# ---------------------------------------------------------------------------
+# Boundary-aware retry estimates on the query surface (#222 §7, surface Task 5)
+# ---------------------------------------------------------------------------
+
+NIGHT_HALF = (ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", scale=0.5),)
+
+
+class TestCheckAvailabilityIsScheduleAware:
+    """The query surface must agree with the rejection path at one instant.
+
+    `available()` and `time_until_available()` are thin wrappers over
+    `check_availability()` (#473), so converting it converts all three. Missing
+    it would leave `acquire()` saying "at midnight" while the display said "in
+    eleven hours" about the same bucket at the same instant.
+
+    These run against a real (moto-backed) repository: the schedules reach the
+    walk through `_deserialize_limits`, which decodes `l_{name}_sched` and
+    `l_{name}_rsched` off the config item, so this half of Task 5 is verified
+    end to end rather than through a constructed `BucketState`.
+    """
+
+    async def test_reports_the_scheduled_capacity_for_a_missing_bucket(self, limiter):
+        """The no-bucket branch reported `limit.capacity` outright; inside a
+        0.5x window that is twice what the first acquire would admit."""
+        repo = limiter._repository
+        await repo.set_limits(
+            "ca-1", [Limit.per_minute("rpm", 1000).with_schedule(NIGHT_HALF)], resource="gpt-4"
+        )
+        repo._now_ms = lambda: _ny("2026-09-16 03:00")
+        await repo.invalidate_config_cache()
+
+        check = await limiter.check_availability("ca-1", "gpt-4")
+        assert check.status("rpm").available == 500
+
+    async def test_the_same_limit_outside_the_window_reports_the_base(self, limiter):
+        """Discriminates the test above against a hardcoded halving."""
+        repo = limiter._repository
+        await repo.set_limits(
+            "ca-1b", [Limit.per_minute("rpm", 1000).with_schedule(NIGHT_HALF)], resource="gpt-4"
+        )
+        repo._now_ms = lambda: _ny("2026-09-15 14:00")
+        await repo.invalidate_config_cache()
+
+        check = await limiter.check_availability("ca-1b", "gpt-4")
+        assert check.status("rpm").available == 1000
+
+    async def test_clamps_a_live_balance_to_the_scheduled_capacity(self, limiter):
+        """The other base-capacity site: `min(total_across_shards,
+        limit.capacity)`. A bucket full at 1000 entering a 0.5x window reports
+        500, not 1000 — the surplus is unspendable (#222 §3.3)."""
+        repo = limiter._repository
+        await repo.set_limits(
+            "ca-2", [Limit.per_minute("rpm", 1000).with_schedule(NIGHT_HALF)], resource="gpt-4"
+        )
+        repo._now_ms = lambda: _ny("2026-09-15 14:00")  # outside the window
+        await repo.invalidate_config_cache()
+        async with limiter.acquire("ca-2", "gpt-4", consume={"rpm": 1}):
+            pass
+
+        repo._now_ms = lambda: _ny("2026-09-16 03:00")  # inside it
+        await repo.invalidate_config_cache()
+        check = await limiter.check_availability("ca-2", "gpt-4")
+        assert check.status("rpm").available == 500
+
+    async def test_the_wait_walks_boundaries(self, limiter):
+        """A daily quota's honest answer is "at midnight". Before this it was
+        0.0 — "retry now", an hour early and repeatedly (#530)."""
+        repo = limiter._repository
+        await repo.set_limits("ca-3", [RPD], resource="gpt-4")
+        repo._now_ms = lambda: _ny("2026-09-15 23:00")
+        await repo.invalidate_config_cache()
+        async with limiter.acquire("ca-3", "gpt-4", consume={"rpd": 10_000}):
+            pass
+
+        check = await limiter.check_availability("ca-3", "gpt-4", needed={"rpd": 5_000})
+        assert check.status("rpd").available == 0
+        assert check.status("rpd").retry_after_seconds == pytest.approx(3600.001, abs=0.5)
+
+    async def test_a_pending_reset_is_reflected_in_the_balance(self, limiter):
+        """The bucket crossed midnight and nothing has touched it since, so
+        disk still holds the burnt balance. Without this the display says
+        "0 remaining, resets tomorrow" while the very next acquire restores the
+        quota immediately."""
+        repo = limiter._repository
+        await repo.set_limits("ca-4", [RPD], resource="gpt-4")
+        repo._now_ms = lambda: _ny("2026-09-15 23:00")
+        await repo.invalidate_config_cache()
+        async with limiter.acquire("ca-4", "gpt-4", consume={"rpd": 10_000}):
+            pass
+
+        repo._now_ms = lambda: _ny("2026-09-16 00:30")
+        await repo.invalidate_config_cache()
+        check = await limiter.check_availability("ca-4", "gpt-4", needed={"rpd": 5_000})
+        assert check.status("rpd").available == 10_000
+        assert check.status("rpd").retry_after_seconds == 0.0
+
+    async def test_a_lowering_boundary_lengthens_the_displayed_wait(self):
+        """The spec's worked example through the query surface. Verified
+        against the walk directly, since `check_availability` sums shards and
+        so hands it `shard_count=1`."""
+        business = (ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.5),)
+        got = retry_after_with_schedule(
+            deficit_milli=500_000,
+            cp_milli=1_000_000,
+            ra_milli=1_000_000,
+            rp_ms=60_000,
+            sched=business,
+            now_ms=_ny("2026-09-15 08:59:50"),
+        )
+        assert got == pytest.approx(50.001, abs=0.002)
+
+    def test_a_pending_reset_is_decided_per_shard(self):
+        """Two shards of one quota, only one of them past the edge. Deciding
+        per *limit name* instead would report the whole entity restored on the
+        strength of a single stale shard."""
+
+        def _shard(rf: str) -> BucketState:
+            return BucketState(
+                entity_id="ca-7",
+                resource="gpt-4",
+                limit_name="rpd",
+                tokens_milli=0,
+                last_refill_ms=_ny(rf),
+                capacity_milli=10_000_000,
+                refill_amount_milli=0,
+                refill_period_ms=86_400_000,
+                shard_count=2,
+                reset_sched=RPD.reset_schedule,
+            )
+
+        now = _ny("2026-09-16 00:30")
+        stale = RateLimiter._readable_balance(_shard("2026-09-15 23:00"), RPD, now)
+        fresh = RateLimiter._readable_balance(_shard("2026-09-16 00:15"), RPD, now)
+        assert stale == 5_000, "the shard that missed the edge reports its restored share"
+        assert fresh == 0, "the shard that already applied it keeps its spent balance"
+
+    def test_a_limit_without_a_reset_is_never_pending(self):
+        """Discriminates the test above: the edge, not the staleness, is what
+        restores the balance."""
+        plain = Limit.per_day("rpd", 10_000)
+        state = BucketState(
+            entity_id="ca-8",
+            resource="gpt-4",
+            limit_name="rpd",
+            tokens_milli=0,
+            last_refill_ms=_ny("2026-09-15 23:00"),
+            capacity_milli=10_000_000,
+            refill_amount_milli=10_000_000,
+            refill_period_ms=86_400_000,
+        )
+        got = RateLimiter._readable_balance(state, plain, _ny("2026-09-16 00:30"))
+        assert got == calculate_available(state, _ny("2026-09-16 00:30"))
+
+    async def test_an_unscheduled_entity_is_unchanged(self, limiter):
+        """Every existing check_availability assertion in the suite must still
+        hold; this is the regression guard for the two capacity sites."""
+        repo = limiter._repository
+        await repo.set_limits("ca-5", [Limit.per_minute("rpm", 1000)], resource="gpt-4")
+        check = await limiter.check_availability("ca-5", "gpt-4", needed={"rpm": 1})
+        assert check.status("rpm").available == 1000
+        assert check.status("rpm").retry_after_seconds == 0.0
+
+    async def test_time_until_available_agrees_with_check_availability(self, limiter):
+        """`time_until_available()` is a wrapper, so it converts with it —
+        and this is what would catch it drifting back to a flat estimate."""
+        repo = limiter._repository
+        await repo.set_limits("ca-6", [RPD], resource="gpt-4")
+        repo._now_ms = lambda: _ny("2026-09-15 23:00")
+        await repo.invalidate_config_cache()
+        async with limiter.acquire("ca-6", "gpt-4", consume={"rpd": 10_000}):
+            pass
+
+        wait = await limiter.time_until_available("ca-6", "gpt-4", needed={"rpd": 5_000})
+        assert wait == pytest.approx(3600.001, abs=0.5)
+
+
+class TestSlowPathRejectionWalksBoundaries:
+    """Site 2: slow-path admission, reached through `_admit_limit`.
+
+    The slow path attaches the resolved config's schedules to each
+    `BucketState` before admission — `sched` was already attached, and the
+    reset schedule now travels with it. Without that pairing a quota's
+    rejection here quotes the drip ADR-137 says it does not have.
+    """
+
+    @staticmethod
+    def _slow(limiter):
+        return RateLimiter(repository=limiter._repository, speculative_writes=False)
+
+    async def test_an_exhausted_quota_reports_its_reset_edge(self, limiter):
+        repo = limiter._repository
+        slow = self._slow(limiter)
+        await repo.set_limits("slow-q", [RPD], resource="gpt-4")
+        repo._now_ms = lambda: _ny("2026-09-15 23:00")
+        await repo.invalidate_config_cache()
+
+        async with slow.acquire("slow-q", "gpt-4", consume={"rpd": 10_000}):
+            pass
+
+        with pytest.raises(RateLimitExceeded) as exc:
+            async with slow.acquire("slow-q", "gpt-4", consume={"rpd": 5_000}):
+                pass
+        assert exc.value.retry_after_seconds == pytest.approx(3600.001, abs=0.5)
+
+    async def test_a_dripping_limit_is_unchanged(self, limiter):
+        """Discriminates the test above: an ordinary limit still reports the
+        rate arithmetic, not a calendar instant."""
+        repo = limiter._repository
+        slow = self._slow(limiter)
+        await repo.set_limits("slow-d", [Limit.per_minute("rpm", 100)], resource="gpt-4")
+        repo._now_ms = lambda: _ny("2026-09-15 23:00")
+        await repo.invalidate_config_cache()
+
+        async with slow.acquire("slow-d", "gpt-4", consume={"rpm": 100}):
+            pass
+
+        with pytest.raises(RateLimitExceeded) as exc:
+            async with slow.acquire("slow-d", "gpt-4", consume={"rpm": 50}):
+                pass
+        # 50 tokens at 100/min = 30 s
+        assert exc.value.retry_after_seconds == pytest.approx(30.001, abs=0.5)

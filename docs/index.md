@@ -29,6 +29,7 @@ A rate limiting library backed by DynamoDB using the token bucket algorithm.
 ## Features
 
 - **Token Bucket Algorithm** - Precise rate limiting with configurable capacity and refill rates
+- **Scheduled Limits and Quota Periods** - Vary a limit by cron window, or grant a fixed allowance per calendar period
 - **Multiple Limits** - Track requests per minute, tokens per minute, etc. in a single call
 - **Hierarchical Entities** - Two-level hierarchy (project → API keys) with cascade mode
 - **Atomic Transactions** - Multi-key updates via DynamoDB TransactWriteItems

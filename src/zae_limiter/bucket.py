@@ -24,7 +24,8 @@ For implementation details, see docs/contributing/architecture.md
 
 from dataclasses import dataclass
 
-from .models import BucketState, Limit, LimitStatus
+from .models import BucketState, Limit, LimitStatus, is_accrual_rate
+from .schedule import retry_after_with_schedule
 
 
 @dataclass
@@ -152,10 +153,19 @@ def try_consume(
     else:
         # Failure - calculate retry time
         deficit_milli = requested_milli - current_tokens_milli
-        retry_after = calculate_retry_after(
+        # The **undivided base** goes in, with `shard_count` alongside: the
+        # walk re-evaluates `effective_params` per window and takes the shard
+        # share afterwards, so handing it the pre-scaled, pre-divided
+        # `effective_*` values would apply both narrowings twice (#222 §7).
+        retry_after = retry_after_with_schedule(
             deficit_milli=deficit_milli,
-            refill_amount_milli=state.retry_refill_amount_milli(now_ms),
-            refill_period_ms=state.effective_refill_period_ms(now_ms),
+            cp_milli=state.capacity_milli,
+            ra_milli=state.refill_amount_milli,
+            rp_ms=state.refill_period_ms,
+            sched=state.sched,
+            reset_sched=state.reset_sched,
+            now_ms=now_ms,
+            shard_count=state.shard_count,
         )
         return ConsumeResult(
             success=False,
@@ -170,27 +180,85 @@ def calculate_retry_after(
     deficit_milli: int,
     refill_amount_milli: int,
     refill_period_ms: int,
+    next_reset_ms: int | None = None,
+    *,
+    now_ms: int | None = None,
 ) -> float:
     """
     Calculate seconds until deficit is refilled.
+
+    A quota — a limit that never drips and is restored in one lump by a
+    ``reset_schedule`` — has no refill rate to compute a wait from. Its honest
+    "retry after" is the next reset instant, so callers that know it pass it in
+    ``next_reset_ms`` and the three cases become (#530):
+
+    ==============================  ==================================
+    Condition                       Result
+    ==============================  ==================================
+    :func:`~.models.is_accrual_rate`  rate arithmetic; ``next_reset_ms``
+                                    is ignored entirely
+    not accruing, reset known       the wait until that reset instant
+    not accruing, no reset          ``0.0``
+    ==============================  ==================================
+
+    The rate handed in is an **effective** one — scheduled, and narrowed to one
+    shard — so "not accruing" is the temporal predicate
+    (:meth:`BucketState.accrues`), not "is a quota". The two differ: a dripping
+    limit whose per-shard share floors to zero is also not accruing. Every
+    caller reaches this through ``BucketState.retry_refill_amount_milli``,
+    which falls back to the *undivided* rate for exactly that case, so a
+    floored share never arrives here as a zero.
+
+    The last row is therefore unreachable for any constructible limit. ADR-137
+    makes ``refill_amount = 0`` valid *only* alongside a ``reset_schedule``, so
+    a zero rate that survives that fallback implies a reset exists — which is
+    precisely why the reset has to be threaded through here rather than left to
+    the four call sites. What remains of that branch once again means what it
+    always claimed to: a corrupt stored item whose rate is itself 0.
 
     Args:
         deficit_milli: How many millitokens we're short
         refill_amount_milli: Refill rate numerator
         refill_period_ms: Refill rate denominator
+        next_reset_ms: Absolute epoch-ms instant of the next ``reset_schedule``
+            edge, or None when the limit has no reset (or the caller does not
+            know it). Consulted only when the refill rate is 0, and only
+            together with ``now_ms``.
+        now_ms: The clock reading ``next_reset_ms`` is measured against. Must
+            be supplied alongside it; the two travel together because the
+            instant alone cannot be turned into a wait.
+
+    Since #222 §7 this has **no production callers**: every one of them walks
+    forward across schedule boundaries instead (``schedule.retry_after_with_
+    schedule``), because the rate in force *now* is the wrong divisor as soon
+    as a boundary falls inside the wait. It stays as the definition that walk
+    is pinned against — the walk's unscheduled path and its ``max_windows``
+    fallback must return the identical value to the millisecond, which
+    ``test_unscheduled_matches_calculate_retry_after_exactly`` enforces. The
+    walk cannot simply call it: ``bucket`` imports ``models`` imports
+    ``schedule``, so the arithmetic is inlined there instead.
 
     Returns:
-        Seconds until deficit is recovered (float), or 0.0 when the bucket has
-        no refill configured at all and no wait can be computed.
+        Seconds until deficit is recovered (float), or 0.0 when the bucket
+        neither refills nor resets and no wait can be computed.
     """
     if deficit_milli <= 0:
         return 0.0
-    if refill_amount_milli <= 0:
-        # A bucket that never refills has no finite wait. Callers pass
-        # BucketState.retry_refill_amount_milli, which already falls back to
-        # the undivided rate when a shard's share floors to zero, so this only
-        # guards a bucket item whose stored rate is itself 0 — report no wait
-        # rather than raise ZeroDivisionError from inside an error path.
+    if not is_accrual_rate(refill_amount_milli):
+        if next_reset_ms is not None and now_ms is not None:
+            # A reset restores the whole balance at once, so the edge *is* the
+            # answer — no rate is involved. The +1ms mirrors the rounding
+            # millisecond the rate arithmetic below adds.
+            wait_ms = next_reset_ms - now_ms
+            if wait_ms <= 0:
+                # The edge has already passed and nothing has applied it yet.
+                # Report no wait rather than a negative one.
+                return 0.0
+            return (wait_ms + 1) / 1000.0
+        # A bucket that neither refills nor resets has no finite wait. Under
+        # ADR-137 no constructible limit reaches here, so this guards a corrupt
+        # bucket item whose stored rate is itself 0 — report no wait rather
+        # than raise ZeroDivisionError from inside an error path.
         return 0.0
 
     # time_ms = deficit * period / amount
@@ -254,10 +322,17 @@ def calculate_time_until_available(
         return 0.0
 
     deficit_milli = needed_milli - refill.new_tokens_milli
-    return calculate_retry_after(
+    # Undivided base plus `shard_count`, as in `try_consume` — the walk does
+    # both narrowings itself.
+    return retry_after_with_schedule(
         deficit_milli=deficit_milli,
-        refill_amount_milli=state.retry_refill_amount_milli(now_ms),
-        refill_period_ms=state.effective_refill_period_ms(now_ms),
+        cp_milli=state.capacity_milli,
+        ra_milli=state.refill_amount_milli,
+        rp_ms=state.refill_period_ms,
+        sched=state.sched,
+        reset_sched=state.reset_sched,
+        now_ms=now_ms,
+        shard_count=state.shard_count,
     )
 
 

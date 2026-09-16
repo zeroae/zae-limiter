@@ -337,6 +337,11 @@ except RateLimitExceeded as e:
     print(e.as_dict())
 ```
 
+Each entry in `as_dict()`'s `limits` array carries a `kind` — `"rate"`, which reports
+`refill_amount` and `refill_period_seconds`, or `"quota"`, which reports `resets_at_ms` and no
+drip fields at all. Read `kind` rather than inferring the shape from the fields present. See
+[`as_dict()` Output](../api/exceptions.md#as_dict-output) for the full body.
+
 ### Service Unavailable
 
 ```python
@@ -457,6 +462,8 @@ The speculative path falls back to the normal read-write path when:
 - The bucket does not exist yet (first acquire for an entity)
 - A new limit was added that is not in the bucket
 - Token refill since last access would provide enough capacity
+- The bucket crossed a schedule boundary, so its balance was worked out under parameters no
+  longer in force. One request per bucket per boundary pays this
 
 See [Performance Tuning - Speculative Writes](../performance.md#8-speculative-writes) for detailed cost analysis and guidance on when to disable this feature.
 
