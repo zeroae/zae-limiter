@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789516561832,
+  "lastUpdate": 1789520017538,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -25420,6 +25420,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.002126354843174382",
             "extra": "mean: 1.078616085400006 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a42198b77f5a949dd57eb9d9671a40baa48ea21a",
+          "message": "🔧 chore(ci): pin every ruff declaration to one exact version (#598)\n\n## Summary\n\nFive places named a ruff version and none was constrained against any\nother, so the lint command documented in `CLAUDE.md` formatted with\n**0.16.6** while the commit hook that gates the commit formatted with\n**0.9.2**:\n\n| Declaration | Was | Now |\n|---|---|---|\n| `[build-system] requires` | `ruff>=0.9.0` | `ruff==0.16.6` |\n| `[dev]` extra | `ruff>=0.1.0` (resolved 0.16.6) | `ruff==0.16.6` |\n| `.pre-commit-config.yaml` rev | `v0.9.2` | `v0.16.6` |\n| `.github/workflows/ci-lint.yml` | `pip install ruff` (unpinned) |\npinned |\n| hatch default env | named none — handed `generate-sync` whatever was\non `PATH` | pinned |\n\nNew `scripts/check_ruff_pin.py`, wired as the `check-ruff-pin`\npre-commit hook, reads all five and fails if any disagrees or is not an\nexact pin. An exact pin rather than a compatible range, because a range\nstill lets `uv sync` and the hook resolve to different versions inside\nit — which is the bug.\n\nThe expensive half of the trap was not the local churn.\n`generate_sync.py` shells out to `shutil.which(\"ruff\")` while the\n`verify-sync-generated` hook checks the result with the pinned one, so a\nconstruct the two versions disagree on leaves the generated sync twin\nreported permanently out of date, with nothing in the output naming the\ncause. Observed on #513, where a multi-line `lambda` had to be rewritten\nas a `def` to land.\n\nv0.16.6's `ruff-format` hook declares `types_or: [python, pyi, jupyter,\nmarkdown]`, so the hook now covers the Markdown the documented command\nalready globbed. The issue's \"bumping the hook fixes the `.py` file but\nnot the 33 Markdown files\" asymmetry was a property of intermediate revs\nand does not apply at this version.\n\n## How to review this — 34 of the 42 files are mechanical\n\nThe diff is large (~1,600 insertions) but the size is not substance:\n\n| Commit | Files | What |\n|---|---|---|\n| `1d93eebc` 🔧 chore(ci) | 5 (+156/−5) | **Review this.** The pin, and\nthe `check-ruff-pin` hook that holds it. |\n| `87100c32` 🎨 style | 34 (+1419/−1246) | **Skim this.** Pure `ruff\nformat` output, isolated so the commit above stays reviewable. 33\nMarkdown files whose Python code blocks ruff only began formatting after\n0.9.2, plus `tests/unit/test_cfn_iam_parity.py` — 0.16.6 parenthesises a\nmulti-line conditional `lambda` body where 0.9.2 did not, the same\nconstruct that blocked #513. No prose, no code semantics changed. No\ngenerated file is among the 34. |\n| `53db9982` 📝 docs | 3 (+39/−16) | **Review this.** Retires the \"never\nrun bare `ruff format .`\" workaround. |\n\nThe workaround was never in `CLAUDE.md` or `.claude/rules/lint-rules.md`\n— it lived in `docs/plans/2026-09-13-scheduled-limits-surface-plan.md`,\nin its Global Constraints and echoed verbatim in four task steps and two\nledger entries, which is why it kept being copied into agent briefs. All\nseven are updated; the scoped `pre-commit run --files <paths>`\ninvocations still work and are still cheaper, they are simply no longer\nrequired.\n\n## Test plan\n\n- [x] `uv run ruff format --check .` on a clean tree — **before:** 34\nfiles would be reformatted / 326 already formatted; **after:** 0 / 361\nalready formatted\n- [x] `uv run ruff check .` — All checks passed\n- [x] `uv run mypy` — Success: no issues found in 58 source files\n- [x] `uv run pytest tests/unit/ -q` — 4831 passed\n- [x] `uv run pytest tests/unit/ -m gevent -n 0 -q` — 26 passed\n- [x] `uv run pytest tests/doctest/ -q` — 352 passed, 227 skipped\n(relevant: docs code blocks were reformatted)\n- [x] `pre-commit run --all-files` — all 7 hooks pass\n- [x] `uv run python scripts/generate_sync.py` then `git diff\n--exit-code` over the sync twins — clean\n- [x] `uv build` — sdist and wheel both build; the isolated build env's\npinned ruff regenerated the sync twins identically (\"All files up to\ndate\")\n- [x] **Drift demo** (issue acceptance criterion \"demonstrate in the\nPR\"): editing the hook `rev` back to `v0.9.2` makes `pre-commit run\ncheck-ruff-pin` fail with exit 1, printing all five declarations and\nwhich one disagrees\n- [x] No `# noqa`, no `# type: ignore`, no new\n`[tool.ruff.lint.per-file-ignores]` entry, no `--ignore` flag anywhere\nin the diff (`.claude/rules/lint-rules.md`)\n\nDependabot groups `ruff`, so it will bump `pyproject.toml` without the\nhook `rev` — that PR failing `check-ruff-pin` is the intended behaviour,\nnot a false positive.\n\nRefs #486 — the closing keyword lives on commit `1d93eebc`, not in this\nbody, so it is not duplicated here.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01QdVj8nPhUwTz2aNJzMFqt5",
+          "timestamp": "2026-09-15T20:47:31-04:00",
+          "tree_id": "3ed43421f20b7de9823a6129e14de40e995572ec",
+          "url": "https://github.com/zeroae/zae-limiter/commit/a42198b77f5a949dd57eb9d9671a40baa48ea21a"
+        },
+        "date": 1789520016482,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 25.240685771626914,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010513557892035097",
+            "extra": "mean: 39.61857490908989 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 17.629283198425295,
+            "unit": "iter/sec",
+            "range": "stddev: 0.01395053755590086",
+            "extra": "mean: 56.72380372727368 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 38.9999058135317,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003497673738010418",
+            "extra": "mean: 25.64108756521747 msec\nrounds: 23"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 41.41145540461599,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0040949670973638354",
+            "extra": "mean: 24.14790763158093 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 21.767984519361313,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00923449302277201",
+            "extra": "mean: 45.93902568749808 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 87.55372340244259,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0011627452352003416",
+            "extra": "mean: 11.421558800000753 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 25.100408956780193,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005977897504701119",
+            "extra": "mean: 39.8399883333326 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 24.781727500519487,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008834713060375369",
+            "extra": "mean: 40.35231200000232 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 25.887287251302578,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0074047311755416475",
+            "extra": "mean: 38.62899925714244 msec\nrounds: 35"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 26.982150912378756,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00787898150914619",
+            "extra": "mean: 37.061537578949064 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 28.36856482924729,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00859438806443695",
+            "extra": "mean: 35.25028516666535 msec\nrounds: 36"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 28.95884824194836,
+            "unit": "iter/sec",
+            "range": "stddev: 0.002292017274388133",
+            "extra": "mean: 34.531760090908904 msec\nrounds: 22"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 30.420288668663755,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004113092194382408",
+            "extra": "mean: 32.87279785185307 msec\nrounds: 27"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.8983330455055125,
+            "unit": "iter/sec",
+            "range": "stddev: 0.015845862048592906",
+            "extra": "mean: 526.7779552000093 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.932115359471627,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005130273815112829",
+            "extra": "mean: 517.5674398000069 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9444404428922583,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004910216167107113",
+            "extra": "mean: 1.0588280156000054 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9234821326019712,
+            "unit": "iter/sec",
+            "range": "stddev: 0.012491251454729228",
+            "extra": "mean: 1.0828579836000016 sec\nrounds: 5"
           }
         ]
       }
