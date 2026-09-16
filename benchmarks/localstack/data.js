@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789521490971,
+  "lastUpdate": 1789527211946,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -25706,6 +25706,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.022997045881710733",
             "extra": "mean: 1.0944217385999877 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a1697476b85690580b356b73ce4dfd40a3aa93a4",
+          "message": "🐛 fix(limiter): bound schedule modifier magnitudes and version the compact encoding (#600)\n\n## Summary\n\nTwo changes in `src/zae_limiter/schedule.py`.\n\n**#570 — magnitude bounds.** `ScheduleEntry.scale` was validated for\nsign, finiteness (#564)\nand integrality (#569) but never magnitude. `scale=1e300` is positive\nand finite, so it passed\nconstruction and died elsewhere: `OverflowError` from `round(scale *\n1000)` in `encode` above\n~1.8e305, `OverflowError` from `int(cp_milli * scale)` in\n`effective_params` — the acquire slow\npath, where it is a 500 — from ~1e303, `decimal.Inexact` out of boto3\nbetween 1e33 and 1e120,\nand nothing at all below 1e33, where it merely enforces a limit nobody\nmeant.\n\nThree ceilings now live in `schedule.py`: `MAX_TOKENS = 10**15`,\n`MAX_PERIOD_SECONDS = 10**9`,\n`MAX_SCALE = 10**6`, enforced by `ScheduleEntry.__post_init__` and by\n`Limit.__post_init__`.\nOnly one number is derived — `MAX_STORED_MILLI = 10**38 - 1`, DynamoDB's\nlargest exactly\nstorable integer, verified against boto3 (`10**38` raises\n`decimal.Rounded` before the request\nis sent). The three are judgement calls chosen so that no product of\nthem can reach it:\n`10**15 x 1000 x 10**6 = 10**24`, fourteen orders inside. `Limit` is\nnarrowed too, and that is\nnot optional: the quantity that has to stay storable is the product\n`capacity x 1000 x scale`,\nso with an unbounded base the overflow threshold stays data-dependent —\nthe same entry raising\non a `tpm` of 10,000,000 and returning cleanly on an `rpm` of 10.\n`Limit.per_minute(\"rpm\",\n10**40)` constructed on `main` and could not be written.\n\nOrdered after the finiteness and integrality guards and after the\npositivity test, whose upper\nhalf it is. A plain `ValueError`, so `manifest._parse_entries` surfaces\n`schedule[i]: ...` and\n`zae-limiter limits plan` fails before anything is written.\n\n**#515 — versioned encoding.** Design §4.1 promised a version marker; it\nwas deferred on the\nargument that a marker cannot classify anything already written. That\nargument expired unused\n— the encoding never shipped. Added now it costs fixture churn; added\nafter v0.14.0 it is a\nmigration against live `sched` / `rsched` attributes.\n\nThe version is decimal digits at the head of the whole attribute, no\ndelimiter:\n`1h9-17w1-5s500;h0-6c2000`, `1m0h0`. No legal entry can begin with a\ndigit, so no separator is\nneeded. **One byte**, emitted once per attribute. Measured: §4.2's worst\nshared case (6 limits\nx 4 entries) is **846 B**, **178 B** of headroom, pinned exactly rather\nthan as `< 1024`\nbecause that budget is shared with unlanded work.\n\n**An unversioned string is rejected, not read as v1** — the\ntolerant-reader concession would\nserve an empty population forever while spending the discriminating\npower the marker exists to\nprovide.\n\nCorrected along the way: §4.1's claim that `_tokenise` reports a clean\n`cannot parse from\noffset N` for an unknown tag. Verified — it does so **only** when the\ntag stands at the start\nof an entry; after a value it is absorbed and fails as `invalid cron\nexpression` or a bare\n`invalid literal for int()`, indistinguishable from corruption. §4.1 and\n§6.5 now say so, and\nthe heuristic survives only as a statement about corruption *within* a\nversion.\n\nRefs #570, Refs #515.\n\n## Test plan\n\n- `uv run pytest tests/unit/ -q` — **4888 passed**\n- `uv run pytest tests/unit/ -m gevent -n 0 -q` — **26 passed**\n- `uv run pytest tests/integration/ -q` (LocalStack) — **138 passed**,\nincluding 9 new in\n\n`tests/integration/test_schedule_failure.py::TestVersionMarkerSurvivesTheRealRoundTrip`:\nstored config and bucket both carry the marker; the aggregator's\n`_parse_bucket_record` and\nthe provisioner's `resolve_bucket_limits` both read back what the client\nwrote; a version-2\nvalue is diagnosed as such at the client boundary and reported (not\nraised) by the aggregator\n- `uv run pytest tests/doctest/ -q` — 352 passed, 227 skipped\n- `uv run mypy` clean; `uv run ruff check .` clean; `ruff format\n--check` clean on changed files\n- `scripts/generate_sync.py` regenerated; a second run reports \"All\nfiles up to date\"\n- Diff coverage 100% (pre-push hook)\n- Mutation checks, each fix separately:\n- #570: `schedule.py` magnitude guard disabled → 15 targeted failures;\n`models.py` `Limit`\n    guard disabled → 3 failures\n- #515: encoder drops the marker → 138 failures; reader accepts any\nversion → 4 failures;\n    reader tolerates an unversioned string as v1 → 3 failures\n\n### Coverage boundary, stated because it bit once\n\nEvery run behind the encoding change was scoped to `tests/unit/` and\n`tests/integration/`.\n`tests/e2e/` was outside all of them, **including the mutation check\nabove** — so \"encoder\ndrops the marker → 138 failures\" understates by one.\n`tests/e2e/test_localstack.py` pins the\nstored `sched` attribute byte-for-byte in\n\n`TestE2EScheduleThroughTheProvisioner::test_an_applied_schedule_reaches_an_existing_bucket`,\nthat literal was missed in the first pass, and CI caught it in both the\n`integration (3.12)`\nand `e2e (3.12)` jobs (the integration job's selection also reaches part\nof `tests/e2e/`).\n\nFixed in `3b142425`, after a sweep of the whole tree — `tests/`,\n`docs/`, `.claude/`, `src/` —\nfor surviving unversioned literals. It was the **only** one. Every other\nbare-looking match is\ndeliberate: the unversioned-rejection and newer-version cases in\n`test_schedule_encoding.py`,\nthe `f\"1m0h0{tag}\"` modifier parametrisation, the `f\"{ENCODING_VERSION +\n1}...\"` integration\nfixture, and design §6.5's failure table, which quotes an unmarked\nstring on purpose.\n\n- `uv run pytest tests/e2e/ -q` (LocalStack) — **58 passed, 41 skipped**\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01QdVj8nPhUwTz2aNJzMFqt5",
+          "timestamp": "2026-09-15T22:48:35-04:00",
+          "tree_id": "a3b54ee6429767566a08a3be9de66735ff10bf11",
+          "url": "https://github.com/zeroae/zae-limiter/commit/a1697476b85690580b356b73ce4dfd40a3aa93a4"
+        },
+        "date": 1789527210764,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 25.65678256033225,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00605702445040371",
+            "extra": "mean: 38.976048444441055 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 17.80985275633066,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010927695206502977",
+            "extra": "mean: 56.14869553845928 msec\nrounds: 13"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 37.7884152376595,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004810369904076535",
+            "extra": "mean: 26.46313675000087 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 44.72734744708106,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003933584387641747",
+            "extra": "mean: 22.357686227271692 msec\nrounds: 22"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 22.603167659338613,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006911381664005311",
+            "extra": "mean: 44.241586624998774 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 94.24767985776442,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0008835730448370987",
+            "extra": "mean: 10.610340769228142 msec\nrounds: 26"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 29.153009081675663,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004739665407154728",
+            "extra": "mean: 34.30177643749843 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 20.762931423608915,
+            "unit": "iter/sec",
+            "range": "stddev: 0.058394447686380004",
+            "extra": "mean: 48.162755999999575 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 27.992335998193354,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0049239649734698614",
+            "extra": "mean: 35.724063903224824 msec\nrounds: 31"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 26.245623476671433,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004742402860732984",
+            "extra": "mean: 38.10159057142824 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 28.495974120948524,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007096602832199749",
+            "extra": "mean: 35.09267645161357 msec\nrounds: 31"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 26.1398344440431,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008844969083747857",
+            "extra": "mean: 38.25578934482831 msec\nrounds: 29"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 32.16662947261861,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0036706780185579877",
+            "extra": "mean: 31.088118848486626 msec\nrounds: 33"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9331186454294378,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004293616957124367",
+            "extra": "mean: 517.2988229999987 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9327396385458673,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004566235351425964",
+            "extra": "mean: 517.4002644000041 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9513268392973988,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0039046290387168316",
+            "extra": "mean: 1.0511634474000005 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9267746694290648,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005543057199496667",
+            "extra": "mean: 1.0790109321999979 sec\nrounds: 5"
           }
         ]
       }
