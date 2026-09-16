@@ -51,7 +51,7 @@ The one place a single instant *is* what you want is a quota reset — see [Quot
 
 The common case. `scale` is a multiplier on the base limit:
 
-```{.python .lint-only}
+```python
 from zae_limiter import Limit, RateLimiter, Repository, ScheduleEntry
 
 repo = await Repository.open()
@@ -83,7 +83,7 @@ Outside the window the limit is 1000/min. Inside it, 500/min.
 When a window should have its own number rather than a multiple of the base, set `capacity`
 directly. `refill_amount` and `refill_period_seconds` are optional and fall back to the base:
 
-```{.python .lint-only}
+```python
 Limit.per_minute("rpm", 1000).with_schedule((
     ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", capacity=2000),
 ))
@@ -97,7 +97,7 @@ An entry sets **either** `scale` **or** the absolute fields — never both. Mixi
 Entries are checked in order and the first one matching the current minute supplies the limit.
 Nothing merges, and nothing accumulates:
 
-```{.python .lint-only}
+```python
 Limit.per_minute("rpm", 1000).with_schedule((
     # Weekends are quiet — most specific first.
     ScheduleEntry(cron="* * * * SAT,SUN", tz="America/New_York", scale=2.0),
@@ -113,7 +113,7 @@ If no entry matches, the base limit applies. Order the specific before the gener
 
 Every entry carries its own IANA timezone, defaulting to `UTC`:
 
-```{.python .lint-only}
+```python
 ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="Europe/Berlin", scale=0.5)
 ```
 
@@ -142,7 +142,7 @@ and does not recover in between — spend it, and you wait for the reset.
 
 `Limit.quota()` builds one. The period is whatever the cron expression says:
 
-```{.python .lint-only}
+```python
 from zae_limiter import Limit
 
 await limiter.set_limits(
@@ -157,7 +157,7 @@ await limiter.set_limits(
 
 Any other period is the same call with a different expression:
 
-```{.python .lint-only}
+```python
 Limit.quota("session", 500, cron="0 */5 * * *", tz="America/New_York")    # every five hours
 Limit.quota("weekly", 50_000, cron="0 0 * * MON", tz="America/New_York")  # Monday midnight
 Limit.quota("daily", 10_000, cron="0 0 * * *", tz="America/New_York")     # local midnight
@@ -189,7 +189,7 @@ numbers and schedule together.
 That has one consequence people trip over: an entity-level `rpm` with **no** schedule *removes*
 the resource-level schedule for that entity, exactly as it already replaces the numbers.
 
-```{.python .lint-only}
+```python
 # Resource level: everyone gets the business-hours reduction.
 await limiter.set_resource_defaults("gpt-4", limits=[
     Limit.per_minute("rpm", 1000).with_schedule((
