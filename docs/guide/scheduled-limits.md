@@ -60,13 +60,15 @@ limiter = RateLimiter(repository=repo)
 await limiter.set_limits(
     "user-123",
     limits=[
-        Limit.per_minute("rpm", 1000).with_schedule((
-            ScheduleEntry(
-                cron="* 9-17 * * MON-FRI",
-                tz="America/New_York",
-                scale=0.5,
-            ),
-        )),
+        Limit.per_minute("rpm", 1000).with_schedule(
+            (
+                ScheduleEntry(
+                    cron="* 9-17 * * MON-FRI",
+                    tz="America/New_York",
+                    scale=0.5,
+                ),
+            )
+        ),
     ],
     resource="gpt-4",
 )
@@ -84,9 +86,9 @@ When a window should have its own number rather than a multiple of the base, set
 directly. `refill_amount` and `refill_period_seconds` are optional and fall back to the base:
 
 ```python
-Limit.per_minute("rpm", 1000).with_schedule((
-    ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", capacity=2000),
-))
+Limit.per_minute("rpm", 1000).with_schedule(
+    (ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", capacity=2000),)
+)
 ```
 
 An entry sets **either** `scale` **or** the absolute fields — never both. Mixing them raises
@@ -98,13 +100,15 @@ Entries are checked in order and the first one matching the current minute suppl
 Nothing merges, and nothing accumulates:
 
 ```python
-Limit.per_minute("rpm", 1000).with_schedule((
-    # Weekends are quiet — most specific first.
-    ScheduleEntry(cron="* * * * SAT,SUN", tz="America/New_York", scale=2.0),
-    # Business hours on the remaining days.
-    ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.5),
-    # Everything else falls through to the base limit.
-))
+Limit.per_minute("rpm", 1000).with_schedule(
+    (
+        # Weekends are quiet — most specific first.
+        ScheduleEntry(cron="* * * * SAT,SUN", tz="America/New_York", scale=2.0),
+        # Business hours on the remaining days.
+        ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.5),
+        # Everything else falls through to the base limit.
+    )
+)
 ```
 
 If no entry matches, the base limit applies. Order the specific before the general.
@@ -158,9 +162,9 @@ await limiter.set_limits(
 Any other period is the same call with a different expression:
 
 ```python
-Limit.quota("session", 500, cron="0 */5 * * *", tz="America/New_York")    # every five hours
+Limit.quota("session", 500, cron="0 */5 * * *", tz="America/New_York")  # every five hours
 Limit.quota("weekly", 50_000, cron="0 0 * * MON", tz="America/New_York")  # Monday midnight
-Limit.quota("daily", 10_000, cron="0 0 * * *", tz="America/New_York")     # local midnight
+Limit.quota("daily", 10_000, cron="0 0 * * *", tz="America/New_York")  # local midnight
 ```
 
 A quota has no refill rate: a limit either drips or resets, never both
@@ -194,22 +198,28 @@ the resource-level schedule for that entity, exactly as it already replaces the 
 
 ```python
 # Resource level: everyone gets the business-hours reduction.
-await limiter.set_resource_defaults("gpt-4", limits=[
-    Limit.per_minute("rpm", 1000).with_schedule((
-        ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.5),
-    )),
-])
+await limiter.set_resource_defaults(
+    "gpt-4",
+    limits=[
+        Limit.per_minute("rpm", 1000).with_schedule(
+            (ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.5),)
+        ),
+    ],
+)
 
 # This entity is now UNSCHEDULED at 2000/min — the resource schedule does not carry over.
-await limiter.set_limits("enterprise-1", limits=[Limit.per_minute("rpm", 2000)],
-                         resource="gpt-4")
+await limiter.set_limits("enterprise-1", limits=[Limit.per_minute("rpm", 2000)], resource="gpt-4")
 
 # To keep a schedule for this entity, state it.
-await limiter.set_limits("enterprise-1", resource="gpt-4", limits=[
-    Limit.per_minute("rpm", 2000).with_schedule((
-        ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.5),
-    )),
-])
+await limiter.set_limits(
+    "enterprise-1",
+    resource="gpt-4",
+    limits=[
+        Limit.per_minute("rpm", 2000).with_schedule(
+            (ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.5),)
+        ),
+    ],
+)
 ```
 
 ## Declarative configuration
