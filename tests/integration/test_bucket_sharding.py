@@ -1137,7 +1137,7 @@ class TestDurationWindowRolloverFanOut:
     """One rollover converges every shard on one window (ADR-139, #624).
 
     Exercises the real conditional `UpdateItem`s `_propagate_window_start`
-    issues -- `attribute_exists(PK) AND (attribute_not_exists(ws) OR ws < :new)`
+    issues -- `attribute_exists(PK) AND (attribute_not_exists(ws) OR ws <= :open_floor)`
     -- which moto only approximates.
     """
 
@@ -1205,6 +1205,12 @@ class TestDurationWindowRolloverFanOut:
         t0 = int(time.time() * 1000)
         repo = await self._seed(limiter, entity_id, t0)
 
+        # A sibling that spent part of its share before the rollover: the
+        # fan-out must leave that balance exactly as it found it.
+        await repo.write_each(
+            [repo.build_composite_adjust(entity_id, "gpt-4", {"session": 300_000}, shard_id=1)]
+        )
+
         rolled_at = t0 + self.WINDOW_MS + 100
         monkeypatch.setattr(repo, "_now_ms", lambda: rolled_at)
         monkeypatch.setattr(_random, "randrange", lambda *a: 2)
@@ -1215,10 +1221,14 @@ class TestDurationWindowRolloverFanOut:
         items = [await self._raw(repo, entity_id, s) for s in range(self.SHARDS)]
         starts = {int(item[ws_attr]["N"]) for item in items}
         assert starts == {rolled_at}, f"shards anchored different windows: {starts}"
+        tk_attr = bucket_attr("session", BUCKET_FIELD_TK)
         for shard in (0, 1, 3):
             assert int(items[shard]["vu"]["N"]) == 0, f"shard {shard} kept its fast path"
-            # The fan-out moves `ws` only; each sibling restores its own share.
-            assert int(items[shard][bucket_attr("session", BUCKET_FIELD_TK)]["N"]) == 1_000_000
+            assert items[shard][bucket_attr("session", "rsa")] == {"N": "2"}
+        # The fan-out moves `ws` only; each sibling restores its own share
+        # under its own lock, so the spent one still holds what it held.
+        assert int(items[1][tk_attr]["N"]) == 700_000
+        assert int(items[0][tk_attr]["N"]) == 1_000_000
 
     async def test_a_delayed_stale_rollover_does_not_drag_the_entity_back(
         self, localstack_limiter, unique_name
@@ -1230,13 +1240,13 @@ class TestDurationWindowRolloverFanOut:
 
         assert (
             await repo._propagate_window_start(
-                entity_id, "gpt-4", 0, self.SHARDS, {"session": t0 + 10_000}
+                entity_id, "gpt-4", 0, self.SHARDS, {"session": (t0 + 10_000, 2)}
             )
             == self.SHARDS - 1
         )
         assert (
             await repo._propagate_window_start(
-                entity_id, "gpt-4", 0, self.SHARDS, {"session": t0 + 5_000}
+                entity_id, "gpt-4", 0, self.SHARDS, {"session": (t0 + 5_000, 2)}
             )
             == 0
         )
