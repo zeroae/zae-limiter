@@ -19,6 +19,12 @@ A duration cannot be written in cron, so this is a second field rather than a se
 the first. Feasibility, costing and the alternatives considered are in
 `docs/plans/2026-09-15-rolling-session-windows-analysis.md`.
 
+This record **lifts ADR-138's deferral** of duration-based windows to a later release.
+ADR-138's own decision — that `reset_schedule` itself names only fixed calendar windows,
+expressed as cron — is unaffected and stays exactly as written there: this is a new mechanism,
+`Limit.reset_after`, not a reinterpretation of `reset_schedule`. A limit carries one or the
+other and never both (ADR-137).
+
 ## Decision
 
 `Limit` gains **`reset_after: timedelta | None`**. A limit with `reset_after` set is a quota
@@ -129,6 +135,17 @@ parent's.
   fleet-upgrade requirement already exists.
 
 ## Alternatives Considered
+
+### Duration-based windows anchored to the entity, expressed in cron
+Rejected because: cron names instants on a wall clock, so it cannot express "five hours after
+*you* started". The duration form needed a second field on `Limit` rather than a second reading
+of `reset_schedule` — which is this record.
+
+### One field, interpreted as cron or as a duration depending on its content
+Rejected because: it doubles the semantics of every reader — config, manifest, CLI, aggregator
+and client — behind a value whose meaning is discovered by parsing it. Two fields that are
+mutually exclusive at construction (ADR-137, this record) give the same expressiveness and are
+checked once, at the boundary.
 
 ### Read the window end off `vu`
 Rejected because: `vu` is also the limit-change fan-out's marker and the aggregator's staleness

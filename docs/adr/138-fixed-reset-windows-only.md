@@ -41,10 +41,9 @@ will have to answer.
 
 ## Decision
 
-`reset_schedule` supports fixed calendar windows only. A window anchored to an entity's own
-activity is a different mechanism rather than a competing answer to the same question, and is
-recorded separately in [ADR-139](139-duration-reset-windows.md) as `Limit.reset_after`. A limit
-carries one or the other and never both (ADR-137).
+`reset_schedule` supports fixed calendar windows only. Duration-based windows anchored to an
+entity's own activity are deferred to a later release on scope grounds, not excluded as
+infeasible, and require their own decision record when taken up.
 
 ## Consequences
 
@@ -58,19 +57,20 @@ carries one or the other and never both (ADR-137).
 
 **Negative:**
 - Every entity resets simultaneously, concentrating load at the boundary. For a large tenant
-  population this is a thundering herd a calendar expression cannot spread. The duration form
-  (ADR-139) does not have this property at all, which is the argument that carried it.
+  population this is a thundering herd the current design does nothing to spread. The deferred
+  duration form does not have this property at all, which is the strongest argument for taking
+  it up.
 - The nearest common real-world behaviour is the one excluded, so the limitation must be stated
   explicitly in the user guide rather than left to be discovered.
-- A caller wanting per-entity windows reaches for `reset_after` (ADR-139) rather than for an
-  approximation of one in cron.
+- A caller wanting per-entity windows has no partial path: the feature is absent rather than
+  approximate.
 
 ## Alternatives Considered
 
-### Duration-based windows anchored to the entity, expressed in cron
-Rejected because: cron names instants on a wall clock, so it cannot express "five hours after
-*you* started". The duration form is a second field on `Limit` rather than a second reading of
-this one — see ADR-139.
+### Duration-based windows anchored to the entity, in this release
+Deferred, not rejected: it is a second refill mechanism with its own configuration surface,
+storage and documentation, and #222 is already long. It remains the answer to the thundering
+herd noted above.
 
 ### Per-entity window storing a fixed start instant and projecting intervals from it
 Rejected because: it needs the same anchor the duration form does, and still cannot express "go
@@ -80,8 +80,6 @@ idle long enough and your window restarts", which is what anchoring to the entit
 Rejected because: it silently gives entities different allowance boundaries than their
 configuration states, and the drift is undiscoverable from the config.
 
-### One field, interpreted as cron or as a duration depending on its content
+### Support both and select per limit
 Rejected because: it doubles the semantics of every reader — config, manifest, CLI, aggregator
-and client — behind a value whose meaning is discovered by parsing it. Two fields that are
-mutually exclusive at construction (ADR-137, ADR-139) give the same expressiveness and are
-checked once, at the boundary.
+and client — for a behaviour that has not been asked for.
