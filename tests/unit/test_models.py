@@ -1,7 +1,7 @@
 """Tests for models."""
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -399,6 +399,97 @@ class TestQuotaFactory:
         assert q.schedule == BUSINESS
         assert q.reset_schedule == DAILY_RESET
         assert q.refill_amount == 0
+
+
+class TestQuotaDuration:
+    """`Limit.reset_after` is the duration spelling of the reset half (ADR-139).
+
+    A window anchored to the entity's own first use, rather than to the wall
+    clock. The alternative spelling of `reset_schedule`, never a companion to
+    it: a limit has one recovery mechanism (ADR-137).
+    """
+
+    def test_quota_takes_a_duration(self):
+        limit = Limit.quota("session", 10_000, reset_after=timedelta(hours=5))
+        assert limit.capacity == 10_000
+        assert limit.refill_amount == 0
+        assert limit.reset_after == timedelta(hours=5)
+        assert limit.reset_after_seconds == 18_000
+        assert limit.reset_schedule == ()
+        assert limit.is_quota is True
+
+    def test_quota_still_takes_a_cron(self):
+        limit = Limit.quota("rpd", 10_000, cron="0 0 * * *")
+        assert limit.reset_after is None
+        assert limit.is_quota is True
+
+    def test_quota_requires_exactly_one_of_cron_and_reset_after(self):
+        with pytest.raises(ValueError, match="exactly one of `cron` or `reset_after`"):
+            Limit.quota("x", 10, cron="0 0 * * *", reset_after=timedelta(hours=5))
+        with pytest.raises(ValueError, match="exactly one of `cron` or `reset_after`"):
+            Limit.quota("x", 10)
+
+    def test_reset_after_and_reset_schedule_are_mutually_exclusive(self):
+        # ADR-137/ADR-139: one recovery mechanism per limit. Two resets would
+        # restore the allowance twice over some periods and once over others.
+        with pytest.raises(ValueError, match="one recovery mechanism"):
+            Limit(
+                name="x",
+                capacity=10,
+                refill_amount=0,
+                refill_period_seconds=1,
+                reset_schedule=(ScheduleEntry.reset(cron="0 0 * * *"),),
+                reset_after=timedelta(hours=5),
+            )
+
+    def test_reset_after_beside_a_positive_rate_is_rejected(self):
+        # The same ADR-137 pairing rule the cron form already enforces.
+        with pytest.raises(ValueError, match="drips or resets"):
+            Limit(
+                name="x",
+                capacity=10,
+                refill_amount=10,
+                refill_period_seconds=60,
+                reset_after=timedelta(hours=5),
+            )
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            timedelta(0),  # zero
+            timedelta(seconds=-1),  # negative
+            timedelta(milliseconds=1500),  # not a whole number of seconds
+        ],
+    )
+    def test_reset_after_must_be_a_positive_whole_number_of_seconds(self, bad):
+        # #569's whole-number rule and #564's finiteness rule, restated for a
+        # duration: sub-second windows are not expressible in storage (`rsa` is
+        # seconds) and would truncate silently.
+        with pytest.raises(ValueError, match="whole number of seconds"):
+            Limit(
+                name="x",
+                capacity=10,
+                refill_amount=0,
+                refill_period_seconds=1,
+                reset_after=bad,
+            )
+
+    def test_reset_after_shares_the_period_ceiling(self):
+        # #570 bounds every duration on a limit at MAX_PERIOD_SECONDS (10**9 s,
+        # about 31.7 years). The check runs after the whole-seconds rule, so a
+        # fractional window still reports its own message; the bound itself is
+        # legal.
+        with pytest.raises(ValueError, match="reset_after must be at most"):
+            Limit.quota("session", 10, reset_after=timedelta(seconds=MAX_PERIOD_SECONDS + 1))
+        Limit.quota("session", 10, reset_after=timedelta(seconds=MAX_PERIOD_SECONDS))
+
+    def test_a_duration_quota_round_trips_through_dict(self):
+        limit = Limit.quota("session", 10_000, reset_after=timedelta(hours=5))
+        assert limit.to_dict()["reset_after_seconds"] == 18_000
+        assert Limit.from_dict(limit.to_dict()) == limit
+
+    def test_a_dripping_limit_omits_reset_after_from_its_dict(self):
+        assert "reset_after_seconds" not in Limit.per_minute("rpm", 100).to_dict()
 
 
 class TestResetSchedule:

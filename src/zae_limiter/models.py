@@ -3,6 +3,7 @@
 import re
 import warnings
 from dataclasses import dataclass, field, replace
+from datetime import timedelta
 from typing import Any, Literal
 
 from .exceptions import InvalidIdentifierError, InvalidNameError
@@ -400,6 +401,15 @@ class Limit:
     refill_period_seconds: int
     schedule: tuple[ScheduleEntry, ...] = ()
     reset_schedule: tuple[ScheduleEntry, ...] = ()
+    # A window anchored to the entity's own first use, rather than to the wall
+    # clock (ADR-139). The alternative spelling of `reset_schedule`, never a
+    # companion to it: a limit has one recovery mechanism (ADR-137). A
+    # `timedelta` rather than a bare integer because the field name carries no
+    # unit, so the type has to — `reset_after=timedelta(hours=5)` is
+    # self-documenting where `reset_after=18000` is a puzzle. Storage,
+    # manifests and CloudFormation all spell it `..._seconds` and take an int,
+    # because a bare scalar there cannot carry a type.
+    reset_after: timedelta | None = None
 
     def __post_init__(self) -> None:
         validate_name(self.name, "name")
@@ -451,18 +461,55 @@ class Limit:
                 f"instant the balance goes back to the effective capacity; it overrides "
                 f"no parameters."
             )
+        # A duration has to be expressible in the storage unit, which is whole
+        # seconds (`l_{name}_rsa` / `b_{name}_rsa`). Rejecting here rather
+        # than truncating is the same call #569 made for the schedule
+        # absolutes: a silently-truncated window is a limit that resets at a
+        # time the operator never wrote.
+        if self.reset_after is not None:
+            total = self.reset_after.total_seconds()
+            if total <= 0 or total != int(total):
+                raise ValueError(
+                    f"reset_after must be a positive whole number of seconds, got "
+                    f"{self.reset_after!r} ({total}s). The window length is stored in "
+                    f"seconds, so a fraction of one cannot be represented."
+                )
+            # The upper half of the positivity test, ordered after it as #570
+            # orders its own bounds: every duration on a limit shares one
+            # ceiling, so a window cannot outlive what `refill_period_seconds`
+            # is allowed to be.
+            if total > MAX_PERIOD_SECONDS:
+                raise ValueError(
+                    f"reset_after must be at most {MAX_PERIOD_SECONDS} seconds, got "
+                    f"{self.reset_after!r} ({int(total)}s). Every duration on a limit "
+                    f"shares this ceiling (#570)."
+                )
+        # ADR-139: `reset_after` and `reset_schedule` are two spellings of the
+        # reset half, not two mechanisms that compose. A limit that both reset
+        # at midnight and rolled five hours from first use would restore its
+        # allowance twice over some periods and once over others, with no
+        # reading of "the allowance" faithful to either.
+        if self.reset_after is not None and self.reset_schedule:
+            raise ValueError(
+                "a limit has one recovery mechanism: `reset_after` names a window "
+                "anchored to the entity's own first use and `reset_schedule` names "
+                "fixed calendar instants, so they are alternatives rather than "
+                "companions (ADR-137, ADR-139). Pass one of `cron=` or "
+                "`reset_after=` to Limit.quota()."
+            )
         # ADR-137: a limit drips or resets, never both and never neither. The
         # two fields can no longer be validated independently, so the message
         # has to explain the pairing rather than the field. Checked *after* the
         # structural checks above: an entry in the wrong tuple is a more
         # specific diagnosis than the pairing it happens to violate.
-        if self.refill_amount == 0 and not self.reset_schedule:
+        if self.refill_amount == 0 and not self.reset_schedule and self.reset_after is None:
             raise ValueError(
                 "refill_amount=0 means the limit does not drip, which is only valid "
                 "with a reset_schedule; otherwise the bucket can never recover. "
-                "Use Limit.quota(name, amount, cron=..., tz=...) (ADR-137)."
+                "Use Limit.quota(name, amount, cron=...) or "
+                "Limit.quota(name, amount, reset_after=...) (ADR-137, ADR-139)."
             )
-        if self.refill_amount > 0 and self.reset_schedule:
+        if self.refill_amount > 0 and (self.reset_schedule or self.reset_after is not None):
             raise ValueError(
                 "a limit drips or resets, never both: a positive refill_amount "
                 "alongside a reset_schedule grants roughly twice the intended "
@@ -586,47 +633,62 @@ class Limit:
         name: str,
         amount: int,
         *,
-        cron: str,
+        cron: str | None = None,
         tz: str = "UTC",
+        reset_after: timedelta | None = None,
     ) -> "Limit":
-        """An allowance of ``amount`` per calendar window, restored at each edge.
+        """An allowance of ``amount`` per window, restored in one lump.
 
-        A quota does not drip: the balance is *set* to the capacity when the
-        window opens and does not recover in between (ADR-137). That is what
-        makes "10,000 a day, and when they are gone you wait for midnight"
-        different from ``per_day("rpd", 10_000)``, which returns roughly seven
-        tokens a minute all day.
+        Two window shapes, and **exactly one** of them per limit:
 
-        The window is a **fixed calendar window** — every entity on this
+        ``cron`` gives a **fixed calendar window** — every entity on this
         schedule resets at the same wall-clock instant, in ``tz`` (ADR-138).
+        That is what a billing period needs: "10,000 per calendar month" is a
+        statement about the calendar, not about the caller.
 
-        The amount and the reset have to arrive together, which is the whole
-        reason this factory exists. Building the limit first and attaching the
-        reset afterwards cannot work at any spelling: the intermediate value is
-        either a drip with a reset or a zero rate with none, and ``Limit``
-        rejects both. :meth:`with_reset_schedule` is therefore a *replacement*
-        operator on a limit that is already a quota, never the way one is made.
+        ``reset_after`` gives a **window anchored to the entity's own first
+        use** (ADR-139): five hours from when *you* started, not from midnight.
+        That is what a session cap needs. The window is idle-restarting — go
+        quiet past its end and the next call opens a fresh one. ``tz`` is
+        meaningless here and is ignored.
 
-        ``refill_period_seconds`` is stored as
-        ``_QUOTA_REFILL_PERIOD_SECONDS`` and is inert while ``refill_amount``
-        is 0; it exists only because the field is validated positive.
+        Either way the limit does not drip: the balance is *set* to the
+        capacity when the window opens and does not recover in between
+        (ADR-137). The amount and the reset have to arrive together, which is
+        why this factory exists — the intermediate value in any two-step
+        spelling is either a drip with a reset or a zero rate with none, and
+        ``Limit`` rejects both.
 
         Args:
-            name: Limit name (e.g., "rpd")
+            name: Limit name (e.g. "rpd", "session")
             amount: The whole allowance for one window (also the ceiling)
-            cron: Standard 5-field cron naming the instant the window opens
-            tz: IANA timezone the expression is read in
+            cron: Standard 5-field cron naming the instant the window opens.
+                Mutually exclusive with ``reset_after``.
+            tz: IANA timezone ``cron`` is read in. Ignored with ``reset_after``.
+            reset_after: Window length, anchored to first use. Mutually
+                exclusive with ``cron``.
 
         Example: 10,000 a day, back to 10,000 at New York midnight
             Limit.quota("rpd", 10_000, cron="0 0 * * *",
                         tz="America/New_York")
+
+        Example: 10,000 a session, five hours from your own first call
+            Limit.quota("session", 10_000, reset_after=timedelta(hours=5))
         """
+        if (cron is None) == (reset_after is None):
+            raise ValueError(
+                "Limit.quota() takes exactly one of `cron` or `reset_after`: a "
+                "calendar window resets every entity at the same instant (ADR-138) "
+                "and a duration window resets each entity relative to its own first "
+                "use (ADR-139), and a limit has one recovery mechanism (ADR-137)."
+            )
         return cls(
             name=name,
             capacity=amount,
             refill_amount=0,
             refill_period_seconds=_QUOTA_REFILL_PERIOD_SECONDS,
-            reset_schedule=(ScheduleEntry.reset(cron=cron, tz=tz),),
+            reset_schedule=((ScheduleEntry.reset(cron=cron, tz=tz),) if cron is not None else ()),
+            reset_after=reset_after,
         )
 
     @classmethod
@@ -667,6 +729,11 @@ class Limit:
         ``reset_schedule`` is also the half that survives
         :meth:`per_shard`, which must return a quota whose rate is still zero.
 
+        Since ADR-139 there are two spellings of the reset half — a cron and a
+        duration — and this is true of both. It stays structural: a property
+        of the configuration and of nothing else, so ``per_shard`` and
+        ``from_bucket_state`` can rely on it without a clock.
+
         Consumers are the ones that must treat a quota as a different *kind* of
         thing no matter what the clock says: display (``10,000 per day``, never
         ``0/sec``), validation, documentation. Anything asking "is this
@@ -674,7 +741,19 @@ class Limit:
         is only one of the two ways to get a zero rate, and the other one
         carries no ``reset_schedule`` to be found by.
         """
-        return bool(self.reset_schedule)
+        return bool(self.reset_schedule) or self.reset_after is not None
+
+    @property
+    def reset_after_seconds(self) -> int | None:
+        """:attr:`reset_after` in the unit everything below the API uses.
+
+        Storage (``l_{name}_rsa``, ``b_{name}_rsa``), the manifest
+        (``reset_after_seconds``) and CloudFormation (``ResetAfterSeconds``)
+        all carry whole seconds, because a bare scalar cannot carry a type.
+        ``__post_init__`` has already rejected anything that is not a positive
+        whole number of them, so this cannot lose information.
+        """
+        return None if self.reset_after is None else int(self.reset_after.total_seconds())
 
     @property
     def refill_rate(self) -> float:
@@ -734,11 +813,17 @@ class Limit:
         # byte-identical to the record for attaching nothing.
         if self.reset_schedule:
             result["reset_schedule"] = [_schedule_entry_to_dict(e) for e in self.reset_schedule]
+        # Whole seconds at every boundary below the API, for the reason in
+        # `reset_after_seconds`. Omitted when unset so existing payloads —
+        # audit events included — are byte-identical.
+        if self.reset_after is not None:
+            result["reset_after_seconds"] = self.reset_after_seconds
         return result
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Limit":
         """Deserialize from dictionary."""
+        reset_after_seconds = data.get("reset_after_seconds")
         return cls(
             name=data["name"],
             capacity=data["capacity"],
@@ -750,6 +835,9 @@ class Limit:
             # exactly one.
             reset_schedule=tuple(
                 ScheduleEntry.reset(**entry) for entry in data.get("reset_schedule", ())
+            ),
+            reset_after=(
+                timedelta(seconds=reset_after_seconds) if reset_after_seconds is not None else None
             ),
         )
 
@@ -895,6 +983,7 @@ class Limit:
         # remove out from under this constructor.
         object.__setattr__(obj, "schedule", ())
         object.__setattr__(obj, "reset_schedule", ())
+        object.__setattr__(obj, "reset_after", None)
         return obj
 
 

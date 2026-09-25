@@ -38,6 +38,18 @@ def test_all_has_no_duplicates():
     assert len(zae_limiter.__all__) == len(set(zae_limiter.__all__))
 
 
+def test_reset_after_needs_no_new_export():
+    """ADR-139's surface adds no name to `__all__`.
+
+    A user writes `Limit.quota("s", 10_000, reset_after=timedelta(hours=5))`.
+    `Limit` is already exported and `timedelta` is stdlib, so there is nothing
+    new to import — unlike `ScheduleEntry` (#534), which the user constructs.
+    The `__all__` frozen at v1.0.0 is unchanged.
+    """
+    assert "reset_after" not in zae_limiter.__all__
+    assert "timedelta" not in zae_limiter.__all__
+
+
 def test_only_schedule_entry_is_promoted_to_the_root():
     """The excluded `schedule` names stay module-scoped.
 
