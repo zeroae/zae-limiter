@@ -52,6 +52,17 @@ repos:
         files: cfn_template\.yaml$
         stages: [pre-commit]
 
+      - id: no-truthy-aexit-mock
+        name: Forbid __aexit__ = AsyncMock() (truthy, swallows exceptions)
+        # A bare AsyncMock() awaits to a truthy MagicMock, and a truthy __aexit__
+        # tells `async with` to suppress any exception raised inside the block, so
+        # the test can pass while the code under test fails (#615). Use
+        # AsyncMock(return_value=False), which is what a real client returns.
+        entry: '__aexit__\s*=\s*AsyncMock\(\s*\)'
+        language: pygrep
+        files: ^tests/.*\.py$
+        stages: [pre-commit]
+
       - id: verify-sync-generated
         name: Verify generated sync code is up-to-date
         entry: >-
