@@ -30,6 +30,7 @@ from zae_limiter.models import BucketState
 from zae_limiter.repository_protocol import SpeculativeResult
 from zae_limiter.schedule import ScheduleEntry, retry_after_with_schedule
 from zae_limiter.schema import (
+    BUCKET_FIELD_RF,
     BUCKET_FIELD_RSA,
     BUCKET_FIELD_TK,
     BUCKET_FIELD_VU,
@@ -10655,6 +10656,33 @@ class TestOpenWindowIfElapsed:
         assert state.tokens_milli == 1_000_000
 
 
+class TestTheOpenerResetsItsOwnWindow:
+    """The pass that anchors a window resets unconditionally (ADR-139).
+
+    `ws > rf` is the rule for a shard that *sees* a window someone else
+    opened. The opener "applies its own reset under its own rf lock": with
+    another writer's clock ahead of this one, `rf` can sit after the `now` the
+    opener anchors at, and gating its reset on `ws > rf` would anchor a fresh
+    window over the dead one's leftovers — and since `ws > rf` never holds
+    again after the commit, hold the entity to them for the whole new window.
+    """
+
+    def test_the_opener_resets_even_when_rf_is_ahead_of_its_clock(self):
+        end = 5_000 + 18_000_000
+        now = end + 20
+        state = _window_state(tokens_milli=300_000, last_refill_ms=end + 50)
+        assert RateLimiter._open_window_if_elapsed(SESSION, state, now_ms=now) == now
+        assert state.window_rolled is False, "the shard-side rule would not fire"
+        assert RateLimiter._apply_window_roll(SESSION, state, now_ms=now, opened=True) is True
+        assert state.tokens_milli == 1_000_000
+
+    def test_opened_does_nothing_for_a_limit_without_a_window(self):
+        plain = Limit.per_minute("session", 1_000)
+        state = _window_state(tokens_milli=7)
+        assert RateLimiter._apply_window_roll(plain, state, now_ms=6_000, opened=True) is False
+        assert state.tokens_milli == 7
+
+
 class TestMaterialisationStampsWindow:
     """`ws + rsa` is the third voting member of `vu`'s minimum (ADR-139)."""
 
@@ -10906,6 +10934,37 @@ class TestWindowRollThroughAcquire:
         async with slow.acquire("user-1", "gpt-4", consume={"session": 1}):
             pass
         assert await _stored_ws(repo, "user-1", "gpt-4", "session") == T0 + 60_000
+
+    async def test_the_opener_resets_even_when_rf_is_ahead_of_its_clock(self, limiter):
+        """Another writer (a client or the aggregator with a faster clock)
+        stamped `rf` after this client's `now`. The window has elapsed by this
+        client's clock, so this pass anchors — and must restore the allowance
+        rather than admit against the dead window's 3 leftover tokens."""
+        repo = limiter._repository
+        await repo.set_limits("user-1", [SESSION_10], resource="gpt-4")
+        repo._now_ms = lambda: T0
+        async with limiter.acquire("user-1", "gpt-4", consume={"session": 7}):
+            pass
+
+        end = T0 + FIVE_HOURS_MS
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, "user-1", "gpt-4", 0)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="SET #rf = :rf",
+            ExpressionAttributeNames={"#rf": BUCKET_FIELD_RF},
+            ExpressionAttributeValues={":rf": {"N": str(end + 50)}},
+        )
+
+        now = end + 20
+        repo._now_ms = lambda: now
+        async with limiter.acquire("user-1", "gpt-4", consume={"session": 5}):
+            pass
+        assert await _stored_ws(repo, "user-1", "gpt-4", "session") == now
+        assert await _stored_tk(repo, "user-1", "gpt-4", "session") == 5_000
 
     async def test_the_parent_only_path_rolls_the_parents_window(self, limiter):
         """`_try_parent_only_acquire` is the second slow-path seam. It is

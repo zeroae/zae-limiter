@@ -1485,7 +1485,9 @@ class RateLimiter:
         return True
 
     @staticmethod
-    def _apply_window_roll(limit: Limit, state: BucketState, now_ms: int) -> bool:
+    def _apply_window_roll(
+        limit: Limit, state: BucketState, now_ms: int, *, opened: bool = False
+    ) -> bool:
         """Restore the balance if a duration window has been rolled (ADR-139).
 
         :meth:`_apply_reset_edge` with the backwards cron scan replaced by an
@@ -1510,9 +1512,17 @@ class RateLimiter:
         The *anchoring* of a new window is **not** here. This applies a window
         another writer (or an earlier pass) already opened. Opening one is
         :meth:`_open_window_if_elapsed`, which runs immediately before this and
-        mutates the same ``state``, so the two compose into one pass:
-        ``_open_window_if_elapsed`` moves ``ws`` forward to ``now_ms``, and this
-        then observes ``ws > rf`` and restores the balance.
+        mutates the same ``state``; the caller passes ``opened=True`` when it
+        did, and the reset is then **unconditional**. ``ws > rf`` is the rule
+        for a shard that *sees* a window another writer opened; the opener
+        applies its own reset under its own ``rf`` lock (ADR-139). Gating the
+        opener on ``ws > rf`` too would fail whenever another writer's clock
+        stamped ``rf`` after this client's ``now``: the window would be anchored
+        over the dead window's leftovers, and because ``rf >= ws`` after the
+        commit, ``ws > rf`` would never hold again — the entity held to those
+        leftovers for a whole new window. Nudging ``ws`` past ``rf`` instead is
+        wrong the other way: the reset would re-fire after the commit and
+        refund everything spent in between.
 
         Must be called **before** :meth:`_admit_limit`, so the restored balance
         gates the request that crossed the boundary rather than the one after
@@ -1521,7 +1531,7 @@ class RateLimiter:
         been captured, because they are the *stored* values the ``ADD`` delta
         and the ``rf`` lock are built from.
         """
-        if limit.reset_after is None or not state.window_rolled:
+        if limit.reset_after is None or not (opened or state.window_rolled):
             return False
         state.tokens_milli = state.effective_capacity_milli(now_ms)
         return True
@@ -1776,7 +1786,7 @@ class RateLimiter:
             # parent's `ws` off the parent's item and nothing else.
             parent_new_ws = self._open_window_if_elapsed(limit, existing, now_ms)
             self._apply_reset_edge(limit, existing, now_ms)
-            self._apply_window_roll(limit, existing, now_ms)
+            self._apply_window_roll(limit, existing, now_ms, opened=parent_new_ws is not None)
 
             status, consumed = self._admit_limit(
                 parent_id, resource, limit, existing, consume, now_ms
@@ -2072,7 +2082,7 @@ class RateLimiter:
                 if not is_new:
                     new_ws = self._open_window_if_elapsed(limit, state, now_ms)
                     self._apply_reset_edge(limit, state, now_ms)
-                    self._apply_window_roll(limit, state, now_ms)
+                    self._apply_window_roll(limit, state, now_ms, opened=new_ws is not None)
 
                 status, consumed = self._admit_limit(eid, resource, limit, state, consume, now_ms)
                 if status is not None:
