@@ -77,7 +77,7 @@ Resource defaults override system defaults for a specific resource:
 await limiter.set_resource_defaults(
     resource="gpt-4",
     limits=[
-        Limit.per_minute("rpm", 50),       # Lower RPM for expensive model
+        Limit.per_minute("rpm", 50),  # Lower RPM for expensive model
         Limit.per_minute("tpm", 100_000),  # Higher TPM
     ],
 )
@@ -103,7 +103,7 @@ await limiter.set_limits(
     entity_id="user-premium",
     # resource defaults to "_default_" when omitted
     limits=[
-        Limit.per_minute("rpm", 500),       # 10x normal on any model
+        Limit.per_minute("rpm", 500),  # 10x normal on any model
         Limit.per_minute("tpm", 100_000),
     ],
 )
@@ -125,7 +125,7 @@ await limiter.set_limits(
     entity_id="user-premium",
     resource="gpt-4",  # Only applies to gpt-4
     limits=[
-        Limit.per_minute("rpm", 1000),      # Even higher for this specific model
+        Limit.per_minute("rpm", 1000),  # Even higher for this specific model
         Limit.per_minute("tpm", 1_000_000),
     ],
 )
@@ -219,7 +219,7 @@ async def setup_rate_limits(limiter: RateLimiter):
     await limiter.set_resource_defaults(
         resource="gpt-4",
         limits=[
-            Limit.per_minute("rpm", 5),    # Expensive model: lower limits
+            Limit.per_minute("rpm", 5),  # Expensive model: lower limits
             Limit.per_minute("tpm", 500),
         ],
     )
@@ -227,7 +227,7 @@ async def setup_rate_limits(limiter: RateLimiter):
     await limiter.set_resource_defaults(
         resource="gpt-3.5-turbo",
         limits=[
-            Limit.per_minute("rpm", 20),   # Cheap model: higher limits
+            Limit.per_minute("rpm", 20),  # Cheap model: higher limits
             Limit.per_minute("tpm", 5_000),
         ],
     )
@@ -297,15 +297,19 @@ When you set limits at any level, the new limits **completely replace** the prev
 
 ```python
 # Initial: rpm=100, tpm=10000
-await limiter.set_system_defaults([
-    Limit.per_minute("rpm", 100),
-    Limit.per_minute("tpm", 10_000),
-])
+await limiter.set_system_defaults(
+    [
+        Limit.per_minute("rpm", 100),
+        Limit.per_minute("tpm", 10_000),
+    ]
+)
 
 # After this: rpm is GONE, only tpm=20000 exists
-await limiter.set_system_defaults([
-    Limit.per_minute("tpm", 20_000),
-])
+await limiter.set_system_defaults(
+    [
+        Limit.per_minute("tpm", 20_000),
+    ]
+)
 ```
 
 To add or update a single limit while preserving others, read first. A limit rebuilt from a

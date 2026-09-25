@@ -14,10 +14,10 @@ Flat attribute names `name`, `resource`, `action`, and `timestamp` are DynamoDB 
 
 ```python
 # Correct - use aliases
-ExpressionAttributeNames={"#resource": "resource", "#action": "action"}
+ExpressionAttributeNames = {"#resource": "resource", "#action": "action"}
 
 # Wrong - will fail with ValidationException
-UpdateExpression="SET resource = :val"
+UpdateExpression = "SET resource = :val"
 ```
 
 ## Anti-Patterns
@@ -28,7 +28,7 @@ DynamoDB throws `ValidationException: Two document paths overlap` when a single 
 
 ```python
 # WRONG - overlapping paths error
-UpdateExpression="""
+UpdateExpression = """
     SET #data = if_not_exists(#data, :initial_data)
     ADD #data.counter :delta, #data.total_events :one
 """
@@ -36,7 +36,7 @@ UpdateExpression="""
 
 ```python
 # CORRECT - flat schema avoids overlapping paths
-UpdateExpression="""
+UpdateExpression = """
     SET entity_id = :entity_id,
         #resource = if_not_exists(#resource, :resource)
     ADD #limit_name :delta, #total_events :one
@@ -49,10 +49,10 @@ When using ADD on an attribute that may not exist yet (first write), guard initi
 
 ```python
 # WRONG - ADD fails if attribute doesn't exist on first write
-UpdateExpression="ADD counter :delta"
+UpdateExpression = "ADD counter :delta"
 
 # CORRECT - SET initializes, ADD increments atomically
-UpdateExpression="""
+UpdateExpression = """
     SET entity_id = if_not_exists(entity_id, :entity_id)
     ADD counter :delta
 """

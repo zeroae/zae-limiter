@@ -42,6 +42,22 @@ pre-commit run --all-files
 uv run cfn-lint src/zae_limiter/infra/cfn_template.yaml
 ```
 
+**Run the lint commands bare — `.` is the whole tree, and that is correct (#486).** Ruff is
+pinned to one exact version in five places (`[build-system] requires`, the `[dev]` extra, the
+hatch default env, `.pre-commit-config.yaml`'s `rev`, and `ci-lint.yml`'s `pip install`), so
+`uv run ruff format .` and the commit hook produce byte-identical output. On a clean tree the
+bare command reformats nothing — the standing "never run bare `uv run ruff format .`"
+workaround is retired.
+
+Two ruff versions do not agree, and the damage is not limited to churn:
+`scripts/generate_sync.py` formats its output with whatever `ruff` is on `PATH` while the
+`verify-sync-generated` hook regenerates and checks with the pinned one, so a construct the two
+disagree on leaves a generated sync twin reported permanently out of date with nothing in the
+output naming the cause (observed on #513: a multi-line `lambda` with a conditional body). The
+`check-ruff-pin` hook (`scripts/check_ruff_pin.py`) fails the commit if any of the five drifts —
+including a dependabot bump that moves `pyproject.toml` without the hook `rev`, which is the
+expected way it fires.
+
 ### Sync Code Generation
 
 Native sync code is generated from async source via AST transformation (see ADR-121). The transformer handles `asyncio.gather(a, b)` by converting it to `self._run_in_executor(lambda: a, lambda: b)`, with a configurable `parallel_mode` parameter on `SyncRepository` that controls the execution strategy:
@@ -63,6 +79,7 @@ async def _safe(item):
         return await work(item)
     except Exception as exc:
         return exc
+
 
 results = await asyncio.gather(*[_safe(i) for i in items])
 ```
@@ -522,9 +539,9 @@ from zae_limiter import RateLimiter, Repository
 # Provision infrastructure + register namespace
 repo = await (
     Repository.builder()
-    .namespace("default")       # Resolve namespace (default: "default")
-    .config_cache_ttl(120)      # Config cache TTL in seconds
-    .build()                    # Async: creates infra, registers default ns, resolves namespace
+    .namespace("default")  # Resolve namespace (default: "default")
+    .config_cache_ttl(120)  # Config cache TTL in seconds
+    .build()  # Async: creates infra, registers default ns, resolves namespace
 )
 limiter = RateLimiter(repository=repo)
 
@@ -540,11 +557,7 @@ repo = await (
 )
 
 # LocalStack development
-repo = await (
-    Repository.builder()
-    .endpoint_url("http://localhost:4566")
-    .build()
-)
+repo = await Repository.builder().endpoint_url("http://localhost:4566").build()
 ```
 
 **Builder `build()` steps:**
@@ -757,8 +770,11 @@ Bucket items use per-(entity, resource, shard) partition keys: `PK={ns}/BUCKET#{
 
 **Client-side shard creation (ADR-133, issue #439) — no aggregator dependency:**
 - The slow path targets the **same shard** the speculative attempt selected, sized by the `shard_count` on its failure image: `_try_speculative_acquire()` hands both to `_do_acquire(shard_id=..., shard_count=...)`, which passes them through `Repository.select_shard()`, `batch_get_entity_and_buckets` / `batch_get_buckets` (keys are `(entity_id, resource, shard_id)`) and into `LeaseEntry._shard_id` / `_shard_count` for `_commit_initial()`. A failed speculative write never updates the entity cache, so the cache is not consulted for a shard the fast path already observed
-- A missing shard N>0 is created by the client with `capacity_milli // shard_count` tokens, `wcu` undivided, stored `cp`/`ra` undivided, and the observed `shard_count` stamped — identical to the aggregator's Path 2 clone, so shard creation never multiplies total capacity. A doubling does not rewrite shard 0's balance, but it no longer survives either: `refill_bucket()` clamps to `min(capacity_milli, tokens_milli)` on **every** path, including the two that add no tokens, so shard 0 is trimmed to its new share on the next refill pass by whichever refiller gets there first — the client slow path or the aggregator, which writes the negative delta as an `ADD` (#222 §3.3, replaces #469). Steady state and the transient are both `capacity`. Debt is untouched: the clamp is `min()`, not a clamp into range
+- A missing shard N>0 is created by the client with `wcu` undivided, stored `cp`/`ra` undivided, and the observed `shard_count` stamped — identical to the aggregator's Path 2 clone. A **dripping** limit's new shard starts at `capacity_milli // shard_count`, and that does not multiply total capacity: the stored `ra` is undivided, so every shard refills at `ra // shard_count`, the ceilings still sum to `capacity`, and a new shard starting full is a one-off burst of at most one `time_to_fill` — which token-bucket semantics already permit. A doubling does not rewrite shard 0's balance, but it no longer survives either: `refill_bucket()` clamps to `min(capacity_milli, tokens_milli)` on **every** path, including the two that add no tokens, so shard 0 is trimmed to its new share on the next refill pass by whichever refiller gets there first — the client slow path or the aggregator, which writes the negative delta as an `ADD` (#222 §3.3, replaces #469). Steady state and the transient are both `capacity`. Debt is untouched: the clamp is `min()`, not a clamp into range
+- **A quota's new shard is filled by transfer, never minted (#587).** A quota has no drip at all (ADR-137), so for it the paragraph above does not hold: a fresh `capacity // shard_count` is net-new allowance, and nothing reclaims it before the next reset edge. Measured on `Limit.quota("rpd", 1000, cron="0 0 * * *")` with the clock frozen inside one period, a `wcu` walk 1→32 admitted **3496 against a configured 1000 — 3.5x**; the single clearest step is an entity that had spent 998 of 1000 and held 2 tokens finding itself holding **501** after one `acquire()` tripped `wcu`. So before the shard is created, `Repository.reclaim_quota_surplus()` (mirrored in the aggregator by `processor._reclaim_quota_surplus`) **eagerly applies the clamp** to every shard that already exists — one conditional `UpdateItem` per shard holding a surplus, `SET tk = :share` under `tk > :share` with `ReturnValues=UPDATED_OLD` — and the new shard starts with exactly what that took, capped at one share (`models.new_shard_starting_tokens_milli`). A full entity therefore still gets a full new share, paid for by the clamp on the shard it split from (the pre-#587 behaviour, which was right for that case and is why the bug hid); a spent entity gets nothing. The clamp is eager rather than left to the siblings' next pass because the speculative fast path is a pure `ADD` with no ceiling arithmetic, so an untrimmed sibling would spend the same surplus the new shard was just granted. No token is destroyed that was not already doomed — the clamp takes exactly that much whenever it next runs — so a reclaim followed by a rejected acquire costs the entity nothing. Keyed on `Limit.is_quota`, the **structural** predicate, never `BucketState.accrues`, which is also true of a dripping limit whose share has floored to zero (#475). Cost: 1 GSI3 KEYS_ONLY query + 1 `BatchGetItem` + at most one write per surplus-holding shard, once per shard creation, and only for a resource that carries a quota
+  - **Zero-filling and blind redistribution were both considered and rejected.** Zero-filling never over-admits but runs away: a shard that can admit nothing still takes its share of ADR-134's random draws and rejects them, every successful write piles back onto the one shard with tokens, that shard trips `wcu` again, and the count walks to `MAX_SHARD_COUNT` with the whole balance clamped onto a single `C // 32` — 3% of the quota reachable and ~91% spurious rejections for the rest of the period. Redistribution (deduct a blind `old_share / 2` from each existing shard at the doubling, create the new ones at the new share) does not fix the over-admission at all: on a spent quota the deduction lands as **debt that nothing ever repays**, while the new shard's share is immediately spendable, so the entity still gains `C/2` per doubling — arithmetically identical to the bug. Conserving the *sum* of the balances is not the same as conserving what can be **spent**
 - After wcu-driven doubling the slow path draws from the **newly added** shards (`random.randrange(old_count, new_count)`); `bump_shard_count()` returns the winner's count (via `ReturnValuesOnConditionCheckFailure=ALL_OLD`) when another client doubled first, so a losing client still draws from the new range. A non-cascade shard-retry that hits `BUCKET_MISSING` stops probing and sends the slow path to create that shard instead of fast-rejecting
+- **A doubling is gated on the acquire proceeding, on the child path too (#480).** `_try_speculative_acquire` runs `_check_speculative_failure` *before* `_shard_after_wcu_exhaustion`, the same ordering #474 established for the cascade parent. A `BOTH_EXHAUSTED` failure — reserved `wcu` drained **and** a declared limit drained — is on its way to a `RateLimitExceeded`, and doubling there is a pure side effect: `_learn_shard_count` is monotonic, so one doubling per rejection walks an entity at its limit to `MAX_SHARD_COUNT` and pins every shard at `capacity // 32` forever (#475). Worse before the gate: the doubling handed the slow path a shard it then *created* holding `capacity // 2`, so the rejection became an admission. A plain `WCU_EXHAUSTED` passes the gate by construction — `consume` never names `wcu`, so every declared limit is satisfiable — which is what keeps the GHSA-76rv mitigation and ADR-133's wcu-refill route (slow path on the same shard) intact
 - Cascade: a cascading child never accepts a child-only retry lease (it would bypass the parent); on `APP_LIMIT_EXHAUSTED` it hands an untried shard to the slow path, which commits child + parent in one transaction. Speculative compensation credits the shard that was debited (`result.shard_id` / `parent_result.shard_id`), and the parent-only slow path reuses `parent_result.shard_id`
 - Race with the aggregator: both create under `attribute_not_exists(PK)`; a lost race routes `_commit_initial()` to the consumption-only retry (`tk >= consumed`) on that same shard — one extra WCU, no over-admission. If a *sibling* item cancelled the transaction instead (parent rf lock), the innocent Put is re-issued from its per-index `CancellationReasons` entry
 - Write sharding therefore engages with `--no-aggregator`; the aggregator's proactive sharding and propagation below are an optimization, not a requirement
@@ -767,6 +783,7 @@ Bucket items use per-(entity, resource, shard) partition keys: `PK={ns}/BUCKET#{
 - Monitors `wcu` consumption ratio per bucket in each stream batch
 - When consumption >= 80% of capacity (`WCU_PROACTIVE_THRESHOLD = 0.8`), doubles `shard_count` on shard 0
 - Propagates `shard_count` changes from shard 0 to all other shards via conditional writes, pre-creating new shard items so clients skip the one-time create slow path
+- Path 2 pre-creates **all** the new shards in one pass, so an unguarded quota there grants the full `C/2` immediately rather than lazily. It runs the same reclaim-then-grant as the client (`_reclaim_quota_surplus`, #587): clamp shards `0..old_count-1` to their new share, then hand the pool out **greedily** across the new shards — the first usable one gets a full share rather than every clone getting a slice too small to admit anything. Dripping limits keep `scaled_cp // new_count` unchanged
 
 **GSI3 bucket discovery:**
 - Bucket items set `GSI3PK={ns}/ENTITY#{id}, GSI3SK=BUCKET#{resource}#{shard}`
@@ -836,6 +853,55 @@ only materialised quantity is `tk`. The fast path evaluates nothing and is gated
 The pieces are documented where they live — `vu` and `SCHEDULE_BOUNDARY` under the speculative
 write pattern, `sched`/`rsched`/`sched_tz` under the config attribute format and the writer
 table, the quota TTL horizon under ADR-136, and the boundary walk under Exception Design.
+
+**The compact encoding is versioned (#515).** Every stored `sched` / `rsched` /
+`b_{name}_sched` / `l_{name}_sched` value opens with its encoding version as decimal digits —
+`1h9-17w1-5s500;h0-6c2000`, `1m0h0` — emitted once per attribute by `schedule.encode` /
+`encode_reset` and checked first by `decode` / `decode_reset` / `to_cron`. **One byte**: no
+legal entry can begin with a digit (`_encode_cron` always emits `tag + spec`, every tag a
+letter), so no delimiter is needed, and the 1 KB WCU boundary §4.2 defends is shared with
+everything else on the item.
+
+**An unversioned string is rejected, not read as v1.** The usual tolerant-reader concession
+would serve an empty population: the encoding is unreleased, so no unmarked item exists.
+Rejecting keeps the invariant checkable and is what lets a newer-client value be diagnosed at
+offset 0. Three distinct greppable messages — `carries no version marker`, `is encoding version
+N; this build reads up to version M`, and the pre-existing `cannot parse from offset N` /
+`invalid cron expression` — all still plain `ValueError` (§6.1), so the aggregator's
+`except ValueError` still catches them and `_decode_stored_schedule` still converts to
+`RateLimiterUnavailable`.
+
+What this buys is a **log line, not behaviour**, which is why it was deferrable at all: design
+§6.5's table had a newer client's appended modifier tag (`h9-17s500q42`) failing as
+`invalid literal for int()`, indistinguishable from corruption, because `_tokenise`'s value
+pattern absorbs an unknown tag that does not sit at an entry boundary. The version is now read
+before the body, so that diagnosis no longer depends on where the unknown token sits. The
+tokeniser heuristic survives as a statement about corruption *within* a version.
+
+Measured: the §4.2 worst shared case (6 limits x 4 entries, one shared schedule) is **846 B**,
+**178 B** under the boundary, pinned exactly by
+`TestSizeBudget.test_the_worst_shared_case_stays_under_one_kb`. That headroom is shared with
+unlanded work — see the design doc's headroom note.
+
+**Magnitude bounds on every numeric modifier (#570).** `schedule.py` names three ceilings —
+`MAX_TOKENS = 10**15`, `MAX_PERIOD_SECONDS = 10**9`, `MAX_SCALE = 10**6` — enforced by
+`ScheduleEntry.__post_init__` on `scale` / `capacity` / `refill_amount` /
+`refill_period_seconds` and by `Limit.__post_init__` on the base `capacity` /
+`refill_amount` / `refill_period_seconds`. Each raises a plain `ValueError` naming the field,
+the value and the bound, so `manifest._parse_entries` reports it as `schedule[i]: …` and
+`zae-limiter limits plan` fails before anything is written.
+
+Only one number here is derived: `MAX_STORED_MILLI = 10**38 - 1`, DynamoDB's largest exactly
+storable integer (38 significant digits — boto3's serializer raises `decimal.Rounded` at
+`10**38`, before the request is sent). The three ceilings are judgement calls chosen so that no
+product of them can reach it: `10**15 × 1000 × 10**6 = 10**24`, fourteen orders inside.
+**Bounding `scale` alone would not have worked**, which is why `Limit` is narrowed too: the
+quantity that must stay storable is the product `capacity × 1000 × scale`, so with an unbounded
+base the overflow threshold stays data-dependent — the same `ScheduleEntry` raising
+`OverflowError` on a `tpm` of 10,000,000 and returning cleanly on an `rpm` of 10, on the acquire
+slow path, as a 500. The check is ordered **after** #564's finiteness and #569's integrality
+guards (so a NaN or a `1.5` still reports its own message) and after the positivity test, whose
+upper half it is.
 
 See [ADR-135](docs/adr/135-scheduled-limits.md) for the decision and the alternatives
 considered, and `docs/plans/2026-09-13-scheduled-limits-design.md` for the full design.
@@ -1065,7 +1131,7 @@ All PK and GSI PK values are prefixed with `{ns}/` where `{ns}` is the opaque na
 - A failure tripping `vu` classifies as `SpeculativeFailureReason.SCHEDULE_BOUNDARY`, **ahead of `DISABLED`'s successor checks and every exhausted reason** — a closed window is not a rejection, and reading it as one would raise `RateLimitExceeded` against limits the new window may have just raised, or (worse) read as `WCU_EXHAUSTED` and double `shard_count` at every boundary. `DISABLED` still outranks it: no re-materialisation admits a disabled bucket. The limiter routes `SCHEDULE_BOUNDARY` to the slow path — the only place that re-materialises — never to a fast rejection and never to a shard retry, since every shard crosses the same boundary. A *probed* shard that reports it (the transient where shards re-materialise one at a time) is handed to the slow path exactly as a `BUCKET_MISSING` probe is. On the cascade path a boundary-expired **parent** refunds the child's speculative debit and falls back to the full slow path rather than the parent-only one, costing one extra compensating write per crossing
 - **The slow path is the only client that writes `vu` (#222 §2.1).** `_commit_initial()` takes the minimum `next_boundary()` across **every** limit sharing the bucket item — including the ones the caller did not name in `consume`, since the same write materialises them and `vu` is one item-level attribute — and passes it to `build_composite_normal(vu=...)` / `build_composite_create(vu=...)`. `None` (the unscheduled majority) omits the attribute on a create and leaves an existing one untouched on an update — **except** when the group resolved no boundary at all, where it is `REMOVE`d (`clear_vu`): that group covers every limit sharing the item, so no boundary means nothing on the item is scheduled, and leaving the `vu = 0` the fan-out stamps on every call would fail the fast-path guard forever rather than once; `vu` is only ever `SET`, never `REMOVE`d in the same expression (#488). Each boundary is computed by the acquire path at the **same clock reading that drove `effective_params` for that entry's refill**, not at `_commit_initial()`'s own later reading: the two are a round trip apart, and a boundary crossed in between must land `vu` at or before `rf` so the next acquire re-materialises — deriving it from the commit instant would skip the boundary just crossed and leave the fast path spending pre-boundary tokens for a whole window
 - **A bucket created by the slow path carries its schedules** (`sched` / `rsched` / `sched_tz` / `b_{name}_sched` / `b_{name}_rsched`, design §2.2, §3.6), and its balance starts at the *scheduled* per-shard share rather than the base ceiling. The aggregator reads the item and nothing else, so an item with `vu` but no `sched` would be refilled toward the base ceiling — the schedule silently unenforced until the next admin fan-out. All scheduled limits on one item must agree on a timezone (`sched_tz` is one attribute per item), the same rule `set_limits()` enforces at config-write time
-- **An unscheduled limit is recorded as unscheduled, not left to inherit (#541).** A bucket item carries one hoisted `sched` / `rsched` pair plus the per-limit `b_{name}_*` overrides, and absence of an override means "inherit the item default" — which is what keeps a shared schedule down to one attribute. It cannot *also* mean "this limit has none", so every unscheduled limit on an item that carries a default is stamped with the reserved marker `schema.BUCKET_SCHED_NONE` (`"-"`, not a legal compact encoding: `schedule._tokenise` rejects it at offset 0). Without it the contamination ran **both** ways on a mixed item — a `0.5x` rate limit took the quota's midnight reset (its balance hard-`SET` at the edge, its drip skipped that pass) and the quota took the rate limit's `0.5x` window (half its allowance, silently) — and it reached the aggregator's refill and shard clone, the slow path's `BucketState`, and every fast-path `RateLimitExceeded` status through `Limit.per_shard`. One encoder (`Repository._encode_one_tuple`) serves both writers, mirrored in `zae_limiter_provisioner/bucket_sync.py`; the readers are `Repository._deserialize_composite_bucket`, `processor._parse_bucket_record` and `processor.propagate_shard_count`. The reserved `wcu` limit never carries either tuple and so is never marked
+- **An unscheduled limit is recorded as unscheduled, not left to inherit (#541).** A bucket item carries one hoisted `sched` / `rsched` pair plus the per-limit `b_{name}_*` overrides, and absence of an override means "inherit the item default" — which is what keeps a shared schedule down to one attribute. It cannot *also* mean "this limit has none", so every unscheduled limit on an item that carries a default is stamped with the reserved marker `schema.BUCKET_SCHED_NONE` (`"-"`, not a legal compact encoding: it carries no version marker, so the decoders reject it before the tokeniser, #515). Without it the contamination ran **both** ways on a mixed item — a `0.5x` rate limit took the quota's midnight reset (its balance hard-`SET` at the edge, its drip skipped that pass) and the quota took the rate limit's `0.5x` window (half its allowance, silently) — and it reached the aggregator's refill and shard clone, the slow path's `BucketState`, and every fast-path `RateLimitExceeded` status through `Limit.per_shard`. One encoder (`Repository._encode_one_tuple`) serves both writers, mirrored in `zae_limiter_provisioner/bucket_sync.py`; the readers are `Repository._deserialize_composite_bucket`, `processor._parse_bucket_record` and `processor.propagate_shard_count`. The reserved `wcu` limit never carries either tuple and so is never marked
 - **The slow path's `BucketState.sched` comes from the resolved config, not from the item.** `_deserialize_composite_bucket()` reads the base params only; `_do_acquire()` and `_try_parent_only_acquire()` attach `limit.schedule` to each state before admission, so `effective_params` applies to the refill, the ceiling and the `Limit.per_shard()` in any rejection. Config is also the fresher of the two — an item stamped before the last `set_limits()` still holds the old schedule
 
 **Entity metadata cache (issue #318, GHSA-76rv):**
@@ -1099,7 +1165,8 @@ All PK and GSI PK values are prefixed with `{ns}/` where `{ns}` is the opaque na
 | Speculative consume | `ADD tk -consumed` | `attribute_exists(PK) AND tk >= consumed AND (attribute_not_exists(vu) OR vu > :now)` | No |
 | Normal path (initial) | `SET rf = :new_rf (+ vu) ADD tk -consumed` (`REMOVE vu` when nothing on the item is scheduled) | `rf = :expected_rf` | Yes (optimistic lock) |
 | Normal path (retry) | `ADD tk -consumed` | `tk >= consumed` | No (skips refill) |
-| Client shard create (ADR-133) | `Put` full item, `tk = effective cp // shard_count`, `wcu` undivided, `sched`/`rsched`/`sched_tz`/`vu` when scheduled | `attribute_not_exists(PK)` | Sets `rf = now` |
+| Client shard create (ADR-133) | `Put` full item, `tk = effective cp // shard_count` (a quota: what the reclaim below took, #587), `wcu` undivided, `sched`/`rsched`/`sched_tz`/`vu` when scheduled | `attribute_not_exists(PK)` | Sets `rf = now` |
+| Quota surplus reclaim, per existing shard (#587) | `SET tk = :share`, `ReturnValues=UPDATED_OLD` | `tk > :share` (client) / `attribute_exists(PK) AND tk > :share` (aggregator) | No |
 | Adjustment / rollback | `ADD tk +/-delta` | (unconditional) | No |
 | Aggregator refill | `ADD tk +refill SET rf = :now` | `rf = :expected_rf AND vu = :expected_vu` (#508) | Yes (optimistic lock) |
 | Aggregator proactive shard | `SET shard_count = :new` | `shard_count = :old` | No |

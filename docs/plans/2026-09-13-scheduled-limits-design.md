@@ -52,12 +52,12 @@ Rejected alternatives are recorded in §1.7.
 ```python
 @dataclass(frozen=True)
 class ScheduleEntry:
-    cron: str                               # 5-field, matched as a pattern
-    tz: str = "UTC"                         # IANA name, validated via zoneinfo
+    cron: str  # 5-field, matched as a pattern
+    tz: str = "UTC"  # IANA name, validated via zoneinfo
     # exactly one of:
-    scale: float | None = None              # multiplier of base capacity AND refill_amount
-    capacity: int | None = None             # absolute
-    refill_amount: int | None = None        # optional; defaults to the base's value
+    scale: float | None = None  # multiplier of base capacity AND refill_amount
+    capacity: int | None = None  # absolute
+    refill_amount: int | None = None  # optional; defaults to the base's value
     refill_period_seconds: int | None = None
 ```
 
@@ -492,12 +492,12 @@ compact never does), but it is not the documented interface.
 `[{"c":"* 9-17 * * MON-FRI","z":"America/New_York","s":0.5},…]` becomes:
 
 ```
-h9-17w1-5s500;h0-6c2000
+1h9-17w1-5s500;h0-6c2000
 ```
 
-Wildcard fields omitted, remaining fields letter-tagged (`m h D M w`), names normalized to
-numbers, `scale` as an integer per-mille, entries separated by `;`. Timezone hoisted to a
-single item-level `sched_tz`. Per-limit `b_{name}_sched` written **only** when that limit's
+A leading **version marker**, then wildcard fields omitted, remaining fields letter-tagged
+(`m h D M w`), names normalized to numbers, `scale` as an integer per-mille, entries separated
+by `;`. Timezone hoisted to a single item-level `sched_tz`. Per-limit `b_{name}_sched` written **only** when that limit's
 schedule differs from the item-level `sched` default — schedules *may* differ per limit, but
 sharing one is the normal case, and this reuses §1.6's override-not-merge idiom rather than
 introducing a table and indices.
@@ -506,29 +506,47 @@ It decodes losslessly to a canonical 5-field cron string (`h9-17w1-5` → `* 9-1
 cronsim remains the only parser and the §3.1 oracle test covers both forms unchanged.
 
 Reset entries encode into their own `rsched` / `b_{name}_rsched` attributes with the same
-grammar minus the modifier token, so they are very small — `0 0 * * *` is `m0h0`, 4 bytes.
+grammar minus the modifier token, so they are very small — `0 0 * * *` is `1m0h0`, 5 bytes.
 Keeping them in a separate attribute rather than tagging them inside `sched` mirrors the
 separate tuple and keeps the decoder from having to partition one list into two meanings.
 
-**No version marker is carried.** An earlier draft of this section promised one (~6 B) so §6
-could distinguish "written by a newer client" from "corrupt". It was not built: core plan
-Task 5 (PR #504) shipped the encoding without it, and surface plan Task 10 (PR #514) decided
-against adding it. The decisive argument is that a marker cannot classify anything *already*
-written — an unmarked string stays ambiguous between "an older client wrote this" and "this is
-corrupt" — so the distinction only works forward from the day it ships, against 6 B on every
-scheduled bucket item forever and the 1 KB boundary §4.2 exists to defend.
+**A version marker is carried, as one byte.** An earlier draft of this section promised one
+(~6 B); core plan Task 5 (PR #504) shipped the encoding without it and surface plan Task 10
+(PR #514) decided against adding it, on the argument that a marker cannot classify anything
+*already* written — an unmarked string stays ambiguous between "an older client wrote this"
+and "this is corrupt" — so the distinction only works forward from the day it ships.
 
-What is lost is a log line, not behaviour: both readings produce the identical action
-(`RateLimiterUnavailable` on the client, skip-the-bucket in the aggregator), so nothing
-downstream branches on it. `_tokenise` discriminates *structurally* — an unknown tag at the
-start of an entry raises `malformed compact schedule entry ...: cannot parse from offset N`
-where a cronsim rejection reads `invalid cron expression ...` — which is a heuristic, not a
-proof, since corruption can also fail at an offset. It is also **weaker than it sounds**: an
-unknown tag appearing after a value is absorbed into that value and fails as a cron or `int()`
-error instead, which is the realistic shape of a new modifier tag. §6.5 tabulates what the log
-actually says. Adding a marker later is not a break provided the reader
-treats its absence as v1, which it must do regardless for every item written before one exists.
-Tracked as #515.
+That argument is sound and it **expired unused**: the encoding never shipped. #515 therefore
+adds the marker before v0.14.0, when its cost is fixture churn rather than a migration against
+live `sched` / `rsched` values, and when the "cannot fix the past" objection has no past to
+apply to.
+
+- **Shape.** The encoding version as decimal digits at the head of the whole attribute, no
+  delimiter: `1h9-17w1-5s500;h0-6c2000`. No legal entry can begin with a digit — `_encode_cron`
+  always emits `tag + spec` and every tag is a letter — so the digits are unambiguous without a
+  separator. One byte, against the 1 KB boundary §4.2 defends. Emitted once per attribute, not
+  per entry: one attribute is written by one encoder at one version, so a per-entry marker
+  would cost a byte per `;` for no extra information. A two-byte form (`1:`) would buy a weak
+  checksum on the marker itself; the byte is worth more, and that budget is shared with work
+  landing after this one.
+- **An unversioned string is rejected, not read as v1.** This paragraph previously said a
+  later reader "has to be tolerant of absence anyway, for every item written before the marker
+  existed". There are no such items, so that tolerance would serve an empty population forever
+  while spending exactly the discriminating power the marker exists to provide. Rejecting
+  instead makes the invariant checkable — every stored schedule begins with a marker — which
+  is what lets a newer-client string be diagnosed at offset 0 rather than wherever its
+  unfamiliar body happens to fail.
+- **What it buys.** The three readings are now separate, greppable messages: `carries no
+  version marker`, `is encoding version N; this build reads up to version M`, and the
+  pre-existing `cannot parse from offset N` / `invalid cron expression`. §6.5's table below is
+  what this removes: rows two and four there were indistinguishable, and both are
+  forward-compatibility cases only if the writer was newer — which the marker now says outright
+  regardless of where in the string the unknown token sits.
+
+`_tokenise`'s structural discrimination remains, and remains a heuristic rather than a proof —
+it still cannot tell corruption from a same-version mistake, and an unknown tag after a value is
+still absorbed. That is now a statement about corruption *within* a version, not about
+forward compatibility.
 
 ### 4.2 Why — measured
 
@@ -557,6 +575,17 @@ themselves dominate, and an item can already cross 1 KB from limit count alone w
 schedule anywhere. Schedules now contribute 84 B in the worst shared case. That is why there
 is **no write-time size budget** — a pre-existing property of composite bucket items is not
 something a schedule-specific gate should police.
+
+**Measured headroom, with the #515 version marker present.** Against the real
+`build_composite_create` shape, the §4.2 worst *shared* case — 6 limits x 4 entries, one
+schedule shared item-wide — is **846 B**, leaving **178 B** before the 1 KB boundary. The
+marker itself is 1 B of that. The figure is pinned exactly rather than as `< 1024`
+(`TestSizeBudget.test_the_worst_shared_case_stays_under_one_kb`) because the remaining headroom
+is **shared with work that has not landed**: the v0.15.0 session-quota design adds roughly 30 B
+per rolling limit (`b_{name}_ws` and `b_{name}_rsa`, plain `N` attributes outside the encoded
+string). Six rolling limits on this item would be ~180 B and would cross the boundary on their
+own. Neither change is individually the culprit; whichever lands second inherits the problem, so
+the number is recorded here rather than left to be rediscovered.
 
 **Levers not built,** for a pathological config (many limits each with a *distinct* schedule,
 which lands at 1091 B): a dedupe table with per-limit indices, or bit-packing the field sets
@@ -645,9 +674,9 @@ exists, is already documented, and in `allow` mode degrades exactly the way the 
 asked, rather than inventing a fourth behaviour.
 
 The realistic trigger is forward-compatibility, not corruption — a newer client writing an
-encoding an older one cannot read. §4.1 was to have carried a version marker so the log could
-distinguish the two; it does not, and the cost of that is a log line rather than behaviour
-(#515). See "What the log can actually say" below, which is weaker than §4.1 claims.
+encoding an older one cannot read. §4.1 carries a **version marker** (#515) so the log can say
+which of the two it is; the behaviour is identical either way, which is why this stayed a
+log-line question until it was cheap to settle. See "What the log can actually say" below.
 
 ### 6.1 The rule: the parser raises `ValueError`, and each boundary converts
 
@@ -724,26 +753,32 @@ mode. The degraded lease is constructed with `degraded=True`, never inferred fro
 
 ### 6.5 What the log can actually say
 
-Without a version marker the only discriminator is the shape of the failure, and it is weaker
-than §4.1 states. `_tokenise` reports `cannot parse from offset N` only when the unrecognised
-byte stands where a **tag** is expected — the start of an entry. Its value pattern is "anything
-that is not a known tag letter", so an unknown tag appearing *after* a value (the realistic
-shape of a new modifier a newer encoder appends) is swallowed into that value and surfaces
-downstream as `invalid cron expression ...` or as a bare `invalid literal for int()`, naming
-neither the tag nor an offset:
+Since #515 the first thing read is the version marker, so the forward-compatibility case is
+named outright:
 
 | Stored | Message |
 |--------|---------|
-| `q42h9-17s500` | `malformed compact schedule entry ...: cannot parse from offset 0` |
-| `h9-17q42s500` | `invalid cron expression '* 9-17q42 * * *': Bad hour` |
-| `h9-17s500q42` | `invalid literal for int() with base 10: '500q42'` |
-| `h99` (genuinely bad field) | `invalid cron expression '* 99 * * *': Bad hour` |
+| `2h9-17s500` (any body) | `... is encoding version 2; this build reads up to version 1` |
+| `h9-17w1-5s500` (no marker) | `... carries no version marker` |
+| `1q42h9-17s500` | `malformed compact schedule entry ...: cannot parse from offset 0` |
+| `1h9-17q42s500` | `invalid cron expression '* 9-17q42 * * *': Bad hour` |
+| `1h9-17s500q42` | `invalid literal for int() with base 10: '500q42'` |
+| `1h99` (genuinely bad field) | `invalid cron expression '* 99 * * *': Bad hour` |
 
-Rows two and four are indistinguishable, which is the collision the marker would have removed.
-So the heuristic is not merely "not a proof" (corruption can fail at an offset too) — it is
-also incomplete in the other direction. Pinned by
-`TestDecodeRaisesValueErrorForTheAggregatorsSake.test_an_unknown_tag_only_reaches_the_tokeniser_at_an_entry_boundary`,
-so #515 has a concrete statement of what it would buy.
+Rows three to six are all *same-version* failures, and among them the original weakness stands:
+`_tokenise` reports `cannot parse from offset N` only when the unrecognised byte stands where a
+**tag** is expected, i.e. the start of an entry. Its value pattern is "anything that is not a
+known tag letter", so an unknown token appearing *after* a value is swallowed into that value
+and surfaces as a cron or `int()` error naming neither the tag nor an offset — rows four and
+six are still indistinguishable from row five. What changed is that this no longer decides the
+question anyone actually asks. A newer encoder bumps the version, so rows one and two answer
+"who wrote this" before the body is parsed at all, and the residual ambiguity is between two
+kinds of same-version corruption, which produce the same action.
+
+Pinned by
+`TestDecodeRaisesValueErrorForTheAggregatorsSake.test_an_unknown_tag_only_reaches_the_tokeniser_at_an_entry_boundary`
+(the residual heuristic) and `TestVersionMarker` (the marker itself, including that the same
+two strings are diagnosed identically once the version differs).
 
 ## 7. `retry_after_seconds` across a boundary
 

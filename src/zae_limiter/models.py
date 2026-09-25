@@ -6,7 +6,12 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 from .exceptions import InvalidIdentifierError, InvalidNameError
-from .schedule import ScheduleEntry, effective_params
+from .schedule import (
+    MAX_PERIOD_SECONDS,
+    MAX_TOKENS,
+    ScheduleEntry,
+    effective_params,
+)
 
 # ---------------------------------------------------------------------------
 # Validation Constants
@@ -222,6 +227,87 @@ def is_accrual_rate(refill_amount_milli: int) -> bool:
     return refill_amount_milli > 0
 
 
+def new_shard_starting_tokens_milli(
+    share_milli: int,
+    reclaimed_milli: int | None,
+    *,
+    is_quota: bool,
+) -> int:
+    """What a shard coming into existence right now may start with (#587).
+
+    A shard is created by the client slow path (ADR-133) and by the
+    aggregator's propagation clone, and until #587 both minted it a fresh
+    ``capacity // shard_count``. For a **dripping** limit that is sound: the
+    stored ``ra`` is undivided, each shard refills at ``ra // shard_count``, so
+    the ceilings across all shards still sum to the configured capacity and a
+    new shard starting full is a one-off burst of at most one ``time_to_fill``
+    — which token-bucket semantics already permit. That path is unchanged, and
+    ``is_quota=False`` returns ``share_milli`` verbatim.
+
+    A **quota** has no rate at all (ADR-137), so there is nothing for a fresh
+    share to amortise against and no pass that takes it back before the next
+    reset edge. Minting one hands the entity allowance it never earned: the
+    issue measured a 1000-a-day quota admitting 3496 inside a single frozen
+    period, 3.5x, by walking ``shard_count`` 1 -> 32.
+
+    So a quota's new shard is given a **transfer, never a mint**. Before it is
+    created, every shard that already exists is clamped to the freshly shrunken
+    per-shard ceiling — the same ``min(capacity, tokens)`` that
+    ``bucket.refill_bucket`` would apply on their next materialising pass (#496
+    / #222 §3.3), just taken now instead of eventually — and the new shard
+    starts with what that reclaimed, capped at its own share:
+
+    * an entity holding a **full** quota when it doubles gets a full new share,
+      precisely paid for by the clamp on the shard it split from — the behaviour
+      before #587, which was right for this case and is why the bug hid;
+    * an entity that has **spent** its quota gets nothing, because there is no
+      surplus to move. That is the fix; and
+    * everything in between conserves exactly, and both shards keep tokens, so
+      ADR-134's random re-draw still finds them.
+
+    Doing the clamp *eagerly* is what makes the conservation hold at the instant
+    of the doubling rather than eventually. Leaving it to the siblings' next
+    pass reopens the same hole in transient form: the speculative fast path is a
+    pure ``ADD`` with no ceiling arithmetic, so an unclamped sibling will happily
+    spend the surplus that has just been granted to the new shard as well. No
+    token is destroyed that was not already doomed — the clamp takes exactly
+    this much whenever it next runs — so a reclaim followed by an acquire that
+    is then rejected leaves the entity no worse off.
+
+    Zero-filling instead would also never over-admit, but it is not neutral: a
+    new shard that can admit nothing takes its share of the draws and rejects
+    them, the successful writes pile back onto the one shard that has tokens,
+    that shard trips ``wcu`` again, and the count runs away to
+    ``MAX_SHARD_COUNT`` with the whole balance clamped onto a single
+    ``C // 32``. Redistribution — deducting a blind ``old_share / 2`` from each
+    existing shard at the doubling — does not fix the over-admission at all: on
+    a spent quota the deduction lands as debt that nothing ever repays, while
+    the new shard's share is immediately spendable, so the entity still gains
+    ``C/2`` per doubling. Conserving the *sum* of the balances is not the same
+    as conserving what can be **spent**.
+
+    Args:
+        share_milli: This shard's ceiling — the capacity in force now,
+            divided by ``shard_count`` (``BucketState.effective_capacity_milli``).
+        reclaimed_milli: Millitokens taken off the existing shards of this
+            (entity, resource, limit) by the eager clamp. ``None`` means no
+            shard exists to reclaim from — nothing has been materialised for
+            this limit, so there is no spend to conserve against and the share
+            is granted in full.
+        is_quota: :attr:`Limit.is_quota` — the **structural** predicate. Not
+            :meth:`BucketState.accrues`, which is also true of a dripping limit
+            whose share has floored to zero; starving that limit's new shard
+            would be wrong, since it does recover.
+
+    Returns:
+        Starting balance in millitokens, never negative and never above
+        ``share_milli``.
+    """
+    if not is_quota or reclaimed_milli is None:
+        return share_milli
+    return max(0, min(share_milli, reclaimed_milli))
+
+
 def _schedule_entry_to_dict(entry: ScheduleEntry) -> dict[str, Any]:
     """One schedule entry as a plain dict, emitting only the fields that are set.
 
@@ -323,6 +409,25 @@ class Limit:
             raise ValueError("refill_amount must not be negative")
         if self.refill_period_seconds <= 0:
             raise ValueError("refill_period_seconds must be positive")
+        # Upper bounds, for the same reason `ScheduleEntry` has them (#570).
+        # Bounding `scale` alone proves nothing: the quantity that has to stay
+        # inside DynamoDB's 38 significant digits is the *product*
+        # `capacity x 1000 x scale`, so the base has to be bounded too or the
+        # overflow threshold stays data-dependent — the same entry raising on a
+        # large `tpm` and returning cleanly on a small `rpm`. The ceilings and
+        # their derivation live in `schedule.py`, beside the one hard limit they
+        # respect, because that module may not import this one.
+        for field_name, value, bound in (
+            ("capacity", self.capacity, MAX_TOKENS),
+            ("refill_amount", self.refill_amount, MAX_TOKENS),
+            ("refill_period_seconds", self.refill_period_seconds, MAX_PERIOD_SECONDS),
+        ):
+            if value > bound:
+                raise ValueError(
+                    f"{field_name} must be at most {bound}, got {value!r}. Above this "
+                    f"the limit cannot be stored exactly as a DynamoDB Number, and a "
+                    f"schedule applied on top of it overflows (#570)."
+                )
         # The two tuples are validated by opposite rules and neither is a
         # superset of the other, so an entry in the wrong one is checked here
         # rather than left to whatever reads it. A reset entry in `schedule`
@@ -1100,6 +1205,7 @@ class BucketState:
         limit: Limit,
         now_ms: int,
         shard_count: int = 1,
+        reclaimed_milli: int | None = None,
     ) -> "BucketState":
         """
         Create a new bucket at full capacity from a Limit.
@@ -1115,6 +1221,12 @@ class BucketState:
             now_ms: Current time in milliseconds
             shard_count: Shards the bucket is split across; a new shard
                 starts at its effective share, ``capacity // shard_count``
+            reclaimed_milli: Millitokens the caller's eager clamp took off
+                the shards that already exist for this (entity, resource,
+                limit). Only a **quota** reads it, and only to take a transfer
+                instead of a mint (#587) — see
+                :func:`new_shard_starting_tokens_milli`. ``None`` (the default,
+                and every dripping limit) keeps the full share.
         """
         capacity_milli = limit.capacity * 1000
         state = cls(
@@ -1142,7 +1254,15 @@ class BucketState:
         # base ceiling would hand out a full unscaled allowance before any
         # refiller trimmed it, which is exactly the window the schedule exists
         # to narrow.
-        state.tokens_milli = state.effective_capacity_milli(now_ms)
+        #
+        # A quota being added to shards that already exist takes a transfer of
+        # its siblings' surplus instead of a fresh share, because it has no
+        # rate for a mint to amortise against (#587).
+        state.tokens_milli = new_shard_starting_tokens_milli(
+            state.effective_capacity_milli(now_ms),
+            reclaimed_milli,
+            is_quota=limit.is_quota,
+        )
         return state
 
 

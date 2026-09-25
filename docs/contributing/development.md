@@ -64,6 +64,12 @@ ruff check --fix .
 mypy
 ```
 
+Ruff is pinned to one exact version across `pyproject.toml` (build requirements, the `dev`
+extra, and the hatch default env), `.pre-commit-config.yaml` and the CI lint workflow, so the
+formatter you run locally and the one the commit hook runs agree byte for byte. Running
+`ruff format .` over the whole tree is therefore safe: on a clean tree it reformats nothing.
+The `check-ruff-pin` hook fails the commit if those declarations ever drift apart.
+
 ## Commit Messages
 
 Follow the ZeroAE [commit conventions](https://github.com/zeroae/.claude/blob/main/commits.md):

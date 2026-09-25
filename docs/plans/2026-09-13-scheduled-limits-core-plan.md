@@ -125,11 +125,15 @@ class TestScheduleEntry:
         with pytest.raises(ValueError, match="scale"):
             ScheduleEntry(cron="* * * * *", scale=scale)
 
-    @pytest.mark.parametrize("kwargs", [
-        {"capacity": 0}, {"capacity": -5},
-        {"capacity": 10, "refill_amount": 0},
-        {"capacity": 10, "refill_period_seconds": 0},
-    ])
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"capacity": 0},
+            {"capacity": -5},
+            {"capacity": 10, "refill_amount": 0},
+            {"capacity": 10, "refill_period_seconds": 0},
+        ],
+    )
     def test_rejects_non_positive_absolutes(self, kwargs):
         with pytest.raises(ValueError):
             ScheduleEntry(cron="* * * * *", **kwargs)
@@ -376,18 +380,21 @@ def test_agrees_with_croniter(expr):
 def test_dst_window_edge_holds_local_and_moves_in_utc():
     """9am New York stays 9am local across spring-forward; its UTC instant shifts."""
     parsed = parse_cron("* 9-17 * * MON-FRI", "America/New_York")
-    before = int(datetime(2027, 3, 12, 9, 0, tzinfo=NY).timestamp())   # Fri, EST
-    after = int(datetime(2027, 3, 16, 9, 0, tzinfo=NY).timestamp())    # Tue, EDT
+    before = int(datetime(2027, 3, 12, 9, 0, tzinfo=NY).timestamp())  # Fri, EST
+    after = int(datetime(2027, 3, 16, 9, 0, tzinfo=NY).timestamp())  # Tue, EDT
     assert matches(parsed, before * 1000) and matches(parsed, after * 1000)
     assert datetime.utcfromtimestamp(before).hour == 14
     assert datetime.utcfromtimestamp(after).hour == 13
 
 
-@pytest.mark.parametrize("day,expected_minutes", [
-    ("2027-03-14", 1380),   # spring forward: a 23-hour day
-    ("2026-11-01", 1500),   # fall back: a 25-hour day
-    ("2026-09-15", 1440),   # ordinary
-])
+@pytest.mark.parametrize(
+    "day,expected_minutes",
+    [
+        ("2027-03-14", 1380),  # spring forward: a 23-hour day
+        ("2026-11-01", 1500),  # fall back: a 25-hour day
+        ("2026-09-15", 1440),  # ordinary
+    ],
+)
 def test_no_minute_skipped_or_doubled(day, expected_minutes):
     start = int(datetime.fromisoformat(f"{day} 00:00").replace(tzinfo=NY).timestamp())
     end = int(datetime.fromisoformat(f"{day} 23:59").replace(tzinfo=NY).timestamp()) + 60
@@ -470,7 +477,7 @@ EOF
 ```python
 from zae_limiter.schedule import ScheduleEntry, effective_params
 
-BASE = (1_000_000, 1_000_000, 60_000)   # 1000 tokens/min, in milli-units
+BASE = (1_000_000, 1_000_000, 60_000)  # 1000 tokens/min, in milli-units
 TUE_1400 = int(datetime(2026, 9, 15, 14, 0, tzinfo=ZoneInfo("America/New_York")).timestamp() * 1000)
 TUE_0300 = int(datetime(2026, 9, 15, 3, 0, tzinfo=ZoneInfo("America/New_York")).timestamp() * 1000)
 
@@ -495,10 +502,15 @@ class TestEffectiveParams:
         assert effective_params(*BASE, sched, TUE_0300) == (2_000_000, 1_000_000, 60_000)
 
     def test_absolute_refill_fields_override_individually(self):
-        sched = (ScheduleEntry(
-            cron="* 0-6 * * *", tz="America/New_York",
-            capacity=2000, refill_amount=500, refill_period_seconds=30,
-        ),)
+        sched = (
+            ScheduleEntry(
+                cron="* 0-6 * * *",
+                tz="America/New_York",
+                capacity=2000,
+                refill_amount=500,
+                refill_period_seconds=30,
+            ),
+        )
         assert effective_params(*BASE, sched, TUE_0300) == (2_000_000, 500_000, 30_000)
 
     def test_first_matching_entry_wins(self):
@@ -650,8 +662,8 @@ class TestNextBoundary:
     def test_window_edge_follows_local_time_across_dst(self):
         before = next_boundary(BUSINESS, now_ms=_ms("2027-03-12 08:30"))
         after = next_boundary(BUSINESS, now_ms=_ms("2027-03-16 08:30"))
-        assert datetime.utcfromtimestamp(before / 1000).hour == 14   # EST
-        assert datetime.utcfromtimestamp(after / 1000).hour == 13    # EDT
+        assert datetime.utcfromtimestamp(before / 1000).hour == 14  # EST
+        assert datetime.utcfromtimestamp(after / 1000).hour == 13  # EDT
 
     def test_no_transition_returns_now_plus_cap(self):
         """A schedule that always matches has no boundary; cap rather than loop forever."""
@@ -679,8 +691,9 @@ class TestNextBoundary:
 
         now = _ms("2026-09-15 06:00")
         b = next_boundary(BUSINESS, now_ms=now)
-        assert effective_params(1_000_000, 1_000_000, 60_000, BUSINESS, b - 60_000) != \
-               effective_params(1_000_000, 1_000_000, 60_000, BUSINESS, b)
+        assert effective_params(
+            1_000_000, 1_000_000, 60_000, BUSINESS, b - 60_000
+        ) != effective_params(1_000_000, 1_000_000, 60_000, BUSINESS, b)
 
 
 class TestParseCacheIsHot:
@@ -835,10 +848,13 @@ class TestEncode:
 
     def test_is_much_smaller_than_json(self):
         import json
+
         compact, _ = encode((BUSINESS, NIGHTS))
         as_json = json.dumps(
-            [{"c": BUSINESS.cron, "z": BUSINESS.tz, "s": 0.5},
-             {"c": NIGHTS.cron, "z": NIGHTS.tz, "cp": 2000}],
+            [
+                {"c": BUSINESS.cron, "z": BUSINESS.tz, "s": 0.5},
+                {"c": NIGHTS.cron, "z": NIGHTS.tz, "cp": 2000},
+            ],
             separators=(",", ":"),
         )
         assert len(compact) * 4 < len(as_json)
@@ -853,13 +869,25 @@ class TestEncode:
 
 
 class TestRoundTrip:
-    @pytest.mark.parametrize("entries", [
-        (BUSINESS,), (NIGHTS,), (BUSINESS, NIGHTS),
-        (ScheduleEntry(cron="*/15 * * * SAT,SUN", tz="UTC", scale=0.25),),
-        (ScheduleEntry(cron="0 0 1 JAN,JUL *", tz="UTC", capacity=5000),),
-        (ScheduleEntry(cron="* * * * *", tz="UTC", capacity=7, refill_amount=3,
-                       refill_period_seconds=30),),
-    ])
+    @pytest.mark.parametrize(
+        "entries",
+        [
+            (BUSINESS,),
+            (NIGHTS,),
+            (BUSINESS, NIGHTS),
+            (ScheduleEntry(cron="*/15 * * * SAT,SUN", tz="UTC", scale=0.25),),
+            (ScheduleEntry(cron="0 0 1 JAN,JUL *", tz="UTC", capacity=5000),),
+            (
+                ScheduleEntry(
+                    cron="* * * * *",
+                    tz="UTC",
+                    capacity=7,
+                    refill_amount=3,
+                    refill_period_seconds=30,
+                ),
+            ),
+        ],
+    )
     def test_semantic_round_trip(self, entries):
         compact, tz = encode(entries)
         restored = decode(compact, tz or "UTC")
@@ -873,19 +901,25 @@ class TestRoundTrip:
 
         compact, tz = encode((BUSINESS, NIGHTS))
         restored = decode(compact, tz)
-        now = int(datetime(2026, 9, 15, 14, 0,
-                           tzinfo=ZoneInfo("America/New_York")).timestamp() * 1000)
+        now = int(
+            datetime(2026, 9, 15, 14, 0, tzinfo=ZoneInfo("America/New_York")).timestamp() * 1000
+        )
         base = (1_000_000, 1_000_000, 60_000)
-        assert effective_params(*base, restored, now) == effective_params(*base, (BUSINESS, NIGHTS), now)
+        assert effective_params(*base, restored, now) == effective_params(
+            *base, (BUSINESS, NIGHTS), now
+        )
 
 
 class TestDisplay:
-    @pytest.mark.parametrize("compact,expected", [
-        ("h9-17w1-5s500", "* 9-17 * * MON-FRI"),
-        ("h0-6c2000", "* 0-6 * * *"),
-        ("m*/15w6,7s250", "*/15 * * * SAT,SUN"),
-        ("m0h0D1M1,7c5000", "0 0 1 JAN,JUL *"),
-    ])
+    @pytest.mark.parametrize(
+        "compact,expected",
+        [
+            ("h9-17w1-5s500", "* 9-17 * * MON-FRI"),
+            ("h0-6c2000", "* 0-6 * * *"),
+            ("m*/15w6,7s250", "*/15 * * * SAT,SUN"),
+            ("m0h0D1M1,7c5000", "0 0 1 JAN,JUL *"),
+        ],
+    )
     def test_renders_canonical_cron_with_names(self, compact, expected):
         """Weekday and month always render as names, which is the one visible
         normalisation: an operator who typed 1-5 gets MON-FRI back."""
@@ -919,6 +953,7 @@ Expected: PASS
 def test_bucket_item_stays_under_one_kb():
     """A bucket item crossing 1 KB doubles the WCU cost of every acquire on it."""
     from zae_limiter.schedule import encode
+
     compact, tz = encode((BUSINESS, NIGHTS))
     # 4 limits x 2 entries, shared schedule: item-level `sched` + `sched_tz`
     overhead = len("sched") + len(compact) + len("sched_tz") + len(tz) + len("vu") + 7
@@ -971,38 +1006,58 @@ class TestUnconditionalClamp:
 
     def test_clamps_when_no_time_has_passed(self):
         r = refill_bucket(
-            tokens_milli=900_000, last_refill_ms=1000, now_ms=1000,
-            capacity_milli=500_000, refill_amount_milli=500_000, refill_period_ms=60_000,
+            tokens_milli=900_000,
+            last_refill_ms=1000,
+            now_ms=1000,
+            capacity_milli=500_000,
+            refill_amount_milli=500_000,
+            refill_period_ms=60_000,
         )
         assert r.new_tokens_milli == 500_000
         assert r.new_last_refill_ms == 1000
 
     def test_clamps_when_elapsed_is_negative(self):
         r = refill_bucket(
-            tokens_milli=900_000, last_refill_ms=2000, now_ms=1000,
-            capacity_milli=500_000, refill_amount_milli=500_000, refill_period_ms=60_000,
+            tokens_milli=900_000,
+            last_refill_ms=2000,
+            now_ms=1000,
+            capacity_milli=500_000,
+            refill_amount_milli=500_000,
+            refill_period_ms=60_000,
         )
         assert r.new_tokens_milli == 500_000
 
     def test_clamps_when_elapsed_is_too_short_to_add_a_millitoken(self):
         r = refill_bucket(
-            tokens_milli=900_000, last_refill_ms=1000, now_ms=1001,
-            capacity_milli=500_000, refill_amount_milli=1, refill_period_ms=60_000,
+            tokens_milli=900_000,
+            last_refill_ms=1000,
+            now_ms=1001,
+            capacity_milli=500_000,
+            refill_amount_milli=1,
+            refill_period_ms=60_000,
         )
         assert r.new_tokens_milli == 500_000
 
     def test_does_not_disturb_a_bucket_already_at_or_below_capacity(self):
         r = refill_bucket(
-            tokens_milli=100_000, last_refill_ms=1000, now_ms=1000,
-            capacity_milli=500_000, refill_amount_milli=500_000, refill_period_ms=60_000,
+            tokens_milli=100_000,
+            last_refill_ms=1000,
+            now_ms=1000,
+            capacity_milli=500_000,
+            refill_amount_milli=500_000,
+            refill_period_ms=60_000,
         )
         assert r.new_tokens_milli == 100_000
 
     def test_leaves_debt_alone(self):
         """Buckets go negative for post-hoc reconciliation; clamping is min(), not max()."""
         r = refill_bucket(
-            tokens_milli=-50_000, last_refill_ms=1000, now_ms=1000,
-            capacity_milli=500_000, refill_amount_milli=500_000, refill_period_ms=60_000,
+            tokens_milli=-50_000,
+            last_refill_ms=1000,
+            now_ms=1000,
+            capacity_milli=500_000,
+            refill_amount_milli=500_000,
+            refill_period_ms=60_000,
         )
         assert r.new_tokens_milli == -50_000
 ```
@@ -1093,11 +1148,20 @@ class TestNegativeRefillDelta:
         """A bucket holding more than its cap must be trimmed, not skipped."""
         table = MagicMock()
         state = BucketRefillState(
-            namespace_id="ns123", entity_id="user-1", resource="gpt-4", shard_count=1, rf_ms=1000,
-            limits={"rpm": LimitRefillInfo(
-                tk_milli=900_000, cp_milli=500_000, ra_milli=500_000,
-                rp_ms=60_000, tc_delta=0,
-            )},
+            namespace_id="ns123",
+            entity_id="user-1",
+            resource="gpt-4",
+            shard_count=1,
+            rf_ms=1000,
+            limits={
+                "rpm": LimitRefillInfo(
+                    tk_milli=900_000,
+                    cp_milli=500_000,
+                    ra_milli=500_000,
+                    rp_ms=60_000,
+                    tc_delta=0,
+                )
+            },
         )
         assert try_refill_bucket(table, state, now_ms=1000) is True
         values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
@@ -1106,11 +1170,20 @@ class TestNegativeRefillDelta:
     def test_still_skips_when_nothing_to_do(self):
         table = MagicMock()
         state = BucketRefillState(
-            namespace_id="ns123", entity_id="user-1", resource="gpt-4", shard_count=1, rf_ms=1000,
-            limits={"rpm": LimitRefillInfo(
-                tk_milli=500_000, cp_milli=500_000, ra_milli=500_000,
-                rp_ms=60_000, tc_delta=0,
-            )},
+            namespace_id="ns123",
+            entity_id="user-1",
+            resource="gpt-4",
+            shard_count=1,
+            rf_ms=1000,
+            limits={
+                "rpm": LimitRefillInfo(
+                    tk_milli=500_000,
+                    cp_milli=500_000,
+                    ra_milli=500_000,
+                    rp_ms=60_000,
+                    tc_delta=0,
+                )
+            },
         )
         assert try_refill_bucket(table, state, now_ms=1000) is False
         table.update_item.assert_not_called()
@@ -1120,15 +1193,24 @@ class TestNegativeRefillDelta:
         capacity would leave every shard holding the whole limit."""
         table = MagicMock()
         state = BucketRefillState(
-            namespace_id="ns123", entity_id="user-1", resource="gpt-4", shard_count=4, rf_ms=1000,
-            limits={"rpm": LimitRefillInfo(
-                tk_milli=400_000, cp_milli=800_000, ra_milli=800_000,
-                rp_ms=60_000, tc_delta=0,
-            )},
+            namespace_id="ns123",
+            entity_id="user-1",
+            resource="gpt-4",
+            shard_count=4,
+            rf_ms=1000,
+            limits={
+                "rpm": LimitRefillInfo(
+                    tk_milli=400_000,
+                    cp_milli=800_000,
+                    ra_milli=800_000,
+                    rp_ms=60_000,
+                    tc_delta=0,
+                )
+            },
         )
         assert try_refill_bucket(table, state, now_ms=1000) is True
         values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
-        assert values[":rd_rpm"] == -200_000   # 400_000 -> 800_000//4 == 200_000
+        assert values[":rd_rpm"] == -200_000  # 400_000 -> 800_000//4 == 200_000
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1265,9 +1347,7 @@ class TestScheduleValidation:
     def test_with_schedule_returns_a_new_limit(self):
         """`Limit` is frozen; `with_schedule` must not mutate."""
         base = Limit.per_minute("rpm", 1000)
-        scheduled = base.with_schedule(
-            (ScheduleEntry(cron="* * * * *", tz="UTC", scale=0.5),)
-        )
+        scheduled = base.with_schedule((ScheduleEntry(cron="* * * * *", tz="UTC", scale=0.5),))
         assert base.schedule == ()
         assert scheduled is not base
         assert scheduled.capacity == base.capacity
@@ -1404,7 +1484,7 @@ from zae_limiter.schedule import ScheduleEntry
 
 NY = ZoneInfo("America/New_York")
 TUE_1400 = int(datetime(2026, 9, 15, 14, 0, tzinfo=NY).timestamp() * 1000)  # inside 9-17
-TUE_0300 = int(datetime(2026, 9, 15, 3, 0, tzinfo=NY).timestamp() * 1000)   # outside
+TUE_0300 = int(datetime(2026, 9, 15, 3, 0, tzinfo=NY).timestamp() * 1000)  # outside
 
 
 def _state(**kwargs) -> BucketState:
@@ -1432,8 +1512,8 @@ class TestScheduledEffectiveParams:
         split the result. Dividing first would floor twice against a smaller
         numerator and drift."""
         state = _state(shard_count=4, sched=BUSINESS)
-        assert state.effective_capacity_milli(TUE_1400) == 125_000   # (1_000_000*0.5)//4
-        assert state.effective_capacity_milli(TUE_0300) == 250_000   # 1_000_000//4, no match
+        assert state.effective_capacity_milli(TUE_1400) == 125_000  # (1_000_000*0.5)//4
+        assert state.effective_capacity_milli(TUE_0300) == 250_000  # 1_000_000//4, no match
 
     def test_refill_scales_with_capacity(self):
         state = _state(shard_count=1, sched=BUSINESS)
@@ -1457,7 +1537,7 @@ class TestScheduledEffectiveParams:
         a speed nothing in the system refills at during the window."""
         state = _state(refill_amount_milli=1_000, shard_count=1024, sched=BUSINESS)
         assert state.effective_refill_amount_milli(TUE_1400) == 0
-        assert state.retry_refill_amount_milli(TUE_1400) == 500   # 1_000*0.5, undivided
+        assert state.retry_refill_amount_milli(TUE_1400) == 500  # 1_000*0.5, undivided
 
     def test_retry_rate_uses_the_share_when_it_is_non_zero(self):
         state = _state(shard_count=2, sched=BUSINESS)
@@ -1483,51 +1563,53 @@ Add to `BucketState` after `shard_count` at :492:
 Replace the three properties at :504-527:
 
 ```python
-    def effective_capacity_milli(self, now_ms: int) -> int:
-        """This shard's share of the capacity in force at ``now_ms``.
+def effective_capacity_milli(self, now_ms: int) -> int:
+    """This shard's share of the capacity in force at ``now_ms``.
 
-        Scale first, divide second (§2.1): the schedule applies to the whole
-        limit and the shards split the result.
-        """
-        cp, _ra, _rp = effective_params(
-            self.capacity_milli,
-            self.refill_amount_milli,
-            self.refill_period_ms,
-            self.sched,
-            now_ms,
-        )
-        return cp // self.shard_count
+    Scale first, divide second (§2.1): the schedule applies to the whole
+    limit and the shards split the result.
+    """
+    cp, _ra, _rp = effective_params(
+        self.capacity_milli,
+        self.refill_amount_milli,
+        self.refill_period_ms,
+        self.sched,
+        now_ms,
+    )
+    return cp // self.shard_count
 
-    def effective_refill_amount_milli(self, now_ms: int) -> int:
-        """This shard's share of the refill in force at ``now_ms``."""
-        _cp, ra, _rp = effective_params(
-            self.capacity_milli,
-            self.refill_amount_milli,
-            self.refill_period_ms,
-            self.sched,
-            now_ms,
-        )
-        return ra // self.shard_count
 
-    def retry_refill_amount_milli(self, now_ms: int) -> int:
-        """Refill rate for a "seconds until available" estimate at ``now_ms``.
+def effective_refill_amount_milli(self, now_ms: int) -> int:
+    """This shard's share of the refill in force at ``now_ms``."""
+    _cp, ra, _rp = effective_params(
+        self.capacity_milli,
+        self.refill_amount_milli,
+        self.refill_period_ms,
+        self.sched,
+        now_ms,
+    )
+    return ra // self.shard_count
 
-        ``effective_refill_amount_milli`` floors to 0 for a slow refill on a
-        heavily sharded bucket, and a rate of 0 has no finite wait. Fall back
-        to the *scheduled but undivided* rate — not the base rate, which
-        during a ``scale`` window is a speed nothing refills at.
-        """
-        share = self.effective_refill_amount_milli(now_ms)
-        if share:
-            return share
-        _cp, ra, _rp = effective_params(
-            self.capacity_milli,
-            self.refill_amount_milli,
-            self.refill_period_ms,
-            self.sched,
-            now_ms,
-        )
-        return ra
+
+def retry_refill_amount_milli(self, now_ms: int) -> int:
+    """Refill rate for a "seconds until available" estimate at ``now_ms``.
+
+    ``effective_refill_amount_milli`` floors to 0 for a slow refill on a
+    heavily sharded bucket, and a rate of 0 has no finite wait. Fall back
+    to the *scheduled but undivided* rate — not the base rate, which
+    during a ``scale`` window is a speed nothing refills at.
+    """
+    share = self.effective_refill_amount_milli(now_ms)
+    if share:
+        return share
+    _cp, ra, _rp = effective_params(
+        self.capacity_milli,
+        self.refill_amount_milli,
+        self.refill_period_ms,
+        self.sched,
+        now_ms,
+    )
+    return ra
 ```
 
 `models.py` must now import `effective_params` and `ScheduleEntry` from `.schedule`. That direction is safe: `schedule.py` imports nothing from `models` (Task 1).
@@ -1899,7 +1981,8 @@ class TestSlowPathWritesVu:
 
     def test_writes_vu_when_given_one(self, repo):
         item = repo.build_composite_normal(
-            "user-1", "gpt-4",
+            "user-1",
+            "gpt-4",
             consumed={"rpm": 1000},
             refill_amounts={"rpm": 0},
             now_ms=self.NOW,
@@ -1915,7 +1998,8 @@ class TestSlowPathWritesVu:
         """`next_boundary` returns None for an unscheduled limit, and None must
         omit the attribute rather than write a null."""
         item = repo.build_composite_normal(
-            "user-1", "gpt-4",
+            "user-1",
+            "gpt-4",
             consumed={"rpm": 1000},
             refill_amounts={"rpm": 0},
             now_ms=self.NOW,
@@ -1928,7 +2012,8 @@ class TestSlowPathWritesVu:
     def test_negative_refill_delta_trims_the_surplus(self):
         """Task 6 makes this delta negative on a shrink; the ADD carries it."""
         item = repo.build_composite_normal(
-            "user-1", "gpt-4",
+            "user-1",
+            "gpt-4",
             consumed={"rpm": 1000},
             refill_amounts={"rpm": -400_000},
             now_ms=self.NOW,
@@ -1942,7 +2027,8 @@ class TestSlowPathWritesVu:
         """A bucket created on the slow path needs its first `vu`, or the very
         next acquire takes the fast path against an unmaterialised item."""
         item = repo.build_composite_create(
-            "user-1", "gpt-4",
+            "user-1",
+            "gpt-4",
             states=[],
             now_ms=self.NOW,
             vu=self.NOW + 3_600_000,
@@ -2259,7 +2345,7 @@ Note `vu = 0` is appended **outside** the `if scheduled:` block, after it:
 Add the two bucket-field constants to `schema.py` beside `BUCKET_FIELD_VU`:
 
 ```python
-BUCKET_FIELD_SCHED = "sched"      # item-level default schedule (§4.1)
+BUCKET_FIELD_SCHED = "sched"  # item-level default schedule (§4.1)
 BUCKET_FIELD_SCHED_TZ = "sched_tz"  # IANA name, hoisted out of every entry
 ```
 
@@ -2405,7 +2491,7 @@ class TestAggregatorRespectsSchedules:
         state = _state(sched=BUSINESS, shard_count=2)
         assert try_refill_bucket(table, state, now_ms=TUE_1400) is True
         values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
-        assert values[":rd_rpm"] == 250_000   # (1_000_000*0.5)//2
+        assert values[":rd_rpm"] == 250_000  # (1_000_000*0.5)//2
 
 
 class TestAggregatorRestampsVu:

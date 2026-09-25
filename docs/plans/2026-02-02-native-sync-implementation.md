@@ -191,11 +191,13 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
                 node.module = IMPORT_MODULE_REWRITES[node.module]
 
             # Check for relative import path rewrites
-            module_key = f".{node.module}" if node.level == 0 else "." * node.level + (node.module or "")
+            module_key = (
+                f".{node.module}" if node.level == 0 else "." * node.level + (node.module or "")
+            )
             for old_path, new_path in IMPORT_PATH_REWRITES.items():
                 if module_key.endswith(old_path.lstrip(".")):
                     # Replace the suffix
-                    prefix = module_key[:-len(old_path.lstrip("."))]
+                    prefix = module_key[: -len(old_path.lstrip("."))]
                     new_module = prefix + new_path.lstrip(".")
                     node.module = new_module.lstrip(".")
                     break
@@ -233,9 +235,9 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
             value = node.value
             # Rewrite class names in string annotations
             for old_name, new_name in CLASS_RENAMES.items():
-                value = re.sub(rf'\b{old_name}\b', new_name, value)
+                value = re.sub(rf"\b{old_name}\b", new_name, value)
             for old_name, new_name in TYPE_REWRITES.items():
-                value = re.sub(rf'\b{old_name}\b', new_name, value)
+                value = re.sub(rf"\b{old_name}\b", new_name, value)
             node.value = value
         return node
 
@@ -609,10 +611,10 @@ from .sync_config_cache import SyncConfigCache
 
 Ensure `__all__` includes:
 ```python
-"SyncRateLimiter",
-"SyncRepository",
-"SyncLease",
-"SyncConfigCache",
+("SyncRateLimiter",)
+("SyncRepository",)
+("SyncLease",)
+("SyncConfigCache",)
 ```
 
 **Step 3: Verify imports work**
@@ -824,11 +826,13 @@ Add to transformer class:
 def visit_Decorator(self, node: ast.AST) -> ast.AST | None:
     """Remove @pytest.mark.asyncio decorators."""
     if isinstance(node, ast.Attribute):
-        if (isinstance(node.value, ast.Attribute) and
-            isinstance(node.value.value, ast.Name) and
-            node.value.value.id == "pytest" and
-            node.value.attr == "mark" and
-            node.attr == "asyncio"):
+        if (
+            isinstance(node.value, ast.Attribute)
+            and isinstance(node.value.value, ast.Name)
+            and node.value.value.id == "pytest"
+            and node.value.attr == "mark"
+            and node.attr == "asyncio"
+        ):
             return None  # Remove decorator
     return node
 ```
@@ -940,10 +944,7 @@ class TestGeventCompatibility:
                 results.append(entity_id)
 
         # Spawn multiple greenlets
-        greenlets = [
-            gevent.spawn(acquire_limit, f"entity-{i}")
-            for i in range(5)
-        ]
+        greenlets = [gevent.spawn(acquire_limit, f"entity-{i}") for i in range(5)]
         gevent.joinall(greenlets)
 
         assert len(results) == 5

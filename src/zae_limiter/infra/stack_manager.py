@@ -7,7 +7,7 @@ from importlib.resources import files
 from typing import Any, cast
 
 from aiobotocore.session import AioSession, get_session
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 
 from ..exceptions import StackAlreadyExistsError, StackOperationError
 from ..models import StackOptions
@@ -796,7 +796,9 @@ class StackManager:
                             break
 
                     await asyncio.sleep(interval)
-                except Exception:
+                except (ClientError, BotoCoreError):
+                    # AWS API and connection errors are transient; anything else
+                    # is a bug and must not hide behind max_seconds of retries (#612).
                     await asyncio.sleep(interval)
 
         return False

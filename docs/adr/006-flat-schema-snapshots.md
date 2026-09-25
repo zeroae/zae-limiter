@@ -21,10 +21,10 @@ Use flat schema (top-level attributes) for usage snapshot records, diverging fro
 {
     "PK": "ENTITY#user-1",
     "SK": "#USAGE#gpt-4#2024-01-01T14:00:00Z",
-    "resource": "gpt-4",      # Top-level
-    "window": "hourly",       # Top-level
-    "tpm": 5000,              # Counter at top-level
-    "total_events": 10,       # Counter at top-level
+    "resource": "gpt-4",  # Top-level
+    "window": "hourly",  # Top-level
+    "tpm": 5000,  # Counter at top-level
+    "total_events": 10,  # Counter at top-level
 }
 ```
 

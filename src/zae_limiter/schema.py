@@ -101,10 +101,11 @@ BUCKET_FIELD_VU = "vu"  # valid-until, epoch ms — schedule materialisation sta
 # window it never declared, in both directions at once (a rate limit acquiring a
 # quota's midnight reset, a quota acquiring the rate limit's 0.5x scale).
 #
-# Not a legal compact encoding: `schedule._tokenise` rejects it at offset 0, so
-# it can never collide with a real schedule, and a reader that has not learned
-# it fails loudly on an undecodable attribute rather than silently scaling a
-# limit. Written only on items that carry an item-level default — an entirely
+# Not a legal compact encoding: it carries no version marker, so `schedule`'s
+# decoders reject it before they reach the tokeniser (#515). It can never
+# collide with a real schedule, and a reader that has not learned it fails
+# loudly on an undecodable attribute rather than silently scaling a limit.
+# Written only on items that carry an item-level default — an entirely
 # unscheduled bucket grows no schedule attributes at all.
 BUCKET_SCHED_NONE = "-"
 

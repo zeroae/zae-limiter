@@ -3,7 +3,7 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, EndpointConnectionError
 
 from zae_limiter import StackOptions
 from zae_limiter.exceptions import StackAlreadyExistsError, StackOperationError
@@ -570,17 +570,21 @@ class TestDeployLambdaCode:
             # Setup context manager for client
             mock_client_cm = MagicMock()
             mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
-            mock_client_cm.__aexit__ = AsyncMock()
+            mock_client_cm.__aexit__ = AsyncMock(return_value=False)
 
             mock_session = MagicMock()
             mock_session.create_client.return_value = mock_client_cm
             mock_session_class.return_value = mock_session
 
             manager = StackManager(stack_name="test", region="us-east-1")
+            # The ESM poll is covered by TestWaitForEsmReady; unmocked it sleeps
+            # its full 120 s timeout against the MagicMock session.
+            manager.wait_for_esm_ready = AsyncMock(return_value=True)
             result = await manager.deploy_lambda_code()
 
             assert result["status"] == "deployed"
             assert result["function_arn"] == "arn:aws:lambda:us-east-1:123:function:test"
+            assert result["esm_ready"] is True
             mock_lambda.update_function_code.assert_called_once()
 
     @pytest.mark.asyncio
@@ -625,7 +629,7 @@ class TestDeployProvisionerCode:
 
             mock_client_cm = MagicMock()
             mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
-            mock_client_cm.__aexit__ = AsyncMock()
+            mock_client_cm.__aexit__ = AsyncMock(return_value=False)
 
             mock_session = MagicMock()
             mock_session.create_client.return_value = mock_client_cm
@@ -679,7 +683,7 @@ class TestDeployProvisionerCode:
 
             mock_client_cm = MagicMock()
             mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
-            mock_client_cm.__aexit__ = AsyncMock()
+            mock_client_cm.__aexit__ = AsyncMock(return_value=False)
 
             mock_session = MagicMock()
             mock_session.create_client.return_value = mock_client_cm
@@ -846,7 +850,7 @@ class TestClose:
 
         # Setup mock client
         mock_client = MagicMock()
-        mock_client.__aexit__ = AsyncMock()
+        mock_client.__aexit__ = AsyncMock(return_value=False)
         manager._client = mock_client
         manager._session = MagicMock()
 
@@ -1172,8 +1176,35 @@ class TestEnsureTags:
             assert "Not authorized" in str(exc_info.value)
 
 
+class _VirtualClock:
+    """Stands in for ``time`` and ``asyncio`` inside the stack manager module.
+
+    ``sleep`` advances ``time`` instantly, so the 5 s poll interval and the
+    ``max_seconds`` timeout run exactly as written without real waiting.
+    """
+
+    def __init__(self) -> None:
+        self.now = 1_000_000.0
+
+    def time(self) -> float:
+        return self.now
+
+    async def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
 class TestWaitForEsmReady:
     """Tests for wait_for_esm_ready method."""
+
+    @pytest.fixture(autouse=True)
+    def virtual_clock(self):
+        clock = _VirtualClock()
+        with (
+            patch("zae_limiter.infra.stack_manager.time", clock),
+            # create=True: the generated sync module sleeps via time, not asyncio
+            patch("zae_limiter.infra.stack_manager.asyncio", clock, create=True),
+        ):
+            yield clock
 
     @pytest.mark.asyncio
     async def test_returns_true_when_esm_enabled_and_stabilized(self) -> None:
@@ -1193,7 +1224,7 @@ class TestWaitForEsmReady:
 
             mock_client_cm = MagicMock()
             mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
-            mock_client_cm.__aexit__ = AsyncMock()
+            mock_client_cm.__aexit__ = AsyncMock(return_value=False)
 
             mock_session = MagicMock()
             mock_session.create_client.return_value = mock_client_cm
@@ -1225,7 +1256,7 @@ class TestWaitForEsmReady:
 
             mock_client_cm = MagicMock()
             mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
-            mock_client_cm.__aexit__ = AsyncMock()
+            mock_client_cm.__aexit__ = AsyncMock(return_value=False)
 
             mock_session = MagicMock()
             mock_session.create_client.return_value = mock_client_cm
@@ -1256,7 +1287,7 @@ class TestWaitForEsmReady:
 
             mock_client_cm = MagicMock()
             mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
-            mock_client_cm.__aexit__ = AsyncMock()
+            mock_client_cm.__aexit__ = AsyncMock(return_value=False)
 
             mock_session = MagicMock()
             mock_session.create_client.return_value = mock_client_cm
@@ -1285,7 +1316,7 @@ class TestWaitForEsmReady:
 
             mock_client_cm = MagicMock()
             mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
-            mock_client_cm.__aexit__ = AsyncMock()
+            mock_client_cm.__aexit__ = AsyncMock(return_value=False)
 
             mock_session = MagicMock()
             mock_session.create_client.return_value = mock_client_cm
@@ -1315,7 +1346,7 @@ class TestWaitForEsmReady:
 
             mock_client_cm = MagicMock()
             mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
-            mock_client_cm.__aexit__ = AsyncMock()
+            mock_client_cm.__aexit__ = AsyncMock(return_value=False)
 
             mock_session = MagicMock()
             mock_session.create_client.return_value = mock_client_cm
@@ -1338,7 +1369,7 @@ class TestWaitForEsmReady:
 
             mock_client_cm = MagicMock()
             mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
-            mock_client_cm.__aexit__ = AsyncMock()
+            mock_client_cm.__aexit__ = AsyncMock(return_value=False)
 
             mock_session = MagicMock()
             mock_session.create_client.return_value = mock_client_cm
@@ -1351,14 +1382,19 @@ class TestWaitForEsmReady:
 
     @pytest.mark.asyncio
     async def test_handles_api_exception(self) -> None:
-        """wait_for_esm_ready handles API exceptions gracefully."""
+        """wait_for_esm_ready retries AWS API errors until it times out."""
         with patch("zae_limiter.infra.stack_manager.get_session") as mock_session_class:
             mock_lambda = MagicMock()
-            mock_lambda.list_event_source_mappings = AsyncMock(side_effect=Exception("API error"))
+            mock_lambda.list_event_source_mappings = AsyncMock(
+                side_effect=ClientError(
+                    {"Error": {"Code": "ServiceException", "Message": "API error"}},
+                    "ListEventSourceMappings",
+                )
+            )
 
             mock_client_cm = MagicMock()
             mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
-            mock_client_cm.__aexit__ = AsyncMock()
+            mock_client_cm.__aexit__ = AsyncMock(return_value=False)
 
             mock_session = MagicMock()
             mock_session.create_client.return_value = mock_client_cm
@@ -1369,6 +1405,57 @@ class TestWaitForEsmReady:
             result = await manager.wait_for_esm_ready("test-aggregator", max_seconds=1)
 
             assert result is False
+
+    @pytest.mark.asyncio
+    async def test_retries_connection_errors_until_ready(self) -> None:
+        """A dropped connection is transient: the next poll can still succeed."""
+        with patch("zae_limiter.infra.stack_manager.get_session") as mock_session_class:
+            mock_lambda = MagicMock()
+            mock_lambda.list_event_source_mappings = AsyncMock(
+                side_effect=[
+                    EndpointConnectionError(endpoint_url="http://localhost:4566"),
+                    {"EventSourceMappings": [{"State": "Enabled", "LastProcessingResult": "OK"}]},
+                ]
+            )
+
+            mock_client_cm = MagicMock()
+            mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
+            mock_client_cm.__aexit__ = AsyncMock(return_value=False)
+
+            mock_session = MagicMock()
+            mock_session.create_client.return_value = mock_client_cm
+            mock_session_class.return_value = mock_session
+
+            manager = StackManager(stack_name="test", region="us-east-1")
+            result = await manager.wait_for_esm_ready(
+                "test-aggregator", max_seconds=10, min_stabilization=0.0
+            )
+
+            assert result is True
+            assert mock_lambda.list_event_source_mappings.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_raises_non_aws_errors_on_the_first_poll(self) -> None:
+        """A programming error is not retried for max_seconds (#612)."""
+        with patch("zae_limiter.infra.stack_manager.get_session") as mock_session_class:
+            mock_lambda = MagicMock()
+            mock_lambda.list_event_source_mappings = AsyncMock(side_effect=TypeError("boom"))
+
+            mock_client_cm = MagicMock()
+            mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
+            # A bare AsyncMock() returns a truthy MagicMock, which would make the
+            # context manager swallow the very exception under test.
+            mock_client_cm.__aexit__ = AsyncMock(return_value=False)
+
+            mock_session = MagicMock()
+            mock_session.create_client.return_value = mock_client_cm
+            mock_session_class.return_value = mock_session
+
+            manager = StackManager(stack_name="test", region="us-east-1")
+            with pytest.raises(TypeError, match="boom"):
+                await manager.wait_for_esm_ready("test-aggregator", max_seconds=120)
+
+            assert mock_lambda.list_event_source_mappings.call_count == 1
 
     @pytest.mark.asyncio
     async def test_waits_when_last_processing_result_is_none(self) -> None:
@@ -1405,7 +1492,7 @@ class TestWaitForEsmReady:
 
             mock_client_cm = MagicMock()
             mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
-            mock_client_cm.__aexit__ = AsyncMock()
+            mock_client_cm.__aexit__ = AsyncMock(return_value=False)
 
             mock_session = MagicMock()
             mock_session.create_client.return_value = mock_client_cm
@@ -1432,7 +1519,7 @@ class TestWaitForEsmReady:
 
             mock_client_cm = MagicMock()
             mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
-            mock_client_cm.__aexit__ = AsyncMock()
+            mock_client_cm.__aexit__ = AsyncMock(return_value=False)
 
             mock_session = MagicMock()
             mock_session.create_client.return_value = mock_client_cm
@@ -1475,7 +1562,7 @@ class TestWaitForEsmReady:
 
             mock_client_cm = MagicMock()
             mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
-            mock_client_cm.__aexit__ = AsyncMock()
+            mock_client_cm.__aexit__ = AsyncMock(return_value=False)
 
             mock_session = MagicMock()
             mock_session.create_client.return_value = mock_client_cm
@@ -1511,7 +1598,7 @@ class TestWaitForEsmReady:
 
             mock_client_cm = MagicMock()
             mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
-            mock_client_cm.__aexit__ = AsyncMock()
+            mock_client_cm.__aexit__ = AsyncMock(return_value=False)
 
             mock_session = MagicMock()
             mock_session.create_client.return_value = mock_client_cm

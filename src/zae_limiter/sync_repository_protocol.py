@@ -660,6 +660,33 @@ class SyncRepositoryProtocol(Protocol):
         """
         ...
 
+    def reclaim_quota_surplus(
+        self, entity_id: str, resource: str, shares_milli: dict[str, int]
+    ) -> tuple[int, dict[str, int]]:
+        """Clamp a quota's existing shards to their new share, and report the take (#587).
+
+        A quota does not drip (ADR-137), so a shard created mid-period at a
+        fresh ``capacity // shard_count`` is allowance nothing reclaims before
+        the next reset edge. The new shard is filled by transfer instead: this
+        applies the ceiling the doubling shrank the existing shards to — the
+        same clamp ``refill_bucket`` would apply on their next pass — and what
+        it takes is what the new shard is created with.
+
+        Must be called with quota limits only; a dripping limit's new shard
+        rightly starts full.
+
+        Args:
+            entity_id: Entity owning the shards
+            resource: Resource the shards belong to
+            shares_milli: ``{limit_name: capacity_milli // shard_count}``
+
+        Returns:
+            ``(shards_found, {limit_name: reclaimed_milli})``. ``shards_found``
+            is 0 when nothing is materialised for this (entity, resource),
+            which is not the same as reclaiming nothing.
+        """
+        ...
+
     def reconcile_bucket_to_defaults(
         self,
         entity_id: str,

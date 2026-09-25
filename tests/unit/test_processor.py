@@ -2310,11 +2310,11 @@ NY = ZoneInfo("America/New_York")
 TUE_1400 = int(datetime(2026, 9, 15, 14, 0, tzinfo=NY).timestamp() * 1000)
 # Business hours at half rate. The window closes at 18:00 local.
 BUSINESS = (ScheduleEntry(cron="* 9-17 * * MON-FRI", tz="America/New_York", scale=0.5),)
-BUSINESS_COMPACT = "h9-17w1-5s500"
+BUSINESS_COMPACT = "1h9-17w1-5s500"
 # The 14:00 hour at a quarter rate. Its window closes at 15:00 local — three
 # hours *before* BUSINESS does, which is what makes it useful as an override.
 HOUR_14 = (ScheduleEntry(cron="* 14 * * *", tz="America/New_York", scale=0.25),)
-HOUR_14_COMPACT = "h14s250"
+HOUR_14_COMPACT = "1h14s250"
 # What comes back off the wire. `decode` normalises weekday names to numbers
 # (Task 5), so `MON-FRI` round-trips as `1-5` — the same schedule, spelled
 # canonically. Comparing against the literal above would be asserting that
@@ -2697,7 +2697,7 @@ class TestUndecodableSchedule:
         assert parsed.limits["rpm"].tc_delta == 10_000_000  # usage data still usable
 
     def test_usage_deltas_are_still_extracted(self) -> None:
-        deltas = extract_deltas(_sched_record(limits=self.LIMITS, sched="h99-nope"))
+        deltas = extract_deltas(_sched_record(limits=self.LIMITS, sched="1h99-nope"))
         assert [d.tokens_delta for d in deltas] == [10_000_000]
 
     def test_refill_is_skipped_entirely(self) -> None:
@@ -2790,7 +2790,7 @@ class TestShardCloneRespectsSchedule:
 # ---------------------------------------------------------------------------
 
 DAILY_RESET = (ScheduleEntry.reset(cron="0 0 * * *", tz="America/New_York"),)
-DAILY_RESET_COMPACT = "m0h0"
+DAILY_RESET_COMPACT = "1m0h0"
 
 WED_0030 = int(datetime(2026, 9, 16, 0, 30, tzinfo=NY).timestamp() * 1000)
 TUE_2300 = int(datetime(2026, 9, 15, 23, 0, tzinfo=NY).timestamp() * 1000)
@@ -3036,7 +3036,7 @@ class TestResetSchedIsCarriedFromTheStreamImage:
         record = _sched_record(
             limits=self.QUOTA,
             rf_ms=TUE_2300,
-            rsched="m0h0w0",  # Sunday only
+            rsched="1m0h0w0",  # Sunday only
             limit_rsched={"rpd": DAILY_RESET_COMPACT},
         )
         parsed = _parse_bucket_record(record)
@@ -3044,7 +3044,7 @@ class TestResetSchedIsCarriedFromTheStreamImage:
         assert parsed.limits["rpd"].reset_sched == decode_reset(
             DAILY_RESET_COMPACT, "America/New_York"
         )
-        assert parsed.reset_sched == decode_reset("m0h0w0", "America/New_York")
+        assert parsed.reset_sched == decode_reset("1m0h0w0", "America/New_York")
 
     def test_no_rsched_leaves_both_tuples_empty(self) -> None:
         """Discriminates the two above: the overwhelming majority of items."""
@@ -3266,3 +3266,134 @@ class TestABatchWithNoConsumptionStillReachesTheBucket:
         assert result.refills_written == 1
         (call,) = table.update_item.call_args_list
         assert "user-1" in call.kwargs["Key"]["PK"]
+
+
+class TestQuotaShardCloneIsATransfer:
+    """Path 2 must not mint a quota's new shards (#587).
+
+    A quota never drips (ADR-137), so a clone created at
+    ``capacity // shard_count`` is allowance nothing reclaims before the next
+    reset edge. The clones are filled by transfer instead: the shards being
+    split from are clamped to their new ceiling, and what that takes is what the
+    clones get.
+    """
+
+    CAPACITY = 10_000_000
+
+    def _record(self, *, tk: int, old_count: int = 1, new_count: int = 2, **kwargs) -> dict:
+        record = _sched_record(
+            limits={
+                "rpd": {"tk": tk, "cp": self.CAPACITY, "ra": 0, "rp": 1_000, "tc": 0},
+                "wcu": {"tk": 900_000, "cp": 1_000_000, "ra": 1_000_000, "rp": 1_000, "tc": 0},
+            },
+            rsched=DAILY_RESET_COMPACT,
+            shard_count=new_count,
+            **kwargs,
+        )
+        record["dynamodb"]["OldImage"]["shard_count"] = {"N": str(old_count)}
+        return record
+
+    @staticmethod
+    def _table(*, reclaimed: dict[str, int] | None = None) -> MagicMock:
+        """A table whose conditional clamp reports ``reclaimed`` as the old value."""
+        table = MagicMock()
+        attributes = {f"b_{name}_tk": value for name, value in (reclaimed or {}).items()}
+        table.update_item.return_value = {"Attributes": attributes}
+        return table
+
+    def test_a_full_quota_clone_is_paid_for_by_the_clamp(self) -> None:
+        """Unchanged from before #587 — the case the bug hid behind."""
+        table = self._table(reclaimed={"rpd": self.CAPACITY})
+        assert propagate_shard_count(table, self._record(tk=self.CAPACITY), TUE_1400) == 1
+        assert table.put_item.call_args.kwargs["Item"]["b_rpd_tk"] == 5_000_000
+        clamp = table.update_item.call_args.kwargs
+        assert clamp["ExpressionAttributeValues"][":share"] == 5_000_000
+        assert clamp["ConditionExpression"] == "attribute_exists(PK) AND #tk > :share"
+
+    def test_a_spent_quota_clone_gets_nothing(self) -> None:
+        """#587 itself. The clamp reclaims nothing from a shard already below
+        its new ceiling, so there is nothing to hand the clone."""
+        table = self._table()
+        table.update_item.side_effect = ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException", "Message": "no surplus"}},
+            "UpdateItem",
+        )
+        assert propagate_shard_count(table, self._record(tk=2_000), TUE_1400) == 1
+        item = table.put_item.call_args.kwargs["Item"]
+        assert item["b_rpd_tk"] == 0
+        assert item["b_wcu_tk"] == 1_000_000  # per-partition, never divided
+
+    def test_the_pool_is_handed_out_greedily_across_the_new_shards(self) -> None:
+        """One doubling adds several shards; the first usable one gets the
+        transfer rather than every clone getting a slice too small to admit."""
+        table = self._table(reclaimed={"rpd": 4_000_000})
+        record = self._record(tk=4_000_000, old_count=2, new_count=4)
+        assert propagate_shard_count(table, record, TUE_1400) == 3  # 1 updated + 2 created
+        granted = [c.kwargs["Item"]["b_rpd_tk"] for c in table.put_item.call_args_list]
+        # Two shards clamped from 4_000_000 to 2_500_000 => 3_000_000 reclaimed.
+        assert granted == [2_500_000, 500_000]
+
+    def test_a_clamp_that_reports_no_attributes_contributes_nothing(self) -> None:
+        table = self._table()
+        table.update_item.return_value = {}
+        assert propagate_shard_count(table, self._record(tk=self.CAPACITY), TUE_1400) == 1
+        assert table.put_item.call_args.kwargs["Item"]["b_rpd_tk"] == 0
+
+    def test_a_non_conditional_clamp_failure_propagates(self) -> None:
+        table = self._table()
+        table.update_item.side_effect = ClientError(
+            {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": "no"}},
+            "UpdateItem",
+        )
+        with pytest.raises(ClientError):
+            propagate_shard_count(table, self._record(tk=self.CAPACITY), TUE_1400)
+
+    def test_a_dripping_limit_on_the_same_item_still_gets_a_full_share(self) -> None:
+        """The regression pin: only the quota changes shape."""
+        table = self._table(reclaimed={"rpd": self.CAPACITY})
+        record = _sched_record(
+            limits={
+                "rpd": {"tk": 2_000, "cp": self.CAPACITY, "ra": 0, "rp": 1_000, "tc": 0},
+                "rpm": {"tk": 0, "cp": 1_000_000, "ra": 1_000_000, "rp": 60_000, "tc": 0},
+            },
+            rsched=DAILY_RESET_COMPACT,
+            limit_rsched={"rpm": BUCKET_SCHED_NONE},
+            shard_count=2,
+        )
+        record["dynamodb"]["OldImage"]["shard_count"] = {"N": "1"}
+        assert propagate_shard_count(table, record, TUE_1400) == 1
+        assert table.put_item.call_args.kwargs["Item"]["b_rpm_tk"] == 500_000
+
+    def test_a_zero_rate_without_a_reset_is_not_treated_as_a_quota(self) -> None:
+        """A corrupt item (ADR-137 pairs the two), and starving it would be
+        wrong for the one shape that is not a quota but reads like one."""
+        table = self._table()
+        record = _sched_record(
+            limits={"rpd": {"tk": 2_000, "cp": self.CAPACITY, "ra": 0, "rp": 1_000, "tc": 0}},
+            shard_count=2,
+        )
+        record["dynamodb"]["OldImage"]["shard_count"] = {"N": "1"}
+        assert propagate_shard_count(table, record, TUE_1400) == 1
+        assert table.put_item.call_args.kwargs["Item"]["b_rpd_tk"] == 5_000_000
+        table.update_item.assert_not_called()
+
+    def test_the_unscheduled_marker_blocks_inheriting_the_items_reset(self) -> None:
+        """#541's marker means "this limit declares none", so it is not a quota
+        however the item-level default reads."""
+        table = self._table()
+        record = self._record(tk=2_000, limit_rsched={"rpd": BUCKET_SCHED_NONE})
+        assert propagate_shard_count(table, record, TUE_1400) == 1
+        assert table.put_item.call_args.kwargs["Item"]["b_rpd_tk"] == 5_000_000
+
+    def test_a_per_limit_reset_makes_it_a_quota_without_an_item_default(self) -> None:
+        table = self._table(reclaimed={"rpd": self.CAPACITY})
+        record = _sched_record(
+            limits={
+                "rpd": {"tk": self.CAPACITY, "cp": self.CAPACITY, "ra": 0, "rp": 1_000, "tc": 0}
+            },
+            limit_rsched={"rpd": DAILY_RESET_COMPACT},
+            shard_count=2,
+        )
+        record["dynamodb"]["OldImage"]["shard_count"] = {"N": "1"}
+        assert propagate_shard_count(table, record, TUE_1400) == 1
+        assert table.put_item.call_args.kwargs["Item"]["b_rpd_tk"] == 5_000_000

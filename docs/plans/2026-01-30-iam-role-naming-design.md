@@ -59,7 +59,7 @@ def get_role_name(self, stack_name: str, component: str) -> str | None:
             "role_name",
             role_name,
             f"exceeds IAM 64-character limit by {len(role_name) - 64} characters. "
-            f"Shorten stack name to max {max_stack_len} characters with this format."
+            f"Shorten stack name to max {max_stack_len} characters with this format.",
         )
     return role_name
 ```

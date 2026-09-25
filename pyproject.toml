@@ -1,5 +1,9 @@
 [build-system]
-requires = ["hatchling", "hatch-vcs", "hatch-build-scripts", "ruff>=0.9.0"]
+# ruff is pinned exactly here, in the [dev] extra, in the hatch default env, in
+# .pre-commit-config.yaml and in .github/workflows/ci-lint.yml. All five must
+# agree: the build hook, the codegen script, the commit hook and CI all format
+# the same files, and two ruff versions produce two different answers (#486).
+requires = ["hatchling", "hatch-vcs", "hatch-build-scripts", "ruff==0.16.6"]
 build-backend = "hatchling.build"
 
 [project]
@@ -52,7 +56,7 @@ dev = [
     "pytest-repeat>=0.9.4",
     "pytest-examples>=0.0.18",
     "pytest-xdist>=3.5.0",
-    "ruff>=0.1.0",
+    "ruff==0.16.6",  # exact pin — see [build-system] requires (#486)
     "types-aiobotocore[dynamodb,s3]>=2.0.0",
     "types-docker>=7.0.0",
     "types-gevent>=24.0.0",
@@ -105,6 +109,11 @@ packages = ["src/zae_limiter", "src/zae_limiter_aggregator", "src/zae_limiter_pr
 
 [[tool.hatch.build.hooks.build-scripts.scripts]]
 commands = ["python scripts/generate_sync.py"]
+
+[tool.hatch.envs.default]
+# generate_sync.py shells out to whatever `ruff` is on PATH, so the hatch env
+# that runs it must carry the same pin as everything else (#486).
+dependencies = ["ruff==0.16.6"]
 
 [tool.hatch.envs.default.scripts]
 generate-sync = "python scripts/generate_sync.py"

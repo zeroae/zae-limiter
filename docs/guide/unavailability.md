@@ -67,10 +67,12 @@ try:
         await do_work()
 except RateLimiterUnavailable as e:
     # DynamoDB is unavailable - handle degraded mode
-    print(JSONResponse(
-        status_code=503,
-        content={"error": "Service temporarily unavailable"},
-    ).status_code)
+    print(
+        JSONResponse(
+            status_code=503,
+            content={"error": "Service temporarily unavailable"},
+        ).status_code
+    )
 ```
 
 **When to use:**
@@ -144,11 +146,7 @@ Override the default mode for specific requests:
 
 ```python
 # Default to BLOCK via builder
-repo = await (
-    Repository.builder()
-    .on_unavailable("block")
-    .build()
-)
+repo = await Repository.builder().on_unavailable("block").build()
 limiter = RateLimiter(repository=repo)
 
 # But allow this specific request to proceed
@@ -195,21 +193,11 @@ except RateLimiterUnavailable as e:
 
 ```python
 # High-risk: billing, security → BLOCK
-billing_repo = await (
-    Repository.builder()
-    .namespace("billing")
-    .on_unavailable("block")
-    .build()
-)
+billing_repo = await Repository.builder().namespace("billing").on_unavailable("block").build()
 billing_limiter = RateLimiter(repository=billing_repo)
 
 # Lower-risk: general API → ALLOW
-api_repo = await (
-    Repository.builder()
-    .namespace("api")
-    .on_unavailable("allow")
-    .build()
-)
+api_repo = await Repository.builder().namespace("api").on_unavailable("allow").build()
 api_limiter = RateLimiter(repository=api_repo)
 ```
 

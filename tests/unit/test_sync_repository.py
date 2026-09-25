@@ -2245,8 +2245,21 @@ class TestSpeculativeConsume:
         repo.transact_write([put_item])
         result = repo.speculative_consume("e1", "gpt-4", {"rpm": 1})
         assert result.success is True
-        for _ in range(999):
-            repo.speculative_consume("e1", "gpt-4", {"rpm": 0})
+        from zae_limiter import schema
+
+        client = repo._get_client()
+        client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, "e1", "gpt-4", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="ADD #wtk :neg",
+            ExpressionAttributeNames={
+                "#wtk": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK)
+            },
+            ExpressionAttributeValues={":neg": {"N": str(-999 * 1000)}},
+        )
         result = repo.speculative_consume("e1", "gpt-4", {"rpm": 1})
         assert result.success is False
         assert result.failure_reason == SpeculativeFailureReason.BOTH_EXHAUSTED
@@ -3059,9 +3072,21 @@ class TestPreShardBuckets:
         states = [BucketState.from_limit("e1", "gpt-4", lim, now_ms) for lim in limits]
         put_item = repo.build_composite_create("e1", "gpt-4", states, now_ms)
         repo.transact_write([put_item])
-        for _ in range(schema.WCU_LIMIT_CAPACITY):
-            result = repo.speculative_consume("e1", "gpt-4", {"rpm": 1})
-            assert result.success is True
+        result = repo.speculative_consume("e1", "gpt-4", {"rpm": 1})
+        assert result.success is True
+        client = repo._get_client()
+        client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, "e1", "gpt-4", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="ADD #wtk :neg",
+            ExpressionAttributeNames={
+                "#wtk": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK)
+            },
+            ExpressionAttributeValues={":neg": {"N": str(-(schema.WCU_LIMIT_CAPACITY - 1) * 1000)}},
+        )
         result = repo.speculative_consume("e1", "gpt-4", {"rpm": 1})
         assert result.success is False
 
@@ -3807,7 +3832,7 @@ class TestScheduleConfigRoundTrip:
                 "SK": {"S": sk_config("gpt-4")},
             },
         )["Item"]
-        assert item["l_rpm_sched"]["S"] == "h9-17w1-5s500"
+        assert item["l_rpm_sched"]["S"] == "1h9-17w1-5s500"
         assert item["sched_tz"]["S"] == "America/New_York"
         assert "l_tpm_sched" not in item
         assert "l_rpm_sched_tz" not in item
@@ -3860,7 +3885,7 @@ class TestScheduleConfigRoundTrip:
             "l_rpm_cp": {"N": "1000"},
             "l_rpm_ra": {"N": "1000"},
             "l_rpm_rp": {"N": "60"},
-            "l_rpm_sched": {"S": "h9-17s500"},
+            "l_rpm_sched": {"S": "1h9-17s500"},
         }
         (limit,) = repo._deserialize_composite_limits(item)
         assert limit.schedule == (ScheduleEntry(cron="* 9-17 * * *", tz="UTC", scale=0.5),)
@@ -4157,7 +4182,7 @@ class TestCreateStampsSchedule:
 
     def test_stamps_the_item_level_schedule_and_timezone(self, repo):
         item = self._item(repo, [Limit.per_minute("rpm", 1000).with_schedule(self.BUSINESS)])
-        assert item["sched"]["S"] == "h9-17w1-5s500"
+        assert item["sched"]["S"] == "1h9-17w1-5s500"
         assert item["sched_tz"]["S"] == "America/New_York"
 
     def test_omits_sched_when_nothing_is_scheduled(self, repo):
@@ -4177,10 +4202,10 @@ class TestCreateStampsSchedule:
                 Limit.per_minute("cpm", 20).with_schedule(self.NIGHTLY),
             ],
         )
-        assert item["sched"]["S"] == "h9-17w1-5s500"
+        assert item["sched"]["S"] == "1h9-17w1-5s500"
         assert bucket_attr("rpm", "sched") not in item
         assert bucket_attr("tpm", "sched") not in item
-        assert item[bucket_attr("cpm", "sched")]["S"] == "h0-6s250"
+        assert item[bucket_attr("cpm", "sched")]["S"] == "1h0-6s250"
 
     def test_an_unscheduled_limit_beside_a_scheduled_one_is_marked_unscheduled(self, repo):
         """#541. Absence means "use the item default", so an unscheduled limit
@@ -4296,7 +4321,7 @@ class TestFanOutStampsSchedule:
             "fan-1", [Limit.per_minute("rpm", 1000).with_schedule(self.BUSINESS)], resource="gpt-4"
         )
         item = self._raw(repo, "fan-1", "gpt-4")
-        assert item["sched"]["S"] == "h9-17w1-5s500"
+        assert item["sched"]["S"] == "1h9-17w1-5s500"
         assert item["sched_tz"]["S"] == "America/New_York"
         assert item[BUCKET_FIELD_VU]["N"] == "0"
 
@@ -4360,7 +4385,7 @@ class TestFanOutStampsSchedule:
         )
         for shard in range(4):
             item = self._raw(repo, "fan-shard", "gpt-4", shard)
-            assert item["sched"]["S"] == "h9-17w1-5s500", f"shard {shard}"
+            assert item["sched"]["S"] == "1h9-17w1-5s500", f"shard {shard}"
             assert item[BUCKET_FIELD_VU]["N"] == "0", f"shard {shard}"
 
     def test_the_entity_wide_scope_reaches_every_resource(self, repo):
@@ -4390,10 +4415,10 @@ class TestFanOutStampsSchedule:
             self._seed(repo, "fan-mixed", resource, [Limit.per_minute("rpm", 1000)])
         repo.set_limits("fan-mixed", [Limit.per_minute("rpm", 1000).with_schedule(self.BUSINESS)])
         overridden = self._raw(repo, "fan-mixed", "gpt-4")
-        assert overridden["sched"]["S"] == "h0-6s250", "gpt-4 keeps its own schedule"
+        assert overridden["sched"]["S"] == "1h0-6s250", "gpt-4 keeps its own schedule"
         assert overridden[BUCKET_FIELD_VU]["N"] == "0"
         inherited = self._raw(repo, "fan-mixed", "claude-3")
-        assert inherited["sched"]["S"] == "h9-17w1-5s500", "claude-3 takes `_default_`"
+        assert inherited["sched"]["S"] == "1h9-17w1-5s500", "claude-3 takes `_default_`"
         assert inherited[BUCKET_FIELD_VU]["N"] == "0"
 
     def test_a_narrowed_per_limit_override_is_removed(self, repo):
@@ -4418,7 +4443,7 @@ class TestFanOutStampsSchedule:
             resource="gpt-4",
         )
         assert (
-            self._raw(repo, "fan-narrow", "gpt-4")[bucket_attr("tpm", "sched")]["S"] == "h0-6s250"
+            self._raw(repo, "fan-narrow", "gpt-4")[bucket_attr("tpm", "sched")]["S"] == "1h0-6s250"
         )
         repo.set_limits(
             "fan-narrow",
@@ -4429,7 +4454,7 @@ class TestFanOutStampsSchedule:
             resource="gpt-4",
         )
         item = self._raw(repo, "fan-narrow", "gpt-4")
-        assert item["sched"]["S"] == "h9-17w1-5s500"
+        assert item["sched"]["S"] == "1h9-17w1-5s500"
         assert bucket_attr("tpm", "sched") not in item
 
     def test_a_limit_that_loses_its_schedule_beside_one_that_keeps_it(self, repo):
@@ -4464,7 +4489,7 @@ class TestFanOutStampsSchedule:
             resource="gpt-4",
         )
         item = self._raw(repo, "fan-drop", "gpt-4")
-        assert item["sched"]["S"] == "h9-17w1-5s500"
+        assert item["sched"]["S"] == "1h9-17w1-5s500"
         assert item[bucket_attr("tpm", "sched")]["S"] == BUCKET_SCHED_NONE
         buckets = {b.limit_name: b for b in repo._deserialize_composite_bucket(item)}
         assert buckets["tpm"].sched == ()
@@ -4769,7 +4794,7 @@ class TestResetScheduleReachesStorage:
         """`rsched`, not a tag inside `sched` (§4.1), and four bytes."""
         repo.set_limits("rs-2", [self.QUOTA], resource="gpt-4")
         item = self._raw_config(repo, "rs-2", "gpt-4")
-        assert item[limit_attr("rpd", LIMIT_FIELD_RSCHED)]["S"] == "m0h0"
+        assert item[limit_attr("rpd", LIMIT_FIELD_RSCHED)]["S"] == "1m0h0"
         assert limit_attr("rpd", "sched") not in item
         assert item[CONFIG_FIELD_SCHED_TZ]["S"] == "America/New_York"
 
@@ -4787,8 +4812,8 @@ class TestResetScheduleReachesStorage:
         sched = (ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", scale=0.5),)
         repo.set_limits("rs-2c", [self.QUOTA.with_schedule(sched)], resource="gpt-4")
         item = self._raw_config(repo, "rs-2c", "gpt-4")
-        assert item[limit_attr("rpd", "sched")]["S"] == "h0-6s500"
-        assert item[limit_attr("rpd", LIMIT_FIELD_RSCHED)]["S"] == "m0h0"
+        assert item[limit_attr("rpd", "sched")]["S"] == "1h0-6s500"
+        assert item[limit_attr("rpd", LIMIT_FIELD_RSCHED)]["S"] == "1m0h0"
         assert item[CONFIG_FIELD_SCHED_TZ]["S"] == "America/New_York"
         (stored,) = repo.get_limits("rs-2c", resource="gpt-4")
         assert stored.schedule == sched
@@ -4799,7 +4824,7 @@ class TestResetScheduleReachesStorage:
         drip gets none."""
         repo.set_limits("rs-2d", [Limit.per_minute("rpm", 100), self.QUOTA], resource="gpt-4")
         item = self._raw_config(repo, "rs-2d", "gpt-4")
-        assert item[limit_attr("rpd", LIMIT_FIELD_RSCHED)]["S"] == "m0h0"
+        assert item[limit_attr("rpd", LIMIT_FIELD_RSCHED)]["S"] == "1m0h0"
         assert limit_attr("rpm", LIMIT_FIELD_RSCHED) not in item
         by_name = {lim.name: lim for lim in repo.get_limits("rs-2d", resource="gpt-4")}
         assert by_name["rpd"].reset_schedule == self.RESET
@@ -4812,7 +4837,7 @@ class TestResetScheduleReachesStorage:
         )
         repo.set_limits("rs-2e", [self.QUOTA.with_reset_schedule(many)], resource="gpt-4")
         item = self._raw_config(repo, "rs-2e", "gpt-4")
-        assert item[limit_attr("rpd", LIMIT_FIELD_RSCHED)]["S"] == "m0h0D1;m0h12D15"
+        assert item[limit_attr("rpd", LIMIT_FIELD_RSCHED)]["S"] == "1m0h0D1;m0h12D15"
         (stored,) = repo.get_limits("rs-2e", resource="gpt-4")
         assert stored.reset_schedule == many
 
@@ -4841,7 +4866,7 @@ class TestResetScheduleReachesStorage:
         it — the one shape that can never recover."""
         self._seed_bucket(repo, "rs-6", "gpt-4", [self.QUOTA])
         item = self._raw_bucket(repo, "rs-6", "gpt-4")
-        assert item[BUCKET_FIELD_RSCHED]["S"] == "m0h0"
+        assert item[BUCKET_FIELD_RSCHED]["S"] == "1m0h0"
         assert item[BUCKET_FIELD_SCHED_TZ]["S"] == "America/New_York"
         assert BUCKET_FIELD_SCHED not in item, "a quota carries no parameter schedule"
 
@@ -4849,8 +4874,8 @@ class TestResetScheduleReachesStorage:
         sched = (ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", scale=0.5),)
         self._seed_bucket(repo, "rs-6b", "gpt-4", [self.QUOTA.with_schedule(sched)])
         item = self._raw_bucket(repo, "rs-6b", "gpt-4")
-        assert item[BUCKET_FIELD_SCHED]["S"] == "h0-6s500"
-        assert item[BUCKET_FIELD_RSCHED]["S"] == "m0h0"
+        assert item[BUCKET_FIELD_SCHED]["S"] == "1h0-6s500"
+        assert item[BUCKET_FIELD_RSCHED]["S"] == "1m0h0"
         assert item[BUCKET_FIELD_SCHED_TZ]["S"] == "America/New_York"
 
     def test_a_created_bucket_writes_a_per_limit_override(self, repo):
@@ -4859,8 +4884,8 @@ class TestResetScheduleReachesStorage:
         weekly = Limit.quota("rpw", 50000, cron="0 0 * * SUN", tz="America/New_York")
         self._seed_bucket(repo, "rs-6c", "gpt-4", [self.QUOTA, weekly])
         item = self._raw_bucket(repo, "rs-6c", "gpt-4")
-        assert item[BUCKET_FIELD_RSCHED]["S"] == "m0h0"
-        assert item[bucket_attr("rpw", BUCKET_FIELD_RSCHED)]["S"] == "m0h0w7"
+        assert item[BUCKET_FIELD_RSCHED]["S"] == "1m0h0"
+        assert item[bucket_attr("rpw", BUCKET_FIELD_RSCHED)]["S"] == "1m0h0w7"
         assert bucket_attr("rpd", BUCKET_FIELD_RSCHED) not in item
 
     def test_an_unscheduled_bucket_carries_neither(self, repo):
@@ -4875,7 +4900,7 @@ class TestResetScheduleReachesStorage:
         self._seed_bucket(repo, "rs-4", "gpt-4", [Limit.per_day("rpd", 10000)])
         repo.set_limits("rs-4", [self.QUOTA], resource="gpt-4")
         item = self._raw_bucket(repo, "rs-4", "gpt-4")
-        assert item[BUCKET_FIELD_RSCHED]["S"] == "m0h0"
+        assert item[BUCKET_FIELD_RSCHED]["S"] == "1m0h0"
         assert item[BUCKET_FIELD_SCHED_TZ]["S"] == "America/New_York"
 
     def test_removing_a_reset_schedule_removes_the_stamp(self, repo):
@@ -5226,7 +5251,7 @@ class TestUnreadableStoredSchedule:
         the worst available reading. That rejection must reach the caller as
         unavailability, not as a `ValueError`."""
         self._seed(repo, "corrupt-4b", [self.QUOTA])
-        _corrupt_config_sched(repo, "corrupt-4b", "gpt-4", "rpd", "m0h0s500", field="rsched")
+        _corrupt_config_sched(repo, "corrupt-4b", "gpt-4", "rpd", "1m0h0s500", field="rsched")
         repo.invalidate_config_cache()
         with pytest.raises(RateLimiterUnavailable, match="overrides no parameters"):
             repo.get_limits("corrupt-4b", resource="gpt-4")
@@ -5279,7 +5304,7 @@ class TestUnreadableStoredSchedule:
         both). Same class — the stored schedule leaves the limit
         undeterminable — so it converts the same way."""
         self._seed(repo, "corrupt-4e", [Limit.per_minute("rpm", 1000)])
-        _corrupt_config_sched(repo, "corrupt-4e", "gpt-4", "rpm", "m0h0", field="rsched")
+        _corrupt_config_sched(repo, "corrupt-4e", "gpt-4", "rpm", "1m0h0", field="rsched")
         repo.invalidate_config_cache()
         with pytest.raises(RateLimiterUnavailable, match="cannot be reconstructed"):
             repo.get_limits("corrupt-4e", resource="gpt-4")
@@ -5478,6 +5503,6 @@ class TestAMixedItemAttributesEachScheduleToItsOwnLimit:
         created = _sched_attrs(self._raw(repo, "mix-3", "gpt-4"))
         fanned = _sched_attrs(self._raw(repo, "mix-4", "gpt-4"))
         assert created == fanned
-        assert created["sched"] == "h9-17w1-5s500"
-        assert created["rsched"] == "m0h0"
+        assert created["sched"] == "1h9-17w1-5s500"
+        assert created["rsched"] == "1m0h0"
         assert created["sched_tz"] == self.ZONE

@@ -2,7 +2,9 @@
 # See https://pre-commit.com/hooks.html for more hooks
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.9.2
+    # Pinned exactly. scripts/check_ruff_pin.py (the check-ruff-pin hook below)
+    # fails if this rev and pyproject.toml's ruff pins disagree — see #486.
+    rev: v0.16.6
     hooks:
       - id: ruff
         args: [--fix]
@@ -35,11 +37,30 @@ repos:
 
   - repo: local
     hooks:
+      - id: check-ruff-pin
+        name: Check ruff version pins agree
+        entry: python scripts/check_ruff_pin.py
+        language: python
+        files: ^(pyproject\.toml|\.pre-commit-config\.yaml|\.github/workflows/ci-lint\.yml)$
+        pass_filenames: false
+        stages: [pre-commit]
+
       - id: check-aws-partition
         name: Check for hardcoded AWS partition in CloudFormation
         entry: bash -c 'if grep -n "arn:aws:" "$@" 2>/dev/null; then echo "Use ${AWS::Partition} instead of hardcoded aws partition"; exit 1; fi'
         language: system
         files: cfn_template\.yaml$
+        stages: [pre-commit]
+
+      - id: no-truthy-aexit-mock
+        name: Forbid __aexit__ = AsyncMock() (truthy, swallows exceptions)
+        # A bare AsyncMock() awaits to a truthy MagicMock, and a truthy __aexit__
+        # tells `async with` to suppress any exception raised inside the block, so
+        # the test can pass while the code under test fails (#615). Use
+        # AsyncMock(return_value=False), which is what a real client returns.
+        entry: '__aexit__\s*=\s*AsyncMock\(\s*\)'
+        language: pygrep
+        files: ^tests/.*\.py$
         stages: [pre-commit]
 
       - id: verify-sync-generated

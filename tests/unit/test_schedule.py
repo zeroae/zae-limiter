@@ -5,7 +5,17 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from zae_limiter.schedule import ScheduleEntry, effective_params, parse_cron
+from zae_limiter.schedule import (
+    MAX_PERIOD_SECONDS,
+    MAX_SCALE,
+    MAX_STORED_MILLI,
+    MAX_TOKENS,
+    ScheduleEntry,
+    decode,
+    effective_params,
+    encode,
+    parse_cron,
+)
 
 
 class TestParseCron:
@@ -136,9 +146,15 @@ class TestScheduleEntry:
         with pytest.raises(ValueError, match="finite"):
             ScheduleEntry(cron="* * * * *", scale=float("nan"))
 
-    def test_huge_integer_capacity_is_not_swept_up(self):
-        """`math.isfinite` casts to float, so a bare call would OverflowError here."""
-        assert ScheduleEntry(cron="* * * * *", capacity=10**400).capacity == 10**400
+    def test_a_huge_integer_capacity_is_not_swept_up_by_the_finiteness_guard(self):
+        """`math.isfinite` casts to float, so a bare call would OverflowError here.
+
+        Since #570 the value is rejected — but for its *magnitude*, by an `int`
+        comparison, which is only reachable because the isinstance guard above
+        still keeps `math.isfinite` away from it.
+        """
+        with pytest.raises(ValueError, match="capacity must be at most"):
+            ScheduleEntry(cron="* * * * *", capacity=10**400)
 
 
 class TestAbsolutesAreIntegers:
@@ -448,3 +464,158 @@ class TestScheduleEntryReset:
         with pytest.raises(Exception):
             e.cron = "x"  # type: ignore[misc]
         assert hash(e)
+
+
+class TestMagnitudeBounds:
+    """A finite but astronomical modifier is rejected at construction (#570).
+
+    #564 closed the non-finite hole and #569 the non-integral one; neither
+    reaches this third member of the family. ``math.isfinite(1e300)`` is True
+    and ``1e300 > 0``, so the value clears ``ScheduleEntry`` untouched and dies
+    somewhere else entirely — ``OverflowError`` inside ``encode`` above
+    ~``1.8e305``, ``OverflowError`` inside ``effective_params`` (on the acquire
+    slow path) from ``1e303``, and, quietest of all, nowhere at all below
+    ``1e33``, where it merely encodes a 35-character token and enforces a limit
+    nobody meant.
+    """
+
+    @pytest.mark.parametrize("scale", [1e7, 1e30, 1e33, 1e120, 1e302, 1e305, 1e306])
+    def test_rejects_an_astronomical_scale(self, scale):
+        with pytest.raises(ValueError, match="scale must be at most"):
+            ScheduleEntry(cron="* * * * *", scale=scale)
+
+    def test_the_message_names_the_field_the_value_and_the_bound(self):
+        with pytest.raises(ValueError) as exc:
+            ScheduleEntry(cron="* * * * *", scale=1e300)
+        message = str(exc.value)
+        assert "scale" in message
+        assert "1e+300" in message
+        assert str(MAX_SCALE) in message
+
+    @pytest.mark.parametrize("scale", [1e3, 1e30, 1e33, 1e120, 1e302, 1e305, 1e306])
+    def test_every_swept_scale_either_fails_or_round_trips(self, scale):
+        """The acceptance sweep: construction rejects it, or storage survives it.
+
+        The band that raises *nowhere* is the point — `1e30` encodes, decodes
+        and enforces, so "does Python raise" was never the right test.
+        """
+        try:
+            entry = ScheduleEntry(cron="* * * * *", scale=scale)
+        except ValueError:
+            return
+        compact, tz = encode((entry,))
+        assert decode(compact, tz or "UTC")
+
+    @pytest.mark.parametrize(
+        ("field", "bound"),
+        [
+            ("capacity", MAX_TOKENS),
+            ("refill_amount", MAX_TOKENS),
+            ("refill_period_seconds", MAX_PERIOD_SECONDS),
+        ],
+    )
+    def test_rejects_an_astronomical_absolute(self, field, bound):
+        """The absolutes are Python ints, so they never saturate to ``inf`` —
+        they produce an unbounded digit string in `sched` and a `decimal`
+        rejection from inside boto3 at write time instead."""
+        with pytest.raises(ValueError, match=f"{field} must be at most"):
+            ScheduleEntry(cron="* * * * *", **{field: bound + 1})
+
+    @pytest.mark.parametrize(
+        ("field", "bound"),
+        [
+            ("scale", MAX_SCALE),
+            ("capacity", MAX_TOKENS),
+            ("refill_amount", MAX_TOKENS),
+            ("refill_period_seconds", MAX_PERIOD_SECONDS),
+        ],
+    )
+    def test_the_bound_itself_is_accepted(self, field, bound):
+        """Inclusive: the constant names the largest *accepted* value."""
+        assert getattr(ScheduleEntry(cron="* * * * *", **{field: bound}), field) == bound
+
+    def test_non_finite_is_reported_before_magnitude(self):
+        with pytest.raises(ValueError, match="scale must be a finite number"):
+            ScheduleEntry(cron="* * * * *", scale=float("inf"))
+
+    @pytest.mark.parametrize("field", ["capacity", "refill_amount", "refill_period_seconds"])
+    def test_non_integral_is_reported_before_magnitude(self, field):
+        with pytest.raises(ValueError, match=f"{field} must be a whole number"):
+            ScheduleEntry(cron="* * * * *", **{field: 1e300})
+
+    def test_negative_is_reported_as_positivity_not_magnitude(self):
+        """Ordering: the two ends of one range check, and the low end is first
+        so a negative value keeps the message #564/#569 callers already match."""
+        with pytest.raises(ValueError, match="scale must be positive"):
+            ScheduleEntry(cron="* * * * *", scale=-1e300)
+
+    def test_effective_params_cannot_overflow_for_any_constructible_entry(self):
+        """The property that makes the acquire path safe by construction.
+
+        Taken against the largest base DynamoDB can store at all, which is
+        further than any `Limit` this build will now construct.
+        """
+        largest_storable_base = 10**38 - 1
+        for entry in (
+            ScheduleEntry(cron="* * * * *", scale=MAX_SCALE),
+            ScheduleEntry(cron="* * * * *", capacity=MAX_TOKENS),
+            ScheduleEntry(cron="* * * * *", refill_amount=MAX_TOKENS),
+            ScheduleEntry(cron="* * * * *", refill_period_seconds=MAX_PERIOD_SECONDS),
+        ):
+            effective_params(
+                largest_storable_base,
+                largest_storable_base,
+                MAX_PERIOD_SECONDS * 1000,
+                (entry,),
+                0,
+            )
+
+    def test_the_scaled_result_of_a_permitted_base_is_storable(self):
+        """DynamoDB Numbers carry 38 significant digits and boto3 raises from the
+        `decimal` context rather than sending the request, so the real boundary
+        is the serializer, not a Python exception."""
+        from boto3.dynamodb.types import TypeSerializer
+
+        serializer = TypeSerializer()
+        base_milli = MAX_TOKENS * 1000
+        for entry in (
+            ScheduleEntry(cron="* * * * *", scale=MAX_SCALE),
+            ScheduleEntry(cron="* * * * *", capacity=MAX_TOKENS, refill_amount=MAX_TOKENS),
+        ):
+            cp, ra, rp = effective_params(
+                base_milli, base_milli, MAX_PERIOD_SECONDS * 1000, (entry,), 0
+            )
+            for value in (cp, ra, rp):
+                serializer.serialize(value)
+
+    def test_the_derived_ceiling_is_where_boto3_actually_stops(self):
+        """Pins the derivation itself: `MAX_STORED_MILLI` is not a preference."""
+        from boto3.dynamodb.types import TypeSerializer
+
+        serializer = TypeSerializer()
+        serializer.serialize(MAX_STORED_MILLI)
+        with pytest.raises(Exception):
+            serializer.serialize(MAX_STORED_MILLI + 1)
+
+    def test_the_worst_constructible_product_stays_inside_the_ceiling(self):
+        """The per-field ceilings are chosen so no product of them can reach it."""
+        assert MAX_TOKENS * 1000 * MAX_SCALE <= MAX_STORED_MILLI
+
+
+class TestMagnitudeBoundsAtTheManifestAndCloudFormationEntrances:
+    """#570 must be reported before anything is written, at every entrance."""
+
+    def test_the_yaml_manifest_reports_it_as_a_schedule_entry_error(self):
+        from zae_limiter_provisioner.manifest import _parse_entries
+
+        with pytest.raises(ValueError, match=r"schedule\[0\]: scale must be at most"):
+            _parse_entries([{"cron": "* * * * *", "scale": 1e300}], key="schedule", reset=False)
+
+    def test_the_cloudformation_entrance_rejects_a_stringified_scale(self):
+        """`_coerce_float` (#561) checks type and finiteness, never magnitude, so
+        the bound has to be the one `ScheduleEntry` applies underneath it."""
+        from zae_limiter_provisioner.handler import _coerce_float
+
+        assert _coerce_float("1e300", "Scale") == 1e300
+        with pytest.raises(ValueError, match="scale must be at most"):
+            ScheduleEntry(cron="* * * * *", scale=_coerce_float("1e300", "Scale"))

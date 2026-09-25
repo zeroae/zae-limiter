@@ -65,6 +65,38 @@ def freeze_clock(repo) -> int:
     return frozen
 
 
+def exhaust_wcu(repo, entity_id: str, resource: str, shard_id: int = 0) -> None:
+    """Leave a shard exactly as ``WCU_LIMIT_CAPACITY`` fast-path writes of
+    ``{"rpm": 1}`` would, in two writes instead of a thousand.
+
+    The first write is a real ``_speculative_consume_single`` so every side
+    effect of the fast path (entity cache, shard-count learning) still happens.
+    The rest are folded into one ``ADD`` of the same ``tk``/``tc`` deltas the
+    fast path applies per write, so the item's balances and counters land
+    where the loop left them.
+    """
+    from zae_limiter import schema
+
+    repo._speculative_consume_single(entity_id, resource, {"rpm": 1}, shard_id=shard_id)
+    rest_milli = (schema.WCU_LIMIT_CAPACITY - 1) * 1000
+    client = repo._get_client()
+    client.update_item(
+        TableName=repo.table_name,
+        Key={
+            "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, resource, shard_id)},
+            "SK": {"S": schema.sk_state()},
+        },
+        UpdateExpression="ADD #rtk :neg, #rtc :pos, #wtk :neg, #wtc :pos",
+        ExpressionAttributeNames={
+            "#rtk": schema.bucket_attr("rpm", schema.BUCKET_FIELD_TK),
+            "#rtc": schema.bucket_attr("rpm", schema.BUCKET_FIELD_TC),
+            "#wtk": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK),
+            "#wtc": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TC),
+        },
+        ExpressionAttributeValues={":neg": {"N": str(-rest_milli)}, ":pos": {"N": str(rest_milli)}},
+    )
+
+
 class TestRateLimiterEntities:
     """Tests for entity management."""
 
@@ -3000,7 +3032,7 @@ class TestInfrastructureDiscovery:
         ) as mock_get_client:
             mock_client = MagicMock()
             mock_client.describe_stacks = MagicMock(return_value={"Stacks": []})
-            mock_client.__exit__ = MagicMock()
+            mock_client.__exit__ = MagicMock(return_value=False)
             mock_get_client.return_value = mock_client
             discovery = SyncInfrastructureDiscovery(region="us-east-1")
             with discovery:
@@ -3036,7 +3068,7 @@ class TestRateLimiterListDeployed:
             mock_discovery = MagicMock()
             mock_discovery.list_limiters = MagicMock(return_value=mock_limiters)
             mock_discovery.__enter__ = MagicMock(return_value=mock_discovery)
-            mock_discovery.__exit__ = MagicMock()
+            mock_discovery.__exit__ = MagicMock(return_value=False)
             mock_discovery_class.return_value = mock_discovery
             result = SyncRateLimiter.list_deployed(region="us-east-1")
             assert result == mock_limiters
@@ -3050,7 +3082,7 @@ class TestRateLimiterListDeployed:
             mock_discovery = MagicMock()
             mock_discovery.list_limiters = MagicMock(return_value=[])
             mock_discovery.__enter__ = MagicMock(return_value=mock_discovery)
-            mock_discovery.__exit__ = MagicMock()
+            mock_discovery.__exit__ = MagicMock(return_value=False)
             mock_discovery_class.return_value = mock_discovery
             SyncRateLimiter.list_deployed(region="us-east-1", endpoint_url="http://localhost:4566")
             mock_discovery_class.assert_called_once_with(
@@ -3065,7 +3097,7 @@ class TestRateLimiterListDeployed:
             mock_discovery = MagicMock()
             mock_discovery.list_limiters = MagicMock(return_value=[])
             mock_discovery.__enter__ = MagicMock(return_value=mock_discovery)
-            mock_discovery.__exit__ = MagicMock()
+            mock_discovery.__exit__ = MagicMock(return_value=False)
             mock_discovery_class.return_value = mock_discovery
             result = SyncRateLimiter.list_deployed(region="us-east-1")
             assert result == []
@@ -3097,7 +3129,7 @@ class TestRateLimiterListDeployed:
             mock_discovery = MagicMock()
             mock_discovery.list_limiters = MagicMock(return_value=[])
             mock_discovery.__enter__ = MagicMock(return_value=mock_discovery)
-            mock_discovery.__exit__ = MagicMock()
+            mock_discovery.__exit__ = MagicMock(return_value=False)
             mock_discovery_class.return_value = mock_discovery
             result = SyncRateLimiter.list_deployed(region="us-east-1")
             assert isinstance(result, list)
@@ -3160,7 +3192,7 @@ class TestRateLimiterListDeployed:
             mock_session = MagicMock()
             mock_client = MagicMock()
             mock_client.__enter__ = MagicMock(return_value=mock_client)
-            mock_client.__exit__ = MagicMock()
+            mock_client.__exit__ = MagicMock(return_value=False)
             mock_session.client.return_value = mock_client
             mock_get_session.return_value = mock_session
             discovery = SyncInfrastructureDiscovery(region="us-east-1")
@@ -3176,7 +3208,7 @@ class TestRateLimiterListDeployed:
             mock_session = MagicMock()
             mock_client = MagicMock()
             mock_client.__enter__ = MagicMock(return_value=mock_client)
-            mock_client.__exit__ = MagicMock()
+            mock_client.__exit__ = MagicMock(return_value=False)
             mock_session.client.return_value = mock_client
             mock_get_session.return_value = mock_session
             discovery = SyncInfrastructureDiscovery(
@@ -3194,7 +3226,7 @@ class TestRateLimiterListDeployed:
             mock_session = MagicMock()
             mock_client = MagicMock()
             mock_client.__enter__ = MagicMock(return_value=mock_client)
-            mock_client.__exit__ = MagicMock()
+            mock_client.__exit__ = MagicMock(return_value=False)
             mock_session.client.return_value = mock_client
             mock_get_session.return_value = mock_session
             discovery = SyncInfrastructureDiscovery()
@@ -5878,8 +5910,7 @@ class TestShardRetry:
             },
             ExpressionAttributeValues={":hour": {"N": "3600000"}, ":one": {"N": "1"}},
         )
-        for _ in range(schema.WCU_LIMIT_CAPACITY):
-            repo._speculative_consume_single("user-1", "gpt-4", {"rpm": 1}, shard_id=0)
+        exhaust_wcu(repo, "user-1", "gpt-4")
         sync_limiter._speculative_writes = True
         with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
             rpm_entry = next(e for e in lease.entries if e.limit.name == "rpm")
@@ -6047,8 +6078,7 @@ class TestClientShardCreation:
         limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
         repo = self._seed_shard0(sync_limiter, shard_count=1, limit=limit)
         self._slow_wcu_refill(repo)
-        for _ in range(schema.WCU_LIMIT_CAPACITY):
-            repo._speculative_consume_single("user-1", "gpt-4", {"rpm": 1}, shard_id=0)
+        exhaust_wcu(repo, "user-1", "gpt-4")
         cp_milli = self.CAPACITY * 1000
         shard0_before = self._n(self._raw_item(repo, 0), "rpm", schema.BUCKET_FIELD_TK)
         assert shard0_before == cp_milli - schema.WCU_LIMIT_CAPACITY * 1000
@@ -6581,6 +6611,57 @@ class TestClientShardCreation:
         )
         assert self._n(item, "rpm", schema.BUCKET_FIELD_TK) == self.CAPACITY * 1000 - 1000
 
+    def test_rejected_acquire_never_doubles_the_shard_count(self, sync_limiter):
+        """The non-cascade twin of #474 (issue #480): a doubling on the way to a
+        rejection is a pure side effect. `BOTH_EXHAUSTED` means the reserved wcu
+        *and* a declared limit are drained, so the acquire is about to raise —
+        nothing then creates or reads the shard the doubling hands back. Repeat
+        it once per rejection and an entity sitting at its limit walks from 1 to
+        MAX_SHARD_COUNT (``_learn_shard_count`` is monotonic, nothing shrinks
+        it), after which every shard's share is `capacity // 32` forever and any
+        request above that is unadmittable on every shard (#475)."""
+        from zae_limiter import schema
+        from zae_limiter.exceptions import RateLimitExceeded
+
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        now_ms = int(time.time() * 1000)
+        repo = self._seed_shards(sync_limiter, 1, limit, tokens_milli=0, rf_ms=now_ms)
+        ns = repo._namespace_id
+        self._slow_wcu_refill(repo)
+        self._drain_wcu(repo, 0, now_ms)
+        for _ in range(3):
+            with pytest.raises(RateLimitExceeded):
+                with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}):
+                    pass
+        assert repo._entity_cache[ns, "user-1"][2]["gpt-4"] == 1
+        item = self._raw_item(repo, 0)
+        assert item["shard_count"]["N"] == "1", "a rejected acquire must not shard the entity"
+        assert self._raw_item(repo, 1) is None
+        assert self._n(item, schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK) == 0
+
+    def test_wcu_exhaustion_with_room_to_admit_still_doubles(self, sync_limiter):
+        """The other half of the #480 gate, and the GHSA-76rv mitigation itself:
+        the *same* drained wcu on an entity whose declared limit can still admit
+        must double and move off the hot shard. Differs from the test above in
+        one input — the rpm balance."""
+        from zae_limiter import schema
+
+        limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
+        now_ms = int(time.time() * 1000)
+        repo = self._seed_shards(
+            sync_limiter, 1, limit, tokens_milli=self.CAPACITY * 1000, rf_ms=now_ms
+        )
+        ns = repo._namespace_id
+        self._slow_wcu_refill(repo)
+        self._drain_wcu(repo, 0, now_ms)
+        with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
+            assert {e._shard_id for e in lease.entries} == {1}
+        assert repo._entity_cache[ns, "user-1"][2]["gpt-4"] == 2
+        shard1 = self._raw_item(repo, 1)
+        assert shard1 is not None, "the hot shard's wcu must still spread the entity"
+        assert shard1["shard_count"]["N"] == "2"
+        assert self._n(shard1, "rpm", schema.BUCKET_FIELD_TK) == self.CAPACITY * 1000 // 2 - 1000
+
     def test_create_race_lost_to_aggregator_consumes_once(self, sync_limiter):
         """If the aggregator's Path 2 wins the create, the client retries as a
         consumption-only conditional write on that shard: one debit, no
@@ -6628,8 +6709,7 @@ class TestClientShardCreation:
         repo = self._seed_shard0(sync_limiter, shard_count=1, limit=limit)
         ns = repo._namespace_id
         self._slow_wcu_refill(repo)
-        for _ in range(schema.WCU_LIMIT_CAPACITY):
-            repo._speculative_consume_single("user-1", "gpt-4", {"rpm": 1}, shard_id=0)
+        exhaust_wcu(repo, "user-1", "gpt-4")
         client = repo._get_client()
         original_bump = repo.bump_shard_count
 
@@ -6665,13 +6745,10 @@ class TestClientShardCreation:
         """If the bump cannot report a larger count (shard 0 vanished between
         the failed write and the bump), there is no new range to draw from;
         the slow path keeps the shard it already selected."""
-        from zae_limiter import schema
-
         limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
         repo = self._seed_shard0(sync_limiter, shard_count=1, limit=limit)
         self._slow_wcu_refill(repo)
-        for _ in range(schema.WCU_LIMIT_CAPACITY):
-            repo._speculative_consume_single("user-1", "gpt-4", {"rpm": 1}, shard_id=0)
+        exhaust_wcu(repo, "user-1", "gpt-4")
         repo.bump_shard_count = MagicMock(return_value=1)
         slow_path_shards: list[int | None] = []
         original_do_acquire = sync_limiter._do_acquire
@@ -7143,8 +7220,7 @@ class TestCascadeParentSharding:
         repo = self._seed(sync_limiter, limit, parent_shard_count=1)
         ns = repo._namespace_id
         self._slow_wcu_refill(repo, "parent-1", 0)
-        for _ in range(schema.WCU_LIMIT_CAPACITY):
-            repo._speculative_consume_single("parent-1", "gpt-4", {"rpm": 1}, shard_id=0)
+        exhaust_wcu(repo, "parent-1", "gpt-4")
         with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
             parent_entry = next(e for e in lease.entries if e.entity_id == "parent-1")
             assert parent_entry._shard_id == 1
