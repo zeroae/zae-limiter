@@ -1823,9 +1823,11 @@ Change `_materialisation_stamps`'s signature to take the state and add the third
         return vu, reset_ms
 ```
 
-Update both call sites (limiter.py:1653 and 1909) to pass the state, and place
+Update both call sites (limiter.py:1667 and 1947, the two
+`self._materialisation_stamps(limit, now_ms)` calls) to pass the state, and place
 `_open_window_if_elapsed` immediately before `_apply_reset_edge` / `_apply_window_roll` at
-1642 and 1892:
+1656 and 1930 (the two `self._apply_reset_edge(...)` calls). Line numbers as of `main` at
+`f4c19c72`; find the calls by name if they have moved again:
 
 ```python
             new_ws = self._open_window_if_elapsed(limit, state, now_ms)
