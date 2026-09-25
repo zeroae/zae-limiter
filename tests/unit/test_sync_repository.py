@@ -2245,8 +2245,21 @@ class TestSpeculativeConsume:
         repo.transact_write([put_item])
         result = repo.speculative_consume("e1", "gpt-4", {"rpm": 1})
         assert result.success is True
-        for _ in range(999):
-            repo.speculative_consume("e1", "gpt-4", {"rpm": 0})
+        from zae_limiter import schema
+
+        client = repo._get_client()
+        client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, "e1", "gpt-4", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="ADD #wtk :neg",
+            ExpressionAttributeNames={
+                "#wtk": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK)
+            },
+            ExpressionAttributeValues={":neg": {"N": str(-999 * 1000)}},
+        )
         result = repo.speculative_consume("e1", "gpt-4", {"rpm": 1})
         assert result.success is False
         assert result.failure_reason == SpeculativeFailureReason.BOTH_EXHAUSTED
@@ -3059,9 +3072,21 @@ class TestPreShardBuckets:
         states = [BucketState.from_limit("e1", "gpt-4", lim, now_ms) for lim in limits]
         put_item = repo.build_composite_create("e1", "gpt-4", states, now_ms)
         repo.transact_write([put_item])
-        for _ in range(schema.WCU_LIMIT_CAPACITY):
-            result = repo.speculative_consume("e1", "gpt-4", {"rpm": 1})
-            assert result.success is True
+        result = repo.speculative_consume("e1", "gpt-4", {"rpm": 1})
+        assert result.success is True
+        client = repo._get_client()
+        client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, "e1", "gpt-4", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="ADD #wtk :neg",
+            ExpressionAttributeNames={
+                "#wtk": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK)
+            },
+            ExpressionAttributeValues={":neg": {"N": str(-(schema.WCU_LIMIT_CAPACITY - 1) * 1000)}},
+        )
         result = repo.speculative_consume("e1", "gpt-4", {"rpm": 1})
         assert result.success is False
 
