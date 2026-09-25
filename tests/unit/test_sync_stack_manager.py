@@ -500,9 +500,11 @@ class TestDeployLambdaCode:
             mock_session.client.return_value = mock_lambda
             mock_session_class.return_value = mock_session
             manager = SyncStackManager(stack_name="test", region="us-east-1")
+            manager.wait_for_esm_ready = MagicMock(return_value=True)
             result = manager.deploy_lambda_code()
             assert result["status"] == "deployed"
             assert result["function_arn"] == "arn:aws:lambda:us-east-1:123:function:test"
+            assert result["esm_ready"] is True
             mock_lambda.update_function_code.assert_called_once()
 
     def test_raises_on_build_failure(self) -> None:
