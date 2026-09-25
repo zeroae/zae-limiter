@@ -46,6 +46,7 @@ def _state(
     shard_count: int = 1,
     sched: tuple[ScheduleEntry, ...] = (),
     reset_sched: tuple[ScheduleEntry, ...] = (),
+    reset_after_seconds: int | None = None,
 ) -> BucketState:
     """A bucket item's stored state: base parameters, never the effective ones."""
     return BucketState(
@@ -60,6 +61,7 @@ def _state(
         shard_count=shard_count,
         sched=sched,
         reset_sched=reset_sched,
+        reset_after_seconds=reset_after_seconds,
     )
 
 
@@ -2665,3 +2667,35 @@ class TestBucketStateWindowFields:
         assert reconstructed.reset_schedule == ()
         assert reconstructed.refill_amount == 0
         assert reconstructed.is_quota
+
+    def test_from_bucket_state_degrades_both_reset_spellings_at_once(self):
+        """A corrupt item carrying both `reset_sched` and
+        `reset_after_seconds` beside a zero rate is unconstructible under
+        ADR-139 (a limit resets one way, never both) — no `BucketState.from_limit`
+        call can produce it, since `Limit.__post_init__` already enforces
+        that exclusivity on any `Limit` that reaches it. Round trip it anyway
+        rather than raise from inside a rejection path (fix round 1, #620):
+        `reset_sched`, the pre-ADR-139 reading, wins and the duration
+        spelling is dropped."""
+        state = _state(
+            refill_amount_milli=0,
+            reset_sched=DAILY_RESET,
+            reset_after_seconds=18_000,
+        )
+        limit = Limit.from_bucket_state(state)  # must not raise
+        assert limit.reset_schedule == DAILY_RESET
+        assert limit.reset_after is None
+        assert limit.refill_amount == 0
+        assert limit.is_quota
+
+    def test_from_bucket_state_degrades_reset_after_beside_a_positive_rate(self):
+        """The mirror-image corruption: `reset_after_seconds` set beside a
+        positive stored rate is unconstructible under ADR-137 exactly as a
+        `reset_sched` beside a positive rate already was — same fix round,
+        same behaviour: keep the rate floor, drop the reset entirely."""
+        state = _state(refill_amount_milli=1_000_000, reset_after_seconds=18_000)
+        limit = Limit.from_bucket_state(state)  # must not raise
+        assert limit.reset_schedule == ()
+        assert limit.reset_after is None
+        assert limit.refill_amount == 1000  # the stored rate, floored — not the quota shape
+        assert not limit.is_quota

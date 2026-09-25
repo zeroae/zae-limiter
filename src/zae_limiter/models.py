@@ -870,15 +870,25 @@ class Limit:
         The pairing is decided by the **stored** shape, not by either half
         alone. Since ADR-139 a quota item can carry either spelling of the
         reset — ``reset_sched`` (a cron) or ``reset_after_seconds`` (a
-        duration) — so both are consulted: a bucket item carrying a reset
-        beside a positive rate is unconstructible under ADR-137 and so means
-        corruption; it keeps the floor and loses whichever tuple it carried,
-        preserving the pre-#222 reading rather than raising where a rejection
-        is already being reported — the same call
-        ``bucket.calculate_retry_after``'s last branch makes. A duration
-        window read back as a dripping limit would advertise a phantom
-        one-token drip beside a ``retry_after_seconds`` computed from a rate
-        that does not exist.
+        duration) — so both are consulted, and two shapes are corrupt rather
+        than legally constructible. Neither may reach the constructor call
+        below, which would raise from inside a rejection path instead of
+        round-tripping — the same discipline the positive-rate case already
+        followed, now stated for both:
+
+        * **A reset beside a positive rate** (``refill_amount_milli > 0``)
+          is unconstructible under ADR-137: it keeps the rate floor and drops
+          *both* reset tuples, preserving the pre-#222 reading — the same
+          call ``bucket.calculate_retry_after``'s last branch makes. A
+          duration window read back as a dripping limit would advertise a
+          phantom one-token drip beside a ``retry_after_seconds`` computed
+          from a rate that does not exist.
+        * **Both reset tuples at once** beside a zero rate is unconstructible
+          under ADR-139 (§Negatives: a limit resets one way, never both).
+          ``reset_sched`` — the pre-ADR-139 reading — wins and
+          ``reset_after_seconds`` is dropped, so the bucket still reconstructs
+          as the quota it is rather than raising two-recovery-mechanisms from
+          inside a rejection path.
 
         Note that ``state.reset_sched`` and ``state.reset_after_seconds`` are
         populated by the slow path (from the resolved config) and by
@@ -890,6 +900,11 @@ class Limit:
         is_quota = state.refill_amount_milli == 0 and (
             bool(state.reset_sched) or state.reset_after_seconds is not None
         )
+        # `reset_sched` wins when a corrupt item carries both spellings at
+        # once (see above) — never pass both to the constructor.
+        reset_after = None
+        if is_quota and not state.reset_sched and state.reset_after_seconds is not None:
+            reset_after = timedelta(seconds=state.reset_after_seconds)
         return cls(
             name=state.limit_name,
             capacity=max(1, state.capacity_milli // 1000),
@@ -897,11 +912,7 @@ class Limit:
             refill_period_seconds=max(1, state.refill_period_ms // 1000),
             schedule=state.sched,
             reset_schedule=state.reset_sched if is_quota else (),
-            reset_after=(
-                timedelta(seconds=state.reset_after_seconds)
-                if is_quota and state.reset_after_seconds is not None
-                else None
-            ),
+            reset_after=reset_after,
         )
 
     def per_shard(self, shard_count: int, now_ms: int) -> "Limit":
