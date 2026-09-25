@@ -2424,9 +2424,14 @@ class Repository:
             attr_names["#vu"] = schema.BUCKET_FIELD_VU
 
         # ADR-139 duration window rollover. Monotonic counters, not the limit
-        # name, for the same reason the #487 stale-limit REMOVE aliases use
-        # `#stale{i}_{j}`: `NAME_PATTERN` allows `-` and `.`, neither legal in
-        # an expression attribute alias (`.` is a document-path separator).
+        # name, mirroring the #487 stale-limit REMOVE aliases (`#stale{i}_{j}`):
+        # `NAME_PATTERN` allows `-` and `.` in a limit name, and an
+        # `ExpressionAttributeNames` *value* may legally contain either --
+        # what cannot is a raw name appearing as a path segment directly in
+        # the `UpdateExpression` *text*, where `.` parses as a document-path
+        # separator and `-` as subtraction. The alias (`#ws{i}`) sidesteps
+        # that by keeping the expression text itself free of the raw name;
+        # only the alias *value*, substituted by DynamoDB, carries it.
         # `sorted` only to keep the expression deterministic for tests.
         for i, (name, ws) in enumerate(sorted((window_starts or {}).items())):
             name_alias = f"#ws{i}"
@@ -5239,6 +5244,35 @@ class Repository:
                 stack_name=self.stack_name,
             ) from exc
 
+    def _decode_stored_window_int(self, attr_name: str, raw: str | None) -> int | None:
+        """Parse a `b_{name}_ws` / `b_{name}_rsa` value, or declare the limiter
+        unavailable (ADR-139).
+
+        Same shape and reasoning as `_decode_stored_schedule`: unlike `sched`/
+        `rsched`, `ws`/`rsa` have no grammar of their own -- they are bare `N`
+        attributes, so DynamoDB legally stores a non-integral value like
+        `"18000.5"` and `int()` itself can raise. Converting that to
+        `RateLimiterUnavailable` (rather than letting a bare `ValueError`
+        escape, or silently reading it as `None`) matters beyond the slow
+        path: the ALL_OLD / ALL_NEW images behind the speculative path go
+        through `_deserialize_composite_bucket`, which calls this, so an
+        unguarded corruption there would raise out of a hot path with no
+        indication of which attribute or item was at fault. `None` (the
+        attribute is simply absent) is not corruption -- it is every bucket
+        written before this attribute existed, and every `wcu` limit, which
+        never carries one -- so it is returned, not raised.
+        """
+        if raw is None:
+            return None
+        try:
+            return int(raw)
+        except ValueError as exc:
+            raise RateLimiterUnavailable(
+                f"stored duration window in {attr_name} could not be decoded: {raw!r}: {exc}",
+                cause=exc,
+                stack_name=self.stack_name,
+            ) from exc
+
     def _deserialize_composite_bucket(self, item: dict[str, Any]) -> list[BucketState]:
         """Deserialize a composite DynamoDB item to a list of BucketStates.
 
@@ -5329,18 +5363,27 @@ class Repository:
             tc_attr = item.get(schema.bucket_attr(name, schema.BUCKET_FIELD_TC), {})
             total_consumed = int(tc_attr["N"]) if "N" in tc_attr else None
 
-            # ADR-139 duration window. Absent on every item written before the
-            # window existed (and always absent on `wcu`, which never carries
-            # one) -- `None` there, exactly like `total_consumed_milli` above
-            # for the same reason: a bucket predating the attribute is not
-            # corruption. This matters beyond the slow path: the ALL_OLD /
-            # ALL_NEW images behind the speculative path go through this
-            # function too, so without it every fast-path status would report
-            # a quota with no window.
-            ws_attr = item.get(schema.bucket_attr(name, schema.BUCKET_FIELD_WS), {})
-            window_start_ms = int(ws_attr["N"]) if "N" in ws_attr else None
-            rsa_attr = item.get(schema.bucket_attr(name, schema.BUCKET_FIELD_RSA), {})
-            reset_after_seconds = int(rsa_attr["N"]) if "N" in rsa_attr else None
+            # ADR-139 duration window. A missing attribute (absent on every
+            # item written before the window existed, and always absent on
+            # `wcu`, which never carries one) decodes to `None`, exactly like
+            # `total_consumed_milli` above for the same reason -- predating
+            # the attribute is not corruption. A *present but non-integral*
+            # value is corruption and is converted to `RateLimiterUnavailable`
+            # by `_decode_stored_window_int`, the same treatment
+            # `_decode_stored_schedule` gives a corrupt `sched`/`rsched`. This
+            # matters beyond the slow path: the ALL_OLD / ALL_NEW images
+            # behind the speculative path go through this function too, so
+            # without it every fast-path status would report a quota with no
+            # window, and with an unguarded `int()` a corrupt value would
+            # raise a bare, undiagnosable `ValueError` from that hot path.
+            ws_name = schema.bucket_attr(name, schema.BUCKET_FIELD_WS)
+            window_start_ms = self._decode_stored_window_int(
+                ws_name, item.get(ws_name, {}).get("N")
+            )
+            rsa_name = schema.bucket_attr(name, schema.BUCKET_FIELD_RSA)
+            reset_after_seconds = self._decode_stored_window_int(
+                rsa_name, item.get(rsa_name, {}).get("N")
+            )
 
             # `wcu` is never scheduled — it tracks partition write pressure,
             # not a user limit, and is the one limit `effective_params` must

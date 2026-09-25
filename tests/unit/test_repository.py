@@ -988,6 +988,44 @@ class TestDurationWindowStamp:
         assert back["wcu"].window_start_ms is None
         assert back["wcu"].reset_after_seconds is None
 
+    @pytest.mark.asyncio
+    async def test_deserialize_missing_window_attrs_reads_as_none(self, repo):
+        """A pre-#622 bucket item (no ws/rsa attrs at all) still deserializes."""
+        limit = Limit.per_minute("rpm", 100)
+        now = 1_757_000_000_000
+        state = BucketState.from_limit("e1", "gpt-4", limit, now_ms=now, shard_count=1)
+        item = repo.build_composite_create("e1", "gpt-4", [state], now_ms=now)["Put"]["Item"]
+        assert bucket_attr("rpm", BUCKET_FIELD_WS) not in item
+        assert bucket_attr("rpm", BUCKET_FIELD_RSA) not in item
+
+        back = {s.limit_name: s for s in repo._deserialize_composite_bucket(item)}
+        assert back["rpm"].window_start_ms is None
+        assert back["rpm"].reset_after_seconds is None
+
+    @pytest.mark.asyncio
+    async def test_deserialize_raises_unavailable_on_corrupt_ws(self, repo):
+        """A non-integral b_{name}_ws surfaces as RateLimiterUnavailable, not a bare ValueError."""
+        limit = Limit.quota("session", 10_000, reset_after=timedelta(hours=5))
+        now = 1_757_000_000_000
+        state = BucketState.from_limit("e1", "gpt-4", limit, now_ms=now, shard_count=1)
+        item = repo.build_composite_create("e1", "gpt-4", [state], now_ms=now)["Put"]["Item"]
+        item[bucket_attr("session", BUCKET_FIELD_WS)] = {"N": "18000.5"}
+
+        with pytest.raises(RateLimiterUnavailable, match="18000.5"):
+            repo._deserialize_composite_bucket(item)
+
+    @pytest.mark.asyncio
+    async def test_deserialize_raises_unavailable_on_corrupt_rsa(self, repo):
+        """A non-integral b_{name}_rsa surfaces as RateLimiterUnavailable, not a bare ValueError."""
+        limit = Limit.quota("session", 10_000, reset_after=timedelta(hours=5))
+        now = 1_757_000_000_000
+        state = BucketState.from_limit("e1", "gpt-4", limit, now_ms=now, shard_count=1)
+        item = repo.build_composite_create("e1", "gpt-4", [state], now_ms=now)["Put"]["Item"]
+        item[bucket_attr("session", BUCKET_FIELD_RSA)] = {"N": "not-a-number"}
+
+        with pytest.raises(RateLimiterUnavailable, match="not-a-number"):
+            repo._deserialize_composite_bucket(item)
+
 
 class TestCompositeBucketTTL:
     """Tests for TTL in composite bucket build methods (Issue #271)."""

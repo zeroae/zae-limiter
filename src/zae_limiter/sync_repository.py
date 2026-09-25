@@ -4252,6 +4252,35 @@ class SyncRepository:
                 stack_name=self.stack_name,
             ) from exc
 
+    def _decode_stored_window_int(self, attr_name: str, raw: str | None) -> int | None:
+        """Parse a `b_{name}_ws` / `b_{name}_rsa` value, or declare the limiter
+        unavailable (ADR-139).
+
+        Same shape and reasoning as `_decode_stored_schedule`: unlike `sched`/
+        `rsched`, `ws`/`rsa` have no grammar of their own -- they are bare `N`
+        attributes, so DynamoDB legally stores a non-integral value like
+        `"18000.5"` and `int()` itself can raise. Converting that to
+        `RateLimiterUnavailable` (rather than letting a bare `ValueError`
+        escape, or silently reading it as `None`) matters beyond the slow
+        path: the ALL_OLD / ALL_NEW images behind the speculative path go
+        through `_deserialize_composite_bucket`, which calls this, so an
+        unguarded corruption there would raise out of a hot path with no
+        indication of which attribute or item was at fault. `None` (the
+        attribute is simply absent) is not corruption -- it is every bucket
+        written before this attribute existed, and every `wcu` limit, which
+        never carries one -- so it is returned, not raised.
+        """
+        if raw is None:
+            return None
+        try:
+            return int(raw)
+        except ValueError as exc:
+            raise RateLimiterUnavailable(
+                f"stored duration window in {attr_name} could not be decoded: {raw!r}: {exc}",
+                cause=exc,
+                stack_name=self.stack_name,
+            ) from exc
+
     def _deserialize_composite_bucket(self, item: dict[str, Any]) -> list[BucketState]:
         """Deserialize a composite DynamoDB item to a list of BucketStates.
 
@@ -4325,10 +4354,14 @@ class SyncRepository:
 
             tc_attr = item.get(schema.bucket_attr(name, schema.BUCKET_FIELD_TC), {})
             total_consumed = int(tc_attr["N"]) if "N" in tc_attr else None
-            ws_attr = item.get(schema.bucket_attr(name, schema.BUCKET_FIELD_WS), {})
-            window_start_ms = int(ws_attr["N"]) if "N" in ws_attr else None
-            rsa_attr = item.get(schema.bucket_attr(name, schema.BUCKET_FIELD_RSA), {})
-            reset_after_seconds = int(rsa_attr["N"]) if "N" in rsa_attr else None
+            ws_name = schema.bucket_attr(name, schema.BUCKET_FIELD_WS)
+            window_start_ms = self._decode_stored_window_int(
+                ws_name, item.get(ws_name, {}).get("N")
+            )
+            rsa_name = schema.bucket_attr(name, schema.BUCKET_FIELD_RSA)
+            reset_after_seconds = self._decode_stored_window_int(
+                rsa_name, item.get(rsa_name, {}).get("N")
+            )
             is_wcu = name == schema.WCU_LIMIT_NAME
             sched = (
                 () if is_wcu else _schedule_for(name, schema.BUCKET_FIELD_SCHED, item_sched, False)
