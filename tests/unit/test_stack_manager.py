@@ -577,10 +577,14 @@ class TestDeployLambdaCode:
             mock_session_class.return_value = mock_session
 
             manager = StackManager(stack_name="test", region="us-east-1")
+            # The ESM poll is covered by TestWaitForEsmReady; unmocked it sleeps
+            # its full 120 s timeout against the MagicMock session.
+            manager.wait_for_esm_ready = AsyncMock(return_value=True)
             result = await manager.deploy_lambda_code()
 
             assert result["status"] == "deployed"
             assert result["function_arn"] == "arn:aws:lambda:us-east-1:123:function:test"
+            assert result["esm_ready"] is True
             mock_lambda.update_function_code.assert_called_once()
 
     @pytest.mark.asyncio
