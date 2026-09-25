@@ -124,7 +124,13 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev --extra plot
       - name: Run integration tests
-        run: uv run pytest -m integration -v --cov --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
+        # The e2e job runs tests/e2e/test_localstack.py and benchmark-localstack runs
+        # tests/benchmark/test_localstack.py; both also carry the integration marker.
+        # tests/doctest/test_docs_integration.py is collected here, so it needs no step of its own.
+        run: >-
+          uv run pytest -m integration
+          --ignore=tests/e2e/test_localstack.py --ignore=tests/benchmark/test_localstack.py
+          -v --cov --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
         env:
           AWS_ACCESS_KEY_ID: test
           AWS_SECRET_ACCESS_KEY: test
