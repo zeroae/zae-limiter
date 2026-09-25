@@ -76,8 +76,8 @@ gh run view <run-id> --json jobs \
   --jq '.jobs[] | select(.name=="integration (3.12)") | .steps[] | "\(.name) \(.conclusion)"'
 ```
 
-Typical durations on this repo: `unit` ~7 min, `e2e` ~10 min, `integration` ~15 min, the full
-`Tests` round ~15-20 min. Suspect a hang only well past that, and only after the steps disagree
+Typical durations on this repo: `unit` ~4 min, `integration` ~8.5 min, `e2e` ~10 min, the full
+`Tests` round ~10-11 min (e2e is the long pole). Suspect a hang only well past that, and only after the steps disagree
 with the job.
 
 ## Required checks are narrow
