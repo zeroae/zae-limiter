@@ -1176,8 +1176,35 @@ class TestEnsureTags:
             assert "Not authorized" in str(exc_info.value)
 
 
+class _VirtualClock:
+    """Stands in for ``time`` and ``asyncio`` inside the stack manager module.
+
+    ``sleep`` advances ``time`` instantly, so the 5 s poll interval and the
+    ``max_seconds`` timeout run exactly as written without real waiting.
+    """
+
+    def __init__(self) -> None:
+        self.now = 1_000_000.0
+
+    def time(self) -> float:
+        return self.now
+
+    async def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
 class TestWaitForEsmReady:
     """Tests for wait_for_esm_ready method."""
+
+    @pytest.fixture(autouse=True)
+    def virtual_clock(self):
+        clock = _VirtualClock()
+        with (
+            patch("zae_limiter.infra.stack_manager.time", clock),
+            # create=True: the generated sync module sleeps via time, not asyncio
+            patch("zae_limiter.infra.stack_manager.asyncio", clock, create=True),
+        ):
+            yield clock
 
     @pytest.mark.asyncio
     async def test_returns_true_when_esm_enabled_and_stabilized(self) -> None:
