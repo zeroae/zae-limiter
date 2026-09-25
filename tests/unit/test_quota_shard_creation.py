@@ -47,7 +47,7 @@ async def seed_shard0(limiter, entity_id, limit, now_ms, resource=RESOURCE):
     state = BucketState.from_limit(entity_id, resource, limit, now_ms)
     # `vu` the way the slow path stamps it (#222 §2.1): without it a quota's
     # fast path never demotes, so a crossed reset edge is never materialised.
-    vu, _reset = RateLimiter._materialisation_stamps(limit, now_ms)
+    vu, _reset = RateLimiter._materialisation_stamps(limit, state, now_ms)
     await repo.transact_write(
         [
             repo.build_composite_create(
@@ -63,7 +63,7 @@ async def _write_shard(repo, entity_id, limit, shard_id, tokens_milli, resource=
     now_ms = repo._now_ms()
     state = BucketState.from_limit(entity_id, resource, limit, now_ms)
     state.tokens_milli = tokens_milli
-    vu, _reset = RateLimiter._materialisation_stamps(limit, now_ms)
+    vu, _reset = RateLimiter._materialisation_stamps(limit, state, now_ms)
     await repo.transact_write(
         [
             repo.build_composite_create(

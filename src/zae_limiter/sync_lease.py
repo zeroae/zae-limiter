@@ -46,6 +46,8 @@ class LeaseEntry:
     _declared: bool = True
     _boundary_ms: int | None = None
     _reset_edge_ms: int | None = None
+    _window_start_ms: int | None = None
+    _window_end_ms: int | None = None
 
 
 @dataclass
@@ -301,6 +303,7 @@ class SyncLease:
             else:
                 consumed: dict[str, int] = {}
                 refill_amounts: dict[str, int] = {}
+                window_starts: dict[str, int] = {}
                 expected_rf = group_entries[0]._original_rf_ms
                 for entry in group_entries:
                     name = entry.limit.name
@@ -314,6 +317,15 @@ class SyncLease:
                             entry.state.effective_capacity_milli(now_ms)
                             - entry._original_tokens_milli
                         )
+                    if entry._window_end_ms is not None and entry._window_end_ms <= now_ms:
+                        entry._window_start_ms = now_ms
+                        entry.state.window_start_ms = now_ms
+                        refill_amounts[name] = (
+                            entry.state.effective_capacity_milli(now_ms)
+                            - entry._original_tokens_milli
+                        )
+                    if entry._window_start_ms is not None:
+                        window_starts[name] = entry._window_start_ms
                 items.append(
                     repo.build_composite_normal(
                         entity_id=entity_id,
@@ -325,6 +337,7 @@ class SyncLease:
                         ttl_seconds=ttl_seconds,
                         shard_id=shard_id,
                         vu=vu,
+                        window_starts=window_starts,
                         clear_vu=not boundaries,
                     )
                 )

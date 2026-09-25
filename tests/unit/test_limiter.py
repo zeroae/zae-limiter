@@ -2,7 +2,7 @@
 
 import asyncio
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
@@ -30,8 +30,10 @@ from zae_limiter.models import BucketState
 from zae_limiter.repository_protocol import SpeculativeResult
 from zae_limiter.schedule import ScheduleEntry, retry_after_with_schedule
 from zae_limiter.schema import (
+    BUCKET_FIELD_RSA,
     BUCKET_FIELD_TK,
     BUCKET_FIELD_VU,
+    BUCKET_FIELD_WS,
     bucket_attr,
     pk_bucket,
     sk_state,
@@ -10529,3 +10531,407 @@ class TestSlowPathRejectionWalksBoundaries:
                 pass
         # 50 tokens at 100/min = 30 s
         assert exc.value.retry_after_seconds == pytest.approx(30.001, abs=0.5)
+
+
+# ---------------------------------------------------------------------------
+# Duration reset windows on the slow path (ADR-139, #623)
+# ---------------------------------------------------------------------------
+
+SESSION = Limit.quota("session", 1_000, reset_after=timedelta(hours=5))
+
+
+def _window_state(**kwargs) -> BucketState:
+    """A shard of ``SESSION`` whose balance is spent, window opened at 5_000."""
+    base = dict(
+        entity_id="e1",
+        resource="gpt-4",
+        limit_name="session",
+        tokens_milli=0,
+        last_refill_ms=1_000,
+        capacity_milli=1_000_000,
+        # A quota does not drip (ADR-137): zero rate, inert period.
+        refill_amount_milli=0,
+        refill_period_ms=1_000,
+        total_consumed_milli=1_000_000,
+        shard_count=1,
+        window_start_ms=5_000,
+        reset_after_seconds=18_000,
+    )
+    base.update(kwargs)
+    return BucketState(**base)
+
+
+class TestApplyWindowRoll:
+    """The duration-window reset, isolated from DynamoDB (ADR-139).
+
+    ``_apply_reset_edge`` with the backwards cron scan replaced by the
+    attribute read ``ws > rf``.
+    """
+
+    def test_window_roll_fires_when_ws_is_newer_than_rf(self):
+        # `ws > rf` is the whole coherence rule: a shard whose window start is
+        # newer than its own last materialisation has not applied that window.
+        state = _window_state()
+        assert RateLimiter._apply_window_roll(SESSION, state, now_ms=6_000) is True
+        assert state.tokens_milli == 1_000_000
+
+    def test_window_roll_is_strictly_greater_than(self):
+        # `>=` would re-fire on every later request and refund everything
+        # spent since — an unbounded quota. Same reasoning as the reset edge.
+        state = _window_state(last_refill_ms=5_000)
+        assert RateLimiter._apply_window_roll(SESSION, state, now_ms=6_000) is False
+        assert state.tokens_milli == 0
+
+    def test_window_roll_resets_to_the_shard_share(self):
+        # Resetting every shard to the undivided capacity would multiply the
+        # entity's quota by shard_count.
+        state = _window_state(shard_count=4)
+        assert RateLimiter._apply_window_roll(SESSION, state, now_ms=6_000) is True
+        assert state.tokens_milli == 250_000
+
+    def test_window_roll_does_nothing_for_a_cron_quota(self):
+        limit = Limit.quota("rpd", 1_000, cron="0 0 * * *")
+        state = _window_state(limit_name="rpd", window_start_ms=None, reset_after_seconds=None)
+        assert RateLimiter._apply_window_roll(limit, state, now_ms=6_000) is False
+        assert state.tokens_milli == 0
+
+    def test_window_roll_leaves_tc_alone(self):
+        # The consumption counter must stay monotonic
+        # (.claude/rules/design-validation.md).
+        state = _window_state()
+        before = state.total_consumed_milli
+        assert RateLimiter._apply_window_roll(SESSION, state, now_ms=6_000) is True
+        assert state.total_consumed_milli == before
+
+    def test_window_roll_clears_debt_rather_than_carrying_it(self):
+        state = _window_state(tokens_milli=-3_000_000)
+        assert RateLimiter._apply_window_roll(SESSION, state, now_ms=6_000) is True
+        assert state.tokens_milli == 1_000_000
+
+
+class TestOpenWindowIfElapsed:
+    """Anchoring a new window: idle-restarting, never tiling (ADR-139)."""
+
+    def test_open_window_does_nothing_inside_the_window(self):
+        # Exhaustion inside the window must not move the anchor.
+        state = _window_state()
+        assert RateLimiter._open_window_if_elapsed(SESSION, state, now_ms=6_000) is None
+        assert state.window_start_ms == 5_000
+
+    def test_open_window_anchors_at_now_once_elapsed(self):
+        # Idle-restarting: the new window starts at the first use past the old
+        # one's end, not at `ws_old + rsa` (a grid tile).
+        now = 5_000 + 3 * 18_000_000 + 7
+        state = _window_state()
+        assert RateLimiter._open_window_if_elapsed(SESSION, state, now_ms=now) == now
+        assert state.window_start_ms == now
+        assert state.window_end_ms == now + 18_000_000
+
+    def test_open_window_fires_exactly_at_the_end(self):
+        # The window is half-open, [ws, ws + rsa): its end instant belongs to
+        # the next window, the same instant `vu` stops admitting fast writes.
+        end = 5_000 + 18_000_000
+        state = _window_state()
+        assert RateLimiter._open_window_if_elapsed(SESSION, state, now_ms=end) == end
+
+    def test_open_window_opens_the_first_window_when_ws_is_absent(self):
+        # A shard stamped before its limit gained a window carries `rsa` and
+        # no `ws`; the first materialising pass opens it.
+        state = _window_state(window_start_ms=None)
+        assert RateLimiter._open_window_if_elapsed(SESSION, state, now_ms=9_000) == 9_000
+        assert state.window_start_ms == 9_000
+
+    def test_open_window_ignores_a_limit_without_reset_after(self):
+        limit = Limit.quota("rpd", 1_000, cron="0 0 * * *")
+        state = _window_state(limit_name="rpd", window_start_ms=None)
+        assert RateLimiter._open_window_if_elapsed(limit, state, now_ms=9_000) is None
+        assert state.window_start_ms is None
+
+    def test_open_then_roll_compose_into_one_pass(self):
+        now = 5_000 + 18_000_000 + 1
+        state = _window_state(last_refill_ms=5_000)
+        assert RateLimiter._open_window_if_elapsed(SESSION, state, now_ms=now) == now
+        assert RateLimiter._apply_window_roll(SESSION, state, now_ms=now) is True
+        assert state.tokens_milli == 1_000_000
+
+
+class TestMaterialisationStampsWindow:
+    """`ws + rsa` is the third voting member of `vu`'s minimum (ADR-139)."""
+
+    def test_vu_is_the_window_end_for_a_duration_quota(self):
+        state = _window_state()
+        vu, reset_ms = RateLimiter._materialisation_stamps(SESSION, state, 6_000)
+        assert vu == 5_000 + 18_000_000
+        assert reset_ms is None
+
+    def test_vu_is_the_earlier_of_a_param_boundary_and_the_window_end(self):
+        limit = SESSION.with_schedule((ScheduleEntry(cron="* 0-6 * * *", tz="UTC", scale=0.5),))
+        now = int(datetime(2026, 9, 16, 3, 0, tzinfo=UTC).timestamp() * 1000)
+        state = _window_state(window_start_ms=now - 17_000_000)
+        vu, _ = RateLimiter._materialisation_stamps(limit, state, now)
+        assert vu == now - 17_000_000 + 18_000_000  # 04:00-ish, before 07:00
+
+    def test_a_window_on_the_state_alone_does_not_vote(self):
+        # The limit, not the item, decides whether a window is in force.
+        plain = Limit.per_minute("session", 1_000)
+        vu, _ = RateLimiter._materialisation_stamps(plain, _window_state(), 6_000)
+        assert vu is None
+
+
+FIVE_HOURS_MS = 5 * 3_600_000
+SESSION_10 = Limit.quota("session", 10, reset_after=timedelta(hours=5))
+T0 = 1_757_000_000_000
+
+
+async def _raw_bucket(repo, entity_id, resource="gpt-4", shard=0):
+    """The raw item of one bucket shard, straight off the table."""
+    client = await repo._get_client()
+    response = await client.get_item(
+        TableName=repo.table_name,
+        Key={
+            "PK": {"S": pk_bucket(repo._namespace_id, entity_id, resource, shard)},
+            "SK": {"S": sk_state()},
+        },
+    )
+    return response["Item"]
+
+
+async def _stored_ws(repo, entity_id, resource, limit_name, shard=0):
+    """``b_{limit}_ws`` off one shard's raw item, or None when absent."""
+    item = await _raw_bucket(repo, entity_id, resource, shard)
+    attr = item.get(bucket_attr(limit_name, BUCKET_FIELD_WS))
+    return None if attr is None else int(attr["N"])
+
+
+async def _stored_tk(repo, entity_id, resource, limit_name, shard=0):
+    item = await _raw_bucket(repo, entity_id, resource, shard)
+    return int(item[bucket_attr(limit_name, BUCKET_FIELD_TK)]["N"])
+
+
+async def _strip_window(repo, entity_id, resource, limit_name, shard=0):
+    """REMOVE ``b_{limit}_ws`` and ``b_{limit}_rsa``: an item stamped before
+    its limit gained a window (a resource-level `reset_after` never fans out)."""
+    client = await repo._get_client()
+    await client.update_item(
+        TableName=repo.table_name,
+        Key={
+            "PK": {"S": pk_bucket(repo._namespace_id, entity_id, resource, shard)},
+            "SK": {"S": sk_state()},
+        },
+        UpdateExpression="REMOVE #ws, #rsa",
+        ExpressionAttributeNames={
+            "#ws": bucket_attr(limit_name, BUCKET_FIELD_WS),
+            "#rsa": bucket_attr(limit_name, BUCKET_FIELD_RSA),
+        },
+    )
+
+
+class TestWindowRollThroughAcquire:
+    """Duration windows through `acquire()` (ADR-139).
+
+    The fast path is left on: an elapsed window reaches the slow path through
+    `vu`, which `ws + rsa` votes into, so these exercise the real route.
+    """
+
+    async def test_first_use_anchors_and_stamps_vu_at_the_window_end(self, limiter):
+        repo = limiter._repository
+        await repo.set_limits("user-1", [SESSION_10], resource="gpt-4")
+        repo._now_ms = lambda: T0
+        async with limiter.acquire("user-1", "gpt-4", consume={"session": 1}):
+            pass
+        item = await _raw_bucket(repo, "user-1")
+        assert await _stored_ws(repo, "user-1", "gpt-4", "session") == T0
+        assert int(item[BUCKET_FIELD_VU]["N"]) == T0 + FIVE_HOURS_MS
+
+    async def test_exhaustion_inside_the_window_does_not_move_the_anchor(self, limiter):
+        """ADR-139: only a persisted materialising pass anchors. An exhausted
+        quota is still inside the window it already anchored, so a caller
+        retrying against it must not keep restarting its own five hours."""
+        repo = limiter._repository
+        await repo.set_limits("user-1", [SESSION_10], resource="gpt-4")
+        repo._now_ms = lambda: T0
+        async with limiter.acquire("user-1", "gpt-4", consume={"session": 10}):
+            pass
+        assert await _stored_ws(repo, "user-1", "gpt-4", "session") == T0
+
+        # 1 hour later, still inside the window, and now exhausted.
+        repo._now_ms = lambda: T0 + 3_600_000
+        for _ in range(3):
+            with pytest.raises(RateLimitExceeded):
+                async with limiter.acquire("user-1", "gpt-4", consume={"session": 1}):
+                    pass
+        assert await _stored_ws(repo, "user-1", "gpt-4", "session") == T0
+
+    async def test_exhaustion_on_the_slow_path_does_not_move_the_anchor_either(self, limiter):
+        """The same reading with the fast path off, so the rejection is the
+        slow path's `RateLimitExceeded` rather than a 0-WCU fast rejection."""
+        repo = limiter._repository
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        await repo.set_limits("user-1", [SESSION_10], resource="gpt-4")
+        repo._now_ms = lambda: T0
+        async with slow.acquire("user-1", "gpt-4", consume={"session": 10}):
+            pass
+        repo._now_ms = lambda: T0 + 3_600_000
+        with pytest.raises(RateLimitExceeded):
+            async with slow.acquire("user-1", "gpt-4", consume={"session": 1}):
+                pass
+        assert await _stored_ws(repo, "user-1", "gpt-4", "session") == T0
+
+    async def test_the_window_rolls_the_balance_back_in_one_lump(self, limiter):
+        """Spend the allowance, cross the window's end, spend it all again.
+        A quota does not drip, so without the roll the second acquire raises."""
+        repo = limiter._repository
+        await repo.set_limits("user-1", [SESSION_10], resource="gpt-4")
+        repo._now_ms = lambda: T0
+        async with limiter.acquire("user-1", "gpt-4", consume={"session": 10}):
+            pass
+
+        now = T0 + FIVE_HOURS_MS + 1
+        repo._now_ms = lambda: now
+        async with limiter.acquire("user-1", "gpt-4", consume={"session": 10}):
+            pass
+
+        bucket = next(b for b in await repo.get_buckets("user-1", resource="gpt-4"))
+        assert bucket.tokens_milli == 0
+        assert bucket.total_consumed_milli == 20_000, "`tc` stays monotonic across the roll"
+        assert await _stored_ws(repo, "user-1", "gpt-4", "session") == now
+        item = await _raw_bucket(repo, "user-1")
+        assert int(item[BUCKET_FIELD_VU]["N"]) == now + FIVE_HOURS_MS
+
+    async def test_a_rejection_at_a_boundary_writes_nothing(self, limiter):
+        """A pass that crosses a boundary and is then rejected for another
+        reason (here: asking for more than the whole allowance) leaves the item
+        unchanged. See the plan's "anchoring rule": write-on-enter raises
+        before any write, so the restored balance is in-memory only and there
+        is no half-applied state. The window anchors at the next request that
+        writes.
+
+        **This test encodes a decision.** If the owner prefers the rollover to
+        be persisted on a rejection path, this is the test to change, and the
+        change is visible rather than silent.
+        """
+        repo = limiter._repository
+        await repo.set_limits("user-1", [SESSION_10], resource="gpt-4")
+        repo._now_ms = lambda: T0
+        async with limiter.acquire("user-1", "gpt-4", consume={"session": 10}):
+            pass
+        before = await _raw_bucket(repo, "user-1")
+
+        repo._now_ms = lambda: T0 + FIVE_HOURS_MS + 1
+        with pytest.raises(RateLimitExceeded):
+            async with limiter.acquire("user-1", "gpt-4", consume={"session": 999_999}):
+                pass
+        assert await _raw_bucket(repo, "user-1") == before, "nothing was written"
+        assert await _stored_ws(repo, "user-1", "gpt-4", "session") == T0
+
+        # And the next admitted request anchors at its own now.
+        repo._now_ms = lambda: T0 + FIVE_HOURS_MS + 2
+        async with limiter.acquire("user-1", "gpt-4", consume={"session": 1}):
+            pass
+        assert await _stored_ws(repo, "user-1", "gpt-4", "session") == T0 + FIVE_HOURS_MS + 2
+        assert await _stored_tk(repo, "user-1", "gpt-4", "session") == 9_000
+
+    async def test_a_rejection_at_a_boundary_reports_the_rolled_view(self, limiter):
+        """Even though nothing is written, the rejection tells the truth about
+        what the caller would have got: the restored balance, not the burnt
+        one. (`resets_at_ms` for the new window lands with Task 12.)"""
+        repo = limiter._repository
+        await repo.set_limits("user-1", [SESSION_10], resource="gpt-4")
+        repo._now_ms = lambda: T0
+        async with limiter.acquire("user-1", "gpt-4", consume={"session": 10}):
+            pass
+
+        repo._now_ms = lambda: T0 + FIVE_HOURS_MS + 1
+        with pytest.raises(RateLimitExceeded) as exc:
+            async with limiter.acquire("user-1", "gpt-4", consume={"session": 999_999}):
+                pass
+        status = next(s for s in exc.value.statuses if s.limit_name == "session")
+        assert status.available == 10
+
+    async def test_an_idle_entity_restarts_its_window(self, limiter):
+        """Window ends at t0+5h, entity quiet, calls again at t0+11h -> a FRESH
+        window starting t0+11h, not a grid tile at t0+10h."""
+        repo = limiter._repository
+        await repo.set_limits("user-1", [SESSION_10], resource="gpt-4")
+        repo._now_ms = lambda: T0
+        async with limiter.acquire("user-1", "gpt-4", consume={"session": 1}):
+            pass
+
+        repo._now_ms = lambda: T0 + 11 * 3_600_000
+        async with limiter.acquire("user-1", "gpt-4", consume={"session": 1}):
+            pass
+        assert await _stored_ws(repo, "user-1", "gpt-4", "session") == T0 + 11 * 3_600_000
+        assert await _stored_tk(repo, "user-1", "gpt-4", "session") == 9_000
+
+    async def test_cascade_parent_and_child_anchor_independently(self, limiter):
+        """ADR-139: the parent's window does not track the child's, consistent
+        with cascade already treating limits, shards and `disabled` as
+        per-entity state."""
+        repo = limiter._repository
+        # Resource-level buckets carry a TTL, and a duration window's TTL
+        # horizon is Task 11 (#628); keep this test about anchoring.
+        repo._bucket_ttl_refill_multiplier = 0
+        await repo.set_resource_defaults("gpt-4", [SESSION_10])
+        await repo.create_entity("parent")
+        await repo.create_entity("child", parent_id="parent", cascade=True)
+        repo._now_ms = lambda: T0
+        async with limiter.acquire("child", "gpt-4", consume={"session": 1}):
+            pass
+        # A second child, first seen an hour later, gives the parent nothing
+        # new: the parent anchored at t0 with the first child's call.
+        await repo.create_entity("child2", parent_id="parent", cascade=True)
+        repo._now_ms = lambda: T0 + 3_600_000
+        async with limiter.acquire("child2", "gpt-4", consume={"session": 1}):
+            pass
+        assert await _stored_ws(repo, "parent", "gpt-4", "session") == T0
+        assert await _stored_ws(repo, "child", "gpt-4", "session") == T0
+        assert await _stored_ws(repo, "child2", "gpt-4", "session") == T0 + 3_600_000
+        assert await _stored_tk(repo, "parent", "gpt-4", "session") == 8_000
+
+    async def test_config_reset_after_reaches_an_item_carrying_no_window(self, limiter):
+        """The slow path takes `reset_after_seconds` from resolved config, as
+        it does `sched` and `reset_sched`. A resource-level `reset_after` never
+        fans out, so an item created before it carries no `rsa`/`ws`; without
+        the config value its window would never open."""
+        repo = limiter._repository
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        await repo.set_limits("user-1", [SESSION_10], resource="gpt-4")
+        repo._now_ms = lambda: T0
+        async with slow.acquire("user-1", "gpt-4", consume={"session": 10}):
+            pass
+
+        await _strip_window(repo, "user-1", "gpt-4", "session")
+
+        repo._now_ms = lambda: T0 + 60_000
+        async with slow.acquire("user-1", "gpt-4", consume={"session": 1}):
+            pass
+        assert await _stored_ws(repo, "user-1", "gpt-4", "session") == T0 + 60_000
+
+    async def test_the_parent_only_path_rolls_the_parents_window(self, limiter):
+        """`_try_parent_only_acquire` is the second slow-path seam. It is
+        reached when a parent's speculative write failed for a reason refill
+        could fix; a boundary-expired parent normally reaches the full slow
+        path through `vu` instead, so it is driven directly here."""
+        repo = limiter._repository
+        await repo.set_limits("parent", [SESSION_10], resource="gpt-4")
+        repo._now_ms = lambda: T0
+        async with limiter.acquire("parent", "gpt-4", consume={"session": 10}):
+            pass
+
+        # Strip the window as well, so this also pins the parent path taking
+        # `reset_after_seconds` from resolved config rather than the item.
+        await _strip_window(repo, "parent", "gpt-4", "session")
+
+        now = T0 + 60_000
+        repo._now_ms = lambda: now
+        lease = await limiter._try_parent_only_acquire(
+            "parent",
+            "gpt-4",
+            {"session": 4},
+            child_entries=[],
+            parent_shard=0,
+            parent_shard_count=1,
+        )
+        assert lease is not None
+        assert await _stored_ws(repo, "parent", "gpt-4", "session") == now
+        assert await _stored_tk(repo, "parent", "gpt-4", "session") == 6_000

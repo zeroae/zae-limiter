@@ -76,6 +76,19 @@ class LeaseEntry:
     # commit's is the one case `RateLimiter._apply_reset_edge()` cannot have
     # seen, and `rf` is stamped at the *later* reading.
     _reset_edge_ms: int | None = None
+    # The duration window this pass opened, epoch ms, or None when it opened
+    # none (ADR-139). Set by `_open_window_if_elapsed` at the acquire path's
+    # clock reading — never re-derived at commit time, for the same reason
+    # `_boundary_ms` is not: the two readings are a round trip apart, and a
+    # window that elapsed in between must not silently move the anchor forward
+    # past the boundary the admission was gated on.
+    _window_start_ms: int | None = None
+    # The end of the window in force at that same reading, or None when the
+    # limit has no duration window. Set for every window-carrying entry, not
+    # only the ones that opened a window, so `_commit_initial` can detect one
+    # that elapsed **between** the two readings — the exact analogue of
+    # `_reset_edge_ms`, and silent in the same way if unhandled.
+    _window_end_ms: int | None = None
 
 
 @dataclass
@@ -400,6 +413,11 @@ class Lease:
             else:
                 consumed: dict[str, int] = {}
                 refill_amounts: dict[str, int] = {}
+                # Every entry in the group participates, declared or not:
+                # `ws` is per-limit but the write is one item, exactly as `vu`
+                # is, and an undeclared quota sharing the item must still have
+                # its window stamped or it will never roll.
+                window_starts: dict[str, int] = {}
                 expected_rf = group_entries[0]._original_rf_ms
 
                 for entry in group_entries:
@@ -436,6 +454,38 @@ class Lease:
                             entry.state.effective_capacity_milli(now_ms)
                             - entry._original_tokens_milli
                         )
+                    # A duration window that elapsed between the acquire
+                    # path's reading and this one is the mirror of the edge
+                    # case above. `_open_window_if_elapsed()` saw a live window
+                    # at the earlier reading, yet this write persists at a
+                    # reading already past its end — and ADR-139's anchoring
+                    # rule is that the first *persisted* materialising pass
+                    # past the end anchors the next window. Left alone, this
+                    # write would be that pass without anchoring: `ws` stays
+                    # on the dead window, the request is charged to a window
+                    # that has closed, and the anchor slips to whichever
+                    # request happens to come next.
+                    #
+                    # So anchor here, at this reading, and restore the balance
+                    # the same way the reset edge does. `ws == rf` after the
+                    # write, so no later pass re-applies it, and it cannot
+                    # double-apply: the acquire path covers every window end
+                    # at or before its own reading, and `_window_end_ms` is
+                    # strictly after it. Admission was gated against the
+                    # pre-roll balance, the conservative direction. `vu` for
+                    # this item was computed from the dead window's end and so
+                    # is already `<= rf`: the next acquire takes one slow pass
+                    # and re-stamps it, the same cost a param boundary crossed
+                    # in the gap already pays.
+                    if entry._window_end_ms is not None and entry._window_end_ms <= now_ms:
+                        entry._window_start_ms = now_ms
+                        entry.state.window_start_ms = now_ms
+                        refill_amounts[name] = (
+                            entry.state.effective_capacity_milli(now_ms)
+                            - entry._original_tokens_milli
+                        )
+                    if entry._window_start_ms is not None:
+                        window_starts[name] = entry._window_start_ms
 
                 items.append(
                     repo.build_composite_normal(
@@ -448,6 +498,7 @@ class Lease:
                         ttl_seconds=ttl_seconds,
                         shard_id=shard_id,
                         vu=vu,
+                        window_starts=window_starts,
                         # No boundary anywhere in the group means nothing on
                         # this item is scheduled — the group covers every
                         # limit sharing it, declared or not. Leaving `vu`

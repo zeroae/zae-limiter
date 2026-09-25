@@ -1276,6 +1276,23 @@ class BucketState:
             return None
         return self.window_start_ms + self.reset_after_seconds * 1000
 
+    @property
+    def window_rolled(self) -> bool:
+        """Has a window opened that this shard's balance does not reflect yet?
+
+        ``ws > rf`` (ADR-139): a shard whose window start is newer than its own
+        last materialisation has not applied that window. This is the single
+        statement of the rule — the slow-path roll
+        (``RateLimiter._apply_window_roll``) and every read-only view of the
+        balance ask it here rather than restating the comparison, so the two
+        cannot drift (the #489 lesson).
+
+        Strictly ``>``: the pass that applies a roll stamps ``rf`` at or after
+        ``ws``, so ``>=`` would re-fire on every later request and refund
+        everything spent since. ``False`` for a bucket with no window.
+        """
+        return self.window_start_ms is not None and self.window_start_ms > self.last_refill_ms
+
     def accrues(self, now_ms: int) -> bool:
         """Is this shard gaining tokens at ``now_ms``?
 

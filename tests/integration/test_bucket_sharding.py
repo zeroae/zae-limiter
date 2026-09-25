@@ -1041,7 +1041,7 @@ class TestQuotaShardCreationIsATransfer:
         await limiter.set_system_defaults([limit])
         now_ms = repo._now_ms()
         state = BucketState.from_limit(entity_id, "gpt-4", limit, now_ms)
-        vu, _reset = RateLimiter._materialisation_stamps(limit, now_ms)
+        vu, _reset = RateLimiter._materialisation_stamps(limit, state, now_ms)
         await repo.transact_write(
             [
                 repo.build_composite_create(

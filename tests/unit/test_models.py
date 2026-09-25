@@ -2656,6 +2656,27 @@ class TestBucketStateWindowFields:
         assert state.reset_after_seconds == 18_000  # NOT divided
         assert state.tokens_milli == 2_500_000  # 10_000 // 4, in milli
 
+    def test_window_rolled_is_ws_strictly_after_rf(self):
+        """The one shared "window opened but not yet applied here" predicate
+        (ADR-139). The slow-path roll and the read-only balance both ask it,
+        so it lives in one place: strictly ``>``, because the pass that
+        applies a roll stamps ``rf`` at or after ``ws``."""
+        limit = Limit.quota("session", 10_000, reset_after=timedelta(hours=5))
+        state = BucketState.from_limit("e1", "gpt-4", limit, now_ms=1_000, shard_count=1)
+        state.last_refill_ms = 999
+        assert state.window_rolled is True
+        state.last_refill_ms = 1_000
+        assert state.window_rolled is False
+        state.last_refill_ms = 1_001
+        assert state.window_rolled is False
+
+    def test_window_rolled_is_false_without_a_window(self):
+        state = BucketState.from_limit(
+            "e1", "gpt-4", Limit.per_minute("rpm", 100), now_ms=0, shard_count=1
+        )
+        state.last_refill_ms = -1
+        assert state.window_rolled is False
+
     def test_from_bucket_state_reconstructs_a_duration_quota(self):
         """Task 2 Step 6 (deferred here): a duration quota read back off a
         `BucketState` must reconstruct as a quota, not a phantom one-token

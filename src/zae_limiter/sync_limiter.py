@@ -67,6 +67,18 @@ def _is_custom_config(config_source: str | None) -> bool:
     return config_source in _ENTITY_CONFIG_SOURCES
 
 
+def _window_end_in_force(limit: Limit, state: BucketState) -> int | None:
+    """The end of the duration window in force on ``state``, or ``None`` (ADR-139).
+
+    Read **after** ``_open_window_if_elapsed`` has run, so it is the end of the
+    window this pass admitted against. The lease carries it to the commit,
+    which takes a second clock reading a round trip later and must detect a
+    window that elapsed in between. Only the resolved ``limit`` decides whether
+    a window is in force, the same rule ``_materialisation_stamps`` applies.
+    """
+    return state.window_end_ms if limit.reset_after is not None else None
+
+
 class SyncRateLimiter:
     """
     Async rate limiter backed by DynamoDB.
@@ -1136,12 +1148,111 @@ class SyncRateLimiter:
         return True
 
     @staticmethod
-    def _materialisation_stamps(limit: Limit, now_ms: int) -> tuple[int | None, int | None]:
-        """``(vu, next reset edge)`` for one limit at one clock reading (#222).
+    def _apply_window_roll(limit: Limit, state: BucketState, now_ms: int) -> bool:
+        """Restore the balance if a duration window has been rolled (ADR-139).
 
-        ``vu`` is the minimum of the two futures — the next parameter change and
-        the next reset edge — because either invalidates the materialised
-        ``tk``. A limit carrying a ``reset_schedule`` and **no** ``schedule`` is
+        :meth:`_apply_reset_edge` with the backwards cron scan replaced by an
+        attribute read (:attr:`BucketState.window_rolled`, ``ws > rf``), and
+        every property that one was designed for carries over verbatim:
+
+        - **Idempotent.** It is a set, not an add, so two shards applying the
+          same ``ws``, or one shard seeing it on two successive passes,
+          converge.
+        - **Idle buckets are correct for free.** A shard idle across three
+          window boundaries applies one roll on wake, because ``ws`` holds only
+          the *current* window's start.
+        - **Strictly ``>``.** The pass that applies the roll stamps ``rf`` at or
+          after ``ws``, so ``>=`` would re-fire on every later request and
+          refund everything spent since — an unbounded quota.
+        - **Per shard, to the shard's share.** ``effective_capacity_milli``
+          applies the parameter schedule and then divides by ``shard_count``.
+          Resetting every shard to the undivided capacity would multiply the
+          entity's quota by ``shard_count``.
+        - **``tc`` untouched**, so the consumption counter stays monotonic.
+
+        The *anchoring* of a new window is **not** here. This applies a window
+        another writer (or an earlier pass) already opened. Opening one is
+        :meth:`_open_window_if_elapsed`, which runs immediately before this and
+        mutates the same ``state``, so the two compose into one pass:
+        ``_open_window_if_elapsed`` moves ``ws`` forward to ``now_ms``, and this
+        then observes ``ws > rf`` and restores the balance.
+
+        Must be called **before** :meth:`_admit_limit`, so the restored balance
+        gates the request that crossed the boundary rather than the one after
+        it. Mutates ``state`` in place and returns whether it did;
+        ``_original_tokens_milli`` and ``_original_rf_ms`` must already have
+        been captured, because they are the *stored* values the ``ADD`` delta
+        and the ``rf`` lock are built from.
+        """
+        if limit.reset_after is None or not state.window_rolled:
+            return False
+        state.tokens_milli = state.effective_capacity_milli(now_ms)
+        return True
+
+    @staticmethod
+    def _open_window_if_elapsed(limit: Limit, state: BucketState, now_ms: int) -> int | None:
+        """Anchor a new duration window when the current one has elapsed (ADR-139).
+
+        Idle-restarting, not tiling: the new window starts at ``now_ms`` — the
+        first use after expiry — rather than at ``ws_old + rsa``. Anchoring to
+        the old end would be a fixed grid offset by the first-ever use, which
+        cannot express "go idle long enough and your window restarts", the
+        thing anchoring to the entity is *for*.
+
+        The window is half-open, ``[ws, ws + rsa)``: its end instant already
+        belongs to the next window, which is also the instant ``vu`` stops
+        admitting fast-path writes.
+
+        A limit with no window, or one whose window has not elapsed, is left
+        alone — which is how "exhaustion inside the current window does not
+        move the anchor" is enforced: an exhausted quota is still inside its
+        window, so nothing here fires and :meth:`_admit_limit` rejects against
+        the balance on disk. And a pass that *does* open a window but is then
+        rejected writes nothing (write-on-enter invariant 1), so the anchor
+        moves only when a request is admitted and committed.
+
+        A bucket carrying ``rsa`` but **no** ``ws`` (a shard stamped before its
+        limit gained a window, e.g. by the param sync) opens its first window
+        here. A client-created bucket never lacks one, since
+        ``BucketState.from_limit`` stamps it at creation.
+
+        Mutates ``state`` in place. Returns the new ``ws`` when it opened one,
+        so the caller can stamp it; ``None`` otherwise.
+        """
+        if limit.reset_after is None or state.reset_after_seconds is None:
+            return None
+        end = state.window_end_ms
+        if end is not None and now_ms < end:
+            return None
+        state.window_start_ms = now_ms
+        return now_ms
+
+    @staticmethod
+    def _materialisation_stamps(
+        limit: Limit, state: BucketState, now_ms: int
+    ) -> tuple[int | None, int | None]:
+        """``(vu, next reset edge)`` for one limit at one clock reading (#222, ADR-139).
+
+        ``vu`` is the minimum of the futures that invalidate the materialised
+        ``tk``: the next parameter change, the next reset edge, and — since
+        ADR-139 — the end of the current duration window. All three are
+        boundaries past which the fast path must not spend tokens minted under
+        conditions no longer in force.
+
+        The window member is what keeps the speculative condition
+        byte-identical. An elapsed window makes ``vu <= now``, the pre-existing
+        ``(attribute_not_exists(vu) OR vu > :now)`` term fails, the failure
+        classifies as ``SCHEDULE_BOUNDARY``, and the limiter routes it to the
+        slow path — the only place that re-materialises, and therefore the only
+        place that anchors. No new condition term, no new expression value, no
+        config read on the fast path. Read the window end off ``state``
+        **after** :meth:`_open_window_if_elapsed` has run, so a pass that just
+        anchored a new window stamps ``vu`` at the *new* window's end. Only the
+        resolved ``limit`` decides whether a window is in force; a stale
+        ``ws``/``rsa`` left on the item by a limit that no longer has one does
+        not vote.
+
+        A limit carrying a ``reset_schedule`` and **no** ``schedule`` is
         the daily-quota shape, and it must still produce a ``vu``: without one
         the speculative condition never fails, the slow path never runs, and the
         reset fires only when something unrelated forces a materialising pass.
@@ -1162,7 +1273,8 @@ class SyncRateLimiter:
         reset_ms = (
             next_boundary((), limit.reset_schedule, now_ms=now_ms) if limit.reset_schedule else None
         )
-        candidates = [b for b in (param_ms, reset_ms) if b is not None]
+        window_ms = state.window_end_ms if limit.reset_after is not None else None
+        candidates = [b for b in (param_ms, reset_ms, window_ms) if b is not None]
         return (min(candidates) if candidates else None, reset_ms)
 
     @staticmethod
@@ -1283,15 +1395,20 @@ class SyncRateLimiter:
                 return None
             existing.sched = limit.schedule
             existing.reset_sched = limit.reset_schedule
+            existing.reset_after_seconds = limit.reset_after_seconds
             original_tk = existing.tokens_milli
             original_rf = existing.last_refill_ms
+            parent_new_ws = self._open_window_if_elapsed(limit, existing, now_ms)
             self._apply_reset_edge(limit, existing, now_ms)
+            self._apply_window_roll(limit, existing, now_ms)
             status, consumed = self._admit_limit(
                 parent_id, resource, limit, existing, consume, now_ms
             )
             if status is not None:
                 statuses.append(status)
-            parent_boundary_ms, parent_reset_edge_ms = self._materialisation_stamps(limit, now_ms)
+            parent_boundary_ms, parent_reset_edge_ms = self._materialisation_stamps(
+                limit, existing, now_ms
+            )
             parent_entries.append(
                 LeaseEntry(
                     entity_id=parent_id,
@@ -1307,6 +1424,8 @@ class SyncRateLimiter:
                     _shard_count=parent_shard_count,
                     _boundary_ms=parent_boundary_ms,
                     _reset_edge_ms=parent_reset_edge_ms,
+                    _window_start_ms=parent_new_ws,
+                    _window_end_ms=_window_end_in_force(limit, existing),
                 )
             )
         carrier = self._wcu_carrier(
@@ -1437,15 +1556,19 @@ class SyncRateLimiter:
                     state = existing
                     state.sched = limit.schedule
                     state.reset_sched = limit.reset_schedule
+                    state.reset_after_seconds = limit.reset_after_seconds
                 original_tk = state.tokens_milli
                 original_rf = state.last_refill_ms
+                new_ws: int | None = None
                 if not is_new:
+                    new_ws = self._open_window_if_elapsed(limit, state, now_ms)
                     self._apply_reset_edge(limit, state, now_ms)
+                    self._apply_window_roll(limit, state, now_ms)
                 status, consumed = self._admit_limit(eid, resource, limit, state, consume, now_ms)
                 if status is not None:
                     statuses.append(status)
                 has_custom_config = _is_custom_config(entity_config_sources.get(eid))
-                boundary_ms, reset_edge_ms = self._materialisation_stamps(limit, now_ms)
+                boundary_ms, reset_edge_ms = self._materialisation_stamps(limit, state, now_ms)
                 entries.append(
                     LeaseEntry(
                         entity_id=eid,
@@ -1464,6 +1587,8 @@ class SyncRateLimiter:
                         _declared=status is not None,
                         _boundary_ms=boundary_ms,
                         _reset_edge_ms=reset_edge_ms,
+                        _window_start_ms=new_ws,
+                        _window_end_ms=_window_end_in_force(limit, state),
                     )
                 )
             carrier = self._wcu_carrier(
