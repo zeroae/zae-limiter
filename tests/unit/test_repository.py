@@ -6832,6 +6832,24 @@ class TestUnreadableStoredSchedule:
         with pytest.raises(RateLimiterUnavailable, match="cannot be reconstructed"):
             await repo.get_limits("corrupt-4e", resource="gpt-4")
 
+    async def test_a_rejected_reconstruction_names_every_schedule_it_carries(self, repo):
+        """A limit carrying a parameter schedule *and* a stored reset beside its
+        positive rate: both attributes parse, `Limit.__post_init__` rejects the
+        pair (ADR-137), and the unavailability names both stored attributes —
+        either could be the one an operator has to repair."""
+        await self._seed(
+            repo, "corrupt-4f", [Limit.per_minute("rpm", 1000).with_schedule(self.BUSINESS)]
+        )
+        await _corrupt_config_sched(repo, "corrupt-4f", "gpt-4", "rpm", "1m0h0", field="rsched")
+        await repo.invalidate_config_cache()
+
+        with pytest.raises(RateLimiterUnavailable, match="cannot be reconstructed") as excinfo:
+            await repo.get_limits("corrupt-4f", resource="gpt-4")
+        message = str(excinfo.value)
+        assert "l_rpm_sched" in message
+        assert "l_rpm_rsched" in message
+        assert isinstance(excinfo.value.cause, ValueError)
+
     async def test_a_corrupt_duration_window_raises_unavailable(self, repo):
         """`rsa` has no grammar of its own — a bare `N` — but a stored value
         `Limit.__post_init__` rejects outright (zero here) must still convert
