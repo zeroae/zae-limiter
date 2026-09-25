@@ -570,7 +570,7 @@ class TestDeployLambdaCode:
             # Setup context manager for client
             mock_client_cm = MagicMock()
             mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
-            mock_client_cm.__aexit__ = AsyncMock()
+            mock_client_cm.__aexit__ = AsyncMock(return_value=False)
 
             mock_session = MagicMock()
             mock_session.create_client.return_value = mock_client_cm
@@ -629,7 +629,7 @@ class TestDeployProvisionerCode:
 
             mock_client_cm = MagicMock()
             mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
-            mock_client_cm.__aexit__ = AsyncMock()
+            mock_client_cm.__aexit__ = AsyncMock(return_value=False)
 
             mock_session = MagicMock()
             mock_session.create_client.return_value = mock_client_cm
@@ -683,7 +683,7 @@ class TestDeployProvisionerCode:
 
             mock_client_cm = MagicMock()
             mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
-            mock_client_cm.__aexit__ = AsyncMock()
+            mock_client_cm.__aexit__ = AsyncMock(return_value=False)
 
             mock_session = MagicMock()
             mock_session.create_client.return_value = mock_client_cm
@@ -850,7 +850,7 @@ class TestClose:
 
         # Setup mock client
         mock_client = MagicMock()
-        mock_client.__aexit__ = AsyncMock()
+        mock_client.__aexit__ = AsyncMock(return_value=False)
         manager._client = mock_client
         manager._session = MagicMock()
 
@@ -1224,7 +1224,7 @@ class TestWaitForEsmReady:
 
             mock_client_cm = MagicMock()
             mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
-            mock_client_cm.__aexit__ = AsyncMock()
+            mock_client_cm.__aexit__ = AsyncMock(return_value=False)
 
             mock_session = MagicMock()
             mock_session.create_client.return_value = mock_client_cm
@@ -1256,7 +1256,7 @@ class TestWaitForEsmReady:
 
             mock_client_cm = MagicMock()
             mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
-            mock_client_cm.__aexit__ = AsyncMock()
+            mock_client_cm.__aexit__ = AsyncMock(return_value=False)
 
             mock_session = MagicMock()
             mock_session.create_client.return_value = mock_client_cm
@@ -1287,7 +1287,7 @@ class TestWaitForEsmReady:
 
             mock_client_cm = MagicMock()
             mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
-            mock_client_cm.__aexit__ = AsyncMock()
+            mock_client_cm.__aexit__ = AsyncMock(return_value=False)
 
             mock_session = MagicMock()
             mock_session.create_client.return_value = mock_client_cm
@@ -1316,7 +1316,7 @@ class TestWaitForEsmReady:
 
             mock_client_cm = MagicMock()
             mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
-            mock_client_cm.__aexit__ = AsyncMock()
+            mock_client_cm.__aexit__ = AsyncMock(return_value=False)
 
             mock_session = MagicMock()
             mock_session.create_client.return_value = mock_client_cm
@@ -1346,7 +1346,7 @@ class TestWaitForEsmReady:
 
             mock_client_cm = MagicMock()
             mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
-            mock_client_cm.__aexit__ = AsyncMock()
+            mock_client_cm.__aexit__ = AsyncMock(return_value=False)
 
             mock_session = MagicMock()
             mock_session.create_client.return_value = mock_client_cm
@@ -1369,7 +1369,7 @@ class TestWaitForEsmReady:
 
             mock_client_cm = MagicMock()
             mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
-            mock_client_cm.__aexit__ = AsyncMock()
+            mock_client_cm.__aexit__ = AsyncMock(return_value=False)
 
             mock_session = MagicMock()
             mock_session.create_client.return_value = mock_client_cm
@@ -1394,7 +1394,7 @@ class TestWaitForEsmReady:
 
             mock_client_cm = MagicMock()
             mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
-            mock_client_cm.__aexit__ = AsyncMock()
+            mock_client_cm.__aexit__ = AsyncMock(return_value=False)
 
             mock_session = MagicMock()
             mock_session.create_client.return_value = mock_client_cm
@@ -1420,7 +1420,7 @@ class TestWaitForEsmReady:
 
             mock_client_cm = MagicMock()
             mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
-            mock_client_cm.__aexit__ = AsyncMock()
+            mock_client_cm.__aexit__ = AsyncMock(return_value=False)
 
             mock_session = MagicMock()
             mock_session.create_client.return_value = mock_client_cm
@@ -1492,7 +1492,7 @@ class TestWaitForEsmReady:
 
             mock_client_cm = MagicMock()
             mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
-            mock_client_cm.__aexit__ = AsyncMock()
+            mock_client_cm.__aexit__ = AsyncMock(return_value=False)
 
             mock_session = MagicMock()
             mock_session.create_client.return_value = mock_client_cm
@@ -1519,7 +1519,7 @@ class TestWaitForEsmReady:
 
             mock_client_cm = MagicMock()
             mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
-            mock_client_cm.__aexit__ = AsyncMock()
+            mock_client_cm.__aexit__ = AsyncMock(return_value=False)
 
             mock_session = MagicMock()
             mock_session.create_client.return_value = mock_client_cm
@@ -1562,7 +1562,7 @@ class TestWaitForEsmReady:
 
             mock_client_cm = MagicMock()
             mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
-            mock_client_cm.__aexit__ = AsyncMock()
+            mock_client_cm.__aexit__ = AsyncMock(return_value=False)
 
             mock_session = MagicMock()
             mock_session.create_client.return_value = mock_client_cm
@@ -1598,7 +1598,7 @@ class TestWaitForEsmReady:
 
             mock_client_cm = MagicMock()
             mock_client_cm.__aenter__ = AsyncMock(return_value=mock_lambda)
-            mock_client_cm.__aexit__ = AsyncMock()
+            mock_client_cm.__aexit__ = AsyncMock(return_value=False)
 
             mock_session = MagicMock()
             mock_session.create_client.return_value = mock_client_cm
