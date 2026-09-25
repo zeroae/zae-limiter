@@ -3014,7 +3014,7 @@ class TestListCommand:
         mock_discovery = Mock()
         mock_discovery.list_limiters = AsyncMock(return_value=[])
         mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
-        mock_discovery.__aexit__ = AsyncMock()
+        mock_discovery.__aexit__ = AsyncMock(return_value=False)
         mock_discovery_class.return_value = mock_discovery
 
         result = runner.invoke(cli, ["list"])
@@ -3053,7 +3053,7 @@ class TestListCommand:
         mock_discovery = Mock()
         mock_discovery.list_limiters = AsyncMock(return_value=mock_limiters)
         mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
-        mock_discovery.__aexit__ = AsyncMock()
+        mock_discovery.__aexit__ = AsyncMock(return_value=False)
         mock_discovery_class.return_value = mock_discovery
 
         result = runner.invoke(cli, ["list"])
@@ -3089,7 +3089,7 @@ class TestListCommand:
         mock_discovery = Mock()
         mock_discovery.list_limiters = AsyncMock(return_value=mock_limiters)
         mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
-        mock_discovery.__aexit__ = AsyncMock()
+        mock_discovery.__aexit__ = AsyncMock(return_value=False)
         mock_discovery_class.return_value = mock_discovery
 
         result = runner.invoke(cli, ["list"])
@@ -3120,7 +3120,7 @@ class TestListCommand:
         mock_discovery = Mock()
         mock_discovery.list_limiters = AsyncMock(return_value=mock_limiters)
         mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
-        mock_discovery.__aexit__ = AsyncMock()
+        mock_discovery.__aexit__ = AsyncMock(return_value=False)
         mock_discovery_class.return_value = mock_discovery
 
         result = runner.invoke(cli, ["list"])
@@ -3147,7 +3147,7 @@ class TestListCommand:
         mock_discovery = Mock()
         mock_discovery.list_limiters = AsyncMock(return_value=mock_limiters)
         mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
-        mock_discovery.__aexit__ = AsyncMock()
+        mock_discovery.__aexit__ = AsyncMock(return_value=False)
         mock_discovery_class.return_value = mock_discovery
 
         result = runner.invoke(cli, ["list"])
@@ -3175,7 +3175,7 @@ class TestListCommand:
         mock_discovery = Mock()
         mock_discovery.list_limiters = AsyncMock(return_value=mock_limiters)
         mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
-        mock_discovery.__aexit__ = AsyncMock()
+        mock_discovery.__aexit__ = AsyncMock(return_value=False)
         mock_discovery_class.return_value = mock_discovery
 
         result = runner.invoke(cli, ["list"])
@@ -3192,7 +3192,7 @@ class TestListCommand:
         mock_discovery = Mock()
         mock_discovery.list_limiters = AsyncMock(return_value=[])
         mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
-        mock_discovery.__aexit__ = AsyncMock()
+        mock_discovery.__aexit__ = AsyncMock(return_value=False)
         mock_discovery_class.return_value = mock_discovery
 
         result = runner.invoke(cli, ["list", "--region", "eu-west-1"])
@@ -3206,7 +3206,7 @@ class TestListCommand:
         mock_discovery = Mock()
         mock_discovery.list_limiters = AsyncMock(return_value=[])
         mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
-        mock_discovery.__aexit__ = AsyncMock()
+        mock_discovery.__aexit__ = AsyncMock(return_value=False)
         mock_discovery_class.return_value = mock_discovery
 
         result = runner.invoke(
@@ -3225,7 +3225,7 @@ class TestListCommand:
         mock_discovery = Mock()
         mock_discovery.list_limiters = AsyncMock(side_effect=Exception("CloudFormation API error"))
         mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
-        mock_discovery.__aexit__ = AsyncMock()
+        mock_discovery.__aexit__ = AsyncMock(return_value=False)
         mock_discovery_class.return_value = mock_discovery
 
         result = runner.invoke(cli, ["list"])
@@ -3256,7 +3256,7 @@ class TestListCommand:
         mock_discovery = Mock()
         mock_discovery.list_limiters = AsyncMock(return_value=mock_limiters)
         mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
-        mock_discovery.__aexit__ = AsyncMock()
+        mock_discovery.__aexit__ = AsyncMock(return_value=False)
         mock_discovery_class.return_value = mock_discovery
 
         result = runner.invoke(cli, ["list"])
@@ -3285,7 +3285,7 @@ class TestListCommand:
         mock_discovery = Mock()
         mock_discovery.list_limiters = AsyncMock(return_value=mock_limiters)
         mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
-        mock_discovery.__aexit__ = AsyncMock()
+        mock_discovery.__aexit__ = AsyncMock(return_value=False)
         mock_discovery_class.return_value = mock_discovery
 
         result = runner.invoke(cli, ["list"])
@@ -3313,7 +3313,7 @@ class TestListCommand:
         mock_discovery = Mock()
         mock_discovery.list_limiters = AsyncMock(return_value=mock_limiters)
         mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
-        mock_discovery.__aexit__ = AsyncMock()
+        mock_discovery.__aexit__ = AsyncMock(return_value=False)
         mock_discovery_class.return_value = mock_discovery
 
         result = runner.invoke(cli, ["list"])
@@ -3341,7 +3341,7 @@ class TestListCommand:
         mock_discovery = Mock()
         mock_discovery.list_limiters = AsyncMock(return_value=mock_limiters)
         mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
-        mock_discovery.__aexit__ = AsyncMock()
+        mock_discovery.__aexit__ = AsyncMock(return_value=False)
         mock_discovery_class.return_value = mock_discovery
 
         result = runner.invoke(cli, ["list", "--region", "ap-northeast-1"])
@@ -3357,7 +3357,7 @@ class TestListCommand:
         mock_discovery = Mock()
         mock_discovery.list_limiters = AsyncMock(return_value=[])
         mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
-        mock_discovery.__aexit__ = AsyncMock()
+        mock_discovery.__aexit__ = AsyncMock(return_value=False)
         mock_discovery_class.return_value = mock_discovery
 
         result = runner.invoke(cli, ["list"])
@@ -3397,7 +3397,7 @@ class TestListCommand:
         mock_discovery = Mock()
         mock_discovery.list_limiters = AsyncMock(return_value=mock_limiters)
         mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
-        mock_discovery.__aexit__ = AsyncMock()
+        mock_discovery.__aexit__ = AsyncMock(return_value=False)
         mock_discovery_class.return_value = mock_discovery
 
         result = runner.invoke(cli, ["list"])
@@ -3428,7 +3428,7 @@ class TestListCommand:
         mock_discovery = Mock()
         mock_discovery.list_limiters = AsyncMock(return_value=mock_limiters)
         mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
-        mock_discovery.__aexit__ = AsyncMock()
+        mock_discovery.__aexit__ = AsyncMock(return_value=False)
         mock_discovery_class.return_value = mock_discovery
 
         result = runner.invoke(cli, ["list"])

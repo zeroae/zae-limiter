@@ -4091,7 +4091,7 @@ class TestInfrastructureDiscovery:
         ) as mock_get_client:
             mock_client = MagicMock()
             mock_client.describe_stacks = AsyncMock(return_value={"Stacks": []})
-            mock_client.__aexit__ = AsyncMock()
+            mock_client.__aexit__ = AsyncMock(return_value=False)
             mock_get_client.return_value = mock_client
 
             discovery = InfrastructureDiscovery(region="us-east-1")
@@ -4130,7 +4130,7 @@ class TestRateLimiterListDeployed:
             mock_discovery = MagicMock()
             mock_discovery.list_limiters = AsyncMock(return_value=mock_limiters)
             mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
-            mock_discovery.__aexit__ = AsyncMock()
+            mock_discovery.__aexit__ = AsyncMock(return_value=False)
             mock_discovery_class.return_value = mock_discovery
 
             result = await RateLimiter.list_deployed(region="us-east-1")
@@ -4145,7 +4145,7 @@ class TestRateLimiterListDeployed:
             mock_discovery = MagicMock()
             mock_discovery.list_limiters = AsyncMock(return_value=[])
             mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
-            mock_discovery.__aexit__ = AsyncMock()
+            mock_discovery.__aexit__ = AsyncMock(return_value=False)
             mock_discovery_class.return_value = mock_discovery
 
             await RateLimiter.list_deployed(
@@ -4164,7 +4164,7 @@ class TestRateLimiterListDeployed:
             mock_discovery = MagicMock()
             mock_discovery.list_limiters = AsyncMock(return_value=[])
             mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
-            mock_discovery.__aexit__ = AsyncMock()
+            mock_discovery.__aexit__ = AsyncMock(return_value=False)
             mock_discovery_class.return_value = mock_discovery
 
             result = await RateLimiter.list_deployed(region="us-east-1")
@@ -4205,7 +4205,7 @@ class TestRateLimiterListDeployed:
             mock_discovery = MagicMock()
             mock_discovery.list_limiters = AsyncMock(return_value=[])
             mock_discovery.__aenter__ = AsyncMock(return_value=mock_discovery)
-            mock_discovery.__aexit__ = AsyncMock()
+            mock_discovery.__aexit__ = AsyncMock(return_value=False)
             mock_discovery_class.return_value = mock_discovery
 
             # Should work without creating an instance
@@ -4283,7 +4283,7 @@ class TestRateLimiterListDeployed:
             mock_session = MagicMock()
             mock_client = MagicMock()
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock()
+            mock_client.__aexit__ = AsyncMock(return_value=False)
             mock_session.create_client.return_value = mock_client
             mock_get_session.return_value = mock_session
 
@@ -4308,7 +4308,7 @@ class TestRateLimiterListDeployed:
             mock_session = MagicMock()
             mock_client = MagicMock()
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock()
+            mock_client.__aexit__ = AsyncMock(return_value=False)
             mock_session.create_client.return_value = mock_client
             mock_get_session.return_value = mock_session
 
@@ -4334,7 +4334,7 @@ class TestRateLimiterListDeployed:
             mock_session = MagicMock()
             mock_client = MagicMock()
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock()
+            mock_client.__aexit__ = AsyncMock(return_value=False)
             mock_session.create_client.return_value = mock_client
             mock_get_session.return_value = mock_session
 

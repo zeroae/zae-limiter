@@ -3032,7 +3032,7 @@ class TestInfrastructureDiscovery:
         ) as mock_get_client:
             mock_client = MagicMock()
             mock_client.describe_stacks = MagicMock(return_value={"Stacks": []})
-            mock_client.__exit__ = MagicMock()
+            mock_client.__exit__ = MagicMock(return_value=False)
             mock_get_client.return_value = mock_client
             discovery = SyncInfrastructureDiscovery(region="us-east-1")
             with discovery:
@@ -3068,7 +3068,7 @@ class TestRateLimiterListDeployed:
             mock_discovery = MagicMock()
             mock_discovery.list_limiters = MagicMock(return_value=mock_limiters)
             mock_discovery.__enter__ = MagicMock(return_value=mock_discovery)
-            mock_discovery.__exit__ = MagicMock()
+            mock_discovery.__exit__ = MagicMock(return_value=False)
             mock_discovery_class.return_value = mock_discovery
             result = SyncRateLimiter.list_deployed(region="us-east-1")
             assert result == mock_limiters
@@ -3082,7 +3082,7 @@ class TestRateLimiterListDeployed:
             mock_discovery = MagicMock()
             mock_discovery.list_limiters = MagicMock(return_value=[])
             mock_discovery.__enter__ = MagicMock(return_value=mock_discovery)
-            mock_discovery.__exit__ = MagicMock()
+            mock_discovery.__exit__ = MagicMock(return_value=False)
             mock_discovery_class.return_value = mock_discovery
             SyncRateLimiter.list_deployed(region="us-east-1", endpoint_url="http://localhost:4566")
             mock_discovery_class.assert_called_once_with(
@@ -3097,7 +3097,7 @@ class TestRateLimiterListDeployed:
             mock_discovery = MagicMock()
             mock_discovery.list_limiters = MagicMock(return_value=[])
             mock_discovery.__enter__ = MagicMock(return_value=mock_discovery)
-            mock_discovery.__exit__ = MagicMock()
+            mock_discovery.__exit__ = MagicMock(return_value=False)
             mock_discovery_class.return_value = mock_discovery
             result = SyncRateLimiter.list_deployed(region="us-east-1")
             assert result == []
@@ -3129,7 +3129,7 @@ class TestRateLimiterListDeployed:
             mock_discovery = MagicMock()
             mock_discovery.list_limiters = MagicMock(return_value=[])
             mock_discovery.__enter__ = MagicMock(return_value=mock_discovery)
-            mock_discovery.__exit__ = MagicMock()
+            mock_discovery.__exit__ = MagicMock(return_value=False)
             mock_discovery_class.return_value = mock_discovery
             result = SyncRateLimiter.list_deployed(region="us-east-1")
             assert isinstance(result, list)
@@ -3192,7 +3192,7 @@ class TestRateLimiterListDeployed:
             mock_session = MagicMock()
             mock_client = MagicMock()
             mock_client.__enter__ = MagicMock(return_value=mock_client)
-            mock_client.__exit__ = MagicMock()
+            mock_client.__exit__ = MagicMock(return_value=False)
             mock_session.client.return_value = mock_client
             mock_get_session.return_value = mock_session
             discovery = SyncInfrastructureDiscovery(region="us-east-1")
@@ -3208,7 +3208,7 @@ class TestRateLimiterListDeployed:
             mock_session = MagicMock()
             mock_client = MagicMock()
             mock_client.__enter__ = MagicMock(return_value=mock_client)
-            mock_client.__exit__ = MagicMock()
+            mock_client.__exit__ = MagicMock(return_value=False)
             mock_session.client.return_value = mock_client
             mock_get_session.return_value = mock_session
             discovery = SyncInfrastructureDiscovery(
@@ -3226,7 +3226,7 @@ class TestRateLimiterListDeployed:
             mock_session = MagicMock()
             mock_client = MagicMock()
             mock_client.__enter__ = MagicMock(return_value=mock_client)
-            mock_client.__exit__ = MagicMock()
+            mock_client.__exit__ = MagicMock(return_value=False)
             mock_session.client.return_value = mock_client
             mock_get_session.return_value = mock_session
             discovery = SyncInfrastructureDiscovery()
