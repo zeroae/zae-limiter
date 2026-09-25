@@ -1920,6 +1920,14 @@ class SyncRepository:
             }
             tc = state.total_consumed_milli if state.total_consumed_milli is not None else 0
             item[schema.bucket_attr(name, schema.BUCKET_FIELD_TC)] = {"N": str(tc)}
+            if state.reset_after_seconds is not None:
+                item[schema.bucket_attr(name, schema.BUCKET_FIELD_RSA)] = {
+                    "N": str(state.reset_after_seconds)
+                }
+            if state.window_start_ms is not None:
+                item[schema.bucket_attr(name, schema.BUCKET_FIELD_WS)] = {
+                    "N": str(state.window_start_ms)
+                }
         return {
             "Put": {
                 "TableName": self.table_name,
@@ -1940,6 +1948,7 @@ class SyncRepository:
         shard_id: int = 0,
         vu: int | None = None,
         clear_vu: bool = False,
+        window_starts: dict[str, int] | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -1968,6 +1977,14 @@ class SyncRepository:
                 group covers every limit sharing the item. This is the half of
                 the #468 fan-out's `vu = 0` that makes it self-clearing rather
                 than a permanent fast-path demotion.
+            window_starts: Limit name -> the new window start to stamp, epoch
+                ms (ADR-139). Only limits whose window rolled on **this** pass
+                appear; an empty dict or ``None`` leaves every `ws` untouched.
+                This is the only client write that moves a window start — the
+                speculative fast path stays byte-identical — so
+                `_commit_initial()` is where anchoring is decided, which is
+                what makes "only admitted use anchors" fall out rather than
+                being enforced.
         """
         add_parts: list[str] = []
         set_parts: list[str] = ["#rf = :now"]
@@ -1991,6 +2008,12 @@ class SyncRepository:
         elif clear_vu:
             remove_parts.append("#vu")
             attr_names["#vu"] = schema.BUCKET_FIELD_VU
+        for i, (name, ws) in enumerate(sorted((window_starts or {}).items())):
+            name_alias = f"#ws{i}"
+            value_placeholder = f":ws{i}"
+            attr_names[name_alias] = schema.bucket_attr(name, schema.BUCKET_FIELD_WS)
+            set_parts.append(f"{name_alias} = {value_placeholder}")
+            attr_values[value_placeholder] = {"N": str(ws)}
         condition_parts: list[str] = ["#rf = :expected_rf"]
         for name in consumed:
             c = consumed[name]
@@ -4302,6 +4325,10 @@ class SyncRepository:
 
             tc_attr = item.get(schema.bucket_attr(name, schema.BUCKET_FIELD_TC), {})
             total_consumed = int(tc_attr["N"]) if "N" in tc_attr else None
+            ws_attr = item.get(schema.bucket_attr(name, schema.BUCKET_FIELD_WS), {})
+            window_start_ms = int(ws_attr["N"]) if "N" in ws_attr else None
+            rsa_attr = item.get(schema.bucket_attr(name, schema.BUCKET_FIELD_RSA), {})
+            reset_after_seconds = int(rsa_attr["N"]) if "N" in rsa_attr else None
             is_wcu = name == schema.WCU_LIMIT_NAME
             sched = (
                 () if is_wcu else _schedule_for(name, schema.BUCKET_FIELD_SCHED, item_sched, False)
@@ -4323,6 +4350,8 @@ class SyncRepository:
                     shard_count=1 if is_wcu else shard_count,
                     sched=sched,
                     reset_sched=reset_sched,
+                    window_start_ms=window_start_ms,
+                    reset_after_seconds=reset_after_seconds,
                 )
             )
         return buckets

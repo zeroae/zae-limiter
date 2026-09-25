@@ -594,6 +594,7 @@ class RepositoryProtocol(Protocol):
         shard_id: int = 0,
         vu: int | None = None,
         clear_vu: bool = False,
+        window_starts: dict[str, int] | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -608,6 +609,9 @@ class RepositoryProtocol(Protocol):
             vu: Valid-until stamp in epoch ms, or None to leave it untouched
             clear_vu: REMOVE `vu` rather than leaving it, for a pass that
                 knows nothing on the item is scheduled (#222 §2.1)
+            window_starts: Limit name -> the new window start to stamp, epoch
+                ms (ADR-139). Only limits whose window rolled on this pass
+                appear; ``None`` leaves every `ws` untouched.
         """
         ...
 

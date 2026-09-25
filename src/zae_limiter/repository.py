@@ -2309,6 +2309,20 @@ class Repository:
             item[schema.bucket_attr(name, schema.BUCKET_FIELD_TC)] = {
                 "N": str(tc),
             }
+            # ADR-139 duration window. `wcu` is auto-injected above and never
+            # reaches this loop, so it can never carry a window -- the
+            # structural exemption ADR-139 gets for free where `rsched`
+            # needed an explicit carve-out (processor.py). `rsa` is entity-
+            # wide and never divided by shard_count; only the balance above
+            # is.
+            if state.reset_after_seconds is not None:
+                item[schema.bucket_attr(name, schema.BUCKET_FIELD_RSA)] = {
+                    "N": str(state.reset_after_seconds),
+                }
+            if state.window_start_ms is not None:
+                item[schema.bucket_attr(name, schema.BUCKET_FIELD_WS)] = {
+                    "N": str(state.window_start_ms),
+                }
 
         return {
             "Put": {
@@ -2330,6 +2344,7 @@ class Repository:
         shard_id: int = 0,
         vu: int | None = None,
         clear_vu: bool = False,
+        window_starts: dict[str, int] | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -2358,6 +2373,14 @@ class Repository:
                 group covers every limit sharing the item. This is the half of
                 the #468 fan-out's `vu = 0` that makes it self-clearing rather
                 than a permanent fast-path demotion.
+            window_starts: Limit name -> the new window start to stamp, epoch
+                ms (ADR-139). Only limits whose window rolled on **this** pass
+                appear; an empty dict or ``None`` leaves every `ws` untouched.
+                This is the only client write that moves a window start — the
+                speculative fast path stays byte-identical — so
+                `_commit_initial()` is where anchoring is decided, which is
+                what makes "only admitted use anchors" fall out rather than
+                being enforced.
         """
         add_parts: list[str] = []
         set_parts: list[str] = ["#rf = :now"]
@@ -2399,6 +2422,18 @@ class Repository:
             # construction, never both in one expression (#488).
             remove_parts.append("#vu")
             attr_names["#vu"] = schema.BUCKET_FIELD_VU
+
+        # ADR-139 duration window rollover. Monotonic counters, not the limit
+        # name, for the same reason the #487 stale-limit REMOVE aliases use
+        # `#stale{i}_{j}`: `NAME_PATTERN` allows `-` and `.`, neither legal in
+        # an expression attribute alias (`.` is a document-path separator).
+        # `sorted` only to keep the expression deterministic for tests.
+        for i, (name, ws) in enumerate(sorted((window_starts or {}).items())):
+            name_alias = f"#ws{i}"
+            value_placeholder = f":ws{i}"
+            attr_names[name_alias] = schema.bucket_attr(name, schema.BUCKET_FIELD_WS)
+            set_parts.append(f"{name_alias} = {value_placeholder}")
+            attr_values[value_placeholder] = {"N": str(ws)}
 
         condition_parts: list[str] = ["#rf = :expected_rf"]
 
@@ -5294,6 +5329,19 @@ class Repository:
             tc_attr = item.get(schema.bucket_attr(name, schema.BUCKET_FIELD_TC), {})
             total_consumed = int(tc_attr["N"]) if "N" in tc_attr else None
 
+            # ADR-139 duration window. Absent on every item written before the
+            # window existed (and always absent on `wcu`, which never carries
+            # one) -- `None` there, exactly like `total_consumed_milli` above
+            # for the same reason: a bucket predating the attribute is not
+            # corruption. This matters beyond the slow path: the ALL_OLD /
+            # ALL_NEW images behind the speculative path go through this
+            # function too, so without it every fast-path status would report
+            # a quota with no window.
+            ws_attr = item.get(schema.bucket_attr(name, schema.BUCKET_FIELD_WS), {})
+            window_start_ms = int(ws_attr["N"]) if "N" in ws_attr else None
+            rsa_attr = item.get(schema.bucket_attr(name, schema.BUCKET_FIELD_RSA), {})
+            reset_after_seconds = int(rsa_attr["N"]) if "N" in rsa_attr else None
+
             # `wcu` is never scheduled — it tracks partition write pressure,
             # not a user limit, and is the one limit `effective_params` must
             # not scale (a 0.5x window would halve the write ceiling on
@@ -5325,6 +5373,8 @@ class Repository:
                     shard_count=1 if is_wcu else shard_count,
                     sched=sched,
                     reset_sched=reset_sched,
+                    window_start_ms=window_start_ms,
+                    reset_after_seconds=reset_after_seconds,
                 )
             )
 

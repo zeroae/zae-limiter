@@ -20,11 +20,13 @@ from zae_limiter.models import BucketState
 from zae_limiter.schedule import ScheduleEntry
 from zae_limiter.schema import (
     BUCKET_FIELD_DISABLED,
+    BUCKET_FIELD_RSA,
     BUCKET_FIELD_RSCHED,
     BUCKET_FIELD_SCHED,
     BUCKET_FIELD_SCHED_TZ,
     BUCKET_FIELD_TK,
     BUCKET_FIELD_VU,
+    BUCKET_FIELD_WS,
     BUCKET_SCHED_NONE,
     CONFIG_FIELD_SCHED_TZ,
     LIMIT_FIELD_RSA,
@@ -672,6 +674,82 @@ class TestCompositeWritePaths:
         repo.create_entity("entity-no-buckets")
         result = repo.get_buckets("entity-no-buckets")
         assert result == []
+
+
+class TestDurationWindowStamp:
+    """Tests for stamping/reading the ADR-139 duration window on bucket items."""
+
+    def test_create_stamps_the_window(self, repo):
+        """build_composite_create writes b_{name}_ws/rsa from the state, unsharded."""
+        limit = Limit.quota("session", 10000, reset_after=timedelta(hours=5))
+        now = 1757000000000
+        state = BucketState.from_limit("e1", "gpt-4", limit, now_ms=now, shard_count=1)
+        item = repo.build_composite_create("e1", "gpt-4", [state], now_ms=now)["Put"]["Item"]
+        assert item[bucket_attr("session", BUCKET_FIELD_WS)] == {"N": str(now)}
+        assert item[bucket_attr("session", BUCKET_FIELD_RSA)] == {"N": "18000"}
+
+    def test_create_never_divides_rsa_by_shard_count(self, repo):
+        """`rsa` is NEVER divided by shard_count -- only the balance is."""
+        limit = Limit.quota("session", 10000, reset_after=timedelta(hours=5))
+        now = 1757000000000
+        sharded = BucketState.from_limit("e1", "gpt-4", limit, now_ms=now, shard_count=4)
+        item4 = repo.build_composite_create("e1", "gpt-4", [sharded], now_ms=now, shard_count=4)[
+            "Put"
+        ]["Item"]
+        assert item4[bucket_attr("session", BUCKET_FIELD_RSA)] == {"N": "18000"}
+        assert item4[bucket_attr("session", "tk")] == {"N": "2500000"}
+
+    def test_normal_write_sets_a_new_window_start(self, repo):
+        """build_composite_normal SETs b_{name}_ws via an alias when window_starts is given."""
+        upd = repo.build_composite_normal(
+            "e1",
+            "gpt-4",
+            consumed={"session": 1000},
+            refill_amounts={"session": 0},
+            now_ms=2000,
+            expected_rf=1000,
+            window_starts={"session": 2000},
+        )["Update"]
+        expr = upd["UpdateExpression"]
+        names = upd["ExpressionAttributeNames"]
+        values = upd["ExpressionAttributeValues"]
+        ws_aliases = [
+            alias
+            for alias, target in names.items()
+            if target == bucket_attr("session", BUCKET_FIELD_WS)
+        ]
+        assert len(ws_aliases) == 1
+        alias = ws_aliases[0]
+        assert f"{alias} = " in expr
+        placeholder = expr.split(f"{alias} = ")[1].split(",")[0].split(" ")[0]
+        assert values[placeholder] == {"N": "2000"}
+
+    def test_normal_write_omits_ws_when_no_window_rolled(self, repo):
+        """No `window_starts` means no `ws` attribute is touched at all."""
+        upd = repo.build_composite_normal(
+            "e1",
+            "gpt-4",
+            consumed={"session": 1000},
+            refill_amounts={"session": 0},
+            now_ms=2000,
+            expected_rf=1000,
+        )["Update"]
+        assert (
+            bucket_attr("session", BUCKET_FIELD_WS) not in upd["ExpressionAttributeNames"].values()
+        )
+
+    def test_deserialize_reads_the_window_back(self, repo):
+        """_deserialize_composite_bucket reads ws/rsa back into BucketState."""
+        limit = Limit.quota("session", 10000, reset_after=timedelta(hours=5))
+        now = 1757000000000
+        state = BucketState.from_limit("e1", "gpt-4", limit, now_ms=now, shard_count=1)
+        item = repo.build_composite_create("e1", "gpt-4", [state], now_ms=now)["Put"]["Item"]
+        back = {s.limit_name: s for s in repo._deserialize_composite_bucket(item)}
+        assert back["session"].window_start_ms == now
+        assert back["session"].reset_after_seconds == 18000
+        assert back["session"].window_end_ms == now + 18000000
+        assert back["wcu"].window_start_ms is None
+        assert back["wcu"].reset_after_seconds is None
 
 
 class TestCompositeBucketTTL:
