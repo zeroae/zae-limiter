@@ -700,6 +700,17 @@ class TestResetScheduleSurvivesNarrowing:
         limit = Limit.per_minute("rpm", 2)
         assert limit.per_shard(32, TUE_1400).refill_amount == 1
 
+    def test_per_shard_keeps_reset_after_through_the_division(self):
+        """`replace` preserves `reset_after` by default — the identical reason
+        `reset_schedule` survives above: nothing here applies it, so dropping
+        it would make the result unconstructible (a zero `refill_amount` with
+        neither spelling of the reset, ADR-139)."""
+        limit = Limit.quota("session", 10_000, reset_after=timedelta(hours=5))
+        shard = limit.per_shard(4, TUE_1400)
+        assert shard.reset_after == timedelta(hours=5)
+        assert shard.refill_amount == 0
+        assert shard.capacity == 2500
+
 
 class TestResetScheduleSerialisation:
     """`to_dict()` feeds the audit event `details` for all three setters.
@@ -2608,3 +2619,49 @@ class TestBucketStateCarriesTheResetSchedule:
         the carrier must set the field explicitly rather than inherit."""
         state = BucketState.from_limit("e1", "gpt-4", Limit.per_minute("rpm", 100), 0)
         assert Limit._carrier(state).reset_schedule == ()
+
+
+class TestBucketStateWindowFields:
+    """`BucketState.window_start_ms` / `reset_after_seconds` (ADR-139, Task 3).
+
+    `ws` is entity-wide and replicated verbatim to every shard — only the
+    balance is divided — so a `from_limit` call at any `shard_count` stamps
+    the same, undivided window length and start.
+    """
+
+    def test_bucket_state_from_limit_stamps_the_window(self):
+        limit = Limit.quota("session", 10_000, reset_after=timedelta(hours=5))
+        now = 1_757_000_000_000
+        state = BucketState.from_limit("e1", "gpt-4", limit, now_ms=now, shard_count=1)
+        assert state.reset_after_seconds == 18_000
+        assert state.window_start_ms == now  # a bucket is created BY a use
+        assert state.window_end_ms == now + 18_000_000
+        assert state.tokens_milli == 10_000_000
+
+    def test_bucket_state_window_end_is_none_without_a_window(self):
+        state = BucketState.from_limit(
+            "e1", "gpt-4", Limit.per_minute("rpm", 100), now_ms=0, shard_count=1
+        )
+        assert state.window_start_ms is None
+        assert state.reset_after_seconds is None
+        assert state.window_end_ms is None
+
+    def test_bucket_state_window_is_divided_by_shard_count_like_any_quota(self):
+        # The window is entity-wide; only the BALANCE is per-shard. `ws` and
+        # `rsa` are replicated verbatim to every shard.
+        limit = Limit.quota("session", 10_000, reset_after=timedelta(hours=5))
+        state = BucketState.from_limit("e1", "gpt-4", limit, now_ms=0, shard_count=4)
+        assert state.reset_after_seconds == 18_000  # NOT divided
+        assert state.tokens_milli == 2_500_000  # 10_000 // 4, in milli
+
+    def test_from_bucket_state_reconstructs_a_duration_quota(self):
+        """Task 2 Step 6 (deferred here): a duration quota read back off a
+        `BucketState` must reconstruct as a quota, not a phantom one-token
+        drip — `Limit.is_quota` asks both spellings of the reset."""
+        limit = Limit.quota("session", 10_000, reset_after=timedelta(hours=5))
+        state = BucketState.from_limit("e1", "gpt-4", limit, now_ms=0, shard_count=1)
+        reconstructed = Limit.from_bucket_state(state)
+        assert reconstructed.reset_after == timedelta(hours=5)
+        assert reconstructed.reset_schedule == ()
+        assert reconstructed.refill_amount == 0
+        assert reconstructed.is_quota

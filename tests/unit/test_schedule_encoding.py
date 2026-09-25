@@ -512,6 +512,25 @@ class TestSizeBudget:
         )
         assert len(as_json) / (len(compact) + len(tz)) > 3.0
 
+    def test_the_worst_shared_case_plus_one_rolling_limit_stays_under_one_kb(self):
+        """ADR-139's `b_{name}_ws` + `b_{name}_rsa` land on the **same** item and
+        the **same** 1 KB WCU boundary #515's marker was measured against
+        (session-quotas plan Task 3, Step 6). Neither owner measured the
+        other's budget in isolation, so re-measure the combined worst case:
+        §4.2's worst shared schedule (6 limits x 4 entries) plus one of those
+        six limits also carrying a duration reset window.
+        """
+        item = _bucket_item(6, self.WORST_SHARED)
+        # One of the six limits (`lim0`) is also a rolling/session quota:
+        # `ws` (epoch ms) and `rsa` (seconds), per schema.BUCKET_FIELD_WS /
+        # schema.BUCKET_FIELD_RSA.
+        item["b_lim0_ws"] = {"N": "1757000000000"}
+        item["b_lim0_rsa"] = {"N": "18000"}
+        measured = _ddb_item_size(item)
+        assert measured < 1024, (
+            f"combined worst case is {measured} B, at or over the 1 KB WCU boundary"
+        )
+
 
 class TestResetEncoding:
     """Reset entries share the field grammar and drop the modifier tokens."""

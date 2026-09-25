@@ -867,21 +867,29 @@ class Limit:
         one-token drip beside a ``retry_after_seconds`` computed from the
         calendar edge.
 
-        The pairing is decided by the **stored** shape, ``refill_amount_milli
-        == 0 and reset_sched``, not by either half alone. A bucket item
-        carrying a reset beside a positive rate is unconstructible under
-        ADR-137 and so means corruption; it keeps the floor and loses the
-        tuple, preserving the pre-#222 reading rather than raising where a
-        rejection is already being reported — the same call
-        ``bucket.calculate_retry_after``'s last branch makes.
+        The pairing is decided by the **stored** shape, not by either half
+        alone. Since ADR-139 a quota item can carry either spelling of the
+        reset — ``reset_sched`` (a cron) or ``reset_after_seconds`` (a
+        duration) — so both are consulted: a bucket item carrying a reset
+        beside a positive rate is unconstructible under ADR-137 and so means
+        corruption; it keeps the floor and loses whichever tuple it carried,
+        preserving the pre-#222 reading rather than raising where a rejection
+        is already being reported — the same call
+        ``bucket.calculate_retry_after``'s last branch makes. A duration
+        window read back as a dripping limit would advertise a phantom
+        one-token drip beside a ``retry_after_seconds`` computed from a rate
+        that does not exist.
 
-        Note that ``state.reset_sched`` is populated by the slow path (from the
-        resolved config) and by ``BucketState.from_limit``, but **not yet** by
+        Note that ``state.reset_sched`` and ``state.reset_after_seconds`` are
+        populated by the slow path (from the resolved config) and by
+        ``BucketState.from_limit``, but **not yet** by
         ``_deserialize_composite_bucket`` — so for a bucket read back off the
         item this is still the old behaviour exactly, and becomes live with no
-        further edit once that deserialiser decodes ``rsched``.
+        further edit once that deserialiser decodes ``rsched`` / ``rsa``.
         """
-        is_quota = state.refill_amount_milli == 0 and bool(state.reset_sched)
+        is_quota = state.refill_amount_milli == 0 and (
+            bool(state.reset_sched) or state.reset_after_seconds is not None
+        )
         return cls(
             name=state.limit_name,
             capacity=max(1, state.capacity_milli // 1000),
@@ -889,6 +897,11 @@ class Limit:
             refill_period_seconds=max(1, state.refill_period_ms // 1000),
             schedule=state.sched,
             reset_schedule=state.reset_sched if is_quota else (),
+            reset_after=(
+                timedelta(seconds=state.reset_after_seconds)
+                if is_quota and state.reset_after_seconds is not None
+                else None
+            ),
         )
 
     def per_shard(self, shard_count: int, now_ms: int) -> "Limit":
@@ -923,6 +936,10 @@ class Limit:
         lump at a calendar instant rather than dripping back at
         ``refill_amount``. Dropping it would leave a daily-quota rejection
         quoting a wait computed from the drip alone.
+
+        ``reset_after`` is carried through for the identical reason, and the
+        ``is_quota`` carve-out on the rate floor already covers it because that
+        predicate is structural and asks both spellings.
 
         Shares are floored to one whole token because ``Limit`` is whole-token
         and must stay constructible; ``schema.MAX_SHARD_COUNT`` bounds how
@@ -1167,6 +1184,21 @@ class BucketState:
     # reads the base params and neither tuple (surface plan Task 5).
     reset_sched: tuple[ScheduleEntry, ...] = ()
 
+    # Start of the current duration window, epoch ms (ADR-139). `None` means
+    # the window has not started — which for a client-created bucket never
+    # happens, because a bucket is created BY a use, but which a shard stamped
+    # before the limit gained its window can carry until the next fan-out.
+    #
+    # Entity-wide, replicated verbatim to every shard: only the balance is
+    # divided. Each shard resets itself when it observes `ws > rf`, the same
+    # rule `RateLimiter._apply_reset_edge` uses for a cron, so the rollover
+    # fan-out moves this scalar and never `tk`.
+    window_start_ms: int | None = None
+    # The window's length in seconds, denormalised from config so a
+    # materialiser needs no config read — the aggregator reads the item and
+    # nothing else. Never divided by `shard_count`.
+    reset_after_seconds: int | None = None
+
     @property
     def tokens(self) -> int:
         """Current tokens (not millitokens)."""
@@ -1220,6 +1252,18 @@ class BucketState:
         """
         _cp, _ra, rp = self._scheduled_params(now_ms)
         return rp
+
+    @property
+    def window_end_ms(self) -> int | None:
+        """When the current duration window closes, or ``None`` (ADR-139).
+
+        Derived rather than stored, so the start and the end cannot disagree
+        after a partial write, and because ``reset_after_seconds`` has to be on
+        the item anyway for the next window's length.
+        """
+        if self.window_start_ms is None or self.reset_after_seconds is None:
+            return None
+        return self.window_start_ms + self.reset_after_seconds * 1000
 
     def accrues(self, now_ms: int) -> bool:
         """Is this shard gaining tokens at ``now_ms``?
@@ -1337,6 +1381,16 @@ class BucketState:
             # schedules off the item and nothing else, so a bucket born
             # carrying `vu` but no `rsched` would never reset.
             reset_sched=limit.reset_schedule,
+            # Stamped beside `rsched` and for the identical reason: both
+            # refillers read the schedules off the item and nothing else, so a
+            # bucket born carrying `vu` but no window is a bucket whose
+            # `refill_amount` is 0 and which nothing ever resets.
+            reset_after_seconds=limit.reset_after_seconds,
+            # A bucket is created BY a use, so its window starts now. The one
+            # caller that must override this is the shard-create path, which
+            # inherits the entity's existing `ws` from a sibling (Task 8) —
+            # a new shard joins the window in progress rather than opening one.
+            window_start_ms=(now_ms if limit.reset_after is not None else None),
         )
         # Start at full capacity *as of now* — the scheduled share, not the
         # base one. A bucket born inside a `0.5x` window that started at the

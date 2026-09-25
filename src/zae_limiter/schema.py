@@ -92,6 +92,27 @@ BUCKET_FIELD_RSCHED = "rsched"  # item-level default reset schedule (§3.6, §4.
 BUCKET_FIELD_SCHED_TZ = "sched_tz"  # IANA name, hoisted out of every entry
 BUCKET_FIELD_VU = "vu"  # valid-until, epoch ms — schedule materialisation stamp
 
+# Duration reset windows (ADR-139). Two plain numbers rather than a token
+# inside `rsched`: `decode_reset` rejects unknown modifier tags by design, so a
+# token would make every stored entry conditionally-a-cron and grow a branch in
+# `cycle_seconds`, `prev_reset_edge`, `next_reset_edge` and `to_cron`.
+#
+# Deliberately OUTSIDE the versioned compact encoding (#515). That marker lives
+# inside the string `encode()` / `encode_reset()` produce; these are plain `N`
+# attributes and are never part of it, so the marker neither covers them nor
+# needs to — a number has no grammar to version. Staying outside is also what
+# keeps them readable by the aggregator without a decoder.
+#
+# `ws` is the window START, per limit, epoch ms. Absent means the window has
+# not started. It is an ENTITY-WIDE fact replicated verbatim to every shard —
+# only the balance is per-shard — and it is monotonic, which is what lets the
+# rollover fan-out reuse `_propagate_shard_count()`'s `< :new` condition.
+#
+# The window END is derived (`ws + rsa * 1000`) and never stored, so the pair
+# cannot disagree after a partial write.
+BUCKET_FIELD_WS = "ws"  # b_{name}_ws — window start, epoch ms
+BUCKET_FIELD_RSA = "rsa"  # b_{name}_rsa — window length, seconds
+
 # The explicit spelling of "this limit has no schedule of its own" (#541).
 #
 # Absence of a `b_{name}_sched` still means "inherit the item default" — that is
@@ -140,6 +161,7 @@ LIMIT_FIELD_RA = "ra"  # refill_amount
 LIMIT_FIELD_RP = "rp"  # refill_period_seconds
 LIMIT_FIELD_SCHED = "sched"  # compact-encoded schedule (#222 §4.1)
 LIMIT_FIELD_RSCHED = "rsched"  # compact-encoded reset schedule (#222 §4.1)
+LIMIT_FIELD_RSA = "rsa"  # l_{name}_rsa — duration window length, seconds (ADR-139)
 
 # IANA timezone name for every schedule on the item, hoisted out of the
 # individual entries (#222 §4.1). One attribute per item, not per limit: it is
