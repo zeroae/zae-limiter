@@ -623,19 +623,23 @@ table has a new reclaim row. Plan against the corrected text.
       refill_period_seconds: int
       schedule: tuple[ScheduleEntry, ...] = ()
       reset_schedule: tuple[ScheduleEntry, ...] = ()
-      reset_after: timedelta | None = None        # NEW
+      reset_after: timedelta | None = None  # NEW
 
       @property
-      def reset_after_seconds(self) -> int | None: ...   # NEW
+      def reset_after_seconds(self) -> int | None: ...  # NEW
       @property
-      def is_quota(self) -> bool: ...                    # WIDENED
+      def is_quota(self) -> bool: ...  # WIDENED
 
       @classmethod
       def quota(
-          cls, name: str, amount: int, *,
-          cron: str | None = None, tz: str = "UTC",
+          cls,
+          name: str,
+          amount: int,
+          *,
+          cron: str | None = None,
+          tz: str = "UTC",
           reset_after: timedelta | None = None,
-      ) -> "Limit": ...                                  # WIDENED
+      ) -> "Limit": ...  # WIDENED
   ```
   `to_dict()` emits `"reset_after_seconds": int` when set; `from_dict()` reads it back.
 
@@ -678,7 +682,10 @@ def test_reset_after_and_reset_schedule_are_mutually_exclusive():
     # restore the allowance twice over some periods and once over others.
     with pytest.raises(ValueError, match="one recovery mechanism"):
         Limit(
-            name="x", capacity=10, refill_amount=0, refill_period_seconds=1,
+            name="x",
+            capacity=10,
+            refill_amount=0,
+            refill_period_seconds=1,
             reset_schedule=(ScheduleEntry.reset(cron="0 0 * * *"),),
             reset_after=timedelta(hours=5),
         )
@@ -688,7 +695,10 @@ def test_reset_after_beside_a_positive_rate_is_rejected():
     # The same ADR-137 pairing rule the cron form already enforces.
     with pytest.raises(ValueError, match="drips or resets"):
         Limit(
-            name="x", capacity=10, refill_amount=10, refill_period_seconds=60,
+            name="x",
+            capacity=10,
+            refill_amount=10,
+            refill_period_seconds=60,
             reset_after=timedelta(hours=5),
         )
 
@@ -696,9 +706,9 @@ def test_reset_after_beside_a_positive_rate_is_rejected():
 @pytest.mark.parametrize(
     "bad",
     [
-        timedelta(0),                      # zero
-        timedelta(seconds=-1),             # negative
-        timedelta(milliseconds=1500),      # not a whole number of seconds
+        timedelta(0),  # zero
+        timedelta(seconds=-1),  # negative
+        timedelta(milliseconds=1500),  # not a whole number of seconds
     ],
 )
 def test_reset_after_must_be_a_positive_whole_number_of_seconds(bad):
@@ -707,7 +717,10 @@ def test_reset_after_must_be_a_positive_whole_number_of_seconds(bad):
     # seconds) and would truncate silently.
     with pytest.raises(ValueError, match="whole number of seconds"):
         Limit(
-            name="x", capacity=10, refill_amount=0, refill_period_seconds=1,
+            name="x",
+            capacity=10,
+            refill_amount=0,
+            refill_period_seconds=1,
             reset_after=bad,
         )
 
@@ -786,8 +799,9 @@ Widen the two ADR-137 pairing checks to consult both halves. Replace
 and its message's last line with:
 
 ```python
-                "Use Limit.quota(name, amount, cron=...) or "
-                "Limit.quota(name, amount, reset_after=...) (ADR-137, ADR-139)."
+"Use Limit.quota(name, amount, cron=...) or"
+
+"Limit.quota(name, amount, reset_after=...) (ADR-137, ADR-139)."
 ```
 
 Replace `if self.refill_amount > 0 and self.reset_schedule:` with:
@@ -820,71 +834,69 @@ of nothing else, so ``per_shard`` and ``from_bucket_state`` can rely on it witho
 - [ ] **Step 4: Widen the `quota()` factory**
 
 ```python
-    @classmethod
-    def quota(
-        cls,
-        name: str,
-        amount: int,
-        *,
-        cron: str | None = None,
-        tz: str = "UTC",
-        reset_after: timedelta | None = None,
-    ) -> "Limit":
-        """An allowance of ``amount`` per window, restored in one lump.
+@classmethod
+def quota(
+    cls,
+    name: str,
+    amount: int,
+    *,
+    cron: str | None = None,
+    tz: str = "UTC",
+    reset_after: timedelta | None = None,
+) -> "Limit":
+    """An allowance of ``amount`` per window, restored in one lump.
 
-        Two window shapes, and **exactly one** of them per limit:
+    Two window shapes, and **exactly one** of them per limit:
 
-        ``cron`` gives a **fixed calendar window** — every entity on this
-        schedule resets at the same wall-clock instant, in ``tz`` (ADR-138).
-        That is what a billing period needs: "10,000 per calendar month" is a
-        statement about the calendar, not about the caller.
+    ``cron`` gives a **fixed calendar window** — every entity on this
+    schedule resets at the same wall-clock instant, in ``tz`` (ADR-138).
+    That is what a billing period needs: "10,000 per calendar month" is a
+    statement about the calendar, not about the caller.
 
-        ``reset_after`` gives a **window anchored to the entity's own first
-        use** (ADR-139): five hours from when *you* started, not from midnight.
-        That is what a session cap needs. The window is idle-restarting — go
-        quiet past its end and the next call opens a fresh one. ``tz`` is
-        meaningless here and is ignored.
+    ``reset_after`` gives a **window anchored to the entity's own first
+    use** (ADR-139): five hours from when *you* started, not from midnight.
+    That is what a session cap needs. The window is idle-restarting — go
+    quiet past its end and the next call opens a fresh one. ``tz`` is
+    meaningless here and is ignored.
 
-        Either way the limit does not drip: the balance is *set* to the
-        capacity when the window opens and does not recover in between
-        (ADR-137). The amount and the reset have to arrive together, which is
-        why this factory exists — the intermediate value in any two-step
-        spelling is either a drip with a reset or a zero rate with none, and
-        ``Limit`` rejects both.
+    Either way the limit does not drip: the balance is *set* to the
+    capacity when the window opens and does not recover in between
+    (ADR-137). The amount and the reset have to arrive together, which is
+    why this factory exists — the intermediate value in any two-step
+    spelling is either a drip with a reset or a zero rate with none, and
+    ``Limit`` rejects both.
 
-        Args:
-            name: Limit name (e.g. "rpd", "session")
-            amount: The whole allowance for one window (also the ceiling)
-            cron: Standard 5-field cron naming the instant the window opens.
-                Mutually exclusive with ``reset_after``.
-            tz: IANA timezone ``cron`` is read in. Ignored with ``reset_after``.
-            reset_after: Window length, anchored to first use. Mutually
-                exclusive with ``cron``.
+    Args:
+        name: Limit name (e.g. "rpd", "session")
+        amount: The whole allowance for one window (also the ceiling)
+        cron: Standard 5-field cron naming the instant the window opens.
+            Mutually exclusive with ``reset_after``.
+        tz: IANA timezone ``cron`` is read in. Ignored with ``reset_after``.
+        reset_after: Window length, anchored to first use. Mutually
+            exclusive with ``cron``.
 
-        Example: 10,000 a day, back to 10,000 at New York midnight
-            Limit.quota("rpd", 10_000, cron="0 0 * * *",
-                        tz="America/New_York")
+    Example: 10,000 a day, back to 10,000 at New York midnight
+        Limit.quota("rpd", 10_000, cron="0 0 * * *",
+                    tz="America/New_York")
 
-        Example: 10,000 a session, five hours from your own first call
-            Limit.quota("session", 10_000, reset_after=timedelta(hours=5))
-        """
-        if (cron is None) == (reset_after is None):
-            raise ValueError(
-                "Limit.quota() takes exactly one of `cron` or `reset_after`: a "
-                "calendar window resets every entity at the same instant (ADR-138) "
-                "and a duration window resets each entity relative to its own first "
-                "use (ADR-139), and a limit has one recovery mechanism (ADR-137)."
-            )
-        return cls(
-            name=name,
-            capacity=amount,
-            refill_amount=0,
-            refill_period_seconds=_QUOTA_REFILL_PERIOD_SECONDS,
-            reset_schedule=(
-                (ScheduleEntry.reset(cron=cron, tz=tz),) if cron is not None else ()
-            ),
-            reset_after=reset_after,
+    Example: 10,000 a session, five hours from your own first call
+        Limit.quota("session", 10_000, reset_after=timedelta(hours=5))
+    """
+    if (cron is None) == (reset_after is None):
+        raise ValueError(
+            "Limit.quota() takes exactly one of `cron` or `reset_after`: a "
+            "calendar window resets every entity at the same instant (ADR-138) "
+            "and a duration window resets each entity relative to its own first "
+            "use (ADR-139), and a limit has one recovery mechanism (ADR-137)."
         )
+    return cls(
+        name=name,
+        capacity=amount,
+        refill_amount=0,
+        refill_period_seconds=_QUOTA_REFILL_PERIOD_SECONDS,
+        reset_schedule=((ScheduleEntry.reset(cron=cron, tz=tz),) if cron is not None else ()),
+        reset_after=reset_after,
+    )
 ```
 
 - [ ] **Step 5: Extend `to_dict` / `from_dict`**
@@ -902,11 +914,13 @@ In `to_dict`, after the `reset_schedule` block:
 In `from_dict`, add to the constructor call:
 
 ```python
-            reset_after=(
-                timedelta(seconds=data["reset_after_seconds"])
-                if data.get("reset_after_seconds") is not None
-                else None
-            ),
+reset_after = (
+    (
+        timedelta(seconds=data["reset_after_seconds"])
+        if data.get("reset_after_seconds") is not None
+        else None
+    ),
+)
 ```
 
 - [ ] **Step 6: Carry it through `per_shard` and `from_bucket_state`**
@@ -1027,16 +1041,17 @@ EOF
 - Produces:
   ```python
   # src/zae_limiter/schema.py
-  BUCKET_FIELD_WS = "ws"        # b_{name}_ws   — window start, epoch ms
-  BUCKET_FIELD_RSA = "rsa"    # b_{name}_rsa — window length, seconds
-  LIMIT_FIELD_RSA = "rsa"     # l_{name}_rsa — window length, seconds
+  BUCKET_FIELD_WS = "ws"  # b_{name}_ws   — window start, epoch ms
+  BUCKET_FIELD_RSA = "rsa"  # b_{name}_rsa — window length, seconds
+  LIMIT_FIELD_RSA = "rsa"  # l_{name}_rsa — window length, seconds
 
   # src/zae_limiter/models.py, BucketState
   window_start_ms: int | None = None
   reset_after_seconds: int | None = None
 
+
   @property
-  def window_end_ms(self) -> int | None: ...   # ws + reset_after*1000, or None
+  def window_end_ms(self) -> int | None: ...  # ws + reset_after*1000, or None
   ```
 
 - [ ] **Step 1: Write the failing test**
@@ -1049,7 +1064,7 @@ def test_bucket_state_from_limit_stamps_the_window():
     now = 1_757_000_000_000
     state = BucketState.from_limit("e1", "gpt-4", limit, now_ms=now, shard_count=1)
     assert state.reset_after_seconds == 18_000
-    assert state.window_start_ms == now          # a bucket is created BY a use
+    assert state.window_start_ms == now  # a bucket is created BY a use
     assert state.window_end_ms == now + 18_000_000
     assert state.tokens_milli == 10_000_000
 
@@ -1068,8 +1083,8 @@ def test_bucket_state_window_is_divided_by_shard_count_like_any_quota():
     # `rsa` are replicated verbatim to every shard.
     limit = Limit.quota("session", 10_000, reset_after=timedelta(hours=5))
     state = BucketState.from_limit("e1", "gpt-4", limit, now_ms=0, shard_count=4)
-    assert state.reset_after_seconds == 18_000   # NOT divided
-    assert state.tokens_milli == 2_500_000       # 10_000 // 4, in milli
+    assert state.reset_after_seconds == 18_000  # NOT divided
+    assert state.tokens_milli == 2_500_000  # 10_000 // 4, in milli
 ```
 
 and to `tests/unit/test_schema.py`:
@@ -1161,16 +1176,16 @@ and the derived accessor beside `accrues`:
 In `BucketState.from_limit`'s constructor call, after `reset_sched=limit.reset_schedule,`:
 
 ```python
-            # Stamped beside `rsched` and for the identical reason: both
-            # refillers read the schedules off the item and nothing else, so a
-            # bucket born carrying `vu` but no window is a bucket whose
-            # `refill_amount` is 0 and which nothing ever resets.
-            reset_after_seconds=limit.reset_after_seconds,
-            # A bucket is created BY a use, so its window starts now. The one
-            # caller that must override this is the shard-create path, which
-            # inherits the entity's existing `ws` from a sibling (Task 8) —
-            # a new shard joins the window in progress rather than opening one.
-            window_start_ms=now_ms if limit.reset_after is not None else None,
+# Stamped beside `rsched` and for the identical reason: both
+# refillers read the schedules off the item and nothing else, so a
+# bucket born carrying `vu` but no window is a bucket whose
+# `refill_amount` is 0 and which nothing ever resets.
+reset_after_seconds = (limit.reset_after_seconds,)
+# A bucket is created BY a use, so its window starts now. The one
+# caller that must override this is the shard-create path, which
+# inherits the entity's existing `ws` from a sibling (Task 8) —
+# a new shard joins the window in progress rather than opening one.
+window_start_ms = (now_ms if limit.reset_after is not None else None,)
 ```
 
 - [ ] **Step 6: Check the item-size budget against #515**
@@ -1382,11 +1397,18 @@ EOF
 - Produces:
   ```python
   def build_composite_normal(
-      self, entity_id: str, resource: str, consumed: dict[str, int],
-      refill_amounts: dict[str, int], now_ms: int, expected_rf: int,
-      ttl_seconds: int | None = None, shard_id: int = 0,
-      vu: int | None = None, clear_vu: bool = False,
-      window_starts: dict[str, int] | None = None,   # NEW: limit name -> new ws
+      self,
+      entity_id: str,
+      resource: str,
+      consumed: dict[str, int],
+      refill_amounts: dict[str, int],
+      now_ms: int,
+      expected_rf: int,
+      ttl_seconds: int | None = None,
+      shard_id: int = 0,
+      vu: int | None = None,
+      clear_vu: bool = False,
+      window_starts: dict[str, int] | None = None,  # NEW: limit name -> new ws
   ) -> dict[str, Any]: ...
   ```
   `build_composite_create` needs no new parameter: it takes `states`, which already carry the
@@ -1405,16 +1427,17 @@ def test_create_stamps_the_window(repo):
     assert item["b_session_rsa"] == {"N": "18000"}
     # `rsa` is NEVER divided by shard_count — only the balance is.
     sharded = BucketState.from_limit("e1", "gpt-4", limit, now_ms=now, shard_count=4)
-    item4 = repo.build_composite_create(
-        "e1", "gpt-4", [sharded], now_ms=now, shard_count=4
-    )["Put"]["Item"]
+    item4 = repo.build_composite_create("e1", "gpt-4", [sharded], now_ms=now, shard_count=4)["Put"][
+        "Item"
+    ]
     assert item4["b_session_rsa"] == {"N": "18000"}
     assert item4["b_session_tk"] == {"N": "2500000"}
 
 
 def test_normal_write_sets_a_new_window_start(repo):
     upd = repo.build_composite_normal(
-        "e1", "gpt-4",
+        "e1",
+        "gpt-4",
         consumed={"session": 1_000},
         refill_amounts={"session": 0},
         now_ms=2_000,
@@ -1427,7 +1450,8 @@ def test_normal_write_sets_a_new_window_start(repo):
 
 def test_normal_write_omits_ws_when_no_window_rolled(repo):
     upd = repo.build_composite_normal(
-        "e1", "gpt-4",
+        "e1",
+        "gpt-4",
         consumed={"session": 1_000},
         refill_amounts={"session": 0},
         now_ms=2_000,
@@ -1462,19 +1486,15 @@ keyword.
 In `build_composite_create`'s per-state loop, after the `tc` write:
 
 ```python
-            # `wcu` is auto-injected above and never reaches this loop, so it
-            # can never carry a window — the structural exemption ADR-139
-            # gets for free where `rsched` needed an explicit carve-out
-            # (processor.py:799-804), because `ws` is per-limit and `rsched`
-            # has an item-level default.
-            if state.reset_after_seconds is not None:
-                item[schema.bucket_attr(name, schema.BUCKET_FIELD_RSA)] = {
-                    "N": str(state.reset_after_seconds)
-                }
-            if state.window_start_ms is not None:
-                item[schema.bucket_attr(name, schema.BUCKET_FIELD_WS)] = {
-                    "N": str(state.window_start_ms)
-                }
+# `wcu` is auto-injected above and never reaches this loop, so it
+# can never carry a window — the structural exemption ADR-139
+# gets for free where `rsched` needed an explicit carve-out
+# (processor.py:799-804), because `ws` is per-limit and `rsched`
+# has an item-level default.
+if state.reset_after_seconds is not None:
+    item[schema.bucket_attr(name, schema.BUCKET_FIELD_RSA)] = {"N": str(state.reset_after_seconds)}
+if state.window_start_ms is not None:
+    item[schema.bucket_attr(name, schema.BUCKET_FIELD_WS)] = {"N": str(state.window_start_ms)}
 ```
 
 - [ ] **Step 4: SET on the normal path**
@@ -1587,12 +1607,15 @@ scan replaced by an attribute read, and it runs in the same place for the same r
   def _apply_window_roll(limit: Limit, state: BucketState, now_ms: int) -> bool: ...
   @staticmethod
   def _materialisation_stamps(
-      limit: Limit, state: BucketState, now_ms: int   # `state` is NEW
+      limit: Limit,
+      state: BucketState,
+      now_ms: int,  # `state` is NEW
   ) -> tuple[int | None, int | None]: ...
 
+
   # src/zae_limiter/lease.py, LeaseEntry
-  _window_start_ms: int | None = None   # the new ws to stamp, or None
-  _window_end_ms: int | None = None     # the boundary the acquire path saw
+  _window_start_ms: int | None = None  # the new ws to stamp, or None
+  _window_end_ms: int | None = None  # the boundary the acquire path saw
   ```
 
 - [ ] **Step 1: Write the failing roll tests**
@@ -1656,81 +1679,82 @@ Expected: FAIL — `AttributeError: type object 'RateLimiter' has no attribute '
 Immediately after `_apply_reset_edge` in `src/zae_limiter/limiter.py`:
 
 ```python
-    @staticmethod
-    def _apply_window_roll(limit: Limit, state: BucketState, now_ms: int) -> bool:
-        """Restore the balance if a duration window has been rolled (ADR-139).
+@staticmethod
+def _apply_window_roll(limit: Limit, state: BucketState, now_ms: int) -> bool:
+    """Restore the balance if a duration window has been rolled (ADR-139).
 
-        :meth:`_apply_reset_edge` with the backwards cron scan replaced by an
-        attribute read, and every property that one was designed for carries
-        over verbatim:
+    :meth:`_apply_reset_edge` with the backwards cron scan replaced by an
+    attribute read, and every property that one was designed for carries
+    over verbatim:
 
-        - **Idempotent.** It is a set, not an add, so two shards applying the
-          same ``ws``, or one shard seeing it on two successive passes,
-          converge.
-        - **Idle buckets are correct for free.** A shard idle across three
-          window boundaries applies one roll on wake, because ``ws`` holds only
-          the *current* window's start.
-        - **Strictly ``>``.** The pass that applies the roll stamps ``rf`` at or
-          after ``ws``, so ``>=`` would re-fire on every later request and
-          refund everything spent since — an unbounded quota.
-        - **Per shard, to the shard's share.** ``effective_capacity_milli``
-          applies the parameter schedule and then divides by ``shard_count``.
-          Resetting every shard to the undivided capacity would multiply the
-          entity's quota by ``shard_count``.
-        - **``tc`` untouched**, so the consumption counter stays monotonic.
+    - **Idempotent.** It is a set, not an add, so two shards applying the
+      same ``ws``, or one shard seeing it on two successive passes,
+      converge.
+    - **Idle buckets are correct for free.** A shard idle across three
+      window boundaries applies one roll on wake, because ``ws`` holds only
+      the *current* window's start.
+    - **Strictly ``>``.** The pass that applies the roll stamps ``rf`` at or
+      after ``ws``, so ``>=`` would re-fire on every later request and
+      refund everything spent since — an unbounded quota.
+    - **Per shard, to the shard's share.** ``effective_capacity_milli``
+      applies the parameter schedule and then divides by ``shard_count``.
+      Resetting every shard to the undivided capacity would multiply the
+      entity's quota by ``shard_count``.
+    - **``tc`` untouched**, so the consumption counter stays monotonic.
 
-        The *anchoring* of a new window is **not** here. This applies a window
-        another writer (or an earlier pass) already opened. Opening one is
-        :meth:`_open_window_if_elapsed`, which runs immediately before this and
-        mutates the same ``state``, so the two compose into one pass:
-        ``_open_window_if_elapsed`` moves ``ws`` forward to ``now_ms``, and this
-        then observes ``ws > rf`` and restores the balance.
+    The *anchoring* of a new window is **not** here. This applies a window
+    another writer (or an earlier pass) already opened. Opening one is
+    :meth:`_open_window_if_elapsed`, which runs immediately before this and
+    mutates the same ``state``, so the two compose into one pass:
+    ``_open_window_if_elapsed`` moves ``ws`` forward to ``now_ms``, and this
+    then observes ``ws > rf`` and restores the balance.
 
-        Must be called **before** :meth:`_admit_limit`, so the restored balance
-        gates the request that crossed the boundary rather than the one after
-        it. Mutates ``state`` in place and returns whether it did;
-        ``_original_tokens_milli`` and ``_original_rf_ms`` must already have
-        been captured, because they are the *stored* values the ``ADD`` delta
-        and the ``rf`` lock are built from.
-        """
-        if state.window_start_ms is None:
-            return False
-        if state.window_start_ms <= state.last_refill_ms:
-            return False
-        state.tokens_milli = state.effective_capacity_milli(now_ms)
-        return True
+    Must be called **before** :meth:`_admit_limit`, so the restored balance
+    gates the request that crossed the boundary rather than the one after
+    it. Mutates ``state`` in place and returns whether it did;
+    ``_original_tokens_milli`` and ``_original_rf_ms`` must already have
+    been captured, because they are the *stored* values the ``ADD`` delta
+    and the ``rf`` lock are built from.
+    """
+    if state.window_start_ms is None:
+        return False
+    if state.window_start_ms <= state.last_refill_ms:
+        return False
+    state.tokens_milli = state.effective_capacity_milli(now_ms)
+    return True
 
-    @staticmethod
-    def _open_window_if_elapsed(limit: Limit, state: BucketState, now_ms: int) -> int | None:
-        """Anchor a new duration window when the current one has elapsed (ADR-139).
 
-        Idle-restarting, not tiling: the new window starts at ``now_ms`` — the
-        first use after expiry — rather than at ``ws_old + rsa``. Anchoring to
-        the old end would be a fixed grid offset by the first-ever use, which
-        cannot express "go idle long enough and your window restarts", the
-        thing anchoring to the entity is *for*.
+@staticmethod
+def _open_window_if_elapsed(limit: Limit, state: BucketState, now_ms: int) -> int | None:
+    """Anchor a new duration window when the current one has elapsed (ADR-139).
 
-        A limit with no window, or one whose window has not elapsed, is left
-        alone — which is how "exhaustion inside the current window does not
-        move the anchor" is enforced: an exhausted quota is still inside its
-        window, so nothing here fires and `_admit_limit` rejects against the
-        balance on disk.
+    Idle-restarting, not tiling: the new window starts at ``now_ms`` — the
+    first use after expiry — rather than at ``ws_old + rsa``. Anchoring to
+    the old end would be a fixed grid offset by the first-ever use, which
+    cannot express "go idle long enough and your window restarts", the
+    thing anchoring to the entity is *for*.
 
-        A bucket carrying ``rsa`` but **no** ``ws`` (a shard stamped by the
-        param sync before the limit gained its window, Task 11) opens its first
-        window here. That is the only way a client-written bucket can lack one,
-        since ``BucketState.from_limit`` stamps it at creation.
+    A limit with no window, or one whose window has not elapsed, is left
+    alone — which is how "exhaustion inside the current window does not
+    move the anchor" is enforced: an exhausted quota is still inside its
+    window, so nothing here fires and `_admit_limit` rejects against the
+    balance on disk.
 
-        Mutates ``state`` in place. Returns the new ``ws`` when it opened one,
-        so the caller can stamp it and fan it out; ``None`` otherwise.
-        """
-        if limit.reset_after is None or state.reset_after_seconds is None:
-            return None
-        end = state.window_end_ms
-        if end is not None and now_ms < end:
-            return None
-        state.window_start_ms = now_ms
-        return now_ms
+    A bucket carrying ``rsa`` but **no** ``ws`` (a shard stamped by the
+    param sync before the limit gained its window, Task 11) opens its first
+    window here. That is the only way a client-written bucket can lack one,
+    since ``BucketState.from_limit`` stamps it at creation.
+
+    Mutates ``state`` in place. Returns the new ``ws`` when it opened one,
+    so the caller can stamp it and fan it out; ``None`` otherwise.
+    """
+    if limit.reset_after is None or state.reset_after_seconds is None:
+        return None
+    end = state.window_end_ms
+    if end is not None and now_ms < end:
+        return None
+    state.window_start_ms = now_ms
+    return now_ms
 ```
 
 - [ ] **Step 4: Run the roll tests**
@@ -1811,31 +1835,30 @@ In `src/zae_limiter/lease.py`, add to `LeaseEntry` beside `_reset_edge_ms`:
 In `_commit_initial`'s `else:` branch, alongside the `_reset_edge_ms` re-expression:
 
 ```python
-                window_starts: dict[str, int] = {}
-                for entry in group_entries:
-                    name = entry.limit.name
-                    ...
-                    # A window that elapsed between the acquire path's reading
-                    # and this one is the mirror of the reset-edge case below,
-                    # and silent in the same way: `_open_window_if_elapsed()`
-                    # saw nothing, yet `rf` is stamped at this later reading,
-                    # so the next pass compares a `ws` it never moved against
-                    # an `rf` already past the boundary and never rolls either.
-                    # A whole window's quota disappears.
-                    #
-                    # Re-expressing cannot double-apply: the acquire path
-                    # covers every boundary at or before its own reading, and
-                    # `_window_end_ms` is strictly after it. Admission was
-                    # gated against the pre-roll balance, which is the
-                    # conservative direction.
-                    if entry._window_end_ms is not None and entry._window_end_ms <= now_ms:
-                        entry._window_start_ms = now_ms
-                        refill_amounts[name] = (
-                            entry.state.effective_capacity_milli(now_ms)
-                            - entry._original_tokens_milli
-                        )
-                    if entry._window_start_ms is not None:
-                        window_starts[name] = entry._window_start_ms
+window_starts: dict[str, int] = {}
+for entry in group_entries:
+    name = entry.limit.name
+    ...
+    # A window that elapsed between the acquire path's reading
+    # and this one is the mirror of the reset-edge case below,
+    # and silent in the same way: `_open_window_if_elapsed()`
+    # saw nothing, yet `rf` is stamped at this later reading,
+    # so the next pass compares a `ws` it never moved against
+    # an `rf` already past the boundary and never rolls either.
+    # A whole window's quota disappears.
+    #
+    # Re-expressing cannot double-apply: the acquire path
+    # covers every boundary at or before its own reading, and
+    # `_window_end_ms` is strictly after it. Admission was
+    # gated against the pre-roll balance, which is the
+    # conservative direction.
+    if entry._window_end_ms is not None and entry._window_end_ms <= now_ms:
+        entry._window_start_ms = now_ms
+        refill_amounts[name] = (
+            entry.state.effective_capacity_milli(now_ms) - entry._original_tokens_milli
+        )
+    if entry._window_start_ms is not None:
+        window_starts[name] = entry._window_start_ms
 ```
 
 and pass `window_starts=window_starts` to `build_composite_normal(...)`.
@@ -1898,7 +1921,7 @@ async def test_a_rejection_at_a_boundary_writes_nothing(mock_dynamodb, unique_na
     with pytest.raises(RateLimitExceeded):
         async with limiter.acquire("user-1", "gpt-4", consume={"session": 999_999}):
             pass
-    assert await _stored_ws(repo, "user-1", "gpt-4", "session") == t0   # unmoved
+    assert await _stored_ws(repo, "user-1", "gpt-4", "session") == t0  # unmoved
 
     # And the next admitted request anchors at its own now.
     repo._now_ms = lambda: t0 + 18_000_002
@@ -2024,8 +2047,8 @@ surface in the plan.
       resource: str,
       shard_id: int,
       shard_count: int,
-      window_starts: dict[str, int],   # limit name -> new ws, epoch ms
-  ) -> int: ...   # number of (shard, limit) writes that applied
+      window_starts: dict[str, int],  # limit name -> new ws, epoch ms
+  ) -> int: ...  # number of (shard, limit) writes that applied
   ```
 
 - [ ] **Step 1: Write the failing tests**
@@ -2037,7 +2060,7 @@ async def test_propagate_window_start_writes_every_other_shard(repo):
     written = await repo._propagate_window_start(
         "e1", "gpt-4", shard_id=2, shard_count=4, window_starts={"session": 9_000}
     )
-    assert written == 3                       # 0, 1, 3 — never the writer's own
+    assert written == 3  # 0, 1, 3 — never the writer's own
     for s in (0, 1, 3):
         assert await _stored_ws_on(repo, "e1", "gpt-4", "session", shard=s) == 9_000
     # The writer's own shard was stamped by the transaction, not by this.
@@ -2086,9 +2109,12 @@ async def test_propagate_window_start_stamps_vu_zero(repo):
 
 @pytest.mark.asyncio
 async def test_propagate_window_start_is_a_noop_at_shard_count_one(repo):
-    assert await repo._propagate_window_start(
-        "e1", "gpt-4", shard_id=0, shard_count=1, window_starts={"session": 9_000}
-    ) == 0
+    assert (
+        await repo._propagate_window_start(
+            "e1", "gpt-4", shard_id=0, shard_count=1, window_starts={"session": 9_000}
+        )
+        == 0
+    )
 
 
 @pytest.mark.asyncio
@@ -2116,125 +2142,122 @@ Expected: FAIL — `AttributeError: 'Repository' object has no attribute '_propa
 - [ ] **Step 3: Implement it**
 
 ```python
-    async def _propagate_window_start(
-        self,
-        entity_id: str,
-        resource: str,
-        shard_id: int,
-        shard_count: int,
-        window_starts: dict[str, int],
-    ) -> int:
-        """Stamp a newly anchored duration window on the entity's other shards (ADR-139).
+async def _propagate_window_start(
+    self,
+    entity_id: str,
+    resource: str,
+    shard_id: int,
+    shard_count: int,
+    window_starts: dict[str, int],
+) -> int:
+    """Stamp a newly anchored duration window on the entity's other shards (ADR-139).
 
-        Mirrors :meth:`_propagate_shard_count` exactly, with ``ws`` substituted
-        for ``shard_count``, because ``ws`` has the property that shape needs:
-        it is **monotonic**. Window *n+1* opens at a clock reading strictly
-        after window *n* closed, so ``ws₀ < ws₀+W ≤ ws₁ < …`` over the life of
-        the bucket. What the ``ws < :new`` guard buys, in the same terms:
+    Mirrors :meth:`_propagate_shard_count` exactly, with ``ws`` substituted
+    for ``shard_count``, because ``ws`` has the property that shape needs:
+    it is **monotonic**. Window *n+1* opens at a clock reading strictly
+    after window *n* closed, so ``ws₀ < ws₀+W ≤ ws₁ < …`` over the life of
+    the bucket. What the ``ws < :new`` guard buys, in the same terms:
 
-        - **Idempotent.** Re-running a rollover writes nothing the second time.
-        - **Race-free against a concurrent roller.** Two clients crossing the
-          boundary milliseconds apart produce two values; the later wins and the
-          earlier no-ops. Both are within clock skew of the same instant and the
-          window is at most ``reset_after`` long either way — never longer.
-        - **Race-free against a delayed write.** A client whose rollover write
-          is delayed past the *next* boundary carries a ``ws`` now smaller than
-          the stored one, and the condition rejects it. Without monotonicity
-          that write would drag every shard back a full window.
-        - **Safe under ``--no-aggregator``.** The client owns this, exactly as
-          :meth:`bump_shard_count` owns shard-count propagation for the same
-          reason.
+    - **Idempotent.** Re-running a rollover writes nothing the second time.
+    - **Race-free against a concurrent roller.** Two clients crossing the
+      boundary milliseconds apart produce two values; the later wins and the
+      earlier no-ops. Both are within clock skew of the same instant and the
+      window is at most ``reset_after`` long either way — never longer.
+    - **Race-free against a delayed write.** A client whose rollover write
+      is delayed past the *next* boundary carries a ``ws`` now smaller than
+      the stored one, and the condition rejects it. Without monotonicity
+      that write would drag every shard back a full window.
+    - **Safe under ``--no-aggregator``.** The client owns this, exactly as
+      :meth:`bump_shard_count` owns shard-count propagation for the same
+      reason.
 
-        **It writes ``ws`` and never ``tk``**, which is the whole coherence
-        argument. A fan-out cannot use ``ADD`` — it does not know each sibling's
-        balance — and the blind ``SET`` it would otherwise need races the
-        sibling's own slow path in both orderings: landing after, it clobbers
-        and refunds the sibling's committed consumption; landing before, the
-        sibling's ``rf`` lock still holds and its own ``ADD`` applies on top,
-        leaving it at twice its share. Both are over-admission. Each sibling
-        resets itself, under its own lock, in the write it was going to make
-        anyway.
+    **It writes ``ws`` and never ``tk``**, which is the whole coherence
+    argument. A fan-out cannot use ``ADD`` — it does not know each sibling's
+    balance — and the blind ``SET`` it would otherwise need races the
+    sibling's own slow path in both orderings: landing after, it clobbers
+    and refunds the sibling's committed consumption; landing before, the
+    sibling's ``rf`` lock still holds and its own ``ADD`` applies on top,
+    leaving it at twice its share. Both are over-admission. Each sibling
+    resets itself, under its own lock, in the write it was going to make
+    anyway.
 
-        ``vu = 0`` rides along, for the reason the #468 fan-out writes it and
-        for one more. It forces the sibling to take one materialising pass,
-        which is where ``ws > rf`` is evaluated — and the fast path is a pure
-        ``ADD`` with no ceiling arithmetic, so without it a sibling would keep
-        spending its *old* window's balance against a bucket the entity has
-        already rolled. A sibling's ``vu`` is usually already expired (its own
-        window end was the minimum, and that is what just elapsed), but not
-        always — one created before the limit gained its window has no ``ws``
-        and a ``vu`` dominated by a cron boundary — so it is stamped
-        unconditionally rather than conditionally reasoned about. The cost is
-        one skipped aggregator refill per shard per rollover (#508's
-        ``vu = :expected_vu`` pin sees the change), which is a missed top-up,
-        self-healing on the next batch.
+    ``vu = 0`` rides along, for the reason the #468 fan-out writes it and
+    for one more. It forces the sibling to take one materialising pass,
+    which is where ``ws > rf`` is evaluated — and the fast path is a pure
+    ``ADD`` with no ceiling arithmetic, so without it a sibling would keep
+    spending its *old* window's balance against a bucket the entity has
+    already rolled. A sibling's ``vu`` is usually already expired (its own
+    window end was the minimum, and that is what just elapsed), but not
+    always — one created before the limit gained its window has no ``ws``
+    and a ``vu`` dominated by a cron boundary — so it is stamped
+    unconditionally rather than conditionally reasoned about. The cost is
+    one skipped aggregator refill per shard per rollover (#508's
+    ``vu = :expected_vu`` pin sees the change), which is a missed top-up,
+    self-healing on the next batch.
 
-        One write per (sibling, limit) rather than one per sibling covering
-        every rolled limit: two duration limits on one item can have different
-        lengths and therefore roll at different instants, and an ANDed condition
-        over both would no-op the whole write whenever one was already ahead —
-        leaving the other staggered. With the single rolling limit the
-        motivating product has, the two are the same count.
+    One write per (sibling, limit) rather than one per sibling covering
+    every rolled limit: two duration limits on one item can have different
+    lengths and therefore roll at different instants, and an ANDed condition
+    over both would no-op the whole write whenever one was already ahead —
+    leaving the other staggered. With the single rolling limit the
+    motivating product has, the two are the same count.
 
-        Returns:
-            The number of writes that applied. A shortfall against
-            ``(shard_count - 1) * len(window_starts)`` is logged: a lost write
-            leaves a sibling on a stale ``ws``, which costs at most one extra
-            window's share on the shards that already rolled when that sibling
-            later anchors a window of its own (ADR-139 Consequences).
-        """
-        if shard_count <= 1 or not window_starts:
-            return 0
-        client = await self._get_client()
+    Returns:
+        The number of writes that applied. A shortfall against
+        ``(shard_count - 1) * len(window_starts)`` is logged: a lost write
+        leaves a sibling on a stale ``ws``, which costs at most one extra
+        window's share on the shards that already rolled when that sibling
+        later anchors a window of its own (ADR-139 Consequences).
+    """
+    if shard_count <= 1 or not window_starts:
+        return 0
+    client = await self._get_client()
 
-        async def stamp(target_shard: int, name: str, new_ws: int) -> int:
-            try:
-                await client.update_item(
-                    TableName=self.table_name,
-                    Key={
-                        "PK": {
-                            "S": schema.pk_bucket(
-                                self._namespace_id, entity_id, resource, target_shard
-                            )
-                        },
-                        "SK": {"S": schema.sk_state()},
+    async def stamp(target_shard: int, name: str, new_ws: int) -> int:
+        try:
+            await client.update_item(
+                TableName=self.table_name,
+                Key={
+                    "PK": {
+                        "S": schema.pk_bucket(self._namespace_id, entity_id, resource, target_shard)
                     },
-                    UpdateExpression="SET #ws = :new, #vu = :zero",
-                    ConditionExpression=(
-                        "attribute_exists(PK) AND "
-                        "(attribute_not_exists(#ws) OR #ws < :new)"
-                    ),
-                    # An alias, not the bare name: `bucket_attr` interpolates a
-                    # limit name, and `NAME_PATTERN` allows `-` and `.` — `.`
-                    # is a document-path separator in an UpdateExpression.
-                    ExpressionAttributeNames={
-                        "#ws": schema.bucket_attr(name, schema.BUCKET_FIELD_WS),
-                        "#vu": schema.BUCKET_FIELD_VU,
-                    },
-                    ExpressionAttributeValues={
-                        ":new": {"N": str(new_ws)},
-                        ":zero": {"N": "0"},
-                    },
-                )
-                return 1
-            except ClientError as e:
-                code = e.response.get("Error", {}).get("Code")
-                if code == "ConditionalCheckFailedException":
-                    return 0  # already at or ahead of this window, or gone
-                raise
+                    "SK": {"S": schema.sk_state()},
+                },
+                UpdateExpression="SET #ws = :new, #vu = :zero",
+                ConditionExpression=(
+                    "attribute_exists(PK) AND (attribute_not_exists(#ws) OR #ws < :new)"
+                ),
+                # An alias, not the bare name: `bucket_attr` interpolates a
+                # limit name, and `NAME_PATTERN` allows `-` and `.` — `.`
+                # is a document-path separator in an UpdateExpression.
+                ExpressionAttributeNames={
+                    "#ws": schema.bucket_attr(name, schema.BUCKET_FIELD_WS),
+                    "#vu": schema.BUCKET_FIELD_VU,
+                },
+                ExpressionAttributeValues={
+                    ":new": {"N": str(new_ws)},
+                    ":zero": {"N": "0"},
+                },
+            )
+            return 1
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code")
+            if code == "ConditionalCheckFailedException":
+                return 0  # already at or ahead of this window, or gone
+            raise
 
-        # List comprehension, not a generator: the sync transformer rewrites
-        # `gather(*[expr for x in it])` into `_run_in_executor(*[lambda ...])`,
-        # which needs the call deferred into the lambda.
-        targets = [
-            (n, name, ws)
-            for n in range(shard_count)
-            if n != shard_id
-            for name, ws in sorted(window_starts.items())
-        ]
-        results = await asyncio.gather(*[stamp(n, name, ws) for n, name, ws in targets])
-        written = sum(results)
-        return written
+    # List comprehension, not a generator: the sync transformer rewrites
+    # `gather(*[expr for x in it])` into `_run_in_executor(*[lambda ...])`,
+    # which needs the call deferred into the lambda.
+    targets = [
+        (n, name, ws)
+        for n in range(shard_count)
+        if n != shard_id
+        for name, ws in sorted(window_starts.items())
+    ]
+    results = await asyncio.gather(*[stamp(n, name, ws) for n, name, ws in targets])
+    written = sum(results)
+    return written
 ```
 
 **No `asyncio.gather` keyword** — `return_exceptions=True` would abort sync generation
@@ -2248,34 +2271,36 @@ In `src/zae_limiter/lease.py`, at the end of `_commit_initial()` — **after** t
 succeeded, never before:
 
 ```python
-        # After the commit, never inside it. The transaction is what makes the
-        # roll durable on this shard; the fan-out is what stops the entity's
-        # other shards anchoring windows of their own. A failure here is not a
-        # failed acquire — the caller was admitted and the write landed — so it
-        # is logged and swallowed, and the `ws > rf` rule converges the rest of
-        # the shards on whichever `ws` is latest anyway (ADR-139).
-        for group_key, starts in window_fanouts.items():
-            entity_id, resource, shard_id, shard_count = group_key
-            if shard_count <= 1 or not starts:
-                continue
-            try:
-                written = await repo._propagate_window_start(
-                    entity_id, resource, shard_id, shard_count, starts
-                )
-            except Exception:
-                logger.warning(
-                    "duration-window fan-out failed for resource=%s; siblings will "
-                    "anchor their own windows until one converges them",
-                    resource,
-                    exc_info=True,
-                )
-                continue
-            expected = (shard_count - 1) * len(starts)
-            if written < expected:
-                logger.info(
-                    "duration-window fan-out wrote %d of %d for resource=%s",
-                    written, expected, resource,
-                )
+# After the commit, never inside it. The transaction is what makes the
+# roll durable on this shard; the fan-out is what stops the entity's
+# other shards anchoring windows of their own. A failure here is not a
+# failed acquire — the caller was admitted and the write landed — so it
+# is logged and swallowed, and the `ws > rf` rule converges the rest of
+# the shards on whichever `ws` is latest anyway (ADR-139).
+for group_key, starts in window_fanouts.items():
+    entity_id, resource, shard_id, shard_count = group_key
+    if shard_count <= 1 or not starts:
+        continue
+    try:
+        written = await repo._propagate_window_start(
+            entity_id, resource, shard_id, shard_count, starts
+        )
+    except Exception:
+        logger.warning(
+            "duration-window fan-out failed for resource=%s; siblings will "
+            "anchor their own windows until one converges them",
+            resource,
+            exc_info=True,
+        )
+        continue
+    expected = (shard_count - 1) * len(starts)
+    if written < expected:
+        logger.info(
+            "duration-window fan-out wrote %d of %d for resource=%s",
+            written,
+            expected,
+            resource,
+        )
 ```
 
 Build `window_fanouts: dict[tuple[str, str, int, int], dict[str, int]]` in the same loop that
@@ -2323,8 +2348,7 @@ async def test_a_rollover_converges_every_shard_on_one_window(test_repo):
         pass
 
     starts = {
-        await _stored_ws_on(test_repo, "user-1", "gpt-4", "session", shard=s)
-        for s in range(4)
+        await _stored_ws_on(test_repo, "user-1", "gpt-4", "session", shard=s) for s in range(4)
     }
     assert len(starts) == 1, f"shards anchored different windows: {starts}"
 ```
@@ -2398,7 +2422,7 @@ ever**, on a path already priced at 2.5 RCU + 2 WCU.
   ```python
   async def get_shard_window_starts(
       self, entity_id: str, resource: str, limit_names: list[str], shard_id: int = 0
-  ) -> dict[str, int]: ...   # limit name -> ws, epoch ms; absent keys mean "no window there"
+  ) -> dict[str, int]: ...  # limit name -> ws, epoch ms; absent keys mean "no window there"
   ```
 
 - [ ] **Step 1: Write the failing tests**
@@ -2460,68 +2484,67 @@ window); the cascade one fails with the parent inheriting the child's `t0`.
 - [ ] **Step 3: Implement the sibling read**
 
 ```python
-    async def get_shard_window_starts(
-        self,
-        entity_id: str,
-        resource: str,
-        limit_names: list[str],
-        shard_id: int = 0,
-    ) -> dict[str, int]:
-        """Read one shard's duration-window starts, to seed a shard being created (ADR-139).
+async def get_shard_window_starts(
+    self,
+    entity_id: str,
+    resource: str,
+    limit_names: list[str],
+    shard_id: int = 0,
+) -> dict[str, int]:
+    """Read one shard's duration-window starts, to seed a shard being created (ADR-139).
 
-        Shard 0 by default, because :meth:`bump_shard_count` already treats it
-        as the source of truth for ``shard_count``. A created shard inherits
-        ``ws`` verbatim and sets ``rf = now``, so ``ws > rf`` is **false** on
-        the new item and it does not immediately re-roll itself: it joins the
-        window in progress rather than opening one.
+    Shard 0 by default, because :meth:`bump_shard_count` already treats it
+    as the source of truth for ``shard_count``. A created shard inherits
+    ``ws`` verbatim and sets ``rf = now``, so ``ws > rf`` is **false** on
+    the new item and it does not immediately re-roll itself: it joins the
+    window in progress rather than opening one.
 
-        A **separate** read rather than an extra key in the create path's
-        ``BatchGetItem``: that call returns a dict keyed by ``(entity_id,
-        resource, limit_name)`` with no shard component, so shard 0 and shard N
-        would collide on every key. 0.5 RCU, eventually consistent, **once per
-        shard ever** (≤ 31 per (entity, resource), plus TTL recreations) on a
-        path already priced at 2.5 RCU + 2 WCU.
+    A **separate** read rather than an extra key in the create path's
+    ``BatchGetItem``: that call returns a dict keyed by ``(entity_id,
+    resource, limit_name)`` with no shard component, so shard 0 and shard N
+    would collide on every key. 0.5 RCU, eventually consistent, **once per
+    shard ever** (≤ 31 per (entity, resource), plus TTL recreations) on a
+    path already priced at 2.5 RCU + 2 WCU.
 
-        A limit absent from the result has no window on that shard — either it
-        carries none, or the shard has been swept. The caller then opens a fresh
-        window, which is the degraded case ADR-139 records under Consequences
-        and which idle-restarting makes correct rather than merely tolerable.
+    A limit absent from the result has no window on that shard — either it
+    carries none, or the shard has been swept. The caller then opens a fresh
+    window, which is the degraded case ADR-139 records under Consequences
+    and which idle-restarting makes correct rather than merely tolerable.
 
-        Args:
-            entity_id: Entity owning the bucket. On a **cascade** create this is
-                the entity whose shard is being created — the parent for a
-                parent shard, never the child. Parent and child windows are
-                independent (ADR-139).
-            resource: Resource name.
-            limit_names: The limits to look for; only these attributes are
-                projected, so the read stays a fraction of the item.
-            shard_id: The shard to read. Defaults to 0.
-        """
-        if not limit_names:
-            return {}
-        client = await self._get_client()
-        # Aliases, not bare names: `bucket_attr` interpolates a limit name and
-        # `NAME_PATTERN` allows `.`, a document-path separator.
-        names = {
-            f"#w{i}": schema.bucket_attr(n, schema.BUCKET_FIELD_WS)
-            for i, n in enumerate(limit_names)
-        }
-        response = await client.get_item(
-            TableName=self.table_name,
-            Key={
-                "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)},
-                "SK": {"S": schema.sk_state()},
-            },
-            ProjectionExpression=", ".join(names),
-            ExpressionAttributeNames=names,
-        )
-        item = response.get("Item") or {}
-        out: dict[str, int] = {}
-        for i, name in enumerate(limit_names):
-            raw = item.get(names[f"#w{i}"], {}).get("N")
-            if raw is not None:
-                out[name] = int(raw)
-        return out
+    Args:
+        entity_id: Entity owning the bucket. On a **cascade** create this is
+            the entity whose shard is being created — the parent for a
+            parent shard, never the child. Parent and child windows are
+            independent (ADR-139).
+        resource: Resource name.
+        limit_names: The limits to look for; only these attributes are
+            projected, so the read stays a fraction of the item.
+        shard_id: The shard to read. Defaults to 0.
+    """
+    if not limit_names:
+        return {}
+    client = await self._get_client()
+    # Aliases, not bare names: `bucket_attr` interpolates a limit name and
+    # `NAME_PATTERN` allows `.`, a document-path separator.
+    names = {
+        f"#w{i}": schema.bucket_attr(n, schema.BUCKET_FIELD_WS) for i, n in enumerate(limit_names)
+    }
+    response = await client.get_item(
+        TableName=self.table_name,
+        Key={
+            "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)},
+            "SK": {"S": schema.sk_state()},
+        },
+        ProjectionExpression=", ".join(names),
+        ExpressionAttributeNames=names,
+    )
+    item = response.get("Item") or {}
+    out: dict[str, int] = {}
+    for i, name in enumerate(limit_names):
+        raw = item.get(names[f"#w{i}"], {}).get("N")
+        if raw is not None:
+            out[name] = int(raw)
+    return out
 ```
 
 - [ ] **Step 4: Seed the created shard**
@@ -2530,26 +2553,24 @@ In `src/zae_limiter/limiter.py`'s shard-create branch, immediately before the st
 (and beside the existing `_quota_transfer` call that PR #594 added):
 
 ```python
-            # A shard created mid-window joins the window in progress rather
-            # than opening its own (ADR-139). `BucketState.from_limit` stamps
-            # `ws = now_ms`, which is right for the FIRST shard and wrong for
-            # every later one: an entity whose shards each opened their own
-            # window has no single `resets_at_ms`, which is the number the
-            # feature exists to show.
-            #
-            # `entity_id` here is the entity whose shard is being created. On a
-            # cascade create that is the parent for the parent's shard, read
-            # separately — the child's window is independent and may be hours
-            # out of step (ADR-139).
-            window_limits = [lim.name for lim in limits if lim.reset_after is not None]
-            if window_limits and shard_id != 0:
-                inherited = await self._repository.get_shard_window_starts(
-                    entity_id, resource, window_limits
-                )
-                for state in states:
-                    ws = inherited.get(state.limit_name)
-                    if ws is not None:
-                        state.window_start_ms = ws
+# A shard created mid-window joins the window in progress rather
+# than opening its own (ADR-139). `BucketState.from_limit` stamps
+# `ws = now_ms`, which is right for the FIRST shard and wrong for
+# every later one: an entity whose shards each opened their own
+# window has no single `resets_at_ms`, which is the number the
+# feature exists to show.
+#
+# `entity_id` here is the entity whose shard is being created. On a
+# cascade create that is the parent for the parent's shard, read
+# separately — the child's window is independent and may be hours
+# out of step (ADR-139).
+window_limits = [lim.name for lim in limits if lim.reset_after is not None]
+if window_limits and shard_id != 0:
+    inherited = await self._repository.get_shard_window_starts(entity_id, resource, window_limits)
+    for state in states:
+        ws = inherited.get(state.limit_name)
+        if ws is not None:
+            state.window_start_ms = ws
 ```
 
 `shard_id != 0` because shard 0 has no sibling to inherit from: it *is* the source of truth, and
@@ -2652,9 +2673,7 @@ def test_param_sync_removes_a_window_a_limit_no_longer_has(repo):
         ttl_seconds=None,
     )
     assert "b_session_rsa" in upd["UpdateExpression"]
-    assert upd["UpdateExpression"].index("REMOVE") < upd["UpdateExpression"].index(
-        "b_session_rsa"
-    )
+    assert upd["UpdateExpression"].index("REMOVE") < upd["UpdateExpression"].index("b_session_rsa")
 
 
 def test_param_sync_never_writes_ws(repo):
@@ -2772,7 +2791,7 @@ shard-create time and mints it a fresh share — #587 again, for this feature.
   @dataclass(frozen=True)
   class ParsedBucketLimit:
       ...
-      window_start_ms: int | None = None      # NEW
+      window_start_ms: int | None = None  # NEW
       reset_after_seconds: int | None = None  # NEW
   ```
   `LimitRefillInfo` gains the same two fields.
@@ -2781,9 +2800,10 @@ shard-create time and mints it a fresh share — #587 again, for this feature.
 
 ```python
 def test_parse_reads_the_window_off_the_image():
-    image = _bucket_image(limits={"session": {"cp": 10_000_000, "ra": 0}},
-                          extra={"b_session_ws": {"N": "5000"},
-                                 "b_session_rsa": {"N": "18000"}})
+    image = _bucket_image(
+        limits={"session": {"cp": 10_000_000, "ra": 0}},
+        extra={"b_session_ws": {"N": "5000"}, "b_session_rsa": {"N": "18000"}},
+    )
     parsed = _parse_bucket_record(image)
     assert parsed.limits["session"].window_start_ms == 5_000
     assert parsed.limits["session"].reset_after_seconds == 18_000
@@ -2794,8 +2814,9 @@ def test_is_quota_limit_recognises_a_duration_window():
     A duration quota misread as a dripping limit here would be minted a fresh
     share at shard-create time — #587 again, for this feature.
     """
-    image = _bucket_image(limits={"session": {"cp": 10_000_000, "ra": 0}},
-                          extra={"b_session_rsa": {"N": "18000"}})
+    image = _bucket_image(
+        limits={"session": {"cp": 10_000_000, "ra": 0}}, extra={"b_session_rsa": {"N": "18000"}}
+    )
     assert _is_quota_limit("session", image) is True
 
 
@@ -3119,7 +3140,8 @@ computed from the `Limit` alone, and a duration window's `ws` lives on the **buc
   @dataclass(frozen=True)
   class LimitStatus:
       ...
-      resets_at_ms: int | None = None   # NEW — absolute instant the allowance returns
+      resets_at_ms: int | None = None  # NEW — absolute instant the allowance returns
+
 
   # exceptions.py — takes the STATUS, not the limit
   def _limit_shape(self, status: LimitStatus, now_ms: int) -> dict[str, Any]: ...
@@ -3389,11 +3411,13 @@ def test_manifest_parses_a_duration_window():
 
 def test_manifest_rejects_both_reset_spellings():
     with pytest.raises(ValueError, match="one recovery mechanism"):
-        LimitDecl.from_dict({
-            "capacity": 10_000,
-            "reset_after_seconds": 18_000,
-            "reset_schedule": [{"cron": "0 0 * * *"}],
-        })
+        LimitDecl.from_dict(
+            {
+                "capacity": 10_000,
+                "reset_after_seconds": 18_000,
+                "reset_schedule": [{"cron": "0 0 * * *"}],
+            }
+        )
 
 
 @pytest.mark.parametrize("bad", [0, -1, 1.5, True, "5h"])
@@ -3444,28 +3468,24 @@ Expected: FAIL — `LimitDecl` has no `reset_after_seconds`.
 and in `from_dict`, after the schedule parsing:
 
 ```python
-        reset_after_seconds = d.get("reset_after_seconds")
-        if reset_after_seconds is not None:
-            # `bool` is an `int` subclass in Python; a window of `true` is a
-            # mistake, not one second. Same call `_coerce_int` makes (#569).
-            if isinstance(reset_after_seconds, bool) or not isinstance(
-                reset_after_seconds, int
-            ):
-                raise ValueError(
-                    f"reset_after_seconds must be a whole number of seconds, got "
-                    f"{reset_after_seconds!r}. Limits are rejected at parse time so "
-                    f"`limits plan` surfaces the problem before anything is written."
-                )
-            if reset_after_seconds <= 0:
-                raise ValueError(
-                    f"reset_after_seconds must be positive, got {reset_after_seconds}."
-                )
-            if reset_schedule:
-                raise ValueError(
-                    "a limit has one recovery mechanism: `reset_after_seconds` names a "
-                    "window anchored to the entity's own first use and `reset_schedule` "
-                    "names fixed calendar instants (ADR-137, ADR-139). Use one."
-                )
+reset_after_seconds = d.get("reset_after_seconds")
+if reset_after_seconds is not None:
+    # `bool` is an `int` subclass in Python; a window of `true` is a
+    # mistake, not one second. Same call `_coerce_int` makes (#569).
+    if isinstance(reset_after_seconds, bool) or not isinstance(reset_after_seconds, int):
+        raise ValueError(
+            f"reset_after_seconds must be a whole number of seconds, got "
+            f"{reset_after_seconds!r}. Limits are rejected at parse time so "
+            f"`limits plan` surfaces the problem before anything is written."
+        )
+    if reset_after_seconds <= 0:
+        raise ValueError(f"reset_after_seconds must be positive, got {reset_after_seconds}.")
+    if reset_schedule:
+        raise ValueError(
+            "a limit has one recovery mechanism: `reset_after_seconds` names a "
+            "window anchored to the entity's own first use and `reset_schedule` "
+            "names fixed calendar instants (ADR-137, ADR-139). Use one."
+        )
 ```
 
 and widen the shorthand discriminator — this is the one-line change that makes the natural
