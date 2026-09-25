@@ -4365,6 +4365,10 @@ class SyncRepository:
             if limit.reset_schedule:
                 compact, _tz = schedule.encode_reset(limit.reset_schedule)
                 base_item[schema.limit_attr(name, schema.LIMIT_FIELD_RSCHED)] = {"S": compact}
+            if limit.reset_after_seconds is not None:
+                base_item[schema.limit_attr(name, schema.LIMIT_FIELD_RSA)] = {
+                    "N": str(limit.reset_after_seconds)
+                }
         if hoisted_tz is not None:
             base_item[schema.CONFIG_FIELD_SCHED_TZ] = {"S": hoisted_tz}
         return base_item
@@ -4396,9 +4400,12 @@ class SyncRepository:
 
         Raises:
             RateLimiterUnavailable: A stored schedule on this item cannot be
-                decoded, or a limit carrying one cannot be reconstructed from
-                what is stored.
+                decoded, or a limit carrying one — or a stored `rsa` duration
+                window (ADR-139) — cannot be reconstructed from what is
+                stored.
         """
+        from datetime import timedelta
+
         limit_names: list[str] = []
         suffix = f"_{schema.LIMIT_FIELD_CP}"
         for attr_name in item:
@@ -4416,8 +4423,10 @@ class SyncRepository:
 
             sched_name = schema.limit_attr(name, schema.LIMIT_FIELD_SCHED)
             rsched_name = schema.limit_attr(name, schema.LIMIT_FIELD_RSCHED)
+            rsa_name = schema.limit_attr(name, schema.LIMIT_FIELD_RSA)
             sched_attr = item.get(sched_name, {}).get("S")
             rsched_attr = item.get(rsched_name, {}).get("S")
+            rsa_attr = item.get(rsa_name, {}).get("N")
             sched = (
                 self._decode_stored_schedule(sched_name, sched_attr, sched_tz) if sched_attr else ()
             )
@@ -4426,6 +4435,7 @@ class SyncRepository:
                 if rsched_attr
                 else ()
             )
+            reset_after = timedelta(seconds=int(rsa_attr)) if rsa_attr is not None else None
             try:
                 limits.append(
                     Limit(
@@ -4435,13 +4445,21 @@ class SyncRepository:
                         refill_period_seconds=_get(schema.LIMIT_FIELD_RP),
                         schedule=sched,
                         reset_schedule=reset_sched,
+                        reset_after=reset_after,
                     )
                 )
             except ValueError as exc:
-                if not sched and (not reset_sched):
+                culprits = []
+                if sched:
+                    culprits.append(sched_name)
+                if reset_sched:
+                    culprits.append(rsched_name)
+                if reset_after is not None:
+                    culprits.append(f"{rsa_name}={rsa_attr!r}")
+                if not culprits:
                     raise
                 raise RateLimiterUnavailable(
-                    f"stored limit {name!r} carries a schedule but cannot be reconstructed: {exc}",
+                    f"stored limit {name!r} carries {', '.join(culprits)} but cannot be reconstructed: {exc}",
                     cause=exc,
                     stack_name=self.stack_name,
                 ) from exc

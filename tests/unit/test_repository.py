@@ -1,7 +1,7 @@
 """Unit tests for Repository."""
 
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
 
@@ -27,6 +27,7 @@ from zae_limiter.schema import (
     BUCKET_FIELD_VU,
     BUCKET_SCHED_NONE,
     CONFIG_FIELD_SCHED_TZ,
+    LIMIT_FIELD_RSA,
     LIMIT_FIELD_RSCHED,
     WCU_LIMIT_NAME,
     bucket_attr,
@@ -6213,6 +6214,77 @@ class TestResetScheduleReachesStorage:
             )
 
 
+class TestDurationWindowReachesConfigStorage:
+    """`l_{name}_rsa` — a duration quota's window length (ADR-139, plan Task 4).
+
+    The alternative spelling of the reset half: a window anchored to the
+    entity's own first use rather than a calendar instant. Mirrors
+    `TestResetScheduleReachesStorage`, scoped to config items only — bucket
+    items are Task 3's concern.
+    """
+
+    WINDOW = Limit.quota("session", 10_000, reset_after=timedelta(hours=5))
+
+    @staticmethod
+    async def _raw_config(repo, entity_id, resource):
+        from zae_limiter import schema
+
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_entity(repo._namespace_id, entity_id)},
+                "SK": {"S": schema.sk_config(resource)},
+            },
+        )
+        return response.get("Item") or {}
+
+    async def test_entity_limits_round_trip_a_duration_window(self, repo):
+        await repo.set_limits("dw-1", [self.WINDOW], resource="gpt-4")
+        await repo.invalidate_config_cache()
+
+        stored = await repo.get_limits("dw-1", resource="gpt-4")
+        assert stored == [self.WINDOW]
+        assert stored[0].reset_after == timedelta(hours=5)
+
+        resolved, _on_unavailable, source = await repo.resolve_limits("dw-1", "gpt-4")
+        assert resolved is not None
+        assert resolved[0].reset_after == timedelta(hours=5)
+        assert source == "entity"
+
+    async def test_the_window_is_stored_under_its_own_attribute(self, repo):
+        """Seconds, not the `timedelta` — the field name carries no unit, so
+        storage has to spell it (`l_{name}_rsa`), and it is a sibling of
+        `rsched`, not a tag inside it (a quota has one or the other, ADR-139)."""
+        await repo.set_limits("dw-2", [self.WINDOW], resource="gpt-4")
+        item = await self._raw_config(repo, "dw-2", "gpt-4")
+
+        assert item[limit_attr("session", LIMIT_FIELD_RSA)]["N"] == "18000"
+        assert limit_attr("session", LIMIT_FIELD_RSCHED) not in item
+
+    async def test_rewriting_a_limit_without_a_window_drops_it(self, repo):
+        """Config storage is override-not-merge (full-replace PutItem), so this
+        needs no explicit REMOVE — the same property `sched` relies on."""
+        await repo.set_limits("dw-3", [self.WINDOW], resource="gpt-4")
+        await repo.set_limits("dw-3", [Limit.per_minute("session", 100)], resource="gpt-4")
+        await repo.invalidate_config_cache()
+
+        stored = await repo.get_limits("dw-3", resource="gpt-4")
+        assert stored[0].reset_after is None
+        assert stored[0].is_quota is False
+
+    async def test_resource_and_system_levels_round_trip_too(self, repo):
+        """All three config levels share one serialiser, but only one of them
+        is exercised by the entity tests above."""
+        await repo.set_resource_defaults("gpt-4", [self.WINDOW])
+        await repo.set_system_defaults([self.WINDOW])
+
+        (from_resource,) = await repo.get_resource_defaults("gpt-4")
+        system_limits, _on_unavailable = await repo.get_system_defaults()
+        assert from_resource.reset_after == timedelta(hours=5)
+        assert system_limits[0].reset_after == timedelta(hours=5)
+
+
 class TestDeserialisedBucketsCarryBothSchedules:
     """`_deserialize_composite_bucket` reads `sched` / `rsched` off the item.
 
@@ -6430,6 +6502,29 @@ async def _corrupt_config_sched(repo, entity_id, resource, limit_name, value, fi
     )
 
 
+async def _corrupt_config_rsa(repo, entity_id, resource, limit_name, value):
+    """Overwrite `l_{name}_rsa` with a value `Limit.__post_init__` rejects.
+
+    Mirrors `_corrupt_config_sched`, but `rsa` has no grammar to fail
+    decoding — a plain `int()` on a DynamoDB `N` cannot realistically fail —
+    so the realistic corruption is a stored value the constructor itself
+    rejects (zero, negative, or over `MAX_PERIOD_SECONDS`).
+    """
+    from zae_limiter import schema
+
+    client = await repo._get_client()
+    await client.update_item(
+        TableName=repo.table_name,
+        Key={
+            "PK": {"S": schema.pk_entity(repo._namespace_id, entity_id)},
+            "SK": {"S": schema.sk_config(resource)},
+        },
+        UpdateExpression="SET #a = :v",
+        ExpressionAttributeNames={"#a": limit_attr(limit_name, LIMIT_FIELD_RSA)},
+        ExpressionAttributeValues={":v": {"N": str(value)}},
+    )
+
+
 async def _corrupt_bucket_sched(
     repo, entity_id, resource, value, shard=0, field=BUCKET_FIELD_SCHED
 ):
@@ -6605,6 +6700,34 @@ class TestUnreadableStoredSchedule:
 
         with pytest.raises(RateLimiterUnavailable, match="cannot be reconstructed"):
             await repo.get_limits("corrupt-4e", resource="gpt-4")
+
+    async def test_a_corrupt_duration_window_raises_unavailable(self, repo):
+        """`rsa` has no grammar to fail decoding — a plain `int()` on a
+        DynamoDB `N` cannot realistically fail — so the realistic corruption
+        is a stored value `Limit.__post_init__` rejects outright. That must
+        convert exactly like a schedule that fails to parse or a reset stored
+        beside a positive rate, for the same reason: silently reading "no
+        window" would run the limit as an unbounded drip at its base rate."""
+        window = Limit.quota("session", 10_000, reset_after=timedelta(hours=5))
+        await self._seed(repo, "corrupt-4g", [window])
+        await _corrupt_config_rsa(repo, "corrupt-4g", "gpt-4", "session", 0)
+        await repo.invalidate_config_cache()
+
+        with pytest.raises(RateLimiterUnavailable) as excinfo:
+            await repo.get_limits("corrupt-4g", resource="gpt-4")
+        message = str(excinfo.value)
+        assert "l_session_rsa" in message
+        assert "positive whole number of seconds" in message
+        assert isinstance(excinfo.value.cause, ValueError)
+
+    async def test_a_negative_duration_window_raises_unavailable_too(self, repo):
+        window = Limit.quota("session", 10_000, reset_after=timedelta(hours=5))
+        await self._seed(repo, "corrupt-4h", [window])
+        await _corrupt_config_rsa(repo, "corrupt-4h", "gpt-4", "session", -5)
+        await repo.invalidate_config_cache()
+
+        with pytest.raises(RateLimiterUnavailable, match="l_session_rsa"):
+            await repo.get_limits("corrupt-4h", resource="gpt-4")
 
     async def test_an_unscheduled_limit_that_will_not_reconstruct_still_raises_value_error(
         self, repo

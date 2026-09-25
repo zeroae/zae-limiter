@@ -5380,6 +5380,16 @@ class Repository:
             if limit.reset_schedule:
                 compact, _tz = schedule.encode_reset(limit.reset_schedule)
                 base_item[schema.limit_attr(name, schema.LIMIT_FIELD_RSCHED)] = {"S": compact}
+            # ADR-139: the alternative spelling of the reset half — a window
+            # anchored to the entity's own first use rather than a calendar
+            # instant. Written only when the limit has one, exactly like
+            # `rsched`. The full-replace PutItem is what makes removal free: a
+            # limit re-written without a window loses the stored one with no
+            # explicit REMOVE.
+            if limit.reset_after_seconds is not None:
+                base_item[schema.limit_attr(name, schema.LIMIT_FIELD_RSA)] = {
+                    "N": str(limit.reset_after_seconds)
+                }
 
         if hoisted_tz is not None:
             base_item[schema.CONFIG_FIELD_SCHED_TZ] = {"S": hoisted_tz}
@@ -5412,9 +5422,12 @@ class Repository:
 
         Raises:
             RateLimiterUnavailable: A stored schedule on this item cannot be
-                decoded, or a limit carrying one cannot be reconstructed from
-                what is stored.
+                decoded, or a limit carrying one — or a stored `rsa` duration
+                window (ADR-139) — cannot be reconstructed from what is
+                stored.
         """
+        from datetime import timedelta
+
         # Discover limit names by scanning for l_{name}_cp attributes
         limit_names: list[str] = []
         suffix = f"_{schema.LIMIT_FIELD_CP}"
@@ -5439,10 +5452,13 @@ class Repository:
 
             sched_name = schema.limit_attr(name, schema.LIMIT_FIELD_SCHED)
             rsched_name = schema.limit_attr(name, schema.LIMIT_FIELD_RSCHED)
+            rsa_name = schema.limit_attr(name, schema.LIMIT_FIELD_RSA)
             sched_attr = item.get(sched_name, {}).get("S")
             rsched_attr = item.get(rsched_name, {}).get("S")
-            # Both tuples decode independently — either can be corrupt on its
-            # own, and `rsched` is the only one a quota has.
+            rsa_attr = item.get(rsa_name, {}).get("N")
+            # All three decode independently — any one can be corrupt on its
+            # own, and `rsched` / `rsa` are the only reset spellings a quota
+            # carries (ADR-139: never both on the same limit).
             sched = (
                 self._decode_stored_schedule(sched_name, sched_attr, sched_tz) if sched_attr else ()
             )
@@ -5451,6 +5467,11 @@ class Repository:
                 if rsched_attr
                 else ()
             )
+            # A plain `int()` on a DynamoDB `N` cannot realistically fail — the
+            # realistic corruption is a stored value `Limit.__post_init__`
+            # rejects outright (zero, negative, or over MAX_PERIOD_SECONDS),
+            # caught below exactly like a schedule that fails to parse.
+            reset_after = timedelta(seconds=int(rsa_attr)) if rsa_attr is not None else None
             try:
                 limits.append(
                     Limit(
@@ -5460,24 +5481,35 @@ class Repository:
                         refill_period_seconds=_get(schema.LIMIT_FIELD_RP),
                         schedule=sched,
                         reset_schedule=reset_sched,
+                        reset_after=reset_after,
                     )
                 )
             except ValueError as exc:
-                # A schedule can also defeat reconstruction *after* it parses:
-                # a stored `rsched` beside a positive stored rate is rejected
-                # by `Limit.__post_init__` (ADR-137: never both). Same class as
-                # a decode failure — the stored schedule leaves the limit
-                # undeterminable — so it converts the same way, and for the
-                # same reason: "no schedule" would silently run at the base
-                # limit. Scoped to limits that actually carry one; an
-                # unscheduled limit that will not reconstruct (a stored zero
-                # rate with no reset, #538's shape) still surfaces as the
-                # ValueError it has always been, since nothing about a schedule
-                # is involved in deciding it.
-                if not sched and not reset_sched:
+                # A schedule (or a duration window) can also defeat
+                # reconstruction *after* it parses: a stored `rsched` beside a
+                # positive stored rate, or a stored `rsa` <= 0, is rejected by
+                # `Limit.__post_init__` (ADR-137: never both; ADR-139: a
+                # duration must be a positive whole number of seconds). Same
+                # class as a decode failure — the stored value leaves the
+                # limit undeterminable — so it converts the same way, and for
+                # the same reason: "no schedule" would silently run at the
+                # base limit. Scoped to limits that actually carry one of the
+                # three; an unscheduled limit that will not reconstruct (a
+                # stored zero rate with no reset, #538's shape) still surfaces
+                # as the ValueError it has always been, since none of the
+                # three is involved in deciding it.
+                culprits = []
+                if sched:
+                    culprits.append(sched_name)
+                if reset_sched:
+                    culprits.append(rsched_name)
+                if reset_after is not None:
+                    culprits.append(f"{rsa_name}={rsa_attr!r}")
+                if not culprits:
                     raise
                 raise RateLimiterUnavailable(
-                    f"stored limit {name!r} carries a schedule but cannot be reconstructed: {exc}",
+                    f"stored limit {name!r} carries {', '.join(culprits)} but cannot be "
+                    f"reconstructed: {exc}",
                     cause=exc,
                     stack_name=self.stack_name,
                 ) from exc
