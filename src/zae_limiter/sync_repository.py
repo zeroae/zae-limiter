@@ -4435,8 +4435,8 @@ class SyncRepository:
                 if rsched_attr
                 else ()
             )
-            reset_after = timedelta(seconds=int(rsa_attr)) if rsa_attr is not None else None
             try:
+                reset_after = timedelta(seconds=int(rsa_attr)) if rsa_attr is not None else None
                 limits.append(
                     Limit(
                         name=name,
@@ -4454,7 +4454,7 @@ class SyncRepository:
                     culprits.append(sched_name)
                 if reset_sched:
                     culprits.append(rsched_name)
-                if reset_after is not None:
+                if rsa_attr is not None:
                     culprits.append(f"{rsa_name}={rsa_attr!r}")
                 if not culprits:
                     raise

@@ -6702,12 +6702,11 @@ class TestUnreadableStoredSchedule:
             await repo.get_limits("corrupt-4e", resource="gpt-4")
 
     async def test_a_corrupt_duration_window_raises_unavailable(self, repo):
-        """`rsa` has no grammar to fail decoding — a plain `int()` on a
-        DynamoDB `N` cannot realistically fail — so the realistic corruption
-        is a stored value `Limit.__post_init__` rejects outright. That must
-        convert exactly like a schedule that fails to parse or a reset stored
-        beside a positive rate, for the same reason: silently reading "no
-        window" would run the limit as an unbounded drip at its base rate."""
+        """`rsa` has no grammar of its own — a bare `N` — but a stored value
+        `Limit.__post_init__` rejects outright (zero here) must still convert
+        exactly like a schedule that fails to parse or a reset stored beside
+        a positive rate, for the same reason: silently reading "no window"
+        would run the limit as an unbounded drip at its base rate."""
         window = Limit.quota("session", 10_000, reset_after=timedelta(hours=5))
         await self._seed(repo, "corrupt-4g", [window])
         await _corrupt_config_rsa(repo, "corrupt-4g", "gpt-4", "session", 0)
@@ -6728,6 +6727,25 @@ class TestUnreadableStoredSchedule:
 
         with pytest.raises(RateLimiterUnavailable, match="l_session_rsa"):
             await repo.get_limits("corrupt-4h", resource="gpt-4")
+
+    async def test_a_non_integral_duration_window_raises_unavailable_too(self, repo):
+        """A DynamoDB `N` legally holds `"1.5"` — `rsa` has no grammar to
+        reject it before `int()` runs, so this is a distinct failure mode
+        from the value-range checks above: the parse itself raises, inside
+        the guarded region, before `Limit.__post_init__` is ever reached
+        (#621 — a fix round found this escaping as a bare `ValueError`)."""
+        window = Limit.quota("session", 10_000, reset_after=timedelta(hours=5))
+        await self._seed(repo, "corrupt-4i", [window])
+        await _corrupt_config_rsa(repo, "corrupt-4i", "gpt-4", "session", "1.5")
+        await repo.invalidate_config_cache()
+
+        with pytest.raises(RateLimiterUnavailable) as excinfo:
+            await repo.get_limits("corrupt-4i", resource="gpt-4")
+        assert not isinstance(excinfo.value, ValueError)
+        message = str(excinfo.value)
+        assert "l_session_rsa" in message
+        assert "1.5" in message
+        assert isinstance(excinfo.value.cause, ValueError)
 
     async def test_an_unscheduled_limit_that_will_not_reconstruct_still_raises_value_error(
         self, repo

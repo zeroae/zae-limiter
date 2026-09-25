@@ -5467,12 +5467,16 @@ class Repository:
                 if rsched_attr
                 else ()
             )
-            # A plain `int()` on a DynamoDB `N` cannot realistically fail — the
-            # realistic corruption is a stored value `Limit.__post_init__`
-            # rejects outright (zero, negative, or over MAX_PERIOD_SECONDS),
-            # caught below exactly like a schedule that fails to parse.
-            reset_after = timedelta(seconds=int(rsa_attr)) if rsa_attr is not None else None
+            # Unlike `sched`/`rsched`, `rsa` has no grammar of its own — it is
+            # a bare `N`, so a DynamoDB attribute legally carries a
+            # non-integral value like `"1.5"` and `int()` itself can raise.
+            # The parse therefore has to sit *inside* the guarded region below
+            # alongside the value-range failures `Limit.__post_init__` raises
+            # (zero, negative, or over MAX_PERIOD_SECONDS) — pulling it out
+            # would let a non-integral `rsa` escape as a bare `ValueError`
+            # from get_limits()/resolve_limits() (#621).
             try:
+                reset_after = timedelta(seconds=int(rsa_attr)) if rsa_attr is not None else None
                 limits.append(
                     Limit(
                         name=name,
@@ -5489,21 +5493,29 @@ class Repository:
                 # reconstruction *after* it parses: a stored `rsched` beside a
                 # positive stored rate, or a stored `rsa` <= 0, is rejected by
                 # `Limit.__post_init__` (ADR-137: never both; ADR-139: a
-                # duration must be a positive whole number of seconds). Same
-                # class as a decode failure — the stored value leaves the
-                # limit undeterminable — so it converts the same way, and for
-                # the same reason: "no schedule" would silently run at the
-                # base limit. Scoped to limits that actually carry one of the
-                # three; an unscheduled limit that will not reconstruct (a
-                # stored zero rate with no reset, #538's shape) still surfaces
-                # as the ValueError it has always been, since none of the
-                # three is involved in deciding it.
+                # duration must be a positive whole number of seconds). And a
+                # duration window can fail to parse at all — a non-integral
+                # `rsa` (e.g. `"1.5"`) raises out of `int()` itself, inside
+                # this same guarded region, before `Limit.__post_init__` is
+                # ever reached. Same class as a schedule decode failure — the
+                # stored value leaves the limit undeterminable — so all of it
+                # converts the same way, and for the same reason: "no
+                # schedule" would silently run at the base limit. Culprit
+                # membership for `rsa` is decided by `rsa_attr is not None`
+                # (the attribute was present on the item), not by whether
+                # `reset_after` parsed — that name may be unbound here if the
+                # `int()` conversion above is what raised. Scoped to limits
+                # that actually carry one of the three; an unscheduled limit
+                # that will not reconstruct (a stored zero rate with no
+                # reset, #538's shape) still surfaces as the ValueError it
+                # has always been, since none of the three is involved in
+                # deciding it.
                 culprits = []
                 if sched:
                     culprits.append(sched_name)
                 if reset_sched:
                     culprits.append(rsched_name)
-                if reset_after is not None:
+                if rsa_attr is not None:
                     culprits.append(f"{rsa_name}={rsa_attr!r}")
                 if not culprits:
                     raise
