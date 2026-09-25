@@ -9,7 +9,7 @@ Changes should be made to the source file, then regenerated.
 from unittest.mock import MagicMock, patch
 
 import pytest
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, EndpointConnectionError
 
 from zae_limiter import StackOptions
 from zae_limiter.exceptions import StackAlreadyExistsError, StackOperationError
@@ -500,9 +500,11 @@ class TestDeployLambdaCode:
             mock_session.client.return_value = mock_lambda
             mock_session_class.return_value = mock_session
             manager = SyncStackManager(stack_name="test", region="us-east-1")
+            manager.wait_for_esm_ready = MagicMock(return_value=True)
             result = manager.deploy_lambda_code()
             assert result["status"] == "deployed"
             assert result["function_arn"] == "arn:aws:lambda:us-east-1:123:function:test"
+            assert result["esm_ready"] is True
             mock_lambda.update_function_code.assert_called_once()
 
     def test_raises_on_build_failure(self) -> None:
@@ -960,8 +962,34 @@ class TestEnsureTags:
             assert "Not authorized" in str(exc_info.value)
 
 
+class _VirtualClock:
+    """Stands in for ``time`` and ``asyncio`` inside the stack manager module.
+
+    ``sleep`` advances ``time`` instantly, so the 5 s poll interval and the
+    ``max_seconds`` timeout run exactly as written without real waiting.
+    """
+
+    def __init__(self) -> None:
+        self.now = 1000000.0
+
+    def time(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
 class TestWaitForEsmReady:
     """Tests for wait_for_esm_ready method."""
+
+    @pytest.fixture(autouse=True)
+    def virtual_clock(self):
+        clock = _VirtualClock()
+        with (
+            patch("zae_limiter.infra.sync_stack_manager.time", clock),
+            patch("zae_limiter.infra.sync_stack_manager.asyncio", clock, create=True),
+        ):
+            yield clock
 
     def test_returns_true_when_esm_enabled_and_stabilized(self) -> None:
         """wait_for_esm_ready returns True when ESM enabled with OK result."""
@@ -1064,16 +1092,54 @@ class TestWaitForEsmReady:
             assert result is False
 
     def test_handles_api_exception(self) -> None:
-        """wait_for_esm_ready handles API exceptions gracefully."""
+        """wait_for_esm_ready retries AWS API errors until it times out."""
         with patch("zae_limiter.infra.sync_stack_manager.boto3.Session") as mock_session_class:
             mock_lambda = MagicMock()
-            mock_lambda.list_event_source_mappings = MagicMock(side_effect=Exception("API error"))
+            mock_lambda.list_event_source_mappings = MagicMock(
+                side_effect=ClientError(
+                    {"Error": {"Code": "ServiceException", "Message": "API error"}},
+                    "ListEventSourceMappings",
+                )
+            )
             mock_session = MagicMock()
             mock_session.client.return_value = mock_lambda
             mock_session_class.return_value = mock_session
             manager = SyncStackManager(stack_name="test", region="us-east-1")
             result = manager.wait_for_esm_ready("test-aggregator", max_seconds=1)
             assert result is False
+
+    def test_retries_connection_errors_until_ready(self) -> None:
+        """A dropped connection is transient: the next poll can still succeed."""
+        with patch("zae_limiter.infra.sync_stack_manager.boto3.Session") as mock_session_class:
+            mock_lambda = MagicMock()
+            mock_lambda.list_event_source_mappings = MagicMock(
+                side_effect=[
+                    EndpointConnectionError(endpoint_url="http://localhost:4566"),
+                    {"EventSourceMappings": [{"State": "Enabled", "LastProcessingResult": "OK"}]},
+                ]
+            )
+            mock_session = MagicMock()
+            mock_session.client.return_value = mock_lambda
+            mock_session_class.return_value = mock_session
+            manager = SyncStackManager(stack_name="test", region="us-east-1")
+            result = manager.wait_for_esm_ready(
+                "test-aggregator", max_seconds=10, min_stabilization=0.0
+            )
+            assert result is True
+            assert mock_lambda.list_event_source_mappings.call_count == 2
+
+    def test_raises_non_aws_errors_on_the_first_poll(self) -> None:
+        """A programming error is not retried for max_seconds (#612)."""
+        with patch("zae_limiter.infra.sync_stack_manager.boto3.Session") as mock_session_class:
+            mock_lambda = MagicMock()
+            mock_lambda.list_event_source_mappings = MagicMock(side_effect=TypeError("boom"))
+            mock_session = MagicMock()
+            mock_session.client.return_value = mock_lambda
+            mock_session_class.return_value = mock_session
+            manager = SyncStackManager(stack_name="test", region="us-east-1")
+            with pytest.raises(TypeError, match="boom"):
+                manager.wait_for_esm_ready("test-aggregator", max_seconds=120)
+            assert mock_lambda.list_event_source_mappings.call_count == 1
 
     def test_waits_when_last_processing_result_is_none(self) -> None:
         """wait_for_esm_ready keeps waiting when LastProcessingResult is None."""

@@ -3077,9 +3077,22 @@ class TestSpeculativeConsume:
         result = await repo.speculative_consume("e1", "gpt-4", {"rpm": 1})
         assert result.success is True
 
-        # Consume 999 more to exhaust the 1000 wcu capacity
-        for _ in range(999):
-            await repo.speculative_consume("e1", "gpt-4", {"rpm": 0})
+        # Spend the other 999 wcu in one ADD instead of 999 writes
+        from zae_limiter import schema
+
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, "e1", "gpt-4", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="ADD #wtk :neg",
+            ExpressionAttributeNames={
+                "#wtk": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK)
+            },
+            ExpressionAttributeValues={":neg": {"N": str(-999 * 1000)}},
+        )
 
         # Now both rpm (0 tokens) and wcu (0 tokens) should be exhausted
         result = await repo.speculative_consume("e1", "gpt-4", {"rpm": 1})
@@ -4076,10 +4089,23 @@ class TestPreShardBuckets:
         put_item = repo.build_composite_create("e1", "gpt-4", states, now_ms)
         await repo.transact_write([put_item])
 
-        # Exhaust wcu tokens (1000 capacity, 1 per write = 1000 writes)
-        for _ in range(schema.WCU_LIMIT_CAPACITY):
-            result = await repo.speculative_consume("e1", "gpt-4", {"rpm": 1})
-            assert result.success is True
+        # Exhaust wcu tokens (1000 capacity, 1 per write). One real write, then
+        # the remaining 999 writes' wcu debit applied in a single ADD.
+        result = await repo.speculative_consume("e1", "gpt-4", {"rpm": 1})
+        assert result.success is True
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, "e1", "gpt-4", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="ADD #wtk :neg",
+            ExpressionAttributeNames={
+                "#wtk": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK)
+            },
+            ExpressionAttributeValues={":neg": {"N": str(-(schema.WCU_LIMIT_CAPACITY - 1) * 1000)}},
+        )
 
         # Next write should fail due to wcu exhaustion
         result = await repo.speculative_consume("e1", "gpt-4", {"rpm": 1})

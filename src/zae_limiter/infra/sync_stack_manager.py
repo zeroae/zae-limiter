@@ -12,7 +12,7 @@ from importlib.resources import files
 from typing import Any, cast
 
 import boto3
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 
 from ..exceptions import StackAlreadyExistsError, StackOperationError
 from ..models import StackOptions
@@ -645,7 +645,7 @@ class SyncStackManager:
                             return True
                         break
                 time.sleep(interval)
-            except Exception:
+            except (ClientError, BotoCoreError):
                 time.sleep(interval)
         return False
 

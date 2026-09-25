@@ -70,6 +70,41 @@ def freeze_clock(repo) -> int:
     return frozen
 
 
+async def exhaust_wcu(repo, entity_id: str, resource: str, shard_id: int = 0) -> None:
+    """Leave a shard exactly as ``WCU_LIMIT_CAPACITY`` fast-path writes of
+    ``{"rpm": 1}`` would, in two writes instead of a thousand.
+
+    The first write is a real ``_speculative_consume_single`` so every side
+    effect of the fast path (entity cache, shard-count learning) still happens.
+    The rest are folded into one ``ADD`` of the same ``tk``/``tc`` deltas the
+    fast path applies per write, so the item's balances and counters land
+    where the loop left them.
+    """
+    from zae_limiter import schema
+
+    await repo._speculative_consume_single(entity_id, resource, {"rpm": 1}, shard_id=shard_id)
+    rest_milli = (schema.WCU_LIMIT_CAPACITY - 1) * 1000
+    client = await repo._get_client()
+    await client.update_item(
+        TableName=repo.table_name,
+        Key={
+            "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, resource, shard_id)},
+            "SK": {"S": schema.sk_state()},
+        },
+        UpdateExpression="ADD #rtk :neg, #rtc :pos, #wtk :neg, #wtc :pos",
+        ExpressionAttributeNames={
+            "#rtk": schema.bucket_attr("rpm", schema.BUCKET_FIELD_TK),
+            "#rtc": schema.bucket_attr("rpm", schema.BUCKET_FIELD_TC),
+            "#wtk": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK),
+            "#wtc": schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TC),
+        },
+        ExpressionAttributeValues={
+            ":neg": {"N": str(-rest_milli)},
+            ":pos": {"N": str(rest_milli)},
+        },
+    )
+
+
 class TestRateLimiterEntities:
     """Tests for entity management."""
 
@@ -7709,8 +7744,7 @@ class TestShardRetry:
             },
             ExpressionAttributeValues={":hour": {"N": "3600000"}, ":one": {"N": "1"}},
         )
-        for _ in range(schema.WCU_LIMIT_CAPACITY):
-            await repo._speculative_consume_single("user-1", "gpt-4", {"rpm": 1}, shard_id=0)
+        await exhaust_wcu(repo, "user-1", "gpt-4")
 
         # Now shard 0's wcu is exhausted. Acquire should:
         # 1. Detect wcu exhaustion
@@ -7909,8 +7943,7 @@ class TestClientShardCreation:
         repo = await self._seed_shard0(limiter, shard_count=1, limit=limit)
         await self._slow_wcu_refill(repo)
 
-        for _ in range(schema.WCU_LIMIT_CAPACITY):
-            await repo._speculative_consume_single("user-1", "gpt-4", {"rpm": 1}, shard_id=0)
+        await exhaust_wcu(repo, "user-1", "gpt-4")
         cp_milli = self.CAPACITY * 1000
         shard0_before = self._n(await self._raw_item(repo, 0), "rpm", schema.BUCKET_FIELD_TK)
         assert shard0_before == cp_milli - schema.WCU_LIMIT_CAPACITY * 1000
@@ -8598,8 +8631,7 @@ class TestClientShardCreation:
         repo = await self._seed_shard0(limiter, shard_count=1, limit=limit)
         ns = repo._namespace_id
         await self._slow_wcu_refill(repo)
-        for _ in range(schema.WCU_LIMIT_CAPACITY):
-            await repo._speculative_consume_single("user-1", "gpt-4", {"rpm": 1}, shard_id=0)
+        await exhaust_wcu(repo, "user-1", "gpt-4")
 
         client = await repo._get_client()
         original_bump = repo.bump_shard_count
@@ -8639,13 +8671,11 @@ class TestClientShardCreation:
         """If the bump cannot report a larger count (shard 0 vanished between
         the failed write and the bump), there is no new range to draw from;
         the slow path keeps the shard it already selected."""
-        from zae_limiter import schema
 
         limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
         repo = await self._seed_shard0(limiter, shard_count=1, limit=limit)
         await self._slow_wcu_refill(repo)
-        for _ in range(schema.WCU_LIMIT_CAPACITY):
-            await repo._speculative_consume_single("user-1", "gpt-4", {"rpm": 1}, shard_id=0)
+        await exhaust_wcu(repo, "user-1", "gpt-4")
         repo.bump_shard_count = AsyncMock(return_value=1)
 
         slow_path_shards: list[int | None] = []
@@ -9174,8 +9204,7 @@ class TestCascadeParentSharding:
         repo = await self._seed(limiter, limit, parent_shard_count=1)
         ns = repo._namespace_id
         await self._slow_wcu_refill(repo, "parent-1", 0)
-        for _ in range(schema.WCU_LIMIT_CAPACITY):
-            await repo._speculative_consume_single("parent-1", "gpt-4", {"rpm": 1}, shard_id=0)
+        await exhaust_wcu(repo, "parent-1", "gpt-4")
 
         async with limiter.acquire("user-1", "gpt-4", {"rpm": 1}) as lease:
             parent_entry = next(e for e in lease.entries if e.entity_id == "parent-1")
