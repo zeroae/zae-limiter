@@ -1,0 +1,32 @@
+name: conda-forge check
+
+# Every runtime dependency must be installable from conda-forge, or the next release's
+# conda-forge build is blocked after it has already shipped to PyPI (#604). Runs only when
+# the dependency list, or the check itself, changes. Advisory: not a required check.
+# See .claude/rules/dependencies.md.
+
+on:
+  pull_request:
+    paths:
+      - 'pyproject.toml'
+      - 'scripts/check_conda_forge.py'
+      - '.github/workflows/conda-forge-check.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  conda-forge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install packaging
+        run: pip install packaging
+      - name: Check runtime dependencies against conda-forge
+        # Results land in the job summary. Exit 1 only when a dependency cannot be
+        # satisfied on conda-forge; names or APIs it cannot resolve are warnings.
+        run: python scripts/check_conda_forge.py
