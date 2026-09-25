@@ -2457,6 +2457,10 @@ async def test_a_new_shard_inherits_the_window_in_progress(mock_dynamodb, unique
     on the new item and it does not immediately re-roll itself.
     """
     ...  # entity at shard_count=1, window anchored at t0; force a doubling
+    # Force it with `drain_wcu()` plus one acquire, as tests/unit/test_quota_shard_creation.py
+    # does. Drain `wcu` only: since #480 an acquire whose quota is also spent is a
+    # BOTH_EXHAUSTED rejection and never doubles, so a hand-rolled drain of both
+    # would test nothing.
     repo._now_ms = lambda: t0 + 60_000
     await _acquire_on_shard(limiter, "user-1", "gpt-4", shard=1, consume={"session": 1})
     assert await _stored_ws_on(repo, "user-1", "gpt-4", "session", shard=1) == t0
@@ -2491,7 +2495,9 @@ async def test_a_new_quota_shard_is_still_filled_by_transfer(mock_dynamodb, uniq
     #594 measures it: sum(max(0, tk)) across shards, debt excluded.
     """
     before = await _spendable_total(repo, "user-1", "gpt-4", "session")
-    ...  # force a doubling and draw a new shard
+    ...  # force a doubling and draw a new shard: reuse `walk_doublings(limiter, ...,
+    # generations=1)` from tests/unit/test_quota_shard_creation.py, which already
+    # doubles the way #480 permits (see the note on the first test above).
     after = await _spendable_total(repo, "user-1", "gpt-4", "session")
     assert after == before
 ```
@@ -3674,6 +3680,9 @@ async def test_a_duration_quota_doubling_conserves_the_spendable_total(test_repo
     balance rather than adding to it, wiping the debt.
     """
     before = await _spendable_total(test_repo, "user-1", "gpt-4", "session")
+    # `_force_wcu_doubling` drains `wcu` only (see the #480 note in Task 8). Port
+    # `drain_wcu` from tests/unit/test_quota_shard_creation.py into tests/fixtures/
+    # rather than importing it across test modules.
     await _force_wcu_doubling(test_repo, "user-1", "gpt-4")
     await _draw_every_shard(limiter, "user-1", "gpt-4")
     after = await _spendable_total(test_repo, "user-1", "gpt-4", "session")
