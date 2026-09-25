@@ -725,6 +725,17 @@ def test_reset_after_must_be_a_positive_whole_number_of_seconds(bad):
         )
 
 
+def test_reset_after_shares_the_period_ceiling():
+    # #570 bounds every duration on a limit at MAX_PERIOD_SECONDS (10**9 s,
+    # about 31.7 years). The check runs after the whole-seconds rule, so a
+    # fractional window still reports its own message; the bound itself is legal.
+    from zae_limiter.schedule import MAX_PERIOD_SECONDS
+
+    with pytest.raises(ValueError, match="reset_after must be at most"):
+        Limit.quota("session", 10, reset_after=timedelta(seconds=MAX_PERIOD_SECONDS + 1))
+    Limit.quota("session", 10, reset_after=timedelta(seconds=MAX_PERIOD_SECONDS))
+
+
 def test_a_duration_quota_round_trips_through_dict():
     limit = Limit.quota("session", 10_000, reset_after=timedelta(hours=5))
     assert limit.to_dict()["reset_after_seconds"] == 18_000
@@ -773,6 +784,16 @@ pairing checks:
                     f"reset_after must be a positive whole number of seconds, got "
                     f"{self.reset_after!r} ({total}s). The window length is stored in "
                     f"seconds, so a fraction of one cannot be represented."
+                )
+            # The upper half of the positivity test, ordered after it as #570
+            # orders its own bounds: every duration on a limit shares one
+            # ceiling, so a window cannot outlive what `refill_period_seconds`
+            # is allowed to be.
+            if total > MAX_PERIOD_SECONDS:
+                raise ValueError(
+                    f"reset_after must be at most {MAX_PERIOD_SECONDS} seconds, got "
+                    f"{self.reset_after!r} ({int(total)}s). Every duration on a limit "
+                    f"shares this ceiling (#570)."
                 )
         # ADR-139: `reset_after` and `reset_schedule` are two spellings of the
         # reset half, not two mechanisms that compose. A limit that both reset
