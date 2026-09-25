@@ -1111,11 +1111,15 @@ class TestDurationWindowStamp:
 class TestPropagateWindowStart:
     """The rollover fan-out (ADR-139 "Storage and shard coherence", #624).
 
-    `_propagate_window_start` is `_propagate_shard_count` with `ws` substituted:
-    one conditional write per (sibling, limit) under `ws < :new`, never `tk`.
+    One conditional write per (sibling, limit), moving ``ws`` (with ``rsa``
+    and ``vu = 0``) only onto a sibling whose own window had already ended by
+    the new start -- never ``tk``.
     """
 
     SESSION = Limit.quota("session", 1_000, reset_after=timedelta(hours=5))
+    W_MS = 5 * 3_600_000
+    OLD = 1_000
+    NEW = OLD + W_MS  # the old window's end: half-open, so it has elapsed
 
     async def _create_shards(self, repo, entity_id, count, ws, limits=None):
         """``count`` real shard items of ``entity_id``/gpt-4, each stamped ``ws``."""
@@ -1148,38 +1152,70 @@ class TestPropagateWindowStart:
         item = await self._raw(repo, entity_id, shard)
         return int(item[bucket_attr(limit_name, BUCKET_FIELD_WS)]["N"])
 
+    def _windows(self, ws, rsa=18_000):
+        return {"session": (ws, rsa)}
+
     @pytest.mark.asyncio
     async def test_writes_every_other_shard(self, repo):
-        await self._create_shards(repo, "e1", count=4, ws=1_000)
+        await self._create_shards(repo, "e1", count=4, ws=self.OLD)
         written = await repo._propagate_window_start(
-            "e1", "gpt-4", shard_id=2, shard_count=4, window_starts={"session": 9_000}
+            "e1", "gpt-4", shard_id=2, shard_count=4, windows=self._windows(self.NEW)
         )
         assert written == 3  # 0, 1, 3 -- never the writer's own
         for shard in (0, 1, 3):
-            assert await self._stored_ws(repo, "e1", "session", shard) == 9_000
+            assert await self._stored_ws(repo, "e1", "session", shard) == self.NEW
         # The writer's own shard is stamped by its transaction, not by this.
-        assert await self._stored_ws(repo, "e1", "session", 2) == 1_000
+        assert await self._stored_ws(repo, "e1", "session", 2) == self.OLD
+
+    @pytest.mark.asyncio
+    async def test_the_boundary_is_the_half_open_window_end(self, repo):
+        """A sibling moves iff its window had elapsed at the new start, by the
+        same `ws + rsa <= now` rule the opener applied to itself."""
+        await self._create_shards(repo, "e1", count=2, ws=self.OLD)
+        assert (
+            await repo._propagate_window_start(
+                "e1", "gpt-4", shard_id=0, shard_count=2, windows=self._windows(self.NEW - 1)
+            )
+            == 0
+        ), "one millisecond before the sibling's window ends"
+        assert (
+            await repo._propagate_window_start(
+                "e1", "gpt-4", shard_id=0, shard_count=2, windows=self._windows(self.NEW)
+            )
+            == 1
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_concurrent_opener_does_not_move_the_other_openers_shard(self, repo):
+        """Two clients cross the boundary milliseconds apart and each opens a
+        window on its own shard. Moving the earlier opener's shard to the
+        later value would make it read `ws > rf` and reset a second time in
+        one window. Each keeps its own; the stagger lasts one window."""
+        await self._create_shards(repo, "e1", count=2, ws=self.NEW)
+        written = await repo._propagate_window_start(
+            "e1", "gpt-4", shard_id=0, shard_count=2, windows=self._windows(self.NEW + 5)
+        )
+        assert written == 0
+        assert await self._stored_ws(repo, "e1", "session", 1) == self.NEW
 
     @pytest.mark.asyncio
     async def test_is_monotonic(self, repo):
-        """`ws` only ever increases: window n+1 opens at a clock reading
-        strictly after window n closed. A delayed write carrying a stale `ws`
-        must not drag every shard back a full window."""
-        await self._create_shards(repo, "e1", count=2, ws=9_000)
+        """A delayed write carrying a stale `ws` must not drag a shard back."""
+        await self._create_shards(repo, "e1", count=2, ws=self.NEW)
         written = await repo._propagate_window_start(
-            "e1", "gpt-4", shard_id=0, shard_count=2, window_starts={"session": 5_000}
+            "e1", "gpt-4", shard_id=0, shard_count=2, windows=self._windows(self.OLD)
         )
         assert written == 0
-        assert await self._stored_ws(repo, "e1", "session", 1) == 9_000
+        assert await self._stored_ws(repo, "e1", "session", 1) == self.NEW
 
     @pytest.mark.asyncio
     async def test_is_idempotent(self, repo):
-        await self._create_shards(repo, "e1", count=2, ws=1_000)
+        await self._create_shards(repo, "e1", count=2, ws=self.OLD)
         first = await repo._propagate_window_start(
-            "e1", "gpt-4", shard_id=0, shard_count=2, window_starts={"session": 9_000}
+            "e1", "gpt-4", shard_id=0, shard_count=2, windows=self._windows(self.NEW)
         )
         second = await repo._propagate_window_start(
-            "e1", "gpt-4", shard_id=0, shard_count=2, window_starts={"session": 9_000}
+            "e1", "gpt-4", shard_id=0, shard_count=2, windows=self._windows(self.NEW)
         )
         assert (first, second) == (1, 0)
 
@@ -1188,12 +1224,39 @@ class TestPropagateWindowStart:
         """`vu = 0` forces every sibling off the fast path and through one
         materialising pass, which is where `ws > rf` is evaluated. Without it
         a sibling keeps spending its OLD window's balance on a pure ADD."""
-        await self._create_shards(repo, "e1", count=2, ws=1_000)
+        await self._create_shards(repo, "e1", count=2, ws=self.OLD)
         await repo._propagate_window_start(
-            "e1", "gpt-4", shard_id=0, shard_count=2, window_starts={"session": 9_000}
+            "e1", "gpt-4", shard_id=0, shard_count=2, windows=self._windows(self.NEW)
         )
         item = await self._raw(repo, "e1", 1)
         assert int(item[BUCKET_FIELD_VU]["N"]) == 0
+
+    @pytest.mark.asyncio
+    async def test_lands_rsa_beside_ws_on_a_sibling_that_had_none(self, repo):
+        """A sibling stamped before its limit gained a window carries neither
+        attribute. The aggregator and a new shard's inheritance read only the
+        item, so `ws` without `rsa` would leave the window end unknowable."""
+        await self._create_shards(repo, "e1", count=2, ws=self.OLD)
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, "e1", "gpt-4", 1)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="REMOVE #ws, #rsa",
+            ExpressionAttributeNames={
+                "#ws": bucket_attr("session", BUCKET_FIELD_WS),
+                "#rsa": bucket_attr("session", BUCKET_FIELD_RSA),
+            },
+        )
+        written = await repo._propagate_window_start(
+            "e1", "gpt-4", shard_id=0, shard_count=2, windows=self._windows(self.NEW)
+        )
+        assert written == 1
+        item = await self._raw(repo, "e1", 1)
+        assert item[bucket_attr("session", BUCKET_FIELD_WS)] == {"N": str(self.NEW)}
+        assert item[bucket_attr("session", BUCKET_FIELD_RSA)] == {"N": "18000"}
 
     @pytest.mark.asyncio
     async def test_is_a_noop_at_shard_count_one(self, repo):
@@ -1201,7 +1264,7 @@ class TestPropagateWindowStart:
         with patch.object(repo, "_get_client") as mock_get_client:
             assert (
                 await repo._propagate_window_start(
-                    "e1", "gpt-4", shard_id=0, shard_count=1, window_starts={"session": 9_000}
+                    "e1", "gpt-4", shard_id=0, shard_count=1, windows=self._windows(self.NEW)
                 )
                 == 0
             )
@@ -1212,7 +1275,7 @@ class TestPropagateWindowStart:
         with patch.object(repo, "_get_client") as mock_get_client:
             assert (
                 await repo._propagate_window_start(
-                    "e1", "gpt-4", shard_id=0, shard_count=4, window_starts={}
+                    "e1", "gpt-4", shard_id=0, shard_count=4, windows={}
                 )
                 == 0
             )
@@ -1223,13 +1286,13 @@ class TestPropagateWindowStart:
         """A fan-out cannot use ADD (it does not know each sibling's balance)
         and a blind SET races the sibling's own slow path in both orderings.
         Each sibling resets ITSELF, under its own `rf` lock."""
-        await self._create_shards(repo, "e1", count=2, ws=1_000)
+        await self._create_shards(repo, "e1", count=2, ws=self.OLD)
         await repo.transact_write(
             [repo.build_composite_adjust("e1", "gpt-4", {"session": 400_000}, shard_id=1)]
         )
         before = await self._raw(repo, "e1", 1)
         await repo._propagate_window_start(
-            "e1", "gpt-4", shard_id=0, shard_count=2, window_starts={"session": 9_000}
+            "e1", "gpt-4", shard_id=0, shard_count=2, windows=self._windows(self.NEW)
         )
         after = await self._raw(repo, "e1", 1)
         tk = bucket_attr("session", BUCKET_FIELD_TK)
@@ -1239,51 +1302,80 @@ class TestPropagateWindowStart:
     @pytest.mark.asyncio
     async def test_writes_once_per_sibling_and_limit(self, repo):
         """Two windows on one item can roll at different instants, so each
-        limit is its own conditional write: one already ahead must not no-op
+        limit is its own conditional write: one not yet due must not no-op
         the other."""
         daily = Limit.quota("daily", 1_000, reset_after=timedelta(hours=24))
-        await self._create_shards(repo, "e1", count=3, ws=1_000, limits=[self.SESSION, daily])
-        # Shard 1's daily window is already ahead of the incoming value.
-        await repo._propagate_window_start(
-            "e1", "gpt-4", shard_id=0, shard_count=3, window_starts={"daily": 20_000}
-        )
+        await self._create_shards(repo, "e1", count=3, ws=self.OLD, limits=[self.SESSION, daily])
         written = await repo._propagate_window_start(
             "e1",
             "gpt-4",
             shard_id=0,
             shard_count=3,
-            window_starts={"session": 9_000, "daily": 9_000},
+            windows={"session": (self.NEW, 18_000), "daily": (self.NEW, 86_400)},
         )
-        assert written == 2, "session on shards 1 and 2; daily is ahead on both"
+        assert written == 2, "session on shards 1 and 2; the daily window has not ended"
         for shard in (1, 2):
-            assert await self._stored_ws(repo, "e1", "session", shard) == 9_000
-            assert await self._stored_ws(repo, "e1", "daily", shard) == 20_000
+            assert await self._stored_ws(repo, "e1", "session", shard) == self.NEW
+            assert await self._stored_ws(repo, "e1", "daily", shard) == self.OLD
 
     @pytest.mark.asyncio
     async def test_does_not_create_a_missing_shard(self, repo):
         """A sibling that does not exist yet is created later by whoever
         draws it; the fan-out must not conjure a half-item holding only
-        `ws` and `vu`."""
-        await self._create_shards(repo, "e1", count=1, ws=1_000)
+        `ws`, `rsa` and `vu`."""
+        await self._create_shards(repo, "e1", count=1, ws=self.OLD)
         written = await repo._propagate_window_start(
-            "e1", "gpt-4", shard_id=0, shard_count=2, window_starts={"session": 9_000}
+            "e1", "gpt-4", shard_id=0, shard_count=2, windows=self._windows(self.NEW)
         )
         assert written == 0
         assert await repo.get_bucket("e1", "gpt-4", "session", shard_id=1) is None
 
     @pytest.mark.asyncio
-    async def test_reraises_unexpected_client_errors(self, repo):
-        """Only ConditionalCheckFailedException means "already caught up"."""
+    async def test_a_failed_sibling_write_does_not_abandon_the_rest(self, repo, caplog):
+        """A throttled write is logged and counted as not landed. Raising
+        would abandon the siblings not yet written under the serial and gevent
+        sync strategies (#491). The entity id is never logged."""
         with patch.object(repo, "_get_client") as mock_get_client:
             mock_client = AsyncMock()
-            mock_client.update_item.side_effect = ClientError(
-                {"Error": {"Code": "ProvisionedThroughputExceededException"}},
-                "UpdateItem",
-            )
+            mock_client.update_item.side_effect = [
+                ClientError(
+                    {"Error": {"Code": "ProvisionedThroughputExceededException"}},
+                    "UpdateItem",
+                ),
+                {},
+                {},
+            ]
             mock_get_client.return_value = mock_client
-            with pytest.raises(ClientError):
+            with caplog.at_level("WARNING", logger="zae_limiter"):
+                written = await repo._propagate_window_start(
+                    "sk-secret", "gpt-4", shard_id=0, shard_count=4, windows=self._windows(self.NEW)
+                )
+        assert written == 2
+        assert mock_client.update_item.call_count == 3, "every sibling was attempted"
+        assert "fan-out write failed" in caplog.text
+        assert "sk-secret" not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_a_conditional_miss_is_not_logged(self, repo, caplog):
+        await self._create_shards(repo, "e1", count=2, ws=self.NEW)
+        with caplog.at_level("WARNING", logger="zae_limiter"):
+            written = await repo._propagate_window_start(
+                "e1", "gpt-4", shard_id=0, shard_count=2, windows=self._windows(self.NEW)
+            )
+        assert written == 0
+        assert "fan-out write failed" not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_cancellation_still_propagates(self, repo):
+        """Only `Exception` is absorbed; a `BaseException` such as a
+        cancellation must still unwind the caller."""
+        with patch.object(repo, "_get_client") as mock_get_client:
+            mock_client = AsyncMock()
+            mock_client.update_item.side_effect = KeyboardInterrupt()
+            mock_get_client.return_value = mock_client
+            with pytest.raises(KeyboardInterrupt):
                 await repo._propagate_window_start(
-                    "e1", "gpt-4", shard_id=0, shard_count=2, window_starts={"session": 9_000}
+                    "e1", "gpt-4", shard_id=0, shard_count=2, windows=self._windows(self.NEW)
                 )
 
 

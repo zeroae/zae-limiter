@@ -2642,7 +2642,7 @@ class SyncRepository:
         resource: str,
         shard_id: int,
         shard_count: int,
-        window_starts: dict[str, int],
+        windows: dict[str, tuple[int, int]],
     ) -> int:
         """Stamp a newly anchored duration window on the entity's other shards (ADR-139).
 
@@ -2651,62 +2651,89 @@ class SyncRepository:
         "when does mine reset" has no honest answer: ``min(ws) + W``
         over-promises and ``max(ws) + W`` under-promises.
 
-        Mirrors :meth:`_propagate_shard_count`, with ``ws`` substituted for
-        ``shard_count``, because ``ws`` has the property that shape needs: it
-        is **monotonic**. Window *n+1* opens at a clock reading strictly after
-        window *n* closed, so ``ws₀ < ws₀+W ≤ ws₁ < …`` over the life of the
-        bucket. What the ``ws < :new`` guard buys, in the same terms:
+        Shaped like :meth:`_propagate_shard_count`: one conditional write per
+        target, idempotent and monotonic. The condition is **not** "the
+        sibling's ``ws`` is older" but "the sibling's window had already
+        *ended* by the new start"::
 
-        - **Idempotent.** Re-running a rollover writes nothing the second time.
-        - **Race-free against a concurrent roller.** Two clients crossing the
-          boundary milliseconds apart produce two values; the later wins and
-          the earlier no-ops. Both are within clock skew of the same instant.
-        - **Race-free against a delayed write.** A client whose rollover write
-          is delayed past the *next* boundary carries a ``ws`` now smaller
-          than the stored one, and the condition rejects it. Without
-          monotonicity that write would drag every shard back a full window.
+            attribute_not_exists(ws) OR ws <= :open_floor
+            :open_floor = new_ws - rsa * 1000
+
+        which is exactly :meth:`SyncRateLimiter._open_window_if_elapsed`'s rule
+        (the window is half-open, ``[ws, ws + rsa)``, so it has elapsed at
+        ``now`` iff ``ws + rsa <= now``) evaluated at ``new_ws``. A sibling
+        moves only when it would itself have opened a window at that instant.
+        What that buys:
+
+        - **Idempotent.** Once stamped, ``new_ws <= new_ws - W`` is false.
+        - **No double reset between concurrent openers.** Two clients crossing
+          the boundary milliseconds apart each open a window on their own
+          shard and each fan out. A plain ``ws < :new`` let the later value
+          overwrite the earlier opener's own shard, whose ``rf`` is its own
+          ``now`` — so ``ws > rf`` held and that shard reset a *second* time
+          in one window (a moto repro admitted 15 against a quota of 10).
+          Under the floor, both fan-outs no-op on the other's shard: the two
+          shards stay staggered by the openers' few milliseconds until the
+          next window, which is the whole residual cost.
+        - **No drag-back from a delayed write.** A write carrying a stale
+          ``ws`` has a floor below the stored start, and is rejected.
         - **Safe under ``--no-aggregator``.** The client owns this, exactly as
           :meth:`bump_shard_count` owns shard-count propagation.
 
-        **It writes ``ws`` and never ``tk``**, which is the whole coherence
-        argument. A fan-out cannot use ``ADD`` — it does not know each
-        sibling's balance — and the blind ``SET`` it would otherwise need
-        races the sibling's own slow path in both orderings: landing after, it
-        clobbers the sibling's committed consumption; landing before, the
-        sibling's ``rf`` lock still holds and its own ``ADD`` applies on top,
-        leaving it at twice its share. Both over-admit. Each sibling resets
-        itself, under its own ``rf`` lock, in the write it was going to make
-        anyway: it reads ``ws > rf`` (``BucketState.window_rolled``).
+        A sibling whose window is *longer* than ``rsa`` (the length was just
+        raised) may not have elapsed by the floor and no-ops; it opens its own
+        window when it does elapse, which is the pre-fan-out behaviour.
 
-        ``vu = 0`` rides along. The fast path is a pure ``ADD`` with no
+        **It writes ``ws`` and never ``tk``**, which is the coherence argument.
+        A fan-out cannot use ``ADD`` — it does not know each sibling's
+        balance — and the blind ``SET`` it would otherwise need races the
+        sibling's own slow path in both orderings: landing after, it clobbers
+        the sibling's committed consumption; landing before, the sibling's
+        ``rf`` lock still holds and its own ``ADD`` applies on top, leaving it
+        at twice its share. Each sibling resets itself, under its own ``rf``
+        lock, in the write it was going to make anyway: it reads ``ws > rf``
+        (``BucketState.window_rolled``).
+
+        ``rsa`` rides with ``ws``, as on every acquire-path write: a sibling
+        created before its limit gained a window carries none, and the
+        aggregator and a new shard's inheritance read only the item, so a
+        ``ws`` alone would leave the window's end unknowable to them.
+
+        ``vu = 0`` rides along too. The fast path is a pure ``ADD`` with no
         ceiling arithmetic, so without it a sibling whose ``vu`` still lies in
-        the future (one created before its limit gained a window, say, gated
-        by a cron boundary instead) would keep spending its *old* window's
-        balance against a bucket the entity has already rolled. Stamped
-        unconditionally, like the #468 fan-out's. The cost is one skipped
-        aggregator refill per shard per rollover (#508's ``vu = :expected_vu``
-        pin sees the change) — a missed top-up, self-healing next batch.
+        the future (gated by a cron boundary, say) would keep spending its
+        *old* window's balance against a bucket the entity has already
+        rolled. The cost is one skipped aggregator refill per shard per
+        rollover (#508's ``vu = :expected_vu`` pin sees the change).
 
-        ``rsa`` is not written: the sibling already holds it, from its create
-        or its own rollover (both stamp ``ws`` and ``rsa`` together), and the
-        fan-out cannot create an item — ``attribute_exists(PK)`` keeps a
-        sibling that does not exist yet from being conjured as a half-item.
+        ``attribute_exists(PK)`` keeps a sibling that does not exist yet from
+        being conjured as a half-item; whoever draws it creates it.
 
         One write per (sibling, limit) rather than one per sibling: two
         duration limits on one item can have different lengths and so roll at
         different instants, and an ANDed condition would no-op the whole
-        write whenever one was already ahead — leaving the other staggered.
+        write whenever one was not due — leaving the other staggered.
+
+        A write that fails for any reason other than its condition is logged
+        and counted as not landed rather than raised: under the serial and
+        gevent sync strategies a raise would abandon the siblings not yet
+        written (the portable ``_safe`` shape, #491). The caller was already
+        admitted; a sibling left behind opens its own window later.
+
+        Args:
+            windows: Limit name -> ``(new_ws_ms, reset_after_seconds)``.
 
         Returns:
             The number of writes that applied. Zero, with no request issued,
             at ``shard_count == 1``: the cost is ``(S - 1) × L`` WCU per
             rollover, and nothing at all for an unsharded entity.
         """
-        if shard_count <= 1 or not window_starts:
+        if shard_count <= 1 or not windows:
             return 0
         client = self._get_client()
 
-        def stamp(target_shard: int, name: str, new_ws: int) -> int:
+        def stamp(target_shard: int, name: str, window: tuple[int, int]) -> int:
+            new_ws, rsa = window
             try:
                 client.update_item(
                     TableName=self.table_name,
@@ -2718,26 +2745,39 @@ class SyncRepository:
                         },
                         "SK": {"S": schema.sk_state()},
                     },
-                    UpdateExpression="SET #ws = :new, #vu = :zero",
-                    ConditionExpression="attribute_exists(PK) AND (attribute_not_exists(#ws) OR #ws < :new)",
+                    UpdateExpression="SET #ws = :new, #rsa = :rsa, #vu = :zero",
+                    ConditionExpression="attribute_exists(PK) AND (attribute_not_exists(#ws) OR #ws <= :open_floor)",
                     ExpressionAttributeNames={
                         "#ws": schema.bucket_attr(name, schema.BUCKET_FIELD_WS),
+                        "#rsa": schema.bucket_attr(name, schema.BUCKET_FIELD_RSA),
                         "#vu": schema.BUCKET_FIELD_VU,
                     },
-                    ExpressionAttributeValues={":new": {"N": str(new_ws)}, ":zero": {"N": "0"}},
+                    ExpressionAttributeValues={
+                        ":new": {"N": str(new_ws)},
+                        ":rsa": {"N": str(rsa)},
+                        ":open_floor": {"N": str(new_ws - rsa * 1000)},
+                        ":zero": {"N": "0"},
+                    },
                 )
                 return 1
-            except ClientError as e:
-                code = e.response.get("Error", {}).get("Code")
-                if code == "ConditionalCheckFailedException":
-                    return 0
-                raise
+            except Exception as e:
+                code = (
+                    e.response.get("Error", {}).get("Code") if isinstance(e, ClientError) else None
+                )
+                if code != "ConditionalCheckFailedException":
+                    logger.warning(
+                        "duration-window fan-out write failed for resource=%s shard=%d",
+                        resource,
+                        target_shard,
+                        exc_info=True,
+                    )
+                return 0
 
         targets = [
-            (n, name, ws)
+            (n, name, window)
             for n in range(shard_count)
             if n != shard_id
-            for name, ws in sorted(window_starts.items())
+            for name, window in sorted(windows.items())
         ]
         results = self._run_in_executor(*[lambda t=t: stamp(*t) for t in targets])
         return sum(results)

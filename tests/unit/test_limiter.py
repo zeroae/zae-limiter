@@ -11076,6 +11076,62 @@ class TestWindowRolloverFansOut:
         item = await _raw_bucket(repo, "user-1", shard=1)
         assert int(item[BUCKET_FIELD_VU]["N"]) == rolled_at + FIVE_HOURS_MS
 
+    async def test_concurrent_openers_never_reset_one_shard_twice(self, limiter):
+        """Two clients cross the boundary 5 ms apart, each opening a window on
+        its own shard; the first one's fan-out is still in flight when the
+        second's lands. Moving the first opener's shard to the later start
+        made it read `ws > rf` and restore a second time in one window --
+        15 admitted against a quota of 10. The entity admits at most one
+        allowance per window."""
+        repo = limiter._repository
+        await self._seed_shards(repo, "user-1", 2)
+        t1 = T0 + FIVE_HOURS_MS + 1
+        t2 = t1 + 5
+        admitted = 0
+
+        repo._now_ms = lambda: t1
+        real_fan_out = repo._propagate_window_start
+        with (
+            patch.object(repo, "_propagate_window_start", AsyncMock(return_value=0)),
+            patch("zae_limiter.repository.random.randrange", return_value=0),
+        ):
+            async with limiter.acquire("user-1", "gpt-4", consume={"session": 5}):
+                admitted += 5
+
+        repo._now_ms = lambda: t2
+        with patch("zae_limiter.repository.random.randrange", return_value=1):
+            async with limiter.acquire("user-1", "gpt-4", consume={"session": 5}):
+                admitted += 5
+        # The delayed first fan-out lands last.
+        assert await real_fan_out("user-1", "gpt-4", 0, 2, {"session": (t1, 18_000)}) == 0
+
+        repo._now_ms = lambda: t2 + 1_000
+        for shard in (0, 1):
+            with patch("zae_limiter.repository.random.randrange", return_value=shard):
+                try:
+                    async with limiter.acquire("user-1", "gpt-4", consume={"session": 5}):
+                        admitted += 5
+                except RateLimitExceeded:
+                    pass
+
+        assert admitted <= 10, f"admitted {admitted} against a quota of 10 in one window"
+        # Each opener keeps its own start: staggered by 5 ms until the next window.
+        assert await _stored_ws(repo, "user-1", "gpt-4", "session", shard=0) == t1
+        assert await _stored_ws(repo, "user-1", "gpt-4", "session", shard=1) == t2
+
+    async def test_the_fan_out_lands_rsa_on_a_sibling_that_had_none(self, limiter):
+        repo = limiter._repository
+        await self._seed_shards(repo, "user-1", 2)
+        await _strip_window(repo, "user-1", "gpt-4", "session", shard=1)
+        rolled_at = T0 + FIVE_HOURS_MS + 1
+        repo._now_ms = lambda: rolled_at
+        with patch("zae_limiter.repository.random.randrange", return_value=0):
+            async with limiter.acquire("user-1", "gpt-4", consume={"session": 1}):
+                pass
+        item = await _raw_bucket(repo, "user-1", shard=1)
+        assert item[bucket_attr("session", BUCKET_FIELD_WS)] == {"N": str(rolled_at)}
+        assert item[bucket_attr("session", BUCKET_FIELD_RSA)] == {"N": "18000"}
+
     async def test_an_unsharded_entity_issues_no_fan_out(self, limiter):
         """(S-1) x L writes per rollover: zero at S = 1."""
         repo = limiter._repository

@@ -743,13 +743,15 @@ class RepositoryProtocol(Protocol):
         resource: str,
         shard_id: int,
         shard_count: int,
-        window_starts: dict[str, int],
+        windows: dict[str, tuple[int, int]],
     ) -> int:
         """Stamp a newly anchored duration window on the entity's other shards (ADR-139).
 
-        One conditional ``SET ws = :new, vu = 0`` per (sibling, limit) under
-        ``attribute_exists(PK) AND (attribute_not_exists(ws) OR ws < :new)``:
-        monotonic and idempotent, never touching ``tk``. Each sibling resets
+        One conditional ``SET ws = :new, rsa = :rsa, vu = 0`` per (sibling,
+        limit) under ``attribute_exists(PK) AND (attribute_not_exists(ws) OR
+        ws <= :new - rsa)`` — a sibling moves only if its own window had ended
+        by the new start, so two concurrent openers never re-reset each
+        other's shard. Monotonic and idempotent, never touching ``tk``. Each sibling resets
         its own balance under its own ``rf`` lock the next time it
         materialises. Called by ``Lease._commit_initial()`` after a rollover
         write has persisted, which is why it sits on the protocol despite
@@ -760,7 +762,7 @@ class RepositoryProtocol(Protocol):
             resource: Resource the shards belong to
             shard_id: The writer's own shard, which is skipped
             shard_count: The entity's shard count for this resource
-            window_starts: Limit name -> the new window start, epoch ms
+            windows: Limit name -> ``(new_ws_ms, reset_after_seconds)``
 
         Returns:
             The number of (shard, limit) writes that applied; 0 without any

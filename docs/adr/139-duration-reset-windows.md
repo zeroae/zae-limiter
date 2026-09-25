@@ -73,10 +73,19 @@ consumption counter stays monotonic.
 
 **The rollover fan-out moves a scalar and never `tk`.** Whoever first materialises a shard past
 `ws + rsa` anchors `ws_new = now`, applies its own reset under its own `rf` lock, and fans
-`ws_new` to the entity's other shards with concurrent conditional writes under
-`attribute_not_exists(ws) OR ws < :new` — monotonic and idempotent, the shape
-`_propagate_shard_count()` already uses. `ws` is monotonic because window *n+1* opens at a clock
-reading strictly after window *n* closed.
+`ws_new` (with `rsa`, and `vu = 0`) to the entity's other shards with concurrent conditional
+writes under `attribute_not_exists(ws) OR ws <= ws_new - rsa` — a sibling moves only if its own
+window had already ended by `ws_new`, the same half-open rule the opener applied to itself.
+Idempotent and monotonic, in the shape `_propagate_shard_count()` uses; `ws` is monotonic because
+window *n+1* opens at a clock reading strictly after window *n* closed.
+
+The floor, rather than a plain `ws < :new`, is what keeps **concurrent openers** from resetting
+each other. Two clients crossing the boundary milliseconds apart each open a window on their own
+shard and each fan out. Under `ws < :new` the later value overwrote the earlier opener's own
+shard, whose `rf` is its own `now`, so `ws > rf` held and that shard reset a second time inside
+one window — over-admission. Under the floor both fan-outs no-op on the other's shard. The
+residual cost is that those shards stay staggered by the openers' few milliseconds until the
+next window; the entity still admits at most one allowance per window.
 
 A fan-out that carried `tk` would be unsafe in both orderings and cannot be made safe: token
 deltas in this codebase are always `ADD`, which is what makes them commutative with concurrent
@@ -122,13 +131,14 @@ parent's.
   TTL at all, and a per-entity session cap is entity-level by nature, so the formula is reached
   only by resource- and system-level rolling windows. What remains is a purge or a manual delete,
   which loses the balance as well as the window and is not specific to this shape.
-- A lost fan-out write can cost one extra window's allowance on one shard. If a sibling misses
-  the rollover write it keeps a stale `ws`, and when it is next drawn past that stale window's end
-  it anchors a *later* window of its own and fans that out; shards that already rolled then see
-  `ws > rf` a second time and restore again. It is bounded — one extra share per affected shard
-  per lost write, and the system converges on the latest `ws` — and it requires a write to fail,
-  since a sibling holding the *current* `ws` never re-anchors. The fan-out counts its writes and
-  logs a shortfall rather than swallowing it.
+- A lost fan-out write leaves one shard staggered, not over-admitting. A sibling that misses the
+  rollover write keeps its stale `ws`, and when it is next drawn past that stale window's end it
+  anchors a window of its own and fans it out. The shards that already rolled no-op that write —
+  their current windows have not ended by the new start — so none restores twice; the entity
+  runs with that shard offset until the windows next line up at a rollover. The same holds for
+  concurrent openers (above), which is the common case, not a failure. A lengthened `rsa` can
+  likewise no-op on a sibling still inside a longer window; it opens its own when that ends.
+  The fan-out counts its writes and logs a shortfall at debug level rather than swallowing it.
 - A `reset_after` limit is not backward-readable by a client predating it, which reads
   `refill_amount = 0` with no reset and raises. This is a property of ADR-137 rather than of this
   record — a pre-#222 client reading a *calendar* quota raises identically — and the
@@ -161,7 +171,7 @@ number *is* the product.
 
 ### Store the window end rather than the start
 Rejected because: it is the same information and `ws` is the half that is monotonic, which is what
-lets the fan-out reuse `_propagate_shard_count()`'s condition verbatim. Storing both invites the
+lets the fan-out use a `_propagate_shard_count()`-shaped monotonic condition. Storing both invites the
 pair disagreeing after a partial write.
 
 ### A per-entity offset into a fixed grid, derived from the entity id

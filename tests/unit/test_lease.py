@@ -148,9 +148,38 @@ class TestCommitFansTheRolloverOut:
         )
         await Lease(repository=repo, entries=[entry])._commit_initial()
         repo._propagate_window_start.assert_awaited_once_with(
-            "user-1", "gpt-4", 2, 4, {"session": T0 + 1}
+            "user-1", "gpt-4", 2, 4, {"session": (T0 + 1, 18_000)}
         )
         assert order == ["write", "fanout"], "never before the roll is durable"
+
+    async def test_the_lease_is_recorded_committed_before_the_fan_out(self):
+        """The fan-out is bookkeeping-neutral: by the time it runs, the lease
+        already records the write, so nothing it does can leave it
+        half-recorded."""
+        repo = _mock_repo(T0 + 1)
+        entry = _entry(
+            SESSION, _session_state(), consumed=1, _window_start_ms=T0 + 1, _shard_count=4
+        )
+        lease = Lease(repository=repo, entries=[entry])
+        seen: list[tuple[bool, int]] = []
+
+        async def observe(*args):
+            seen.append((lease._initial_committed, entry._initial_consumed))
+            return 3
+
+        repo._propagate_window_start.side_effect = observe
+        await lease._commit_initial()
+        assert seen == [(True, 1)]
+
+    async def test_a_short_fan_out_is_not_logged_at_info(self, caplog):
+        """A shortfall is routine (siblings not created yet, or not due), so
+        it stays below INFO."""
+        repo = _mock_repo(T0 + 1)
+        repo._propagate_window_start.return_value = 1
+        entry = _entry(SESSION, _session_state(), _window_start_ms=T0 + 1, _shard_count=4)
+        with caplog.at_level(logging.INFO, logger="zae_limiter.lease"):
+            await Lease(repository=repo, entries=[entry])._commit_initial()
+        assert "wrote 1 of 3" not in caplog.text
 
     async def test_an_unsharded_entity_issues_no_fan_out(self):
         """(S-1) x L writes: nothing at all at S = 1."""
@@ -178,7 +207,7 @@ class TestCommitFansTheRolloverOut:
         )
         await Lease(repository=repo, entries=[entry])._commit_initial()
         repo._propagate_window_start.assert_awaited_once_with(
-            "user-1", "gpt-4", 0, 8, {"session": T0 + 1}
+            "user-1", "gpt-4", 0, 8, {"session": (T0 + 1, 18_000)}
         )
 
     async def test_the_consumption_only_retry_fans_nothing_out(self):
@@ -258,8 +287,8 @@ class TestCommitFansTheRolloverOut:
         await Lease(repository=repo, entries=[child, parent])._commit_initial()
         calls = sorted(c.args for c in repo._propagate_window_start.await_args_list)
         assert calls == [
-            ("org-1", "gpt-4", 1, 2, {"session": T0 + 1}),
-            ("user-1", "gpt-4", 0, 4, {"session": T0 + 1}),
+            ("org-1", "gpt-4", 1, 2, {"session": (T0 + 1, 18_000)}),
+            ("user-1", "gpt-4", 0, 4, {"session": (T0 + 1, 18_000)}),
         ]
 
     async def test_a_failed_fan_out_is_logged_and_never_fails_the_acquire(self, caplog):
@@ -287,7 +316,7 @@ class TestCommitFansTheRolloverOut:
         repo = _mock_repo(T0 + 1)
         repo._propagate_window_start.return_value = 1
         entry = _entry(SESSION, _session_state(), _window_start_ms=T0 + 1, _shard_count=4)
-        with caplog.at_level(logging.INFO, logger="zae_limiter.lease"):
+        with caplog.at_level(logging.DEBUG, logger="zae_limiter.lease"):
             await Lease(repository=repo, entries=[entry])._commit_initial()
         assert "wrote 1 of 3" in caplog.text
         assert "user-1" not in caplog.text

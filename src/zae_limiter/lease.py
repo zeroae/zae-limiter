@@ -373,7 +373,7 @@ class Lease:
         # Rollovers this commit persists, per bucket item, for the fan-out
         # after the write (ADR-139). Keyed with the item's shard count so a
         # cascade's child and parent each fan out over their own.
-        window_fanouts: dict[tuple[str, str, int, int], dict[str, int]] = {}
+        window_fanouts: dict[tuple[str, str, int, int], dict[str, tuple[int, int]]] = {}
         for (entity_id, resource, shard_id), group_entries in groups.items():
             is_new = group_entries[0]._is_new
 
@@ -528,9 +528,7 @@ class Lease:
                     fanout_count = max(
                         max(e._shard_count, e.state.shard_count) for e in group_entries
                     )
-                    window_fanouts[(entity_id, resource, shard_id, fanout_count)] = {
-                        name: ws for name, (ws, _rsa) in windows.items()
-                    }
+                    window_fanouts[(entity_id, resource, shard_id, fanout_count)] = dict(windows)
 
         if not items:
             self._initial_committed = True
@@ -564,9 +562,6 @@ class Lease:
                         continue
                     raise  # exhausted retries, propagate
                 raise  # other errors propagate unchanged
-
-        if not condition_failed:
-            await self._fan_out_windows(window_fanouts)
 
         if condition_failed:
             # Retry path: ADD consumption only, CONDITION tk>=consumed per limit
@@ -656,8 +651,15 @@ class Lease:
         for entry in self.entries:
             entry._initial_consumed = entry.consumed
 
+        # The lease is committed before the fan-out runs: nothing the fan-out
+        # does (it swallows its own failures) can leave it half-recorded.
+        # Only when the rf-locked write itself landed -- the retry path stamps
+        # no `ws`, so a rollover that fell back to it was never persisted.
+        if not condition_failed:
+            await self._fan_out_windows(window_fanouts)
+
     async def _fan_out_windows(
-        self, window_fanouts: dict[tuple[str, str, int, int], dict[str, int]]
+        self, window_fanouts: dict[tuple[str, str, int, int], dict[str, tuple[int, int]]]
     ) -> None:
         """Propagate each rollover this commit persisted to the item's siblings (ADR-139).
 
@@ -671,20 +673,22 @@ class Lease:
 
         A failure here is not a failed acquire -- the caller was admitted and
         the write landed -- so it is logged and swallowed. A sibling left on
-        the old `ws` anchors its own window later, and `ws < :new` converges
-        the entity on whichever is latest. Cost: ``(S - 1) × L`` conditional
-        writes per rollover, none at all for an unsharded entity.
+        the old `ws` opens its own window when that one elapses, which is the
+        behaviour without a fan-out; the next rollover re-converges the
+        entity. Cost: ``(S - 1) × L`` conditional writes per rollover, none at
+        all for an unsharded entity. It runs after `_initial_committed` is
+        recorded, so the lease's bookkeeping never depends on it.
 
         The entity id is never logged: it is routinely an API key
         (`py/clear-text-logging-sensitive-data`), the same rule
         ``bump_shard_count``'s ``MAX_SHARD_COUNT`` warning follows.
         """
-        for (entity_id, resource, shard_id, shard_count), starts in window_fanouts.items():
+        for (entity_id, resource, shard_id, shard_count), windows in window_fanouts.items():
             if shard_count <= 1:
                 continue
             try:
                 written = await self.repository._propagate_window_start(
-                    entity_id, resource, shard_id, shard_count, starts
+                    entity_id, resource, shard_id, shard_count, windows
                 )
             except Exception:
                 logger.warning(
@@ -694,9 +698,9 @@ class Lease:
                     exc_info=True,
                 )
                 continue
-            expected = (shard_count - 1) * len(starts)
+            expected = (shard_count - 1) * len(windows)
             if written < expected:
-                logger.info(
+                logger.debug(
                     "duration-window fan-out wrote %d of %d for resource=%s",
                     written,
                     expected,
