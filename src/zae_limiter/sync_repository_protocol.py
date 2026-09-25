@@ -535,7 +535,7 @@ class SyncRepositoryProtocol(Protocol):
         shard_id: int = 0,
         vu: int | None = None,
         clear_vu: bool = False,
-        window_starts: dict[str, int] | None = None,
+        windows: dict[str, tuple[int, int]] | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -550,9 +550,10 @@ class SyncRepositoryProtocol(Protocol):
             vu: Valid-until stamp in epoch ms, or None to leave it untouched
             clear_vu: REMOVE `vu` rather than leaving it, for a pass that
                 knows nothing on the item is scheduled (#222 §2.1)
-            window_starts: Limit name -> the new window start to stamp, epoch
-                ms (ADR-139). Only limits whose window rolled on this pass
-                appear; ``None`` leaves every `ws` untouched.
+            windows: Limit name -> ``(window_start_ms, reset_after_seconds)``
+                (ADR-139). Only limits whose window rolled on this pass
+                appear; ``None`` leaves every `ws` untouched. `ws` and `rsa`
+                travel as one pair so neither is ever stamped alone.
         """
         ...
 
@@ -661,6 +662,37 @@ class SyncRepositoryProtocol(Protocol):
 
         Returns:
             The new shard_count, or current_count if another client already doubled.
+        """
+        ...
+
+    def _propagate_window_start(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int,
+        shard_count: int,
+        window_starts: dict[str, int],
+    ) -> int:
+        """Stamp a newly anchored duration window on the entity's other shards (ADR-139).
+
+        One conditional ``SET ws = :new, vu = 0`` per (sibling, limit) under
+        ``attribute_exists(PK) AND (attribute_not_exists(ws) OR ws < :new)``:
+        monotonic and idempotent, never touching ``tk``. Each sibling resets
+        its own balance under its own ``rf`` lock the next time it
+        materialises. Called by ``SyncLease._commit_initial()`` after a rollover
+        write has persisted, which is why it sits on the protocol despite
+        being private.
+
+        Args:
+            entity_id: Entity owning the shards
+            resource: Resource the shards belong to
+            shard_id: The writer's own shard, which is skipped
+            shard_count: The entity's shard count for this resource
+            window_starts: Limit name -> the new window start, epoch ms
+
+        Returns:
+            The number of (shard, limit) writes that applied; 0 without any
+            request at ``shard_count <= 1``.
         """
         ...
 

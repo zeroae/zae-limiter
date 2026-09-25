@@ -2344,7 +2344,7 @@ class Repository:
         shard_id: int = 0,
         vu: int | None = None,
         clear_vu: bool = False,
-        window_starts: dict[str, int] | None = None,
+        windows: dict[str, tuple[int, int]] | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -2373,14 +2373,21 @@ class Repository:
                 group covers every limit sharing the item. This is the half of
                 the #468 fan-out's `vu = 0` that makes it self-clearing rather
                 than a permanent fast-path demotion.
-            window_starts: Limit name -> the new window start to stamp, epoch
-                ms (ADR-139). Only limits whose window rolled on **this** pass
-                appear; an empty dict or ``None`` leaves every `ws` untouched.
-                This is the only client write that moves a window start — the
-                speculative fast path stays byte-identical — so
-                `_commit_initial()` is where anchoring is decided, which is
-                what makes "only admitted use anchors" fall out rather than
-                being enforced.
+            windows: Limit name -> ``(window_start_ms, reset_after_seconds)``
+                to stamp as ``b_{name}_ws`` and ``b_{name}_rsa`` (ADR-139).
+                Only limits whose window rolled on **this** pass appear; an
+                empty dict or ``None`` leaves every `ws` untouched. This is the
+                only client write that moves a window start — the speculative
+                fast path stays byte-identical — so `_commit_initial()` is
+                where anchoring is decided, which is what makes "only admitted
+                use anchors" fall out rather than being enforced.
+
+                The pair is one argument so that `ws` can never land without
+                `rsa`. The aggregator and a new shard's inheritance read only
+                the item, and a resource- or system-level `reset_after` never
+                reaches an existing bucket through the param sync (#271/#296)
+                — so an item holding `ws` alone would carry a window whose end
+                nothing but a config-resolving client could compute.
         """
         add_parts: list[str] = []
         set_parts: list[str] = ["#rf = :now"]
@@ -2433,12 +2440,13 @@ class Repository:
         # that by keeping the expression text itself free of the raw name;
         # only the alias *value*, substituted by DynamoDB, carries it.
         # `sorted` only to keep the expression deterministic for tests.
-        for i, (name, ws) in enumerate(sorted((window_starts or {}).items())):
-            name_alias = f"#ws{i}"
-            value_placeholder = f":ws{i}"
-            attr_names[name_alias] = schema.bucket_attr(name, schema.BUCKET_FIELD_WS)
-            set_parts.append(f"{name_alias} = {value_placeholder}")
-            attr_values[value_placeholder] = {"N": str(ws)}
+        for i, (name, (ws, rsa)) in enumerate(sorted((windows or {}).items())):
+            attr_names[f"#ws{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_WS)
+            attr_names[f"#rsa{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_RSA)
+            set_parts.append(f"#ws{i} = :ws{i}")
+            set_parts.append(f"#rsa{i} = :rsa{i}")
+            attr_values[f":ws{i}"] = {"N": str(ws)}
+            attr_values[f":rsa{i}"] = {"N": str(rsa)}
 
         condition_parts: list[str] = ["#rf = :expected_rf"]
 
@@ -3196,6 +3204,124 @@ class Repository:
         # `gather(*[expr for x in it])` into `_run_in_executor(*[lambda x=x:
         # expr for x in it])`, which needs the call deferred into the lambda.
         results = await asyncio.gather(*[stamp(n) for n in range(1, old_count)])
+        return sum(results)
+
+    async def _propagate_window_start(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int,
+        shard_count: int,
+        window_starts: dict[str, int],
+    ) -> int:
+        """Stamp a newly anchored duration window on the entity's other shards (ADR-139).
+
+        Without it, shard A drawn at 20:00 and shard B at 20:03 anchor
+        different windows and the entity's windows stagger — at which point
+        "when does mine reset" has no honest answer: ``min(ws) + W``
+        over-promises and ``max(ws) + W`` under-promises.
+
+        Mirrors :meth:`_propagate_shard_count`, with ``ws`` substituted for
+        ``shard_count``, because ``ws`` has the property that shape needs: it
+        is **monotonic**. Window *n+1* opens at a clock reading strictly after
+        window *n* closed, so ``ws₀ < ws₀+W ≤ ws₁ < …`` over the life of the
+        bucket. What the ``ws < :new`` guard buys, in the same terms:
+
+        - **Idempotent.** Re-running a rollover writes nothing the second time.
+        - **Race-free against a concurrent roller.** Two clients crossing the
+          boundary milliseconds apart produce two values; the later wins and
+          the earlier no-ops. Both are within clock skew of the same instant.
+        - **Race-free against a delayed write.** A client whose rollover write
+          is delayed past the *next* boundary carries a ``ws`` now smaller
+          than the stored one, and the condition rejects it. Without
+          monotonicity that write would drag every shard back a full window.
+        - **Safe under ``--no-aggregator``.** The client owns this, exactly as
+          :meth:`bump_shard_count` owns shard-count propagation.
+
+        **It writes ``ws`` and never ``tk``**, which is the whole coherence
+        argument. A fan-out cannot use ``ADD`` — it does not know each
+        sibling's balance — and the blind ``SET`` it would otherwise need
+        races the sibling's own slow path in both orderings: landing after, it
+        clobbers the sibling's committed consumption; landing before, the
+        sibling's ``rf`` lock still holds and its own ``ADD`` applies on top,
+        leaving it at twice its share. Both over-admit. Each sibling resets
+        itself, under its own ``rf`` lock, in the write it was going to make
+        anyway: it reads ``ws > rf`` (``BucketState.window_rolled``).
+
+        ``vu = 0`` rides along. The fast path is a pure ``ADD`` with no
+        ceiling arithmetic, so without it a sibling whose ``vu`` still lies in
+        the future (one created before its limit gained a window, say, gated
+        by a cron boundary instead) would keep spending its *old* window's
+        balance against a bucket the entity has already rolled. Stamped
+        unconditionally, like the #468 fan-out's. The cost is one skipped
+        aggregator refill per shard per rollover (#508's ``vu = :expected_vu``
+        pin sees the change) — a missed top-up, self-healing next batch.
+
+        ``rsa`` is not written: the sibling already holds it, from its create
+        or its own rollover (both stamp ``ws`` and ``rsa`` together), and the
+        fan-out cannot create an item — ``attribute_exists(PK)`` keeps a
+        sibling that does not exist yet from being conjured as a half-item.
+
+        One write per (sibling, limit) rather than one per sibling: two
+        duration limits on one item can have different lengths and so roll at
+        different instants, and an ANDed condition would no-op the whole
+        write whenever one was already ahead — leaving the other staggered.
+
+        Returns:
+            The number of writes that applied. Zero, with no request issued,
+            at ``shard_count == 1``: the cost is ``(S - 1) × L`` WCU per
+            rollover, and nothing at all for an unsharded entity.
+        """
+        if shard_count <= 1 or not window_starts:
+            return 0
+        client = await self._get_client()
+
+        async def stamp(target_shard: int, name: str, new_ws: int) -> int:
+            try:
+                await client.update_item(
+                    TableName=self.table_name,
+                    Key={
+                        "PK": {
+                            "S": schema.pk_bucket(
+                                self._namespace_id, entity_id, resource, target_shard
+                            )
+                        },
+                        "SK": {"S": schema.sk_state()},
+                    },
+                    UpdateExpression="SET #ws = :new, #vu = :zero",
+                    ConditionExpression=(
+                        "attribute_exists(PK) AND (attribute_not_exists(#ws) OR #ws < :new)"
+                    ),
+                    # An alias, not the bare name: `NAME_PATTERN` allows `-`
+                    # and `.` in a limit name, and `.` is a document-path
+                    # separator in expression text.
+                    ExpressionAttributeNames={
+                        "#ws": schema.bucket_attr(name, schema.BUCKET_FIELD_WS),
+                        "#vu": schema.BUCKET_FIELD_VU,
+                    },
+                    ExpressionAttributeValues={
+                        ":new": {"N": str(new_ws)},
+                        ":zero": {"N": "0"},
+                    },
+                )
+                return 1
+            except ClientError as e:
+                code = e.response.get("Error", {}).get("Code")
+                if code == "ConditionalCheckFailedException":
+                    return 0  # already at or ahead of this window, or absent
+                raise
+
+        targets = [
+            (n, name, ws)
+            for n in range(shard_count)
+            if n != shard_id
+            for name, ws in sorted(window_starts.items())
+        ]
+        # One bare-name comprehension target, not `for n, name, ws in ...`:
+        # the sync transformer defers the call into a `lambda t=t:` only for a
+        # plain Name target. A tuple target falls through to its generic
+        # branch, which calls `stamp(...)` eagerly and then calls the int.
+        results = await asyncio.gather(*[stamp(*t) for t in targets])
         return sum(results)
 
     # -------------------------------------------------------------------------

@@ -1129,3 +1129,118 @@ class TestQuotaShardCreationIsATransfer:
 
         assert await self._tokens(repo, entity_id, 0, "rpm") == 2_000  # not clamped early
         assert await self._tokens(repo, entity_id, 1, "rpm") == 499_000  # full share, less one
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+class TestDurationWindowRolloverFanOut:
+    """One rollover converges every shard on one window (ADR-139, #624).
+
+    Exercises the real conditional `UpdateItem`s `_propagate_window_start`
+    issues -- `attribute_exists(PK) AND (attribute_not_exists(ws) OR ws < :new)`
+    -- which moto only approximates.
+    """
+
+    SHARDS = 4
+    WINDOW_MS = 2_000
+
+    @staticmethod
+    async def _raw(repo, entity_id: str, shard_id: int) -> dict:
+        client = await repo._get_client()
+        resp = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "gpt-4", shard_id)},
+                "SK": {"S": sk_state()},
+            },
+        )
+        return resp.get("Item") or {}
+
+    async def _seed(self, limiter, entity_id: str, now_ms: int):
+        """Four shards of a 2-second session quota, all anchored at ``now_ms``."""
+        from datetime import timedelta
+
+        from zae_limiter import RateLimiter
+        from zae_limiter.models import BucketState, Limit
+
+        repo = limiter._repository
+        limit = Limit.quota("session", 4_000, reset_after=timedelta(seconds=2))
+        await limiter.create_entity(entity_id)
+        await limiter.set_limits(entity_id, [limit], resource="gpt-4")
+        for shard in range(self.SHARDS):
+            state = BucketState.from_limit(
+                entity_id, "gpt-4", limit, now_ms, shard_count=self.SHARDS
+            )
+            vu, _reset = RateLimiter._materialisation_stamps(limit, state, now_ms)
+            await repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        entity_id,
+                        "gpt-4",
+                        [state],
+                        now_ms,
+                        ttl_seconds=None,
+                        shard_id=shard,
+                        shard_count=self.SHARDS,
+                        vu=vu,
+                    )
+                ]
+            )
+        repo._entity_cache[(repo._namespace_id, entity_id)] = (
+            False,
+            None,
+            {"gpt-4": self.SHARDS},
+        )
+        return repo
+
+    async def test_a_rollover_converges_every_shard_on_one_window(
+        self, localstack_limiter, monkeypatch, unique_name
+    ):
+        """Without the fan-out the entity has four windows drifting apart and
+        no honest answer to "when does mine reset"."""
+        import random as _random
+
+        limiter = localstack_limiter
+        entity_id = f"window-fanout-{unique_name}"
+        t0 = int(time.time() * 1000)
+        repo = await self._seed(limiter, entity_id, t0)
+
+        rolled_at = t0 + self.WINDOW_MS + 100
+        monkeypatch.setattr(repo, "_now_ms", lambda: rolled_at)
+        monkeypatch.setattr(_random, "randrange", lambda *a: 2)
+        async with limiter.acquire(entity_id, "gpt-4", {"session": 1}):
+            pass
+
+        ws_attr = bucket_attr("session", "ws")
+        items = [await self._raw(repo, entity_id, s) for s in range(self.SHARDS)]
+        starts = {int(item[ws_attr]["N"]) for item in items}
+        assert starts == {rolled_at}, f"shards anchored different windows: {starts}"
+        for shard in (0, 1, 3):
+            assert int(items[shard]["vu"]["N"]) == 0, f"shard {shard} kept its fast path"
+            # The fan-out moves `ws` only; each sibling restores its own share.
+            assert int(items[shard][bucket_attr("session", BUCKET_FIELD_TK)]["N"]) == 1_000_000
+
+    async def test_a_delayed_stale_rollover_does_not_drag_the_entity_back(
+        self, localstack_limiter, unique_name
+    ):
+        limiter = localstack_limiter
+        entity_id = f"window-stale-{unique_name}"
+        t0 = int(time.time() * 1000)
+        repo = await self._seed(limiter, entity_id, t0)
+
+        assert (
+            await repo._propagate_window_start(
+                entity_id, "gpt-4", 0, self.SHARDS, {"session": t0 + 10_000}
+            )
+            == self.SHARDS - 1
+        )
+        assert (
+            await repo._propagate_window_start(
+                entity_id, "gpt-4", 0, self.SHARDS, {"session": t0 + 5_000}
+            )
+            == 0
+        )
+        ws_attr = bucket_attr("session", "ws")
+        for shard in range(1, self.SHARDS):
+            item = await self._raw(repo, entity_id, shard)
+            assert int(item[ws_attr]["N"]) == t0 + 10_000

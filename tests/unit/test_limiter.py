@@ -10934,6 +10934,11 @@ class TestWindowRollThroughAcquire:
         async with slow.acquire("user-1", "gpt-4", consume={"session": 1}):
             pass
         assert await _stored_ws(repo, "user-1", "gpt-4", "session") == T0 + 60_000
+        # And `rsa` lands beside it (#624): the aggregator and a new shard's
+        # inheritance read only the item, so a `ws` alone would leave the
+        # window's end unknowable to them.
+        item = await _raw_bucket(repo, "user-1")
+        assert item[bucket_attr("session", BUCKET_FIELD_RSA)] == {"N": "18000"}
 
     async def test_the_opener_resets_even_when_rf_is_ahead_of_its_clock(self, limiter):
         """Another writer (a client or the aggregator with a faster clock)
@@ -10994,3 +10999,92 @@ class TestWindowRollThroughAcquire:
         assert lease is not None
         assert await _stored_ws(repo, "parent", "gpt-4", "session") == now
         assert await _stored_tk(repo, "parent", "gpt-4", "session") == 6_000
+
+
+class TestWindowRolloverFansOut:
+    """A rollover on one shard reaches the entity's other shards (ADR-139, #624).
+
+    Driven through `acquire()` on moto so the sync twin exercises the same
+    fan-out through `_run_in_executor`.
+    """
+
+    async def _seed_shards(self, repo, entity_id, count):
+        """``count`` shards of ``entity_id``'s session quota, anchored at T0."""
+        await repo.set_limits(entity_id, [SESSION_10], resource="gpt-4")
+        for shard in range(count):
+            state = BucketState.from_limit(entity_id, "gpt-4", SESSION_10, T0, shard_count=count)
+            await repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        entity_id,
+                        "gpt-4",
+                        [state],
+                        T0,
+                        ttl_seconds=None,
+                        shard_id=shard,
+                        shard_count=count,
+                        vu=T0 + FIVE_HOURS_MS,
+                    )
+                ]
+            )
+        repo._entity_cache[(repo._namespace_id, entity_id)] = (False, None, {"gpt-4": count})
+
+    async def test_a_rollover_on_one_shard_stamps_every_sibling(self, limiter):
+        repo = limiter._repository
+        await self._seed_shards(repo, "user-1", 2)
+        before = await _raw_bucket(repo, "user-1", shard=1)
+
+        rolled_at = T0 + FIVE_HOURS_MS + 1
+        repo._now_ms = lambda: rolled_at
+        with patch("zae_limiter.repository.random.randrange", return_value=0):
+            async with limiter.acquire("user-1", "gpt-4", consume={"session": 1}):
+                pass
+
+        assert await _stored_ws(repo, "user-1", "gpt-4", "session", shard=0) == rolled_at
+        assert await _stored_ws(repo, "user-1", "gpt-4", "session", shard=1) == rolled_at
+        sibling = await _raw_bucket(repo, "user-1", shard=1)
+        assert int(sibling[BUCKET_FIELD_VU]["N"]) == 0, "the sibling's fast path demotes"
+        tk = bucket_attr("session", BUCKET_FIELD_TK)
+        assert sibling[tk] == before[tk], "the fan-out never touches a balance"
+        assert sibling["rf"] == before["rf"], "nor the sibling's own lock"
+
+    async def test_the_sibling_resets_itself_on_its_next_pass(self, limiter):
+        """The fan-out only moves `ws`; the sibling sees `ws > rf` on its own
+        next materialising pass and restores its share under its own lock --
+        into the window the entity already opened, not a new one of its own."""
+        repo = limiter._repository
+        await self._seed_shards(repo, "user-1", 2)
+        repo._now_ms = lambda: T0
+        with patch("zae_limiter.repository.random.randrange", return_value=1):
+            async with limiter.acquire("user-1", "gpt-4", consume={"session": 5}):
+                pass
+        assert await _stored_tk(repo, "user-1", "gpt-4", "session", shard=1) == 0
+
+        rolled_at = T0 + FIVE_HOURS_MS + 1
+        repo._now_ms = lambda: rolled_at
+        with patch("zae_limiter.repository.random.randrange", return_value=0):
+            async with limiter.acquire("user-1", "gpt-4", consume={"session": 1}):
+                pass
+
+        repo._now_ms = lambda: rolled_at + 60_000
+        with patch("zae_limiter.repository.random.randrange", return_value=1):
+            async with limiter.acquire("user-1", "gpt-4", consume={"session": 2}):
+                pass
+
+        assert await _stored_tk(repo, "user-1", "gpt-4", "session", shard=1) == 3_000
+        assert await _stored_ws(repo, "user-1", "gpt-4", "session", shard=1) == rolled_at
+        item = await _raw_bucket(repo, "user-1", shard=1)
+        assert int(item[BUCKET_FIELD_VU]["N"]) == rolled_at + FIVE_HOURS_MS
+
+    async def test_an_unsharded_entity_issues_no_fan_out(self, limiter):
+        """(S-1) x L writes per rollover: zero at S = 1."""
+        repo = limiter._repository
+        await self._seed_shards(repo, "user-1", 1)
+        repo._now_ms = lambda: T0 + FIVE_HOURS_MS + 1
+        with patch.object(
+            repo, "_propagate_window_start", wraps=repo._propagate_window_start
+        ) as spy:
+            async with limiter.acquire("user-1", "gpt-4", consume={"session": 1}):
+                pass
+        spy.assert_not_called()
+        assert await _stored_ws(repo, "user-1", "gpt-4", "session") == T0 + FIVE_HOURS_MS + 1
