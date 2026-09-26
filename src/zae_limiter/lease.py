@@ -6,10 +6,15 @@ import warnings
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from .bucket import calculate_available, force_consume, try_consume
+from .bucket import (
+    calculate_available,
+    force_consume,
+    retry_after_for_deficit,
+    try_consume,
+    window_end_in_force,
+)
 from .exceptions import LeaseExpiredError, RateLimitExceeded
 from .models import BucketState, Limit, LimitStatus
-from .schedule import retry_after_with_schedule
 from .schema import calculate_bucket_ttl_seconds
 
 # TransactionConflict retry constants (Issue #332)
@@ -240,6 +245,7 @@ class Lease:
                 requested=amount,
                 exceeded=not result.success,
                 retry_after_seconds=result.retry_after_seconds,
+                resets_at_ms=window_end_in_force(entry.limit, entry.state),
             )
             statuses.append(status)
 
@@ -260,6 +266,7 @@ class Lease:
                         requested=0,
                         exceeded=False,
                         retry_after_seconds=0.0,
+                        resets_at_ms=window_end_in_force(entry.limit, entry.state),
                     )
                 )
 
@@ -940,24 +947,17 @@ def _build_retry_failure_statuses(entries: list[LeaseEntry], now_ms: int) -> lis
         # rate would under-report the wait by shard_count. The walk takes the
         # undivided base and does both narrowings — schedule, then shard —
         # itself (#222 §7), and returns the next reset edge outright when one
-        # lands before the deficit clears.
+        # lands before the deficit clears. A duration window answers with the
+        # wait to its end instead (ADR-139), the same helper `try_consume`
+        # uses, so the fast and slow paths cannot answer it differently.
         #
-        # Both schedules come off the **state**, not off `entry.limit`. In
-        # production they are the same tuples — `_do_acquire` attaches the
-        # resolved config's schedules to each state before admission, and
-        # `BucketState.from_limit` stamps them onto a new one — but the state
-        # is the single source `try_consume` also reads, so the fast and slow
-        # paths cannot answer the same question from different fields.
-        retry_after = retry_after_with_schedule(
-            deficit_milli=deficit_milli,
-            cp_milli=entry.state.capacity_milli,
-            ra_milli=entry.state.refill_amount_milli,
-            rp_ms=entry.state.refill_period_ms,
-            sched=entry.state.sched,
-            reset_sched=entry.state.reset_sched,
-            now_ms=now_ms,
-            shard_count=entry.state.shard_count,
-        )
+        # Both schedules and the window come off the **state**, not off
+        # `entry.limit`. In production they are the same values —
+        # `_do_acquire` attaches the resolved config's schedules and window
+        # length to each state before admission, and `BucketState.from_limit`
+        # stamps them onto a new one — but the state is the single source
+        # `try_consume` also reads.
+        retry_after = retry_after_for_deficit(entry.state, deficit_milli, now_ms)
         statuses.append(
             LimitStatus(
                 entity_id=entry.entity_id,
@@ -968,6 +968,7 @@ def _build_retry_failure_statuses(entries: list[LeaseEntry], now_ms: int) -> lis
                 requested=entry.consumed,
                 exceeded=entry.consumed > 0,
                 retry_after_seconds=retry_after,
+                resets_at_ms=window_end_in_force(entry.limit, entry.state),
             )
         )
     return statuses

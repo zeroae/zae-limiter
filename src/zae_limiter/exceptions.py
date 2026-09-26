@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 from .schedule import next_reset_edge
 
 if TYPE_CHECKING:
-    from .models import Limit, LimitStatus
+    from .models import LimitStatus
 
 
 # ---------------------------------------------------------------------------
@@ -118,7 +118,7 @@ class RateLimitExceeded(RateLimitError):  # noqa: N818
         )
 
     @staticmethod
-    def _limit_shape(limit: "Limit", now_ms: int) -> dict[str, Any]:
+    def _limit_shape(status: "LimitStatus", now_ms: int) -> dict[str, Any]:
         """The fields describing *how this limit recovers*, by its kind (#545).
 
         Two shapes, tagged by ``kind``, because a quota and a rate limit
@@ -151,7 +151,15 @@ class RateLimitExceeded(RateLimitError):  # noqa: N818
         required to read it. ``None`` when ``schedule.next_reset_edge`` finds
         no edge inside its scan horizon; the key stays present so a quota
         entry's shape does not vary with the calendar.
+
+        Takes the **status** rather than the limit because a duration window's
+        instant (``ws + reset_after``, ADR-139) is anchored on the bucket item,
+        not in the config: it is computed where the bucket was read and
+        carried on :attr:`LimitStatus.resets_at_ms`, a constant with no scan.
+        A calendar edge still falls back to the cron walk, which is the only
+        source for it.
         """
+        limit = status.limit
         if not limit.is_quota:
             return {
                 "kind": "rate",
@@ -159,11 +167,10 @@ class RateLimitExceeded(RateLimitError):  # noqa: N818
                 "refill_amount": limit.refill_amount,
                 "refill_period_seconds": limit.refill_period_seconds,
             }
-        return {
-            "kind": "quota",
-            "capacity": limit.capacity,
-            "resets_at_ms": next_reset_edge(limit.reset_schedule, now_ms=now_ms),
-        }
+        resets_at_ms = status.resets_at_ms
+        if resets_at_ms is None and limit.reset_schedule:
+            resets_at_ms = next_reset_edge(limit.reset_schedule, now_ms=now_ms)
+        return {"kind": "quota", "capacity": limit.capacity, "resets_at_ms": resets_at_ms}
 
     def as_dict(self) -> dict[str, Any]:
         """
@@ -191,7 +198,7 @@ class RateLimitExceeded(RateLimitError):  # noqa: N818
                     "entity_id": s.entity_id,
                     "resource": s.resource,
                     "limit_name": s.limit_name,
-                    **self._limit_shape(s.limit, now_ms),
+                    **self._limit_shape(s, now_ms),
                     "available": s.available,
                     "requested": s.requested,
                     "exceeded": s.exceeded,

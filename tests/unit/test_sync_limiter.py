@@ -650,6 +650,7 @@ class TestLeaseRetryPath:
         state.sched = ()
         state.reset_sched = ()
         state.shard_count = 1
+        state.window_end_ms = None
         entry = LeaseEntry(entity_id="e1", resource="gpt-4", limit=limit, state=state, consumed=60)
         undeclared_state = MagicMock()
         undeclared_state.tokens_milli = 0
@@ -8705,7 +8706,7 @@ class TestWindowRollThroughAcquire:
     def test_a_rejection_at_a_boundary_reports_the_rolled_view(self, sync_limiter):
         """Even though nothing is written, the rejection tells the truth about
         what the caller would have got: the restored balance, not the burnt
-        one. (`resets_at_ms` for the new window lands with Task 12.)"""
+        one. `resets_at_ms` for the new window is pinned in test_window_reporting."""
         repo = sync_limiter._repository
         repo.set_limits("user-1", [SESSION_10], resource="gpt-4")
         repo._now_ms = lambda: T0

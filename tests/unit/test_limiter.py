@@ -810,6 +810,9 @@ class TestLeaseRetryPath:
         state.sched = ()
         state.reset_sched = ()
         state.shard_count = 1
+        # No duration window (ADR-139): the wait is the schedule walk's, not
+        # the time to a window's end.
+        state.window_end_ms = None
         entry = LeaseEntry(
             entity_id="e1",
             resource="gpt-4",
@@ -10858,7 +10861,7 @@ class TestWindowRollThroughAcquire:
     async def test_a_rejection_at_a_boundary_reports_the_rolled_view(self, limiter):
         """Even though nothing is written, the rejection tells the truth about
         what the caller would have got: the restored balance, not the burnt
-        one. (`resets_at_ms` for the new window lands with Task 12.)"""
+        one. `resets_at_ms` for the new window is pinned in test_window_reporting."""
         repo = limiter._repository
         await repo.set_limits("user-1", [SESSION_10], resource="gpt-4")
         repo._now_ms = lambda: T0

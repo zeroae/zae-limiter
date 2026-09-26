@@ -1,6 +1,7 @@
 """Tests for exception classes."""
 
 import time
+from datetime import timedelta
 
 import pytest
 
@@ -248,6 +249,59 @@ class TestRateLimitExceeded:
         assert "refill_amount" not in limits[0]
         assert limits[1]["refill_amount"] == 100
         assert "resets_at_ms" not in limits[1]
+
+    @staticmethod
+    def _status_for(limit: Limit, resets_at_ms: int | None, retry: float = 1.0) -> LimitStatus:
+        return LimitStatus(
+            entity_id="e1",
+            resource="gpt-4",
+            limit_name=limit.name,
+            limit=limit,
+            available=0,
+            requested=1,
+            exceeded=True,
+            retry_after_seconds=retry,
+            resets_at_ms=resets_at_ms,
+        )
+
+    def test_a_duration_quota_reports_a_constant_reset_instant(self) -> None:
+        """`ws + reset_after`, read straight off the status — no scan (ADR-139).
+
+        The calendar form needs `next_reset_edge`'s bounded cron walk; a
+        duration window's anchor lives on the bucket, so the instant is
+        computed where the bucket was read and carried on the status.
+        """
+        limit = Limit.quota("session", 10_000, reset_after=timedelta(hours=5))
+        status = self._status_for(limit, 1_757_018_000_000, retry=3600.0)
+        body = RateLimitExceeded([status]).as_dict()["limits"][0]
+        assert body["kind"] == "quota"
+        assert body["capacity"] == 10_000
+        assert body["resets_at_ms"] == 1_757_018_000_000
+        # #545: a quota omits the drip fields entirely.
+        assert "refill_amount" not in body
+        assert "refill_period_seconds" not in body
+
+    def test_a_duration_quota_with_no_live_window_reports_null(self) -> None:
+        """No carried instant and no cron to scan: the key stays, the value is None."""
+        limit = Limit.quota("session", 10_000, reset_after=timedelta(hours=5))
+        body = RateLimitExceeded([self._status_for(limit, None)]).as_dict()["limits"][0]
+        assert body["kind"] == "quota"
+        assert body["resets_at_ms"] is None
+
+    def test_a_calendar_quota_still_scans_for_its_edge(self) -> None:
+        """Regression guard: `_limit_shape` takes a status now, and a CALENDAR
+        quota's status carries `resets_at_ms=None` — it must still fall back to
+        `next_reset_edge`, or #545's whole surface goes null."""
+        limit = Limit.quota("rpd", 10_000, cron="0 0 * * *")
+        body = RateLimitExceeded([self._status_for(limit, None)]).as_dict()["limits"][0]
+        assert body["kind"] == "quota"
+        assert body["resets_at_ms"] is not None
+
+    def test_a_rate_limit_carries_no_reset_instant(self) -> None:
+        status = self._status_for(Limit.per_minute("rpm", 100), None)
+        body = RateLimitExceeded([status]).as_dict()["limits"][0]
+        assert body["kind"] == "rate"
+        assert "resets_at_ms" not in body
 
     def test_retry_after_header_rounds_up(self) -> None:
         """retry_after_header rounds up fractional seconds."""

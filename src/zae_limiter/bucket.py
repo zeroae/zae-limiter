@@ -152,28 +152,71 @@ def try_consume(
         )
     else:
         # Failure - calculate retry time
-        deficit_milli = requested_milli - current_tokens_milli
-        # The **undivided base** goes in, with `shard_count` alongside: the
-        # walk re-evaluates `effective_params` per window and takes the shard
-        # share afterwards, so handing it the pre-scaled, pre-divided
-        # `effective_*` values would apply both narrowings twice (#222 §7).
-        retry_after = retry_after_with_schedule(
-            deficit_milli=deficit_milli,
-            cp_milli=state.capacity_milli,
-            ra_milli=state.refill_amount_milli,
-            rp_ms=state.refill_period_ms,
-            sched=state.sched,
-            reset_sched=state.reset_sched,
-            now_ms=now_ms,
-            shard_count=state.shard_count,
-        )
         return ConsumeResult(
             success=False,
             new_tokens_milli=current_tokens_milli,
             new_last_refill_ms=refill.new_last_refill_ms,
             available=available,
-            retry_after_seconds=retry_after,
+            retry_after_seconds=retry_after_for_deficit(
+                state, requested_milli - current_tokens_milli, now_ms
+            ),
         )
+
+
+def window_end_in_force(limit: Limit, state: BucketState) -> int | None:
+    """The end of the duration window in force on ``state``, or ``None`` (ADR-139).
+
+    The instant a duration quota's allowance returns, which is what
+    :attr:`LimitStatus.resets_at_ms` carries for it. On the slow path it is
+    read **after** ``RateLimiter._open_window_if_elapsed`` has run, so it is
+    the end of the window this pass admitted against — a rejection at a
+    boundary reports the window just opened, not the one that elapsed. Only
+    the resolved ``limit`` decides whether a window is in force: a stale
+    ``ws``/``rsa`` left on the item by a limit that no longer has one does
+    not vote.
+    """
+    return state.window_end_ms if limit.reset_after is not None else None
+
+
+def retry_after_for_deficit(state: BucketState, deficit_milli: int, now_ms: int) -> float:
+    """Seconds until ``deficit_milli`` clears on this shard.
+
+    A **duration window** answers from the item: the balance returns in one
+    lump at ``ws + reset_after`` and a quota has no drip at all (ADR-137), so
+    the wait to the window's end is the only finite answer — the same call the
+    calendar form's reset branch makes, but a constant rather than a scan. The
+    window is half-open, ``[ws, ws + rsa)``, so the end instant is already the
+    next window's and no ``+1`` is added. An ended window reports 0: the next
+    acquire opens a fresh one and restores the balance.
+
+    Decided here rather than in ``schedule.retry_after_with_schedule`` because
+    ``schedule.py`` may import nothing from ``models.py`` — that one-way
+    dependency is what lets both Lambda packages vendor it — and the window
+    anchor lives on the ``BucketState``. On the slow path ``rsa`` is the
+    resolved config's (``_do_acquire`` attaches it), so a limit that lost its
+    window carries none here.
+
+    Everything else walks the schedule. The **undivided base** goes in, with
+    ``shard_count`` alongside: the walk re-evaluates ``effective_params`` per
+    window and takes the shard share afterwards, so handing it the pre-scaled,
+    pre-divided ``effective_*`` values would apply both narrowings twice
+    (#222 §7).
+    """
+    if deficit_milli <= 0:
+        return 0.0
+    end = state.window_end_ms
+    if end is not None:
+        return max(0, end - now_ms) / 1000.0
+    return retry_after_with_schedule(
+        deficit_milli=deficit_milli,
+        cp_milli=state.capacity_milli,
+        ra_milli=state.refill_amount_milli,
+        rp_ms=state.refill_period_ms,
+        sched=state.sched,
+        reset_sched=state.reset_sched,
+        now_ms=now_ms,
+        shard_count=state.shard_count,
+    )
 
 
 def calculate_retry_after(
@@ -321,19 +364,7 @@ def calculate_time_until_available(
     if refill.new_tokens_milli >= needed_milli:
         return 0.0
 
-    deficit_milli = needed_milli - refill.new_tokens_milli
-    # Undivided base plus `shard_count`, as in `try_consume` — the walk does
-    # both narrowings itself.
-    return retry_after_with_schedule(
-        deficit_milli=deficit_milli,
-        cp_milli=state.capacity_milli,
-        ra_milli=state.refill_amount_milli,
-        rp_ms=state.refill_period_ms,
-        sched=state.sched,
-        reset_sched=state.reset_sched,
-        now_ms=now_ms,
-        shard_count=state.shard_count,
-    )
+    return retry_after_for_deficit(state, needed_milli - refill.new_tokens_milli, now_ms)
 
 
 def force_consume(
@@ -403,6 +434,7 @@ def build_limit_status(
         requested=requested,
         exceeded=not result.success,
         retry_after_seconds=result.retry_after_seconds,
+        resets_at_ms=window_end_in_force(limit, state),
     )
 
 

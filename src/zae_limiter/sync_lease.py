@@ -12,10 +12,15 @@ import warnings
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from .bucket import calculate_available, force_consume, try_consume
+from .bucket import (
+    calculate_available,
+    force_consume,
+    retry_after_for_deficit,
+    try_consume,
+    window_end_in_force,
+)
 from .exceptions import LeaseExpiredError, RateLimitExceeded
 from .models import BucketState, Limit, LimitStatus
-from .schedule import retry_after_with_schedule
 from .schema import calculate_bucket_ttl_seconds
 
 _CONFLICT_MAX_RETRIES = 3
@@ -158,6 +163,7 @@ class SyncLease:
                 requested=amount,
                 exceeded=not result.success,
                 retry_after_seconds=result.retry_after_seconds,
+                resets_at_ms=window_end_in_force(entry.limit, entry.state),
             )
             statuses.append(status)
             if result.success:
@@ -175,6 +181,7 @@ class SyncLease:
                         requested=0,
                         exceeded=False,
                         retry_after_seconds=0.0,
+                        resets_at_ms=window_end_in_force(entry.limit, entry.state),
                     )
                 )
         violations = [s for s in statuses if s.exceeded]
@@ -684,16 +691,7 @@ def _build_retry_failure_statuses(entries: list[LeaseEntry], now_ms: int) -> lis
         if not entry._declared:
             continue
         deficit_milli = max(0, entry.consumed * 1000 - entry.state.tokens_milli)
-        retry_after = retry_after_with_schedule(
-            deficit_milli=deficit_milli,
-            cp_milli=entry.state.capacity_milli,
-            ra_milli=entry.state.refill_amount_milli,
-            rp_ms=entry.state.refill_period_ms,
-            sched=entry.state.sched,
-            reset_sched=entry.state.reset_sched,
-            now_ms=now_ms,
-            shard_count=entry.state.shard_count,
-        )
+        retry_after = retry_after_for_deficit(entry.state, deficit_milli, now_ms)
         statuses.append(
             LimitStatus(
                 entity_id=entry.entity_id,
@@ -704,6 +702,7 @@ def _build_retry_failure_statuses(entries: list[LeaseEntry], now_ms: int) -> lis
                 requested=entry.consumed,
                 exceeded=entry.consumed > 0,
                 retry_after_seconds=retry_after,
+                resets_at_ms=window_end_in_force(entry.limit, entry.state),
             )
         )
     return statuses

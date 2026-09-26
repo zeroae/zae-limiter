@@ -1066,6 +1066,20 @@ class LimitStatus:
     requested: int  # amount requested
     exceeded: bool  # True if this limit was exceeded
     retry_after_seconds: float  # time until `requested` is available (0 if not exceeded)
+    # The absolute instant this limit's allowance returns, epoch ms, or None:
+    # for a rate limit, for a calendar quota (whose edge is recoverable from
+    # the clock plus the cron, so `RateLimitExceeded.as_dict` scans for it),
+    # and for a duration quota with no live window.
+    #
+    # It has to live here rather than being derived from `limit` because a
+    # duration window's anchor (`ws`) is on the BUCKET, not in the config
+    # (ADR-139). A per-entity window is recoverable from nothing but the item.
+    #
+    # Populated at all four construction sites — `bucket.declared_statuses`,
+    # `RateLimiter._admit_limit`, `lease._build_retry_failure_statuses` and
+    # `RateLimiter.check_availability` — the same four #222 §7 wired the
+    # boundary-aware `retry_after_seconds` at.
+    resets_at_ms: int | None = None
 
     @property
     def deficit(self) -> int:

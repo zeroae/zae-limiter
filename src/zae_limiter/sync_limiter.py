@@ -23,6 +23,7 @@ from .bucket import (
     declared_statuses,
     force_consume,
     try_consume,
+    window_end_in_force,
     would_refill_satisfy,
 )
 from .exceptions import RateLimiterUnavailable, RateLimitExceeded, ResourceDisabled, ValidationError
@@ -67,16 +68,18 @@ def _is_custom_config(config_source: str | None) -> bool:
     return config_source in _ENTITY_CONFIG_SOURCES
 
 
-def _window_end_in_force(limit: Limit, state: BucketState) -> int | None:
-    """The end of the duration window in force on ``state``, or ``None`` (ADR-139).
+def _config_window_end(limit: Limit, bucket: BucketState) -> int | None:
+    """When ``bucket``'s duration window ends under ``limit``'s length (ADR-139).
 
-    Read **after** ``_open_window_if_elapsed`` has run, so it is the end of the
-    window this pass admitted against. The lease carries it to the commit,
-    which takes a second clock reading a round trip later and must detect a
-    window that elapsed in between. Only the resolved ``limit`` decides whether
-    a window is in force, the same rule ``_materialisation_stamps`` applies.
+    The item's ``ws`` paired with the resolved config's ``reset_after`` — the
+    pairing the slow path uses, since ``_do_acquire`` overwrites the item's
+    ``rsa`` with the config's before ``_open_window_if_elapsed`` reads it. A
+    read-only view built on the same pairing therefore agrees with the next
+    writer about when the window ends. ``None`` for a bucket with no window.
     """
-    return state.window_end_ms if limit.reset_after is not None else None
+    if limit.reset_after_seconds is None or bucket.window_start_ms is None:
+        return None
+    return bucket.window_start_ms + limit.reset_after_seconds * 1000
 
 
 class SyncRateLimiter:
@@ -1323,6 +1326,7 @@ class SyncRateLimiter:
             requested=amount,
             exceeded=not result.success,
             retry_after_seconds=result.retry_after_seconds,
+            resets_at_ms=window_end_in_force(limit, state),
         )
         if not result.success:
             return (status, 0)
@@ -1435,7 +1439,7 @@ class SyncRateLimiter:
                     _boundary_ms=parent_boundary_ms,
                     _reset_edge_ms=parent_reset_edge_ms,
                     _window_start_ms=parent_new_ws,
-                    _window_end_ms=_window_end_in_force(limit, existing),
+                    _window_end_ms=window_end_in_force(limit, existing),
                 )
             )
         carrier = self._wcu_carrier(
@@ -1618,7 +1622,7 @@ class SyncRateLimiter:
                         _boundary_ms=boundary_ms,
                         _reset_edge_ms=reset_edge_ms,
                         _window_start_ms=new_ws,
-                        _window_end_ms=_window_end_in_force(limit, state),
+                        _window_end_ms=window_end_in_force(limit, state),
                     )
                 )
             carrier = self._wcu_carrier(
@@ -1892,6 +1896,10 @@ class SyncRateLimiter:
             edge = prev_reset_edge(limit.reset_schedule, now_ms)
             if edge is not None and edge > bucket.last_refill_ms:
                 return bucket.effective_capacity_milli(now_ms) // 1000
+        if limit is not None and limit.reset_after is not None:
+            end = _config_window_end(limit, bucket)
+            if end is None or now_ms >= end or bucket.window_rolled:
+                return bucket.effective_capacity_milli(now_ms) // 1000
         return calculate_available(bucket, now_ms)
 
     def check_availability(
@@ -1990,13 +1998,19 @@ class SyncRateLimiter:
         resolved_limits, _ = self._resolve_limits(entity_id, resource, limits)
         resolved_by_name = {limit.name: limit for limit in resolved_limits}
         totals: dict[str, int] = {}
+        window_ends: dict[str, int] = {}
         for bucket in self._repository.get_buckets(entity_id):
             if bucket.resource != resource:
                 continue
             name = bucket.limit_name
+            limit_for_bucket = resolved_by_name.get(name)
             totals[name] = totals.get(name, 0) + self._readable_balance(
-                bucket, resolved_by_name.get(name), now_ms
+                bucket, limit_for_bucket, now_ms
             )
+            if limit_for_bucket is not None and limit_for_bucket.reset_after is not None:
+                end = _config_window_end(limit_for_bucket, bucket)
+                if end is not None and end > now_ms:
+                    window_ends[name] = max(end, window_ends.get(name, end))
         statuses: list[LimitStatus] = []
         for limit in resolved_limits:
             eff_cp, _eff_ra, _eff_rp = effective_params(
@@ -2013,8 +2027,12 @@ class SyncRateLimiter:
                 available = ceiling
             requested = needed.get(limit.name, 0)
             exceeded = requested > 0 and available < requested
+            resets_at_ms = window_ends.get(limit.name)
             wait = 0.0
-            if exceeded:
+            if exceeded and limit.reset_after is not None:
+                if resets_at_ms is not None:
+                    wait = (resets_at_ms - now_ms) / 1000.0
+            elif exceeded:
                 wait = retry_after_with_schedule(
                     deficit_milli=(requested - available) * 1000,
                     cp_milli=limit.capacity * 1000,
@@ -2034,6 +2052,7 @@ class SyncRateLimiter:
                     requested=requested,
                     exceeded=exceeded,
                     retry_after_seconds=wait,
+                    resets_at_ms=resets_at_ms,
                 )
             )
         return Availability(
