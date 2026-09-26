@@ -41,11 +41,18 @@ async def _connect(
     region: str | None,
     endpoint_url: str | None,
     namespace: str = "default",
+    *,
+    report_too_old: bool = False,
 ) -> Repository:
     """Open a repository with namespace resolution.
 
     Handles ValidationError and NamespaceNotFoundError with user-friendly messages.
     Always returns a valid Repository or exits with an error.
+
+    ``report_too_old``: for the reporting commands (``check``, ``version``). A
+    client below the stack's ``client_min_version`` gets a Repository that
+    skipped the version check instead of an exit, so the command can print
+    its report — with the incompatibility in it — rather than just refuse.
     """
     from .exceptions import NamespaceNotFoundError, ValidationError, VersionMismatchError
     from .repository import Repository
@@ -55,6 +62,9 @@ async def _connect(
             namespace, stack=name, region=region, endpoint_url=endpoint_url
         )
     except VersionMismatchError as e:
+        if report_too_old and not e.can_auto_update:
+            # Reads only: the record is what the report is about.
+            return Repository(name, region, endpoint_url, _skip_deprecation_warning=True)
         # A client below the stack's client_min_version (#638). Caught here so
         # every command — `upgrade` above all, which would otherwise downgrade
         # the Lambdas the minimum protects — stops with the reason, not a
@@ -1297,7 +1307,7 @@ def version_cmd(
     )
 
     async def _version() -> None:
-        repo = await _connect(name, region, endpoint_url)
+        repo = await _connect(name, region, endpoint_url, report_too_old=True)
         try:
             click.echo()
             click.echo("zae-limiter Infrastructure Version")
@@ -1595,7 +1605,7 @@ def check(
     )
 
     async def _check() -> None:
-        repo = await _connect(name, region, endpoint_url)
+        repo = await _connect(name, region, endpoint_url, report_too_old=True)
         try:
             click.echo()
             click.echo("Compatibility Check")

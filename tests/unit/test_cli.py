@@ -7423,6 +7423,20 @@ class TestClientMinVersionSurvivesTheCli:
         manager.deploy_lambda_code.assert_called_once()
         assert asyncio.run(self._record())["lambda_version"] == "0.15.0"
 
+    @pytest.mark.parametrize("command", ["check", "version"])
+    def test_reporting_commands_report_a_client_below_the_minimum(
+        self, mock_dynamodb, runner: CliRunner, command
+    ) -> None:
+        import asyncio
+
+        asyncio.run(self._seed("0.16.0", "0.16.0"))
+        with patch("zae_limiter.__version__", "0.15.0"):
+            result = runner.invoke(cli, [command, "--name", self.TABLE, "--region", "us-east-1"])
+        assert result.exit_code == 1
+        assert "0.16.0" in result.output  # the report was printed
+        assert "INCOMPATIBLE" in result.output
+        assert "below minimum required version 0.16.0" in result.output
+
     def test_upgrade_by_a_client_below_the_minimum_is_refused(
         self, mock_dynamodb, runner: CliRunner
     ) -> None:
