@@ -30,8 +30,9 @@ Two callers that first use it at 09:00 and 14:30 get windows ending at 14:00 and
 
     **A stack whose Lambda version is unknown is refused too.** When `Repository.open()` finds
     a table with no version record — say, one built from an older `cfn-template` — it writes
-    one without claiming Lambdas it did not deploy. Run `zae-limiter upgrade --force` to deploy
-    them and stamp the version.
+    one without claiming an aggregator it did not deploy (it claims its own version only when it
+    finds no aggregator at all). Run `zae-limiter upgrade` to deploy the Lambdas and stamp the
+    version.
 
     **Clients older than v0.15.0 are not enforced.** A successful write raises the stack's
     `client_min_version` to 0.15.0, and every client from v0.15.0 on refuses to start below it

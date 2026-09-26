@@ -143,14 +143,17 @@ deferred to #640.
   repository read when opened and re-reads only on a refusal. A missing record, or an unknown
   `lambda_version`, fails closed.
 - **The stamp must be earned.** `lambda_version` records this build only when the call that
-  writes it deployed the stack's Lambda code — created the stack, or pushed aggregator code.
-  `open()` of a table with no record (a stack built from an older `cfn-template`) records it as
-  unknown, and CLI `deploy --no-aggregator` against an existing stack keeps the stored value. An
-  unknown version asks for no Lambda update, so `open(auto_update=True)` neither loops nor
-  pushes code onto a stack that may have no aggregator; the remedy is `zae-limiter upgrade
-  --force`. A `--no-aggregator` stack is not exempted from the gate: the record cannot say the
-  aggregator is absent. Its remedy is re-running `zae-limiter deploy` from `0.15.0`, since
-  `upgrade` pushes code to an aggregator that does not exist.
+  writes it created the stack, pushed aggregator code, or found **no aggregator function at
+  all** (a `lambda:GetFunctionConfiguration` probe on `{stack}-aggregator` — the function
+  itself rather than the stack's `EnableAggregator` parameter, because the function is what
+  reads the stream and the template creates it only when a role is also available). With an
+  aggregator present, or a probe that cannot tell, `open()` of a table with no record records
+  the version as unknown and CLI `deploy --no-aggregator` keeps the stored value. An unknown
+  version asks for no Lambda update, so `open(auto_update=True)` neither loops nor pushes code;
+  the remedy is `zae-limiter upgrade`, which treats unknown as out of date. A `--no-aggregator`
+  stack's remedy is re-running `zae-limiter deploy` from `0.15.0`: it finds no aggregator and
+  stamps its own version, where `upgrade` would push code to an aggregator that does not
+  exist.
 - **C — `client_min_version` becomes a real gate.** Clients from v0.15.0 on raise
   `VersionMismatchError` when below it (before, `check_compatibility` returned an incompatible
   result with no flag set and both version checks fell through). A Lambda update, `deploy` and

@@ -1037,29 +1037,39 @@ mints `cp // new_count` per new shard (#587 again).
   swallowed; out of the provisioner it is a CloudFormation FAILED or a `limits apply` error.
 - **`acquire(limits=[...])` override (A).** The slow path writes an override onto the bucket
   (`b_{name}_rsa`, `ra = 0`), exactly the item an old aggregator's clone over-admits, so
-  `RateLimiter.acquire` calls `RepositoryProtocol.require_reset_after_readers` **outside** the
-  `on_unavailable` try (a refusal is never a degraded lease). Free when it passes: it trusts
+  `RateLimiter.acquire` calls `RepositoryProtocol.require_reset_after_readers` — only when an
+  override actually carries `reset_after` (the pre-check is in the limiter, via `getattr`, so a
+  third-party backend without the method still serves every other override). It runs inside
+  the `on_unavailable` try, so a failed version read is a backend error like any other
+  (`RateLimiterUnavailable`, or a degraded lease that writes nothing under ALLOW), while a
+  refusal (`VersionMismatchError`) is re-raised and never degraded. Free when it passes: it trusts
   `Repository._lambda_version`, cached by `_check_*`, `_initialize_version_record`,
   `_perform_lambda_update` and every gate read, and carried into `namespace()` scopes. Only a
   refusal re-reads (consistent, no ratchet). A deprecated-constructor repo, which never read
   the record, reads it once and then caches — one RCU per repository against failing every such
   caller closed with no remedy on the same object.
 - **The stamp must be earned.** `_initialize_version_record` stamps `lambda_version` with
-  `_deployed_lambda_version` — set by `_ensure_infrastructure_internal` only when
-  `create_stack` returned `created: True` (a new flag: an existing stack also reports
-  `CREATE_COMPLETE`) or aggregator code was pushed — and otherwise records it as **unknown**
-  (`NULL`). CLI `deploy` does the same (keeps the stored value when it created nothing and
-  pushed no aggregator code). An unknown stamp asks for no Lambda update, so
-  `open(auto_update=True)` neither loops nor pushes code onto a possibly aggregator-less stack;
-  only the gate refuses, naming `upgrade --force`. The init write is a conditional `PutItem`
+  `_deployed_lambda_version` — set by `_ensure_infrastructure_internal` when `create_stack`
+  returned `created: True` (a new flag: an existing stack also reports `CREATE_COMPLETE`), when
+  aggregator code was pushed, or when **no aggregator function exists**
+  (`StackManager.aggregator_exists` / module-level `aggregator_function_exists`, a
+  `GetFunctionConfiguration` probe on `{stack}-aggregator`: True / False / None = cannot
+  tell). The init path runs the same probe itself (without constructing a `StackManager`), so
+  an application role without Lambda permissions gets None and records **unknown** (`NULL`).
+  CLI `deploy` follows the same rule, keeping the stored value only when an aggregator exists
+  or the probe cannot tell — so re-running v0.15 `deploy` is the way out for a v0.14-stamped
+  `--no-aggregator` stack (whose `upgrade` / auto-update hit #644). An unknown stamp asks for
+  no Lambda update, so `open(auto_update=True)` neither loops nor pushes code; CLI `upgrade`
+  treats unknown as out of date (no `--force` needed); the gate refuses it naming `upgrade`. The init write is a conditional `PutItem`
   (`attribute_not_exists(PK)`): it follows an eventually consistent miss, and a stale miss must
   not clobber a record or its ratcheted minimum; on losing it reads the winner back. Test
   fixtures that need a writable stack stamp `lambda_version=__version__` explicitly.
 - **Missing version record fails closed** — nothing proves the readers (`can_auto_update=False`,
   remedy `zae-limiter deploy`).
-- **`--no-aggregator` gets no exemption** — the record cannot say the aggregator is absent. A
-  v0.15-deployed no-aggregator stack passes naturally; a v0.14-deployed one is refused until
-  redeployed by v0.15 (`upgrade` pushes code to an aggregator that does not exist).
+- **`--no-aggregator` gets no exemption in the gate** — the record cannot say the aggregator
+  is absent. A v0.15-deployed no-aggregator stack passes naturally; a v0.14-deployed one is
+  refused until redeployed by v0.15, whose probe finds no aggregator and stamps its own version
+  (`upgrade` pushes code to an aggregator that does not exist).
 - **Ratchet (C).** A write the gate admits raises `client_min_version` to
   `ratcheted_client_min_version()` — `0.15.0`, capped at the writer's own version for a dev
   build — with a conditional `UpdateItem` on the value just read, **never lowering it**; a
@@ -1068,7 +1078,8 @@ mints `cp // new_count` per new shard (#587 again).
   `requires_client_upgrade`, and both `_check_and_update_version_auto` and
   `_check_version_strict` raise `VersionMismatchError(can_auto_update=False)` on it (they fell
   off the end before). The CLI's `_connect` turns it into an exit-1 message, so a too-old v0.15
-  `upgrade` cannot downgrade the Lambdas; `limits_cli._invoke_provisioner` exits 1 on it (and
+  `upgrade` cannot downgrade the Lambdas (`check` and `version` pass `report_too_old=True` and
+  print their report with the incompatibility instead; `check` still exits 1); `limits_cli._invoke_provisioner` exits 1 on it (and
   on a failed auto-update's `StackOperationError`) instead of invoking an unchecked
   provisioner. `deploy` does no minimum check. `set_version_record(client_min_version=None)` — the
   new default, used by `_perform_lambda_update` and CLI `deploy` / `upgrade` — keeps the stored

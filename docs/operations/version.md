@@ -117,10 +117,11 @@ Then follow the migration procedures in the [Migration Guide](../migrations.md#s
 **Cause:** Infrastructure requires a newer client version. From v0.15.0, `Repository.open()`,
 `connect()` and `builder().build()` raise `VersionMismatchError` (with `can_auto_update=False`)
 when the client is below the version record's `client_min_version`. So does every CLI command
-that opens the stack's repository — `status`, `version`, `check`, `upgrade`, `limits
-plan|apply|diff` and the `entity`, `resource`, `system`, `namespace`, `audit` and `usage`
-groups — exiting 1 with the message. **`deploy` does no minimum check**, nor do `delete`,
-`list`, `cfn-template` and `lambda-export`, which never open the repository:
+that opens the stack's repository — `status`, `upgrade`, `limits plan|apply|diff` and the
+`entity`, `resource`, `system`, `namespace`, `audit` and `usage` groups — exiting 1 with the
+message. `check` and `version` print their normal report instead, with the incompatibility in
+it, and `check` exits 1. **`deploy` does no minimum check**, nor do `delete`, `list`,
+`cfn-template` and `lambda-export`, which never open the repository:
 
 ```
 VersionMismatchError: Version mismatch: client=0.15.0, schema=0.10.0, lambda=0.16.0.
@@ -169,12 +170,18 @@ so nothing is written. Three cases:
 | Version record | Meaning | Remedy |
 |----------------|---------|--------|
 | `lambda_version` older than 0.15.0 (release candidates of 0.15.0 count) | Old Lambdas deployed | `zae-limiter upgrade`, or `Repository.open()` with `auto_update=True` |
-| `lambda_version` unknown (`null`) | The record was initialized by a client that deployed no Lambda code — e.g. `open()` of a stack built from an older `cfn-template` / `lambda-export` | `zae-limiter upgrade --force` |
+| `lambda_version` unknown (`null`) | The record was initialized by a client that deployed no Lambda code while an aggregator exists (or it could not tell) — e.g. `open()` of a stack built from an older `cfn-template` / `lambda-export` | `zae-limiter upgrade` |
 | Missing | Never initialized | `zae-limiter deploy` from v0.15.0 or later |
 
 On a stack deployed with `--no-aggregator`, `upgrade` cannot help (it pushes code to an
-aggregator that does not exist): re-run `zae-limiter deploy` from v0.15.0 or later instead,
-which stamps the record.
+aggregator that does not exist): re-run `zae-limiter deploy` from v0.15.0 or later instead.
+It finds no aggregator function (`lambda:GetFunctionConfiguration`, which a deployer already
+holds) and stamps its own version, since no aggregator exists to be older. When the function
+exists, or the probe cannot tell, `deploy --no-aggregator` keeps the stored stamp.
+
+An unknown `lambda_version` also turns off Lambda auto-update: `Repository.open()` has no
+version to compare, so it never pushes code. `zae-limiter upgrade` (no `--force` needed) deploys
+the Lambdas and stamps the version.
 
 ```
 VersionMismatchError: Version mismatch: client=0.15.0, schema=0.10.0, lambda=0.14.0.
