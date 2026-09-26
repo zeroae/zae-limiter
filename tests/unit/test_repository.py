@@ -8156,6 +8156,12 @@ class TestVersionRecordInitialization:
             (False, False, False, False, True, None),  # an old provisioner left live
             (False, False, False, False, None, None),  # provisioner probe cannot tell
             (False, False, False, False, False, "0.15.0"),  # neither function exists
+            (False, True, True, True, True, "0.15.0"),  # both pushed
+            # builder().enable_provisioner(False) on an existing stack: the
+            # aggregator is pushed, but an old provisioner is left live
+            (False, True, False, True, True, None),
+            (False, True, False, True, None, None),  # provisioner probe cannot tell
+            (False, True, False, True, False, "0.15.0"),  # aggregator pushed, no provisioner
         ],
     )
     async def test_ensure_infrastructure_records_what_it_deployed(

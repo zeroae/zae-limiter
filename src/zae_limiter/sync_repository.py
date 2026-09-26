@@ -608,25 +608,21 @@ class SyncRepository:
         if self._stack_options is None:
             return
         from . import __version__
-        from .infra.sync_stack_manager import SyncStackManager
+        from .infra.sync_stack_manager import SyncStackManager, stack_lambdas_current
 
         with SyncStackManager(self.stack_name, self.region, self.endpoint_url) as manager:
             result = manager.create_stack(stack_options=self._stack_options)
-            deployed = isinstance(result, dict) and result.get("created") is True
             if self._stack_options.deploys_aggregator_lambda:
                 manager.deploy_lambda_code()
-                deployed = True
             if self._stack_options.deploys_provisioner_lambda:
                 manager.deploy_provisioner_code()
-            if (
-                not deployed
-                and manager.aggregator_exists() is False
-                and (
-                    self._stack_options.deploys_provisioner_lambda
-                    or manager.provisioner_exists() is False
-                )
-            ):
-                deployed = True
+            deployed = stack_lambdas_current(
+                created=isinstance(result, dict) and result.get("created") is True,
+                aggregator_pushed=self._stack_options.deploys_aggregator_lambda,
+                provisioner_pushed=self._stack_options.deploys_provisioner_lambda,
+                aggregator_exists=manager.aggregator_exists,
+                provisioner_exists=manager.provisioner_exists,
+            )
         if deployed:
             self._deployed_lambda_version = __version__
         self._write_audit_retention_config()
@@ -1342,18 +1338,21 @@ class SyncRepository:
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         stamp = self._deployed_lambda_version
         if stamp is None:
-            from .infra.sync_stack_manager import lambda_function_exists
+            from .infra.sync_stack_manager import lambda_function_exists, stack_lambdas_current
 
             self._get_client()
-            assert self._session is not None
-            if all(
-                [
-                    lambda_function_exists(
-                        self._session, f"{self.table_name}-{suffix}", self.region, self.endpoint_url
-                    )
-                    is False
-                    for suffix in ("aggregator", "limits-provisioner")
-                ]
+            session = self._session
+            assert session is not None
+            if stack_lambdas_current(
+                created=False,
+                aggregator_pushed=False,
+                provisioner_pushed=False,
+                aggregator_exists=lambda: lambda_function_exists(
+                    session, f"{self.table_name}-aggregator", self.region, self.endpoint_url
+                ),
+                provisioner_exists=lambda: lambda_function_exists(
+                    session, f"{self.table_name}-limits-provisioner", self.region, self.endpoint_url
+                ),
             ):
                 stamp = __version__
         item: dict[str, Any] = {

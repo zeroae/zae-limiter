@@ -697,14 +697,10 @@ class Repository:
             return
 
         from . import __version__
-        from .infra.stack_manager import StackManager
+        from .infra.stack_manager import StackManager, stack_lambdas_current
 
         async with StackManager(self.stack_name, self.region, self.endpoint_url) as manager:
             result = await manager.create_stack(stack_options=self._stack_options)
-            # #638: a stack this call created holds only this build's Lambdas
-            # (or none). An existing one is left alone by create_stack, so its
-            # aggregator is this build's only if the code is pushed below.
-            deployed = isinstance(result, dict) and result.get("created") is True
 
             # Deploy Lambda code only for functions CloudFormation actually created.
             # Both gates mirror the template conditions: with create_iam=False the
@@ -712,25 +708,18 @@ class Repository:
             # code to them would fail with ResourceNotFoundException.
             if self._stack_options.deploys_aggregator_lambda:
                 await manager.deploy_lambda_code()
-                deployed = True
 
             if self._stack_options.deploys_provisioner_lambda:
                 await manager.deploy_provisioner_code()
 
-            # No aggregator code pushed: the stamp is still truthful when there
-            # is no aggregator at all (every --no-aggregator stack) and no
-            # provisioner older than this build — pushed just now, or absent.
-            # create_stack never updates an existing stack, so --no-provisioner
-            # leaves a live old one in place.
-            if (
-                not deployed
-                and await manager.aggregator_exists() is False
-                and (
-                    self._stack_options.deploys_provisioner_lambda
-                    or await manager.provisioner_exists() is False
-                )
-            ):
-                deployed = True
+            # #638: may the version record claim this build's Lambdas?
+            deployed = await stack_lambdas_current(
+                created=isinstance(result, dict) and result.get("created") is True,
+                aggregator_pushed=self._stack_options.deploys_aggregator_lambda,
+                provisioner_pushed=self._stack_options.deploys_provisioner_lambda,
+                aggregator_exists=manager.aggregator_exists,
+                provisioner_exists=manager.provisioner_exists,
+            )
 
         if deployed:
             self._deployed_lambda_version = __version__
@@ -1596,18 +1585,24 @@ class Repository:
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         stamp = self._deployed_lambda_version
         if stamp is None:
-            from .infra.stack_manager import lambda_function_exists
+            from .infra.stack_manager import lambda_function_exists, stack_lambdas_current
 
             await self._get_client()  # creates the session the probe shares
-            assert self._session is not None
-            if all(
-                [
-                    await lambda_function_exists(
-                        self._session, f"{self.table_name}-{suffix}", self.region, self.endpoint_url
-                    )
-                    is False
-                    for suffix in ("aggregator", "limits-provisioner")
-                ]
+            session = self._session
+            assert session is not None
+            if await stack_lambdas_current(
+                created=False,
+                aggregator_pushed=False,
+                provisioner_pushed=False,
+                aggregator_exists=lambda: lambda_function_exists(
+                    session, f"{self.table_name}-aggregator", self.region, self.endpoint_url
+                ),
+                provisioner_exists=lambda: lambda_function_exists(
+                    session,
+                    f"{self.table_name}-limits-provisioner",
+                    self.region,
+                    self.endpoint_url,
+                ),
             ):
                 stamp = __version__
         item: dict[str, Any] = {

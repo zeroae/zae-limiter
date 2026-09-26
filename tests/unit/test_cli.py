@@ -7338,32 +7338,55 @@ class TestClientMinVersionSurvivesTheCli:
         assert record["client_min_version"] == "0.15.0"
 
     @pytest.mark.parametrize(
-        ("created", "flags", "aggregator", "provisioner", "expected"),
+        ("created", "flags", "aggregator", "provisioner", "expected", "pushed"),
         [
             # a stack this deploy created holds only this build's Lambdas
-            (True, [], True, True, "0.15.1"),
-            # no aggregator, provisioner code pushed by this deploy
-            (False, [], False, True, "0.15.1"),
+            (True, [], True, True, "0.15.1", (1, 1)),
+            # both functions' code pushed
+            (False, [], True, True, "0.15.1", (1, 1)),
+            # aggregator pushed, but deploy never touches a function it does
+            # not push: the old provisioner is still live
+            (False, ["--no-provisioner"], True, True, "0.14.0", (1, 0)),
+            (
+                False,
+                ["--no-iam", "--aggregator-role-arn", "arn:aws:iam::123456789012:role/x"],
+                True,
+                True,
+                "0.14.0",
+                (1, 0),
+            ),
+            # aggregator pushed, no provisioner on the stack
+            (False, ["--no-provisioner"], True, False, "0.15.1", (1, 0)),
+            # aggregator pushed, the provisioner probe cannot tell
+            (False, ["--no-provisioner"], True, None, "0.14.0", (1, 0)),
+            # no aggregator, provisioner code pushed
+            (False, ["--no-aggregator"], False, True, "0.15.1", (0, 1)),
             # an old aggregator is left alone
-            (False, [], True, True, "0.14.0"),
+            (False, ["--no-aggregator"], True, True, "0.14.0", (0, 1)),
             # the aggregator probe cannot tell
-            (False, [], None, True, "0.14.0"),
-            # deploy never removes functions: an old provisioner is still live
-            (False, ["--no-provisioner"], False, True, "0.14.0"),
-            (False, ["--no-iam"], False, True, "0.14.0"),
-            # neither function exists: nothing can be older
-            (False, ["--no-provisioner"], False, False, "0.15.1"),
-            # the provisioner probe cannot tell
-            (False, ["--no-provisioner"], False, None, "0.14.0"),
+            (False, ["--no-aggregator"], None, True, "0.14.0", (0, 1)),
+            # neither pushed: both must be absent
+            (False, ["--no-aggregator", "--no-provisioner"], False, True, "0.14.0", (0, 0)),
+            (False, ["--no-aggregator", "--no-iam"], False, True, "0.14.0", (0, 0)),
+            (False, ["--no-aggregator", "--no-provisioner"], False, False, "0.15.1", (0, 0)),
+            (False, ["--no-aggregator", "--no-provisioner"], False, None, "0.14.0", (0, 0)),
         ],
     )
-    def test_deploy_without_the_aggregator_stamps_only_what_it_deployed(
-        self, mock_dynamodb, runner: CliRunner, created, flags, aggregator, provisioner, expected
+    def test_deploy_stamps_only_when_no_older_lambda_can_remain(
+        self,
+        mock_dynamodb,
+        runner: CliRunner,
+        created,
+        flags,
+        aggregator,
+        provisioner,
+        expected,
+        pushed,
     ) -> None:
-        """--no-aggregator on an existing stack adds and removes no functions,
-        so it may claim this build only when no Lambda older than it can be
-        left: no aggregator, and a provisioner it pushed or none at all
-        (#638) — the reset_after gate trusts the stamp."""
+        """deploy on an existing stack pushes code but adds and removes no
+        functions, so it may claim this build only when the stack was created
+        now, or both the aggregator and the provisioner are current — pushed
+        in this run, or absent (#638). The reset_after gate trusts the stamp."""
         import asyncio
 
         asyncio.run(self._seed("0.14.0", "0.0.0"))
@@ -7378,21 +7401,14 @@ class TestClientMinVersionSurvivesTheCli:
             patch("zae_limiter.cli.StackManager", return_value=manager),
         ):
             result = runner.invoke(
-                cli,
-                [
-                    "deploy",
-                    "--name",
-                    self.TABLE,
-                    "--region",
-                    "us-east-1",
-                    "--no-aggregator",
-                    *flags,
-                ],
+                cli, ["deploy", "--name", self.TABLE, "--region", "us-east-1", *flags]
             )
         assert result.exit_code == 0, result.output
         assert asyncio.run(self._record())["lambda_version"] == expected
-        if flags:
-            manager.deploy_provisioner_code.assert_not_called()
+        assert (
+            manager.deploy_lambda_code.await_count,
+            manager.deploy_provisioner_code.await_count,
+        ) == pushed
 
     def test_redeploying_a_no_aggregator_stack_is_the_way_out(
         self, mock_dynamodb, runner: CliRunner
@@ -7437,6 +7453,24 @@ class TestClientMinVersionSurvivesTheCli:
         ):
             assert asyncio.run(use()) == ["session"]
         no_updates.assert_not_called()
+
+    def test_upgrade_leaves_a_known_current_stack_alone(
+        self, mock_dynamodb, runner: CliRunner
+    ) -> None:
+        """The counterpart of the unknown case: a known, current stamp is up
+        to date and nothing is pushed."""
+        import asyncio
+
+        asyncio.run(self._seed("0.15.0", "0.0.0"))
+        manager = self._manager()
+        with (
+            patch("zae_limiter.__version__", "0.15.0"),
+            patch("zae_limiter.cli.StackManager", return_value=manager),
+        ):
+            result = runner.invoke(cli, ["upgrade", "--name", self.TABLE, "--region", "us-east-1"])
+        assert result.exit_code == 0, result.output
+        assert "already up to date" in result.output
+        manager.deploy_lambda_code.assert_not_called()
 
     def test_upgrade_updates_an_unknown_lambda_version_without_force(
         self, mock_dynamodb, runner: CliRunner

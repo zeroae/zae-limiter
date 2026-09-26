@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, cast
 import click
 
 from .infra.lambda_builder import get_package_info, write_lambda_package
-from .infra.stack_manager import StackManager
+from .infra.stack_manager import StackManager, stack_lambdas_current
 from .limits_cli import limits
 from .loadtest.cli import loadtest
 from .local import local
@@ -481,11 +481,8 @@ def deploy(
 
                 status = result.get("status", "unknown")
                 click.echo(f"✓ Stack {status.lower().replace('_', ' ')}")
-                # #638: lambda_version is stamped with this build only when the
-                # stack's Lambdas are provably this build's — a stack created
-                # just now, one whose aggregator code is pushed below, or one
-                # with no aggregator at all (probed in step 4).
-                lambdas_deployed = result.get("created") is True
+                # #638: what this deploy pushed, for the stamp in step 4.
+                aggregator_pushed = False
                 provisioner_pushed = False
 
                 if result.get("stack_id"):
@@ -498,7 +495,7 @@ def deploy(
 
                     try:
                         lambda_result = await manager.deploy_lambda_code(wait=True)
-                        lambdas_deployed = True
+                        aggregator_pushed = True
 
                         if lambda_result.get("status") == "deployed":
                             size_kb = lambda_result.get("size_bytes", 0) / 1024
@@ -552,17 +549,15 @@ def deploy(
                     )
                     try:
                         lambda_version: str | None = __version__
-                        # No aggregator code pushed and the stack not new: the
-                        # stamp is still truthful when there is no aggregator
-                        # to be old (every --no-aggregator stack) and no old
-                        # provisioner either — its code pushed above, or the
-                        # function absent. deploy never adds or removes
-                        # functions on an existing stack, so --no-provisioner /
-                        # --no-iam leave a live one untouched. A function that
-                        # exists, or a probe that cannot tell, keeps the stamp.
-                        if not lambdas_deployed and not (
-                            await manager.aggregator_exists() is False
-                            and (provisioner_pushed or await manager.provisioner_exists() is False)
+                        # #638: claim this build only when no Lambda older than
+                        # it can remain (stack_lambdas_current); otherwise keep
+                        # the stored stamp.
+                        if not await stack_lambdas_current(
+                            created=result.get("created") is True,
+                            aggregator_pushed=aggregator_pushed,
+                            provisioner_pushed=provisioner_pushed,
+                            aggregator_exists=manager.aggregator_exists,
+                            provisioner_exists=manager.provisioner_exists,
                         ):
                             stored = await repo.get_version_record()
                             lambda_version = (stored or {}).get("lambda_version")

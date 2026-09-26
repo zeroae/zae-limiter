@@ -8,6 +8,7 @@ Changes should be made to the source file, then regenerated.
 
 import logging
 import time
+from collections.abc import Callable
 from importlib.resources import files
 from typing import Any, cast
 
@@ -55,11 +56,47 @@ def lambda_function_exists(
     except ClientError as e:
         if e.response["Error"]["Code"] == "ResourceNotFoundException":
             return False
-        logger.debug("Aggregator probe failed for %s", function_name, exc_info=True)
+        logger.debug("Lambda existence probe failed for %s", function_name, exc_info=True)
         return None
     except BotoCoreError:
-        logger.debug("Aggregator probe failed for %s", function_name, exc_info=True)
+        logger.debug("Lambda existence probe failed for %s", function_name, exc_info=True)
         return None
+    return True
+
+
+def stack_lambdas_current(
+    *,
+    created: bool,
+    aggregator_pushed: bool,
+    provisioner_pushed: bool,
+    aggregator_exists: Callable[[], bool | None],
+    provisioner_exists: Callable[[], bool | None],
+) -> bool:
+    """Whether a write may stamp ``lambda_version`` with this build (#638).
+
+    The ``reset_after`` gate trusts that stamp, so every writer of it — CLI
+    ``deploy``, ``SyncRepository._ensure_infrastructure_internal`` and the
+    ``open()`` init path — asks this one question. The stamp is this build's
+    only if the stack was created in this call, **or** both:
+
+    - the aggregator is current: its code was pushed in this run, or it
+      probes absent; **and**
+    - the provisioner is current: its code was pushed in this run, or it
+      probes absent.
+
+    ``create_stack`` never updates an existing stack, so a flag such as
+    ``--no-provisioner`` or ``--no-iam`` leaves an existing function — and
+    its old code — in place. A probe that cannot tell (None) counts as "not
+    current". Probes run only for functions whose code was not pushed.
+    """
+    if created:
+        return True
+    for pushed, exists in (
+        (aggregator_pushed, aggregator_exists),
+        (provisioner_pushed, provisioner_exists),
+    ):
+        if not pushed and exists() is not False:
+            return False
     return True
 
 

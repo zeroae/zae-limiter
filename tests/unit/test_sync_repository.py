@@ -6753,6 +6753,10 @@ class TestVersionRecordInitialization:
             (False, False, False, False, True, None),
             (False, False, False, False, None, None),
             (False, False, False, False, False, "0.15.0"),
+            (False, True, True, True, True, "0.15.0"),
+            (False, True, False, True, True, None),
+            (False, True, False, True, None, None),
+            (False, True, False, True, False, "0.15.0"),
         ],
     )
     def test_ensure_infrastructure_records_what_it_deployed(
