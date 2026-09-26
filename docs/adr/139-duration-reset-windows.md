@@ -71,11 +71,25 @@ stamps `rf` at or after `ws`; the target is the shard's share of the effective c
 resetting does not multiply the entity's quota by `shard_count`; and `tc` is never touched, so the
 consumption counter stays monotonic.
 
+**`rf` is monotonic on every item, windowed or not.** Because `rf` is the only record that a
+shard has applied its window, every materialising write stamps
+`rf = max(now, stored rf, every applied ws on the item)` (`lease._monotonic_rf`, mirrored by the
+aggregator) — never `rf = now`. A writer whose clock runs behind the one that stamped the item
+would otherwise move `rf` backward past `ws`, the next pass would read `ws > rf` and reset again,
+and every request from the slow clock would refund the window's spend. The rule applies to items
+with no window too — there it reduces to `max(now, stored rf)` — which costs nothing, because
+`refill_bucket` treats a non-positive elapsed time as zero.
+
 **The rollover fan-out moves a scalar and never `tk`.** Whoever first materialises a shard past
 `ws + rsa` anchors `ws_new = now`, applies its own reset under its own `rf` lock, and fans
 `ws_new` (with `rsa`, and `vu = 0`) to the entity's other shards with concurrent conditional
-writes under `attribute_not_exists(ws) OR ws <= ws_new - rsa` — a sibling moves only if its own
-window had already ended by `ws_new`, the same half-open rule the opener applied to itself.
+writes under `rf < ws_new AND (attribute_not_exists(ws) OR ws <= ws_new - rsa)` — a sibling
+moves only if its own window had already ended by `ws_new`, the same half-open rule the opener
+applied to itself, and only if it has not already materialised at or past `ws_new`. The `rf`
+guard matters because a sibling applies the new window by reading `ws > rf`: one whose `rf` is
+already at or past `ws_new` (an aggregator refill that landed after its old window ended, or a
+writer whose clock runs ahead) would read the moved `ws` as already applied and keep its burnt
+balance for the whole new window. Left alone, it opens its own window when next drawn.
 Idempotent and monotonic, in the shape `_propagate_shard_count()` uses; `ws` is monotonic because
 window *n+1* opens at a clock reading strictly after window *n* closed.
 
@@ -94,14 +108,22 @@ balance. The blind `SET` it would need either clobbers a sibling's committed con
 lands under the sibling's still-held `rf` lock and leaves it at twice its share. The `ws > rf`
 rule removes the question.
 
-A shard created mid-window inherits `ws` from shard 0, read once per shard on the create path.
+A shard created mid-window inherits `ws` from shard 0, read once per shard on the create path,
+and joins that window with the #587 transfer from its siblings. The read is **strongly
+consistent** — 1 RCU for the small projected item, against 0.5 eventually consistent — because a
+shard is usually created right after shard 0 was written, often by the write that rolled its
+window: a stale pre-roll `ws` looks ended, and the new shard would take a fresh full share on top
+of the window shard 0 had just opened (measured at 15 admitted against a quota of 10). If shard 0's
+window **has** ended (or shard 0 carries none), the new shard opens its own window at `now` at its
+full share — its siblings' balances belong to the window that ended — and fans that window out
+like any rollover, so the entity keeps one window phase.
 Cascade parents and children anchor **independently**: the parent's window does not track the
 child's, consistent with cascade already treating limits, shards and `disabled` as per-entity
 state. That independence is not free at shard-create time — the inheritance read is scoped to one
 entity's shards, so a cascade slow path creating a parent shard resolves the *parent's* `ws` with
-its own read rather than reusing the child's. It costs 0.5 RCU on the cascade shard-create path,
-once per parent shard, and it is what stops a busy child's window from silently becoming its
-parent's.
+its own read rather than reusing the child's. It costs 1 RCU (strongly consistent, above) on the
+cascade shard-create path, once per parent shard, and it is what stops a busy child's window from
+silently becoming its parent's.
 
 ## Consequences
 
@@ -117,8 +139,10 @@ parent's.
   config.
 
 **Negative:**
-- A rollover costs (S − 1) writes to keep an entity's shards on one window, where S is
-  `shard_count`. Zero for the unsharded majority; 31 at `MAX_SHARD_COUNT`, once per window. A
+- A rollover costs (S − 1) × L writes to keep an entity's shards on one window, where S is
+  `shard_count` and L the number of duration-window limits on the item — one conditional write
+  per (sibling, limit), because two windows of different lengths roll at different instants.
+  Zero for the unsharded majority; 31 × L at `MAX_SHARD_COUNT`, once per window. A
   per-shard window would cost nothing and is not available: `check_availability` would then have
   no honest answer to "when does my window reset", which is the feature's headline number.
 - The window state is not recoverable from the clock, so losing every shard of a bucket loses the

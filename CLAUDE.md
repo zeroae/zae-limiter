@@ -861,8 +861,8 @@ cron fields as sets, first match wins, no match means the base. `reset_schedule`
 on the transition *into* matching, which is why `0 0 * * *` is correct there and would be a
 one-minute window in `schedule`. `Limit.quota()` is the only constructor for the second
 (ADR-137: a limit drips or resets, never both, so the allowance and the reset must arrive
-together); windows are fixed calendar windows, never anchored to an entity's own first use
-(ADR-138).
+together); `reset_schedule` windows are fixed calendar windows (ADR-138), and the one
+first-use-anchored form is the separate `Limit.reset_after` duration window (ADR-139).
 
 Both ride on the `Limit` through the existing four-level resolution, so no setter signature
 changed and inheritance is **override, not merge** — an entity-level limit with no schedule

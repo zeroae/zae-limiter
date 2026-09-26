@@ -105,8 +105,13 @@ BUCKET_FIELD_VU = "vu"  # valid-until, epoch ms — schedule materialisation sta
 #
 # `ws` is the window START, per limit, epoch ms. Absent means the window has
 # not started. It is an ENTITY-WIDE fact replicated verbatim to every shard —
-# only the balance is per-shard — and it is monotonic, which is what lets the
-# rollover fan-out reuse `_propagate_shard_count()`'s `< :new` condition.
+# only the balance is per-shard — and it is monotonic. The rollover fan-out
+# (`Repository._propagate_window_start()`) does NOT use a plain `ws < :new`:
+# it moves a sibling only if that sibling's own window had ENDED by the new
+# start (`ws <= :new - rsa * 1000`, the half-open rule the opener applied to
+# itself) and only if the sibling's `rf < :new`, since a sibling applies the
+# window by reading `ws > rf` and one already past the new start would
+# otherwise keep its burnt balance for the whole window.
 #
 # The window END is derived (`ws + rsa * 1000`) and never stored, so the pair
 # cannot disagree after a partial write.
