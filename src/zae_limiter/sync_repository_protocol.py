@@ -540,6 +540,8 @@ class SyncRepositoryProtocol(Protocol):
         windows: dict[str, tuple[int, int]] | None = None,
         rf_ms: int | None = None,
         window_lengths: dict[str, int] | None = None,
+        seeds: "dict[str, BucketState] | None" = None,
+        seed_shard_count: int | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -563,18 +565,37 @@ class SyncRepositoryProtocol(Protocol):
             window_lengths: Limit name -> ``reset_after_seconds`` to stamp as
                 ``rsa`` alone, where the configured length differs from the
                 item's and the window did not move (ADR-139)
+            seeds: Limit name -> state of a limit missing from this existing
+                item (#633), SET in full on this write under
+                ``attribute_not_exists(cp) OR attribute_not_exists(tk)``
+                rather than ``ADD``ed. Must not also appear in ``consumed``.
+            seed_shard_count: The count a quota seed's share was sized for;
+                pins ``attribute_not_exists(shard_count) OR shard_count <=
+                :sized`` so a racing doubling cannot leave an oversized quota
+                share for the fast path to spend (#633).
         """
         ...
 
     def build_composite_retry(
-        self, entity_id: str, resource: str, consumed: dict[str, int], shard_id: int = 0
+        self,
+        entity_id: str,
+        resource: str,
+        consumed: dict[str, int],
+        shard_id: int = 0,
+        seeds: "dict[str, BucketState] | None" = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the retry write path (ADR-115 path 3).
+
+        Must ask for ``ReturnValuesOnConditionCheckFailure=ALL_OLD``: the lease
+        reports a failure here from the item's real balance (#633).
 
         Args:
             entity_id: Entity owning the bucket
             resource: Resource name
             consumed: Amount consumed per limit (millitokens)
+            seeds: Limit name -> state of a limit still missing from the item
+                (#633), written with ``if_not_exists`` so a limit another
+                writer seeded first is debited, never re-seeded.
         """
         ...
 
@@ -591,6 +612,26 @@ class SyncRepositoryProtocol(Protocol):
             entity_id: Entity owning the bucket
             resource: Resource name
             deltas: Delta per limit (millitokens, positive=consume, negative=release)
+        """
+        ...
+
+    def persist_seed(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int,
+        state: "BucketState",
+        vu: int | None = None,
+        seed_shard_count: int | None = None,
+    ) -> bool:
+        """Write a transfer seed on a pass that will not write it itself (#633).
+
+        ``SET`` the limit's attributes at ``state.tokens_milli`` with nothing
+        consumed, under ``attribute_exists(PK) AND attribute_not_exists(tk)``
+        and the shard-count pin; ``vu`` lowered when absent or later.
+
+        Returns:
+            Whether the seed was written.
         """
         ...
 
@@ -731,6 +772,29 @@ class SyncRepositoryProtocol(Protocol):
             ``(shards_found, {limit_name: reclaimed_milli})``. ``shards_found``
             is 0 when nothing is materialised for this (entity, resource),
             which is not the same as reclaiming nothing.
+        """
+        ...
+
+    def reclaim_quota_seed(
+        self, entity_id: str, resource: str, capacities_milli: dict[str, int], shard_count: int
+    ) -> tuple[int, dict[str, int]]:
+        """How quotas missing from an existing shard may be seeded (#633, #587).
+
+        Full share ``capacity // count`` unless some sibling holds more than
+        that share; then every sibling above it is clamped and the seed is
+        what the clamp took. ``count`` is the largest of ``shard_count`` and
+        every sibling's stored count.
+
+        Args:
+            entity_id: Entity owning the shards
+            resource: Resource the shards belong to
+            capacities_milli: ``{limit_name: capacity_milli}`` in force now,
+                undivided, for the missing quota limits
+            shard_count: The shard count the caller would seed at
+
+        Returns:
+            ``(count, {limit_name: reclaimed_milli})`` for the limits that
+            must take a transfer; a name absent gets its full share.
         """
         ...
 

@@ -6,6 +6,7 @@ import random
 import warnings
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal
@@ -28,7 +29,7 @@ from .exceptions import (
     ResourceDisabled,
     ValidationError,
 )
-from .lease import Lease, LeaseEntry
+from .lease import Lease, LeaseEntry, persist_transfer_seeds
 from .models import (
     AuditEvent,
     Availability,
@@ -2028,10 +2029,40 @@ class RateLimiter:
 
         for eid in entity_ids:
             eid_shard, eid_shard_count = entity_shards[eid]
-            # Track whether any bucket existed for this entity+resource
-            any_existing = any(
-                (eid, resource, limit.name) in existing_buckets for limit in entity_limits[eid]
+            # Whether the bucket *item* exists on this shard. Decided from
+            # everything read off it — the reserved `wcu` and limits no longer
+            # configured included — not from the resolved limits alone: an
+            # item can exist while holding none of them (every limit replaced
+            # at the config level), and a create `Put` against it could only
+            # lose its `attribute_not_exists(PK)` race to itself (#633).
+            item_states = [
+                state for (b_eid, _res, _name), state in existing_buckets.items() if b_eid == eid
+            ]
+            any_existing = bool(item_states)
+            # A limit configured after the item was created is missing from it
+            # and is *seeded* on this pass's write, per limit (#633): newness
+            # is a property of the limit, not of the item. Its `rf` lock value
+            # is the item's, and its share is taken at the item's shard count
+            # — the one every sibling limit on it already refills against —
+            # or the cached one where that has already moved further.
+            item_rf = item_states[0].last_refill_ms if item_states else now_ms
+            seed_shard_count = max(
+                [eid_shard_count]
+                + [s.shard_count for s in item_states if s.limit_name != WCU_LIMIT_NAME]
             )
+            missing = (
+                [
+                    limit
+                    for limit in entity_limits[eid]
+                    if (eid, resource, limit.name) not in existing_buckets
+                ]
+                if any_existing
+                else []
+            )
+            seed_shard_count, seed_transfer = await self._quota_seed_transfer(
+                eid, resource, missing, seed_shard_count, now_ms
+            )
+            seed_ws = await self._seed_window_starts(eid, resource, missing, seed_shard_count)
 
             # A quota has no rate for a freshly minted share to amortise
             # against (ADR-137), so a shard added to a set that already exists
@@ -2055,7 +2086,70 @@ class RateLimiter:
                 existing = existing_buckets.get(bucket_key)
                 created_anchor: int | None = None
                 stored_rsa: int | None = None
-                if existing is None:
+                seed = existing is None and any_existing
+                seed_initial: BucketState | None = None
+                if seed:
+                    is_new = True
+                    # Missing from an item that exists (#633): seeded at its
+                    # per-shard, schedule-effective starting share, exactly as
+                    # a create would start it — a quota by transfer where a
+                    # sibling already holds more than its share (#587), a
+                    # session quota joining shard 0's live window (ADR-139).
+                    # The same rules `from_limit` and the create path apply
+                    # below, taken at the item's shard count.
+                    inherited_ws = seed_ws.get(limit.name)
+                    window_live: bool | None = None
+                    if inherited_ws is not None and limit.reset_after_seconds is not None:
+                        window_live = inherited_ws + limit.reset_after_seconds * 1000 > now_ms
+                    state = BucketState.from_limit(
+                        eid,
+                        resource,
+                        limit,
+                        now_ms,
+                        shard_count=seed_shard_count,
+                        reclaimed_milli=(
+                            None if window_live is False else seed_transfer.get(limit.name)
+                        ),
+                    )
+                    if window_live:
+                        state.window_start_ms = inherited_ws
+                    # A transfer's clamp has already written; keep the seed
+                    # as it stands before admission so it can be persisted if
+                    # this pass ends up writing no seed (#633). The persist
+                    # leaves `rf` where it is, so it is skipped whenever `rf`
+                    # sits behind the limit's current period: the next slow
+                    # pass would then apply the reset it thinks it missed and
+                    # hand the shard a full share on top of the persisted
+                    # transfer the fast path had already spent (measured 1200
+                    # against 1000). For a session quota that is a joined
+                    # window starting after `rf` (`ws > rf` rolls it); for a
+                    # calendar quota, a reset edge after `rf`. Skipping falls
+                    # back to the unpersisted transfer, whose over-grant is
+                    # inside the residual tracked separately.
+                    period_start = (
+                        state.window_start_ms
+                        if limit.reset_after is not None
+                        else prev_reset_edge(limit.reset_schedule, now_ms)
+                        if limit.reset_schedule
+                        else None
+                    )
+                    if (
+                        limit.name in seed_transfer
+                        and window_live is not False
+                        and (period_start is None or period_start <= item_rf)
+                    ):
+                        seed_initial = replace(state)
+                    # A seed that opens its own window on a sharded entity
+                    # anchors the entity's next one, so it fans out like a
+                    # rollover — the rule a created shard N>0 follows.
+                    created_anchor = (
+                        state.window_start_ms
+                        if limit.reset_after is not None
+                        and not window_live
+                        and seed_shard_count > 1
+                        else None
+                    )
+                elif existing is None:
                     is_new = True
                     # A new shard of a sharded *dripping* bucket starts at its
                     # effective per-shard share — capacity_milli //
@@ -2091,7 +2185,7 @@ class RateLimiter:
                     # would leave this shard holding the dead window's
                     # leftovers for the whole of the new one.
                     inherited_ws = sibling_ws.get(limit.name)
-                    window_live: bool | None = None
+                    window_live = None
                     if inherited_ws is not None and limit.reset_after_seconds is not None:
                         window_live = inherited_ws + limit.reset_after_seconds * 1000 > now_ms
                     state = BucketState.from_limit(
@@ -2152,7 +2246,12 @@ class RateLimiter:
 
                 # Capture original values before try_consume modifies them (ADR-115)
                 original_tk = state.tokens_milli
-                original_rf = state.last_refill_ms
+                # A seeded limit locks on the item's `rf`, never on the
+                # synthetic `now` its fresh state carries: that value can
+                # never match, and with the seed sorted first every write fell
+                # to the consumption-only retry and no refill was credited
+                # again (#633).
+                original_rf = item_rf if seed else state.last_refill_ms
 
                 # A calendar reset edge crossed since this item was last
                 # refilled restores the balance *before* admission, so a
@@ -2206,6 +2305,8 @@ class RateLimiter:
                         _original_tokens_milli=original_tk,
                         _original_rf_ms=original_rf,
                         _is_new=is_new and not any_existing,
+                        _seed=seed,
+                        _seed_initial=seed_initial,
                         _has_custom_config=has_custom_config,
                         _shard_id=eid_shard,
                         _shard_count=eid_shard_count,
@@ -2235,6 +2336,9 @@ class RateLimiter:
         # Check for any violations
         violations = [s for s in statuses if s.exceeded]
         if violations:
+            # A quota seed's transfer already clamped its siblings; persist
+            # the seed so a rejection does not destroy what it took (#633).
+            await persist_transfer_seeds(self._repository, entries)
             raise RateLimitExceeded(statuses)
 
         return Lease(
@@ -2379,6 +2483,72 @@ class RateLimiter:
         if any_existing or shard_id == 0:
             return {}
         window_limits = [limit.name for limit in limits if limit.reset_after is not None]
+        if not window_limits:
+            return {}
+        return await self._repository.get_shard_window_starts(entity_id, resource, window_limits)
+
+    async def _quota_seed_transfer(
+        self,
+        entity_id: str,
+        resource: str,
+        missing: list[Limit],
+        shard_count: int,
+        now_ms: int,
+    ) -> tuple[int, dict[str, int]]:
+        """The shard count and transfers quotas missing from an existing shard are seeded with.
+
+        The seed counterpart of :meth:`_quota_transfer` (#633). Returns
+        ``(shard_count, {})`` — costing nothing, and leaving every missing
+        limit on its full share — unless the entity is sharded and one of the
+        missing limits is a quota: an unsharded item is the only shard, and a
+        dripping limit's seed amortises against its drip exactly as a new
+        shard's does. Otherwise defers to
+        :meth:`Repository.reclaim_quota_seed`, which may also raise the shard
+        count to one a sibling already carries.
+
+        Returns:
+            ``(shard_count, {limit_name: reclaimed_milli})``: the count every
+            seed on this item is taken at, and the quotas that must take a
+            transfer; a name absent from the mapping keeps the full share.
+        """
+        if shard_count <= 1:
+            return shard_count, {}
+        capacities_milli = {
+            limit.name: effective_params(
+                limit.capacity * 1000,
+                limit.refill_amount * 1000,
+                limit.refill_period_seconds * 1000,
+                limit.schedule,
+                now_ms,
+            )[0]
+            for limit in missing
+            if limit.is_quota
+        }
+        if not capacities_milli:
+            return shard_count, {}
+        return await self._repository.reclaim_quota_seed(
+            entity_id, resource, capacities_milli, shard_count
+        )
+
+    async def _seed_window_starts(
+        self,
+        entity_id: str,
+        resource: str,
+        missing: list[Limit],
+        shard_count: int,
+    ) -> dict[str, int]:
+        """The duration windows a session quota being seeded would join (#633, ADR-139).
+
+        The seed counterpart of :meth:`_sibling_window_starts`: one strongly
+        consistent read of shard 0's ``ws``, once per (bucket, new session
+        limit). On a sharded entity the read covers shard 0 itself too — a
+        sibling's rollover fan-out may already have stamped a ``ws`` on it for
+        a limit it does not carry yet. Unsharded, there is nothing to join and
+        nothing is read: the seed opens its window at ``now``.
+        """
+        if shard_count <= 1:
+            return {}
+        window_limits = [limit.name for limit in missing if limit.reset_after is not None]
         if not window_limits:
             return {}
         return await self._repository.get_shard_window_starts(entity_id, resource, window_limits)

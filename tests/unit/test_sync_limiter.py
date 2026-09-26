@@ -673,7 +673,10 @@ class TestLeaseRetryPath:
         assert statuses[0].retry_after_seconds > 0.0
 
     def test_build_retry_failure_statuses_no_deficit(self):
-        """retry_after_seconds is 0 when tokens are sufficient (shouldn't happen in practice)."""
+        """No deficit in memory still reports a wait, never a literal 0 (#633).
+
+        The status is exceeded — the retry's write failed — and a 429 saying
+        "retry after 0" is read as "retry now", a hot loop. Floored at 1 ms."""
         from zae_limiter.sync_lease import LeaseEntry, _build_retry_failure_statuses
 
         limit = Limit.per_minute("rpm", 100)
@@ -685,7 +688,7 @@ class TestLeaseRetryPath:
         state.shard_count = 1
         entry = LeaseEntry(entity_id="e1", resource="gpt-4", limit=limit, state=state, consumed=10)
         statuses = _build_retry_failure_statuses([entry], now_ms=1000)
-        assert statuses[0].retry_after_seconds == 0.0
+        assert statuses[0].retry_after_seconds == 0.001
 
     def test_commit_retry_on_condition_failure(self, sync_limiter):
         """Commit retries with consumption-only on optimistic lock failure."""
@@ -9193,3 +9196,751 @@ class TestSlowPathCommitErrorsHonourOnUnavailable:
                     "commit-retry", "gpt-4", consume={"rpm": 1}, on_unavailable=OnUnavailable.ALLOW
                 ):
                     pass
+
+
+class TestRetryRejectionReportsTheRealWait:
+    """A consumption-only retry that fails is reported from the item it failed
+    against, not from the in-memory state that just proved stale (#633). From
+    memory the deficit was always 0, so every such rejection quoted
+    ``retry_after_seconds == 0.0``: a hot retry loop driven by the 429 itself."""
+
+    def test_retry_rejection_reports_the_real_wait(self, sync_limiter):
+        """A consumption-only retry that fails reports the item's real balance
+        and the wait to refill it, not the in-memory ``0.0``."""
+        slow = SyncRateLimiter(repository=sync_limiter._repository, speculative_writes=False)
+        repo = sync_limiter._repository
+        repo._now_ms = lambda: T0
+        repo.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 100)])
+        with slow.acquire("real-wait", "gpt-4", consume={"rpm": 1}):
+            pass
+        stale = slow._fetch_entity_and_buckets("real-wait", "gpt-4", 0)
+        client = repo._get_client()
+        client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, "real-wait", "gpt-4", 0)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="SET #tk = :z, #rf = :rf",
+            ExpressionAttributeNames={
+                "#tk": bucket_attr("rpm", BUCKET_FIELD_TK),
+                "#rf": BUCKET_FIELD_RF,
+            },
+            ExpressionAttributeValues={":z": {"N": "0"}, ":rf": {"N": str(T0 + 1)}},
+        )
+        repo._now_ms = lambda: T0 + 1
+        with patch.object(slow, "_fetch_entity_and_buckets", MagicMock(return_value=stale)):
+            with pytest.raises(RateLimitExceeded) as exc_info:
+                with slow.acquire("real-wait", "gpt-4", consume={"rpm": 1}):
+                    pass
+        status = exc_info.value.statuses[0]
+        assert status.exceeded
+        assert status.available == 0
+        assert status.retry_after_seconds == pytest.approx(0.6, abs=0.01)
+
+
+class TestLimitAddedToExistingBucket:
+    """#633: a limit added to a config level whose bucket items already exist.
+
+    The first acquire creates the composite item carrying only the limits
+    configured at the time. A limit added afterwards is absent from that item,
+    and before the fix every path that touched it broke:
+
+    * mode 1 - an acquire consuming the new limit was rejected on every call,
+      with ``retry_after_seconds == 0.0``, because every write guarded on an
+      attribute that did not exist;
+    * mode 2 - a slow-path acquire *not* consuming it created ``b_{n}_tk = 0``
+      (no ``cp`` at resource/system level, so every later read divided by
+      zero; an empty balance at entity level);
+    * mode 3 - with the new limit resolved first, the ``rf`` lock compared
+      against a synthetic ``now`` and never matched, so refill was never
+      credited.
+
+    The fix seeds the missing limit on the same write, at its per-shard,
+    schedule-effective starting share.
+    """
+
+    RPM = Limit.per_minute("rpm", 100)
+    TPM = Limit.per_minute("tpm", 1000)
+
+    @staticmethod
+    def _configure(repo, level, entity_id, limits):
+        if level == "resource":
+            repo.set_resource_defaults("gpt-4", limits)
+        elif level == "system":
+            repo.set_system_defaults(limits)
+        else:
+            repo.set_limits(entity_id, limits, resource="gpt-4")
+        repo.invalidate_config_cache()
+
+    def _item_then_new_limit(self, sync_limiter, level, entity_id, new_limits):
+        """Create the item with ``rpm`` alone, then configure ``new_limits``."""
+        repo = sync_limiter._repository
+        repo._now_ms = lambda: T0
+        self._configure(repo, level, entity_id, [self.RPM])
+        with sync_limiter.acquire(entity_id, "gpt-4", consume={"rpm": 1}):
+            pass
+        self._configure(repo, level, entity_id, new_limits)
+        return repo
+
+    @pytest.mark.parametrize("level", ["resource", "entity", "system"])
+    @pytest.mark.parametrize("speculative", [True, False])
+    @pytest.mark.parametrize(
+        "consume", [{"rpm": 1, "tpm": 1}, {"tpm": 1}], ids=["both", "new-only"]
+    )
+    def test_consuming_the_new_limit_is_admitted(self, sync_limiter, level, speculative, consume):
+        entity_id = f"add-{level}-{speculative}-{len(consume)}"
+        acq = SyncRateLimiter(repository=sync_limiter._repository, speculative_writes=speculative)
+        repo = self._item_then_new_limit(acq, level, entity_id, [self.RPM, self.TPM])
+        with acq.acquire(entity_id, "gpt-4", consume=consume):
+            pass
+        item = _raw_bucket(repo, entity_id)
+        assert int(item[bucket_attr("tpm", BUCKET_FIELD_TK)]["N"]) == 999000
+        assert item[bucket_attr("tpm", "cp")]["N"] == "1000000"
+        assert item[bucket_attr("tpm", "tc")]["N"] == "1000"
+        rpm_left = 98000 if "rpm" in consume else 99000
+        assert int(item[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"]) == rpm_left
+        assert acq.available(entity_id, "gpt-4") == {"rpm": rpm_left // 1000, "tpm": 999}
+        repo._now_ms = lambda: T0 + 1000
+        with sync_limiter.acquire(entity_id, "gpt-4", consume=consume):
+            pass
+        after = _raw_bucket(repo, entity_id)
+        assert after[BUCKET_FIELD_RF] == item[BUCKET_FIELD_RF]
+        assert int(after[bucket_attr("tpm", BUCKET_FIELD_TK)]["N"]) == 998000
+
+    @pytest.mark.parametrize("level", ["resource", "entity", "system"])
+    def test_slow_path_not_consuming_the_new_limit_seeds_it_full(self, sync_limiter, level):
+        """Mode 2: the undeclared new limit is seeded at its full share, with
+        its parameters, rather than created as ``tk = 0`` with no ``cp``."""
+        entity_id = f"mode2-{level}"
+        slow = SyncRateLimiter(repository=sync_limiter._repository, speculative_writes=False)
+        repo = self._item_then_new_limit(slow, level, entity_id, [self.RPM, self.TPM])
+        with slow.acquire(entity_id, "gpt-4", consume={"rpm": 1}):
+            pass
+        item = _raw_bucket(repo, entity_id)
+        assert item[bucket_attr("tpm", BUCKET_FIELD_TK)]["N"] == "1000000"
+        assert item[bucket_attr("tpm", "cp")]["N"] == "1000000"
+        assert item[bucket_attr("tpm", "ra")]["N"] == "1000000"
+        assert item[bucket_attr("tpm", "rp")]["N"] == "60000"
+        assert slow.available(entity_id, "gpt-4") == {"rpm": 98, "tpm": 1000}
+        with sync_limiter.acquire(entity_id, "gpt-4", consume={"tpm": 10}):
+            pass
+        assert _stored_tk(repo, entity_id, "gpt-4", "tpm") == 990000
+
+    def test_entity_level_calendar_quota_added_mid_period_is_seeded_full(self, sync_limiter):
+        rpd = Limit.quota("rpd", 1000, cron="0 0 * * *")
+        repo = self._item_then_new_limit(sync_limiter, "entity", "mode2-rpd", [self.RPM, rpd])
+        with sync_limiter.acquire("mode2-rpd", "gpt-4", consume={"rpm": 1}):
+            pass
+        assert _stored_tk(repo, "mode2-rpd", "gpt-4", "rpd") == 1000000
+        with sync_limiter.acquire("mode2-rpd", "gpt-4", consume={"rpd": 1}):
+            pass
+        assert _stored_tk(repo, "mode2-rpd", "gpt-4", "rpd") == 999000
+
+    def test_entity_level_session_quota_is_seeded_with_its_window(self, sync_limiter):
+        repo = self._item_then_new_limit(
+            sync_limiter, "entity", "mode2-session", [self.RPM, SESSION_10]
+        )
+        with sync_limiter.acquire("mode2-session", "gpt-4", consume={"rpm": 1}):
+            pass
+        item = _raw_bucket(repo, "mode2-session")
+        assert item[bucket_attr("session", BUCKET_FIELD_TK)]["N"] == "10000"
+        assert int(item[bucket_attr("session", BUCKET_FIELD_WS)]["N"]) == T0
+        assert int(item[bucket_attr("session", BUCKET_FIELD_RSA)]["N"]) == FIVE_HOURS_MS // 1000
+        assert int(item[BUCKET_FIELD_VU]["N"]) == T0 + FIVE_HOURS_MS
+        repo._now_ms = lambda: T0 + 3600000
+        with sync_limiter.acquire("mode2-session", "gpt-4", consume={"session": 1}):
+            pass
+        after = _raw_bucket(repo, "mode2-session")
+        assert after[BUCKET_FIELD_RF] == item[BUCKET_FIELD_RF]
+        assert after[bucket_attr("session", BUCKET_FIELD_TK)]["N"] == "9000"
+
+    def test_new_limit_resolved_first_still_credits_refill(self, sync_limiter):
+        """Mode 3: the `rf` lock is taken from a limit the item really has."""
+        slow = SyncRateLimiter(repository=sync_limiter._repository, speculative_writes=False)
+        rpm = Limit.per_minute("rpm", 10)
+        repo = sync_limiter._repository
+        repo._now_ms = lambda: T0
+        self._configure(repo, "resource", "mode3", [rpm])
+        with slow.acquire("mode3", "gpt-4", consume={"rpm": 5}):
+            pass
+        self._configure(repo, "resource", "mode3", [self.TPM, rpm])
+        limits, _source = slow._resolve_limits("mode3", "gpt-4", None)
+        assert [limit.name for limit in limits][0] == "tpm", "precondition: tpm resolves first"
+        for minute in range(1, 16):
+            now = T0 + minute * 60000
+            repo._now_ms = lambda now=now: now
+            with slow.acquire("mode3", "gpt-4", consume={"rpm": 1}):
+                pass
+            item = _raw_bucket(repo, "mode3")
+            assert int(item[BUCKET_FIELD_RF]["N"]) == now, f"minute {minute}: rf-locked write"
+            assert int(item[bucket_attr("rpm", BUCKET_FIELD_TK)]["N"]) == 9000
+
+    def test_repairs_an_item_damaged_by_an_older_client(self, sync_limiter):
+        """An item holding ``b_tpm_tk`` without ``b_tpm_cp`` (mode 2 on an old
+        client) is read as missing the limit and reseeded on the next write."""
+        slow = SyncRateLimiter(repository=sync_limiter._repository, speculative_writes=False)
+        repo = self._item_then_new_limit(slow, "resource", "damaged", [self.RPM, self.TPM])
+        client = repo._get_client()
+        client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, "damaged", "gpt-4", 0)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="ADD #tk :z, #tc :z",
+            ExpressionAttributeNames={
+                "#tk": bucket_attr("tpm", BUCKET_FIELD_TK),
+                "#tc": bucket_attr("tpm", "tc"),
+            },
+            ExpressionAttributeValues={":z": {"N": "0"}},
+        )
+        assert slow.available("damaged", "gpt-4") == {"rpm": 99, "tpm": 1000}
+        with slow.acquire("damaged", "gpt-4", consume={"rpm": 1, "tpm": 1}):
+            pass
+        item = _raw_bucket(repo, "damaged")
+        assert item[bucket_attr("tpm", BUCKET_FIELD_TK)]["N"] == "999000"
+        assert item[bucket_attr("tpm", "cp")]["N"] == "1000000"
+
+    def test_retry_seeds_when_the_lock_is_lost_to_a_writer_that_does_not(self, sync_limiter):
+        """The rf-locked seed can lose its lock to a writer that moves `rf`
+        without seeding (an aggregator refill); the consumption-only retry
+        then seeds the limit itself instead of rejecting on a missing one."""
+        slow = SyncRateLimiter(repository=sync_limiter._repository, speculative_writes=False)
+        repo = self._item_then_new_limit(slow, "resource", "lost-lock", [self.RPM, self.TPM])
+        stale = slow._fetch_entity_and_buckets("lost-lock", "gpt-4", 0)
+        client = repo._get_client()
+        client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, "lost-lock", "gpt-4", 0)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="SET #rf = :rf",
+            ExpressionAttributeNames={"#rf": BUCKET_FIELD_RF},
+            ExpressionAttributeValues={":rf": {"N": str(T0 + 1)}},
+        )
+        repo._now_ms = lambda: T0 + 1
+        with patch.object(slow, "_fetch_entity_and_buckets", MagicMock(return_value=stale)):
+            with slow.acquire("lost-lock", "gpt-4", consume={"tpm": 1}):
+                pass
+        item = _raw_bucket(repo, "lost-lock")
+        assert int(item[BUCKET_FIELD_RF]["N"]) == T0 + 1, "the retry, not the locked write"
+        assert item[bucket_attr("tpm", BUCKET_FIELD_TK)]["N"] == "999000"
+        assert item[bucket_attr("tpm", "cp")]["N"] == "1000000"
+
+    def _lose_the_lock(self, slow, repo, entity_id):
+        """Read the item, then move its `rf` the way a non-seeding writer
+        (an aggregator refill) would, so the rf-locked write loses its lock."""
+        stale = slow._fetch_entity_and_buckets(entity_id, "gpt-4", 0)
+        client = repo._get_client()
+        client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "gpt-4", 0)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="SET #rf = :rf",
+            ExpressionAttributeNames={"#rf": BUCKET_FIELD_RF},
+            ExpressionAttributeValues={":rf": {"N": str(T0 + 1)}},
+        )
+        repo._now_ms = lambda: T0 + 1
+        return stale
+
+    def test_the_retry_leaves_a_scheduled_seed_to_the_next_locked_pass(self, sync_limiter):
+        """The retry stamps no `vu`, so it must not seed a quota: a quota seeded
+        there could be spent by the fast path past its reset edge. One extra
+        rejection, then the next rf-locked pass seeds it with its `vu`."""
+        slow = SyncRateLimiter(repository=sync_limiter._repository, speculative_writes=False)
+        rpd = Limit.quota("rpd", 1000, cron="0 0 * * *")
+        repo = self._item_then_new_limit(slow, "resource", "retry-quota", [self.RPM, rpd])
+        stale = self._lose_the_lock(slow, repo, "retry-quota")
+        with patch.object(slow, "_fetch_entity_and_buckets", MagicMock(return_value=stale)):
+            with pytest.raises(RateLimitExceeded) as exc_info:
+                with slow.acquire("retry-quota", "gpt-4", consume={"rpd": 1}):
+                    pass
+        assert exc_info.value.retry_after_seconds > 0
+        assert bucket_attr("rpd", BUCKET_FIELD_TK) not in _raw_bucket(repo, "retry-quota")
+        with slow.acquire("retry-quota", "gpt-4", consume={"rpd": 1}):
+            pass
+        item = _raw_bucket(repo, "retry-quota")
+        assert item[bucket_attr("rpd", BUCKET_FIELD_TK)]["N"] == "999000"
+        assert BUCKET_FIELD_VU in item
+
+    def test_the_retry_does_not_bake_in_a_damaged_limit_it_does_not_debit(self, sync_limiter):
+        """A stray `tk = 0` without `cp` (an older client's mode 2) on a limit
+        the retry does not debit is left alone, so the next locked pass can
+        still recognise and repair it; writing `cp` beside it would make it
+        read as a genuinely spent balance."""
+        slow = SyncRateLimiter(repository=sync_limiter._repository, speculative_writes=False)
+        repo = self._item_then_new_limit(slow, "resource", "retry-damaged", [self.RPM, self.TPM])
+        client = repo._get_client()
+        client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, "retry-damaged", "gpt-4", 0)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="ADD #tk :z",
+            ExpressionAttributeNames={"#tk": bucket_attr("tpm", BUCKET_FIELD_TK)},
+            ExpressionAttributeValues={":z": {"N": "0"}},
+        )
+        stale = self._lose_the_lock(slow, repo, "retry-damaged")
+        with patch.object(slow, "_fetch_entity_and_buckets", MagicMock(return_value=stale)):
+            with slow.acquire("retry-damaged", "gpt-4", consume={"rpm": 1}):
+                pass
+        assert bucket_attr("tpm", "cp") not in _raw_bucket(repo, "retry-damaged")
+        with slow.acquire("retry-damaged", "gpt-4", consume={"rpm": 1}):
+            pass
+        item = _raw_bucket(repo, "retry-damaged")
+        assert item[bucket_attr("tpm", BUCKET_FIELD_TK)]["N"] == "1000000"
+        assert item[bucket_attr("tpm", "cp")]["N"] == "1000000"
+
+
+class TestLimitAddedToExistingShards:
+    """#633 on a sharded entity: each shard is seeded once, and a quota's seeds
+    never mint allowance (#587)."""
+
+    RPM = Limit.per_minute("rpm", 100)
+    RPD = Limit.quota("rpd", 1000, cron="0 0 * * *")
+
+    def _two_shards(self, sync_limiter, entity_id, extra_on_shard0=None):
+        """Shards 0 and 1 carrying ``rpm`` only (optionally ``rpd`` on shard 0
+        as ``(tokens_milli, tc_milli)``), then ``rpd`` configured."""
+        repo = sync_limiter._repository
+        ns = repo._namespace_id
+        repo._now_ms = lambda: T0
+        repo.set_resource_defaults("gpt-4", [self.RPM])
+        for shard_id in (0, 1):
+            states = [BucketState.from_limit(entity_id, "gpt-4", self.RPM, T0, shard_count=2)]
+            if shard_id == 0 and extra_on_shard0 is not None:
+                rpd = BucketState.from_limit(entity_id, "gpt-4", self.RPD, T0, shard_count=2)
+                rpd.tokens_milli, rpd.total_consumed_milli = extra_on_shard0
+                states.append(rpd)
+            repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        entity_id, "gpt-4", states, T0, shard_id=shard_id, shard_count=2
+                    )
+                ]
+            )
+        repo._entity_cache[ns, entity_id] = (False, None, {"gpt-4": 2})
+        repo.set_resource_defaults("gpt-4", [self.RPM, self.RPD])
+        repo.invalidate_config_cache()
+        return repo
+
+    @staticmethod
+    def _acquire_on(sync_limiter, entity_id, shard_id, consume):
+        slow = SyncRateLimiter(repository=sync_limiter._repository, speculative_writes=False)
+        with patch("zae_limiter.sync_repository.random.randrange", return_value=shard_id):
+            with slow.acquire(entity_id, "gpt-4", consume=consume):
+                pass
+
+    def test_each_shard_is_seeded_once_and_the_seeds_sum_to_capacity(self, sync_limiter):
+        repo = self._two_shards(sync_limiter, "shards-sum")
+        self._acquire_on(sync_limiter, "shards-sum", 0, {"rpd": 1})
+        self._acquire_on(sync_limiter, "shards-sum", 1, {"rpd": 1})
+        self._acquire_on(sync_limiter, "shards-sum", 1, {"rpd": 1})
+        tk0 = _stored_tk(repo, "shards-sum", "gpt-4", "rpd", shard=0)
+        tk1 = _stored_tk(repo, "shards-sum", "gpt-4", "rpd", shard=1)
+        assert (tk0, tk1) == (499000, 498000)
+        assert tk0 + tk1 + 3000 == 1000000
+
+    def test_a_quota_seed_takes_a_transfer_of_a_partly_spent_surplus(self, sync_limiter):
+        """Shard 0 holds the new quota at the unsharded share (granted before
+        the doubling) and has spent 300 of it, holding 700. Seeding shard 1
+        with a fresh 500 on top of an unclamped 700 would admit 1,500 in one
+        period; the seed clamps shard 0 to its share and takes the 200 that
+        took, so what is left to spend is exactly the 700 not yet spent."""
+        repo = self._two_shards(sync_limiter, "shards-spent", extra_on_shard0=(700000, 300000))
+        self._acquire_on(sync_limiter, "shards-spent", 1, {"rpd": 1})
+        tk0 = _stored_tk(repo, "shards-spent", "gpt-4", "rpd", shard=0)
+        tk1 = _stored_tk(repo, "shards-spent", "gpt-4", "rpd", shard=1)
+        assert (tk0, tk1) == (500000, 199000)
+        assert tk0 + tk1 + 300000 + 1000 == 1000000
+
+    def test_a_sibling_that_spent_in_an_earlier_period_does_not_starve_the_seed(self, sync_limiter):
+        """Review of #633: `tc` is cumulative across periods, so a sibling that
+        consumed before a reset edge used to read as over-granted forever.
+        Every seed then took a transfer of nothing, was rejected before any
+        write, and the shard was never seeded. The rule is the surplus held."""
+        day = 86400000
+        midnight = (T0 // day + 1) * day
+        repo = self._two_shards(sync_limiter, "starve-rpd")
+        repo._now_ms = lambda: T0 + 1000
+        self._acquire_on(sync_limiter, "starve-rpd", 0, {"rpd": 1})
+        repo._now_ms = lambda: midnight + 1000
+        self._acquire_on(sync_limiter, "starve-rpd", 0, {"rpd": 1})
+        assert _stored_tk(repo, "starve-rpd", "gpt-4", "rpd", shard=0) == 499000
+        repo._now_ms = lambda: midnight + 60000
+        self._acquire_on(sync_limiter, "starve-rpd", 1, {"rpd": 1})
+        assert _stored_tk(repo, "starve-rpd", "gpt-4", "rpd", shard=1) == 499000
+
+    def test_a_sibling_that_spent_in_an_earlier_window_does_not_starve_the_seed(self, sync_limiter):
+        """The session-quota twin: shard 0 consumed in a window that has since
+        rolled over; shard 1 is seeded at its full share and joins the new one."""
+        repo = sync_limiter._repository
+        ns = repo._namespace_id
+        repo._now_ms = lambda: T0
+        repo.set_resource_defaults("gpt-4", [self.RPM, SESSION_10])
+        s0 = [
+            BucketState.from_limit("starve-sess", "gpt-4", limit, T0, shard_count=2)
+            for limit in (self.RPM, SESSION_10)
+        ]
+        s1 = [BucketState.from_limit("starve-sess", "gpt-4", self.RPM, T0, shard_count=2)]
+        for shard_id, states in ((0, s0), (1, s1)):
+            repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        "starve-sess", "gpt-4", states, T0, shard_id=shard_id, shard_count=2
+                    )
+                ]
+            )
+        repo._entity_cache[ns, "starve-sess"] = (False, None, {"gpt-4": 2})
+        repo.invalidate_config_cache()
+        repo._now_ms = lambda: T0 + 1000
+        self._acquire_on(sync_limiter, "starve-sess", 0, {"session": 2})
+        rolled = T0 + FIVE_HOURS_MS + 1000
+        repo._now_ms = lambda: rolled
+        self._acquire_on(sync_limiter, "starve-sess", 0, {"session": 1})
+        assert _stored_tk(repo, "starve-sess", "gpt-4", "session", shard=0) == 4000
+        repo._now_ms = lambda: rolled + 60000
+        self._acquire_on(sync_limiter, "starve-sess", 1, {"session": 1})
+        shard1 = _raw_bucket(repo, "starve-sess", shard=1)
+        assert shard1[bucket_attr("session", BUCKET_FIELD_TK)]["N"] == "4000"
+        assert int(shard1[bucket_attr("session", BUCKET_FIELD_WS)]["N"]) == rolled
+
+    def test_the_seed_share_honours_a_sibling_with_a_higher_shard_count(self, sync_limiter):
+        """A doubling that reached shard 0 but not the seeding shard or the
+        cache: the sibling read the quota rule already pays supplies the count."""
+        repo = self._two_shards(sync_limiter, "shards-count")
+        client = repo._get_client()
+        client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, "shards-count", "gpt-4", 0)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="SET shard_count = :four",
+            ExpressionAttributeValues={":four": {"N": "4"}},
+        )
+        self._acquire_on(sync_limiter, "shards-count", 1, {"rpd": 1})
+        assert _stored_tk(repo, "shards-count", "gpt-4", "rpd", shard=1) == 249000
+
+    def test_a_quota_seed_reclaims_an_unspent_sibling_surplus(self, sync_limiter):
+        """Shard 0 holds the whole unspent quota at the unsharded share: the
+        seed clamps it to its share and hands shard 1 what that took."""
+        repo = self._two_shards(sync_limiter, "shards-full", extra_on_shard0=(1000000, 0))
+        self._acquire_on(sync_limiter, "shards-full", 1, {"rpd": 1})
+        tk0 = _stored_tk(repo, "shards-full", "gpt-4", "rpd", shard=0)
+        tk1 = _stored_tk(repo, "shards-full", "gpt-4", "rpd", shard=1)
+        assert (tk0, tk1) == (500000, 499000)
+
+    def test_a_dripping_limit_is_seeded_at_the_share_without_reading_siblings(self, sync_limiter):
+        """Only a quota can be minted; a dripping limit's seed amortises against
+        its drip, so no sibling is read."""
+        repo = sync_limiter._repository
+        repo._now_ms = lambda: T0
+        self._two_shards(sync_limiter, "shards-drip")
+        repo.set_resource_defaults("gpt-4", [self.RPM, Limit.per_minute("tpm", 1000)])
+        repo.invalidate_config_cache()
+        with patch.object(repo, "reclaim_quota_seed", MagicMock()) as reclaim:
+            self._acquire_on(sync_limiter, "shards-drip", 1, {"tpm": 1})
+        reclaim.assert_not_called()
+        assert _stored_tk(repo, "shards-drip", "gpt-4", "tpm", shard=1) == 499000
+
+    def test_a_session_quota_seed_opens_the_window_and_the_sibling_joins_it(self, sync_limiter):
+        """The first shard seeded opens the entity's window and fans it out; the
+        second joins it on its own seed and is admitted on the fast path."""
+        repo = sync_limiter._repository
+        ns = repo._namespace_id
+        repo._now_ms = lambda: T0
+        repo.set_resource_defaults("gpt-4", [self.RPM])
+        for shard_id in (0, 1):
+            state = BucketState.from_limit("sess-shards", "gpt-4", self.RPM, T0, shard_count=2)
+            repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        "sess-shards", "gpt-4", [state], T0, shard_id=shard_id, shard_count=2
+                    )
+                ]
+            )
+        repo._entity_cache[ns, "sess-shards"] = (False, None, {"gpt-4": 2})
+        repo.set_resource_defaults("gpt-4", [self.RPM, SESSION_10])
+        repo.invalidate_config_cache()
+        repo._now_ms = lambda: T0 + 1000
+        self._acquire_on(sync_limiter, "sess-shards", 1, {"session": 1})
+        assert _stored_ws(repo, "sess-shards", "gpt-4", "session", shard=1) == T0 + 1000
+        assert _stored_ws(repo, "sess-shards", "gpt-4", "session", shard=0) == T0 + 1000
+        repo._now_ms = lambda: T0 + 2000
+        self._acquire_on(sync_limiter, "sess-shards", 0, {"session": 1})
+        shard0 = _raw_bucket(repo, "sess-shards", shard=0)
+        assert int(shard0[bucket_attr("session", BUCKET_FIELD_WS)]["N"]) == T0 + 1000, "joined"
+        assert shard0[bucket_attr("session", BUCKET_FIELD_TK)]["N"] == "4000"
+        assert int(shard0[BUCKET_FIELD_VU]["N"]) == T0 + 1000 + FIVE_HOURS_MS
+        repo._now_ms = lambda: T0 + 3000
+        with patch("zae_limiter.sync_repository.random.randrange", return_value=0):
+            with sync_limiter.acquire("sess-shards", "gpt-4", consume={"session": 1}):
+                pass
+        after = _raw_bucket(repo, "sess-shards", shard=0)
+        assert after[BUCKET_FIELD_RF] == shard0[BUCKET_FIELD_RF], "the fast path took it"
+        assert after[bucket_attr("session", BUCKET_FIELD_TK)]["N"] == "3000"
+
+    def test_a_reset_edge_crossed_before_the_commit_restores_a_transfer_seed(self, sync_limiter):
+        """A seed that took a transfer of nothing, committed after the midnight
+        edge its acquire read just missed, starts the new period at its share."""
+        midnight = 1757030400000
+        repo = self._two_shards(sync_limiter, "shards-edge", extra_on_shard0=(100000, 900000))
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        repo._now_ms = lambda: midnight - 1000
+        lease = slow._do_acquire(
+            "shards-edge", "gpt-4", None, {"rpm": 1}, shard_id=1, shard_count=2
+        )
+        repo._now_ms = lambda: midnight + 1000
+        lease._commit_initial()
+        assert _stored_tk(repo, "shards-edge", "gpt-4", "rpd", shard=1) == 500000
+
+    def test_a_joined_window_ending_before_the_commit_is_reanchored(self, sync_limiter):
+        """A session seed that joined shard 0's window, committed after that
+        window ended, anchors the next one at the commit and fans it out."""
+        repo = sync_limiter._repository
+        ns = repo._namespace_id
+        repo._now_ms = lambda: T0
+        repo.set_resource_defaults("gpt-4", [self.RPM, SESSION_10])
+        s0 = [
+            BucketState.from_limit("sess-end", "gpt-4", limit, T0, shard_count=2)
+            for limit in (self.RPM, SESSION_10)
+        ]
+        s1 = [BucketState.from_limit("sess-end", "gpt-4", self.RPM, T0, shard_count=2)]
+        for shard_id, states in ((0, s0), (1, s1)):
+            repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        "sess-end", "gpt-4", states, T0, shard_id=shard_id, shard_count=2
+                    )
+                ]
+            )
+        repo._entity_cache[ns, "sess-end"] = (False, None, {"gpt-4": 2})
+        repo.invalidate_config_cache()
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        repo._now_ms = lambda: T0 + FIVE_HOURS_MS - 1000
+        lease = slow._do_acquire(
+            "sess-end", "gpt-4", None, {"session": 1}, shard_id=1, shard_count=2
+        )
+        commit_at = T0 + FIVE_HOURS_MS + 1000
+        repo._now_ms = lambda: commit_at
+        lease._commit_initial()
+        shard1 = _raw_bucket(repo, "sess-end", shard=1)
+        assert int(shard1[bucket_attr("session", BUCKET_FIELD_WS)]["N"]) == commit_at
+        assert shard1[bucket_attr("session", BUCKET_FIELD_TK)]["N"] == "4000"
+        assert _stored_ws(repo, "sess-end", "gpt-4", "session", shard=0) == commit_at
+
+    def test_a_doubling_racing_an_unsharded_quota_seed_does_not_mint(self, sync_limiter):
+        """Re-review of #633 (R3): shard 0 at S=1 seeds the whole quota and
+        reads no siblings; an aggregator doubling lands between its read and
+        its write (without moving `rf`), and the Path 2 clone of the pre-seed
+        image carries no quota. Unpinned, shard 0 kept all 1000 at count 2,
+        the fast path spent it, and shard 1 then seeded 500 more: 1500 admitted
+        against 1000. The seed now pins the count it was sized for."""
+        rpm = Limit.per_minute("rpm", 100000)
+        repo = sync_limiter._repository
+        ns = repo._namespace_id
+        repo._now_ms = lambda: T0
+        repo.set_resource_defaults("gpt-4", [rpm])
+        state = BucketState.from_limit("race", "gpt-4", rpm, T0, shard_count=1)
+        repo.transact_write(
+            [repo.build_composite_create("race", "gpt-4", [state], T0, shard_id=0, shard_count=1)]
+        )
+        repo.set_resource_defaults("gpt-4", [rpm, self.RPD])
+        repo.invalidate_config_cache()
+        repo._entity_cache[ns, "race"] = (False, None, {"gpt-4": 1})
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        repo._now_ms = lambda: T0 + 1000
+        stale = slow._fetch_entity_and_buckets("race", "gpt-4", 0)
+        client = repo._get_client()
+        client.update_item(
+            TableName=repo.table_name,
+            Key={"PK": {"S": pk_bucket(ns, "race", "gpt-4", 0)}, "SK": {"S": sk_state()}},
+            UpdateExpression="SET shard_count = :two",
+            ExpressionAttributeValues={":two": {"N": "2"}},
+        )
+        clone = BucketState.from_limit("race", "gpt-4", rpm, T0, shard_count=2)
+        repo.transact_write(
+            [repo.build_composite_create("race", "gpt-4", [clone], T0, shard_id=1, shard_count=2)]
+        )
+        admitted = 0
+        with patch.object(slow, "_fetch_entity_and_buckets", MagicMock(return_value=stale)):
+            with pytest.raises(RateLimitExceeded):
+                with slow.acquire("race", "gpt-4", consume={"rpd": 1}):
+                    admitted += 1
+        item = _raw_bucket(repo, "race", shard=0)
+        assert bucket_attr("rpd", BUCKET_FIELD_TK) not in item, "the pinned seed lost"
+        repo._entity_cache[ns, "race"] = (False, None, {"gpt-4": 2})
+        repo._now_ms = lambda: T0 + 2000
+        for shard in (0, 1, 0, 1):
+            while True:
+                try:
+                    self._acquire_on(sync_limiter, "race", shard, {"rpd": 100})
+                except RateLimitExceeded:
+                    break
+                admitted += 100
+        assert admitted == 1000
+
+    def test_a_rejected_transfer_seed_is_persisted(self, sync_limiter):
+        """Re-review of #633 (R2): the seed's clamp already wrote, so a
+        rejected acquire persists the seed at what the clamp took; the next
+        pass must not seed a full share on top of the 300 already spent."""
+        repo = self._two_shards(sync_limiter, "r2-reject", extra_on_shard0=(700000, 300000))
+        with pytest.raises(RateLimitExceeded):
+            self._acquire_on(sync_limiter, "r2-reject", 1, {"rpd": 300})
+        assert _stored_tk(repo, "r2-reject", "gpt-4", "rpd", shard=0) == 500000
+        shard1 = _raw_bucket(repo, "r2-reject", shard=1)
+        assert shard1[bucket_attr("rpd", BUCKET_FIELD_TK)]["N"] == "200000"
+        assert shard1[bucket_attr("rpd", "tc")]["N"] == "0"
+        assert BUCKET_FIELD_VU in shard1, "the reset edge still forces a pass"
+        self._acquire_on(sync_limiter, "r2-reject", 1, {"rpd": 1})
+        assert _stored_tk(repo, "r2-reject", "gpt-4", "rpd", shard=1) == 199000
+
+    def test_a_transfer_seed_that_loses_its_lock_is_persisted_and_debited(self, sync_limiter):
+        """R2's other half: the rf-locked write loses its lock, the seed is
+        persisted before the consumption-only retry, which then debits it."""
+        repo = self._two_shards(sync_limiter, "r2-lock", extra_on_shard0=(700000, 300000))
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        stale = slow._fetch_entity_and_buckets("r2-lock", "gpt-4", 1)
+        client = repo._get_client()
+        client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, "r2-lock", "gpt-4", 1)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="SET #rf = :rf",
+            ExpressionAttributeNames={"#rf": BUCKET_FIELD_RF},
+            ExpressionAttributeValues={":rf": {"N": str(T0 + 1)}},
+        )
+        repo._now_ms = lambda: T0 + 1
+        with patch.object(slow, "_fetch_entity_and_buckets", MagicMock(return_value=stale)):
+            with patch("zae_limiter.sync_repository.random.randrange", return_value=1):
+                with slow.acquire("r2-lock", "gpt-4", consume={"rpd": 1}):
+                    pass
+        assert _stored_tk(repo, "r2-lock", "gpt-4", "rpd", shard=1) == 199000
+        assert _stored_tk(repo, "r2-lock", "gpt-4", "rpd", shard=0) == 500000
+
+    def _spent_sibling_after_midnight(self, sync_limiter, entity_id):
+        """Shard 0 granted the whole quota at count 1 and materialised after
+        midnight (its grant is today's); shard 1 last materialised before it."""
+        day = 86400000
+        midnight = (T0 // day + 1) * day
+        repo = self._two_shards(sync_limiter, entity_id, extra_on_shard0=(700000, 300000))
+        client = repo._get_client()
+        client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "gpt-4", 0)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="SET #rf = :rf",
+            ExpressionAttributeNames={"#rf": BUCKET_FIELD_RF},
+            ExpressionAttributeValues={":rf": {"N": str(midnight + 1000)}},
+        )
+        repo._now_ms = lambda: midnight + 2000
+        return (repo, midnight)
+
+    def test_no_persist_behind_a_reset_edge_on_a_rejection(self, sync_limiter):
+        """Re-review of #633: `persist_seed` leaves `rf` alone. On an item whose
+        `rf` is older than the last reset edge, the fast path spent the
+        persisted transfer and the next slow pass then applied the edge it
+        thought it missed, resetting the shard to a full share: 1200+ in one
+        period. Such a seed is not persisted."""
+        repo, _ = self._spent_sibling_after_midnight(sync_limiter, "edge-reject")
+        with pytest.raises(RateLimitExceeded):
+            self._acquire_on(sync_limiter, "edge-reject", 1, {"rpd": 300})
+        shard1 = _raw_bucket(repo, "edge-reject", shard=1)
+        assert bucket_attr("rpd", BUCKET_FIELD_TK) not in shard1
+        admitted = 0
+        while True:
+            try:
+                self._acquire_on(sync_limiter, "edge-reject", 1, {"rpd": 100})
+            except RateLimitExceeded:
+                break
+            admitted += 100
+        tk0 = _stored_tk(repo, "edge-reject", "gpt-4", "rpd", shard=0)
+        assert admitted + tk0 // 1000 == 1000
+
+    def test_no_persist_behind_a_reset_edge_on_a_lost_lock(self, sync_limiter):
+        repo, midnight = self._spent_sibling_after_midnight(sync_limiter, "edge-lock")
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        stale = slow._fetch_entity_and_buckets("edge-lock", "gpt-4", 1)
+        client = repo._get_client()
+        client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, "edge-lock", "gpt-4", 1)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="SET #rf = :rf",
+            ExpressionAttributeNames={"#rf": BUCKET_FIELD_RF},
+            ExpressionAttributeValues={":rf": {"N": str(T0 + 1)}},
+        )
+        with patch.object(slow, "_fetch_entity_and_buckets", MagicMock(return_value=stale)):
+            with patch("zae_limiter.sync_repository.random.randrange", return_value=1):
+                with pytest.raises(RateLimitExceeded):
+                    with slow.acquire("edge-lock", "gpt-4", consume={"rpd": 1}):
+                        pass
+        shard1 = _raw_bucket(repo, "edge-lock", shard=1)
+        assert bucket_attr("rpd", BUCKET_FIELD_TK) not in shard1
+
+
+class TestPersistSeed:
+    """`SyncRepository.persist_seed` (#633): write-once, pinned, `vu` only lowered."""
+
+    RPD = Limit.quota("rpd", 1000, cron="0 0 * * *")
+
+    def _item(self, repo, entity_id, vu=None):
+        repo._now_ms = lambda: T0
+        rpm = Limit.per_minute("rpm", 100)
+        state = BucketState.from_limit(entity_id, "gpt-4", rpm, T0, shard_count=2)
+        repo.transact_write(
+            [
+                repo.build_composite_create(
+                    entity_id, "gpt-4", [state], T0, shard_id=0, shard_count=2, vu=vu
+                )
+            ]
+        )
+        seed = BucketState.from_limit(entity_id, "gpt-4", self.RPD, T0, shard_count=2)
+        seed.tokens_milli = 123000
+        return seed
+
+    def test_lowers_a_later_vu(self, sync_limiter):
+        repo = sync_limiter._repository
+        seed = self._item(repo, "ps-later", vu=T0 + 10**9)
+        assert repo.persist_seed("ps-later", "gpt-4", 0, seed, vu=T0 + 5, seed_shard_count=2)
+        item = _raw_bucket(repo, "ps-later")
+        assert item[bucket_attr("rpd", BUCKET_FIELD_TK)]["N"] == "123000"
+        assert int(item[BUCKET_FIELD_VU]["N"]) == T0 + 5
+
+    def test_keeps_an_earlier_vu(self, sync_limiter):
+        repo = sync_limiter._repository
+        seed = self._item(repo, "ps-earlier", vu=T0 + 1)
+        assert repo.persist_seed("ps-earlier", "gpt-4", 0, seed, vu=T0 + 5)
+        item = _raw_bucket(repo, "ps-earlier")
+        assert item[bucket_attr("rpd", BUCKET_FIELD_TK)]["N"] == "123000"
+        assert int(item[BUCKET_FIELD_VU]["N"]) == T0 + 1
+
+    def test_never_overwrites_and_honours_the_pin(self, sync_limiter):
+        repo = sync_limiter._repository
+        seed = self._item(repo, "ps-once")
+        assert not repo.persist_seed("ps-once", "gpt-4", 0, seed, seed_shard_count=1)
+        assert repo.persist_seed("ps-once", "gpt-4", 0, seed)
+        seed.tokens_milli = 999000
+        assert not repo.persist_seed("ps-once", "gpt-4", 0, seed, vu=T0 + 5)
+        assert _stored_tk(repo, "ps-once", "gpt-4", "rpd") == 123000
+
+    def test_other_errors_propagate(self, sync_limiter):
+        repo = sync_limiter._repository
+        seed = self._item(repo, "ps-error")
+        client = repo._get_client()
+        boom = ClientError({"Error": {"Code": "ValidationException"}}, "UpdateItem")
+        with patch.object(client, "update_item", MagicMock(side_effect=boom)):
+            with pytest.raises(ClientError):
+                repo.persist_seed("ps-error", "gpt-4", 0, seed)
