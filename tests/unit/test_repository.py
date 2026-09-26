@@ -7766,7 +7766,7 @@ class TestResetAfterVersionGate:
         with patch("zae_limiter.__version__", "0.15.0"):
             with pytest.raises(VersionMismatchError) as exc_info:
                 await self._write(repo, "entity", [self.SESSION])
-        assert "zae-limiter upgrade --force" in str(exc_info.value)
+        assert "Run 'zae-limiter upgrade' to deploy it" in str(exc_info.value)
         assert "re-run 'zae-limiter deploy'" in str(exc_info.value)
         assert exc_info.value.can_auto_update is False
 
@@ -8029,11 +8029,27 @@ class TestVersionRecordInitialization:
 
     SESSION = Limit.quota("session", 10, reset_after=timedelta(hours=5))
 
-    async def test_a_record_initialized_without_a_deploy_is_unknown(self, repo):
-        await repo._initialize_version_record()
+    @pytest.mark.parametrize("probe", [True, None])
+    async def test_a_record_initialized_without_a_deploy_is_unknown(self, repo, probe):
+        """An aggregator this Repository did not deploy — or a probe that
+        cannot tell (an application role without Lambda permissions) —
+        leaves the Lambda version unknown."""
+        with patch(
+            "zae_limiter.infra.stack_manager.aggregator_function_exists",
+            AsyncMock(return_value=probe),
+        ):
+            await repo._initialize_version_record()
         record = await repo.get_version_record()
         assert record["lambda_version"] is None
         assert record["client_min_version"] == "0.0.0"
+
+    async def test_a_record_initialized_on_a_stack_without_an_aggregator_claims_this_build(
+        self, repo
+    ):
+        """No aggregator (moto has no such function) means nothing to be old."""
+        with patch("zae_limiter.__version__", "0.15.0"):
+            await repo._initialize_version_record()
+        assert (await repo.get_version_record())["lambda_version"] == "0.15.0"
 
     async def test_a_record_initialized_after_a_deploy_claims_this_build(self, repo):
         repo._deployed_lambda_version = "0.15.0"
@@ -8044,10 +8060,16 @@ class TestVersionRecordInitialization:
         setup = Repository(name="old-stack", region="us-east-1", _skip_deprecation_warning=True)
         await setup.create_table()
         await setup.close()
-        with patch("zae_limiter.__version__", "0.15.0"):
+        with (
+            patch("zae_limiter.__version__", "0.15.0"),
+            patch(
+                "zae_limiter.infra.stack_manager.aggregator_function_exists",
+                AsyncMock(return_value=True),
+            ),
+        ):
             repo = await Repository.open("default", stack="old-stack", region="us-east-1")
             try:
-                with pytest.raises(VersionMismatchError, match="upgrade --force"):
+                with pytest.raises(VersionMismatchError, match="zae-limiter upgrade"):
                     await repo.set_limits("u", [self.SESSION], resource="r")
                 assert await repo.get_limits("u", resource="r") == []
             finally:
@@ -8058,7 +8080,11 @@ class TestVersionRecordInitialization:
         have no aggregator, where a code push fails on every open()."""
         setup = Repository(name="unknown-stack", region="us-east-1", _skip_deprecation_warning=True)
         await setup.create_table()
-        await setup._initialize_version_record()
+        with patch(
+            "zae_limiter.infra.stack_manager.aggregator_function_exists",
+            AsyncMock(return_value=True),
+        ):
+            await setup._initialize_version_record()
         await setup.close()
         with (
             patch("zae_limiter.__version__", "0.15.0"),
@@ -8096,15 +8122,17 @@ class TestVersionRecordInitialization:
             client.put_item = original
 
     @pytest.mark.parametrize(
-        ("created", "aggregator", "expected"),
+        ("created", "aggregator", "exists", "expected"),
         [
-            (True, False, "0.15.0"),  # a stack this call created
-            (False, True, "0.15.0"),  # aggregator code pushed
-            (False, False, None),  # existing stack, aggregator untouched
+            (True, False, True, "0.15.0"),  # a stack this call created
+            (False, True, True, "0.15.0"),  # aggregator code pushed
+            (False, False, True, None),  # existing stack, its aggregator untouched
+            (False, False, None, None),  # existing stack, probe cannot tell
+            (False, False, False, "0.15.0"),  # existing stack with no aggregator
         ],
     )
     async def test_ensure_infrastructure_records_what_it_deployed(
-        self, mock_dynamodb, created, aggregator, expected
+        self, mock_dynamodb, created, aggregator, exists, expected
     ):
         from zae_limiter.models import StackOptions
 
@@ -8120,6 +8148,7 @@ class TestVersionRecordInitialization:
         manager.create_stack = AsyncMock(
             return_value={"status": "CREATE_COMPLETE", **({"created": True} if created else {})}
         )
+        manager.aggregator_exists = AsyncMock(return_value=exists)
         try:
             with (
                 patch("zae_limiter.__version__", "0.15.0"),

@@ -119,6 +119,7 @@ class TestCLI:
         )
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=None)
+        mock_instance.aggregator_exists = AsyncMock(return_value=True)
         mock_stack_manager.return_value = mock_instance
 
         # Mock repository for version record and namespace registration
@@ -183,6 +184,7 @@ class TestCLI:
         )
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=None)
+        mock_instance.aggregator_exists = AsyncMock(return_value=True)
         return mock_instance
 
     @patch("zae_limiter.repository.Repository")
@@ -283,6 +285,7 @@ class TestCLI:
         )
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=None)
+        mock_instance.aggregator_exists = AsyncMock(return_value=True)
         mock_stack_manager.return_value = mock_instance
 
         mock_repo_instance = Mock()
@@ -316,6 +319,7 @@ class TestCLI:
         )
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=None)
+        mock_instance.aggregator_exists = AsyncMock(return_value=True)
         mock_stack_manager.return_value = mock_instance
 
         result = runner.invoke(cli, ["deploy", "--no-wait"])
@@ -350,6 +354,7 @@ class TestCLI:
         )
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=None)
+        mock_instance.aggregator_exists = AsyncMock(return_value=True)
         mock_stack_manager.return_value = mock_instance
 
         # Mock repository for version record and namespace registration
@@ -403,6 +408,7 @@ class TestCLI:
         )
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=None)
+        mock_instance.aggregator_exists = AsyncMock(return_value=True)
         mock_stack_manager.return_value = mock_instance
 
         # Mock repository for version record and namespace registration
@@ -454,6 +460,7 @@ class TestCLI:
         )
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=None)
+        mock_instance.aggregator_exists = AsyncMock(return_value=True)
         mock_stack_manager.return_value = mock_instance
 
         # Mock repository for version record and namespace registration
@@ -513,6 +520,7 @@ class TestCLI:
         )
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=None)
+        mock_instance.aggregator_exists = AsyncMock(return_value=True)
         mock_stack_manager.return_value = mock_instance
 
         # Mock repository for version record and namespace registration
@@ -569,6 +577,7 @@ class TestCLI:
         )
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=None)
+        mock_instance.aggregator_exists = AsyncMock(return_value=True)
         mock_stack_manager.return_value = mock_instance
 
         # Mock repository for version record and namespace registration
@@ -621,6 +630,7 @@ class TestCLI:
         )
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=None)
+        mock_instance.aggregator_exists = AsyncMock(return_value=True)
         mock_stack_manager.return_value = mock_instance
 
         # Mock repository for version record and namespace registration
@@ -675,6 +685,7 @@ class TestCLI:
         )
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=None)
+        mock_instance.aggregator_exists = AsyncMock(return_value=True)
         mock_stack_manager.return_value = mock_instance
 
         # Mock repository for version record and namespace registration
@@ -731,6 +742,7 @@ class TestCLI:
         )
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=None)
+        mock_instance.aggregator_exists = AsyncMock(return_value=True)
         mock_stack_manager.return_value = mock_instance
 
         # Mock repository for version record and namespace registration
@@ -865,6 +877,7 @@ class TestCLI:
         )
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=None)
+        mock_instance.aggregator_exists = AsyncMock(return_value=True)
         mock_stack_manager.return_value = mock_instance
 
         # Mock repository for version record and namespace registration
@@ -926,6 +939,7 @@ class TestCLI:
         )
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=None)
+        mock_instance.aggregator_exists = AsyncMock(return_value=True)
         mock_stack_manager.return_value = mock_instance
 
         mock_repo_instance = Mock()
@@ -985,6 +999,7 @@ class TestCLI:
         )
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=None)
+        mock_instance.aggregator_exists = AsyncMock(return_value=True)
         mock_stack_manager.return_value = mock_instance
 
         mock_repo_instance = Mock()
@@ -1033,6 +1048,7 @@ class TestCLI:
         )
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=None)
+        mock_instance.aggregator_exists = AsyncMock(return_value=True)
         mock_stack_manager.return_value = mock_instance
 
         mock_repo_instance = Mock()
@@ -1074,6 +1090,7 @@ class TestCLI:
         mock_instance.deploy_provisioner_code = AsyncMock()
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=None)
+        mock_instance.aggregator_exists = AsyncMock(return_value=True)
         mock_stack_manager.return_value = mock_instance
 
         mock_repo_instance = Mock()
@@ -1126,6 +1143,7 @@ class TestCLI:
         )
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=None)
+        mock_instance.aggregator_exists = AsyncMock(return_value=True)
         mock_stack_manager.return_value = mock_instance
 
         mock_repo_instance = Mock()
@@ -1178,6 +1196,7 @@ class TestCLI:
         )
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=None)
+        mock_instance.aggregator_exists = AsyncMock(return_value=True)
         mock_stack_manager.return_value = mock_instance
 
         mock_repo_instance = Mock()
@@ -1266,6 +1285,7 @@ class TestCLI:
         mock_instance.delete_stack = AsyncMock(return_value=None)
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=None)
+        mock_instance.aggregator_exists = AsyncMock(return_value=True)
         mock_stack_manager.return_value = mock_instance
 
         result = runner.invoke(cli, ["delete", "--name", "test-stack", "--yes", "--wait"])
@@ -1281,6 +1301,7 @@ class TestCLI:
         mock_instance.delete_stack = AsyncMock(return_value=None)
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=None)
+        mock_instance.aggregator_exists = AsyncMock(return_value=True)
         mock_stack_manager.return_value = mock_instance
 
         result = runner.invoke(cli, ["delete", "--name", "test-stack", "--yes", "--no-wait"])
@@ -1295,6 +1316,7 @@ class TestCLI:
         mock_instance.delete_stack = AsyncMock(return_value=None)
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
         mock_instance.__aexit__ = AsyncMock(return_value=None)
+        mock_instance.aggregator_exists = AsyncMock(return_value=True)
         mock_stack_manager.return_value = mock_instance
 
         result = runner.invoke(
@@ -7294,14 +7316,20 @@ class TestClientMinVersionSurvivesTheCli:
         assert record["client_min_version"] == "0.15.0"
 
     @pytest.mark.parametrize(
-        ("created", "expected"),
-        [(False, "0.14.0"), (True, "0.15.1")],
+        ("created", "exists", "expected"),
+        [
+            (True, True, "0.15.1"),  # a stack this deploy created
+            (False, False, "0.15.1"),  # existing stack with no aggregator: nothing is old
+            (False, True, "0.14.0"),  # existing stack keeps its old aggregator
+            (False, None, "0.14.0"),  # the probe cannot tell
+        ],
     )
     def test_deploy_without_the_aggregator_stamps_only_what_it_deployed(
-        self, mock_dynamodb, runner: CliRunner, created, expected
+        self, mock_dynamodb, runner: CliRunner, created, exists, expected
     ) -> None:
-        """--no-aggregator on an existing stack leaves its aggregator alone, so
-        it must not claim it (#638): the reset_after gate trusts the stamp."""
+        """--no-aggregator on an existing stack leaves any aggregator alone, so
+        it may claim this build only when there is none (#638): the
+        reset_after gate trusts the stamp."""
         import asyncio
 
         asyncio.run(self._seed("0.14.0", "0.0.0"))
@@ -7309,6 +7337,7 @@ class TestClientMinVersionSurvivesTheCli:
         manager.create_stack = AsyncMock(
             return_value={"status": "CREATE_COMPLETE", **({"created": True} if created else {})}
         )
+        manager.aggregator_exists = AsyncMock(return_value=exists)
         with (
             patch("zae_limiter.__version__", "0.15.1"),
             patch("zae_limiter.cli.StackManager", return_value=manager),
@@ -7319,6 +7348,80 @@ class TestClientMinVersionSurvivesTheCli:
             )
         assert result.exit_code == 0, result.output
         assert asyncio.run(self._record())["lambda_version"] == expected
+
+    def test_redeploying_a_no_aggregator_stack_is_the_way_out(
+        self, mock_dynamodb, runner: CliRunner
+    ) -> None:
+        """The #638 fix-round-2 repro, end to end: a v0.14-stamped stack with
+        no aggregator is redeployed by v0.15, then opens with auto_update and
+        stores a reset_after limit — without ever pushing aggregator code,
+        which fails on such a stack (#644)."""
+        import asyncio
+        from datetime import timedelta
+
+        from zae_limiter import Limit
+        from zae_limiter.repository import Repository
+
+        asyncio.run(self._seed("0.14.0", "0.0.0"))
+        manager = self._manager()
+        manager.create_stack = AsyncMock(return_value={"status": "UPDATE_COMPLETE"})
+        manager.aggregator_exists = AsyncMock(return_value=False)
+        with (
+            patch("zae_limiter.__version__", "0.15.1"),
+            patch("zae_limiter.cli.StackManager", return_value=manager),
+        ):
+            result = runner.invoke(
+                cli,
+                ["deploy", "--name", self.TABLE, "--region", "us-east-1", "--no-aggregator"],
+            )
+        assert result.exit_code == 0, result.output
+        assert asyncio.run(self._record())["lambda_version"] == "0.15.1"
+
+        async def use() -> list[str]:
+            repo = await Repository.open("default", stack=self.TABLE, region="us-east-1")
+            try:
+                session = Limit.quota("session", 5, reset_after=timedelta(hours=1))
+                await repo.set_limits("u", [session], resource="r")
+                return [limit.name for limit in await repo.get_limits("u", resource="r")]
+            finally:
+                await repo.close()
+
+        with (
+            patch("zae_limiter.__version__", "0.15.1"),
+            patch("zae_limiter.infra.stack_manager.StackManager") as no_updates,
+        ):
+            assert asyncio.run(use()) == ["session"]
+        no_updates.assert_not_called()
+
+    def test_upgrade_updates_an_unknown_lambda_version_without_force(
+        self, mock_dynamodb, runner: CliRunner
+    ) -> None:
+        """Unknown is not "up to date" (#638): the record was initialized by a
+        client that deployed no Lambda code."""
+        import asyncio
+
+        asyncio.run(self._seed("0.15.0", "0.0.0"))
+
+        async def unknown() -> None:
+            from zae_limiter.repository import Repository
+            from zae_limiter.version import get_schema_version
+
+            repo = Repository(self.TABLE, "us-east-1", None, _skip_deprecation_warning=True)
+            try:
+                await repo.set_version_record(schema_version=get_schema_version())
+            finally:
+                await repo.close()
+
+        asyncio.run(unknown())
+        manager = self._manager()
+        with (
+            patch("zae_limiter.__version__", "0.15.0"),
+            patch("zae_limiter.cli.StackManager", return_value=manager),
+        ):
+            result = runner.invoke(cli, ["upgrade", "--name", self.TABLE, "--region", "us-east-1"])
+        assert result.exit_code == 0, result.output
+        manager.deploy_lambda_code.assert_called_once()
+        assert asyncio.run(self._record())["lambda_version"] == "0.15.0"
 
     def test_upgrade_by_a_client_below_the_minimum_is_refused(
         self, mock_dynamodb, runner: CliRunner

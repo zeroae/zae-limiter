@@ -30,6 +30,40 @@ NAME_TAG_KEY = f"{VERSION_TAG_PREFIX}name"
 TYPE_TAG_KEY = f"{VERSION_TAG_PREFIX}type"
 
 
+async def aggregator_function_exists(
+    session: AioSession,
+    function_name: str,
+    region: str | None,
+    endpoint_url: str | None,
+) -> bool | None:
+    """``StackManager.aggregator_exists`` without a StackManager (#638).
+
+    ``Repository._initialize_version_record`` probes with this, so opening a
+    stack never constructs the infrastructure manager.
+
+    Returns:
+        True if the function exists, False if Lambda says it does not, None
+        if the probe could not tell.
+    """
+    kwargs: dict[str, Any] = {}
+    if region:
+        kwargs["region_name"] = region
+    if endpoint_url:
+        kwargs["endpoint_url"] = endpoint_url
+    try:
+        async with session.create_client("lambda", **kwargs) as lambda_client:
+            await lambda_client.get_function_configuration(FunctionName=function_name)
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ResourceNotFoundException":
+            return False
+        logger.debug("Aggregator probe failed for %s", function_name, exc_info=True)
+        return None
+    except BotoCoreError:
+        logger.debug("Aggregator probe failed for %s", function_name, exc_info=True)
+        return None
+    return True
+
+
 class StackManager:
     """
     Manages CloudFormation stack lifecycle for rate limiter infrastructure.
@@ -718,6 +752,37 @@ class StackManager:
                     stack_name=self.stack_name,
                     reason=(f"Provisioner deployment failed ({error_code}): {error_msg}"),
                 ) from e
+
+    async def aggregator_exists(self, function_name: str | None = None) -> bool | None:
+        """Whether the stack's aggregator Lambda function exists (#638).
+
+        The ``reset_after`` gate trusts the version record's ``lambda_version``,
+        so a deploy that pushes no aggregator code may stamp it only when there
+        is no aggregator to be old. This asks Lambda directly
+        (``GetFunctionConfiguration``, the call ``deploy_lambda_code``'s and
+        ``deploy_provisioner_code``'s ``function_updated`` waiters already make,
+        so a deployer holds the permission) rather than reading the stack's
+        ``EnableAggregator`` parameter: the function is created only when the
+        template's ``DeployAggregatorLambda`` condition also has a role, and
+        what the gate cares about is whether something reads the stream, not
+        what the template intended.
+
+        Args:
+            function_name: Lambda function name (default: {table_name}-aggregator)
+
+        Returns:
+            True if it exists, False if Lambda says it does not, None if the
+            probe could not tell (no permission, no Lambda endpoint, ...) — a
+            caller must then treat the aggregator as possibly present.
+        """
+        if self._session is None:
+            self._session = get_session()
+        return await aggregator_function_exists(
+            self._session,
+            function_name or f"{self.table_name}-aggregator",
+            self.region,
+            self.endpoint_url,
+        )
 
     async def wait_for_esm_ready(
         self,

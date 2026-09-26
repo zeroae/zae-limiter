@@ -343,7 +343,7 @@ class TestResetAfterRefusal:
 
     def test_unknown_lambda_version(self):
         message, auto = reset_after_refusal(True, None)
-        assert "zae-limiter upgrade --force" in message
+        assert "Run 'zae-limiter upgrade' to deploy it" in message
         assert "--no-aggregator, re-run 'zae-limiter deploy'" in message
         assert auto is False
 

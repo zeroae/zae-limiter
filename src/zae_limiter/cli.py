@@ -473,9 +473,8 @@ def deploy(
                 click.echo(f"✓ Stack {status.lower().replace('_', ' ')}")
                 # #638: lambda_version is stamped with this build only when the
                 # stack's Lambdas are provably this build's — a stack created
-                # just now, or one whose aggregator code is pushed below. An
-                # existing stack deployed with --no-aggregator keeps whatever
-                # aggregator it had, so its stamp is left as stored.
+                # just now, one whose aggregator code is pushed below, or one
+                # with no aggregator at all (probed in step 4).
                 lambdas_deployed = result.get("created") is True
 
                 if result.get("stack_id"):
@@ -541,7 +540,12 @@ def deploy(
                     )
                     try:
                         lambda_version: str | None = __version__
-                        if not lambdas_deployed:
+                        # No aggregator code pushed and the stack not new: the
+                        # stamp is still truthful when there is no aggregator
+                        # to be old (every --no-aggregator stack). Only one
+                        # that exists, or a probe that cannot tell, keeps the
+                        # stored value.
+                        if not lambdas_deployed and await manager.aggregator_exists() is not False:
                             stored = await repo.get_version_record()
                             lambda_version = (stored or {}).get("lambda_version")
                         # client_min_version is left as stored (#638): a
@@ -1438,7 +1442,14 @@ def upgrade(
             infra_version = InfrastructureVersion.from_record(version_record)
             compat = check_compatibility(__version__, infra_version)
 
-            if not force and compat.is_compatible and not compat.requires_lambda_update:
+            # An unknown lambda_version (#638: the record was initialized by a
+            # client that deployed no Lambda code) is not "up to date".
+            if (
+                not force
+                and compat.is_compatible
+                and not compat.requires_lambda_update
+                and infra_version.lambda_version
+            ):
                 click.echo()
                 click.echo("Infrastructure is already up to date.")
                 click.echo(f"  Client:   {__version__}")

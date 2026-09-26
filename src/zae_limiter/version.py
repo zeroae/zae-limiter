@@ -292,8 +292,7 @@ def reset_after_refusal(record_found: bool, lambda_version: str | None) -> tuple
             "Refusing to store a reset_after limit: the version record does not say "
             "which Lambda code is deployed (it was initialized by a client that "
             "deployed none), so nothing proves the aggregator reads reset_after "
-            f"(added in {minimum}). Run 'zae-limiter upgrade --force' to deploy it. "
-            + no_aggregator,
+            f"(added in {minimum}). Run 'zae-limiter upgrade' to deploy it. " + no_aggregator,
             False,
         )
     return (

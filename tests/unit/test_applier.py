@@ -619,7 +619,7 @@ class TestResetAfterVersionGate:
     def test_an_unknown_lambda_version_fails_closed(self, client):
         """Initialized by a client that deployed no Lambda code (#638)."""
         self._stamp(client, None)
-        with pytest.raises(VersionMismatchError, match="upgrade --force") as exc_info:
+        with pytest.raises(VersionMismatchError, match="Run 'zae-limiter upgrade'") as exc_info:
             require_reset_after_readers(
                 self._changes({"session": self.SESSION}), self.TABLE, client=client
             )
