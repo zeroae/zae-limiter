@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tests.fixtures.sharding import drain_wcu, materialise, spendable, walk_doublings
+from tests.fixtures.sharding import drain_wcu, materialise, spendable
 from tests.fixtures.windows import FIVE_HOURS_MS, SESSION_10, T0
 from zae_limiter import RateLimiter, RateLimiterUnavailable
 from zae_limiter.schema import (
@@ -53,6 +53,10 @@ async def _stored_tk_on(repo, entity_id, limit_name, shard):
     return int(item[bucket_attr(limit_name, BUCKET_FIELD_TK)]["N"])
 
 
+async def _balances(repo, entity_id, shard_count):
+    return [await _stored_tk_on(repo, entity_id, "session", s) for s in range(shard_count)]
+
+
 async def _first_use(limiter, entity_id, now_ms, consume=1):
     """Configure ``SESSION_10`` for ``entity_id`` and anchor its window on shard 0."""
     repo = limiter._repository
@@ -87,6 +91,12 @@ class TestNewShardJoinsTheWindow:
         item = await _raw(repo, "user-1", 1)
         assert int(item[BUCKET_FIELD_RF]["N"]) == now
         assert int(item[BUCKET_FIELD_VU]["N"]) == T0 + FIVE_HOURS_MS, "vu at the joined end"
+        # Joining a live window keeps the #587 transfer: shard 0 held 9 against
+        # a new share of 5, so 4 moved and the creating acquire spent 1.
+        assert await _balances(repo, "user-1", 2) == [5_000, 3_000]
+        assert await spendable(repo, "user-1", "session", 2, resource=RESOURCE) == 8
+        # And a live-inherit create never fans out: shard 0 keeps its window.
+        assert await _stored_ws_on(repo, "user-1", "session", 0) == T0
 
     async def test_a_new_shard_with_no_sibling_window_opens_one(self, limiter):
         """Shard 0 swept by TTL (possible only for resource- and system-level
@@ -137,6 +147,23 @@ class TestNewShardJoinsTheWindow:
         assert await _stored_ws_on(repo, "user-1", "session", 0) == now
         assert await spendable(repo, "user-1", "session", 2, resource=RESOURCE) == 8
 
+    async def test_a_dead_windows_surplus_is_clamped_and_the_new_shard_gets_its_share(
+        self, limiter
+    ):
+        """Shard 0 still holds 9 from the window that ended. The reclaim clamps
+        it to the new share of 5 and the 4 it takes are thrown away: the new
+        shard starts at exactly its share, never share plus the dead surplus.
+        """
+        repo = limiter._repository
+        await _first_use(limiter, "user-1", T0)
+        assert await repo.bump_shard_count("user-1", RESOURCE, 1) == 2
+
+        now = T0 + FIVE_HOURS_MS + 3_600_000
+        repo._now_ms = lambda: now
+        assert await materialise(limiter, "user-1", "session", 1, resource=RESOURCE) == 1
+        assert await _balances(repo, "user-1", 2) == [5_000, 4_000]
+        assert await _stored_ws_on(repo, "user-1", "session", 1) == now
+
     async def test_a_cascade_parent_shard_inherits_the_parents_window(self, limiter):
         """ADR-139: parent and child anchor independently, so the parent shard's
         ``ws`` is resolved with the PARENT's own read — never reused from the
@@ -171,20 +198,22 @@ class TestNewShardJoinsTheWindow:
         """A duration window is a quota, so PR #594's reclaim-then-grant must
         fire for it too — a mint here would be #587 again for this feature.
         Measured as #594 measures it: sum(max(0, tk)) across shards.
+
+        Shard 0 holds 7 against a new share of 5, so exactly 2 transfer. A mint
+        would create shard 1 at 5 and leave the entity with 9 spendable after
+        one admission instead of 6.
         """
         repo = limiter._repository
-        await _first_use(limiter, "user-1", T0)
+        await _first_use(limiter, "user-1", T0, consume=3)
+        await drain_wcu(repo, "user-1", 0, resource=RESOURCE)
         repo._now_ms = lambda: T0 + 60_000
 
-        _admitted, shard_count, spends = await walk_doublings(
-            limiter, "user-1", "session", generations=1, resource=RESOURCE
-        )
-        assert shard_count == 2
-        [(before, after)] = spends
-        assert after == before
-        # Spent down to 2 against a new share of 5: nothing to transfer, so the
-        # acquire that would have created shard 1 is rejected and writes nothing.
-        assert await _raw(repo, "user-1", 1) == {}
+        before = await spendable(repo, "user-1", "session", 1, resource=RESOURCE)
+        assert before == 7
+        assert await materialise(limiter, "user-1", "session", 0, resource=RESOURCE) == 1
+        assert await _balances(repo, "user-1", 2) == [5_000, 1_000]
+        after = await spendable(repo, "user-1", "session", 2, resource=RESOURCE)
+        assert after == before - 1, "conserved, less the one token admitted"
 
     async def test_shard_zero_being_created_never_reads_a_sibling(self, limiter):
         """Shard 0 is the source of truth: its creation is an entity's first
