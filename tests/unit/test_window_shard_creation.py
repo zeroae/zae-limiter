@@ -125,13 +125,16 @@ class TestNewShardJoinsTheWindow:
         assert await _stored_tk_on(repo, "user-1", "session", 1) == 4_000
         item = await _raw(repo, "user-1", 1)
         assert int(item[BUCKET_FIELD_VU]["N"]) == now + FIVE_HOURS_MS
-        # The create never fans out, and shard 0 is left for its own roll.
-        assert await _stored_ws_on(repo, "user-1", "session", 0) == T0
+        # The new anchor fans out, so the entity runs one window phase, not
+        # two: shard 0 moves onto it (its own window had ended) but keeps its
+        # balance until it applies the roll under its own lock.
+        assert await _stored_ws_on(repo, "user-1", "session", 0) == now
         assert await _stored_tk_on(repo, "user-1", "session", 0) == 0
 
-        # Shard 0 then rolls on its own next pass: the entity is back to 10.
+        # Shard 0 then rolls on its own next pass, into the SAME window.
         repo._now_ms = lambda: now + 1
         assert await materialise(limiter, "user-1", "session", 0, resource=RESOURCE) == 1
+        assert await _stored_ws_on(repo, "user-1", "session", 0) == now
         assert await spendable(repo, "user-1", "session", 2, resource=RESOURCE) == 8
 
     async def test_a_cascade_parent_shard_inherits_the_parents_window(self, limiter):

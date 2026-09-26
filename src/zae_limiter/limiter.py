@@ -2016,6 +2016,7 @@ class RateLimiter:
                 # Get existing bucket from batch result or create new one
                 bucket_key = (eid, resource, limit.name)
                 existing = existing_buckets.get(bucket_key)
+                created_anchor: int | None = None
                 if existing is None:
                     is_new = True
                     # A new shard of a sharded *dripping* bucket starts at its
@@ -2067,6 +2068,21 @@ class RateLimiter:
                     )
                     if window_live:
                         state.window_start_ms = inherited_ws
+                    # A shard N>0 that opens its own window (shard 0's has
+                    # ended, or shard 0 carries none) anchors the entity's
+                    # next window, so it fans out like a rollover: otherwise
+                    # shard 0 later anchors a window of its own at t', the
+                    # fan-out leaves this shard alone, and the entity runs two
+                    # phases. Only siblings whose window has ended move. The
+                    # live-inherit case and a shard-0 create never fan out.
+                    created_anchor = (
+                        state.window_start_ms
+                        if eid_shard != 0
+                        and not any_existing
+                        and limit.reset_after is not None
+                        and not window_live
+                        else None
+                    )
                 else:
                     is_new = False
                     state = existing
@@ -2111,7 +2127,7 @@ class RateLimiter:
                 # moves nothing — `_open_window_if_elapsed` fires only past the
                 # window's end — and a pass that anchors and is then rejected
                 # writes nothing at all (write-on-enter invariant 1).
-                new_ws: int | None = None
+                new_ws: int | None = created_anchor
                 if not is_new:
                     new_ws = self._open_window_if_elapsed(limit, state, now_ms)
                     self._apply_reset_edge(limit, state, now_ms)

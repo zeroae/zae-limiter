@@ -415,6 +415,21 @@ class Lease:
                         rf_ms=_monotonic_rf(now_ms, None, group_entries),
                     )
                 )
+                # A create fans out only when it anchored the entity's next
+                # window: a shard N>0 whose sibling window had ended or was
+                # absent (the limiter sets `_window_start_ms` for exactly that
+                # case). A shard that joined a live window, or a shard 0, has
+                # nothing to propagate — fanning its `now` out mid-window would
+                # drag every sibling's window forward, a reset nobody earned.
+                created = {
+                    e.limit.name: (e._window_start_ms, e.state.reset_after_seconds)
+                    for e in group_entries
+                    if e._window_start_ms is not None and e.state.reset_after_seconds is not None
+                }
+                if created:
+                    window_fanouts[(entity_id, resource, shard_id, first_entry._shard_count)] = (
+                        created
+                    )
             else:
                 consumed: dict[str, int] = {}
                 refill_amounts: dict[str, int] = {}
@@ -522,10 +537,8 @@ class Lease:
                         clear_vu=not boundaries,
                     )
                 )
-                # Only this branch can roll a window. A create stamps `ws` from
-                # its state too, but that is a new shard's anchor, not a
-                # rollover: fanning its `now` out mid-window would drag every
-                # sibling's window forward -- a reset nobody earned. The item's
+                # The rollover fan-out. A create fans out only in the one case
+                # above (it anchored the entity's next window). The item's
                 # own `shard_count` is consulted beside the cached one, which
                 # can lag it; a sibling the cache has not learned about yet
                 # would otherwise keep its old window.

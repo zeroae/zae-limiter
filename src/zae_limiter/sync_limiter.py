@@ -1554,6 +1554,7 @@ class SyncRateLimiter:
             for limit in entity_limits[eid]:
                 bucket_key = (eid, resource, limit.name)
                 existing = existing_buckets.get(bucket_key)
+                created_anchor: int | None = None
                 if existing is None:
                     is_new = True
                     inherited_ws = sibling_ws.get(limit.name)
@@ -1572,6 +1573,14 @@ class SyncRateLimiter:
                     )
                     if window_live:
                         state.window_start_ms = inherited_ws
+                    created_anchor = (
+                        state.window_start_ms
+                        if eid_shard != 0
+                        and (not any_existing)
+                        and (limit.reset_after is not None)
+                        and (not window_live)
+                        else None
+                    )
                 else:
                     is_new = False
                     state = existing
@@ -1580,7 +1589,7 @@ class SyncRateLimiter:
                     state.reset_after_seconds = limit.reset_after_seconds
                 original_tk = state.tokens_milli
                 original_rf = state.last_refill_ms
-                new_ws: int | None = None
+                new_ws: int | None = created_anchor
                 if not is_new:
                     new_ws = self._open_window_if_elapsed(limit, state, now_ms)
                     self._apply_reset_edge(limit, state, now_ms)

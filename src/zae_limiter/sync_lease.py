@@ -302,6 +302,15 @@ class SyncLease:
                         rf_ms=_monotonic_rf(now_ms, None, group_entries),
                     )
                 )
+                created = {
+                    e.limit.name: (e._window_start_ms, e.state.reset_after_seconds)
+                    for e in group_entries
+                    if e._window_start_ms is not None and e.state.reset_after_seconds is not None
+                }
+                if created:
+                    window_fanouts[entity_id, resource, shard_id, first_entry._shard_count] = (
+                        created
+                    )
             else:
                 consumed: dict[str, int] = {}
                 refill_amounts: dict[str, int] = {}
