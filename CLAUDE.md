@@ -1048,33 +1048,36 @@ mints `cp // new_count` per new shard (#587 again).
   refusal re-reads (consistent, no ratchet). A deprecated-constructor repo, which never read
   the record, reads it once and then caches — one RCU per repository against failing every such
   caller closed with no remedy on the same object.
-- **The stamp must be earned.** `_initialize_version_record` stamps `lambda_version` with
-  `_deployed_lambda_version` — set by `_ensure_infrastructure_internal` when `create_stack`
-  returned `created: True` (a new flag: an existing stack also reports `CREATE_COMPLETE`), when
-  aggregator code was pushed, or when **no aggregator function exists and no provisioner is
-  older than this build** (`StackManager.aggregator_exists` / `provisioner_exists`, both
-  backed by module-level `lambda_function_exists`, a `GetFunctionConfiguration` probe:
-  True / False / None = cannot tell; the provisioner counts as not older when its code was
-  pushed in the same run, else it must probe absent). `create_stack` never updates an existing
-  stack, so `deploy --no-provisioner` / `--no-iam` leaves a live pre-v0.15 provisioner that
-  would store a `reset_after` manifest limit as a dripping one — the fix-round-3 hole. The init
-  path probes both functions itself (without constructing a `StackManager`), so an application
-  role without Lambda permissions gets None and records **unknown** (`NULL`). CLI `deploy`
-  follows the same rule, keeping the stored value otherwise — so re-running v0.15 `deploy`
-  **with the provisioner enabled** is the way out for a v0.14-stamped `--no-aggregator` stack
-  (whose `upgrade` / auto-update hit #644). An unknown stamp asks for
-  no Lambda update, so `open(auto_update=True)` neither loops nor pushes code; CLI `upgrade`
-  treats unknown as out of date (no `--force` needed); the gate refuses it naming `upgrade`. The init write is a conditional `PutItem`
-  (`attribute_not_exists(PK)`): it follows an eventually consistent miss, and a stale miss must
-  not clobber a record or its ratcheted minimum; on losing it reads the winner back. Test
-  fixtures that need a writable stack stamp `lambda_version=__version__` explicitly.
+- **The stamp must be earned.** One predicate, `infra.stack_manager.stack_lambdas_current`,
+  decides whether a writer may stamp `lambda_version` with this build: only if the stack was
+  created in this call, **or** both:
+  - the aggregator is current: its code was pushed in this run, or it probes absent; **and**
+  - the provisioner is current: its code was pushed in this run, or it probes absent.
+
+  If either probe cannot tell, the stored stamp is kept (a new record is left **unknown**,
+  `NULL`). Probes (`StackManager.aggregator_exists` / `provisioner_exists`, both backed by
+  module-level `lambda_function_exists`, a `GetFunctionConfiguration` call: True / False /
+  None = cannot tell) run only for a function whose code was not pushed. Writers: CLI `deploy`
+  (keeps the stored value otherwise), `_ensure_infrastructure_internal` (sets
+  `_deployed_lambda_version`), and `_initialize_version_record`, which probes without
+  constructing a `StackManager`, so an application role without Lambda permissions gets None.
+  `create_stack` returns `created: True` only when it created the stack (an existing stack also
+  reports `CREATE_COMPLETE`) and never updates an existing one: `--no-provisioner` / `--no-iam`
+  leave a live pre-v0.15 provisioner, which would store a `reset_after` manifest limit as a
+  dripping one. Re-running v0.15 `deploy` **with the provisioner enabled** is therefore the way
+  out for a v0.14-stamped `--no-aggregator` stack (whose `upgrade` / auto-update hit #644). An
+  unknown stamp asks for no Lambda update, so `open(auto_update=True)` neither loops nor pushes
+  code; CLI `upgrade` treats unknown as out of date (no `--force` needed); the gate refuses it
+  naming `upgrade`. The init write is a conditional `PutItem` (`attribute_not_exists(PK)`): it
+  follows an eventually consistent miss, and a stale miss must not clobber a record or its
+  ratcheted minimum; on losing it reads the winner back. Test fixtures that need a writable
+  stack stamp `lambda_version=__version__` explicitly.
 - **Missing version record fails closed** — nothing proves the readers (`can_auto_update=False`,
   remedy `zae-limiter deploy`).
 - **`--no-aggregator` gets no exemption in the gate** — the record cannot say the aggregator
   is absent. A v0.15-deployed no-aggregator stack passes naturally; a v0.14-deployed one is
-  refused until redeployed by v0.15 with the provisioner enabled, whose probe finds no
-  aggregator and stamps its own version (`upgrade` pushes code to an aggregator that does not
-  exist).
+  refused until redeployed by v0.15 with the provisioner enabled, which earns the stamp under
+  the rule above (`upgrade` pushes code to an aggregator that does not exist).
 - **Ratchet (C).** A write the gate admits raises `client_min_version` to
   `ratcheted_client_min_version()` — `0.15.0`, capped at the writer's own version for a dev
   build — with a conditional `UpdateItem` on the value just read, **never lowering it**; a

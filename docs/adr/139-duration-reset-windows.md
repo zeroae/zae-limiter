@@ -142,21 +142,25 @@ deferred to #640.
   a limit in the call carries `reset_after`; the `acquire()` override trusts the version the
   repository read when opened and re-reads only on a refusal. A missing record, or an unknown
   `lambda_version`, fails closed.
-- **The stamp must be earned.** `lambda_version` records this build only when the call that
-  writes it created the stack, pushed aggregator code, or found **no aggregator function at
-  all** (a `lambda:GetFunctionConfiguration` probe on `{stack}-aggregator` — the function
-  itself rather than the stack's `EnableAggregator` parameter, because the function is what
-  reads the stream and the template creates it only when a role is also available) **and** no
-  provisioner older than it — its code pushed in the same run, or `{stack}-limits-provisioner`
-  probed absent. `deploy` on an existing stack adds and removes no functions (`create_stack`
-  never updates one), so `--no-provisioner` or `--no-iam` leaves a live pre-v0.15 provisioner,
-  which stores a `reset_after` manifest limit as a dripping one. With either function present,
-  or a probe that cannot tell, `open()` of a table with no record records the version as
-  unknown and CLI `deploy` keeps the stored value. An unknown
-  version asks for no Lambda update, so `open(auto_update=True)` neither loops nor pushes code;
-  the remedy is `zae-limiter upgrade`, which treats unknown as out of date. A `--no-aggregator`
-  stack's remedy is re-running `zae-limiter deploy` from `0.15.0` with the provisioner enabled:
-  it finds no aggregator, pushes provisioner code and stamps its own version, where `upgrade`
+- **The stamp must be earned.** `lambda_version` records this build only if the stack was
+  created in this call, **or** both:
+  - the aggregator is current: its code was pushed in this run, or it probes absent; **and**
+  - the provisioner is current: its code was pushed in this run, or it probes absent.
+
+  If either probe cannot tell, the stored stamp is kept (a new record is left unknown). The
+  probe is `lambda:GetFunctionConfiguration` on `{stack}-aggregator` /
+  `{stack}-limits-provisioner` — the functions themselves rather than the stack's
+  `EnableAggregator` parameter, because the function is what does the reading and the template
+  creates it only when a role is also available. The provisioner is in the rule because
+  `deploy` on an existing stack pushes code but adds and removes no functions (`create_stack`
+  never updates one): `--no-provisioner` or `--no-iam` leaves a live pre-v0.15 provisioner,
+  which stores a `reset_after` manifest limit as a dripping one. One predicate,
+  `stack_manager.stack_lambdas_current`, serves CLI `deploy`,
+  `_ensure_infrastructure_internal` and the `open()` init path. An unknown version asks for no
+  Lambda update, so `open(auto_update=True)` neither loops nor pushes code; the remedy is
+  `zae-limiter upgrade`, which treats unknown as out of date. A `--no-aggregator` stack's remedy
+  is re-running `zae-limiter deploy` from `0.15.0` with the provisioner enabled: the aggregator
+  probes absent, the provisioner's code is pushed, and the stamp is earned — where `upgrade`
   would push code to an aggregator that does not exist.
 - **C — `client_min_version` becomes a real gate.** Clients from v0.15.0 on raise
   `VersionMismatchError` when below it (before, `check_compatibility` returned an incompatible

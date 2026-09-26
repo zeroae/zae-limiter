@@ -170,18 +170,23 @@ so nothing is written. Three cases:
 | Version record | Meaning | Remedy |
 |----------------|---------|--------|
 | `lambda_version` older than 0.15.0 (release candidates of 0.15.0 count) | Old Lambdas deployed | `zae-limiter upgrade`, or `Repository.open()` with `auto_update=True` |
-| `lambda_version` unknown (`null`) | The record was initialized by a client that deployed no Lambda code while an aggregator exists (or it could not tell) — e.g. `open()` of a stack built from an older `cfn-template` / `lambda-export` | `zae-limiter upgrade` |
+| `lambda_version` unknown (`null`) | The record was initialized by a client that deployed no Lambda code while an aggregator or provisioner exists (or it could not tell) — e.g. `open()` of a stack built from an older `cfn-template` / `lambda-export` | `zae-limiter upgrade` |
 | Missing | Never initialized | `zae-limiter deploy` from v0.15.0 or later |
 
 On a stack deployed with `--no-aggregator`, `upgrade` cannot help (it pushes code to an
 aggregator that does not exist): re-run `zae-limiter deploy` from v0.15.0 or later instead,
-**with the provisioner enabled** (no `--no-provisioner`, no `--no-iam`). `deploy` on an
-existing stack adds and removes no functions — it only pushes code — so it stamps its own
-version only when no Lambda older than it can remain: it finds no aggregator function
-(`lambda:GetFunctionConfiguration`, which a deployer already holds), and the provisioner either
-got this build's code in the same run or does not exist either. If either function exists
-untouched, or a probe cannot tell, `deploy` keeps the stored stamp: a pre-v0.15 provisioner
-stores a `reset_after` manifest limit as a dripping one, silently.
+**with the provisioner enabled** (no `--no-provisioner`, no `--no-iam`).
+
+`deploy` on an existing stack pushes code but adds and removes no functions, so it stamps its
+own version only if the stack was created in this call, **or** both:
+
+- the aggregator is current: its code was pushed in this run, or it probes absent; **and**
+- the provisioner is current: its code was pushed in this run, or it probes absent.
+
+If either probe cannot tell, `deploy` keeps the stored stamp. The probe is
+`lambda:GetFunctionConfiguration`, which a deployer already holds. The provisioner matters as
+much as the aggregator: a pre-v0.15 provisioner left live stores a `reset_after` manifest limit
+as a dripping one, silently.
 
 An unknown `lambda_version` also turns off Lambda auto-update: `Repository.open()` has no
 version to compare, so it never pushes code. `zae-limiter upgrade` (no `--force` needed) deploys
