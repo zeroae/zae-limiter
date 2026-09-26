@@ -14,13 +14,34 @@ session = Limit.quota("session", 10_000, reset_after=timedelta(hours=5))
 
 Two callers that first use it at 09:00 and 14:30 get windows ending at 14:00 and 19:30.
 
-!!! warning "Upgrade every client and the aggregator before storing one"
-    `reset_after` is new in v0.15.0, and nothing checks versions for you. A client older than
-    v0.15.0 cannot read a level that stores a `reset_after` limit: with
-    `on_unavailable="block"` every `acquire()` against that level raises
-    `RateLimiterUnavailable`, and with `on_unavailable="allow"` it is admitted **with no
-    limiting at all**, including the other limits on that level. An older aggregator Lambda
-    treats the quota as a dripping limit and grants each shard it pre-creates a fresh share.
+!!! warning "Upgrade every client before storing one; the Lambdas are checked for you"
+    `reset_after` is new in v0.15.0.
+
+    **The aggregator is enforced.** `set_limits()`, `set_resource_defaults()`,
+    `set_system_defaults()` and `zae-limiter limits apply` refuse to store a `reset_after`
+    limit with `VersionMismatchError` until the stack's version record says its Lambdas are
+    v0.15.0 or newer. An older aggregator would treat the quota as a dripping limit and grant
+    each shard it pre-creates a fresh share. `Repository.open()` updates the Lambdas for you;
+    after `Repository.connect()` or `auto_update=False`, run `zae-limiter upgrade` first. The
+    check costs one strongly consistent read, and only on a write that carries `reset_after`.
+
+    **Clients older than v0.15.0 are not enforced.** A successful write raises the stack's
+    `client_min_version` to 0.15.0, and every client from v0.15.0 on refuses to start below it
+    — but v0.14 ignores that field. A v0.14 client cannot read a level that stores a
+    `reset_after` limit: with `on_unavailable="block"` every `acquire()` against that level
+    raises `RateLimiterUnavailable`, and with `on_unavailable="allow"` it **fails open** — each
+    acquire is admitted with no limiting at all, including the other limits on that level.
+
+    **Never run a v0.14 CLI against a stack that holds one.** The check runs only at write
+    time, and v0.14 can undo it afterwards:
+
+    - `zae-limiter deploy` or `upgrade --force` from v0.14 puts the v0.14 Lambdas back and
+      stamps `lambda_version = 0.14.0`.
+    - A v0.14 `upgrade` treats the raised minimum as "not up to date", so it too downgrades the
+      Lambdas — and resets `client_min_version` to `0.0.0`.
+
+    The next v0.15 `Repository.open()` re-upgrades the Lambdas; the minimum comes back only
+    with the next `reset_after` write.
 
 ## Which one do I want?
 

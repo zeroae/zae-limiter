@@ -114,13 +114,46 @@ Then follow the migration procedures in the [Migration Guide](../migrations.md#s
 
 ### Minimum Client Version Error
 
-**Cause:** Infrastructure requires a newer client version.
+**Cause:** Infrastructure requires a newer client version. From v0.15.0, `Repository.open()`,
+`connect()`, `builder().build()` and every CLI command raise `VersionMismatchError` (with
+`can_auto_update=False`) when the client is below the version record's `client_min_version`:
+
+```
+VersionMismatchError: Version mismatch: client=0.15.0, schema=0.10.0, lambda=0.16.0.
+Client version 0.15.0 is below minimum required version 0.16.0. Please upgrade.
+```
+
+The minimum is raised automatically: storing a `reset_after` limit raises it to 0.15.0
+([Session Quotas](../guide/session-quotas.md)). `zae-limiter deploy`, `zae-limiter upgrade` and
+a Lambda auto-update keep the stored minimum; they never lower it.
+
+**Limits:**
+
+- The check runs when a repository is opened. A process opened before the minimum was raised
+  keeps running until it restarts.
+- Clients older than v0.15.0 ignore the field entirely.
 
 **Solution:** Upgrade the client library:
 
 ```bash
 pip install --upgrade zae-limiter
 ```
+
+### Refused `reset_after` write
+
+**Cause:** `set_limits()`, `set_resource_defaults()`, `set_system_defaults()` or
+`zae-limiter limits apply` was given a `reset_after` limit while the version record's
+`lambda_version` is older than 0.15.0 (or the record is missing). An older aggregator would
+over-admit the limit, so nothing is written.
+
+```
+VersionMismatchError: Version mismatch: client=0.15.0, schema=0.10.0, lambda=0.14.0.
+Refusing to store a reset_after limit: the deployed Lambdas predate 0.15.0 and would
+misread it (the aggregator over-admits it). Run 'zae-limiter upgrade' first, ...
+```
+
+**Solution:** `zae-limiter upgrade --name <name>`, or open the stack with
+`Repository.open()` (which updates the Lambdas), then retry the write.
 
 ## Upgrade Procedure
 

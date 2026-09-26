@@ -37,7 +37,10 @@ Client 1.2.0 + Min Client 1.3.0 = Incompatible (upgrade client)
 
 **Minor/patch version mismatch**: Compatible. Client and infrastructure can operate together.
 
-**Minimum client version**: Infrastructure can require a minimum client version. Older clients are rejected.
+**Minimum client version**: Infrastructure can require a minimum client version. Clients from
+v0.15.0 on raise `VersionMismatchError` below it (earlier clients ignore it). Deploys, upgrades
+and Lambda auto-updates keep the stored minimum; storing a `reset_after` limit raises it to
+0.15.0 (#638).
 
 ### Checking Compatibility
 
