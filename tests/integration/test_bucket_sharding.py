@@ -1331,3 +1331,103 @@ class TestNewShardJoinsTheWindow:
         assert await repo.get_shard_window_starts(entity_id, "gpt-4", ["sess.v1"]) == {
             "sess.v1": t0
         }
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+class TestConcurrentWindowOpeners:
+    """Two clients cross the same window boundary at once, on different shards.
+
+    Each opens a window on its own shard and fans it out. The fan-out's floor
+    (`ws <= new_ws - rsa`) is what stops the later opener from moving the
+    earlier opener's shard onto its value, which would read `ws > rf` there and
+    reset it a second time inside one window. Unit tests pin the condition
+    sequentially; this runs the two acquires truly concurrently against a real
+    conditional-write backend, so either write order can land.
+    """
+
+    ROUNDS = 3
+    CAPACITY = 4_000
+    SHARDS = TestDurationWindowRolloverFanOut.SHARDS
+    WINDOW_MS = TestDurationWindowRolloverFanOut.WINDOW_MS
+
+    @staticmethod
+    def _force_shard(monkeypatch, repo, shard: int) -> None:
+        """Pin one repository's draws to ``shard`` (a per-instance pin, unlike
+        patching `random`, so two concurrent acquires can draw differently)."""
+        real = type(repo).select_shard.__get__(repo)
+
+        def select(entity_id, resource, shard_id=None, shard_count=None):
+            return real(entity_id, resource, shard if shard_id is None else shard_id, shard_count)
+
+        monkeypatch.setattr(repo, "select_shard", select)
+
+    async def test_concurrent_openers_admit_one_allowance(
+        self, localstack_limiter, shared_minimal_stack, unique_namespace, monkeypatch, unique_name
+    ):
+        import asyncio
+
+        from tests.fixtures.repositories import make_test_repo
+        from zae_limiter import RateLimiter
+
+        seeder = TestDurationWindowRolloverFanOut()
+        parent_b, repo_b = await make_test_repo(shared_minimal_stack, unique_namespace)
+        limiter_a = localstack_limiter
+        repo_a = limiter_a._repository
+        limiter_b = RateLimiter(repository=repo_b)
+        try:
+            for round_ in range(self.ROUNDS):
+                entity_id = f"window-race-{round_}-{unique_name}"
+                t0 = int(time.time() * 1000)
+                await seeder._seed(limiter_a, entity_id, t0)
+                repo_b._entity_cache[(repo_b._namespace_id, entity_id)] = (
+                    False,
+                    None,
+                    {"gpt-4": self.SHARDS},
+                )
+
+                # Openers a few ms apart, both past the window's end.
+                open_a = t0 + self.WINDOW_MS + 100
+                open_b = open_a + 5
+                monkeypatch.setattr(repo_a, "_now_ms", lambda v=open_a: v)
+                monkeypatch.setattr(repo_b, "_now_ms", lambda v=open_b: v)
+                self._force_shard(monkeypatch, repo_a, 1)
+                self._force_shard(monkeypatch, repo_b, 2)
+
+                async def draw(limiter):
+                    async with limiter.acquire(entity_id, "gpt-4", {"session": 1}):
+                        pass
+
+                await asyncio.gather(draw(limiter_a), draw(limiter_b))
+                admitted = 2
+
+                ws_attr = bucket_attr("session", "ws")
+                starts = [
+                    int((await seeder._raw(repo_a, entity_id, s))[ws_attr]["N"])
+                    for s in range(self.SHARDS)
+                ]
+                assert set(starts) <= {open_a, open_b}, starts
+
+                # Now draw every shard, the openers' own included: a shard reset
+                # twice in one window would refund its spend here.
+                later = open_b + 50
+                monkeypatch.setattr(repo_a, "_now_ms", lambda v=later: v)
+                for shard in range(self.SHARDS):
+                    self._force_shard(monkeypatch, repo_a, shard)
+                    await draw(limiter_a)
+                    admitted += 1
+
+                balances = [
+                    int(
+                        (await seeder._raw(repo_a, entity_id, s))[bucket_attr("session", "tk")]["N"]
+                    )
+                    for s in range(self.SHARDS)
+                ]
+                left = sum(max(0, b) for b in balances) // 1000
+                assert admitted + left == self.CAPACITY, (
+                    round_,
+                    admitted,
+                    balances,
+                )
+        finally:
+            await parent_b.close()
