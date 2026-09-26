@@ -7,6 +7,8 @@ for a quota, a single `max` across both) and the ADR-136 boundary that decides
 which buckets reach the formula at all.
 """
 
+from datetime import timedelta
+
 import pytest
 
 from zae_limiter import RateLimiter, schema
@@ -104,6 +106,39 @@ class TestQuotaTtlHorizon:
         assert schema.calculate_bucket_ttl_seconds([utc], 7) == schema.calculate_bucket_ttl_seconds(
             [kolkata], 7
         )
+
+
+class TestDurationWindowTtlHorizon:
+    """A `reset_after` quota's horizon is the window itself (ADR-139).
+
+    The other spelling of the reset half of ADR-137: no `reset_schedule`
+    means the pre-existing `_recovery_seconds` branch (`min()` over
+    `limit.reset_schedule`) had nothing to scan and raised
+    `ValueError: min() iterable argument is empty` for every session quota
+    that reached a resource- or system-level TTL calculation — reachable as
+    soon as the provisioner's `_decode_limits` (or a direct `set_limits()`
+    call at a level that expires) started round-tripping `reset_after`.
+    """
+
+    def test_the_window_length_is_the_horizon(self):
+        window = Limit.quota("session", 10_000, reset_after=timedelta(hours=5))
+        assert schema.calculate_bucket_ttl_seconds([window], 7) == 5 * HOUR * 7
+
+    def test_horizon_ignores_capacity(self):
+        small = Limit.quota("q", 10, reset_after=timedelta(minutes=1))
+        huge = Limit.quota("q", 10_000_000, reset_after=timedelta(minutes=1))
+        assert schema.calculate_bucket_ttl_seconds([small], 7) == 60 * 7
+        assert schema.calculate_bucket_ttl_seconds([huge], 7) == 60 * 7
+
+    def test_mixed_item_max_spans_a_drip_and_a_duration_quota(self):
+        drip = Limit.per_minute("rpm", 100)  # 60s
+        window = Limit.quota("session", 10_000, reset_after=timedelta(hours=5))  # 18000s
+        assert schema.calculate_bucket_ttl_seconds([drip, window], 7) == 5 * HOUR * 7
+
+    def test_a_calendar_quota_beside_a_duration_quota_takes_the_slower(self):
+        calendar = Limit.quota("rpd", 10_000, cron="0 0 * * *")  # DAY
+        window = Limit.quota("session", 10_000, reset_after=timedelta(hours=1))  # HOUR
+        assert schema.calculate_bucket_ttl_seconds([calendar, window], 7) == DAY * 7
 
 
 class TestMixedBucketTakesTheMax:
@@ -378,3 +413,24 @@ class TestQuotaReachesTheWritePaths:
         # The fan-out stamps from its own clock, so bound rather than pin it.
         now_seconds = ttl_repo._now_ms() // 1000
         assert now_seconds + DAY * 7 - 60 <= int(item["ttl"]["N"]) <= now_seconds + DAY * 7 + 60
+
+    async def test_sync_bucket_params_stamps_a_duration_window_ttl(self, ttl_repo):
+        # Task 9 (#626): the param sync's TTL branch reconstructs a `Limit`
+        # from the resolved config, and a session quota round-trips through
+        # `reset_after` rather than `reset_schedule` — the #532-shaped crash
+        # this pins is `ValueError: min() iterable argument is empty` out of
+        # `schema._recovery_seconds`, not `ZeroDivisionError`.
+        window = Limit.quota("session", 1000, reset_after=timedelta(hours=1))
+        await ttl_repo.set_resource_defaults("gpt-4", [window])
+        await ttl_repo.set_limits("u-sync2", [Limit.per_minute("rpm", 60)], resource="gpt-4")
+        await _acquire_once(ttl_repo, "u-sync2", "gpt-4", "rpm")
+        assert "ttl" not in await _bucket_item(ttl_repo, "u-sync2", "gpt-4")
+
+        limiter = RateLimiter(repository=ttl_repo)
+        async with limiter:
+            await limiter.delete_limits("u-sync2", resource="gpt-4")
+
+        item = await _bucket_item(ttl_repo, "u-sync2", "gpt-4")
+        assert "ttl" in item
+        now_seconds = ttl_repo._now_ms() // 1000
+        assert now_seconds + HOUR * 7 - 60 <= int(item["ttl"]["N"]) <= now_seconds + HOUR * 7 + 60
