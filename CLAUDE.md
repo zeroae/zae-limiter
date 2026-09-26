@@ -303,6 +303,27 @@ properties; `limits_cli._SCHEDULE_KEYS` and `handler._CFN_SCHEDULE_KEYS` are exa
 pinned by a unit test, and cannot share a module because the provisioner zip carries only the
 four-file `zae_limiter` stub.
 
+**`reset_after_seconds` (ADR-139):** A third recovery spelling on any `limits.<name>` mapping,
+at every level — a window anchored to the entity's own **first use** rather than to fixed
+calendar instants. Mutually exclusive with `reset_schedule` (a limit has one recovery
+mechanism); like `reset_schedule`, it flips the `refill_amount` shorthand default from
+`capacity` to **0**, so the natural manifest names only the allowance and the window:
+
+```yaml
+resources:
+  claude-sonnet:
+    limits:
+      session:
+        capacity: 10000
+        reset_after_seconds: 18000   # 5h, from each entity's own first use
+```
+
+Round-trips through the CloudFormation `Custom::ZaeLimiterLimits` resource as a
+`ResetAfterSeconds` property (`handler._CFN_LIMIT_OPTIONAL_KEYS`); `limits_cli._limits_to_cfn`
+emits it from the same key. Spelled `..._seconds` and typed `int` in the manifest and in
+CloudFormation because neither carries a type, matching `Limit.reset_after_seconds` rather than
+the Python API's `Limit.reset_after: timedelta`.
+
 **`disabled` (ADR-125):** Optional tri-state boolean on `resources.<name>` and
 `entities.<id>.resources.<name>` entries (omit to inherit; `true`/`false` to set explicitly).
 Not supported on `system`. Round-trips through the generated CloudFormation

@@ -1001,7 +1001,13 @@ class TestLimitsCfnTemplateSchedules:
                                 "rpd": {
                                     "capacity": 99999,
                                     "reset_schedule": [{"cron": "30 4 * * MON", "tz": "UTC"}],
-                                }
+                                },
+                                # ADR-139: the third recovery spelling, alongside
+                                # the `reset_schedule` case above.
+                                "session": {
+                                    "capacity": 10000,
+                                    "reset_after_seconds": 18000,
+                                },
                             }
                         }
                     }
@@ -1014,3 +1020,51 @@ class TestLimitsCfnTemplateSchedules:
             _cfn_properties_to_manifest(self._props(source))
         ).to_dict()
         assert via_cfn == direct
+
+
+class TestLimitsCfnTemplateDurationWindow:
+    """`reset_after_seconds` (ADR-139) -> CFN `ResetAfterSeconds`, mirroring
+    `TestLimitsCfnTemplateSchedules` for the third recovery spelling."""
+
+    def _render(self, yaml_content: dict) -> dict:
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            yaml.dump(yaml_content, f)
+            f.flush()
+
+            result = CliRunner().invoke(
+                cli,
+                ["limits", "cfn-template", "--name", "test-app", "-f", f.name],
+            )
+        assert result.exit_code == 0, result.output
+        parsed: dict = yaml.safe_load(result.output)
+        return parsed
+
+    def _resource_limits(self, yaml_content: dict, resource: str = "claude-sonnet") -> dict:
+        props = self._render(yaml_content)["Resources"]["TenantLimits"]["Properties"]
+        limits: dict = props["Resources"][resource]["Limits"]
+        return limits
+
+    def test_emits_reset_after_seconds(self):
+        limits = self._resource_limits(
+            {
+                "namespace": "test-ns",
+                "resources": {
+                    "claude-sonnet": {
+                        "limits": {"session": {"capacity": 10000, "reset_after_seconds": 18000}}
+                    }
+                },
+            }
+        )
+        assert limits["session"] == {"Capacity": 10000, "ResetAfterSeconds": 18000}
+
+    def test_omits_reset_after_seconds_when_absent(self):
+        """Absent means "no window"; an ordinary rate limit's template is
+        unchanged by this feature."""
+        limits = self._resource_limits(
+            {
+                "namespace": "test-ns",
+                "resources": {"claude-sonnet": {"limits": {"rpm": {"capacity": 1000}}}},
+            }
+        )
+        assert limits["rpm"] == {"Capacity": 1000}
+        assert "ResetAfterSeconds" not in limits["rpm"]

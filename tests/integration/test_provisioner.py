@@ -416,6 +416,67 @@ class TestHandlerIntegration:
         assert "gpt-4" in state.get("managed_resources", [])
 
     @pytest.mark.asyncio
+    async def test_apply_stamps_a_duration_window_onto_a_live_bucket(
+        self, test_repo, localstack_limiter
+    ):
+        """`reset_after_seconds` (ADR-139, plan Task 13) must reach a live
+        bucket's `rsa` attribute through the entity-level bucket-param-sync
+        fan-out, exactly as `schedule`/`reset_schedule` already do.
+
+        This is the direct regression test for the bug the Task 13 rename
+        fixed: `Change.data["limits"]` (built from `LimitDecl.to_dict()`) and
+        `bucket_sync._decode_limits`'s output must agree on the dict key
+        `build_bucket_param_update` reads, or an entity-level manifest apply
+        of a session quota silently drops the window on every existing
+        bucket (the #487 class of bug, for this field). Before the fix, this
+        assertion failed with `reset_after_seconds is None`.
+        """
+        # A bucket already exists for a "session" limit, created via the
+        # Python API with a shorter window.
+        from datetime import timedelta
+
+        await test_repo.set_limits(
+            "user-1",
+            [Limit.quota("session", 10_000, reset_after=timedelta(hours=1))],
+            resource="gpt-4",
+        )
+        async with localstack_limiter.acquire("user-1", "gpt-4", {"session": 1}):
+            pass
+
+        buckets = await test_repo.get_buckets("user-1", resource="gpt-4")
+        assert buckets, "a bucket must exist before the apply for the fan-out to have work"
+        assert buckets[0].reset_after_seconds == 3600
+
+        # An entity-level manifest apply widens the window to 6h.
+        manifest = {
+            "namespace": "test",
+            "entities": {
+                "user-1": {
+                    "resources": {
+                        "gpt-4": {
+                            "limits": {
+                                "session": {"capacity": 20_000, "reset_after_seconds": 21_600}
+                            }
+                        }
+                    }
+                }
+            },
+        }
+        event = self._cli_event("apply", test_repo.table_name, test_repo._namespace_id, manifest)
+        result = _handle_cli(event, None)
+        assert result["errors"] == []
+
+        # 1. Readable via the Python API.
+        entity_limits = await test_repo.get_limits("user-1", "gpt-4")
+        session = next(lim for lim in entity_limits if lim.name == "session")
+        assert session.capacity == 20_000
+        assert session.reset_after == timedelta(hours=6)
+
+        # 2. The fan-out re-stamped the LIVE bucket, not just config.
+        buckets = await test_repo.get_buckets("user-1", resource="gpt-4")
+        assert buckets[0].reset_after_seconds == 21_600
+
+    @pytest.mark.asyncio
     async def test_undecodable_stored_schedule_still_records_state(self, test_repo):
         """#563: a post-commit fan-out failure must not lose `#PROVISIONER`.
 

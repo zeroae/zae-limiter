@@ -440,6 +440,135 @@ class TestDripAndResetAcrossWindows:
         assert decl.schedule[0].refill_amount == 500
 
 
+# --- Duration-window quotas (ADR-139, plan Task 13) -------------------------
+
+
+class TestDurationWindowManifest:
+    """`reset_after_seconds` — the third recovery spelling, alongside
+    `reset_schedule` (#222, ADR-135). A window anchored to the entity's own
+    first use rather than to a fixed calendar instant (ADR-139)."""
+
+    def test_manifest_parses_a_duration_window(self):
+        decl = LimitDecl.from_dict({"capacity": 10_000, "reset_after_seconds": 18_000})
+        assert decl.capacity == 10_000
+        assert decl.reset_after_seconds == 18_000
+        # ADR-137: a reset flips the refill_amount shorthand default to 0, so
+        # the natural manifest — allowance plus window, nothing else — is the
+        # valid one.
+        assert decl.refill_amount == 0
+
+    def test_an_unscheduled_limit_has_no_duration_window(self):
+        decl = LimitDecl.from_dict({"capacity": 10_000})
+        assert decl.reset_after_seconds is None
+
+    def test_manifest_rejects_both_reset_spellings(self):
+        with pytest.raises(ValueError, match="one recovery mechanism"):
+            LimitDecl.from_dict(
+                {
+                    "capacity": 10_000,
+                    "reset_after_seconds": 18_000,
+                    "reset_schedule": [{"cron": "0 0 * * *"}],
+                }
+            )
+
+    @pytest.mark.parametrize("bad", [0, -1, 1.5, True, "5h"])
+    def test_manifest_rejects_a_non_integral_window(self, bad):
+        """#569's whole-number rule and #564's finiteness rule, both of which
+        the schedule absolutes already carry. `True` is rejected even though
+        `bool` is an `int` subclass: a window of `true` is a mistake, not one
+        second."""
+        with pytest.raises(ValueError, match="reset_after_seconds"):
+            LimitDecl.from_dict({"capacity": 10_000, "reset_after_seconds": bad})
+
+    def test_manifest_rejects_a_window_above_the_magnitude_bound(self):
+        from zae_limiter.schedule import MAX_PERIOD_SECONDS
+
+        with pytest.raises(ValueError, match="reset_after_seconds"):
+            LimitDecl.from_dict({"capacity": 10_000, "reset_after_seconds": MAX_PERIOD_SECONDS + 1})
+
+    def test_a_window_beside_a_schedule_entry_reintroducing_the_drip_is_rejected(self):
+        """ADR-137 is a rule about the limit, not about one field — the same
+        check that already covers `reset_schedule` (`TestDripAndResetAcrossWindows`)
+        must also cover this spelling, since the `resets` discriminator now
+        covers both."""
+        with pytest.raises(ValueError, match="drips or resets"):
+            LimitDecl.from_dict(
+                {
+                    "capacity": 10_000,
+                    "reset_after_seconds": 18_000,
+                    "schedule": [{"cron": "* * * * SAT,SUN", "refill_amount": 500}],
+                }
+            )
+
+    def test_a_scale_entry_beside_a_window_is_legal(self):
+        """`scale` and the absolute overrides stay legal beside a window,
+        exactly as beside a `reset_schedule` — scaling a zero rate leaves it
+        zero."""
+        decl = LimitDecl.from_dict(
+            {
+                "capacity": 10_000,
+                "reset_after_seconds": 18_000,
+                "schedule": [{"cron": "* * * * SAT,SUN", "scale": 0.5}],
+            }
+        )
+        assert decl.schedule[0].scale == 0.5
+
+
+class TestDurationWindowSurvivesToChangeData:
+    """Mirrors `TestScheduleSurvivesToChangeData` for `reset_after_seconds`."""
+
+    def test_to_dict_round_trips_a_duration_window(self):
+        decl = LimitDecl.from_dict({"capacity": 10_000, "reset_after_seconds": 18_000})
+        assert decl.to_dict()["reset_after_seconds"] == 18_000
+        assert LimitDecl.from_dict(decl.to_dict()) == decl
+
+    def test_to_dict_omits_reset_after_seconds_when_unset(self):
+        decl = LimitDecl.from_dict({"capacity": 10_000})
+        assert "reset_after_seconds" not in decl.to_dict()
+
+    def test_change_data_carries_the_duration_window(self):
+        from zae_limiter_provisioner.differ import compute_diff
+
+        manifest = LimitsManifest.from_dict(
+            {
+                "namespace": "default",
+                "entities": {
+                    "user-1": {
+                        "resources": {
+                            "claude-sonnet": {
+                                "limits": {
+                                    "session": {"capacity": 10_000, "reset_after_seconds": 18_000}
+                                }
+                            }
+                        }
+                    }
+                },
+            }
+        )
+        changes = compute_diff(manifest, previous={})
+        entity_change = next(c for c in changes if c.level == "entity")
+        session = entity_change.data["limits"]["session"]
+        assert session["reset_after_seconds"] == 18_000
+        assert session["refill_amount"] == 0
+
+    def test_change_data_is_json_serialisable(self):
+        import json
+
+        from zae_limiter_provisioner.differ import compute_diff
+
+        manifest = LimitsManifest.from_dict(
+            {
+                "namespace": "default",
+                "resources": {
+                    "claude-sonnet": {
+                        "limits": {"session": {"capacity": 10_000, "reset_after_seconds": 18_000}}
+                    }
+                },
+            }
+        )
+        json.dumps([c.data for c in compute_diff(manifest, previous={})])
+
+
 class TestSchedulesAtEveryConfigLevel:
     """The manifest carries limits at three levels; the rule holds at each."""
 

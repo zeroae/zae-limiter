@@ -1419,6 +1419,60 @@ class TestCfnScalarCoercion:
         assert set(_CFN_SCHEDULE_COERCERS) == set(_CFN_SCHEDULE_KEYS)
 
 
+class TestCfnDurationWindow:
+    """`ResetAfterSeconds` (ADR-139, plan Task 13) — the third recovery
+    spelling's CloudFormation round trip, mirroring the `RefillAmount`/
+    `RefillPeriod` coverage above."""
+
+    def test_cfn_round_trip_of_a_duration_window(self):
+        """CloudFormation delivers EVERY property as a string (#554), so the
+        coercer is not optional here."""
+        from zae_limiter_provisioner.handler import _CFN_LIMIT_OPTIONAL_KEYS
+
+        manifest_key, coercer = _CFN_LIMIT_OPTIONAL_KEYS["ResetAfterSeconds"]
+        assert manifest_key == "reset_after_seconds"
+        assert coercer("18000", "ResetAfterSeconds") == 18_000
+        import pytest
+
+        with pytest.raises(ValueError, match="whole number"):
+            coercer("5h", "ResetAfterSeconds")
+
+    def test_reset_after_seconds_reaches_the_manifest_shape(self):
+        result = _cfn_limits_to_manifest(
+            {"session": {"Capacity": "10000", "ResetAfterSeconds": "18000"}}
+        )
+        assert result["session"]["reset_after_seconds"] == 18_000
+
+    def test_empty_string_drops_reset_after_seconds(self):
+        """Same optional-property rule as `RefillAmount`/`RefillPeriod`."""
+        result = _cfn_limits_to_manifest({"rpm": {"Capacity": "500", "ResetAfterSeconds": ""}})
+        assert result == {"rpm": {"capacity": 500}}
+
+    def test_a_bool_reset_after_seconds_is_rejected(self):
+        import pytest
+
+        with pytest.raises(ValueError, match="boolean"):
+            _cfn_limits_to_manifest({"session": {"Capacity": "1", "ResetAfterSeconds": True}})
+
+    def test_cli_and_handler_round_trip_reset_after_seconds(self):
+        """`limits_cli._limits_to_cfn` (the generator) and
+        `handler._cfn_limits_to_manifest` (the reader) must agree on the
+        property name — the same role `_SCHEDULE_KEYS`/`_CFN_SCHEDULE_KEYS`
+        play for schedule entries, but `_CFN_LIMIT_OPTIONAL_KEYS` has no
+        peer table in `limits_cli` (`_limits_to_cfn`'s branch is hand-coded),
+        so the round trip itself is the test rather than a second key table."""
+        from zae_limiter.limits_cli import _limits_to_cfn
+
+        manifest_limits = {"session": {"capacity": 10_000, "reset_after_seconds": 18_000}}
+        cfn = _limits_to_cfn(manifest_limits)
+        assert cfn["session"]["ResetAfterSeconds"] == 18_000
+
+        # CloudFormation stringifies every scalar (#554) before the Lambda
+        # ever sees it.
+        stringified = {"session": {"Capacity": "10000", "ResetAfterSeconds": "18000"}}
+        assert _cfn_limits_to_manifest(stringified)["session"]["reset_after_seconds"] == 18_000
+
+
 @patch("zae_limiter_provisioner.handler.urllib.request.urlopen")
 @patch("zae_limiter_provisioner.applier.boto3")
 @patch("zae_limiter_provisioner.handler.boto3")
