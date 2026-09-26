@@ -2018,6 +2018,7 @@ class SyncRepository:
         rf_ms: int | None = None,
         window_lengths: dict[str, int] | None = None,
         seeds: dict[str, BucketState] | None = None,
+        seed_shard_count: int | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -2095,6 +2096,19 @@ class SyncRepository:
                 older client. Explicit ``SET`` rather than ``if_not_exists``:
                 the guard makes it exact, and the same attribute cannot also
                 be ``ADD``ed in one expression (#168).
+            seed_shard_count: The shard count a **quota** seed's share was
+                sized for, or ``None`` when no quota is seeded. Pins the write
+                on ``attribute_not_exists(shard_count) OR shard_count <=
+                :sized``: a quota never drips, so a share sized for a count
+                a doubling has since overtaken would be spent by the fast
+                path (a pure ``ADD``) before any refill clamp trimmed it — the
+                aggregator's proactive doubling can land between this pass's
+                read and its write without moving ``rf`` (#633). A lost pin
+                falls to the consumption-only retry, which never seeds a
+                quota, and the next pass reads the new count. ``<=`` rather
+                than ``=``: a share sized for a *higher* count (read off a
+                sibling the item has not caught up with) is the smaller one,
+                so only growth past it is unsafe.
         """
         add_parts: list[str] = []
         set_parts: list[str] = ["#rf = :now"]
@@ -2168,6 +2182,10 @@ class SyncRepository:
             condition_parts.append(
                 f"(attribute_not_exists(#sp{j}) OR attribute_not_exists(#st{j}))"
             )
+        if seed_shard_count is not None:
+            attr_names["#pinsc"] = "shard_count"
+            attr_values[":pinsc"] = {"N": str(seed_shard_count)}
+            condition_parts.append("(attribute_not_exists(#pinsc) OR #pinsc <= :pinsc)")
         if seeded_tz is not None:
             set_parts.append("#stz = :stz")
             attr_names["#stz"] = schema.BUCKET_FIELD_SCHED_TZ

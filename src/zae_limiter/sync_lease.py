@@ -400,6 +400,14 @@ class SyncLease:
                         windows={**seed_windows, **windows},
                         window_lengths=window_lengths,
                         seeds=seeds,
+                        seed_shard_count=max(
+                            (
+                                e.state.shard_count
+                                for e in group_entries
+                                if e._seed and e.limit.is_quota
+                            ),
+                            default=None,
+                        ),
                         rf_ms=_monotonic_rf(now_ms, expected_rf, group_entries),
                         clear_vu=not boundaries,
                     )

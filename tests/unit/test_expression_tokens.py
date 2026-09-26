@@ -216,6 +216,20 @@ class TestCompositeBuilders:
         assert_expression_safe(update)
         assert " ADD " not in update["UpdateExpression"]
 
+    def test_normal_with_a_pinned_quota_seed(self) -> None:
+        update = _repo().build_composite_normal(
+            "user-1",
+            "api",
+            consumed={"rpm": 1000},
+            refill_amounts={},
+            now_ms=2_000,
+            expected_rf=1_000,
+            seeds={HYPHENATED: self._seed_states()[HYPHENATED]},
+            seed_shard_count=2,
+        )["Update"]
+        assert_expression_safe(update)
+        assert "#pinsc <= :pinsc" in update["ConditionExpression"]
+
     def test_retry_with_seeds(self) -> None:
         seeds = self._seed_states()
         update = _repo().build_composite_retry(

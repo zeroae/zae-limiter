@@ -9734,3 +9734,54 @@ class TestLimitAddedToExistingShards:
         assert int(shard1[bucket_attr("session", BUCKET_FIELD_WS)]["N"]) == commit_at
         assert shard1[bucket_attr("session", BUCKET_FIELD_TK)]["N"] == "4000"
         assert _stored_ws(repo, "sess-end", "gpt-4", "session", shard=0) == commit_at
+
+    def test_a_doubling_racing_an_unsharded_quota_seed_does_not_mint(self, sync_limiter):
+        """Re-review of #633 (R3): shard 0 at S=1 seeds the whole quota and
+        reads no siblings; an aggregator doubling lands between its read and
+        its write (without moving `rf`), and the Path 2 clone of the pre-seed
+        image carries no quota. Unpinned, shard 0 kept all 1000 at count 2,
+        the fast path spent it, and shard 1 then seeded 500 more: 1500 admitted
+        against 1000. The seed now pins the count it was sized for."""
+        rpm = Limit.per_minute("rpm", 100000)
+        repo = sync_limiter._repository
+        ns = repo._namespace_id
+        repo._now_ms = lambda: T0
+        repo.set_resource_defaults("gpt-4", [rpm])
+        state = BucketState.from_limit("race", "gpt-4", rpm, T0, shard_count=1)
+        repo.transact_write(
+            [repo.build_composite_create("race", "gpt-4", [state], T0, shard_id=0, shard_count=1)]
+        )
+        repo.set_resource_defaults("gpt-4", [rpm, self.RPD])
+        repo.invalidate_config_cache()
+        repo._entity_cache[ns, "race"] = (False, None, {"gpt-4": 1})
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        repo._now_ms = lambda: T0 + 1000
+        stale = slow._fetch_entity_and_buckets("race", "gpt-4", 0)
+        client = repo._get_client()
+        client.update_item(
+            TableName=repo.table_name,
+            Key={"PK": {"S": pk_bucket(ns, "race", "gpt-4", 0)}, "SK": {"S": sk_state()}},
+            UpdateExpression="SET shard_count = :two",
+            ExpressionAttributeValues={":two": {"N": "2"}},
+        )
+        clone = BucketState.from_limit("race", "gpt-4", rpm, T0, shard_count=2)
+        repo.transact_write(
+            [repo.build_composite_create("race", "gpt-4", [clone], T0, shard_id=1, shard_count=2)]
+        )
+        admitted = 0
+        with patch.object(slow, "_fetch_entity_and_buckets", MagicMock(return_value=stale)):
+            with pytest.raises(RateLimitExceeded):
+                with slow.acquire("race", "gpt-4", consume={"rpd": 1}):
+                    admitted += 1
+        item = _raw_bucket(repo, "race", shard=0)
+        assert bucket_attr("rpd", BUCKET_FIELD_TK) not in item, "the pinned seed lost"
+        repo._entity_cache[ns, "race"] = (False, None, {"gpt-4": 2})
+        repo._now_ms = lambda: T0 + 2000
+        for shard in (0, 1, 0, 1):
+            while True:
+                try:
+                    self._acquire_on(sync_limiter, "race", shard, {"rpd": 100})
+                except RateLimitExceeded:
+                    break
+                admitted += 100
+        assert admitted == 1000

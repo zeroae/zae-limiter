@@ -605,6 +605,17 @@ class Lease:
                         windows={**seed_windows, **windows},
                         window_lengths=window_lengths,
                         seeds=seeds,
+                        # A quota seed's share is only safe at the count it
+                        # was sized for (#633): pin it against a racing
+                        # doubling.
+                        seed_shard_count=max(
+                            (
+                                e.state.shard_count
+                                for e in group_entries
+                                if e._seed and e.limit.is_quota
+                            ),
+                            default=None,
+                        ),
                         # Computed after the loop above, which can anchor a
                         # window at this reading; the lock still compares the
                         # stored `expected_rf`.
