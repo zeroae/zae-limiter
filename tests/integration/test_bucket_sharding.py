@@ -1254,3 +1254,36 @@ class TestDurationWindowRolloverFanOut:
         for shard in range(1, self.SHARDS):
             item = await self._raw(repo, entity_id, shard)
             assert int(item[ws_attr]["N"]) == t0 + 10_000
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+class TestNewShardJoinsTheWindow:
+    """A shard created mid-window inherits shard 0's `ws` (ADR-139, #625).
+
+    Exercises the real projected `GetItem` behind `get_shard_window_starts`,
+    which moto only approximates.
+    """
+
+    LIMIT_NAME = "session"
+
+    async def test_the_projection_aliases_a_dotted_limit_name(
+        self, localstack_limiter, unique_name
+    ):
+        """`NAME_PATTERN` allows `.`, a document-path separator: written bare
+        into the projection it would name a nested path and read nothing."""
+        from datetime import timedelta
+
+        from zae_limiter.models import BucketState, Limit
+
+        repo = localstack_limiter._repository
+        entity_id = f"window-dotted-{unique_name}"
+        limit = Limit.quota("sess.v1", 1_000, reset_after=timedelta(hours=5))
+        t0 = int(time.time() * 1000)
+        state = BucketState.from_limit(entity_id, "gpt-4", limit, t0)
+        await repo.transact_write(
+            [repo.build_composite_create(entity_id, "gpt-4", [state], t0, shard_id=0)]
+        )
+        assert await repo.get_shard_window_starts(entity_id, "gpt-4", ["sess.v1"]) == {
+            "sess.v1": t0
+        }

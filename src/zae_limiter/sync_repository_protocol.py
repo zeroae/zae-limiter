@@ -725,6 +725,28 @@ class SyncRepositoryProtocol(Protocol):
         """
         ...
 
+    def get_shard_window_starts(
+        self, entity_id: str, resource: str, limit_names: list[str], shard_id: int = 0
+    ) -> dict[str, int]:
+        """Read one shard's duration-window starts, to seed a shard being created (ADR-139).
+
+        A shard created mid-window joins the window in progress rather than
+        opening its own, so the create path reads the ``ws`` it would inherit
+        from shard 0 — the source of truth for ``shard_count`` already.
+
+        Args:
+            entity_id: Entity whose shard is being created. On a cascade create
+                this is the parent for the parent's shard, never the child.
+            resource: Resource name
+            limit_names: The limits to look for
+            shard_id: The shard to read. Defaults to 0.
+
+        Returns:
+            ``{limit_name: window_start_ms}``. A limit absent from the result
+            has no window on that shard, or the shard does not exist.
+        """
+        ...
+
     def reconcile_bucket_to_defaults(
         self,
         entity_id: str,

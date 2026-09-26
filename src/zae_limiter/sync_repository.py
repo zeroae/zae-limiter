@@ -5051,6 +5051,75 @@ class SyncRepository:
                 reclaimed[name] += previous - share
         return (len(pks), reclaimed)
 
+    def get_shard_window_starts(
+        self, entity_id: str, resource: str, limit_names: list[str], shard_id: int = 0
+    ) -> dict[str, int]:
+        """Read one shard's duration-window starts, to seed a shard being created (ADR-139).
+
+        Shard 0 by default, because :meth:`bump_shard_count` already treats it
+        as the source of truth for ``shard_count``. A created shard inherits
+        ``ws`` verbatim and sets ``rf = now``, so ``ws > rf`` is **false** on
+        the new item and it does not immediately re-roll itself: it joins the
+        window in progress rather than opening one. Whether the window read
+        here is still *live* is the caller's decision, against the ``rsa`` of
+        the config it resolved — this returns the stored start and nothing
+        more.
+
+        A **separate** read rather than an extra key in the create path's
+        ``BatchGetItem``: that call returns a dict keyed by ``(entity_id,
+        resource, limit_name)`` with no shard component, so shard 0 and shard N
+        would collide on every key. 0.5 RCU, eventually consistent, **once per
+        shard ever** (≤ 31 per (entity, resource), plus TTL recreations) on a
+        path already priced at 2.5 RCU + 2 WCU.
+
+        A limit absent from the result has no window on that shard — either it
+        carries none, or the shard has been swept. The caller then opens a fresh
+        window, which is the degraded case ADR-139 records under Consequences
+        and which idle-restarting makes correct rather than merely tolerable.
+
+        Args:
+            entity_id: Entity owning the bucket. On a **cascade** create this is
+                the entity whose shard is being created — the parent for a
+                parent shard, never the child. Parent and child windows are
+                independent (ADR-139).
+            resource: Resource name.
+            limit_names: The limits to look for; only these attributes are
+                projected, so the read stays a fraction of the item.
+            shard_id: The shard to read. Defaults to 0.
+
+        Returns:
+            ``{limit_name: window_start_ms}`` for the limits whose ``ws`` is on
+            the item.
+
+        Raises:
+            RateLimiterUnavailable: A stored ``ws`` is not an integer, the same
+                treatment every other reader gives a corrupt window.
+        """
+        if not limit_names:
+            return {}
+        client = self._get_client()
+        names = {
+            f"#w{i}": schema.bucket_attr(name, schema.BUCKET_FIELD_WS)
+            for i, name in enumerate(limit_names)
+        }
+        response = client.get_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)},
+                "SK": {"S": schema.sk_state()},
+            },
+            ProjectionExpression=", ".join(names),
+            ExpressionAttributeNames=names,
+        )
+        item = response.get("Item") or {}
+        out: dict[str, int] = {}
+        for i, name in enumerate(limit_names):
+            attr = names[f"#w{i}"]
+            ws = self._decode_stored_window_int(attr, item.get(attr, {}).get("N"))
+            if ws is not None:
+                out[name] = ws
+        return out
+
     def _fanout_resource(self, resource: str, disabled: bool) -> int:
         """Stamp every bucket for a resource, honoring per-entity overrides.
 
