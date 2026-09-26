@@ -637,6 +637,7 @@ class SyncRateLimiter:
                     shard_count=slow_path_shard_count,
                     parent_shard_id=slow_path_parent_shard,
                 )
+            lease._commit_initial()
         except (RateLimitExceeded, ValidationError, ResourceDisabled, Warning):
             raise
         except Exception as e:
@@ -651,7 +652,6 @@ class SyncRateLimiter:
                     entity_id=entity_id,
                     resource=resource,
                 ) from e
-        lease._commit_initial()
         try:
             yield lease
             lease._commit_adjustments()

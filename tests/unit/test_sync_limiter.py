@@ -9135,3 +9135,61 @@ class TestLimitNamesWithDotsAndHyphens:
                 raise RuntimeError("boom")
         assert _stored_tk(repo, "dots-rollback", "gpt-4", "rpm.v2") == 99000
         assert _stored_tk(repo, "dots-rollback", "gpt-4", "req-min") == 990000
+
+
+class TestSlowPathCommitErrorsHonourOnUnavailable:
+    """A backend error from the slow path's commit is an outage, like one from
+    the fast path: `RateLimiterUnavailable` under BLOCK, a degraded lease under
+    ALLOW. On main it escaped `acquire()` as the raw `ClientError`, bypassing
+    `on_unavailable` entirely (found under #634, where an invalid expression
+    token failed exactly this write)."""
+
+    @staticmethod
+    def _validation_error():
+        return ClientError(
+            {"Error": {"Code": "ValidationException", "Message": "invalid token"}},
+            "TransactWriteItems",
+        )
+
+    def test_block_raises_rate_limiter_unavailable(self, sync_limiter):
+        repo = sync_limiter._repository
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        repo.set_limits("commit-block", [Limit.per_minute("rpm", 100)], resource="gpt-4")
+        with patch.object(repo, "transact_write", side_effect=self._validation_error()):
+            with pytest.raises(RateLimiterUnavailable, match="invalid token") as exc_info:
+                with slow.acquire(
+                    "commit-block", "gpt-4", consume={"rpm": 1}, on_unavailable=OnUnavailable.BLOCK
+                ):
+                    pass
+        assert isinstance(exc_info.value.__cause__, ClientError)
+
+    def test_allow_yields_a_degraded_lease(self, sync_limiter):
+        repo = sync_limiter._repository
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        repo.set_limits("commit-allow", [Limit.per_minute("rpm", 100)], resource="gpt-4")
+        with patch.object(repo, "transact_write", side_effect=self._validation_error()):
+            with slow.acquire(
+                "commit-allow", "gpt-4", consume={"rpm": 1}, on_unavailable=OnUnavailable.ALLOW
+            ) as lease:
+                assert lease.degraded is True
+
+    def test_a_retry_rejection_still_propagates(self, sync_limiter):
+        """The consumption-only retry's `RateLimitExceeded` is a verdict, not an
+        outage: it must pass through unchanged, even under ALLOW."""
+        repo = sync_limiter._repository
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        repo.set_limits("commit-retry", [Limit.per_minute("rpm", 100)], resource="gpt-4")
+        with slow.acquire("commit-retry", "gpt-4", consume={"rpm": 1}):
+            pass
+        exc_cls = type("TransactionCanceledException", (Exception,), {})
+        lost = exc_cls()
+        lost.response = {
+            "Error": {"Code": "TransactionCanceledException"},
+            "CancellationReasons": [{"Code": "ConditionalCheckFailed"}],
+        }
+        with patch.object(repo, "transact_write", side_effect=[lost, lost]):
+            with pytest.raises(RateLimitExceeded):
+                with slow.acquire(
+                    "commit-retry", "gpt-4", consume={"rpm": 1}, on_unavailable=OnUnavailable.ALLOW
+                ):
+                    pass
