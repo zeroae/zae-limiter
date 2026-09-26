@@ -758,6 +758,36 @@ class TestDurationWindowStamp:
         assert stamped(bucket_attr("a.b", BUCKET_FIELD_RSA)) == 60
         assert "a.b" not in expr
 
+    def test_normal_write_stamps_a_changed_length_alone(self, repo):
+        """`window_lengths` SETs `rsa` without `ws` for a limit whose window
+        did not move but whose configured length changed (#629). A name also
+        in `windows` is skipped: its pair already carries the length, and two
+        SETs on one path are a ValidationException."""
+        upd = repo.build_composite_normal(
+            "e1",
+            "gpt-4",
+            consumed={"session": 1000},
+            refill_amounts={"session": 0},
+            now_ms=2000,
+            expected_rf=1000,
+            windows={"session": (2000, 18000)},
+            window_lengths={"session": 99, "a.b": 60},
+        )["Update"]
+        expr = upd["UpdateExpression"]
+        names = upd["ExpressionAttributeNames"]
+        values = upd["ExpressionAttributeValues"]
+
+        def stamped(attr):
+            aliases = [a for a, target in names.items() if target == attr]
+            assert len(aliases) == 1, aliases
+            placeholder = expr.split(f"{aliases[0]} = ")[1].split(",")[0].split(" ")[0]
+            return int(values[placeholder]["N"])
+
+        assert stamped(bucket_attr("session", BUCKET_FIELD_RSA)) == 18000
+        assert stamped(bucket_attr("a.b", BUCKET_FIELD_RSA)) == 60
+        assert not [a for a, t in names.items() if t == bucket_attr("a.b", BUCKET_FIELD_WS)]
+        assert "a.b" not in expr
+
     def test_a_normal_write_carrying_ws_and_rsa_round_trips(self, repo):
         """Executed, not just built: an item created with no window at all
         (stamped before its limit gained one) gets both attributes from the

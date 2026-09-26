@@ -98,6 +98,14 @@ class LeaseEntry:
     # that elapsed **between** the two readings — the exact analogue of
     # `_reset_edge_ms`, and silent in the same way if unhandled.
     _window_end_ms: int | None = None
+    # The `rsa` stored on the item as read, before the acquire path replaced
+    # it on the state with the resolved config's length (ADR-139). None for a
+    # create, or an item that carried none. `_commit_initial` compares the two
+    # and re-stamps `rsa` when the config length changed: a resource- or
+    # system-level `reset_after` change never fans out, and without this the
+    # item would keep the old length — and the fast path read a window end
+    # the slow path no longer enforces — until the window next moved.
+    _stored_reset_after_seconds: int | None = None
 
 
 @dataclass
@@ -452,6 +460,9 @@ class Lease:
                 # only the item, and a resource- or system-level `reset_after`
                 # never reaches an existing bucket through the param sync.
                 windows: dict[str, tuple[int, int]] = {}
+                # The configured length where it differs from the item's and
+                # the window did not move (a moved window carries it already).
+                window_lengths: dict[str, int] = {}
                 expected_rf = group_entries[0]._original_rf_ms
 
                 for entry in group_entries:
@@ -521,6 +532,12 @@ class Lease:
                     rsa = entry.state.reset_after_seconds
                     if entry._window_start_ms is not None and rsa is not None:
                         windows[name] = (entry._window_start_ms, rsa)
+                    elif (
+                        entry.limit.reset_after is not None
+                        and rsa is not None
+                        and rsa != entry._stored_reset_after_seconds
+                    ):
+                        window_lengths[name] = rsa
 
                 items.append(
                     repo.build_composite_normal(
@@ -534,6 +551,7 @@ class Lease:
                         shard_id=shard_id,
                         vu=vu,
                         windows=windows,
+                        window_lengths=window_lengths,
                         # Computed after the loop above, which can anchor a
                         # window at this reading; the lock still compares the
                         # stored `expected_rf`.

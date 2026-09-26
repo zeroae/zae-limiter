@@ -419,3 +419,37 @@ class TestCheckAvailabilityReportsOneWindow:
         rpm = Limit.per_minute("rpm", 60)
         check = await self._check(limiter, [], T0, needed={"rpm": 1}, limits=(rpm,))
         assert check.status("rpm").resets_at_ms is None
+
+
+class TestASlowPassRestampsTheConfiguredLength:
+    """Ruling (b): the root cause. After a non-fanned-out config change, one
+    admitted slow pass leaves the item's `rsa` equal to the config length."""
+
+    async def _stored_rsa(self, repo):
+        client = await repo._get_client()
+        item = (await client.get_item(TableName=repo.table_name, Key=_bucket_key(repo, "user-1")))[
+            "Item"
+        ]
+        return int(item[bucket_attr("session", BUCKET_FIELD_RSA)]["N"])
+
+    @pytest.mark.parametrize("speculative", [True, False], ids=["fast", "slow"])
+    async def test_a_lengthened_resource_default_reaches_the_item(self, limiter, speculative):
+        repo = limiter._repository
+        one_hour = Limit.quota("session", 10, reset_after=timedelta(hours=1))
+        await repo.set_resource_defaults(RESOURCE, [one_hour])
+        repo._now_ms = lambda: T0
+        async with limiter.acquire("user-1", RESOURCE, consume={"session": 1}):
+            pass
+        assert await self._stored_rsa(repo) == 3600
+
+        # Resource defaults never fan out to buckets (#271/#296).
+        await repo.set_resource_defaults(RESOURCE, [SESSION_10])
+        await repo.invalidate_config_cache()
+        target = limiter if speculative else RateLimiter(repository=repo, speculative_writes=False)
+        # Past the item's 1 h end, inside the config's 5 h: `vu` sends even
+        # the fast path to the slow path, which anchors nothing (the config
+        # window is live) and must still correct the length.
+        repo._now_ms = lambda: T0 + 2 * ONE_HOUR_MS
+        async with target.acquire("user-1", RESOURCE, consume={"session": 1}):
+            pass
+        assert await self._stored_rsa(repo) == FIVE_HOURS_MS // 1000

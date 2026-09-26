@@ -53,6 +53,7 @@ class LeaseEntry:
     _reset_edge_ms: int | None = None
     _window_start_ms: int | None = None
     _window_end_ms: int | None = None
+    _stored_reset_after_seconds: int | None = None
 
 
 @dataclass
@@ -322,6 +323,7 @@ class SyncLease:
                 consumed: dict[str, int] = {}
                 refill_amounts: dict[str, int] = {}
                 windows: dict[str, tuple[int, int]] = {}
+                window_lengths: dict[str, int] = {}
                 expected_rf = group_entries[0]._original_rf_ms
                 for entry in group_entries:
                     name = entry.limit.name
@@ -345,6 +347,12 @@ class SyncLease:
                     rsa = entry.state.reset_after_seconds
                     if entry._window_start_ms is not None and rsa is not None:
                         windows[name] = (entry._window_start_ms, rsa)
+                    elif (
+                        entry.limit.reset_after is not None
+                        and rsa is not None
+                        and (rsa != entry._stored_reset_after_seconds)
+                    ):
+                        window_lengths[name] = rsa
                 items.append(
                     repo.build_composite_normal(
                         entity_id=entity_id,
@@ -357,6 +365,7 @@ class SyncLease:
                         shard_id=shard_id,
                         vu=vu,
                         windows=windows,
+                        window_lengths=window_lengths,
                         rf_ms=_monotonic_rf(now_ms, expected_rf, group_entries),
                         clear_vu=not boundaries,
                     )

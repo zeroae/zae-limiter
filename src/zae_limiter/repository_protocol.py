@@ -598,6 +598,7 @@ class RepositoryProtocol(Protocol):
         clear_vu: bool = False,
         windows: dict[str, tuple[int, int]] | None = None,
         rf_ms: int | None = None,
+        window_lengths: dict[str, int] | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -618,6 +619,9 @@ class RepositoryProtocol(Protocol):
                 travel as one pair so neither is ever stamped alone.
             rf_ms: The ``rf`` to stamp, or None for ``now_ms``. The lock still
                 compares against ``expected_rf`` (ADR-139)
+            window_lengths: Limit name -> ``reset_after_seconds`` to stamp as
+                ``rsa`` alone, where the configured length differs from the
+                item's and the window did not move (ADR-139)
         """
         ...
 

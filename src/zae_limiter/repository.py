@@ -2350,6 +2350,7 @@ class Repository:
         clear_vu: bool = False,
         windows: dict[str, tuple[int, int]] | None = None,
         rf_ms: int | None = None,
+        window_lengths: dict[str, int] | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -2397,6 +2398,16 @@ class Repository:
                 it never moves backward and never sits below a window start
                 the item carries (ADR-139). ``None`` stamps ``now_ms``. The
                 lock still compares against ``expected_rf``, the stored value.
+            window_lengths: Limit name -> ``reset_after_seconds`` to stamp as
+                ``b_{name}_rsa`` **alone**, for a limit whose window did not
+                move on this pass but whose configured length differs from
+                the one on the item (ADR-139). A resource- or system-level
+                ``reset_after`` change never fans out (#271/#296), and
+                ``windows`` stamps ``rsa`` only when ``ws`` moves, so without
+                this the item kept the old length for a whole window: the fast
+                path then read an end the slow path no longer enforces. A name
+                also in ``windows`` is skipped — that pair already carries the
+                length, and two SETs on one path are a ValidationException.
         """
         add_parts: list[str] = []
         set_parts: list[str] = ["#rf = :now"]
@@ -2456,6 +2467,13 @@ class Repository:
             set_parts.append(f"#rsa{i} = :rsa{i}")
             attr_values[f":ws{i}"] = {"N": str(ws)}
             attr_values[f":rsa{i}"] = {"N": str(rsa)}
+
+        rolled = windows or {}
+        lengths = sorted((n, v) for n, v in (window_lengths or {}).items() if n not in rolled)
+        for i, (name, rsa) in enumerate(lengths):
+            attr_names[f"#wl{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_RSA)
+            set_parts.append(f"#wl{i} = :wl{i}")
+            attr_values[f":wl{i}"] = {"N": str(rsa)}
 
         condition_parts: list[str] = ["#rf = :expected_rf"]
 

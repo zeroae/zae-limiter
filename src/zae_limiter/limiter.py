@@ -1797,6 +1797,7 @@ class RateLimiter:
             # same reason: a resource- or system-level `reset_after` never
             # fans out, so an item created before it was configured carries no
             # `rsa`, and without this its window would never open.
+            stored_rsa = existing.reset_after_seconds
             existing.reset_after_seconds = limit.reset_after_seconds
 
             original_tk = existing.tokens_milli
@@ -1848,6 +1849,7 @@ class RateLimiter:
                     _reset_edge_ms=parent_reset_edge_ms,
                     _window_start_ms=parent_new_ws,
                     _window_end_ms=window_end_in_force(limit, existing, now_ms),
+                    _stored_reset_after_seconds=stored_rsa,
                 )
             )
 
@@ -2044,6 +2046,7 @@ class RateLimiter:
                 bucket_key = (eid, resource, limit.name)
                 existing = existing_buckets.get(bucket_key)
                 created_anchor: int | None = None
+                stored_rsa: int | None = None
                 if existing is None:
                     is_new = True
                     # A new shard of a sharded *dripping* bucket starts at its
@@ -2134,7 +2137,9 @@ class RateLimiter:
                     # `reset_after` was configured: those levels never fan out
                     # (#271/#296), so the item carries no `rsa` and its window
                     # would never open. `ws` stays the item's — it is state,
-                    # not config.
+                    # not config. The item's own length is kept aside so the
+                    # commit can re-stamp it when the config has changed.
+                    stored_rsa = state.reset_after_seconds
                     state.reset_after_seconds = limit.reset_after_seconds
 
                 # Capture original values before try_consume modifies them (ADR-115)
@@ -2203,6 +2208,7 @@ class RateLimiter:
                         _reset_edge_ms=reset_edge_ms,
                         _window_start_ms=new_ws,
                         _window_end_ms=window_end_in_force(limit, state, now_ms),
+                        _stored_reset_after_seconds=stored_rsa,
                     )
                 )
 

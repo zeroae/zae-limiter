@@ -126,6 +126,58 @@ class TestCommitStampsWindowStarts:
         assert kwargs["refill_amounts"] == {"session": 1_000}
 
 
+class TestCommitRestampsAChangedWindowLength:
+    """A resource- or system-level `reset_after` change never fans out, so
+    the rf-locked write re-stamps `rsa` whenever the configured length (on
+    the state) differs from the item's (ADR-139, #629)."""
+
+    async def test_a_changed_length_is_stamped_alone(self):
+        repo = _mock_repo(T0 + 1)
+        entry = _entry(
+            SESSION,
+            _session_state(tokens_milli=4_000),
+            consumed=1,
+            _window_end_ms=T0 + FIVE_HOURS_MS,
+            _stored_reset_after_seconds=3_600,
+        )
+        await Lease(repository=repo, entries=[entry])._commit_initial()
+        kwargs = repo.build_composite_normal.call_args.kwargs
+        assert kwargs["windows"] == {}
+        assert kwargs["window_lengths"] == {"session": 18_000}
+
+    async def test_an_unchanged_length_is_not_rewritten(self):
+        repo = _mock_repo(T0 + 1)
+        entry = _entry(
+            SESSION,
+            _session_state(tokens_milli=4_000),
+            consumed=1,
+            _window_end_ms=T0 + FIVE_HOURS_MS,
+            _stored_reset_after_seconds=18_000,
+        )
+        await Lease(repository=repo, entries=[entry])._commit_initial()
+        assert repo.build_composite_normal.call_args.kwargs["window_lengths"] == {}
+
+    async def test_a_moved_window_carries_the_length_in_its_pair(self):
+        repo = _mock_repo(T0 + 1)
+        entry = _entry(
+            SESSION,
+            _session_state(),
+            _window_start_ms=T0 + 1,
+            _stored_reset_after_seconds=3_600,
+        )
+        await Lease(repository=repo, entries=[entry])._commit_initial()
+        kwargs = repo.build_composite_normal.call_args.kwargs
+        assert kwargs["windows"] == {"session": (T0 + 1, 18_000)}
+        assert kwargs["window_lengths"] == {}
+
+    async def test_a_limit_without_a_window_stamps_no_length(self):
+        repo = _mock_repo(T0 + 1)
+        rpm = Limit.per_minute("session", 10)
+        entry = _entry(rpm, _session_state(tokens_milli=4_000), consumed=1)
+        await Lease(repository=repo, entries=[entry])._commit_initial()
+        assert repo.build_composite_normal.call_args.kwargs["window_lengths"] == {}
+
+
 def _condition_failed() -> ClientError:
     return ClientError(
         {"Error": {"Code": "ConditionalCheckFailedException", "Message": "rf moved"}},
