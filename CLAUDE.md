@@ -1024,22 +1024,42 @@ mints `cp // new_count` per new shard (#587 again).
 - **Writer gate (A).** `Repository.set_limits` / `set_resource_defaults` /
   `set_system_defaults` (`_require_reset_after_readers`) and the provisioner
   (`applier.require_reset_after_readers`, run by `handler._apply_and_record` **before** any
-  write) refuse a `reset_after` limit with `VersionMismatchError` (`can_auto_update=True`,
-  message names `zae-limiter upgrade`) unless the version record's `lambda_version` is
-  `>= version.MIN_READER_VERSION_FOR_RESET_AFTER` (`0.15.0`, release part only) **or equals
-  the writer's own `__version__`** — the only way a dev build (`0.14.1.devN`, numbered below
-  the release) can prove it. Cost: nothing unless a limit carries `reset_after`, then one
-  **strongly consistent** `GetItem` (1 RCU). `VersionMismatchError` is a `VersionError`, not
-  `RateLimiterUnavailable`, and admin paths do not consult `on_unavailable`, so it is never
+  write) refuse a `reset_after` limit with `VersionMismatchError` unless the version record's
+  `lambda_version` is `>= version.MIN_READER_VERSION_FOR_RESET_AFTER` (`0.15.0`, release part
+  only — `parse_version` reads PEP 440 `aN`/`bN`/`rcN`, so `0.15.0rc1` counts) **or equals the
+  writer's own `__version__`** — the only way a dev build (`0.14.1.devN`, numbered below the
+  release) can prove it. Cost: nothing unless a limit carries `reset_after`, then one **strongly
+  consistent** `GetItem` (1 RCU). Message and `can_auto_update` come from
+  `version.reset_after_refusal()` (shared with the provisioner): True only for a known, old
+  version; the message names `zae-limiter upgrade` **and** `deploy` for `--no-aggregator`
+  stacks, since the record cannot say which it is. `VersionMismatchError` is a `VersionError`,
+  not `RateLimiterUnavailable`, and admin paths do not consult `on_unavailable`, so it is never
   swallowed; out of the provisioner it is a CloudFormation FAILED or a `limits apply` error.
-- **Missing version record fails closed** — nothing proves the readers. `open()` / `builder()`
-  write one and `connect()` refuses a stack without one, so only the deprecated constructor
-  (and test fixtures, which call `_initialize_version_record()`) reach it.
-- **`--no-aggregator` gets no exemption.** `lambda_version` is stamped with the deploying
-  client's version whether or not the aggregator exists, and the record cannot say it is
-  absent. A v0.15-deployed no-aggregator stack passes naturally; a v0.14-deployed one is
-  refused until redeployed by v0.15 — the provisioner Lambda (deployed independently of the
-  aggregator) is v0.14 there too.
+- **`acquire(limits=[...])` override (A).** The slow path writes an override onto the bucket
+  (`b_{name}_rsa`, `ra = 0`), exactly the item an old aggregator's clone over-admits, so
+  `RateLimiter.acquire` calls `RepositoryProtocol.require_reset_after_readers` **outside** the
+  `on_unavailable` try (a refusal is never a degraded lease). Free when it passes: it trusts
+  `Repository._lambda_version`, cached by `_check_*`, `_initialize_version_record`,
+  `_perform_lambda_update` and every gate read, and carried into `namespace()` scopes. Only a
+  refusal re-reads (consistent, no ratchet). A deprecated-constructor repo, which never read
+  the record, reads it once and then caches — one RCU per repository against failing every such
+  caller closed with no remedy on the same object.
+- **The stamp must be earned.** `_initialize_version_record` stamps `lambda_version` with
+  `_deployed_lambda_version` — set by `_ensure_infrastructure_internal` only when
+  `create_stack` returned `created: True` (a new flag: an existing stack also reports
+  `CREATE_COMPLETE`) or aggregator code was pushed — and otherwise records it as **unknown**
+  (`NULL`). CLI `deploy` does the same (keeps the stored value when it created nothing and
+  pushed no aggregator code). An unknown stamp asks for no Lambda update, so
+  `open(auto_update=True)` neither loops nor pushes code onto a possibly aggregator-less stack;
+  only the gate refuses, naming `upgrade --force`. The init write is a conditional `PutItem`
+  (`attribute_not_exists(PK)`): it follows an eventually consistent miss, and a stale miss must
+  not clobber a record or its ratcheted minimum; on losing it reads the winner back. Test
+  fixtures that need a writable stack stamp `lambda_version=__version__` explicitly.
+- **Missing version record fails closed** — nothing proves the readers (`can_auto_update=False`,
+  remedy `zae-limiter deploy`).
+- **`--no-aggregator` gets no exemption** — the record cannot say the aggregator is absent. A
+  v0.15-deployed no-aggregator stack passes naturally; a v0.14-deployed one is refused until
+  redeployed by v0.15 (`upgrade` pushes code to an aggregator that does not exist).
 - **Ratchet (C).** A write the gate admits raises `client_min_version` to
   `ratcheted_client_min_version()` — `0.15.0`, capped at the writer's own version for a dev
   build — with a conditional `UpdateItem` on the value just read, **never lowering it**; a
@@ -1048,14 +1068,18 @@ mints `cp // new_count` per new shard (#587 again).
   `requires_client_upgrade`, and both `_check_and_update_version_auto` and
   `_check_version_strict` raise `VersionMismatchError(can_auto_update=False)` on it (they fell
   off the end before). The CLI's `_connect` turns it into an exit-1 message, so a too-old v0.15
-  `upgrade` cannot downgrade the Lambdas. `set_version_record(client_min_version=None)` — the
+  `upgrade` cannot downgrade the Lambdas; `limits_cli._invoke_provisioner` exits 1 on it (and
+  on a failed auto-update's `StackOperationError`) instead of invoking an unchecked
+  provisioner. `deploy` does no minimum check. `set_version_record(client_min_version=None)` — the
   new default, used by `_perform_lambda_update` and CLI `deploy` / `upgrade` — keeps the stored
   minimum via `if_not_exists`; only `_initialize_version_record` writes `"0.0.0"`.
 - **Holes (documented, not fixable from v0.15):** the gate runs at write time only, so a v0.14
   CLI `deploy` / `upgrade --force` can put the v0.14 Lambdas back afterwards; a v0.14 `upgrade`
   reads the raised minimum as "not up to date", downgrades the Lambdas **and** resets the
-  minimum to `0.0.0`; v0.14 clients ignore the minimum; the minimum is checked only when a
-  repository is opened. Option B (hide the config from v0.14 readers) is #640.
+  minimum to `0.0.0`; v0.14 clients ignore the minimum; the minimum (and the override gate's
+  cached version) is checked only when a repository is opened; a refused CloudFormation update
+  whose previous properties also carried `reset_after` ends in `UPDATE_ROLLBACK_FAILED`
+  (`upgrade`, then `continue-update-rollback`, or skip the resource). Option B (hide the config from v0.14 readers) is #640.
 
 ### Combined Capacity Check (Issue #472)
 

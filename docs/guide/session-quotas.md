@@ -18,12 +18,20 @@ Two callers that first use it at 09:00 and 14:30 get windows ending at 14:00 and
     `reset_after` is new in v0.15.0.
 
     **The aggregator is enforced.** `set_limits()`, `set_resource_defaults()`,
-    `set_system_defaults()` and `zae-limiter limits apply` refuse to store a `reset_after`
-    limit with `VersionMismatchError` until the stack's version record says its Lambdas are
-    v0.15.0 or newer. An older aggregator would treat the quota as a dripping limit and grant
-    each shard it pre-creates a fresh share. `Repository.open()` updates the Lambdas for you;
-    after `Repository.connect()` or `auto_update=False`, run `zae-limiter upgrade` first. The
-    check costs one strongly consistent read, and only on a write that carries `reset_after`.
+    `set_system_defaults()`, `zae-limiter limits apply` and an `acquire(limits=[...])`
+    override refuse a `reset_after` limit with `VersionMismatchError` until the stack's version
+    record says its Lambdas are v0.15.0 or newer (a 0.15.0 release candidate counts). An older
+    aggregator would treat the quota as a dripping limit and grant each shard it pre-creates a
+    fresh share. `Repository.open()` updates old Lambdas for you; after `Repository.connect()`
+    or `auto_update=False`, run `zae-limiter upgrade` first. A stack deployed with
+    `--no-aggregator` is fixed by re-running `zae-limiter deploy` from v0.15.0 instead. The
+    config writers pay one strongly consistent read per write that carries `reset_after`; the
+    `acquire()` override pays nothing, trusting the version read when the repository was opened.
+
+    **A stack whose Lambda version is unknown is refused too.** When `Repository.open()` finds
+    a table with no version record — say, one built from an older `cfn-template` — it writes
+    one without claiming Lambdas it did not deploy. Run `zae-limiter upgrade --force` to deploy
+    them and stamp the version.
 
     **Clients older than v0.15.0 are not enforced.** A successful write raises the stack's
     `client_min_version` to 0.15.0, and every client from v0.15.0 on refuses to start below it
@@ -41,7 +49,12 @@ Two callers that first use it at 09:00 and 14:30 get windows ending at 14:00 and
       Lambdas — and resets `client_min_version` to `0.0.0`.
 
     The next v0.15 `Repository.open()` re-upgrades the Lambdas; the minimum comes back only
-    with the next `reset_after` write.
+    with the next `reset_after` write. A long-lived process that opened its repository before
+    a downgrade keeps trusting the version it read for `acquire(limits=...)` overrides.
+
+    **A refused CloudFormation update can leave the stack in `UPDATE_ROLLBACK_FAILED`** when
+    the previous properties also carried a `reset_after` limit — the rollback is refused the
+    same way. See [Version Management](../operations/version.md#refused-reset_after-write).
 
 ## Which one do I want?
 

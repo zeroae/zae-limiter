@@ -131,15 +131,26 @@ A reader predating this record cannot read a `reset_after` limit (see Negatives)
 is gated on the readers' versions. Decided 2026-09-26: options **A**, **C** and **D** now; **B**
 deferred to #640.
 
-- **A — writer gate on the aggregator.** Every config writer — `Repository.set_limits`,
-  `set_resource_defaults`, `set_system_defaults` and the provisioner applier — refuses a
-  `reset_after` limit with `VersionMismatchError` unless the version record's `lambda_version`
-  is at least `0.15.0` (`version.MIN_READER_VERSION_FOR_RESET_AFTER`), or is exactly the
-  writer's own build. There is one aggregator per stack and its version is `lambda_version`, so
-  this is the one reader a writer can check. Cost: one strongly consistent `GetItem` of
-  `#VERSION` (1 RCU), and only when a limit in the call carries `reset_after`. A missing record
-  fails closed. A `--no-aggregator` stack is not exempted: the record cannot say the aggregator
-  is absent, and `lambda_version` is stamped with the deploying version either way.
+- **A — writer gate on the aggregator.** Every writer of a `reset_after` limit —
+  `Repository.set_limits`, `set_resource_defaults`, `set_system_defaults`, the provisioner
+  applier, and `acquire(limits=[...])`, whose override the slow path writes onto the bucket
+  item — refuses it with `VersionMismatchError` unless the version record's `lambda_version`
+  is at least `0.15.0` (`version.MIN_READER_VERSION_FOR_RESET_AFTER`, release part only, so a
+  `0.15.0rc1` counts), or is exactly the writer's own build. There is one aggregator per stack
+  and its version is `lambda_version`, so this is the one reader a writer can check. Cost: the
+  config writers issue one strongly consistent `GetItem` of `#VERSION` (1 RCU), and only when
+  a limit in the call carries `reset_after`; the `acquire()` override trusts the version the
+  repository read when opened and re-reads only on a refusal. A missing record, or an unknown
+  `lambda_version`, fails closed.
+- **The stamp must be earned.** `lambda_version` records this build only when the call that
+  writes it deployed the stack's Lambda code — created the stack, or pushed aggregator code.
+  `open()` of a table with no record (a stack built from an older `cfn-template`) records it as
+  unknown, and CLI `deploy --no-aggregator` against an existing stack keeps the stored value. An
+  unknown version asks for no Lambda update, so `open(auto_update=True)` neither loops nor
+  pushes code onto a stack that may have no aggregator; the remedy is `zae-limiter upgrade
+  --force`. A `--no-aggregator` stack is not exempted from the gate: the record cannot say the
+  aggregator is absent. Its remedy is re-running `zae-limiter deploy` from `0.15.0`, since
+  `upgrade` pushes code to an aggregator that does not exist.
 - **C — `client_min_version` becomes a real gate.** Clients from v0.15.0 on raise
   `VersionMismatchError` when below it (before, `check_compatibility` returned an incompatible
   result with no flag set and both version checks fell through). A Lambda update, `deploy` and
@@ -215,7 +226,16 @@ on read, so it still fails open under `allow`).
   flip back and forth. The rule is to never run a v0.14 CLI against a stack holding a
   `reset_after` limit.
 - `client_min_version` is checked when a repository is opened, so a long-lived process opened
-  before the minimum was raised is not refused until it restarts.
+  before the minimum was raised is not refused until it restarts. For the same reason the
+  `acquire(limits=...)` override gate trusts the `lambda_version` read at open, and does not
+  see a later downgrade.
+- A refused `Custom::ZaeLimiterLimits` update whose *previous* properties also carried a
+  `reset_after` limit leaves the stack in `UPDATE_ROLLBACK_FAILED`: the rollback re-sends
+  those properties and is refused the same way. The remedy is `zae-limiter upgrade` followed by
+  `continue-update-rollback`, or `continue-update-rollback` skipping the resource — the refused
+  update wrote nothing.
+- A v0.15 `zae-limiter deploy` does no `client_min_version` check of its own; the other CLI
+  commands that open the repository do.
 
 ## Alternatives Considered
 

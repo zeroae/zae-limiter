@@ -115,8 +115,12 @@ Then follow the migration procedures in the [Migration Guide](../migrations.md#s
 ### Minimum Client Version Error
 
 **Cause:** Infrastructure requires a newer client version. From v0.15.0, `Repository.open()`,
-`connect()`, `builder().build()` and every CLI command raise `VersionMismatchError` (with
-`can_auto_update=False`) when the client is below the version record's `client_min_version`:
+`connect()` and `builder().build()` raise `VersionMismatchError` (with `can_auto_update=False`)
+when the client is below the version record's `client_min_version`. So does every CLI command
+that opens the stack's repository — `status`, `version`, `check`, `upgrade`, `limits
+plan|apply|diff` and the `entity`, `resource`, `system`, `namespace`, `audit` and `usage`
+groups — exiting 1 with the message. **`deploy` does no minimum check**, nor do `delete`,
+`list`, `cfn-template` and `lambda-export`, which never open the repository:
 
 ```
 VersionMismatchError: Version mismatch: client=0.15.0, schema=0.10.0, lambda=0.16.0.
@@ -132,6 +136,8 @@ a Lambda auto-update keep the stored minimum; they never lower it.
 - The check runs when a repository is opened. A process opened before the minimum was raised
   keeps running until it restarts.
 - Clients older than v0.15.0 ignore the field entirely.
+- A v0.15 `zae-limiter deploy` against a stack whose minimum it is below still redeploys its own
+  Lambdas; it keeps the minimum, but does not refuse.
 
 **Solution:** Upgrade the client library:
 
@@ -139,12 +145,36 @@ a Lambda auto-update keep the stored minimum; they never lower it.
 pip install --upgrade zae-limiter
 ```
 
+**Lowering a minimum on purpose.** Nothing in zae-limiter lowers `client_min_version` — deploys,
+upgrades and the `reset_after` ratchet only keep or raise it. When you do need an older client
+back (for example after removing every `reset_after` limit), set it by hand:
+
+```bash
+aws dynamodb update-item --table-name <name> \
+  --key '{"PK": {"S": "_/SYSTEM#"}, "SK": {"S": "#VERSION"}}' \
+  --update-expression "SET client_min_version = :v" \
+  --expression-attribute-values '{":v": {"S": "0.14.0"}}'
+```
+
+Only do this when no stored limit needs the newer readers: the minimum is what keeps older
+v0.15+ clients from misreading them.
+
 ### Refused `reset_after` write
 
-**Cause:** `set_limits()`, `set_resource_defaults()`, `set_system_defaults()` or
-`zae-limiter limits apply` was given a `reset_after` limit while the version record's
-`lambda_version` is older than 0.15.0 (or the record is missing). An older aggregator would
-over-admit the limit, so nothing is written.
+**Cause:** `set_limits()`, `set_resource_defaults()`, `set_system_defaults()`,
+`zae-limiter limits apply` or `acquire(limits=[...])` was given a `reset_after` limit while the
+version record cannot prove the Lambdas read it. An older aggregator would over-admit the limit,
+so nothing is written. Three cases:
+
+| Version record | Meaning | Remedy |
+|----------------|---------|--------|
+| `lambda_version` older than 0.15.0 (release candidates of 0.15.0 count) | Old Lambdas deployed | `zae-limiter upgrade`, or `Repository.open()` with `auto_update=True` |
+| `lambda_version` unknown (`null`) | The record was initialized by a client that deployed no Lambda code — e.g. `open()` of a stack built from an older `cfn-template` / `lambda-export` | `zae-limiter upgrade --force` |
+| Missing | Never initialized | `zae-limiter deploy` from v0.15.0 or later |
+
+On a stack deployed with `--no-aggregator`, `upgrade` cannot help (it pushes code to an
+aggregator that does not exist): re-run `zae-limiter deploy` from v0.15.0 or later instead,
+which stamps the record.
 
 ```
 VersionMismatchError: Version mismatch: client=0.15.0, schema=0.10.0, lambda=0.14.0.
@@ -152,8 +182,18 @@ Refusing to store a reset_after limit: the deployed Lambdas predate 0.15.0 and w
 misread it (the aggregator over-admits it). Run 'zae-limiter upgrade' first, ...
 ```
 
-**Solution:** `zae-limiter upgrade --name <name>`, or open the stack with
-`Repository.open()` (which updates the Lambdas), then retry the write.
+**Solution:** apply the remedy above, then retry the write. `acquire(limits=...)` trusts the
+version the repository read when it was opened, and re-reads only on a refusal, so a retry after
+an upgrade succeeds without reopening.
+
+**A refused CloudFormation update can end in `UPDATE_ROLLBACK_FAILED`.** A
+`Custom::ZaeLimiterLimits` update that the gate refuses reports FAILED, and CloudFormation rolls
+back by re-sending the *previous* properties. When those also carried a `reset_after` limit, the
+rollback is refused too, and the stack is left in `UPDATE_ROLLBACK_FAILED`. Either run
+`zae-limiter upgrade` first and then `aws cloudformation continue-update-rollback --stack-name
+<stack>`, or continue the rollback while skipping the resource
+(`--resources-to-skip <LogicalResourceId>`) — the table still holds the previous configuration,
+because the refused update wrote nothing.
 
 ## Upgrade Procedure
 
