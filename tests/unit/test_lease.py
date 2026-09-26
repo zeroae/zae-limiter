@@ -38,7 +38,7 @@ def _session_state(**kwargs) -> BucketState:
 def _mock_repo(now_ms: int) -> MagicMock:
     repo = MagicMock()
     repo._now_ms = MagicMock(return_value=now_ms)
-    repo._bucket_ttl_refill_multiplier = 0
+    repo._bucket_ttl_refill_multiplier = 7
     repo.build_composite_normal = MagicMock(return_value={"Update": {}})
     repo.build_composite_create = MagicMock(return_value={"Put": {}})
     repo.build_composite_retry = MagicMock(return_value={"Update": {"retry": True}})
