@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from botocore.exceptions import ClientError
 
+from tests.fixtures.windows import FIVE_HOURS_MS, SESSION_10, T0
 from zae_limiter import (
     CacheStats,
     Limit,
@@ -8558,11 +8559,6 @@ class TestMaterialisationStampsWindow:
         plain = Limit.per_minute("session", 1000)
         vu, _ = SyncRateLimiter._materialisation_stamps(plain, _window_state(), 6000)
         assert vu is None
-
-
-FIVE_HOURS_MS = 5 * 3600000
-SESSION_10 = Limit.quota("session", 10, reset_after=timedelta(hours=5))
-T0 = 1757000000000
 
 
 def _raw_bucket(repo, entity_id, resource="gpt-4", shard=0):

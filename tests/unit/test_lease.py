@@ -11,13 +11,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from botocore.exceptions import ClientError
 
+from tests.fixtures.windows import FIVE_HOURS_MS, T0
+from tests.fixtures.windows import SESSION_10 as SESSION
 from zae_limiter import Limit, RateLimiter
 from zae_limiter.lease import Lease, LeaseEntry
 from zae_limiter.models import BucketState
-
-FIVE_HOURS_MS = 5 * 3_600_000
-SESSION = Limit.quota("session", 10, reset_after=timedelta(hours=5))
-T0 = 1_757_000_000_000
 
 
 def _session_state(**kwargs) -> BucketState:
