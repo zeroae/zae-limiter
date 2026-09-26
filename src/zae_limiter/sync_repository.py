@@ -2710,6 +2710,15 @@ class SyncRepository:
         raised) may not have elapsed by the floor and no-ops; it opens its own
         window when it does elapse, which is the pre-fan-out behaviour.
 
+        The floor is ANDed with ``rf < :new``. A sibling applies a fanned-out
+        window only by reading ``ws > rf`` (``BucketState.window_rolled``), so
+        one whose ``rf`` is already at or past ``new_ws`` — an aggregator
+        refill that landed after its old window ended, or a writer whose clock
+        runs ahead — would take the new ``ws`` as *already applied* and carry
+        its burnt balance through the whole new window. Left alone instead,
+        its window stays ended and it opens its own when next drawn: one
+        stagger, never an under-admission.
+
         **It writes ``ws`` and never ``tk``**, which is the coherence argument.
         A fan-out cannot use ``ADD`` — it does not know each sibling's
         balance — and the blind ``SET`` it would otherwise need races the
@@ -2772,11 +2781,12 @@ class SyncRepository:
                         "SK": {"S": schema.sk_state()},
                     },
                     UpdateExpression="SET #ws = :new, #rsa = :rsa, #vu = :zero",
-                    ConditionExpression="attribute_exists(PK) AND (attribute_not_exists(#ws) OR #ws <= :open_floor)",
+                    ConditionExpression="attribute_exists(PK) AND #rf < :new AND (attribute_not_exists(#ws) OR #ws <= :open_floor)",
                     ExpressionAttributeNames={
                         "#ws": schema.bucket_attr(name, schema.BUCKET_FIELD_WS),
                         "#rsa": schema.bucket_attr(name, schema.BUCKET_FIELD_RSA),
                         "#vu": schema.BUCKET_FIELD_VU,
+                        "#rf": schema.BUCKET_FIELD_RF,
                     },
                     ExpressionAttributeValues={
                         ":new": {"N": str(new_ws)},

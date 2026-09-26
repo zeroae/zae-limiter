@@ -21,6 +21,7 @@ from zae_limiter.models import BucketState
 from zae_limiter.schedule import ScheduleEntry
 from zae_limiter.schema import (
     BUCKET_FIELD_DISABLED,
+    BUCKET_FIELD_RF,
     BUCKET_FIELD_RSA,
     BUCKET_FIELD_RSCHED,
     BUCKET_FIELD_SCHED,
@@ -964,6 +965,42 @@ class TestPropagateWindowStart:
             )
             == 1
         )
+
+    def _set_rf(self, repo, entity_id, shard, rf):
+        client = repo._get_client()
+        client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "gpt-4", shard)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="SET #rf = :rf",
+            ExpressionAttributeNames={"#rf": BUCKET_FIELD_RF},
+            ExpressionAttributeValues={":rf": {"N": str(rf)}},
+        )
+
+    @pytest.mark.parametrize("rf_offset", [0, 10])
+    def test_a_sibling_already_past_the_new_start_is_left_alone(self, repo, rf_offset):
+        """An aggregator refill after the old window ended (or a writer with a
+        clock ahead) left the sibling's `rf` at or past the new `ws`. Moved,
+        it would read `ws > rf` as false, treat the window as applied and keep
+        its burnt balance for all of it. Left alone, it opens its own."""
+        self._create_shards(repo, "e1", count=2, ws=self.OLD)
+        self._set_rf(repo, "e1", 1, self.NEW + rf_offset)
+        written = repo._propagate_window_start(
+            "e1", "gpt-4", shard_id=0, shard_count=2, windows=self._windows(self.NEW)
+        )
+        assert written == 0
+        assert self._stored_ws(repo, "e1", "session", 1) == self.OLD
+
+    def test_a_sibling_behind_the_new_start_still_moves(self, repo):
+        self._create_shards(repo, "e1", count=2, ws=self.OLD)
+        self._set_rf(repo, "e1", 1, self.NEW - 1)
+        written = repo._propagate_window_start(
+            "e1", "gpt-4", shard_id=0, shard_count=2, windows=self._windows(self.NEW)
+        )
+        assert written == 1
+        assert self._stored_ws(repo, "e1", "session", 1) == self.NEW
 
     def test_a_concurrent_opener_does_not_move_the_other_openers_shard(self, repo):
         """Two clients cross the boundary milliseconds apart and each opens a
