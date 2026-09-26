@@ -38,6 +38,7 @@ def _unrecoverable_limit() -> Limit:
         ("refill_period_seconds", 60),
         ("schedule", ()),
         ("reset_schedule", ()),
+        ("reset_after", None),
     ):
         object.__setattr__(obj, field, value)
     return obj
