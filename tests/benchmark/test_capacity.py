@@ -9,9 +9,12 @@ Run with:
 Note: These tests use moto (mocked DynamoDB) to enable API call counting.
 """
 
+from datetime import timedelta
+
 import pytest
 
-from zae_limiter import Limit
+from tests.fixtures.sharding import pinned_shard
+from zae_limiter import Limit, RateLimitExceeded, schema
 from zae_limiter.schedule import ScheduleEntry
 
 pytestmark = pytest.mark.benchmark
@@ -779,3 +782,205 @@ class TestScheduledFastPathCapacity:
                 pass
         assert capacity_counter.batch_get_item == [], "and the next one is not"
         assert capacity_counter.update_item == 1
+
+
+class TestDurationWindowCapacity:
+    """The claim ADR-139 rests on: ``reset_after`` is a per-rollover cost, never
+    a per-acquire one.
+
+    Inside a live window the fast path is byte-identical to any other bucket's
+    — 0 RCU + 1 WCU, no config read, no bucket read. A rollover costs exactly
+    one ordinary slow pass plus the fan-out, ``(S - 1) × L`` conditional
+    ``UpdateItem``s, and nothing extra at ``S = 1``.
+    """
+
+    RESOURCE = "gpt-4"
+    WINDOW = timedelta(hours=5)
+    WINDOW_MS = 5 * 3_600_000
+    T0 = 1_757_000_000_000
+
+    @staticmethod
+    def _freeze(limiter, now_ms: int) -> None:
+        limiter._repository._now_ms = lambda: now_ms
+
+    @staticmethod
+    def _counts(counter) -> dict:
+        """Every counter, as a comparable snapshot."""
+        return {
+            "get_item": counter.get_item,
+            "batch_get_item": list(counter.batch_get_item),
+            "query": counter.query,
+            "put_item": counter.put_item,
+            "update_item": counter.update_item,
+            "delete_item": counter.delete_item,
+            "transact_write_items": list(counter.transact_write_items),
+            "batch_write_item": list(counter.batch_write_item),
+        }
+
+    def _limits(self, window_limits: int) -> list[Limit]:
+        return [
+            Limit.quota(f"session{i}", 10_000, reset_after=self.WINDOW)
+            for i in range(window_limits)
+        ]
+
+    def _seed(self, limiter, entity_id: str, shards: int, window_limits: int) -> None:
+        """Anchor one window at ``T0`` and bring ``shards`` shards into it the
+        way the real path does: shard 0 first, then doublings, then a draw of
+        every new shard, which joins the window in progress."""
+        repo = limiter._repository
+        consume = {f"session{i}": 1 for i in range(window_limits)}
+        limiter.set_limits(entity_id, self._limits(window_limits), resource=self.RESOURCE)
+        self._freeze(limiter, self.T0)
+        with limiter.acquire(entity_id, self.RESOURCE, consume=consume):
+            pass
+        count = 1
+        while count < shards:
+            count = repo.bump_shard_count(entity_id, self.RESOURCE, count)
+        # A zero-token draw creates the shard without spending: the #587
+        # transfer grants at most one share per created shard, so a later shard
+        # can legitimately start empty and would reject a one-token draw.
+        nothing = dict.fromkeys(consume, 0)
+        for shard in range(1, shards):
+            with pinned_shard(shard), limiter.acquire(entity_id, self.RESOURCE, consume=nothing):
+                pass
+
+    @staticmethod
+    def _force_slow_pass(limiter, entity_id: str, shard: int) -> None:
+        """Close one shard's fast path without moving its window.
+
+        ``vu = 0`` is exactly what the limit-change fan-out stamps (#468), so
+        the next acquire on the shard is an ordinary materialising slow pass —
+        the baseline a rollover is measured against.
+        """
+        repo = limiter._repository
+        repo._get_client().update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, "gpt-4", shard)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="SET #vu = :zero",
+            ExpressionAttributeNames={"#vu": schema.BUCKET_FIELD_VU},
+            ExpressionAttributeValues={":zero": {"N": "0"}},
+        )
+
+    def test_inside_a_live_window_an_acquire_is_one_write_and_no_reads(
+        self, sync_limiter, capacity_counter
+    ):
+        """0 RCU + 1 WCU per acquire, ten times over, with zero config reads."""
+        sync_limiter.set_limits(
+            "win-fast",
+            [Limit.quota("session", 10_000, reset_after=self.WINDOW)],
+            resource=self.RESOURCE,
+        )
+        # Warms the config cache and the entity cache, and anchors the window.
+        with sync_limiter.acquire("win-fast", self.RESOURCE, consume={"session": 1}):
+            pass
+
+        capacity_counter.reset()
+        with capacity_counter.counting():
+            for _ in range(10):
+                with sync_limiter.acquire("win-fast", self.RESOURCE, consume={"session": 1}):
+                    pass
+
+        assert capacity_counter.get_item == 0, "the fast path must not read config"
+        assert capacity_counter.batch_get_item == [], "nor batch-read buckets"
+        assert capacity_counter.query == 0
+        assert capacity_counter.update_item == 10, "one conditional UpdateItem per acquire"
+        assert capacity_counter.total_rcus == 0
+        assert capacity_counter.total_wcus == 10
+
+    def test_an_exhausted_window_rejects_for_free(self, sync_limiter, capacity_counter):
+        """A rejection inside the window is the speculative fast rejection: the
+        one failed conditional and nothing else. It writes nothing, which is
+        also why it cannot move the window's anchor (ADR-139)."""
+        sync_limiter.set_limits(
+            "win-reject",
+            [Limit.quota("session", 3, reset_after=self.WINDOW)],
+            resource=self.RESOURCE,
+        )
+        with sync_limiter.acquire("win-reject", self.RESOURCE, consume={"session": 3}):
+            pass
+
+        capacity_counter.reset()
+        with capacity_counter.counting():
+            with pytest.raises(RateLimitExceeded):
+                with sync_limiter.acquire("win-reject", self.RESOURCE, consume={"session": 1}):
+                    pass
+
+        assert self._counts(capacity_counter) == {
+            "get_item": 0,
+            "batch_get_item": [],
+            "query": 0,
+            "put_item": 0,
+            "update_item": 1,
+            "delete_item": 0,
+            "transact_write_items": [],
+            "batch_write_item": [],
+        }
+
+    @pytest.mark.parametrize(
+        ("shards", "window_limits"),
+        [(1, 1), (4, 1), (4, 2)],
+        ids=["S=1,L=1", "S=4,L=1", "S=4,L=2"],
+    )
+    def test_a_rollover_costs_one_slow_pass_plus_the_fan_out(
+        self, sync_limiter, capacity_counter, shards, window_limits
+    ):
+        """Measured, not asserted from the formula: the rollover's counters are
+        the non-rolling slow pass's plus ``(S - 1) × L`` UpdateItems, and every
+        other counter is identical."""
+        entity_id = f"win-roll-{shards}-{window_limits}"
+        consume = {f"session{i}": 1 for i in range(window_limits)}
+        self._seed(sync_limiter, entity_id, shards, window_limits)
+        drawn = min(1, shards - 1)  # a sibling holding a full transferred share
+
+        # Baseline: an identical slow pass on the same shard, window still live.
+        self._force_slow_pass(sync_limiter, entity_id, drawn)
+        self._freeze(sync_limiter, self.T0 + 1_000)
+        capacity_counter.reset()
+        with capacity_counter.counting(), pinned_shard(drawn):
+            with sync_limiter.acquire(entity_id, self.RESOURCE, consume=consume):
+                pass
+        baseline = self._counts(capacity_counter)
+
+        # The rollover: the same shard, past the window's end. The baseline
+        # pass re-stamped `vu` at that end, so this is a boundary demotion.
+        self._freeze(sync_limiter, self.T0 + self.WINDOW_MS + 100)
+        capacity_counter.reset()
+        with capacity_counter.counting(), pinned_shard(drawn):
+            with sync_limiter.acquire(entity_id, self.RESOURCE, consume=consume):
+                pass
+        rollover = self._counts(capacity_counter)
+
+        fan_out = (shards - 1) * window_limits
+        assert rollover == {**baseline, "update_item": baseline["update_item"] + fan_out}
+        # The slow pass itself, pinned so a change to it is visible here too:
+        # the failed speculative UpdateItem, the uncached disabled walk
+        # (ADR-125), META + bucket, and the one rf-locked write.
+        assert baseline == {
+            "get_item": 0,
+            "batch_get_item": [3, 2],
+            "query": 0,
+            "put_item": 0,
+            "update_item": 2,
+            "delete_item": 0,
+            "transact_write_items": [],
+            "batch_write_item": [],
+        }
+
+        # And the fan-out landed: every shard is on the one new window.
+        repo = sync_limiter._repository
+        client = repo._get_client()
+        starts = set()
+        for shard in range(shards):
+            item = client.get_item(
+                TableName=repo.table_name,
+                Key={
+                    "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, "gpt-4", shard)},
+                    "SK": {"S": schema.sk_state()},
+                },
+            )["Item"]
+            for i in range(window_limits):
+                starts.add(int(item[schema.bucket_attr(f"session{i}", "ws")]["N"]))
+        assert starts == {self.T0 + self.WINDOW_MS + 100}
