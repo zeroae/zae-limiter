@@ -4707,8 +4707,9 @@ speculative writes on the fast path (1 RT) instead of falling back to the slow p
 <li><strong>Compute refill</strong> -- For each bucket, <code>try_refill_bucket()</code> calls <code>refill_bucket()</code> with
    effective capacity (<code>cp // shard_count</code>) and effective refill amount (<code>ra // shard_count</code>),
    then checks if projected tokens are insufficient to cover the observed consumption rate</li>
-<li><strong>Write refill</strong> -- Issues a single <code>UpdateItem</code> with <code>ADD b_{limit}_tk +refill_delta</code>
-   and <code>SET rf = :now</code>, conditioned on <code>rf = :expected_rf</code> (optimistic lock)</li>
+<li><strong>Write refill</strong> -- Issues a single <code>UpdateItem</code> with <code>ADD #rt{i} :rd{i}</code> (the alias
+   <code>#rt{i}</code> names <code>b_{limit}_tk</code>; tokens are positional because a limit name may contain <code>.</code>
+   or <code>-</code>) and <code>SET rf = :new_rf</code>, conditioned on <code>rf = :expected_rf</code> (optimistic lock)</li>
 <li><strong>Proactive sharding</strong> -- <code>try_proactive_shard()</code> checks if wcu consumption &gt;= 80% of capacity
    on shard 0, and conditionally doubles <code>shard_count</code></li>
 <li><strong>Shard propagation</strong> -- <code>propagate_shard_count()</code> detects shard_count changes in stream records
