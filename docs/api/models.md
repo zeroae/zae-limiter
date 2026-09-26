@@ -59,13 +59,6 @@ is rejected rather than rounded. `scale` is the field that takes a fraction.
       members_order: source
       heading_level: 3
 
-`resets_at_ms: int | None` is the absolute epoch-millisecond instant a **session quota's**
-current window ends, read off the bucket item. It is `None` for a rate limit, for a calendar
-quota (whose next edge `RateLimitExceeded.as_dict()` computes from the cron instead), and for a
-session quota with no live window — it is never an instant in the past. Inside
-`RateLimitExceeded` it describes the shard the request was tried on; inside
-`Availability` it is the latest live window end across the entity's shards.
-
 ## Availability
 
 ::: zae_limiter.models.Availability

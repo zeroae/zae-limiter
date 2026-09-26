@@ -321,8 +321,9 @@ number of `reset_after` limits on the bucket:
 | Event | Cost | How often |
 |-------|------|-----------|
 | Acquire inside a window | **Unchanged**: 1 WCU, 0 reads on the speculative path. The fast path's condition is byte-identical to any other limit's | Every request |
-| The request that opens a new window | One slow-path acquire (like any schedule boundary), then **(S − 1) × L** conditional writes, one per (sibling shard, window limit) | Once per window per entity |
-| Opening a window, unsharded entity (S = 1) | The slow-path acquire only; **no** fan-out writes and no requests issued | Once per window per entity |
+| A new window opening | One slow-path acquire **per shard** — the first request to reach each shard after the rollover re-materialises it, as at any schedule boundary | S per window per entity |
+| The fan-out by the request that opened the window | **(S − 1) × L** conditional writes, one per (sibling shard, window limit) | Once per window per entity |
+| Opening a window, unsharded entity (S = 1) | One slow-path acquire; **no** fan-out writes and no requests issued | Once per window per entity |
 | Creating shard N > 0 | **+1 RCU**: one strongly consistent `GetItem` of shard 0's window start, projected to the window attributes, on top of the ADR-133 create cost | Once per shard |
 
 At `MAX_SHARD_COUNT` (32) with one session limit, a rollover is 31 extra WCU (~$19 per million

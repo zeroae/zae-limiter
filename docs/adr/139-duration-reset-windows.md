@@ -163,10 +163,16 @@ silently becoming its parent's.
   concurrent openers (above), which is the common case, not a failure. A lengthened `rsa` can
   likewise no-op on a sibling still inside a longer window; it opens its own when that ends.
   The fan-out counts its writes and logs a shortfall at debug level rather than swallowing it.
-- A `reset_after` limit is not backward-readable by a client predating it, which reads
-  `refill_amount = 0` with no reset and raises. This is a property of ADR-137 rather than of this
-  record — a pre-#222 client reading a *calendar* quota raises identically — and the
-  fleet-upgrade requirement already exists.
+- A `reset_after` limit is not backward-readable by a client predating it, which ignores
+  `l_{name}_rsa`, reads `refill_amount = 0` with no reset, and raises `ValueError` under
+  ADR-137. What the caller sees depends on `on_unavailable`: under `block` every acquire
+  against that level raises `RateLimiterUnavailable`; under `allow` every acquire is admitted
+  as a degraded no-op lease — **no limiting at all on that level**, including its other limits.
+  An aggregator predating this record reads the quota as a dripping limit, so its
+  proactive-sharding clone mints `cp // new_count` per new shard — the #587 over-admission.
+  The incompatibility itself is a property of ADR-137 rather than of this record — a pre-#222
+  client reading a *calendar* quota fails identically — but nothing checks versions, so the
+  whole fleet must be upgraded before a `reset_after` limit is stored.
 
 ## Alternatives Considered
 

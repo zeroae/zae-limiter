@@ -14,10 +14,13 @@ session = Limit.quota("session", 10_000, reset_after=timedelta(hours=5))
 
 Two callers that first use it at 09:00 and 14:30 get windows ending at 14:00 and 19:30.
 
-!!! info "Added in v0.15.0"
-    `Limit.quota(..., reset_after=...)` is new in v0.15.0. Every client and the aggregator Lambda
-    must run v0.15.0 or later before a `reset_after` limit is stored: an older reader cannot
-    reconstruct it and raises.
+!!! warning "Upgrade every client and the aggregator before storing one"
+    `reset_after` is new in v0.15.0, and nothing checks versions for you. A client older than
+    v0.15.0 cannot read a level that stores a `reset_after` limit: with
+    `on_unavailable="block"` every `acquire()` against that level raises
+    `RateLimiterUnavailable`, and with `on_unavailable="allow"` it is admitted **with no
+    limiting at all**, including the other limits on that level. An older aggregator Lambda
+    treats the quota as a dripping limit and grants each shard it pre-creates a fresh share.
 
 ## Which one do I want?
 
@@ -112,9 +115,10 @@ until the window it already opened has ended.
 
 ## Cascade
 
-A parent and its children anchor their windows **independently**. When a cascading child
-acquires, the parent's window is the parent's own: it opened at the parent's first admitted use,
-not the child's, and a busy child cannot drag it along.
+A parent and its children anchor their windows **independently**. The parent's window opens at
+the first admitted request that debits the parent — whichever child (or the parent itself) made
+it — and runs its own course from there. It does not move when a child's own window restarts,
+and a child's window does not move when the parent's does.
 
 ```python
 from datetime import timedelta
@@ -145,7 +149,7 @@ async with limiter.acquire("user-alice", "claude-sonnet", consume={"session": 50
 | Event | Extra DynamoDB cost |
 |-------|---------------------|
 | An acquire inside a window | **None.** The fast path is byte-identical to any other limit: 1 WCU, 0 reads |
-| The request that opens a new window | The slow path once (like any [schedule boundary](scheduled-limits.md#what-happens-at-a-boundary)), plus **(S − 1) × L** conditional writes, where S is the entity's shard count and L the number of `reset_after` limits on the bucket |
+| A new window opening | One slow-path request **per shard** (S in all, as at any [schedule boundary](scheduled-limits.md#what-happens-at-a-boundary)), plus **(S − 1) × L** conditional writes by the request that opened it, where S is the entity's shard count and L the number of `reset_after` limits on the bucket |
 | An unsharded entity (S = 1) opening a window | No extra writes at all |
 | A new shard being created mid-window | One strongly consistent read of shard 0 (1 RCU), once per shard |
 

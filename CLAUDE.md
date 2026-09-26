@@ -1015,7 +1015,11 @@ use)` (`cli._format_duration`); `-l` cannot express it.
 
 **Known limitations:** #475 (a single request above `capacity // shard_count` is unadmittable
 on every shard); millisecond stagger across shards (above); a client predating ADR-139 cannot
-reconstruct a `reset_after` limit and raises, so the fleet must upgrade first.
+reconstruct a `reset_after` limit and raises, or under `on_unavailable=allow` **fails open for
+the whole level** (a degraded no-op lease, so the level's other limits go unenforced too); an
+aggregator predating it treats the quota as a dripping limit and its proactive-sharding clone
+mints `cp // new_count` per new shard (#587 again). Nothing checks versions, so the whole fleet
+must upgrade before one is stored.
 
 ### Combined Capacity Check (Issue #472)
 
