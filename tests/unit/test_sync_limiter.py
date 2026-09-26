@@ -8959,3 +8959,77 @@ class TestWindowRolloverFansOut:
                 pass
         spy.assert_not_called()
         assert _stored_ws(repo, "user-1", "gpt-4", "session") == T0 + FIVE_HOURS_MS + 1
+
+
+class TestRfNeverMovesBackward:
+    """A slow-path write stamps ``rf = max(now, stored rf, applied ws)`` (ADR-139).
+
+    A window rolls when ``ws > rf``, so a client whose clock runs behind the one
+    that stamped the item must not move ``rf`` back below ``ws``: the next pass
+    would read a fresh roll and refund everything spent.
+    """
+
+    def test_a_lagging_clock_cannot_re_roll_the_window(self, sync_limiter):
+        """The review repro: window opened at T0, then 20 slow-path acquires
+        from a clock 900 ms behind. Before the clamp all 20 were admitted and
+        the balance stayed at 9."""
+        repo = sync_limiter._repository
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        repo.set_limits("user-1", [SESSION_10], resource="gpt-4")
+        repo._now_ms = lambda: T0
+        with slow.acquire("user-1", "gpt-4", consume={"session": 1}):
+            pass
+        admitted = 1
+        for i in range(20):
+            repo._now_ms = lambda i=i: T0 - 900 + i
+            try:
+                with slow.acquire("user-1", "gpt-4", consume={"session": 1}):
+                    admitted += 1
+            except RateLimitExceeded:
+                pass
+        assert admitted == 10, f"admitted {admitted} against a quota of 10 in one window"
+        item = _raw_bucket(repo, "user-1")
+        assert int(item[BUCKET_FIELD_RF]["N"]) == T0, "rf never moves backward"
+        assert _stored_tk(repo, "user-1", "gpt-4", "session") == 0
+
+    def test_a_lagging_creator_stamps_rf_at_the_inherited_window(self, sync_limiter):
+        """A new shard inherits the `ws` a faster clock opened; `rf = now` from
+        a slower one would sit below it and the shard would re-roll."""
+        repo = sync_limiter._repository
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        repo.set_limits("user-1", [SESSION_10], resource="gpt-4")
+        repo._now_ms = lambda: T0
+        with slow.acquire("user-1", "gpt-4", consume={"session": 1}):
+            pass
+        assert repo.bump_shard_count("user-1", "gpt-4", 1) == 2
+        with patch("zae_limiter.sync_repository.random.randrange", return_value=1):
+            repo._now_ms = lambda: T0 - 900
+            with slow.acquire("user-1", "gpt-4", consume={"session": 1}):
+                pass
+            item = _raw_bucket(repo, "user-1", shard=1)
+            assert _stored_ws(repo, "user-1", "gpt-4", "session", shard=1) == T0
+            assert int(item[BUCKET_FIELD_RF]["N"]) == T0
+            repo._now_ms = lambda: T0 - 800
+            with slow.acquire("user-1", "gpt-4", consume={"session": 1}):
+                pass
+        assert _stored_tk(repo, "user-1", "gpt-4", "session", shard=1) == 2000
+
+    def test_a_drip_limit_behind_rf_gets_no_negative_refill(self, sync_limiter):
+        """`refill_bucket` treats a non-positive elapsed time as zero, and the
+        write keeps `rf` where it was rather than rewinding it."""
+        repo = sync_limiter._repository
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        repo.set_limits("user-1", [Limit.per_minute("rpm", 60)], resource="gpt-4")
+        repo._now_ms = lambda: T0
+        with slow.acquire("user-1", "gpt-4", consume={"rpm": 30}):
+            pass
+        repo._now_ms = lambda: T0 - 30000
+        with slow.acquire("user-1", "gpt-4", consume={"rpm": 1}):
+            pass
+        assert _stored_tk(repo, "user-1", "gpt-4", "rpm") == 29000
+        item = _raw_bucket(repo, "user-1")
+        assert int(item[BUCKET_FIELD_RF]["N"]) == T0
+        repo._now_ms = lambda: T0 + 1000
+        with slow.acquire("user-1", "gpt-4", consume={"rpm": 1}):
+            pass
+        assert _stored_tk(repo, "user-1", "gpt-4", "rpm") == 29000

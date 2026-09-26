@@ -2214,6 +2214,7 @@ class Repository:
         shard_id: int = 0,
         shard_count: int = 1,
         vu: int | None = None,
+        rf_ms: int | None = None,
     ) -> dict[str, Any]:
         """Build a PutItem for creating a new composite bucket.
 
@@ -2234,13 +2235,16 @@ class Repository:
                 instant at which any limit on this item changes effective
                 params. ``None`` omits the attribute, which the fast path
                 reads as "no schedule, never expires".
+            rf_ms: The ``rf`` to stamp, when the caller has clamped it above
+                ``now_ms`` so that ``rf`` never sits below a window start the
+                item carries (ADR-139). ``None`` stamps ``now_ms``.
         """
         item: dict[str, Any] = {
             "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)},
             "SK": {"S": schema.sk_state()},
             "entity_id": {"S": entity_id},
             "resource": {"S": resource},
-            schema.BUCKET_FIELD_RF: {"N": str(now_ms)},
+            schema.BUCKET_FIELD_RF: {"N": str(now_ms if rf_ms is None else rf_ms)},
             "GSI2PK": {"S": schema.gsi2_pk_resource(self._namespace_id, resource)},
             "GSI2SK": {"S": schema.gsi2_sk_bucket(entity_id, shard_id)},
             "cascade": {"BOOL": cascade},
@@ -2345,6 +2349,7 @@ class Repository:
         vu: int | None = None,
         clear_vu: bool = False,
         windows: dict[str, tuple[int, int]] | None = None,
+        rf_ms: int | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -2388,13 +2393,17 @@ class Repository:
                 reaches an existing bucket through the param sync (#271/#296)
                 — so an item holding `ws` alone would carry a window whose end
                 nothing but a config-resolving client could compute.
+            rf_ms: The ``rf`` to stamp, when the caller has clamped it so that
+                it never moves backward and never sits below a window start
+                the item carries (ADR-139). ``None`` stamps ``now_ms``. The
+                lock still compares against ``expected_rf``, the stored value.
         """
         add_parts: list[str] = []
         set_parts: list[str] = ["#rf = :now"]
         remove_parts: list[str] = []
         attr_names: dict[str, str] = {"#rf": schema.BUCKET_FIELD_RF}
         attr_values: dict[str, Any] = {
-            ":now": {"N": str(now_ms)},
+            ":now": {"N": str(now_ms if rf_ms is None else rf_ms)},
             ":expected_rf": {"N": str(expected_rf)},
         }
 

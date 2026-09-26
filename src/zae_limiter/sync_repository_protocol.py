@@ -508,6 +508,7 @@ class SyncRepositoryProtocol(Protocol):
         shard_id: int = 0,
         shard_count: int = 1,
         vu: int | None = None,
+        rf_ms: int | None = None,
     ) -> dict[str, Any]:
         """Build a PutItem for creating a new composite bucket.
 
@@ -520,6 +521,7 @@ class SyncRepositoryProtocol(Protocol):
             cascade: Whether the entity has cascade enabled
             parent_id: The entity's parent_id (if any)
             vu: Valid-until stamp in epoch ms, or None to omit (#222 §2.1)
+            rf_ms: The ``rf`` to stamp, or None for ``now_ms`` (ADR-139)
         """
         ...
 
@@ -536,6 +538,7 @@ class SyncRepositoryProtocol(Protocol):
         vu: int | None = None,
         clear_vu: bool = False,
         windows: dict[str, tuple[int, int]] | None = None,
+        rf_ms: int | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -554,6 +557,8 @@ class SyncRepositoryProtocol(Protocol):
                 (ADR-139). Only limits whose window rolled on this pass
                 appear; ``None`` leaves every `ws` untouched. `ws` and `rsa`
                 travel as one pair so neither is ever stamped alone.
+            rf_ms: The ``rf`` to stamp, or None for ``now_ms``. The lock still
+                compares against ``expected_rf`` (ADR-139)
         """
         ...
 

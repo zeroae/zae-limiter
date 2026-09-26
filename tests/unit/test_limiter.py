@@ -11140,3 +11140,85 @@ class TestWindowRolloverFansOut:
                 pass
         spy.assert_not_called()
         assert await _stored_ws(repo, "user-1", "gpt-4", "session") == T0 + FIVE_HOURS_MS + 1
+
+
+class TestRfNeverMovesBackward:
+    """A slow-path write stamps ``rf = max(now, stored rf, applied ws)`` (ADR-139).
+
+    A window rolls when ``ws > rf``, so a client whose clock runs behind the one
+    that stamped the item must not move ``rf`` back below ``ws``: the next pass
+    would read a fresh roll and refund everything spent.
+    """
+
+    async def test_a_lagging_clock_cannot_re_roll_the_window(self, limiter):
+        """The review repro: window opened at T0, then 20 slow-path acquires
+        from a clock 900 ms behind. Before the clamp all 20 were admitted and
+        the balance stayed at 9."""
+        repo = limiter._repository
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        await repo.set_limits("user-1", [SESSION_10], resource="gpt-4")
+        repo._now_ms = lambda: T0
+        async with slow.acquire("user-1", "gpt-4", consume={"session": 1}):
+            pass
+
+        admitted = 1
+        for i in range(20):
+            repo._now_ms = lambda i=i: T0 - 900 + i
+            try:
+                async with slow.acquire("user-1", "gpt-4", consume={"session": 1}):
+                    admitted += 1
+            except RateLimitExceeded:
+                pass
+        assert admitted == 10, f"admitted {admitted} against a quota of 10 in one window"
+        item = await _raw_bucket(repo, "user-1")
+        assert int(item[BUCKET_FIELD_RF]["N"]) == T0, "rf never moves backward"
+        assert await _stored_tk(repo, "user-1", "gpt-4", "session") == 0
+
+    async def test_a_lagging_creator_stamps_rf_at_the_inherited_window(self, limiter):
+        """A new shard inherits the `ws` a faster clock opened; `rf = now` from
+        a slower one would sit below it and the shard would re-roll."""
+        repo = limiter._repository
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        await repo.set_limits("user-1", [SESSION_10], resource="gpt-4")
+        repo._now_ms = lambda: T0
+        async with slow.acquire("user-1", "gpt-4", consume={"session": 1}):
+            pass
+        assert await repo.bump_shard_count("user-1", "gpt-4", 1) == 2
+
+        with patch("zae_limiter.repository.random.randrange", return_value=1):
+            repo._now_ms = lambda: T0 - 900
+            async with slow.acquire("user-1", "gpt-4", consume={"session": 1}):
+                pass
+            item = await _raw_bucket(repo, "user-1", shard=1)
+            assert await _stored_ws(repo, "user-1", "gpt-4", "session", shard=1) == T0
+            assert int(item[BUCKET_FIELD_RF]["N"]) == T0
+
+            repo._now_ms = lambda: T0 - 800
+            async with slow.acquire("user-1", "gpt-4", consume={"session": 1}):
+                pass
+        # 4 transferred off shard 0's 9 (share 5), then 2 spent: no re-roll.
+        assert await _stored_tk(repo, "user-1", "gpt-4", "session", shard=1) == 2_000
+
+    async def test_a_drip_limit_behind_rf_gets_no_negative_refill(self, limiter):
+        """`refill_bucket` treats a non-positive elapsed time as zero, and the
+        write keeps `rf` where it was rather than rewinding it."""
+        repo = limiter._repository
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        await repo.set_limits("user-1", [Limit.per_minute("rpm", 60)], resource="gpt-4")
+        repo._now_ms = lambda: T0
+        async with slow.acquire("user-1", "gpt-4", consume={"rpm": 30}):
+            pass
+
+        repo._now_ms = lambda: T0 - 30_000
+        async with slow.acquire("user-1", "gpt-4", consume={"rpm": 1}):
+            pass
+        assert await _stored_tk(repo, "user-1", "gpt-4", "rpm") == 29_000
+        item = await _raw_bucket(repo, "user-1")
+        assert int(item[BUCKET_FIELD_RF]["N"]) == T0
+
+        # One second past the untouched `rf` refills exactly one token; a
+        # rewound `rf` would have refilled 31.
+        repo._now_ms = lambda: T0 + 1_000
+        async with slow.acquire("user-1", "gpt-4", consume={"rpm": 1}):
+            pass
+        assert await _stored_tk(repo, "user-1", "gpt-4", "rpm") == 29_000

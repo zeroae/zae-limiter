@@ -299,6 +299,7 @@ class SyncLease:
                         shard_id=shard_id,
                         shard_count=first_entry._shard_count,
                         vu=vu,
+                        rf_ms=_monotonic_rf(now_ms, None, group_entries),
                     )
                 )
             else:
@@ -340,6 +341,7 @@ class SyncLease:
                         shard_id=shard_id,
                         vu=vu,
                         windows=windows,
+                        rf_ms=_monotonic_rf(now_ms, expected_rf, group_entries),
                         clear_vu=not boundaries,
                     )
                 )
@@ -616,6 +618,45 @@ def _is_transaction_conflict(exc: Exception) -> bool:
     if reason_codes is not None:
         return "TransactionConflict" in reason_codes
     return False
+
+
+def _monotonic_rf(now_ms: int, stored_rf: int | None, group: list[LeaseEntry]) -> int:
+    """The ``rf`` a materialising write stamps: never backward, never below a window (ADR-139).
+
+    ``max(now, stored rf, every applied window start on the item)``. A duration
+    window rolls when ``ws > rf`` (``BucketState.window_rolled``), so ``rf`` is
+    the only record that a shard has applied its window, and a writer whose
+    clock runs **behind** the one that stamped the item would otherwise erase
+    that record:
+
+    * on an existing item, ``rf = now`` moves ``rf`` backward past ``ws``, the
+      next pass reads ``ws > rf`` and resets the balance again, and every
+      request from the slow clock refunds everything spent before it — an
+      unbounded quota;
+    * on a created shard, the inherited ``ws`` of a window a faster clock
+      opened lands above ``rf = now``, so the shard re-rolls on its next pass.
+
+    Holding ``rf`` at or above both closes each. Refill is unaffected in the
+    direction that matters: ``bucket.refill_bucket`` treats a non-positive
+    elapsed time as zero, so an ``rf`` ahead of a later reader's clock grants
+    nothing rather than a negative refill. Only entries whose limit has a
+    window vote with their ``ws``: a stale start left behind by a limit that no
+    longer has one is not a window in force.
+
+    Args:
+        now_ms: The commit's clock reading.
+        stored_rf: The ``rf`` read off the item, or ``None`` for a create.
+        group: Every entry written to this one bucket item.
+    """
+    candidates = [now_ms]
+    if stored_rf is not None:
+        candidates.append(stored_rf)
+    candidates.extend(
+        e.state.window_start_ms
+        for e in group
+        if e.limit.reset_after is not None and e.state.window_start_ms is not None
+    )
+    return max(candidates)
 
 
 def _build_retry_failure_statuses(entries: list[LeaseEntry], now_ms: int) -> list[LimitStatus]:
