@@ -1704,6 +1704,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.repository.Repository.persist_seed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;persist_seed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.repository.Repository.transact_write" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2082,6 +2093,17 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;reclaim_quota_surplus
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.repository.Repository.reclaim_quota_seed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;reclaim_quota_seed
       
     </span>
   </a>
@@ -2646,6 +2668,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.repository_protocol.RepositoryProtocol.persist_seed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;persist_seed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.repository_protocol.RepositoryProtocol.transact_write" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2694,6 +2727,17 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;reclaim_quota_surplus
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.repository_protocol.RepositoryProtocol.reclaim_quota_seed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;reclaim_quota_seed
       
     </span>
   </a>
@@ -5737,6 +5781,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.repository.Repository.persist_seed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;persist_seed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.repository.Repository.transact_write" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6115,6 +6170,17 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;reclaim_quota_surplus
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.repository.Repository.reclaim_quota_seed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;reclaim_quota_seed
       
     </span>
   </a>
@@ -6679,6 +6745,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.repository_protocol.RepositoryProtocol.persist_seed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;persist_seed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.repository_protocol.RepositoryProtocol.transact_write" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6727,6 +6804,17 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;reclaim_quota_surplus
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.repository_protocol.RepositoryProtocol.reclaim_quota_seed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;reclaim_quota_seed
       
     </span>
   </a>
@@ -10262,7 +10350,7 @@ item carries (ADR-139). <code>None</code> stamps <code>now_ms</code>.</p>
 
 
 <a href="#zae_limiter.repository.Repository.build_composite_normal" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_normal</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consumed</span><span class="p">,</span> <span class="n">refill_amounts</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="n">expected_rf</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">vu</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">clear_vu</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">windows</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">rf_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">window_lengths</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_normal</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consumed</span><span class="p">,</span> <span class="n">refill_amounts</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="n">expected_rf</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">vu</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">clear_vu</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">windows</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">rf_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">window_lengths</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">seeds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">seed_shard_count</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -10527,6 +10615,73 @@ length, and two SETs on one path are a ValidationException.</p>
                   <code>None</code>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>seeds</code>
+            </td>
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <a class="autorefs autorefs-internal" title="            BucketState
+
+
+  
+      dataclass
+   (zae_limiter.models.BucketState)" href="../models/#zae_limiter.models.BucketState">BucketState</a>] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Limit name -&gt; the state of a limit <strong>missing</strong> from this
+existing item (#633): configured after the item was created,
+so no <code>b_{name}_*</code> attribute exists to <code>ADD</code> to. Each is
+SET in full on this same write — <code>tk</code> (its starting share
+less this acquire's consumption, already on the state), <code>tc</code>,
+<code>cp</code>/<code>ra</code>/<code>rp</code> and explicit <code>sched</code>/<code>rsched</code>
+overrides (:meth:<code>_explicit_schedule_attrs</code>) — through
+:meth:<code>_limit_item_attrs</code>, the helper the create shares. A
+seeded name must not also appear in <code>consumed</code>. Its window,
+if any, travels in <code>windows</code> like any other.</p>
+<p>Each seed is guarded by <code>attribute_not_exists(cp) OR
+attribute_not_exists(tk)</code>, so it can never overwrite a limit
+another writer seeded first — the <code>rf</code> lock already
+serialises two slow-path seeders, but <code>rf</code> does not move when
+both commit inside one millisecond. <code>cp</code> in the guard is what
+lets a seed repair <code>tk = 0</code> left without parameters by an
+older client. Explicit <code>SET</code> rather than <code>if_not_exists</code>:
+the guard makes it exact, and the same attribute cannot also
+be <code>ADD</code>ed in one expression (#168).</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>seed_shard_count</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The shard count a <strong>quota</strong> seed's share was
+sized for, or <code>None</code> when no quota is seeded. Pins the write
+on <code>attribute_not_exists(shard_count) OR shard_count &lt;=
+:sized</code>: a quota never drips, so a share sized for a count
+a doubling has since overtaken would be spent by the fast
+path (a pure <code>ADD</code>) before any refill clamp trimmed it — the
+aggregator's proactive doubling can land between this pass's
+read and its write without moving <code>rf</code> (#633). A lost pin
+falls to the consumption-only retry, which never seeds a
+quota, and the next pass reads the new count. <code>&lt;=</code> rather
+than <code>=</code>: a share sized for a <em>higher</em> count (read off a
+sibling the item has not caught up with) is the smaller one,
+so only growth past it is unsafe.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -10543,7 +10698,7 @@ length, and two SETs on one path are a ValidationException.</p>
 
 
 <a href="#zae_limiter.repository.Repository.build_composite_retry" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_retry</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consumed</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_retry</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consumed</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">seeds</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -10552,6 +10707,53 @@ length, and two SETs on one path are a ValidationException.</p>
 <p>Lost optimistic lock — skip refill, only consume.
 ADD tk:(-consumed), tc:consumed for each limit.
 CONDITION: tk &gt;= consumed per limit (prevent negative on acquire).</p>
+<p><code>ReturnValuesOnConditionCheckFailure=ALL_OLD</code>: a failure here is a
+rejection, and the lease reports it from the item's real balance rather
+than from the in-memory state that just proved stale (#633). Free — the
+image rides on the failure response.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>seeds</code>
+            </td>
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <a class="autorefs autorefs-internal" title="            BucketState
+
+
+  
+      dataclass
+   (zae_limiter.models.BucketState)" href="../models/#zae_limiter.models.BucketState">BucketState</a>] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Limit name -&gt; state of a limit missing from the item (#633),
+exactly as passed to :meth:<code>build_composite_normal</code>. The lock
+that write lost may have been lost to a writer that does not
+seed (the aggregator), so the limit can still be missing here:
+<code>tk</code> is written as <code>if_not_exists(tk, :seed) - :c</code> under
+<code>attribute_not_exists(tk) OR tk &gt;= :c</code>, and every parameter
+as <code>if_not_exists</code>. A limit another writer seeded first is
+therefore debited, never re-seeded.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
 
 
     </div>
@@ -10575,6 +10777,84 @@ CONDITION: tk &gt;= consumed per limit (prevent negative on acquire).</p>
 <p>Unconditional ADD for post-hoc correction. Can go negative by design.
 Positive delta = consumed more (subtract tokens, add to counter).
 Negative delta = consumed less (add tokens, subtract from counter).</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="zae_limiter.repository.Repository.persist_seed" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">persist_seed</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+  </span>
+
+<a href="#zae_limiter.repository.Repository.persist_seed" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">persist_seed</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">shard_id</span><span class="p">,</span> <span class="n">state</span><span class="p">,</span> <span class="n">vu</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">seed_shard_count</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Write a transfer seed on a pass that will not write it itself (#633, #587).</p>
+<p>A quota missing from an existing shard of a sharded entity may be
+seeded by <strong>transfer</strong>: :meth:<code>reclaim_quota_seed</code> clamps the siblings
+holding a surplus and the seed is what that took. The clamp is a
+write, and it lands before admission. If this pass then writes no seed
+— the acquire is rejected, or its rf-locked write loses the lock and
+the consumption-only retry (which never seeds a quota) runs instead —
+the surplus would be destroyed and the <em>next</em> pass, seeing none left,
+would seed a full share on top of what the siblings already spent.
+So the seed is persisted here, at <code>state.tokens_milli</code> (what the
+clamp took, capped at one share) with nothing consumed.</p>
+<p>The caller skips the persist when the item's <code>rf</code> is behind the
+limit's current period (a calendar reset edge, or a joined window's
+start, after <code>rf</code>): this write leaves <code>rf</code> alone, so the next slow
+pass would apply that edge and reset the shard to a full share on top
+of the persisted transfer the fast path had already spent.</p>
+<p>This does not weaken write-on-enter further than #587 already did: the
+clamp already writes on the rejection path, and this completes that
+same transfer rather than admitting anything. It is a separate write
+rather than one <code>TransactWriteItems</code> with the clamps because the
+clamps run before admission is known (their result sizes the seed),
+and a transaction would have to be rebuilt around the admission
+decision for a path that is taken only on a rejection or a lost lock.</p>
+<p><code>SET</code> of the limit's attributes (<code>tk</code>, <code>tc = 0</code>, <code>cp</code>/<code>ra</code>/
+<code>rp</code>, explicit <code>sched</code>/<code>rsched</code> overrides, <code>sched_tz</code>, and a
+joined window's <code>ws</code>/<code>rsa</code>) under <code>attribute_exists(PK) AND
+attribute_not_exists(tk)</code> — a limit another writer seeded first, or a
+stray <code>tk</code> an older client left, is never overwritten — plus the
+shard-count pin of :meth:<code>build_composite_normal</code>. <code>vu</code> is lowered
+to the seed's boundary when the item's is absent or later; an earlier
+one is left alone (it forces a pass sooner, which is safe) by a second,
+<code>vu</code>-free attempt. So at most 2 WCU, once per transfer seed.</p>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="bool">bool</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Whether the seed was written.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
 
 
     </div>
@@ -13550,6 +13830,227 @@ the quota limits only — the ceiling each shard is clamped to.</p>
 <div class="doc doc-object doc-function">
 
 
+<h4 id="zae_limiter.repository.Repository.reclaim_quota_seed" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">reclaim_quota_seed</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+  </span>
+
+<a href="#zae_limiter.repository.Repository.reclaim_quota_seed" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">reclaim_quota_seed</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">capacities_milli</span><span class="p">,</span> <span class="n">shard_count</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>How quotas missing from an existing shard may be seeded (#633, #587).</p>
+<p>A quota configured after an entity's shards already existed is missing
+from each of them, and each is seeded once, on its own next admitted
+slow pass, at its <strong>current share</strong> <code>C // S</code>. The rule is decided by
+the surplus each sibling actually <em>holds</em> above that share, never by
+what it has consumed:</p>
+<ul>
+<li><strong>no sibling holds more than the share</strong> → the full share (the
+  limit is absent from the returned transfers);</li>
+<li><strong>some sibling holds more</strong> → a transfer: every sibling above the
+  share is clamped to it (:meth:<code>_clamp_quota_shard</code>, the #587 clamp)
+  and the seed is what that took, capped at one share by the caller.</li>
+</ul>
+<p><strong>Why this never starves.</strong> A seed is below the share only on a pass
+that clamped a sibling holding a surplus. The clamp removes it, so on
+every later pass no sibling holds one and the seed is the full share —
+whatever any sibling has spent, in this period or any earlier one. A
+rule reading <code>tc</code> could not say that: <code>tc</code> is cumulative across
+periods, so a sibling that consumed before a reset edge (or a session
+rollover) looked over-granted forever, every seed took a transfer of
+nothing, the acquire was rejected before any write, and the shard was
+never seeded at all.</p>
+<p><strong>Why the full share does not mint.</strong> Within one period (between two
+reset edges, or one session window) each shard is granted at most one
+share by its reset, create or seed. Shares at one shard count sum to
+the capacity, so the full share is safe for every sibling granted at
+the <strong>current</strong> count, whatever it has since spent. The one way a
+sibling is granted more is a grant taken at a <strong>lower</strong> count earlier
+in the period — seeded, created or reset before a doubling that has
+not yet been clamped away. While that grant is unspent it is held as
+a surplus above the share, and the transfer moves exactly the part of
+it this shard's slice was carved from.</p>
+<p>Two ways a pass could still grant too much are closed elsewhere:</p>
+<ul>
+<li><strong>a transfer seed that is then not written</strong> — the acquire is
+  rejected, or its rf-locked write loses the lock — would leave the
+  clamped surplus destroyed and the next pass seeding in full;
+  :meth:<code>persist_seed</code> writes it at what the clamp took instead;</li>
+<li><strong>a doubling racing the seed</strong> (the aggregator's proactive doubling
+  lands between this read and the seed's write, and does not move
+  <code>rf</code>) would leave the seed sized for the old count; the seed's
+  write pins <code>shard_count &lt;= :sized</code> and a lost pin falls to the
+  retry, which never seeds a quota. The refill clamp would not have
+  saved it: a quota never drips, and the fast path (a pure <code>ADD</code>)
+  spends the oversized share before any materialising pass trims it.</li>
+</ul>
+<p><strong>One residual remains, tracked separately:</strong> a sibling granted a share
+at a <strong>lower</strong> shard count in this period that has <strong>already spent</strong>
+into the surplus above its current share. Its spent part is gone from
+<code>tk</code> and cannot be told from a legitimate earlier-period spend without
+a per-period grant record, so the full share is granted on top of it.
+Preconditions: that lower-count grant, <em>and</em> a shard that lacks the quota
+after it. Two sources produce such a shard, neither needing a race:</p>
+<ul>
+<li>a create by a client whose config cache has not yet seen the quota
+  (within <code>config_cache_ttl</code> of configuring it) across a doubling; and</li>
+<li>the aggregator's proactive doubling cloning new shards from an
+  <strong>unseeded shard 0</strong>'s image — the clone carries only the quotas that
+  image carries and reclaims only those, so a sibling seeded before
+  shard 0 keeps a surplus nobody reclaims (measured 1250 against 1000
+  with shard 1 seeded at count 2, then a doubling to 4).</li>
+</ul>
+<p>Bound: at most the part of that
+sibling's surplus it had spent, once, in the period of the doubling
+(<code>C · (1/S' − 1/S)</code> per such sibling for a grant at count <code>S'</code>). A
+transfer can also under-grant for the rest of a period (a surplus
+carved for a shard not yet created handed to this one), never beyond
+the next reset.</p>
+<p>The shard count the share is taken at is the largest of <code>shard_count</code>
+and every sibling's stored count, off the items already read (no extra
+read), so a doubling not yet propagated to the seeding item is still
+honoured; one that lands after these reads is caught by the pin.</p>
+<p>Cost: 1 GSI3 KEYS_ONLY query + 1 <code>BatchGetItem</code> + one conditional
+<code>UpdateItem</code> per sibling holding a surplus. Paid only for a quota,
+only when <code>shard_count &gt; 1</code>, on each slow pass until the seed lands.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>entity_id</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Entity owning the shards.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>resource</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Resource the shards belong to.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>capacities_milli</code>
+            </td>
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="int">int</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>{limit_name: capacity_milli}</code> in force now,
+<strong>undivided</strong>, for the quota limits missing from the shard.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>shard_count</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The shard count the caller would seed at.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(shard_count, {limit_name: reclaimed_milli})</code>: the count the</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="int">int</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>share was taken at, and the limits that must take a transfer. A</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="tuple">tuple</span>[<span title="int">int</span>, <span title="dict">dict</span>[<span title="str">str</span>, <span title="int">int</span>]]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>name absent from the mapping is granted its full share.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
 <h4 id="zae_limiter.repository.Repository.get_shard_window_starts" class="doc doc-heading">
 <code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">get_shard_window_starts</span>
 
@@ -16467,7 +16968,7 @@ image), or None to read the entity cache</p>
 
 
 <a href="#zae_limiter.repository_protocol.RepositoryProtocol.build_composite_normal" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_normal</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consumed</span><span class="p">,</span> <span class="n">refill_amounts</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="n">expected_rf</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">vu</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">clear_vu</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">windows</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">rf_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">window_lengths</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_normal</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consumed</span><span class="p">,</span> <span class="n">refill_amounts</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="n">expected_rf</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">vu</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">clear_vu</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">windows</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">rf_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">window_lengths</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">seeds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">seed_shard_count</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -16685,6 +17186,49 @@ item's and the window did not move (ADR-139)</p>
                   <code>None</code>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>seeds</code>
+            </td>
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <a class="autorefs autorefs-internal" title="            BucketState
+
+
+  
+      dataclass
+   (zae_limiter.models.BucketState)" href="../models/#zae_limiter.models.BucketState">BucketState</a>] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Limit name -&gt; state of a limit missing from this existing
+item (#633), SET in full on this write under
+<code>attribute_not_exists(cp) OR attribute_not_exists(tk)</code>
+rather than <code>ADD</code>ed. Must not also appear in <code>consumed</code>.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>seed_shard_count</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The count a quota seed's share was sized for;
+pins <code>attribute_not_exists(shard_count) OR shard_count &lt;=
+:sized</code> so a racing doubling cannot leave an oversized quota
+share for the fast path to spend (#633).</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -16701,12 +17245,14 @@ item's and the window did not move (ADR-139)</p>
 
 
 <a href="#zae_limiter.repository_protocol.RepositoryProtocol.build_composite_retry" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_retry</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consumed</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_retry</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consumed</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">seeds</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
 
         <p>Build an UpdateItem for the retry write path (ADR-115 path 3).</p>
+<p>Must ask for <code>ReturnValuesOnConditionCheckFailure=ALL_OLD</code>: the lease
+reports a failure here from the item's real balance (#633).</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -16766,6 +17312,29 @@ item's and the window did not move (ADR-139)</p>
             </td>
             <td>
                 <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>seeds</code>
+            </td>
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <a class="autorefs autorefs-internal" title="            BucketState
+
+
+  
+      dataclass
+   (zae_limiter.models.BucketState)" href="../models/#zae_limiter.models.BucketState">BucketState</a>] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Limit name -&gt; state of a limit still missing from the item
+(#633), written with <code>if_not_exists</code> so a limit another
+writer seeded first is debited, never re-seeded.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
             </td>
           </tr>
       </tbody>
@@ -16852,6 +17421,56 @@ Negative delta = consumed less (add tokens, subtract from counter).</p>
             </td>
             <td>
                 <em>required</em>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="zae_limiter.repository_protocol.RepositoryProtocol.persist_seed" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">persist_seed</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+  </span>
+
+<a href="#zae_limiter.repository_protocol.RepositoryProtocol.persist_seed" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">persist_seed</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">shard_id</span><span class="p">,</span> <span class="n">state</span><span class="p">,</span> <span class="n">vu</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">seed_shard_count</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Write a transfer seed on a pass that will not write it itself (#633).</p>
+<p><code>SET</code> the limit's attributes at <code>state.tokens_milli</code> with nothing
+consumed, under <code>attribute_exists(PK) AND attribute_not_exists(tk)</code>
+and the shard-count pin; <code>vu</code> lowered when absent or later.</p>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="bool">bool</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Whether the seed was written.</p>
+              </div>
             </td>
           </tr>
       </tbody>
@@ -17470,6 +18089,147 @@ rightly starts full.</p>
             <td>
               <div class="doc-md-description">
                 <p>which is not the same as reclaiming nothing.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="zae_limiter.repository_protocol.RepositoryProtocol.reclaim_quota_seed" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">reclaim_quota_seed</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+  </span>
+
+<a href="#zae_limiter.repository_protocol.RepositoryProtocol.reclaim_quota_seed" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">reclaim_quota_seed</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">capacities_milli</span><span class="p">,</span> <span class="n">shard_count</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>How quotas missing from an existing shard may be seeded (#633, #587).</p>
+<p>Full share <code>capacity // count</code> unless some sibling holds more than
+that share; then every sibling above it is clamped and the seed is
+what the clamp took. <code>count</code> is the largest of <code>shard_count</code> and
+every sibling's stored count.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>entity_id</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Entity owning the shards</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>resource</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Resource the shards belong to</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>capacities_milli</code>
+            </td>
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="int">int</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>{limit_name: capacity_milli}</code> in force now,
+undivided, for the missing quota limits</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>shard_count</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The shard count the caller would seed at</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(count, {limit_name: reclaimed_milli})</code> for the limits that</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="int">int</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>must take a transfer; a name absent gets its full share.</p>
               </div>
             </td>
           </tr>
