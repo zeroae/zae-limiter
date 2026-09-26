@@ -367,8 +367,8 @@ class Limit:
         name: Unique identifier for this limit type (e.g., "rpm", "tpm")
         capacity: Max tokens in the bucket (ceiling)
         refill_amount: Numerator of refill rate. ``0`` means the limit does not
-            drip at all, and is valid **only** alongside a non-empty
-            ``reset_schedule`` (ADR-137).
+            drip at all, and is valid **only** alongside a reset — a non-empty
+            ``reset_schedule`` or a ``reset_after`` (ADR-137, ADR-139).
         refill_period_seconds: Denominator of refill rate. Inert while
             ``refill_amount`` is 0.
         schedule: Time windows in which different parameters apply (#222).
@@ -381,6 +381,13 @@ class Limit:
             ``schedule`` is resolved first-match-wins and an entry overriding
             no parameters would win its window and supply nothing. Entries are
             built with ``ScheduleEntry.reset()``.
+        reset_after: A reset window anchored to the entity's **own first use**
+            rather than to the wall clock (ADR-139): the balance goes back to
+            the effective capacity in one lump once this long has elapsed
+            since the window opened, and the next admitted request after that
+            opens a fresh window. The alternative spelling of
+            ``reset_schedule``, never a companion to it — setting both is
+            rejected at construction.
 
     A limit **drips or resets, never both and never neither** (ADR-137): a
     positive ``refill_amount`` alongside a ``reset_schedule`` would return the
@@ -391,8 +398,11 @@ class Limit:
     (``Limit.quota(...).with_schedule(...)``): that one sets the ceiling the
     reset restores to, and never touches ``refill_amount``.
 
-    The reset window is a **fixed calendar window** — every entity on one
-    schedule resets at the same wall-clock instant (ADR-138).
+    A ``reset_schedule`` names a **fixed calendar window** — every entity on
+    one schedule resets at the same wall-clock instant (ADR-138). A
+    ``reset_after`` names a **duration window** instead, anchored to each
+    entity's own first admitted use and restarting after the entity goes
+    idle past its end (ADR-139). A limit carries one or the other, never both.
     """
 
     name: str
@@ -890,12 +900,12 @@ class Limit:
           as the quota it is rather than raising two-recovery-mechanisms from
           inside a rejection path.
 
-        Note that ``state.reset_sched`` and ``state.reset_after_seconds`` are
-        populated by the slow path (from the resolved config) and by
-        ``BucketState.from_limit``, but **not yet** by
-        ``_deserialize_composite_bucket`` — so for a bucket read back off the
-        item this is still the old behaviour exactly, and becomes live with no
-        further edit once that deserialiser decodes ``rsched`` / ``rsa``.
+        ``state.reset_sched`` and ``state.reset_after_seconds`` are populated
+        by the slow path (from the resolved config), by
+        ``BucketState.from_limit``, and by ``_deserialize_composite_bucket``,
+        which decodes ``rsched`` and ``b_{name}_rsa`` off the item — so a
+        bucket read back from DynamoDB, including a speculative-path
+        ``ALL_OLD`` / ``ALL_NEW`` image, reconstructs as the quota it is.
         """
         is_quota = state.refill_amount_milli == 0 and (
             bool(state.reset_sched) or state.reset_after_seconds is not None
