@@ -39,7 +39,7 @@ With write-on-exit, there is a window between enter and exit where:
 
 ## Key Invariants
 
-1. `RateLimitExceeded` is raised BEFORE any DynamoDB write (no partial writes on rejection)
+1. `RateLimitExceeded` is raised BEFORE any write of **consumption** — nothing a rejected request asked for is ever debited. Two documented writes may precede a rejection, and neither admits anything: the quota surplus **reclaim clamp** of #587 (`Repository.reclaim_quota_surplus` / `reclaim_quota_seed`, run before admission because its result sizes a new or seeded shard), and the **persist** of what that clamp took (`Repository.persist_seed`, #633), which completes the transfer so the clamped surplus is not destroyed
 2. `_commit_initial()` writes all consumption (child + parent if cascade) atomically via `transact_write()`
 3. `_commit_adjustments()` is a no-op when no `adjust()`, `consume()`, or `release()` calls were made
 4. `_commit_adjustments()` and `_rollback()` use `write_each()` (independent single-item writes, 1 WCU each) since they produce unconditional ADD operations that do not require cross-item atomicity
