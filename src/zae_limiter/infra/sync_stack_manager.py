@@ -31,13 +31,14 @@ NAME_TAG_KEY = f"{VERSION_TAG_PREFIX}name"
 TYPE_TAG_KEY = f"{VERSION_TAG_PREFIX}type"
 
 
-def aggregator_function_exists(
+def lambda_function_exists(
     session: boto3.Session, function_name: str, region: str | None, endpoint_url: str | None
 ) -> bool | None:
-    """``SyncStackManager.aggregator_exists`` without a SyncStackManager (#638).
+    """Whether a Lambda function exists, without a SyncStackManager (#638).
 
-    ``SyncRepository._initialize_version_record`` probes with this, so opening a
-    stack never constructs the infrastructure manager.
+    Backs ``SyncStackManager.aggregator_exists`` / ``provisioner_exists``;
+    ``SyncRepository._initialize_version_record`` probes with it directly, so
+    opening a stack never constructs the infrastructure manager.
 
     Returns:
         True if the function exists, False if Lambda says it does not, None
@@ -644,9 +645,35 @@ class SyncStackManager:
         """
         if self._session is None:
             self._session = boto3.Session()
-        return aggregator_function_exists(
+        return lambda_function_exists(
             self._session,
             function_name or f"{self.table_name}-aggregator",
+            self.region,
+            self.endpoint_url,
+        )
+
+    def provisioner_exists(self, function_name: str | None = None) -> bool | None:
+        """Whether the stack's limits provisioner Lambda function exists (#638).
+
+        The same probe as :meth:`aggregator_exists`. A stamp claimed because
+        the aggregator is absent must also rule out an old provisioner:
+        ``create_stack`` never updates an existing stack, so a redeploy with
+        ``--no-provisioner`` (or ``--no-iam``) leaves a live one untouched, and
+        a pre-v0.15 provisioner stores a ``reset_after`` manifest limit as a
+        dripping one.
+
+        Args:
+            function_name: Lambda function name
+                (default: {table_name}-limits-provisioner)
+
+        Returns:
+            True / False / None (cannot tell), as for :meth:`aggregator_exists`.
+        """
+        if self._session is None:
+            self._session = boto3.Session()
+        return lambda_function_exists(
+            self._session,
+            function_name or f"{self.table_name}-limits-provisioner",
             self.region,
             self.endpoint_url,
         )

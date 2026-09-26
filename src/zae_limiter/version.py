@@ -278,7 +278,8 @@ def reset_after_refusal(record_found: bool, lambda_version: str | None) -> tuple
     minimum = MIN_READER_VERSION_FOR_RESET_AFTER
     no_aggregator = (
         f"On a stack deployed with --no-aggregator, re-run 'zae-limiter deploy' "
-        f"from {minimum} or later instead."
+        f"from {minimum} or later instead, keeping the provisioner enabled (deploy "
+        "does not remove an existing one, so an old provisioner must get new code)."
     )
     if not record_found:
         return (

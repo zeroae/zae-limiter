@@ -8043,13 +8043,29 @@ class TestVersionRecordInitialization:
         cannot tell (an application role without Lambda permissions) —
         leaves the Lambda version unknown."""
         with patch(
-            "zae_limiter.infra.stack_manager.aggregator_function_exists",
+            "zae_limiter.infra.stack_manager.lambda_function_exists",
             AsyncMock(return_value=probe),
         ):
             await repo._initialize_version_record()
         record = await repo.get_version_record()
         assert record["lambda_version"] is None
         assert record["client_min_version"] == "0.0.0"
+
+    @pytest.mark.parametrize(
+        ("aggregator", "provisioner"), [(False, True), (False, None), (True, False)]
+    )
+    async def test_either_live_function_keeps_a_new_record_unknown(
+        self, repo, aggregator, provisioner
+    ):
+        """No aggregator is not enough: an old provisioner stores a reset_after
+        manifest limit as a dripping one (#638 fix round 3)."""
+
+        async def probe(_session, function_name, _region, _endpoint):
+            return aggregator if function_name.endswith("-aggregator") else provisioner
+
+        with patch("zae_limiter.infra.stack_manager.lambda_function_exists", probe):
+            await repo._initialize_version_record()
+        assert (await repo.get_version_record())["lambda_version"] is None
 
     async def test_a_record_initialized_on_a_stack_without_an_aggregator_claims_this_build(
         self, repo
@@ -8071,7 +8087,7 @@ class TestVersionRecordInitialization:
         with (
             patch("zae_limiter.__version__", "0.15.0"),
             patch(
-                "zae_limiter.infra.stack_manager.aggregator_function_exists",
+                "zae_limiter.infra.stack_manager.lambda_function_exists",
                 AsyncMock(return_value=True),
             ),
         ):
@@ -8089,7 +8105,7 @@ class TestVersionRecordInitialization:
         setup = Repository(name="unknown-stack", region="us-east-1", _skip_deprecation_warning=True)
         await setup.create_table()
         with patch(
-            "zae_limiter.infra.stack_manager.aggregator_function_exists",
+            "zae_limiter.infra.stack_manager.lambda_function_exists",
             AsyncMock(return_value=True),
         ):
             await setup._initialize_version_record()
@@ -8130,24 +8146,29 @@ class TestVersionRecordInitialization:
             client.put_item = original
 
     @pytest.mark.parametrize(
-        ("created", "aggregator", "exists", "expected"),
+        ("created", "aggregator", "provisioner", "exists", "prov_exists", "expected"),
         [
-            (True, False, True, "0.15.0"),  # a stack this call created
-            (False, True, True, "0.15.0"),  # aggregator code pushed
-            (False, False, True, None),  # existing stack, its aggregator untouched
-            (False, False, None, None),  # existing stack, probe cannot tell
-            (False, False, False, "0.15.0"),  # existing stack with no aggregator
+            (True, False, True, True, True, "0.15.0"),  # a stack this call created
+            (False, True, True, True, True, "0.15.0"),  # aggregator code pushed
+            (False, False, True, True, True, None),  # its old aggregator untouched
+            (False, False, True, None, True, None),  # aggregator probe cannot tell
+            (False, False, True, False, True, "0.15.0"),  # no aggregator, provisioner pushed
+            (False, False, False, False, True, None),  # an old provisioner left live
+            (False, False, False, False, None, None),  # provisioner probe cannot tell
+            (False, False, False, False, False, "0.15.0"),  # neither function exists
         ],
     )
     async def test_ensure_infrastructure_records_what_it_deployed(
-        self, mock_dynamodb, created, aggregator, exists, expected
+        self, mock_dynamodb, created, aggregator, provisioner, exists, prov_exists, expected
     ):
         from zae_limiter.models import StackOptions
 
         repo = Repository(
             name="deploys",
             region="us-east-1",
-            stack_options=StackOptions(enable_aggregator=aggregator),
+            stack_options=StackOptions(
+                enable_aggregator=aggregator, enable_provisioner=provisioner
+            ),
             _skip_deprecation_warning=True,
         )
         manager = AsyncMock()
@@ -8157,6 +8178,7 @@ class TestVersionRecordInitialization:
             return_value={"status": "CREATE_COMPLETE", **({"created": True} if created else {})}
         )
         manager.aggregator_exists = AsyncMock(return_value=exists)
+        manager.provisioner_exists = AsyncMock(return_value=prov_exists)
         try:
             with (
                 patch("zae_limiter.__version__", "0.15.0"),

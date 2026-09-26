@@ -1816,6 +1816,15 @@ class TestAggregatorExists:
             "lambda", region_name="us-east-1", endpoint_url="http://localhost:4566"
         )
 
+    async def test_the_provisioner_probe_names_the_provisioner(self):
+        session, mock_lambda = self._session(AsyncMock(return_value={}))
+        with patch("zae_limiter.infra.stack_manager.get_session", return_value=session):
+            manager = StackManager(stack_name="probe", region="us-east-1")
+            assert await manager.provisioner_exists() is True
+        mock_lambda.get_function_configuration.assert_called_once_with(
+            FunctionName="probe-limits-provisioner"
+        )
+
     async def test_create_stack_marks_a_stack_it_created(self):
         """``created`` is how #638 tells a new stack from an existing one, which
         also reports CREATE_COMPLETE."""

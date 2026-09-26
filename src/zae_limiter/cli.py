@@ -486,6 +486,7 @@ def deploy(
                 # just now, one whose aggregator code is pushed below, or one
                 # with no aggregator at all (probed in step 4).
                 lambdas_deployed = result.get("created") is True
+                provisioner_pushed = False
 
                 if result.get("stack_id"):
                     click.echo(f"  Stack ID: {result['stack_id']}")
@@ -522,6 +523,7 @@ def deploy(
 
                     try:
                         provisioner_result = await manager.deploy_provisioner_code(wait=True)
+                        provisioner_pushed = True
 
                         if provisioner_result.get("status") == "deployed":
                             size_kb = provisioner_result.get("size_bytes", 0) / 1024
@@ -552,10 +554,16 @@ def deploy(
                         lambda_version: str | None = __version__
                         # No aggregator code pushed and the stack not new: the
                         # stamp is still truthful when there is no aggregator
-                        # to be old (every --no-aggregator stack). Only one
-                        # that exists, or a probe that cannot tell, keeps the
-                        # stored value.
-                        if not lambdas_deployed and await manager.aggregator_exists() is not False:
+                        # to be old (every --no-aggregator stack) and no old
+                        # provisioner either — its code pushed above, or the
+                        # function absent. deploy never adds or removes
+                        # functions on an existing stack, so --no-provisioner /
+                        # --no-iam leave a live one untouched. A function that
+                        # exists, or a probe that cannot tell, keeps the stamp.
+                        if not lambdas_deployed and not (
+                            await manager.aggregator_exists() is False
+                            and (provisioner_pushed or await manager.provisioner_exists() is False)
+                        ):
                             stored = await repo.get_version_record()
                             lambda_version = (stored or {}).get("lambda_version")
                         # client_min_version is left as stored (#638): a

@@ -30,16 +30,17 @@ NAME_TAG_KEY = f"{VERSION_TAG_PREFIX}name"
 TYPE_TAG_KEY = f"{VERSION_TAG_PREFIX}type"
 
 
-async def aggregator_function_exists(
+async def lambda_function_exists(
     session: AioSession,
     function_name: str,
     region: str | None,
     endpoint_url: str | None,
 ) -> bool | None:
-    """``StackManager.aggregator_exists`` without a StackManager (#638).
+    """Whether a Lambda function exists, without a StackManager (#638).
 
-    ``Repository._initialize_version_record`` probes with this, so opening a
-    stack never constructs the infrastructure manager.
+    Backs ``StackManager.aggregator_exists`` / ``provisioner_exists``;
+    ``Repository._initialize_version_record`` probes with it directly, so
+    opening a stack never constructs the infrastructure manager.
 
     Returns:
         True if the function exists, False if Lambda says it does not, None
@@ -777,9 +778,35 @@ class StackManager:
         """
         if self._session is None:
             self._session = get_session()
-        return await aggregator_function_exists(
+        return await lambda_function_exists(
             self._session,
             function_name or f"{self.table_name}-aggregator",
+            self.region,
+            self.endpoint_url,
+        )
+
+    async def provisioner_exists(self, function_name: str | None = None) -> bool | None:
+        """Whether the stack's limits provisioner Lambda function exists (#638).
+
+        The same probe as :meth:`aggregator_exists`. A stamp claimed because
+        the aggregator is absent must also rule out an old provisioner:
+        ``create_stack`` never updates an existing stack, so a redeploy with
+        ``--no-provisioner`` (or ``--no-iam``) leaves a live one untouched, and
+        a pre-v0.15 provisioner stores a ``reset_after`` manifest limit as a
+        dripping one.
+
+        Args:
+            function_name: Lambda function name
+                (default: {table_name}-limits-provisioner)
+
+        Returns:
+            True / False / None (cannot tell), as for :meth:`aggregator_exists`.
+        """
+        if self._session is None:
+            self._session = get_session()
+        return await lambda_function_exists(
+            self._session,
+            function_name or f"{self.table_name}-limits-provisioner",
             self.region,
             self.endpoint_url,
         )

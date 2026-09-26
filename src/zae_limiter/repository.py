@@ -718,8 +718,18 @@ class Repository:
                 await manager.deploy_provisioner_code()
 
             # No aggregator code pushed: the stamp is still truthful when there
-            # is no aggregator at all, which is every --no-aggregator stack.
-            if not deployed and await manager.aggregator_exists() is False:
+            # is no aggregator at all (every --no-aggregator stack) and no
+            # provisioner older than this build — pushed just now, or absent.
+            # create_stack never updates an existing stack, so --no-provisioner
+            # leaves a live old one in place.
+            if (
+                not deployed
+                and await manager.aggregator_exists() is False
+                and (
+                    self._stack_options.deploys_provisioner_lambda
+                    or await manager.provisioner_exists() is False
+                )
+            ):
                 deployed = True
 
         if deployed:
@@ -1563,10 +1573,10 @@ class Repository:
 
         ``lambda_version`` is this build's version **only when this Repository
         deployed the stack's Lambda code** (``_ensure_infrastructure_internal``),
-        or when the stack has no aggregator for it to be older than (probed
-        with ``StackManager.aggregator_exists``; an application role without
-        Lambda permissions gets "cannot tell"); otherwise it is recorded as
-        unknown (#638). The ``reset_after`` gate
+        or when the stack has neither an aggregator nor a limits provisioner
+        for it to be older than (both probed with ``lambda_function_exists``;
+        an application role without Lambda permissions gets "cannot tell");
+        otherwise it is recorded as unknown (#638). The ``reset_after`` gate
         trusts the stamp, so an ``open()`` of a stack built by an older
         ``cfn-template`` / ``lambda-export`` must not claim Lambdas it never
         deployed. An unknown stamp is inert everywhere else: it asks for no
@@ -1586,14 +1596,19 @@ class Repository:
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         stamp = self._deployed_lambda_version
         if stamp is None:
-            from .infra.stack_manager import aggregator_function_exists
+            from .infra.stack_manager import lambda_function_exists
 
             await self._get_client()  # creates the session the probe shares
             assert self._session is not None
-            probe = await aggregator_function_exists(
-                self._session, f"{self.table_name}-aggregator", self.region, self.endpoint_url
-            )
-            if probe is False:
+            if all(
+                [
+                    await lambda_function_exists(
+                        self._session, f"{self.table_name}-{suffix}", self.region, self.endpoint_url
+                    )
+                    is False
+                    for suffix in ("aggregator", "limits-provisioner")
+                ]
+            ):
                 stamp = __version__
         item: dict[str, Any] = {
             "PK": {"S": schema.pk_system(schema.RESERVED_NAMESPACE)},
