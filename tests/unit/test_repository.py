@@ -815,28 +815,28 @@ class TestCompositeWritePaths:
         assert update["Key"]["PK"]["S"] == "default/BUCKET#entity-1#gpt-4#0"
         assert update["Key"]["SK"]["S"] == "#STATE"
 
-        # Verify ADD expression contains both limits
+        # Verify ADD expression contains both limits (positional tokens, #634)
         expr = update["UpdateExpression"]
         assert "ADD" in expr
-        assert "#b_rpm_tk" in expr
-        assert "#b_rpm_tc" in expr
-        assert "#b_tpm_tk" in expr
-        assert "#b_tpm_tc" in expr
+        assert "#bt0" in expr
+        assert "#bc0" in expr
+        assert "#bt1" in expr
+        assert "#bc1" in expr
 
         # Verify condition requires sufficient tokens
         cond = update["ConditionExpression"]
-        assert "#b_rpm_tk >= " in cond
-        assert "#b_tpm_tk >= " in cond
+        assert "#bt0 >= " in cond
+        assert "#bt1 >= " in cond
 
         # Verify attribute mappings
         names = update["ExpressionAttributeNames"]
-        assert names["#b_rpm_tk"] == "b_rpm_tk"
-        assert names["#b_rpm_tc"] == "b_rpm_tc"
+        assert names["#bt0"] == "b_rpm_tk"
+        assert names["#bc0"] == "b_rpm_tc"
 
         # Verify values: tk gets negative (consumption), tc gets positive
         vals = update["ExpressionAttributeValues"]
-        assert vals[":b_rpm_tk_neg"]["N"] == "-5000"
-        assert vals[":b_rpm_tc_delta"]["N"] == "5000"
+        assert vals[":bd0"]["N"] == "-5000"
+        assert vals[":bcd0"]["N"] == "5000"
 
     @pytest.mark.asyncio
     async def test_build_composite_adjust_structure(self, repo):
@@ -856,11 +856,13 @@ class TestCompositeWritePaths:
 
         # Positive delta: subtract from tk, add to tc
         vals = update["ExpressionAttributeValues"]
-        assert vals[":b_rpm_tk_delta"]["N"] == "-3000"
-        assert vals[":b_rpm_tc_delta"]["N"] == "3000"
+        names = update["ExpressionAttributeNames"]
+        assert (names["#bt0"], names["#bt1"]) == ("b_rpm_tk", "b_tpm_tk")
+        assert vals[":bd0"]["N"] == "-3000"
+        assert vals[":bcd0"]["N"] == "3000"
         # Negative delta: add to tk, subtract from tc
-        assert vals[":b_tpm_tk_delta"]["N"] == "500"
-        assert vals[":b_tpm_tc_delta"]["N"] == "-500"
+        assert vals[":bd1"]["N"] == "500"
+        assert vals[":bcd1"]["N"] == "-500"
 
     @pytest.mark.asyncio
     async def test_build_composite_adjust_zero_deltas(self, repo):
@@ -5858,7 +5860,8 @@ class TestSlowPathWritesVu:
             vu=None,
         )
         values = item["Update"]["ExpressionAttributeValues"]
-        assert values[":b_rpm_tk_delta"] == {"N": str(-400_000 - 1000)}
+        assert item["Update"]["ExpressionAttributeNames"]["#bt0"] == "b_rpm_tk"
+        assert values[":bd0"] == {"N": str(-400_000 - 1000)}
 
     def test_create_stamps_vu(self, repo):
         """A bucket created on the slow path needs its first ``vu``, or the

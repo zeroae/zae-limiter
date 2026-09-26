@@ -32,6 +32,21 @@ from zae_limiter_aggregator.processor import (
 )
 
 
+def _refill_deltas(kwargs: dict) -> dict[str, int]:
+    """Refill/reset deltas of one aggregator write, keyed by limit name.
+
+    The write carries positional tokens (`#rt{i}` -> `b_{name}_tk`, `:rd{i}`),
+    never the limit name (#634), so the name is read back off the alias value.
+    """
+    names = kwargs["ExpressionAttributeNames"]
+    values = kwargs["ExpressionAttributeValues"]
+    return {
+        names[alias].removeprefix("b_").removesuffix("_tk"): values[f":rd{alias[3:]}"]
+        for alias in names
+        if alias.startswith("#rt")
+    }
+
+
 class TestConsumptionDelta:
     """Tests for ConsumptionDelta dataclass."""
 
@@ -1253,9 +1268,10 @@ class TestTryRefillBucket:
         mock_table.update_item.assert_called_once()
         call_kwargs = mock_table.update_item.call_args[1]
         update_expr = call_kwargs["UpdateExpression"]
-        # Both limits should have ADD clauses
-        assert "b_tpm_tk" in update_expr
-        assert "b_rpm_tk" in update_expr
+        # Both limits should have ADD clauses, through positional aliases
+        assert "#rt0 :rd0" in update_expr
+        assert "#rt1 :rd1" in update_expr
+        assert set(_refill_deltas(call_kwargs)) == {"tpm", "rpm"}
 
     def test_uses_add_not_set_for_tokens(self) -> None:
         """Verifies ADD is used for token deltas (commutative with speculative writes)."""
@@ -1279,11 +1295,12 @@ class TestTryRefillBucket:
         call_kwargs = mock_table.update_item.call_args[1]
         update_expr = call_kwargs["UpdateExpression"]
         # Token update must use ADD (not SET) for commutativity
-        assert "ADD b_tpm_tk" in update_expr
+        assert "ADD #rt0 :rd0" in update_expr
+        assert call_kwargs["ExpressionAttributeNames"]["#rt0"] == "b_tpm_tk"
         # rf uses SET (optimistic lock)
         assert "SET rf = :new_rf" in update_expr
         # Refill delta should be positive
-        refill_delta = call_kwargs["ExpressionAttributeValues"][":rd_tpm"]
+        refill_delta = _refill_deltas(call_kwargs)["tpm"]
         assert refill_delta > 0
 
     def test_negative_tc_delta_skips_refill(self) -> None:
@@ -1332,8 +1349,8 @@ class TestNegativeRefillDelta:
             },
         )
         assert try_refill_bucket(table, state, now_ms=1000) is True
-        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
-        assert values[":rd_rpm"] == -400_000
+        deltas = _refill_deltas(table.update_item.call_args.kwargs)
+        assert deltas["rpm"] == -400_000
 
     def test_still_skips_when_nothing_to_do(self) -> None:
         table = MagicMock()
@@ -1377,8 +1394,8 @@ class TestNegativeRefillDelta:
             },
         )
         assert try_refill_bucket(table, state, now_ms=1000) is True
-        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
-        assert values[":rd_rpm"] == -200_000  # 400_000 -> 800_000 // 4 == 200_000
+        deltas = _refill_deltas(table.update_item.call_args.kwargs)
+        assert deltas["rpm"] == -200_000  # 400_000 -> 800_000 // 4 == 200_000
 
     def test_trim_is_not_gated_by_the_consumption_threshold(self) -> None:
         """The positive-delta threshold (projected >= consumption estimate) must
@@ -1402,8 +1419,8 @@ class TestNegativeRefillDelta:
             },
         )
         assert try_refill_bucket(table, state, now_ms=1000) is True
-        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
-        assert values[":rd_rpm"] == -400_000
+        deltas = _refill_deltas(table.update_item.call_args.kwargs)
+        assert deltas["rpm"] == -400_000
 
 
 class TestProcessStreamRecordsRefill:
@@ -2411,8 +2428,8 @@ class TestAggregatorRespectsSchedules:
         does not cover the 600_000 consumption estimate, so the top-up runs."""
         table = MagicMock()
         assert try_refill_bucket(table, _sched_state(sched=BUSINESS), now_ms=TUE_1400) is True
-        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
-        assert values[":rd_rpm"] == 500_000
+        deltas = _refill_deltas(table.update_item.call_args.kwargs)
+        assert deltas["rpm"] == 500_000
 
     def test_unscheduled_same_bucket_is_skipped_entirely(self) -> None:
         """Discriminates the test above: at the base rate the same minute
@@ -2434,8 +2451,8 @@ class TestAggregatorRespectsSchedules:
         table = MagicMock()
         state = _sched_state(sched=BUSINESS, shard_count=2)
         assert try_refill_bucket(table, state, now_ms=TUE_1400) is True
-        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
-        assert values[":rd_rpm"] == 250_000  # (1_000_000 * 0.5) // 2
+        deltas = _refill_deltas(table.update_item.call_args.kwargs)
+        assert deltas["rpm"] == 250_000  # (1_000_000 * 0.5) // 2
 
     def test_a_scale_down_trims_a_surplus(self) -> None:
         """Entering a 0.5x window with a full bucket must clamp, not sit on
@@ -2444,8 +2461,8 @@ class TestAggregatorRespectsSchedules:
         state = _sched_state(sched=BUSINESS, rf_ms=TUE_1400)
         state.limits["rpm"].tk_milli = 1_000_000
         assert try_refill_bucket(table, state, now_ms=TUE_1400) is True
-        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
-        assert values[":rd_rpm"] == -500_000
+        deltas = _refill_deltas(table.update_item.call_args.kwargs)
+        assert deltas["rpm"] == -500_000
 
     def test_absolute_entries_override_capacity_and_rate(self) -> None:
         """A `capacity`/`refill_amount` entry replaces the base outright."""
@@ -2459,8 +2476,8 @@ class TestAggregatorRespectsSchedules:
             ),
         )
         assert try_refill_bucket(table, _sched_state(sched=sched), now_ms=TUE_1400) is True
-        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
-        assert values[":rd_rpm"] == 200_000
+        deltas = _refill_deltas(table.update_item.call_args.kwargs)
+        assert deltas["rpm"] == 200_000
 
 
 class TestPerLimitScheduleOverride:
@@ -2488,9 +2505,9 @@ class TestPerLimitScheduleOverride:
         """
         table = MagicMock()
         assert try_refill_bucket(table, self._state(), now_ms=TUE_1400) is True
-        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
-        assert values[":rd_rpm"] == 250_000
-        assert values[":rd_tpm"] == 500_000
+        deltas = _refill_deltas(table.update_item.call_args.kwargs)
+        assert deltas["rpm"] == 250_000
+        assert deltas["tpm"] == 500_000
 
     def test_vu_is_the_earliest_boundary_on_the_item(self) -> None:
         """`vu` is one item-level attribute, so the earliest change anywhere on
@@ -2533,8 +2550,8 @@ class TestWcuIsNeverScheduledOrSharded:
         state = self._wcu_state(shard_count=4, sched=BUSINESS)
         state.limits["wcu"].sched = BUSINESS
         assert try_refill_bucket(table, state, now_ms=TUE_1400) is True
-        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
-        assert values[":rd_wcu"] == 1_000_000
+        deltas = _refill_deltas(table.update_item.call_args.kwargs)
+        assert deltas["wcu"] == 1_000_000
 
     def test_user_limits_on_the_same_item_are_still_divided(self) -> None:
         """Discriminates the test above: the exemption is `wcu`-specific, not
@@ -2551,9 +2568,9 @@ class TestWcuIsNeverScheduledOrSharded:
             sched=BUSINESS,
         )
         assert try_refill_bucket(table, state, now_ms=TUE_1400) is True
-        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
-        assert values[":rd_wcu"] == 1_000_000
-        assert values[":rd_rpm"] == 125_000  # (1_000_000 * 0.5) // 4
+        deltas = _refill_deltas(table.update_item.call_args.kwargs)
+        assert deltas["wcu"] == 1_000_000
+        assert deltas["rpm"] == 125_000  # (1_000_000 * 0.5) // 4
 
 
 class TestAggregatorRestampsVu:
@@ -2841,8 +2858,8 @@ class TestAggregatorAppliesResets:
         table = MagicMock()
         state = _quota_state(reset_sched=DAILY_RESET)
         assert try_refill_bucket(table, state, now_ms=WED_0030) is True
-        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
-        assert values[":rd_rpd"] == 10_000_000 - 2_000_000
+        deltas = _refill_deltas(table.update_item.call_args.kwargs)
+        assert deltas["rpd"] == 10_000_000 - 2_000_000
 
     def test_the_same_bucket_without_a_reset_writes_nothing(self) -> None:
         """Discriminates the test above. A quota's stored rate is 0 (ADR-137),
@@ -2884,8 +2901,8 @@ class TestAggregatorAppliesResets:
         table = MagicMock()
         state = _quota_state(reset_sched=DAILY_RESET, shard_count=4)
         assert try_refill_bucket(table, state, now_ms=WED_0030) is True
-        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
-        assert values[":rd_rpd"] == (10_000_000 // 4) - 2_000_000
+        deltas = _refill_deltas(table.update_item.call_args.kwargs)
+        assert deltas["rpd"] == (10_000_000 // 4) - 2_000_000
 
     def test_the_reset_respects_a_concurrent_param_schedule(self) -> None:
         """Compute effective params first, then set the balance to the result."""
@@ -2893,8 +2910,8 @@ class TestAggregatorAppliesResets:
         night = (ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", scale=0.5),)
         state = _quota_state(reset_sched=DAILY_RESET, sched=night)
         assert try_refill_bucket(table, state, now_ms=WED_0030) is True
-        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
-        assert values[":rd_rpd"] == 5_000_000 - 2_000_000
+        deltas = _refill_deltas(table.update_item.call_args.kwargs)
+        assert deltas["rpd"] == 5_000_000 - 2_000_000
 
     def test_the_reset_never_writes_tc(self) -> None:
         """`try_refill_bucket` writes only `tk` deltas and `rf`/`vu`. Pinned
@@ -2922,8 +2939,8 @@ class TestAggregatorAppliesResets:
         state = _quota_state(reset_sched=DAILY_RESET, shard_count=4)
         state.limits["rpd"].tk_milli = 10_000_000
         assert try_refill_bucket(table, state, now_ms=WED_0030) is True
-        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
-        assert values[":rd_rpd"] == (10_000_000 // 4) - 10_000_000
+        deltas = _refill_deltas(table.update_item.call_args.kwargs)
+        assert deltas["rpd"] == (10_000_000 // 4) - 10_000_000
 
     def test_wcu_is_exempt_from_the_item_level_reset(self) -> None:
         """`rsched` is item-level and applies to every limit by default, but
@@ -2994,9 +3011,9 @@ class TestAggregatorAppliesResets:
             },
         )
         assert try_refill_bucket(table, state, now_ms=WED_0030) is True
-        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
-        assert values[":rd_rpd"] == 10_000_000
-        assert values[":rd_rph"] == 1_500_000  # 90 minutes of drip, not a reset
+        deltas = _refill_deltas(table.update_item.call_args.kwargs)
+        assert deltas["rpd"] == 10_000_000
+        assert deltas["rph"] == 1_500_000  # 90 minutes of drip, not a reset
 
     def test_an_undecodable_schedule_still_skips_the_whole_bucket(self) -> None:
         """`sched_error` short-circuits before any reset logic runs. Refilling
@@ -3176,9 +3193,9 @@ class TestAnUnscheduledLimitOnAScheduledItem:
         table = MagicMock()
         state = next(iter(aggregate_bucket_states([self._record()]).values()))
         assert try_refill_bucket(table, state, now_ms=TUE_1400) is True
-        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
-        assert values[":rd_rpm"] == 500_000
-        assert ":rd_tpm" not in values
+        deltas = _refill_deltas(table.update_item.call_args.kwargs)
+        assert deltas["rpm"] == 500_000
+        assert "tpm" not in deltas
 
     def test_the_marked_limit_takes_no_reset_edge(self) -> None:
         """The direction the issue understates. `rsched` is one item-level
@@ -3197,9 +3214,9 @@ class TestAnUnscheduledLimitOnAScheduledItem:
         )
         state = next(iter(aggregate_bucket_states([record]).values()))
         assert try_refill_bucket(table, state, now_ms=WED_0030) is True
-        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
-        assert values[":rd_rpd"] == 10_000_000 - 2_000_000  # the quota does reset
-        assert ":rd_rpm" not in values  # ...and the rate limit is already full
+        deltas = _refill_deltas(table.update_item.call_args.kwargs)
+        assert deltas["rpd"] == 10_000_000 - 2_000_000  # the quota does reset
+        assert "rpm" not in deltas  # ...and the rate limit is already full
 
     def test_a_cloned_shard_seeds_the_marked_limit_unscaled(self) -> None:
         """Path 2 creates a shard full, so an inherited 0.5x would halve an
@@ -3278,7 +3295,7 @@ class TestABatchWithNoConsumptionStillReachesTheBucket:
 
         assert result.refills_written == 1
         (call,) = table.update_item.call_args_list
-        assert call.kwargs["ExpressionAttributeValues"][":rd_rpm"] == 100_000 - 1_000_000
+        assert _refill_deltas(call.kwargs)["rpm"] == 100_000 - 1_000_000
 
     def test_vu_is_still_restamped(self) -> None:
         """The half that pins the bucket to the slow path when it is skipped."""
@@ -3730,7 +3747,7 @@ class TestAggregatorRollsAWindow:
 
     def test_a_limit_name_never_reaches_an_expression_token(self) -> None:
         """`NAME_PATTERN` allows `-` and `.`, neither legal in a token (#634
-        tracks the pre-existing `:rd_{name}` spelling; the roll adds none)."""
+        made the refill and reset tokens positional too; the roll adds none)."""
         table = MagicMock()
         state = _window_state(_session_record(rf_ms=WS - 1, limits={"s.q-1": _session_limit()}))
         assert try_refill_bucket(table, state, now_ms=WS + 1) is True
@@ -3834,8 +3851,9 @@ class TestAggregatorRfNeverUnappliesAWindow:
         assert try_refill_bucket(table, _window_state(record), now_ms=now) is True
         write = table.update_item.call_args.kwargs
         values = write["ExpressionAttributeValues"]
+        deltas = _refill_deltas(write)
         assert values[":wd0"] == SESSION_CP
-        assert values[":rd_rpm"] == 1_000_000
+        assert deltas["rpm"] == 1_000_000
         assert values[":new_rf"] >= WS
         # The #508 pin still matches the fan-out's `vu = 0` ...
         assert values[":expected_vu"] == 0
@@ -3864,8 +3882,9 @@ class TestAggregatorRfNeverUnappliesAWindow:
         )
         assert try_refill_bucket(table, _window_state(record), now_ms=WS - 1_000) is True
         values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+        deltas = _refill_deltas(table.update_item.call_args.kwargs)
         assert values[":new_rf"] == WS + 60_000
-        assert values[":rd_rpm"] == -1_000_000
+        assert deltas["rpm"] == -1_000_000
         assert ":wd0" not in values
 
     def test_an_unwindowed_item_is_never_moved_backward_either(self) -> None:
@@ -3972,3 +3991,57 @@ class TestVuHonoursTheWindowEnd:
         record["dynamodb"]["NewImage"]["sched_tz"] = {"S": "America/New_York"}
         assert try_refill_bucket(table, _window_state(record), now_ms=TUE_1400) is True
         assert ":new_vu" not in table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+
+
+class TestRefillWithDotsAndHyphensInLimitNames:
+    """#634: the refill wrote `ADD b_rpm.v2_tk :rd_rpm.v2` inline, which DynamoDB
+    (and moto) reject — `.` parses as a nested path, and neither `.` nor `-` is
+    legal in a placeholder. The write is issued against a real moto table here,
+    so an illegal token fails the test instead of being recorded by a mock."""
+
+    def test_refill_and_reset_land_on_a_real_table(self, mock_dynamodb) -> None:
+        import boto3
+
+        client = boto3.client("dynamodb", region_name="us-east-1")
+        client.create_table(
+            TableName="t634",
+            KeySchema=[
+                {"AttributeName": "PK", "KeyType": "HASH"},
+                {"AttributeName": "SK", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "PK", "AttributeType": "S"},
+                {"AttributeName": "SK", "AttributeType": "S"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        record = _sched_record(
+            limits={
+                # Drained and consumed hard: the drip refill tops it up.
+                "rpm.v2": {
+                    "tk": 0,
+                    "cp": 1_000_000,
+                    "ra": 1_000_000,
+                    "rp": 60_000,
+                    "tc": 5_000_000,
+                },
+                # A daily quota whose midnight edge falls inside the gap: reset.
+                "req-min": {"tk": 2_000_000, "cp": 10_000_000, "ra": 0, "rp": 1_000, "tc": 0},
+            },
+            rf_ms=TUE_2300,
+            rsched=DAILY_RESET_COMPACT,
+            limit_rsched={"rpm.v2": BUCKET_SCHED_NONE},
+        )
+        client.put_item(TableName="t634", Item=record["dynamodb"]["NewImage"])
+        state = next(iter(aggregate_bucket_states([record]).values()))
+        table = boto3.resource("dynamodb", region_name="us-east-1").Table("t634")
+
+        assert try_refill_bucket(table, state, WED_0030) is True
+
+        item = client.get_item(
+            TableName="t634",
+            Key={"PK": record["dynamodb"]["NewImage"]["PK"], "SK": {"S": "#STATE"}},
+        )["Item"]
+        assert item["b_rpm.v2_tk"] == {"N": "1000000"}
+        assert item["b_req-min_tk"] == {"N": "10000000"}
+        assert item["rf"] == {"N": str(WED_0030)}

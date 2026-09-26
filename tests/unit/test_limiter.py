@@ -11276,3 +11276,145 @@ class TestRfNeverMovesBackward:
         assert await _stored_tk(repo, "reset-skew", "gpt-4", "rpd") == (
             10_000_000 - 3_000_000 - 2_000_000 - 1_000
         ), "the 5,000 spent since midnight must not be refunded by the skewed write"
+
+
+class TestLimitNamesWithDotsAndHyphens:
+    """#634: every name `NAME_PATTERN` accepts works on every write path.
+
+    `rpm.v2` and `req-min` are legal limit names, and neither `.` nor `-` is
+    legal in a DynamoDB expression token. moto rejects them the way DynamoDB
+    does, so each path below failed on main with a `ValidationException`
+    (the fast path as `RateLimiterUnavailable`, the rest as a raw
+    `ClientError`) — only the create `Put` succeeded.
+
+    The clock is frozen and advanced one second between acquires, which is
+    what tells the paths apart on the stored item: a fast-path success never
+    touches `rf`, the slow path's rf-locked write stamps it.
+    """
+
+    T0 = 1_800_000_000_000
+    LIMITS = [Limit.per_minute("rpm.v2", 100), Limit.per_minute("req-min", 1000)]
+    CONSUME = {"rpm.v2": 1, "req-min": 10}
+
+    async def _seed(self, limiter, entity_id):
+        repo = limiter._repository
+        repo._now_ms = lambda: self.T0
+        await repo.set_limits(entity_id, self.LIMITS, resource="gpt-4")
+        # The create Put: the one write that was never affected.
+        async with limiter.acquire(entity_id, "gpt-4", consume=self.CONSUME):
+            pass
+        repo._now_ms = lambda: self.T0 + 1_000
+        return repo
+
+    async def test_fast_path(self, limiter):
+        repo = await self._seed(limiter, "dots-fast")
+        async with limiter.acquire("dots-fast", "gpt-4", consume=self.CONSUME):
+            pass
+
+        item = await _raw_bucket(repo, "dots-fast")
+        assert int(item[BUCKET_FIELD_RF]["N"]) == self.T0, "the fast path took the write"
+        assert await _stored_tk(repo, "dots-fast", "gpt-4", "rpm.v2") == 98_000
+        assert await _stored_tk(repo, "dots-fast", "gpt-4", "req-min") == 980_000
+
+    async def test_slow_path(self, limiter):
+        slow = RateLimiter(repository=limiter._repository, speculative_writes=False)
+        repo = await self._seed(slow, "dots-slow")
+        async with slow.acquire("dots-slow", "gpt-4", consume=self.CONSUME):
+            pass
+
+        item = await _raw_bucket(repo, "dots-slow")
+        assert int(item[BUCKET_FIELD_RF]["N"]) == self.T0 + 1_000, "the rf-locked write landed"
+        # 99 left after the create, one second of refill (100/min) is 1_666
+        # milli, capped at the 100_000 ceiling, less the second consumption.
+        assert await _stored_tk(repo, "dots-slow", "gpt-4", "rpm.v2") == 100_000 - 1_000
+        assert await _stored_tk(repo, "dots-slow", "gpt-4", "req-min") == 1_000_000 - 10_000
+
+    async def test_adjust(self, limiter):
+        repo = await self._seed(limiter, "dots-adjust")
+        async with limiter.acquire("dots-adjust", "gpt-4", consume=self.CONSUME) as lease:
+            await lease.adjust(**{"rpm.v2": 4, "req-min": -5})
+
+        assert await _stored_tk(repo, "dots-adjust", "gpt-4", "rpm.v2") == 100_000 - 2_000 - 4_000
+        assert await _stored_tk(repo, "dots-adjust", "gpt-4", "req-min") == (
+            1_000_000 - 20_000 + 5_000
+        )
+
+    async def test_rollback(self, limiter):
+        repo = await self._seed(limiter, "dots-rollback")
+        with pytest.raises(RuntimeError, match="boom"):
+            async with limiter.acquire("dots-rollback", "gpt-4", consume=self.CONSUME):
+                raise RuntimeError("boom")
+
+        # Only the seeding acquire's consumption remains.
+        assert await _stored_tk(repo, "dots-rollback", "gpt-4", "rpm.v2") == 99_000
+        assert await _stored_tk(repo, "dots-rollback", "gpt-4", "req-min") == 990_000
+
+
+class TestSlowPathCommitErrorsHonourOnUnavailable:
+    """A backend error from the slow path's commit is an outage, like one from
+    the fast path: `RateLimiterUnavailable` under BLOCK, a degraded lease under
+    ALLOW. On main it escaped `acquire()` as the raw `ClientError`, bypassing
+    `on_unavailable` entirely (found under #634, where an invalid expression
+    token failed exactly this write)."""
+
+    @staticmethod
+    def _validation_error():
+        return ClientError(
+            {"Error": {"Code": "ValidationException", "Message": "invalid token"}},
+            "TransactWriteItems",
+        )
+
+    async def test_block_raises_rate_limiter_unavailable(self, limiter):
+        repo = limiter._repository
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        await repo.set_limits("commit-block", [Limit.per_minute("rpm", 100)], resource="gpt-4")
+        with patch.object(repo, "transact_write", side_effect=self._validation_error()):
+            with pytest.raises(RateLimiterUnavailable, match="invalid token") as exc_info:
+                async with slow.acquire(
+                    "commit-block",
+                    "gpt-4",
+                    consume={"rpm": 1},
+                    on_unavailable=OnUnavailable.BLOCK,
+                ):
+                    pass
+        assert isinstance(exc_info.value.__cause__, ClientError)
+
+    async def test_allow_yields_a_degraded_lease(self, limiter):
+        repo = limiter._repository
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        await repo.set_limits("commit-allow", [Limit.per_minute("rpm", 100)], resource="gpt-4")
+        with patch.object(repo, "transact_write", side_effect=self._validation_error()):
+            async with slow.acquire(
+                "commit-allow",
+                "gpt-4",
+                consume={"rpm": 1},
+                on_unavailable=OnUnavailable.ALLOW,
+            ) as lease:
+                assert lease.degraded is True
+
+    async def test_a_retry_rejection_still_propagates(self, limiter):
+        """The consumption-only retry's `RateLimitExceeded` is a verdict, not an
+        outage: it must pass through unchanged, even under ALLOW."""
+        repo = limiter._repository
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        await repo.set_limits("commit-retry", [Limit.per_minute("rpm", 100)], resource="gpt-4")
+        async with slow.acquire("commit-retry", "gpt-4", consume={"rpm": 1}):
+            pass
+
+        # The rf-locked write and then the consumption-only retry both lose
+        # their condition: the lease's verdict is a rejection.
+        exc_cls = type("TransactionCanceledException", (Exception,), {})
+        lost = exc_cls()
+        lost.response = {  # type: ignore[attr-defined]
+            "Error": {"Code": "TransactionCanceledException"},
+            "CancellationReasons": [{"Code": "ConditionalCheckFailed"}],
+        }
+        with patch.object(repo, "transact_write", side_effect=[lost, lost]):
+            with pytest.raises(RateLimitExceeded):
+                async with slow.acquire(
+                    "commit-retry",
+                    "gpt-4",
+                    consume={"rpm": 1},
+                    on_unavailable=OnUnavailable.ALLOW,
+                ):
+                    pass

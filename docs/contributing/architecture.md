@@ -505,8 +505,9 @@ The aggregator processes DynamoDB Stream records in each batch to:
 2. **Compute refill** -- For each bucket, `try_refill_bucket()` calls `refill_bucket()` with
    effective capacity (`cp // shard_count`) and effective refill amount (`ra // shard_count`),
    then checks if projected tokens are insufficient to cover the observed consumption rate
-3. **Write refill** -- Issues a single `UpdateItem` with `ADD b_{limit}_tk +refill_delta`
-   and `SET rf = :now`, conditioned on `rf = :expected_rf` (optimistic lock)
+3. **Write refill** -- Issues a single `UpdateItem` with `ADD #rt{i} :rd{i}` (the alias
+   `#rt{i}` names `b_{limit}_tk`; tokens are positional because a limit name may contain `.`
+   or `-`) and `SET rf = :new_rf`, conditioned on `rf = :expected_rf` (optimistic lock)
 4. **Proactive sharding** -- `try_proactive_shard()` checks if wcu consumption >= 80% of capacity
    on shard 0, and conditionally doubles `shard_count`
 5. **Shard propagation** -- `propagate_shard_count()` detects shard_count changes in stream records

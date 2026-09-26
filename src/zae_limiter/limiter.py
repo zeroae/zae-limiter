@@ -748,6 +748,18 @@ class RateLimiter:
                     shard_count=slow_path_shard_count,
                     parent_shard_id=slow_path_parent_shard,
                 )
+
+            # Write initial consumption to DynamoDB before yielding (Issue
+            # #309). No-op for speculative leases (already committed by
+            # UpdateItem). Inside this `try` so a backend error from the
+            # slow path's commit surfaces exactly as one from the fast path
+            # does -- `RateLimiterUnavailable`, or a degraded lease under
+            # ALLOW -- rather than as a raw `ClientError` that bypasses
+            # `on_unavailable` (#634). The commit is a single transaction, so
+            # a failure here has written nothing a degraded lease would need
+            # to roll back. Its consumption-only retry still raises
+            # `RateLimitExceeded`, which the clause below passes through.
+            await lease._commit_initial()
         except (RateLimitExceeded, ValidationError, ResourceDisabled, Warning):
             # `Warning`: under warnings-as-errors (-W error, or a
             # simplefilter("error")) the FutureWarnings this module emits
@@ -769,10 +781,6 @@ class RateLimiter:
                     entity_id=entity_id,
                     resource=resource,
                 ) from e
-
-        # Write initial consumption to DynamoDB before yielding (Issue #309)
-        # No-op for speculative leases (already committed by UpdateItem)
-        await lease._commit_initial()
 
         # Lease committed - manage the context
         try:
