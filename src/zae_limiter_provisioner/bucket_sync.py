@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from datetime import timedelta
 from typing import Any
 
 from zae_limiter.models import Limit
@@ -27,6 +28,7 @@ from zae_limiter.schema import (
     BUCKET_FIELD_CP,
     BUCKET_FIELD_RA,
     BUCKET_FIELD_RP,
+    BUCKET_FIELD_RSA,
     BUCKET_FIELD_RSCHED,
     BUCKET_FIELD_SCHED,
     BUCKET_FIELD_SCHED_TZ,
@@ -40,6 +42,7 @@ from zae_limiter.schema import (
     LIMIT_FIELD_CP,
     LIMIT_FIELD_RA,
     LIMIT_FIELD_RP,
+    LIMIT_FIELD_RSA,
     LIMIT_FIELD_RSCHED,
     LIMIT_FIELD_SCHED,
     bucket_attr,
@@ -78,6 +81,15 @@ _MANIFEST_NUMERIC_KEY = {
 _MANIFEST_SCHEDULE_KEY = {
     LIMIT_FIELD_SCHED: "schedule",
     LIMIT_FIELD_RSCHED: "reset_schedule",
+}
+# The duration-window length (ADR-139) decodes the same way as the numeric
+# trio above (a plain "N" attribute), but it is optional — a limit carries it
+# only when it is a session quota — so it is kept out of
+# `_MANIFEST_NUMERIC_KEY` / `_REQUIRED_MANIFEST_KEYS`: folding it in there
+# would make every decoded limit need a `reset_after`, rejecting every
+# ordinary rate limit as malformed.
+_MANIFEST_OPTIONAL_NUMERIC_KEY = {
+    LIMIT_FIELD_RSA: "reset_after",
 }
 
 # A limit missing any of these is malformed and is dropped rather than given a
@@ -181,7 +193,8 @@ def build_bucket_param_update(
     Args:
         limits: Manifest-shaped limits, ``{name: {capacity, refill_amount,
             refill_period}}``, in whole tokens and seconds, optionally with
-            ``schedule`` / ``reset_schedule`` entries (#222).
+            ``schedule`` / ``reset_schedule`` entries (#222) or a
+            ``reset_after`` duration-window length in seconds (ADR-139).
         ttl_multiplier: None leaves ``ttl`` alone; 0 REMOVEs it (entity has
             custom limits, so the bucket must persist); >0 SETs it.
         stale_limit_names: Limit names to strip from the bucket entirely.
@@ -210,6 +223,29 @@ def build_bucket_param_update(
             set_parts.append(f"{alias} = :{alias[1:]}")
             expr_names[alias] = bucket_attr(name, field)
             expr_values[f":{alias[1:]}"] = {"N": str(value)}
+
+        # Duration window length in seconds (ADR-139), mirroring
+        # `Repository._build_bucket_param_update`. SET where this limit has
+        # one, REMOVE where it does not — absence means "no window", full
+        # stop, so this needs no BUCKET_SCHED_NONE analogue (#541): there is
+        # no item-level default to inherit. A `rsa` left behind on a limit
+        # converted back to a drip would keep the item reconstructing as a
+        # quota forever.
+        #
+        # `ws` (window start) is deliberately NOT written here, for the same
+        # reason the async path never writes it: a manifest apply is not a
+        # rollover, and stamping it would restart every caller's window on
+        # an unrelated edit. The `vu = 0` this write already stamps
+        # unconditionally (below) forces the one materialising pass that
+        # anchors a first window or leaves an existing one alone.
+        rsa_alias = f"#rsa{i}"
+        expr_names[rsa_alias] = bucket_attr(name, BUCKET_FIELD_RSA)
+        reset_after = decl.get("reset_after")
+        if reset_after is not None:
+            set_parts.append(f"{rsa_alias} = :{rsa_alias[1:]}")
+            expr_values[f":{rsa_alias[1:]}"] = {"N": str(reset_after)}
+        else:
+            remove_parts.append(rsa_alias)
 
     # Re-stamp both schedules (#222 §2.2, §3.6). Manifests learned to express
     # schedules in #543, which is what lifts this mirror's old exemption: a
@@ -289,10 +325,12 @@ def build_bucket_param_update(
         if ttl_multiplier > 0:
             # The schedules are carried into the rebuilt `Limit` because
             # ADR-137 rejects a zero `refill_amount` that has no
-            # `reset_schedule` — a manifest quota round-trips to exactly that,
-            # so dropping the reset here raises before the TTL is ever
-            # computed. (The resource/system case then divides by the zero
-            # rate, which is #532 and is fixed in `schema`, not here.)
+            # `reset_schedule` and no `reset_after` — a manifest quota
+            # round-trips to exactly that, and so does a session quota
+            # (ADR-139), so dropping either reset here raises before the TTL
+            # is ever computed. (The resource/system case then divides by
+            # the zero rate, which is #532 and is fixed in `schema`, not
+            # here.)
             ttl_seconds = calculate_bucket_ttl_seconds(
                 [
                     Limit(
@@ -302,6 +340,11 @@ def build_bucket_param_update(
                         refill_period_seconds=limits[n]["refill_period"],
                         schedule=sched,
                         reset_schedule=reset_sched,
+                        reset_after=(
+                            timedelta(seconds=limits[n]["reset_after"])
+                            if limits[n].get("reset_after") is not None
+                            else None
+                        ),
                     )
                     for n, sched, reset_sched in parsed
                 ],
@@ -499,6 +542,8 @@ def _decode_limits(item: dict[str, Any]) -> dict[str, dict[str, Any]]:
         name, field = parsed
         if field in _MANIFEST_NUMERIC_KEY:
             partial.setdefault(name, {})[_MANIFEST_NUMERIC_KEY[field]] = int(value["N"])
+        elif field in _MANIFEST_OPTIONAL_NUMERIC_KEY:
+            partial.setdefault(name, {})[_MANIFEST_OPTIONAL_NUMERIC_KEY[field]] = int(value["N"])
         elif field in _MANIFEST_SCHEDULE_KEY:
             decoder = decode_reset if field == LIMIT_FIELD_RSCHED else decode
             partial.setdefault(name, {})[_MANIFEST_SCHEDULE_KEY[field]] = decoder(
