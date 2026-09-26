@@ -12,6 +12,7 @@ from zae_limiter.version import (
     parse_version,
     ratcheted_client_min_version,
     reads_reset_after,
+    reset_after_refusal,
 )
 
 
@@ -329,3 +330,25 @@ class TestPep440PreReleases:
     def test_a_release_candidate_lambda_reads_reset_after(self):
         assert reads_reset_after("0.15.0rc1", "0.15.0")
         assert not reads_reset_after("0.14.1rc1", "0.15.0")
+
+
+class TestResetAfterRefusal:
+    """One wording for the client and the provisioner (#638)."""
+
+    def test_missing_record(self):
+        message, auto = reset_after_refusal(False, None)
+        assert "no version record" in message
+        assert "zae-limiter deploy" in message
+        assert auto is False
+
+    def test_unknown_lambda_version(self):
+        message, auto = reset_after_refusal(True, None)
+        assert "zae-limiter upgrade --force" in message
+        assert "--no-aggregator, re-run 'zae-limiter deploy'" in message
+        assert auto is False
+
+    def test_old_lambda_version(self):
+        message, auto = reset_after_refusal(True, "0.14.0")
+        assert "zae-limiter upgrade" in message
+        assert "--no-aggregator, re-run 'zae-limiter deploy'" in message
+        assert auto is True

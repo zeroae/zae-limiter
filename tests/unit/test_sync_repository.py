@@ -53,6 +53,16 @@ from zae_limiter.sync_repository import SyncRepository
 from zae_limiter.sync_repository_protocol import SpeculativeFailureReason
 
 
+def _stamp_deployed(repo):
+    """The version record a deploy of this build leaves (#638)."""
+    import zae_limiter
+    from zae_limiter.version import get_schema_version
+
+    repo.set_version_record(
+        schema_version=get_schema_version(), lambda_version=zae_limiter.__version__
+    )
+
+
 @pytest.fixture
 def repo(mock_dynamodb):
     """Basic repository instance."""
@@ -5481,8 +5491,8 @@ class TestDurationWindowReachesConfigStorage:
 
     @pytest.fixture(autouse=True)
     def _version_record(self, repo):
-        """What open() writes: without it a reset_after write is refused (#638)."""
-        repo._initialize_version_record()
+        """A deployed stack's record: without it a reset_after write is refused (#638)."""
+        _stamp_deployed(repo)
 
     WINDOW = Limit.quota("session", 10000, reset_after=timedelta(hours=5))
 
@@ -5556,8 +5566,8 @@ class TestDurationWindowParamSync:
 
     @pytest.fixture(autouse=True)
     def _version_record(self, repo):
-        """What open() writes: without it a reset_after write is refused (#638)."""
-        repo._initialize_version_record()
+        """A deployed stack's record: without it a reset_after write is refused (#638)."""
+        _stamp_deployed(repo)
 
     WINDOW = Limit.quota("session", 10000, reset_after=timedelta(hours=5))
 
@@ -5890,8 +5900,8 @@ class TestUnreadableStoredSchedule:
 
     @pytest.fixture(autouse=True)
     def _version_record(self, repo):
-        """What open() writes: without it a reset_after write is refused (#638)."""
-        repo._initialize_version_record()
+        """A deployed stack's record: without it a reset_after write is refused (#638)."""
+        _stamp_deployed(repo)
 
     BUSINESS = (ScheduleEntry(cron="* 9-17 * * 1-5", tz="America/New_York", scale=0.5),)
     QUOTA = Limit.quota("rpd", 10000, cron="0 0 * * *", tz="America/New_York")
@@ -6340,12 +6350,13 @@ class TestResetAfterVersionGate:
             with pytest.raises(VersionMismatchError) as exc_info:
                 self._write(repo, level, [self.RPM, self.SESSION])
         assert "zae-limiter upgrade" in str(exc_info.value)
+        assert "--no-aggregator, re-run 'zae-limiter deploy'" in str(exc_info.value)
         assert exc_info.value.lambda_version == "0.14.0"
         assert exc_info.value.can_auto_update is True
         assert self._read(repo, level) == []
 
     @pytest.mark.parametrize("level", ["entity", "resource", "system"])
-    @pytest.mark.parametrize("lambda_version", ["0.15.0", "0.15.0-rc1", "0.16.2"])
+    @pytest.mark.parametrize("lambda_version", ["0.15.0", "0.15.0rc1", "0.15.0-rc1", "0.16.2"])
     def test_stored_once_the_lambdas_read_it(self, repo, level, lambda_version):
         self._stamp(repo, lambda_version)
         with patch("zae_limiter.__version__", "0.16.2"):
@@ -6359,14 +6370,19 @@ class TestResetAfterVersionGate:
             with pytest.raises(VersionMismatchError) as exc_info:
                 self._write(repo, level, [self.SESSION])
         assert "no version record" in str(exc_info.value)
+        assert "zae-limiter deploy" in str(exc_info.value)
         assert exc_info.value.lambda_version is None
+        assert exc_info.value.can_auto_update is False
         assert self._read(repo, level) == []
 
     def test_a_null_lambda_version_proves_nothing(self, repo):
         self._stamp(repo, None)
         with patch("zae_limiter.__version__", "0.15.0"):
-            with pytest.raises(VersionMismatchError):
+            with pytest.raises(VersionMismatchError) as exc_info:
                 self._write(repo, "entity", [self.SESSION])
+        assert "zae-limiter upgrade --force" in str(exc_info.value)
+        assert "re-run 'zae-limiter deploy'" in str(exc_info.value)
+        assert exc_info.value.can_auto_update is False
 
     def _counting_get_item(self, repo, write):
         client = repo._get_client()
@@ -6384,12 +6400,11 @@ class TestResetAfterVersionGate:
             client.get_item = original
         return [c for c in calls if c["Key"]["SK"]["S"] == "#VERSION"]
 
-    def test_the_version_read_is_strongly_consistent(self, repo):
+    @pytest.mark.parametrize("level", ["entity", "resource", "system"])
+    def test_the_version_read_is_strongly_consistent(self, repo, level):
         self._stamp(repo, "0.15.0")
         with patch("zae_limiter.__version__", "0.15.0"):
-            reads = self._counting_get_item(
-                repo, lambda: repo.set_limits("user-1", [self.SESSION], resource="gpt-4")
-            )
+            reads = self._counting_get_item(repo, lambda: self._write(repo, level, [self.SESSION]))
         assert len(reads) == 1
         assert reads[0]["ConsistentRead"] is True
 
@@ -6602,3 +6617,117 @@ class TestSetVersionRecordMinimum:
         repo.set_version_record(schema_version="0.10.0", client_min_version="0.15.0")
         repo.set_version_record(schema_version="0.10.0", client_min_version="0.1.0")
         assert repo.get_version_record()["client_min_version"] == "0.1.0"
+
+
+class TestVersionRecordInitialization:
+    """A new record claims only Lambdas this SyncRepository deployed (#638 fix round 1).
+
+    The reset_after gate trusts ``lambda_version``. ``open()`` of a table with
+    no record — a stack built by an older ``cfn-template`` / ``lambda-export``
+    — used to stamp this build's version though it deployed nothing, and the
+    gate then admitted a reset_after write the old aggregator over-admits.
+    """
+
+    SESSION = Limit.quota("session", 10, reset_after=timedelta(hours=5))
+
+    def test_a_record_initialized_without_a_deploy_is_unknown(self, repo):
+        repo._initialize_version_record()
+        record = repo.get_version_record()
+        assert record["lambda_version"] is None
+        assert record["client_min_version"] == "0.0.0"
+
+    def test_a_record_initialized_after_a_deploy_claims_this_build(self, repo):
+        repo._deployed_lambda_version = "0.15.0"
+        repo._initialize_version_record()
+        assert repo.get_version_record()["lambda_version"] == "0.15.0"
+
+    def test_open_of_a_recordless_stack_refuses_reset_after(self, mock_dynamodb):
+        setup = SyncRepository(name="old-stack", region="us-east-1", _skip_deprecation_warning=True)
+        setup.create_table()
+        setup.close()
+        with patch("zae_limiter.__version__", "0.15.0"):
+            repo = SyncRepository.open("default", stack="old-stack", region="us-east-1")
+            try:
+                with pytest.raises(VersionMismatchError, match="upgrade --force"):
+                    repo.set_limits("u", [self.SESSION], resource="r")
+                assert repo.get_limits("u", resource="r") == []
+            finally:
+                repo.close()
+
+    def test_an_unknown_stamp_neither_updates_nor_crashes_on_open(self, mock_dynamodb):
+        """No Lambda update is attempted for an unknown stamp: the stack may
+        have no aggregator, where a code push fails on every open()."""
+        setup = SyncRepository(
+            name="unknown-stack", region="us-east-1", _skip_deprecation_warning=True
+        )
+        setup.create_table()
+        setup._initialize_version_record()
+        setup.close()
+        with (
+            patch("zae_limiter.__version__", "0.15.0"),
+            patch("zae_limiter.infra.sync_stack_manager.SyncStackManager") as manager_cls,
+        ):
+            for _ in range(2):
+                repo = SyncRepository.open("default", stack="unknown-stack", region="us-east-1")
+                assert repo._lambda_version_read is True
+                assert repo._lambda_version is None
+                repo.close()
+        manager_cls.assert_not_called()
+
+    def test_a_stale_miss_never_clobbers_an_existing_record(self, repo):
+        repo.set_version_record(
+            schema_version="0.10.0", lambda_version="0.15.0", client_min_version="0.15.0"
+        )
+        repo._initialize_version_record()
+        record = repo.get_version_record()
+        assert record["lambda_version"] == "0.15.0"
+        assert record["client_min_version"] == "0.15.0"
+        assert repo._lambda_version == "0.15.0"
+
+    def test_an_initialization_failure_other_than_a_race_propagates(self, repo):
+        client = repo._get_client()
+        original = client.put_item
+
+        def throttled(*args, **kwargs):
+            raise ClientError({"Error": {"Code": "InternalServerError", "Message": "x"}}, "PutItem")
+
+        client.put_item = throttled
+        try:
+            with pytest.raises(ClientError):
+                repo._initialize_version_record()
+        finally:
+            client.put_item = original
+
+    @pytest.mark.parametrize(
+        ("created", "aggregator", "expected"),
+        [(True, False, "0.15.0"), (False, True, "0.15.0"), (False, False, None)],
+    )
+    def test_ensure_infrastructure_records_what_it_deployed(
+        self, mock_dynamodb, created, aggregator, expected
+    ):
+        from zae_limiter.models import StackOptions
+
+        repo = SyncRepository(
+            name="deploys",
+            region="us-east-1",
+            stack_options=StackOptions(enable_aggregator=aggregator),
+            _skip_deprecation_warning=True,
+        )
+        manager = MagicMock()
+        manager.__enter__ = MagicMock(return_value=manager)
+        manager.__exit__ = MagicMock(return_value=False)
+        manager.create_stack = MagicMock(
+            return_value={"status": "CREATE_COMPLETE", **({"created": True} if created else {})}
+        )
+        try:
+            with (
+                patch("zae_limiter.__version__", "0.15.0"),
+                patch(
+                    "zae_limiter.infra.sync_stack_manager.SyncStackManager", return_value=manager
+                ),
+                patch.object(repo, "_write_audit_retention_config", new_callable=MagicMock),
+            ):
+                repo._ensure_infrastructure_internal()
+            assert repo._deployed_lambda_version == expected
+        finally:
+            repo.close()

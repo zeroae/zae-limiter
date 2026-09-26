@@ -30,9 +30,9 @@ from zae_limiter.schema import (
     sk_version,
 )
 from zae_limiter.version import (
-    MIN_READER_VERSION_FOR_RESET_AFTER,
     ratcheted_client_min_version,
     reads_reset_after,
+    reset_after_refusal,
 )
 
 from .differ import Change
@@ -191,32 +191,15 @@ def require_reset_after_readers(
     last_error: ClientError | None = None
     for _ in range(_CLIENT_MIN_RATCHET_ATTEMPTS):
         item = client.get_item(TableName=table_name, Key=key, ConsistentRead=True).get("Item")
-        if not item:
+        lambda_version = (item or {}).get("lambda_version", {}).get("S")
+        if not item or not reads_reset_after(lambda_version, __version__):
+            message, can_auto_update = reset_after_refusal(bool(item), lambda_version)
             raise VersionMismatchError(
                 client_version=__version__,
-                schema_version="unknown",
-                lambda_version=None,
-                message=(
-                    "Refusing to store a reset_after limit: the stack has no version "
-                    "record, so nothing proves its aggregator reads reset_after (added "
-                    f"in {MIN_READER_VERSION_FOR_RESET_AFTER}). Re-run 'zae-limiter "
-                    "deploy', which writes it."
-                ),
-                can_auto_update=True,
-            )
-        lambda_version = item.get("lambda_version", {}).get("S")
-        if not reads_reset_after(lambda_version, __version__):
-            raise VersionMismatchError(
-                client_version=__version__,
-                schema_version=item.get("schema_version", {}).get("S", "unknown"),
+                schema_version=(item or {}).get("schema_version", {}).get("S", "unknown"),
                 lambda_version=lambda_version,
-                message=(
-                    "Refusing to store a reset_after limit: the deployed Lambdas "
-                    f"predate {MIN_READER_VERSION_FOR_RESET_AFTER} and would misread "
-                    "it (the aggregator over-admits it). Run 'zae-limiter upgrade' "
-                    "first."
-                ),
-                can_auto_update=True,
+                message=message,
+                can_auto_update=can_auto_update,
             )
         stored_min = item.get("client_min_version", {}).get("S")
         new_min = ratcheted_client_min_version(stored_min, __version__)

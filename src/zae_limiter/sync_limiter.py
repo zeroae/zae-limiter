@@ -608,6 +608,9 @@ class SyncRateLimiter:
             RateLimitExceeded: If any limit would be exceeded
             RateLimiterUnavailable: If DynamoDB unavailable and BLOCK
             ValidationError: If no limits configured at any level
+            VersionMismatchError: If ``limits`` carries a ``reset_after`` limit
+                and the stack's Lambdas predate it (#638). Never subject to
+                ``on_unavailable``.
         """
         self._ensure_initialized()
         if use_stored_limits:
@@ -616,6 +619,8 @@ class SyncRateLimiter:
                 DeprecationWarning,
                 stacklevel=2,
             )
+        if limits is not None:
+            self._repository.require_reset_after_readers(limits)
         mode = self._resolve_on_unavailable(on_unavailable)
         try:
             lease: SyncLease | None = None

@@ -356,6 +356,7 @@ class SyncStackManager:
                 "stack_id": stack_id,
                 "stack_name": stack_name,
                 "status": "CREATE_COMPLETE" if wait else "CREATE_IN_PROGRESS",
+                "created": True,
             }
         except ClientError as e:
             error_code = e.response["Error"]["Code"]

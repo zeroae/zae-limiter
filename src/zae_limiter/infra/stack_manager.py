@@ -425,6 +425,9 @@ class StackManager:
                 "stack_id": stack_id,
                 "stack_name": stack_name,
                 "status": "CREATE_COMPLETE" if wait else "CREATE_IN_PROGRESS",
+                # This call created the stack (#638). An existing stack also
+                # reports CREATE_COMPLETE, so the status cannot say so.
+                "created": True,
             }
 
         except ClientError as e:

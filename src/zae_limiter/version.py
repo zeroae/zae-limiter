@@ -262,6 +262,49 @@ def reads_reset_after(lambda_version: str | None, own_version: str) -> bool:
     return _release(deployed) >= parse_version(MIN_READER_VERSION_FOR_RESET_AFTER)
 
 
+def reset_after_refusal(record_found: bool, lambda_version: str | None) -> tuple[str, bool]:
+    """The message and ``can_auto_update`` for a refused ``reset_after`` write (#638).
+
+    One wording for the client and the provisioner. The version record cannot
+    say whether the stack has an aggregator, so each message names both
+    remedies: ``zae-limiter upgrade`` deploys new Lambda code, and a stack
+    deployed with ``--no-aggregator`` is fixed by re-running ``zae-limiter
+    deploy`` from a new enough release instead (``upgrade`` fails there, it
+    pushes code to an aggregator that does not exist).
+
+    ``can_auto_update`` is True only for a known, old ``lambda_version``: that
+    is the one case ``Repository.open(auto_update=True)`` repairs by itself.
+    """
+    minimum = MIN_READER_VERSION_FOR_RESET_AFTER
+    no_aggregator = (
+        f"On a stack deployed with --no-aggregator, re-run 'zae-limiter deploy' "
+        f"from {minimum} or later instead."
+    )
+    if not record_found:
+        return (
+            "Refusing to store a reset_after limit: the stack has no version record, "
+            f"so nothing proves its aggregator reads reset_after (added in {minimum}). "
+            f"Re-run 'zae-limiter deploy' from {minimum} or later, which writes it.",
+            False,
+        )
+    if lambda_version is None:
+        return (
+            "Refusing to store a reset_after limit: the version record does not say "
+            "which Lambda code is deployed (it was initialized by a client that "
+            "deployed none), so nothing proves the aggregator reads reset_after "
+            f"(added in {minimum}). Run 'zae-limiter upgrade --force' to deploy it. "
+            + no_aggregator,
+            False,
+        )
+    return (
+        "Refusing to store a reset_after limit: the deployed Lambdas predate "
+        f"{minimum} and would misread it (the aggregator over-admits it). Run "
+        "'zae-limiter upgrade' first, or open the stack with Repository.open() "
+        "and auto_update=True. " + no_aggregator,
+        True,
+    )
+
+
 def ratcheted_client_min_version(stored: str | None, own_version: str) -> str | None:
     """The ``client_min_version`` a ``reset_after`` write must leave behind (#638 C).
 

@@ -698,6 +698,9 @@ class RateLimiter:
             RateLimitExceeded: If any limit would be exceeded
             RateLimiterUnavailable: If DynamoDB unavailable and BLOCK
             ValidationError: If no limits configured at any level
+            VersionMismatchError: If ``limits`` carries a ``reset_after`` limit
+                and the stack's Lambdas predate it (#638). Never subject to
+                ``on_unavailable``.
         """
         await self._ensure_initialized()
 
@@ -710,6 +713,14 @@ class RateLimiter:
                 DeprecationWarning,
                 stacklevel=2,
             )
+
+        # #638: an override carrying `reset_after` is written onto the bucket by
+        # the slow path, where a pre-v0.15 aggregator over-admits it. Checked
+        # outside the `try` below: a refusal is a configuration error, and
+        # `on_unavailable` must neither wrap it nor turn it into a degraded
+        # (unlimited) lease. No I/O unless an override carries `reset_after`.
+        if limits is not None:
+            await self._repository.require_reset_after_readers(limits)
 
         # Resolve on_unavailable mode
         mode = await self._resolve_on_unavailable(on_unavailable)

@@ -471,6 +471,12 @@ def deploy(
 
                 status = result.get("status", "unknown")
                 click.echo(f"✓ Stack {status.lower().replace('_', ' ')}")
+                # #638: lambda_version is stamped with this build only when the
+                # stack's Lambdas are provably this build's — a stack created
+                # just now, or one whose aggregator code is pushed below. An
+                # existing stack deployed with --no-aggregator keeps whatever
+                # aggregator it had, so its stamp is left as stored.
+                lambdas_deployed = result.get("created") is True
 
                 if result.get("stack_id"):
                     click.echo(f"  Stack ID: {result['stack_id']}")
@@ -482,6 +488,7 @@ def deploy(
 
                     try:
                         lambda_result = await manager.deploy_lambda_code(wait=True)
+                        lambdas_deployed = True
 
                         if lambda_result.get("status") == "deployed":
                             size_kb = lambda_result.get("size_bytes", 0) / 1024
@@ -533,11 +540,15 @@ def deploy(
                         manager.table_name, region, endpoint_url, _skip_deprecation_warning=True
                     )
                     try:
+                        lambda_version: str | None = __version__
+                        if not lambdas_deployed:
+                            stored = await repo.get_version_record()
+                            lambda_version = (stored or {}).get("lambda_version")
                         # client_min_version is left as stored (#638): a
                         # redeploy must never lower a raised minimum.
                         await repo.set_version_record(
                             schema_version=get_schema_version(),
-                            lambda_version=__version__,
+                            lambda_version=lambda_version,
                             updated_by=f"cli:{__version__}",
                         )
                         click.echo(f"✓ Version record initialized (schema {get_schema_version()})")

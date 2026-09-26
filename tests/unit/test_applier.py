@@ -610,10 +610,21 @@ class TestResetAfterVersionGate:
         assert self._record(client)["client_min_version"]["S"] == "0.15.0"
 
     def test_a_missing_version_record_fails_closed(self, client):
-        with pytest.raises(VersionMismatchError, match="no version record"):
+        with pytest.raises(VersionMismatchError, match="no version record") as exc_info:
             require_reset_after_readers(
                 self._changes({"session": self.SESSION}), self.TABLE, client=client
             )
+        assert exc_info.value.can_auto_update is False
+
+    def test_an_unknown_lambda_version_fails_closed(self, client):
+        """Initialized by a client that deployed no Lambda code (#638)."""
+        self._stamp(client, None)
+        with pytest.raises(VersionMismatchError, match="upgrade --force") as exc_info:
+            require_reset_after_readers(
+                self._changes({"session": self.SESSION}), self.TABLE, client=client
+            )
+        assert "re-run 'zae-limiter deploy'" in str(exc_info.value)
+        assert exc_info.value.can_auto_update is False
 
     def test_the_version_read_is_strongly_consistent(self, client):
         self._stamp(client, "0.15.0")

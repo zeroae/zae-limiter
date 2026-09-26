@@ -1129,6 +1129,18 @@ class RepositoryProtocol(Protocol):
         """
         ...
 
+    async def require_reset_after_readers(self, limits: list["Limit"]) -> None:
+        """Refuse ``reset_after`` limits the stack's Lambdas cannot read (#638).
+
+        Called by ``acquire(limits=...)`` before anything is written. Free when
+        no limit carries ``reset_after``, and free when the backend already
+        knows its readers are new enough.
+
+        Raises:
+            VersionMismatchError: the readers predate ``reset_after``.
+        """
+        ...
+
     async def set_version_record(
         self,
         schema_version: str,

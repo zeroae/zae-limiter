@@ -124,6 +124,7 @@ class TestCLI:
         # Mock repository for version record and namespace registration
         mock_repo_instance = Mock()
         mock_repo_instance.set_version_record = AsyncMock()
+        mock_repo_instance.get_version_record = AsyncMock(return_value=None)
         mock_repo_instance.register_namespace = AsyncMock(return_value="test-ns-id")
         mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
@@ -198,6 +199,7 @@ class TestCLI:
 
         mock_repo_instance = Mock()
         mock_repo_instance.set_version_record = AsyncMock()
+        mock_repo_instance.get_version_record = AsyncMock(return_value=None)
         mock_repo_instance.register_namespace = AsyncMock(return_value="test-ns-id")
         mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
@@ -241,6 +243,7 @@ class TestCLI:
 
         mock_repo_instance = Mock()
         mock_repo_instance.set_version_record = AsyncMock()
+        mock_repo_instance.get_version_record = AsyncMock(return_value=None)
         mock_repo_instance.register_namespace = AsyncMock(side_effect=RuntimeError("nope"))
         mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
@@ -284,6 +287,7 @@ class TestCLI:
 
         mock_repo_instance = Mock()
         mock_repo_instance.set_version_record = AsyncMock()
+        mock_repo_instance.get_version_record = AsyncMock(return_value=None)
         mock_repo_instance.register_namespace = AsyncMock(return_value="test-ns-id")
         mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
@@ -351,6 +355,7 @@ class TestCLI:
         # Mock repository for version record and namespace registration
         mock_repo_instance = Mock()
         mock_repo_instance.set_version_record = AsyncMock()
+        mock_repo_instance.get_version_record = AsyncMock(return_value=None)
         mock_repo_instance.register_namespace = AsyncMock(return_value="test-ns-id")
         mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
@@ -403,6 +408,7 @@ class TestCLI:
         # Mock repository for version record and namespace registration
         mock_repo_instance = Mock()
         mock_repo_instance.set_version_record = AsyncMock()
+        mock_repo_instance.get_version_record = AsyncMock(return_value=None)
         mock_repo_instance.register_namespace = AsyncMock(return_value="test-ns-id")
         mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
@@ -453,6 +459,7 @@ class TestCLI:
         # Mock repository for version record and namespace registration
         mock_repo_instance = Mock()
         mock_repo_instance.set_version_record = AsyncMock()
+        mock_repo_instance.get_version_record = AsyncMock(return_value=None)
         mock_repo_instance.register_namespace = AsyncMock(return_value="test-ns-id")
         mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
@@ -511,6 +518,7 @@ class TestCLI:
         # Mock repository for version record and namespace registration
         mock_repo_instance = Mock()
         mock_repo_instance.set_version_record = AsyncMock()
+        mock_repo_instance.get_version_record = AsyncMock(return_value=None)
         mock_repo_instance.register_namespace = AsyncMock(return_value="test-ns-id")
         mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
@@ -566,6 +574,7 @@ class TestCLI:
         # Mock repository for version record and namespace registration
         mock_repo_instance = Mock()
         mock_repo_instance.set_version_record = AsyncMock()
+        mock_repo_instance.get_version_record = AsyncMock(return_value=None)
         mock_repo_instance.register_namespace = AsyncMock(return_value="test-ns-id")
         mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
@@ -617,6 +626,7 @@ class TestCLI:
         # Mock repository for version record and namespace registration
         mock_repo_instance = Mock()
         mock_repo_instance.set_version_record = AsyncMock()
+        mock_repo_instance.get_version_record = AsyncMock(return_value=None)
         mock_repo_instance.register_namespace = AsyncMock(return_value="test-ns-id")
         mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
@@ -670,6 +680,7 @@ class TestCLI:
         # Mock repository for version record and namespace registration
         mock_repo_instance = Mock()
         mock_repo_instance.set_version_record = AsyncMock()
+        mock_repo_instance.get_version_record = AsyncMock(return_value=None)
         mock_repo_instance.register_namespace = AsyncMock(return_value="test-ns-id")
         mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
@@ -725,6 +736,7 @@ class TestCLI:
         # Mock repository for version record and namespace registration
         mock_repo_instance = Mock()
         mock_repo_instance.set_version_record = AsyncMock()
+        mock_repo_instance.get_version_record = AsyncMock(return_value=None)
         mock_repo_instance.register_namespace = AsyncMock(return_value="test-ns-id")
         mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
@@ -858,6 +870,7 @@ class TestCLI:
         # Mock repository for version record and namespace registration
         mock_repo_instance = Mock()
         mock_repo_instance.set_version_record = AsyncMock()
+        mock_repo_instance.get_version_record = AsyncMock(return_value=None)
         mock_repo_instance.register_namespace = AsyncMock(return_value="test-ns-id")
         mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
@@ -917,6 +930,7 @@ class TestCLI:
 
         mock_repo_instance = Mock()
         mock_repo_instance.set_version_record = AsyncMock()
+        mock_repo_instance.get_version_record = AsyncMock(return_value=None)
         mock_repo_instance.register_namespace = AsyncMock(return_value="test-ns-id")
         mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
@@ -975,6 +989,7 @@ class TestCLI:
 
         mock_repo_instance = Mock()
         mock_repo_instance.set_version_record = AsyncMock()
+        mock_repo_instance.get_version_record = AsyncMock(return_value=None)
         mock_repo_instance.register_namespace = AsyncMock(return_value="test-ns-id")
         mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
@@ -1022,6 +1037,7 @@ class TestCLI:
 
         mock_repo_instance = Mock()
         mock_repo_instance.set_version_record = AsyncMock()
+        mock_repo_instance.get_version_record = AsyncMock(return_value=None)
         mock_repo_instance.register_namespace = AsyncMock(return_value="test-ns-id")
         mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
@@ -1062,6 +1078,7 @@ class TestCLI:
 
         mock_repo_instance = Mock()
         mock_repo_instance.set_version_record = AsyncMock()
+        mock_repo_instance.get_version_record = AsyncMock(return_value=None)
         mock_repo_instance.register_namespace = AsyncMock(return_value="test-ns-id")
         mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
@@ -1113,6 +1130,7 @@ class TestCLI:
 
         mock_repo_instance = Mock()
         mock_repo_instance.set_version_record = AsyncMock()
+        mock_repo_instance.get_version_record = AsyncMock(return_value=None)
         mock_repo_instance.register_namespace = AsyncMock(return_value="test-ns-id")
         mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
@@ -1164,6 +1182,7 @@ class TestCLI:
 
         mock_repo_instance = Mock()
         mock_repo_instance.set_version_record = AsyncMock()
+        mock_repo_instance.get_version_record = AsyncMock(return_value=None)
         mock_repo_instance.register_namespace = AsyncMock(return_value="test-ns-id")
         mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
@@ -7273,6 +7292,33 @@ class TestClientMinVersionSurvivesTheCli:
         record = asyncio.run(self._record())
         assert record["lambda_version"] == "0.15.1"
         assert record["client_min_version"] == "0.15.0"
+
+    @pytest.mark.parametrize(
+        ("created", "expected"),
+        [(False, "0.14.0"), (True, "0.15.1")],
+    )
+    def test_deploy_without_the_aggregator_stamps_only_what_it_deployed(
+        self, mock_dynamodb, runner: CliRunner, created, expected
+    ) -> None:
+        """--no-aggregator on an existing stack leaves its aggregator alone, so
+        it must not claim it (#638): the reset_after gate trusts the stamp."""
+        import asyncio
+
+        asyncio.run(self._seed("0.14.0", "0.0.0"))
+        manager = self._manager()
+        manager.create_stack = AsyncMock(
+            return_value={"status": "CREATE_COMPLETE", **({"created": True} if created else {})}
+        )
+        with (
+            patch("zae_limiter.__version__", "0.15.1"),
+            patch("zae_limiter.cli.StackManager", return_value=manager),
+        ):
+            result = runner.invoke(
+                cli,
+                ["deploy", "--name", self.TABLE, "--region", "us-east-1", "--no-aggregator"],
+            )
+        assert result.exit_code == 0, result.output
+        assert asyncio.run(self._record())["lambda_version"] == expected
 
     def test_upgrade_by_a_client_below_the_minimum_is_refused(
         self, mock_dynamodb, runner: CliRunner
