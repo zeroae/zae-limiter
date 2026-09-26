@@ -1586,7 +1586,7 @@ class SyncRateLimiter:
                 if any_existing
                 else []
             )
-            seed_transfer = self._quota_seed_transfer(
+            seed_shard_count, seed_transfer = self._quota_seed_transfer(
                 eid, resource, missing, seed_shard_count, now_ms
             )
             seed_ws = self._seed_window_starts(eid, resource, missing, seed_shard_count)
@@ -1847,24 +1847,26 @@ class SyncRateLimiter:
 
     def _quota_seed_transfer(
         self, entity_id: str, resource: str, missing: list[Limit], shard_count: int, now_ms: int
-    ) -> dict[str, int]:
-        """The transfers quotas missing from an existing shard are seeded with (#633).
+    ) -> tuple[int, dict[str, int]]:
+        """The shard count and transfers quotas missing from an existing shard are seeded with.
 
-        The seed counterpart of :meth:`_quota_transfer`. Returns ``{}`` —
-        costing nothing, and leaving every missing limit on its full share —
-        unless the entity is sharded and one of the missing limits is a quota:
-        an unsharded item is the only shard, so nothing can have been granted
-        or spent anywhere else, and a dripping limit's seed amortises against
-        its drip exactly as a new shard's does. Otherwise defers to
-        :meth:`SyncRepository.reclaim_quota_seed`.
+        The seed counterpart of :meth:`_quota_transfer` (#633). Returns
+        ``(shard_count, {})`` — costing nothing, and leaving every missing
+        limit on its full share — unless the entity is sharded and one of the
+        missing limits is a quota: an unsharded item is the only shard, and a
+        dripping limit's seed amortises against its drip exactly as a new
+        shard's does. Otherwise defers to
+        :meth:`SyncRepository.reclaim_quota_seed`, which may also raise the shard
+        count to one a sibling already carries.
 
         Returns:
-            ``{limit_name: reclaimed_milli}`` for the quotas that must take a
+            ``(shard_count, {limit_name: reclaimed_milli})``: the count every
+            seed on this item is taken at, and the quotas that must take a
             transfer; a name absent from the mapping keeps the full share.
         """
         if shard_count <= 1:
-            return {}
-        shares_milli = {
+            return (shard_count, {})
+        capacities_milli = {
             limit.name: effective_params(
                 limit.capacity * 1000,
                 limit.refill_amount * 1000,
@@ -1872,13 +1874,14 @@ class SyncRateLimiter:
                 limit.schedule,
                 now_ms,
             )[0]
-            // shard_count
             for limit in missing
             if limit.is_quota
         }
-        if not shares_milli:
-            return {}
-        return self._repository.reclaim_quota_seed(entity_id, resource, shares_milli)
+        if not capacities_milli:
+            return (shard_count, {})
+        return self._repository.reclaim_quota_seed(
+            entity_id, resource, capacities_milli, shard_count
+        )
 
     def _seed_window_starts(
         self, entity_id: str, resource: str, missing: list[Limit], shard_count: int

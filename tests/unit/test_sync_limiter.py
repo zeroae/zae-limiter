@@ -9476,21 +9476,86 @@ class TestLimitAddedToExistingShards:
         assert (tk0, tk1) == (499000, 498000)
         assert tk0 + tk1 + 3000 == 1000000
 
-    def test_a_quota_seed_takes_a_transfer_when_a_sibling_already_spent(self, sync_limiter):
-        """Shard 0 holds the new quota at the unsharded share (a creator that
-        predated the doubling) and has spent 900 of it. Seeding shard 1 with a
-        fresh 500 would admit 1,400 in one period; it must take a transfer,
-        and there is nothing left to transfer."""
-        repo = self._two_shards(sync_limiter, "shards-spent", extra_on_shard0=(100000, 900000))
-        with pytest.raises(RateLimitExceeded):
-            self._acquire_on(sync_limiter, "shards-spent", 1, {"rpd": 1})
-        self._acquire_on(sync_limiter, "shards-spent", 1, {"rpm": 1})
+    def test_a_quota_seed_takes_a_transfer_of_a_partly_spent_surplus(self, sync_limiter):
+        """Shard 0 holds the new quota at the unsharded share (granted before
+        the doubling) and has spent 300 of it, holding 700. Seeding shard 1
+        with a fresh 500 on top of an unclamped 700 would admit 1,500 in one
+        period; the seed clamps shard 0 to its share and takes the 200 that
+        took, so what is left to spend is exactly the 700 not yet spent."""
+        repo = self._two_shards(sync_limiter, "shards-spent", extra_on_shard0=(700000, 300000))
+        self._acquire_on(sync_limiter, "shards-spent", 1, {"rpd": 1})
         tk0 = _stored_tk(repo, "shards-spent", "gpt-4", "rpd", shard=0)
         tk1 = _stored_tk(repo, "shards-spent", "gpt-4", "rpd", shard=1)
-        assert (tk0, tk1) == (100000, 0)
-        assert tk0 + tk1 + 900000 <= 1000000
-        shard1 = _raw_bucket(repo, "shards-spent", shard=1)
-        assert shard1[bucket_attr("rpd", "cp")]["N"] == "1000000", "seeded, not zero-created"
+        assert (tk0, tk1) == (500000, 199000)
+        assert tk0 + tk1 + 300000 + 1000 == 1000000
+
+    def test_a_sibling_that_spent_in_an_earlier_period_does_not_starve_the_seed(self, sync_limiter):
+        """Review of #633: `tc` is cumulative across periods, so a sibling that
+        consumed before a reset edge used to read as over-granted forever.
+        Every seed then took a transfer of nothing, was rejected before any
+        write, and the shard was never seeded. The rule is the surplus held."""
+        day = 86400000
+        midnight = (T0 // day + 1) * day
+        repo = self._two_shards(sync_limiter, "starve-rpd")
+        repo._now_ms = lambda: T0 + 1000
+        self._acquire_on(sync_limiter, "starve-rpd", 0, {"rpd": 1})
+        repo._now_ms = lambda: midnight + 1000
+        self._acquire_on(sync_limiter, "starve-rpd", 0, {"rpd": 1})
+        assert _stored_tk(repo, "starve-rpd", "gpt-4", "rpd", shard=0) == 499000
+        repo._now_ms = lambda: midnight + 60000
+        self._acquire_on(sync_limiter, "starve-rpd", 1, {"rpd": 1})
+        assert _stored_tk(repo, "starve-rpd", "gpt-4", "rpd", shard=1) == 499000
+
+    def test_a_sibling_that_spent_in_an_earlier_window_does_not_starve_the_seed(self, sync_limiter):
+        """The session-quota twin: shard 0 consumed in a window that has since
+        rolled over; shard 1 is seeded at its full share and joins the new one."""
+        repo = sync_limiter._repository
+        ns = repo._namespace_id
+        repo._now_ms = lambda: T0
+        repo.set_resource_defaults("gpt-4", [self.RPM, SESSION_10])
+        s0 = [
+            BucketState.from_limit("starve-sess", "gpt-4", limit, T0, shard_count=2)
+            for limit in (self.RPM, SESSION_10)
+        ]
+        s1 = [BucketState.from_limit("starve-sess", "gpt-4", self.RPM, T0, shard_count=2)]
+        for shard_id, states in ((0, s0), (1, s1)):
+            repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        "starve-sess", "gpt-4", states, T0, shard_id=shard_id, shard_count=2
+                    )
+                ]
+            )
+        repo._entity_cache[ns, "starve-sess"] = (False, None, {"gpt-4": 2})
+        repo.invalidate_config_cache()
+        repo._now_ms = lambda: T0 + 1000
+        self._acquire_on(sync_limiter, "starve-sess", 0, {"session": 2})
+        rolled = T0 + FIVE_HOURS_MS + 1000
+        repo._now_ms = lambda: rolled
+        self._acquire_on(sync_limiter, "starve-sess", 0, {"session": 1})
+        assert _stored_tk(repo, "starve-sess", "gpt-4", "session", shard=0) == 4000
+        repo._now_ms = lambda: rolled + 60000
+        self._acquire_on(sync_limiter, "starve-sess", 1, {"session": 1})
+        shard1 = _raw_bucket(repo, "starve-sess", shard=1)
+        assert shard1[bucket_attr("session", BUCKET_FIELD_TK)]["N"] == "4000"
+        assert int(shard1[bucket_attr("session", BUCKET_FIELD_WS)]["N"]) == rolled
+
+    def test_the_seed_share_honours_a_sibling_with_a_higher_shard_count(self, sync_limiter):
+        """A doubling that reached shard 0 but not the seeding shard or the
+        cache: the sibling read the quota rule already pays supplies the count."""
+        repo = self._two_shards(sync_limiter, "shards-count")
+        client = repo._get_client()
+        client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, "shards-count", "gpt-4", 0)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="SET shard_count = :four",
+            ExpressionAttributeValues={":four": {"N": "4"}},
+        )
+        self._acquire_on(sync_limiter, "shards-count", 1, {"rpd": 1})
+        assert _stored_tk(repo, "shards-count", "gpt-4", "rpd", shard=1) == 249000
 
     def test_a_quota_seed_reclaims_an_unspent_sibling_surplus(self, sync_limiter):
         """Shard 0 holds the whole unspent quota at the unsharded share: the

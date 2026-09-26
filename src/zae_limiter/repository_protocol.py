@@ -825,24 +825,26 @@ class RepositoryProtocol(Protocol):
         self,
         entity_id: str,
         resource: str,
-        shares_milli: dict[str, int],
-    ) -> dict[str, int]:
-        """What a quota missing from an existing shard may be seeded with (#633, #587).
+        capacities_milli: dict[str, int],
+        shard_count: int,
+    ) -> tuple[int, dict[str, int]]:
+        """How quotas missing from an existing shard may be seeded (#633, #587).
 
-        The full share is safe unless a sibling was granted more than its
-        current share (``tk + tc > share``: seeded or created while
-        ``shard_count`` was lower). Then the seed is a transfer: siblings over
-        the share are clamped to it and the seed is what that took.
+        Full share ``capacity // count`` unless some sibling holds more than
+        that share; then every sibling above it is clamped and the seed is
+        what the clamp took. ``count`` is the largest of ``shard_count`` and
+        every sibling's stored count.
 
         Args:
             entity_id: Entity owning the shards
             resource: Resource the shards belong to
-            shares_milli: ``{limit_name: capacity_milli // shard_count}`` for
-                the missing quota limits
+            capacities_milli: ``{limit_name: capacity_milli}`` in force now,
+                undivided, for the missing quota limits
+            shard_count: The shard count the caller would seed at
 
         Returns:
-            ``{limit_name: reclaimed_milli}`` for the limits that must take a
-            transfer; a name absent from the result gets its full share.
+            ``(count, {limit_name: reclaimed_milli})`` for the limits that
+            must take a transfer; a name absent gets its full share.
         """
         ...
 

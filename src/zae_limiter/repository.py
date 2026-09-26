@@ -6491,76 +6491,97 @@ class Repository:
         self,
         entity_id: str,
         resource: str,
-        shares_milli: dict[str, int],
-    ) -> dict[str, int]:
-        """What a quota missing from an existing shard may be seeded with (#633, #587).
+        capacities_milli: dict[str, int],
+        shard_count: int,
+    ) -> tuple[int, dict[str, int]]:
+        """How quotas missing from an existing shard may be seeded (#633, #587).
 
         A quota configured after an entity's shards already existed is missing
-        from every one of them, and each is seeded once, on its own next
-        slow-path write. Seeded at the share in force (``capacity //
-        shard_count``), the seeds sum to the capacity: nothing of the new
-        allowance has been spent anywhere, and a shard's seed is its own
-        slice, not one granted elsewhere. That is the common case and it
-        costs nothing beyond this read.
+        from each of them, and each is seeded once, on its own next admitted
+        slow pass, at its **current share** ``C // S``. The rule is decided by
+        the surplus each sibling actually *holds* above that share, never by
+        what it has consumed:
 
-        It stops holding when a sibling was granted **more** than its current
-        share — seeded or created while ``shard_count`` was lower (a client
-        with a stale config created a shard without the quota after a sibling
-        had it, then the entity doubled). That sibling's grant already covers
-        part of this shard's slice, and a fresh share here would mint it a
-        second time (#587). A sibling's grant is not stored, but within one
-        period it is ``tk + tc``: a quota never drips, so every token it was
-        given is either still held or was consumed. So:
+        * **no sibling holds more than the share** → the full share (the
+          limit is absent from the returned transfers);
+        * **some sibling holds more** → a transfer: every sibling above the
+          share is clamped to it (:meth:`_clamp_quota_shard`, the #587 clamp)
+          and the seed is what that took, capped at one share by the caller.
 
-        * no sibling was granted more than the share → the full share
-          (the limit is absent from the result);
-        * otherwise → a **transfer**: every sibling holding more than the
-          share is clamped to it, exactly as :meth:`reclaim_quota_surplus`
-          does for a new shard, and the seed is what that took (capped at one
-          share by the caller). A sibling that already spent into the surplus
-          leaves nothing to take, which is the point.
+        **Why this never starves.** A seed is below the share only on a pass
+        that clamped a sibling holding a surplus. The clamp removes it, so on
+        every later pass no sibling holds one and the seed is the full share —
+        whatever any sibling has spent, in this period or any earlier one. A
+        rule reading ``tc`` could not say that: ``tc`` is cumulative across
+        periods, so a sibling that consumed before a reset edge (or a session
+        rollover) looked over-granted forever, every seed took a transfer of
+        nothing, the acquire was rejected before any write, and the shard was
+        never seeded at all.
 
-        ``tc`` counts every period, not just this one, so a sibling that
-        crossed a reset edge since it was seeded looks over-granted and the
-        seed takes a transfer where a full share was due: a one-period
-        under-grant, never an over-admission.
+        **Why the full share does not mint.** Within one period (between two
+        reset edges, or one session window) each shard is granted at most one
+        share by its reset, create or seed. Shares at one shard count sum to
+        the capacity, so the full share is safe for every sibling granted at
+        the **current** count, whatever it has since spent. The one way a
+        sibling is granted more is a grant taken at a **lower** count earlier
+        in the period — seeded, created or reset before a doubling that has
+        not yet been clamped away. While that grant is unspent it is held as
+        a surplus above the share, and the transfer moves exactly the part of
+        it this shard's slice was carved from. Two residuals remain, both
+        needing that lower-count grant *and* a shard missing the quota after
+        it (only a client whose config cache has not seen the quota yet can
+        create one, so within ``config_cache_ttl`` of configuring it):
+
+        * the sibling already **spent** into its surplus before this seed —
+          the spent part is gone from ``tk`` and cannot be seen without a
+          per-period grant record, so the full share is granted on top of it;
+        * a transfer seed whose acquire is then **rejected** writes nothing,
+          so the clamped surplus is destroyed and the next pass seeds in full.
+
+        Either over-admits at most that sibling's surplus, once, in the period
+        the doubling happened. A transfer can also under-grant for the rest of
+        that period — a surplus carved for a shard not yet created can be
+        handed to this one — never beyond the next reset.
+
+        The shard count the share is taken at is the largest of ``shard_count``
+        and every sibling's stored count, off the items already read (no extra
+        read), so a doubling not yet propagated to the seeding item is still
+        honoured. A doubling that lands after these reads is not: the seed then
+        takes the pre-doubling share, and the refill clamp trims it on the
+        shard's next materialising pass.
 
         Cost: 1 GSI3 KEYS_ONLY query + 1 ``BatchGetItem`` + one conditional
-        ``UpdateItem`` per sibling holding a surplus. Paid once per (shard,
-        new quota), only for a quota, and only when ``shard_count > 1``.
+        ``UpdateItem`` per sibling holding a surplus. Paid only for a quota,
+        only when ``shard_count > 1``, on each slow pass until the seed lands.
 
         Args:
             entity_id: Entity owning the shards.
             resource: Resource the shards belong to.
-            shares_milli: ``{limit_name: capacity_milli // shard_count}`` for
-                the quota limits missing from the shard being seeded.
+            capacities_milli: ``{limit_name: capacity_milli}`` in force now,
+                **undivided**, for the quota limits missing from the shard.
+            shard_count: The shard count the caller would seed at.
 
         Returns:
-            ``{limit_name: reclaimed_milli}`` for the limits that must take a
-            transfer. A name absent from the result is granted its full share.
+            ``(shard_count, {limit_name: reclaimed_milli})``: the count the
+            share was taken at, and the limits that must take a transfer. A
+            name absent from the mapping is granted its full share.
         """
         items = await self._entity_bucket_items(entity_id, resource)
+        count = max(
+            [shard_count] + [int(item.get("shard_count", {}).get("N", "1")) for item in items]
+        )
         transfers: dict[str, int] = {}
-        for name, share in shares_milli.items():
+        for name, capacity in capacities_milli.items():
+            share = capacity // count
             tk_attr = schema.bucket_attr(name, schema.BUCKET_FIELD_TK)
-            tc_attr = schema.bucket_attr(name, schema.BUCKET_FIELD_TC)
-            over_granted = False
-            for item in items:
-                raw_tk = item.get(tk_attr, {}).get("N")
-                if raw_tk is None:
-                    continue
-                tk = int(raw_tk)
-                tc = int(item.get(tc_attr, {}).get("N", "0"))
-                if max(tk, tk + tc) > share:
-                    over_granted = True
-                    break
-            if not over_granted:
+            held = [int(item[tk_attr]["N"]) for item in items if tk_attr in item]
+            if not any(tk > share for tk in held):
                 continue
             taken = 0
             for item in items:
                 taken += await self._clamp_quota_shard(item, name, share)
             transfers[name] = taken
-        return transfers
+        return count, transfers
 
     async def get_shard_window_starts(
         self,
