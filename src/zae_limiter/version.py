@@ -66,6 +66,10 @@ def parse_version(version_str: str) -> ParsedVersion:
     - "1.2.3-dev"
     - "1.2.3.dev123+gabcdef"
     - "0.1.0"
+    - PEP 440 pre-releases, as hatch-vcs writes them: "0.15.0rc1", "0.15.0a2",
+      "0.15.0b1", "0.15.0rc1.dev3+gabcdef" (#638) — the prerelease is "rc1",
+      "a2", "b1", "rc1-dev"
+    - a PEP 440 local label on a release: "0.15.0+d20260926" (dropped)
 
     Args:
         version_str: Version string to parse
@@ -80,9 +84,15 @@ def parse_version(version_str: str) -> ParsedVersion:
     if version_str.startswith("v"):
         version_str = version_str[1:]
 
+    # PEP 440 local label ("+gabcdef", "+unknown"): build metadata, not ordering.
+    version_str = version_str.split("+", 1)[0]
+
     # Handle PEP 440 dev versions (e.g., "0.1.0.dev123+gabcdef")
     # Convert to semver-like format
-    version_str = re.sub(r"\.dev\d+.*$", "-dev", version_str)
+    version_str = re.sub(r"\.dev\d+$", "-dev", version_str)
+
+    # PEP 440 pre-release segment ("0.15.0rc1", "0.15.0rc1-dev") -> semver prerelease
+    version_str = re.sub(r"^(\d+\.\d+\.\d+)(a|b|rc)(\d+)", r"\1-\2\3", version_str)
 
     # Match standard semver with optional prerelease
     match = re.match(r"^(\d+)\.(\d+)\.(\d+)(?:-(.+))?$", version_str)

@@ -252,6 +252,7 @@ class TestReadsResetAfter:
             ("0.14.9", False),
             ("0.15.0", True),
             ("0.15.0-rc1", True),  # release part only, as check_compatibility does
+            ("0.15.0rc1", True),  # the PEP 440 spelling hatch-vcs writes
             ("0.16.3", True),
             ("1.0.0", True),
             ("v0.15.0", True),
@@ -284,5 +285,47 @@ class TestRatchetedClientMinVersion:
         assert ratcheted_client_min_version("0.0.0", dev) == dev
         assert ratcheted_client_min_version(dev, dev) is None
 
-    def test_an_unparseable_writer_raises_nothing(self):
-        assert ratcheted_client_min_version("0.0.0", "0.0.0+unknown") is None
+    @pytest.mark.parametrize("own", ["0.0.0+unknown", "garbage"])
+    def test_an_unknown_writer_raises_nothing(self, own):
+        assert ratcheted_client_min_version("0.0.0", own) is None
+
+    def test_a_release_candidate_writer_ratchets_to_itself(self):
+        assert ratcheted_client_min_version("0.0.0", "0.15.0rc1") == "0.15.0rc1"
+
+
+class TestPep440PreReleases:
+    """hatch-vcs writes PEP 440 versions; the gate's RC claim depends on them (#638)."""
+
+    @pytest.mark.parametrize(
+        ("text", "prerelease"),
+        [
+            ("0.15.0rc1", "rc1"),
+            ("0.15.0a2", "a2"),
+            ("0.15.0b1", "b1"),
+            ("0.15.0rc1.dev3+gabcdef", "rc1-dev"),
+            ("0.15.0+d20260926", None),
+            ("0.0.0+unknown", None),
+        ],
+    )
+    def test_parsed(self, text, prerelease):
+        v = parse_version(text)
+        assert (v.major, v.minor, v.patch, v.prerelease) == (
+            0,
+            int(text.split(".")[1]),
+            0,
+            prerelease,
+        )
+
+    def test_ordered_below_the_release(self):
+        assert parse_version("0.15.0a1") < parse_version("0.15.0b1")
+        assert parse_version("0.15.0b1") < parse_version("0.15.0rc1")
+        assert parse_version("0.15.0rc1") < parse_version("0.15.0")
+
+    @pytest.mark.parametrize("text", ["0.15.0rc", "0.15.0-", "0.15"])
+    def test_malformed_is_still_rejected(self, text):
+        with pytest.raises(ValueError):
+            parse_version(text)
+
+    def test_a_release_candidate_lambda_reads_reset_after(self):
+        assert reads_reset_after("0.15.0rc1", "0.15.0")
+        assert not reads_reset_after("0.14.1rc1", "0.15.0")
