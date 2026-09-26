@@ -673,7 +673,10 @@ class TestLeaseRetryPath:
         assert statuses[0].retry_after_seconds > 0.0
 
     def test_build_retry_failure_statuses_no_deficit(self):
-        """retry_after_seconds is 0 when tokens are sufficient (shouldn't happen in practice)."""
+        """No deficit in memory still reports a wait, never a literal 0 (#633).
+
+        The status is exceeded — the retry's write failed — and a 429 saying
+        "retry after 0" is read as "retry now", a hot loop. Floored at 1 ms."""
         from zae_limiter.sync_lease import LeaseEntry, _build_retry_failure_statuses
 
         limit = Limit.per_minute("rpm", 100)
@@ -685,7 +688,7 @@ class TestLeaseRetryPath:
         state.shard_count = 1
         entry = LeaseEntry(entity_id="e1", resource="gpt-4", limit=limit, state=state, consumed=10)
         statuses = _build_retry_failure_statuses([entry], now_ms=1000)
-        assert statuses[0].retry_after_seconds == 0.0
+        assert statuses[0].retry_after_seconds == 0.001
 
     def test_commit_retry_on_condition_failure(self, sync_limiter):
         """Commit retries with consumption-only on optimistic lock failure."""

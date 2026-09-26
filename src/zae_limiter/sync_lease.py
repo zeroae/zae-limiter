@@ -25,6 +25,7 @@ from .schema import BUCKET_FIELD_RF, BUCKET_FIELD_TK, bucket_attr, calculate_buc
 
 _CONFLICT_MAX_RETRIES = 3
 _CONFLICT_BASE_DELAY_S = 0.025
+_MIN_RETRY_AFTER_S = 0.001
 if TYPE_CHECKING:
     from .sync_repository_protocol import SyncRepositoryProtocol
 logger = logging.getLogger(__name__)
@@ -813,6 +814,7 @@ def _retry_statuses(
                 last_refill_ms=int(item.get(BUCKET_FIELD_RF, {}).get("N", now_ms)),
             )
             result = try_consume(real, entry.consumed, now_ms)
+            exceeded = entry.consumed > 0 and int(raw_tk) < entry.consumed * 1000
             statuses.append(
                 LimitStatus(
                     entity_id=entry.entity_id,
@@ -821,14 +823,18 @@ def _retry_statuses(
                     limit=entry.limit.per_shard(real.shard_count, now_ms),
                     available=result.available,
                     requested=entry.consumed,
-                    exceeded=entry.consumed > 0 and int(raw_tk) < entry.consumed * 1000,
-                    retry_after_seconds=result.retry_after_seconds,
+                    exceeded=exceeded,
+                    retry_after_seconds=max(result.retry_after_seconds, _MIN_RETRY_AFTER_S)
+                    if exceeded
+                    else result.retry_after_seconds,
                     resets_at_ms=window_end_in_force(entry.limit, real, now_ms),
                 )
             )
             continue
         deficit_milli = max(0, entry.consumed * 1000 - entry.state.tokens_milli)
         retry_after = retry_after_for_deficit(entry.state, deficit_milli, now_ms)
+        if entry.consumed > 0:
+            retry_after = max(retry_after, _MIN_RETRY_AFTER_S)
         statuses.append(
             LimitStatus(
                 entity_id=entry.entity_id,

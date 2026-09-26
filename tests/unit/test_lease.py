@@ -473,3 +473,17 @@ class TestRetryFailureStatusesFromImages:
         )
         assert status.exceeded
         assert status.available == 99
+        assert status.retry_after_seconds == 0.001, "never a literal 0 for an exceeded status"
+
+    def test_a_wait_that_rounds_to_zero_is_floored(self) -> None:
+        from zae_limiter.lease import _build_retry_failure_statuses
+
+        fast = Limit.per_second("rps", 1_000_000)
+        state = BucketState.from_limit("user-1", "gpt-4", fast, T0)
+        entry = LeaseEntry(
+            entity_id="user-1", resource="gpt-4", limit=fast, state=state, consumed=1
+        )
+        image = {"b_rps_tk": {"N": "999"}, "rf": {"N": str(T0)}}
+        [status] = _build_retry_failure_statuses([entry], T0, {("user-1", "gpt-4", 0): image})
+        assert status.exceeded
+        assert status.retry_after_seconds == 0.001
