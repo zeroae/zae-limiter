@@ -19,11 +19,13 @@ from zae_limiter.schema import (
     BUCKET_FIELD_CP,
     BUCKET_FIELD_RA,
     BUCKET_FIELD_RP,
+    BUCKET_FIELD_RSA,
     BUCKET_FIELD_SCHED,
     BUCKET_FIELD_SCHED_TZ,
     BUCKET_FIELD_TC,
     BUCKET_FIELD_TK,
     BUCKET_FIELD_VU,
+    BUCKET_FIELD_WS,
     BUCKET_SCHED_NONE,
     bucket_attr,
     get_table_definition,
@@ -752,3 +754,82 @@ class TestMixedScheduleItemIntegration:
         item = _get_bucket(dynamodb_table, entity_id, resource)
         assert int(item["b_tpm_tk"]) == 5_000_000  # 30s at the base rate
         assert int(item["b_spm_tk"]) == 2_500_000  # the 0.5x sibling on the same item
+
+
+@pytest.mark.integration
+class TestDurationWindowRollIntegration:
+    """ADR-139 against real DynamoDB: the roll's positional aliases are legal.
+
+    The shape is the sibling `_propagate_window_start` leaves behind: a window
+    anchored on another shard (`ws > rf`) and `vu = 0`. The duration quota's
+    name carries `.` and `-`, both legal in `NAME_PATTERN` and neither legal in
+    an inline path or an expression token, so this is the part a MagicMock
+    cannot validate. A dripping limit shares the item and is topped up by the
+    same write.
+    """
+
+    SESSION = "s.q-1"
+    RSA = 18_000
+
+    def test_the_roll_lands_with_the_drip_and_a_later_image_is_refused(
+        self, dynamodb_table
+    ) -> None:
+        entity_id = f"entity-{uuid.uuid4().hex[:8]}"
+        resource = "gpt-4"
+        now_ms = int(time.time() * 1000)
+        old_rf_ms = now_ms - 30_000
+        ws = now_ms - 10_000
+        limits = {
+            self.SESSION: {"tk": 0, "cp": 10_000_000, "ra": 0, "rp": 1_000, "tc": 0},
+            "tpm": {"tk": 0, "cp": 10_000_000, "ra": 10_000_000, "rp": 60_000, "tc": 10_000_000},
+        }
+        _seed_bucket(dynamodb_table, entity_id, resource, limits=limits, rf_ms=old_rf_ms)
+        dynamodb_table.update_item(
+            Key={"PK": pk_bucket("default", entity_id, resource, 0), "SK": sk_state()},
+            UpdateExpression="SET #ws = :ws, #rsa = :rsa, #vu = :zero",
+            ExpressionAttributeNames={
+                "#ws": bucket_attr(self.SESSION, BUCKET_FIELD_WS),
+                "#rsa": bucket_attr(self.SESSION, BUCKET_FIELD_RSA),
+                "#vu": BUCKET_FIELD_VU,
+            },
+            ExpressionAttributeValues={":ws": ws, ":rsa": self.RSA, ":zero": 0},
+        )
+
+        state = BucketRefillState(
+            namespace_id="default",
+            entity_id=entity_id,
+            resource=resource,
+            rf_ms=old_rf_ms,
+            limits={
+                self.SESSION: LimitRefillInfo(
+                    tc_delta=0,
+                    tk_milli=0,
+                    cp_milli=10_000_000,
+                    ra_milli=0,
+                    rp_ms=1_000,
+                    window_start_ms=ws,
+                    reset_after_seconds=self.RSA,
+                ),
+                "tpm": LimitRefillInfo(
+                    tc_delta=10_000_000,
+                    tk_milli=0,
+                    cp_milli=10_000_000,
+                    ra_milli=10_000_000,
+                    rp_ms=60_000,
+                ),
+            },
+            vu_ms=0,
+        )
+        assert try_refill_bucket(dynamodb_table, state, now_ms) is True
+
+        item = _get_bucket(dynamodb_table, entity_id, resource)
+        assert int(item[bucket_attr(self.SESSION, BUCKET_FIELD_TK)]) == 10_000_000
+        assert int(item["b_tpm_tk"]) == 5_000_000  # 30s at the base rate
+        assert int(item["rf"]) == now_ms  # >= ws: the window is recorded as applied
+        assert int(item[BUCKET_FIELD_VU]) == ws + self.RSA * 1000
+        # The window itself is untouched: the aggregator never anchors one.
+        assert int(item[bucket_attr(self.SESSION, BUCKET_FIELD_WS)]) == ws
+
+        # The same stale image again: the rf lock refuses it, so the roll
+        # cannot be applied twice.
+        assert try_refill_bucket(dynamodb_table, state, now_ms + 1_000) is False
