@@ -11,6 +11,17 @@ Data models for rate limit configuration and status.
       members_order: source
       heading_level: 3
 
+### Session windows: `Limit.reset_after`
+
+`reset_after: timedelta | None` is the second spelling of a quota's reset
+([ADR-139](../adr/139-duration-reset-windows.md)): the allowance returns this long after the
+entity's **own** first admitted use, and the next admitted request after that opens a fresh
+window. Build one with `Limit.quota(name, capacity, reset_after=timedelta(...))`; `quota()` takes
+exactly one of `cron` or `reset_after`. It must be a positive whole number of seconds, at most
+10⁹. `Limit.reset_after_seconds` is the same value as an `int`, the spelling used by `to_dict()`,
+YAML manifests (`reset_after_seconds`) and CloudFormation (`ResetAfterSeconds`). See
+[Session Quotas](../guide/session-quotas.md).
+
 ## ScheduleEntry
 
 One window of a limit's `schedule`, or one edge of its `reset_schedule`. Build reset entries
@@ -47,6 +58,13 @@ is rejected rather than rounded. `scale` is the field that takes a fraction.
       show_source: false
       members_order: source
       heading_level: 3
+
+`resets_at_ms: int | None` is the absolute epoch-millisecond instant a **session quota's**
+current window ends, read off the bucket item. It is `None` for a rate limit, for a calendar
+quota (whose next edge `RateLimitExceeded.as_dict()` computes from the cron instead), and for a
+session quota with no live window — it is never an instant in the past. Inside
+`RateLimitExceeded` it describes the shard the request was tried on; inside
+`Availability` it is the latest live window end across the entity's shards.
 
 ## Availability
 

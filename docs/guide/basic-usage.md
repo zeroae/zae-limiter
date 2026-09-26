@@ -343,6 +343,10 @@ Each entry in `as_dict()`'s `limits` array carries a `kind` — `"rate"`, which 
 drip fields at all. Read `kind` rather than inferring the shape from the fields present. See
 [`as_dict()` Output](../api/exceptions.md#as_dict-output) for the full body.
 
+For an allowance that resets a fixed time after each caller's own first use — "10,000 tokens per
+five-hour session" — see [Session Quotas](session-quotas.md). For one that resets on the
+calendar, see [Scheduled (Cron) Limits](scheduled-limits.md#quotas).
+
 ### Service Unavailable
 
 ```python

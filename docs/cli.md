@@ -127,6 +127,20 @@ A limit with a `reset_schedule` does not drip: `refill_amount` defaults to `0` r
 both. `Schedule` and `ResetSchedule` round trip through the generated
 `Custom::ZaeLimiterLimits` resource.
 
+A quota can instead reset a fixed time after each entity's **own** first use — a
+[session quota](guide/session-quotas.md). Give `reset_after_seconds` (a whole number of seconds)
+in place of `reset_schedule`; the two are mutually exclusive, and `refill_amount` again defaults
+to `0`:
+
+```yaml
+limits:
+  session:
+    capacity: 10000
+    reset_after_seconds: 18000   # 5h from each entity's own first use
+```
+
+`reset_after_seconds` round trips through `Custom::ZaeLimiterLimits` as `ResetAfterSeconds`.
+
 ### Preview Changes
 
 ```bash
@@ -243,14 +257,24 @@ Limits for entity 'user-123' on resource 'gpt-4':
   rpmo: 1,000,000 quota (resets "0 0 1 * *" America/New_York)
 ```
 
-Schedules are set through the Python API or a YAML manifest. The `-l name:rate/period` flag on
-`set-defaults` and `set-limits` does not take a cron expression.
+A [session quota](guide/session-quotas.md) names its window length and says "after first use",
+so it is not mistaken for a clock-aligned period:
+
+```
+Limits for entity 'user-123' on resource 'claude-sonnet':
+  session: 10,000 quota (resets 5h after first use)
+```
+
+Schedules and session windows are set through the Python API or a YAML manifest. The
+`-l name:rate/period` flag on `set-defaults` and `set-limits` takes neither a cron expression
+nor a `reset_after` window.
 
 !!! warning "`-l` replaces the whole level"
-    A set writes the level's limits in full, and a limit built from `-l` carries no schedule.
-    Running `entity set-limits user-123 -r gpt-4 -l rpm:1000` against a level whose stored
-    `rpm` is scheduled therefore drops that schedule, and a stored quota becomes a dripping
-    limit. Edit scheduled levels through `limits apply` or the Python API.
+    A set writes the level's limits in full, and a limit built from `-l` carries no schedule
+    and no session window. Running `entity set-limits user-123 -r gpt-4 -l rpm:1000` against a
+    level whose stored `rpm` is scheduled therefore drops that schedule, and a stored quota —
+    calendar or session — becomes a dripping limit. Edit such levels through `limits apply` or
+    the Python API.
 
 ## Disabling Resources and Entities
 

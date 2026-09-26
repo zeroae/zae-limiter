@@ -167,6 +167,12 @@ Limit.quota("weekly", 50_000, cron="0 0 * * MON", tz="America/New_York")  # Mond
 Limit.quota("daily", 10_000, cron="0 0 * * *", tz="America/New_York")  # local midnight
 ```
 
+!!! tip "Five hours from each caller's first request is a different quota"
+    `0 */5 * * *` resets at 00:00, 05:00, 10:00 … for **every** caller alike. To give each caller
+    a window that starts at their own first request, use
+    `Limit.quota("session", 500, reset_after=timedelta(hours=5))` instead — see
+    [Session Quotas](session-quotas.md).
+
 A quota has no refill rate: a limit either drips or resets, never both
 ([ADR-137](../adr/137-reset-replaces-drip.md)). Pairing a positive `refill_amount` with a
 `reset_schedule` raises `ValueError` at construction, because the drip running underneath the
@@ -302,12 +308,13 @@ which has no rate to divide by, the wait is the time to the next reset edge — 
 
 ## Limitations
 
-- **A quota period is a fixed calendar window, shared by everyone on it.** The cron expression
-  names wall-clock instants, so `0 */5 * * *` resets at 00:00, 05:00, 10:00 … for **every**
-  entity alike — not five hours after each caller's own first request. A window anchored to each
-  caller's own activity is not supported; it may arrive in a later release
-  ([ADR-138](../adr/138-fixed-reset-windows-only.md)). Note also that resetting every entity at
-  the same instant concentrates load at the boundary.
+- **A cron quota period is a fixed calendar window, shared by everyone on it.** The cron
+  expression names wall-clock instants, so `0 */5 * * *` resets at 00:00, 05:00, 10:00 … for
+  **every** entity alike — not five hours after each caller's own first request
+  ([ADR-138](../adr/138-fixed-reset-windows-only.md)). Resetting every entity at the same instant
+  also concentrates load at the boundary. For a window anchored to each caller's own activity,
+  use a [session quota](session-quotas.md) (`reset_after`,
+  [ADR-139](../adr/139-duration-reset-windows.md)) — a limit takes one or the other, never both.
 - **One time-varying mechanism per bucket.** A bucket uses cron scheduling or another dynamic
   mechanism, not both. This keeps "why is my limit this number" answerable.
 - **Extended cron syntax is not supported.** `L` (last), `W` (weekday) and `#` (nth weekday) are
