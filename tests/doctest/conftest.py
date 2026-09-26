@@ -70,6 +70,9 @@ def doctest_env(moto_env, monkeypatch):
         table_key = (self.table_name, self.region)
         if table_key not in _created_tables:
             await self.create_table()
+            # What `zae-limiter deploy` writes; the version checks are no-ops
+            # here, and without a record a reset_after write is refused (#638).
+            await self._initialize_version_record()
             _created_tables.add(table_key)
             # Register namespaces and set defaults for each
             saved_ns_id = self._namespace_id
@@ -124,6 +127,7 @@ def doctest_env(moto_env, monkeypatch):
         table_key = (self.table_name, self.region)
         if table_key not in _created_tables:
             self.create_table()
+            self._initialize_version_record()  # see the async twin (#638)
             _created_tables.add(table_key)
             saved_ns_id = self._namespace_id
             for ns_name in [

@@ -59,6 +59,11 @@ logger = logging.getLogger(__name__)
 # caller is told the answer is unknown rather than given a short list it
 # cannot tell apart from a complete one.
 _BATCH_GET_MAX_RETRIES = 3
+
+# How many times `_require_reset_after_readers` re-reads the version record when
+# a concurrent writer changes `client_min_version` under its conditional ratchet
+# (#638). Each retry re-checks the gate too, so a lost race is never a stale pass.
+_CLIENT_MIN_RATCHET_ATTEMPTS = 3
 _BATCH_GET_RETRY_BASE_DELAY = 0.05
 
 
@@ -1304,6 +1309,9 @@ class Repository:
         infra_version = InfrastructureVersion.from_record(version_record)
         compatibility = check_compatibility(__version__, infra_version)
 
+        if compatibility.requires_client_upgrade:
+            raise self._client_below_minimum(infra_version, compatibility.message)
+
         if compatibility.is_compatible and not compatibility.requires_lambda_update:
             return
 
@@ -1347,6 +1355,9 @@ class Repository:
         infra_version = InfrastructureVersion.from_record(version_record)
         compatibility = check_compatibility(__version__, infra_version)
 
+        if compatibility.requires_client_upgrade:
+            raise self._client_below_minimum(infra_version, compatibility.message)
+
         if compatibility.is_compatible and not compatibility.requires_lambda_update:
             return
 
@@ -1367,6 +1378,135 @@ class Repository:
                 message=compatibility.message,
                 can_auto_update=True,
             )
+
+    @staticmethod
+    def _client_below_minimum(infra_version: Any, message: str) -> Exception:
+        """The error for a client older than the record's ``client_min_version`` (#638 C).
+
+        Raised, not returned as a soft incompatibility: a stack raises its
+        minimum because it stores something older clients misread (the
+        ``reset_after`` ratchet is the first such writer), so carrying on would
+        be exactly the failure the minimum exists to prevent. Not auto-updatable
+        — the fix is a newer client, not a Lambda deploy.
+        """
+        from . import __version__
+        from .exceptions import VersionMismatchError
+
+        return VersionMismatchError(
+            client_version=__version__,
+            schema_version=infra_version.schema_version,
+            lambda_version=infra_version.lambda_version,
+            message=message,
+            can_auto_update=False,
+        )
+
+    async def _require_reset_after_readers(self, limits: list[Limit]) -> None:
+        """Refuse to store a ``reset_after`` limit the stack cannot read (#638 A).
+
+        A reader predating ADR-139 misreads a ``reset_after`` limit: a client
+        fails every acquire on that level (or, under ``on_unavailable=allow``,
+        stops limiting it altogether), and an aggregator treats it as a
+        dripping limit whose shard clone mints ``cp // new_count`` per new shard
+        (#587). There is one aggregator per stack and its version is the
+        record's ``lambda_version``, so this checks that before anything is
+        written.
+
+        **Free unless it matters:** returns before any I/O when no limit
+        carries ``reset_after``. Otherwise one strongly consistent ``GetItem``
+        of the version record (1 RCU) — consistent, because an eventually
+        consistent read could miss an upgrade that just finished — plus, the
+        first time only, one conditional ``UpdateItem`` raising
+        ``client_min_version`` (the ratchet, #638 C).
+
+        A **missing** version record fails closed: nothing then proves the
+        readers are new enough. ``open()`` and ``builder().build()`` write the
+        record and ``connect()`` refuses a stack without one, so only the
+        deprecated constructor or a deleted record reaches this.
+
+        Raises:
+            VersionMismatchError: the record is missing, or its
+                ``lambda_version`` predates ``reset_after``.
+        """
+        if not any(limit.reset_after is not None for limit in limits):
+            return
+
+        from . import __version__
+        from .exceptions import VersionMismatchError
+        from .version import (
+            MIN_READER_VERSION_FOR_RESET_AFTER,
+            ratcheted_client_min_version,
+            reads_reset_after,
+        )
+
+        client = await self._get_client()
+        key = {
+            "PK": {"S": schema.pk_system(schema.RESERVED_NAMESPACE)},
+            "SK": {"S": schema.sk_version()},
+        }
+        last_error: ClientError | None = None
+        for _ in range(_CLIENT_MIN_RATCHET_ATTEMPTS):
+            response = await client.get_item(
+                TableName=self.table_name, Key=key, ConsistentRead=True
+            )
+            item = response.get("Item")
+            if not item:
+                raise VersionMismatchError(
+                    client_version=__version__,
+                    schema_version="unknown",
+                    lambda_version=None,
+                    message=(
+                        "Refusing to store a reset_after limit: the stack has no "
+                        "version record, so nothing proves its aggregator reads "
+                        f"reset_after (added in {MIN_READER_VERSION_FOR_RESET_AFTER}). "
+                        "Re-run 'zae-limiter deploy', which writes it, or open "
+                        "the stack with Repository.open()."
+                    ),
+                    can_auto_update=True,
+                )
+            lambda_version = item.get("lambda_version", {}).get("S")
+            if not reads_reset_after(lambda_version, __version__):
+                raise VersionMismatchError(
+                    client_version=__version__,
+                    schema_version=item.get("schema_version", {}).get("S", "unknown"),
+                    lambda_version=lambda_version,
+                    message=(
+                        "Refusing to store a reset_after limit: the deployed "
+                        f"Lambdas predate {MIN_READER_VERSION_FOR_RESET_AFTER} and "
+                        "would misread it (the aggregator over-admits it). Run "
+                        "'zae-limiter upgrade' first, or open the stack with "
+                        "Repository.open() and auto_update=True."
+                    ),
+                    can_auto_update=True,
+                )
+            stored_min = item.get("client_min_version", {}).get("S")
+            new_min = ratcheted_client_min_version(stored_min, __version__)
+            if new_min is None:
+                return
+            # Never lowered: conditioned on the value just read, so a concurrent
+            # raise is re-read and re-compared rather than overwritten.
+            condition = (
+                "client_min_version = :stored"
+                if stored_min is not None
+                else "attribute_not_exists(client_min_version)"
+            )
+            values: dict[str, Any] = {":new": {"S": new_min}}
+            if stored_min is not None:
+                values[":stored"] = {"S": stored_min}
+            try:
+                await client.update_item(
+                    TableName=self.table_name,
+                    Key=key,
+                    UpdateExpression="SET client_min_version = :new",
+                    ConditionExpression=f"attribute_exists(PK) AND {condition}",
+                    ExpressionAttributeValues=values,
+                )
+                return
+            except ClientError as e:
+                if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                    raise
+                last_error = e
+        assert last_error is not None
+        raise last_error
 
     async def _initialize_version_record(self) -> None:
         """Initialize the version record for first-time setup."""
@@ -1394,10 +1534,11 @@ class Repository:
             await manager.deploy_lambda_code()
             await manager.deploy_provisioner_code()
 
+            # client_min_version is left as stored (#638 C): a Lambda update
+            # must never lower a minimum a reset_after write ratcheted up.
             await self.set_version_record(
                 schema_version=get_schema_version(),
                 lambda_version=__version__,
-                client_min_version="0.0.0",
                 updated_by=f"client:{__version__}",
             )
 
@@ -3741,8 +3882,13 @@ class Repository:
                 explicit value must be passed to change it; see ADR-125).
                 Passing an explicit value also fans out to existing buckets,
                 exactly as `disable_entity()`/`enable_entity()` do.
+
+        Raises:
+            VersionMismatchError: ``limits`` carries a ``reset_after`` limit
+                and the stack's Lambdas predate it (#638). Nothing is written.
         """
         client = await self._get_client()
+        await self._require_reset_after_readers(limits)
 
         # Full-replace PutItem would drop `disabled`; preserve it unless the
         # caller passed an explicit value (ADR-125).
@@ -4606,9 +4752,14 @@ class Repository:
                 explicit value must be passed to change it; see ADR-125).
                 Passing an explicit value also fans out to existing buckets,
                 exactly as `disable_resource()`/`enable_resource()` do.
+
+        Raises:
+            VersionMismatchError: ``limits`` carries a ``reset_after`` limit
+                and the stack's Lambdas predate it (#638). Nothing is written.
         """
         validate_resource(resource)
         client = await self._get_client()
+        await self._require_reset_after_readers(limits)
 
         # Full-replace PutItem would drop `disabled`; preserve it unless the
         # caller passed an explicit value (ADR-125).
@@ -4827,8 +4978,13 @@ class Repository:
             limits: List of Limit configurations (apply to all resources)
             on_unavailable: Behavior when DynamoDB unavailable ("allow" or "block")
             principal: Caller identity for audit logging
+
+        Raises:
+            VersionMismatchError: ``limits`` carries a ``reset_after`` limit
+                and the stack's Lambdas predate it (#638). Nothing is written.
         """
         client = await self._get_client()
+        await self._require_reset_after_readers(limits)
 
         # Build composite config item with all limits + on_unavailable
         item: dict[str, Any] = {
@@ -5139,7 +5295,7 @@ class Repository:
         self,
         schema_version: str,
         lambda_version: str | None = None,
-        client_min_version: str = "0.0.0",
+        client_min_version: str | None = None,
         updated_by: str | None = None,
     ) -> None:
         """
@@ -5148,28 +5304,46 @@ class Repository:
         Args:
             schema_version: Current schema version (e.g., "1.0.0")
             lambda_version: Currently deployed Lambda version
-            client_min_version: Minimum compatible client version
+            client_min_version: Minimum compatible client version. ``None``
+                (the default) **keeps the stored minimum** — ``"0.0.0"`` only
+                when there is none — so a Lambda deploy or upgrade never lowers
+                a minimum a ``reset_after`` write raised (#638 C). Pass a value
+                only to set the minimum deliberately.
             updated_by: Identifier of what performed the update
         """
         client = await self._get_client()
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
-        # Flat schema (v0.6.0+)
-        # Version record is table-level (one per table), uses RESERVED_NAMESPACE
-        item: dict[str, Any] = {
-            "PK": {"S": schema.pk_system(schema.RESERVED_NAMESPACE)},
-            "SK": {"S": schema.sk_version()},
-            "schema_version": {"S": schema_version},
-            "client_min_version": {"S": client_min_version},
-            "updated_at": {"S": now},
-            "lambda_version": {"S": lambda_version} if lambda_version else {"NULL": True},
-            "updated_by": {"S": updated_by} if updated_by else {"NULL": True},
+        # Flat schema (v0.6.0+). Version record is table-level (one per table),
+        # uses RESERVED_NAMESPACE. An UpdateItem rather than a PutItem so an
+        # unspecified minimum is preserved atomically: if_not_exists keeps a
+        # concurrent ratchet instead of racing a read-then-put.
+        min_expr = ":min" if client_min_version is not None else "if_not_exists(#min, :min)"
+        values: dict[str, Any] = {
+            ":schema": {"S": schema_version},
+            ":min": {"S": client_min_version or "0.0.0"},
+            ":now": {"S": now},
+            ":lambda": {"S": lambda_version} if lambda_version else {"NULL": True},
+            ":by": {"S": updated_by} if updated_by else {"NULL": True},
             # GSI4: table-level item discovery via RESERVED_NAMESPACE
-            "GSI4PK": {"S": schema.RESERVED_NAMESPACE},
-            "GSI4SK": {"S": schema.pk_system(schema.RESERVED_NAMESPACE)},
+            ":gsi4pk": {"S": schema.RESERVED_NAMESPACE},
+            ":gsi4sk": {"S": schema.pk_system(schema.RESERVED_NAMESPACE)},
         }
-
-        await client.put_item(TableName=self.table_name, Item=item)
+        await client.update_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": schema.pk_system(schema.RESERVED_NAMESPACE)},
+                "SK": {"S": schema.sk_version()},
+            },
+            UpdateExpression=(
+                "SET schema_version = :schema, #min = "
+                + min_expr
+                + ", updated_at = :now, lambda_version = :lambda, updated_by = :by,"
+                " GSI4PK = :gsi4pk, GSI4SK = :gsi4sk"
+            ),
+            ExpressionAttributeNames={"#min": "client_min_version"},
+            ExpressionAttributeValues=values,
+        )
 
     # -------------------------------------------------------------------------
     # Audit logging operations

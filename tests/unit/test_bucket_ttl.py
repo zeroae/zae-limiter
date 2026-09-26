@@ -344,6 +344,8 @@ async def ttl_repo(mock_dynamodb):
     repo = Repository(name="test-bucket-ttl", region="us-east-1", _skip_deprecation_warning=True)
     await repo.create_table()
     await repo._register_namespace("default")
+    # What open() writes: without it a reset_after write is refused (#638).
+    await repo._initialize_version_record()
     yield repo
     await repo.close()
 

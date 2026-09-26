@@ -12,6 +12,13 @@ from dataclasses import dataclass
 # 0.10.0: Local Secondary Indexes (ADR-123) - 5 LSI slots, odd=ALL / even=KEYS_ONLY
 CURRENT_SCHEMA_VERSION = "0.10.0"
 
+# The first release whose readers understand a `reset_after` limit (ADR-139).
+# A reader predating it ignores `l_{name}_rsa`, reads a quota with no reset, and
+# fails (clients) or over-admits (the aggregator's shard clone). Writers refuse
+# to store one until the stack's `lambda_version` reaches it, and raise the
+# record's `client_min_version` to it when they do (#638).
+MIN_READER_VERSION_FOR_RESET_AFTER = "0.15.0"
+
 
 @dataclass(frozen=True, order=False)
 class ParsedVersion:
@@ -118,6 +125,7 @@ class CompatibilityResult:
     requires_schema_migration: bool = False
     requires_lambda_update: bool = False
     requires_template_update: bool = False
+    requires_client_upgrade: bool = False
     message: str = ""
 
 
@@ -166,6 +174,7 @@ def check_compatibility(
     if client < min_version:
         return CompatibilityResult(
             is_compatible=False,
+            requires_client_upgrade=True,
             message=(
                 f"Client version {client_version} is below minimum required "
                 f"version {infra_version.client_min_version}. Please upgrade."
@@ -211,6 +220,63 @@ def check_compatibility(
         is_compatible=True,
         message="Client and infrastructure versions are compatible.",
     )
+
+
+def _release(version: ParsedVersion) -> ParsedVersion:
+    """The version with its prerelease tag dropped (``0.15.0-rc1`` -> ``0.15.0``)."""
+    return ParsedVersion(version.major, version.minor, version.patch)
+
+
+def reads_reset_after(lambda_version: str | None, own_version: str) -> bool:
+    """Whether a stack stamped ``lambda_version`` reads ``reset_after`` limits (#638).
+
+    True when the deployed Lambdas are at least
+    :data:`MIN_READER_VERSION_FOR_RESET_AFTER`, compared on the release part
+    only (a ``0.15.0`` release candidate counts, as it does for
+    ``check_compatibility``'s Lambda comparison). Also true when the Lambdas
+    are **exactly** the calling build: a build running this function
+    understands ``reset_after`` by construction, and that is the only way a
+    development build (``0.14.1.dev99+g…``, numbered below the release that
+    introduces the feature) can prove it.
+
+    A missing or unparseable ``lambda_version`` proves nothing, so it is False.
+    """
+    if lambda_version is None:
+        return False
+    if lambda_version == own_version:
+        return True
+    try:
+        deployed = parse_version(lambda_version)
+    except ValueError:
+        return False
+    return _release(deployed) >= parse_version(MIN_READER_VERSION_FOR_RESET_AFTER)
+
+
+def ratcheted_client_min_version(stored: str | None, own_version: str) -> str | None:
+    """The ``client_min_version`` a ``reset_after`` write must leave behind (#638 C).
+
+    Returns the new value to store, or None when the stored minimum is already
+    high enough. **Never lowers it**: a stored minimum above the target is kept.
+
+    The target is :data:`MIN_READER_VERSION_FOR_RESET_AFTER`, capped at the
+    writer's own version. The cap matters only for a development build numbered
+    below the release (``0.14.1.dev99``): raising the minimum above the writer
+    would make the writer's own next ``open()`` refuse to start. An unparseable
+    own version is not a floor anyone can compare against, so nothing is raised.
+    """
+    try:
+        own = parse_version(own_version)
+    except ValueError:
+        return None
+    minimum = parse_version(MIN_READER_VERSION_FOR_RESET_AFTER)
+    target = MIN_READER_VERSION_FOR_RESET_AFTER if own >= minimum else own_version
+    try:
+        current = parse_version(stored or "0.0.0")
+    except ValueError:
+        current = ParsedVersion(0, 0, 0)
+    if parse_version(target) <= current:
+        return None
+    return target
 
 
 def get_schema_version() -> str:

@@ -149,7 +149,8 @@ class TestCLI:
         mock_repo_instance.set_version_record.assert_called_once()
         version_call_args = mock_repo_instance.set_version_record.call_args
         assert version_call_args[1]["schema_version"] == "0.10.0"
-        assert version_call_args[1]["client_min_version"] == "0.0.0"
+        # Left as stored, never reset to 0.0.0 (#638 C).
+        assert "client_min_version" not in version_call_args[1]
 
     @staticmethod
     def _deploy_stack_manager_mock() -> Mock:
@@ -7196,3 +7197,100 @@ class TestScheduleDisplay:
             "      Schedule:\n"
             '        "* 9-17 * * MON-FRI" America/New_York  → scale 50%\n'
         ) in result.output
+
+
+class TestClientMinVersionSurvivesTheCli:
+    """``deploy`` and ``upgrade`` keep a raised ``client_min_version`` (#638 C).
+
+    Moto-backed: the record write is real, only the Lambda/CloudFormation calls
+    are mocked, so these pin what lands in the table rather than a call shape.
+    """
+
+    TABLE = "rate-limits"
+
+    @staticmethod
+    def _manager() -> Mock:
+        manager = TestCLI._deploy_stack_manager_mock()
+        manager.ensure_tags = AsyncMock(return_value=False)
+        return manager
+
+    async def _seed(self, lambda_version: str, client_min_version: str) -> None:
+        from zae_limiter.repository import Repository
+        from zae_limiter.version import get_schema_version
+
+        repo = Repository(self.TABLE, "us-east-1", None, _skip_deprecation_warning=True)
+        try:
+            await repo.create_table()
+            await repo._register_namespace("default")
+            await repo.set_version_record(
+                schema_version=get_schema_version(),
+                lambda_version=lambda_version,
+                client_min_version=client_min_version,
+            )
+        finally:
+            await repo.close()
+
+    async def _record(self) -> dict:
+        from zae_limiter.repository import Repository
+
+        repo = Repository(self.TABLE, "us-east-1", None, _skip_deprecation_warning=True)
+        try:
+            record = await repo.get_version_record()
+        finally:
+            await repo.close()
+        assert record is not None
+        return record
+
+    def test_deploy_keeps_a_raised_minimum(self, mock_dynamodb, runner: CliRunner) -> None:
+        import asyncio
+
+        asyncio.run(self._seed("0.15.0", "0.15.0"))
+        with (
+            patch("zae_limiter.__version__", "0.15.1"),
+            patch("zae_limiter.cli.StackManager", return_value=self._manager()),
+        ):
+            result = runner.invoke(cli, ["deploy", "--name", self.TABLE, "--region", "us-east-1"])
+        assert result.exit_code == 0, result.output
+        record = asyncio.run(self._record())
+        assert record["lambda_version"] == "0.15.1"
+        assert record["client_min_version"] == "0.15.0"
+
+    def test_upgrade_keeps_a_raised_minimum(self, mock_dynamodb, runner: CliRunner) -> None:
+        import asyncio
+
+        asyncio.run(self._seed("0.15.0", "0.15.0"))
+        manager = self._manager()
+        with (
+            patch("zae_limiter.__version__", "0.15.1"),
+            patch("zae_limiter.cli.StackManager", return_value=manager),
+            # upgrade opens with auto_update, which updates the Lambdas too
+            patch("zae_limiter.infra.stack_manager.StackManager", return_value=manager),
+        ):
+            result = runner.invoke(
+                cli, ["upgrade", "--name", self.TABLE, "--region", "us-east-1", "--force"]
+            )
+        assert result.exit_code == 0, result.output
+        record = asyncio.run(self._record())
+        assert record["lambda_version"] == "0.15.1"
+        assert record["client_min_version"] == "0.15.0"
+
+    def test_upgrade_by_a_client_below_the_minimum_is_refused(
+        self, mock_dynamodb, runner: CliRunner
+    ) -> None:
+        """It would otherwise put older Lambdas back — the v0.14 hole, closed
+        for every client from v0.15 on."""
+        import asyncio
+
+        asyncio.run(self._seed("0.16.0", "0.16.0"))
+        manager = self._manager()
+        with (
+            patch("zae_limiter.__version__", "0.15.0"),
+            patch("zae_limiter.cli.StackManager", return_value=manager),
+        ):
+            result = runner.invoke(
+                cli, ["upgrade", "--name", self.TABLE, "--region", "us-east-1", "--force"]
+            )
+        assert result.exit_code == 1
+        assert "below minimum required version 0.16.0" in result.output
+        manager.deploy_lambda_code.assert_not_called()
+        assert asyncio.run(self._record())["lambda_version"] == "0.16.0"

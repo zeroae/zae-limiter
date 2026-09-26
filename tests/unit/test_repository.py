@@ -14,6 +14,7 @@ from zae_limiter.exceptions import (
     EntityExistsError,
     InvalidIdentifierError,
     RateLimiterUnavailable,
+    VersionMismatchError,
 )
 from zae_limiter.models import BucketState
 from zae_limiter.repository import Repository
@@ -6785,6 +6786,11 @@ class TestDurationWindowReachesConfigStorage:
     items are Task 3's concern.
     """
 
+    @pytest.fixture(autouse=True)
+    async def _version_record(self, repo):
+        """What open() writes: without it a reset_after write is refused (#638)."""
+        await repo._initialize_version_record()
+
     WINDOW = Limit.quota("session", 10_000, reset_after=timedelta(hours=5))
 
     @staticmethod
@@ -6859,6 +6865,11 @@ class TestDurationWindowParamSync:
     failure ADR-138 warned about, and the reason ADR-139 keeps the anchor in
     its own attribute rather than deriving it from `vu`.
     """
+
+    @pytest.fixture(autouse=True)
+    async def _version_record(self, repo):
+        """What open() writes: without it a reset_after write is refused (#638)."""
+        await repo._initialize_version_record()
 
     WINDOW = Limit.quota("session", 10_000, reset_after=timedelta(hours=5))
 
@@ -7223,6 +7234,11 @@ class TestUnreadableStoredSchedule:
     double a customer's limit when the schedule said 0.5x, and with `vu` left
     expired it would pin the bucket to the slow path forever.
     """
+
+    @pytest.fixture(autouse=True)
+    async def _version_record(self, repo):
+        """What open() writes: without it a reset_after write is refused (#638)."""
+        await repo._initialize_version_record()
 
     # `1-5`, not `MON-FRI`: the compact storage form normalises names to
     # numbers, so this is what a round trip returns (`schedule.encode`).
@@ -7653,3 +7669,331 @@ class TestAMixedItemAttributesEachScheduleToItsOwnLimit:
         assert created["sched"] == "1h9-17w1-5s500"
         assert created["rsched"] == "1m0h0"
         assert created["sched_tz"] == self.ZONE
+
+
+def _ccf(operation: str) -> ClientError:
+    return ClientError(
+        {"Error": {"Code": "ConditionalCheckFailedException", "Message": "raced"}},
+        operation,
+    )
+
+
+class TestResetAfterVersionGate:
+    """Storing a ``reset_after`` limit is gated on the readers' version (#638 A).
+
+    A reader predating ADR-139 misreads the limit — a v0.14 aggregator's shard
+    clone mints ``cp // new_count`` per new shard (#587) — so every config
+    writer refuses one until the version record says the Lambdas read it.
+    """
+
+    SESSION = Limit.quota("session", 10, reset_after=timedelta(hours=5))
+    RPM = Limit.per_minute("rpm", 100)
+
+    @staticmethod
+    async def _stamp(repo, lambda_version, client_min_version="0.0.0"):
+        from zae_limiter.version import get_schema_version
+
+        await repo.set_version_record(
+            schema_version=get_schema_version(),
+            lambda_version=lambda_version,
+            client_min_version=client_min_version,
+        )
+
+    @staticmethod
+    async def _write(repo, level, limits):
+        if level == "entity":
+            await repo.set_limits("user-1", limits, resource="gpt-4")
+        elif level == "resource":
+            await repo.set_resource_defaults("gpt-4", limits)
+        else:
+            await repo.set_system_defaults(limits)
+
+    @staticmethod
+    async def _read(repo, level):
+        if level == "entity":
+            return await repo.get_limits("user-1", resource="gpt-4")
+        if level == "resource":
+            return await repo.get_resource_defaults("gpt-4")
+        return (await repo.get_system_defaults())[0]
+
+    @pytest.mark.parametrize("level", ["entity", "resource", "system"])
+    async def test_refused_while_the_lambdas_predate_reset_after(self, repo, level):
+        await self._stamp(repo, "0.14.0")
+        with patch("zae_limiter.__version__", "0.15.0"):
+            with pytest.raises(VersionMismatchError) as exc_info:
+                await self._write(repo, level, [self.RPM, self.SESSION])
+        assert "zae-limiter upgrade" in str(exc_info.value)
+        assert exc_info.value.lambda_version == "0.14.0"
+        assert exc_info.value.can_auto_update is True
+        # Refused before anything is written.
+        assert await self._read(repo, level) == []
+
+    @pytest.mark.parametrize("level", ["entity", "resource", "system"])
+    @pytest.mark.parametrize("lambda_version", ["0.15.0", "0.15.0-rc1", "0.16.2"])
+    async def test_stored_once_the_lambdas_read_it(self, repo, level, lambda_version):
+        await self._stamp(repo, lambda_version)
+        with patch("zae_limiter.__version__", "0.16.2"):
+            await self._write(repo, level, [self.RPM, self.SESSION])
+        stored = {limit.name: limit for limit in await self._read(repo, level)}
+        assert stored["session"].reset_after == timedelta(hours=5)
+
+    @pytest.mark.parametrize("level", ["entity", "resource", "system"])
+    async def test_a_missing_version_record_fails_closed(self, repo, level):
+        with patch("zae_limiter.__version__", "0.15.0"):
+            with pytest.raises(VersionMismatchError) as exc_info:
+                await self._write(repo, level, [self.SESSION])
+        assert "no version record" in str(exc_info.value)
+        assert exc_info.value.lambda_version is None
+        assert await self._read(repo, level) == []
+
+    async def test_a_null_lambda_version_proves_nothing(self, repo):
+        await self._stamp(repo, None)
+        with patch("zae_limiter.__version__", "0.15.0"):
+            with pytest.raises(VersionMismatchError):
+                await self._write(repo, "entity", [self.SESSION])
+
+    async def _counting_get_item(self, repo, write):
+        client = await repo._get_client()
+        original = client.get_item
+        calls: list[dict] = []
+
+        async def counting(*args, **kwargs):
+            calls.append(kwargs)
+            return await original(*args, **kwargs)
+
+        client.get_item = counting
+        try:
+            await write()
+        finally:
+            client.get_item = original
+        return [c for c in calls if c["Key"]["SK"]["S"] == "#VERSION"]
+
+    async def test_the_version_read_is_strongly_consistent(self, repo):
+        await self._stamp(repo, "0.15.0")
+        with patch("zae_limiter.__version__", "0.15.0"):
+            reads = await self._counting_get_item(
+                repo, lambda: repo.set_limits("user-1", [self.SESSION], resource="gpt-4")
+            )
+        assert len(reads) == 1
+        assert reads[0]["ConsistentRead"] is True
+
+    @pytest.mark.parametrize("level", ["entity", "resource", "system"])
+    async def test_no_version_read_without_reset_after(self, repo, level):
+        # An old stack, no record even: a write with no reset_after limit
+        # must not pay for the gate, or be refused by it.
+        with patch("zae_limiter.__version__", "0.15.0"):
+            reads = await self._counting_get_item(
+                repo, lambda: self._write(repo, level, [self.RPM])
+            )
+        assert reads == []
+        assert [limit.name for limit in await self._read(repo, level)] == ["rpm"]
+
+    async def test_a_development_build_passes_against_its_own_lambdas(self, repo):
+        dev = "0.14.1.dev99+gabcdef"
+        await self._stamp(repo, dev)
+        with patch("zae_limiter.__version__", dev):
+            await repo.set_limits("user-1", [self.SESSION], resource="gpt-4")
+            # The ratchet stops at the writer's own version, so the writer's
+            # own next open() is not locked out.
+            await repo._check_version_strict()
+        record = await repo.get_version_record()
+        assert record["client_min_version"] == dev
+
+    async def test_a_development_build_is_refused_against_older_lambdas(self, repo):
+        await self._stamp(repo, "0.14.1.dev98+g000000")
+        with patch("zae_limiter.__version__", "0.14.1.dev99+gabcdef"):
+            with pytest.raises(VersionMismatchError):
+                await repo.set_limits("user-1", [self.SESSION], resource="gpt-4")
+
+    async def test_the_write_ratchets_client_min_version(self, repo):
+        await self._stamp(repo, "0.15.0")
+        with patch("zae_limiter.__version__", "0.15.3"):
+            await repo.set_limits("user-1", [self.SESSION], resource="gpt-4")
+        record = await repo.get_version_record()
+        assert record["client_min_version"] == "0.15.0"
+        assert record["lambda_version"] == "0.15.0"
+
+    async def test_the_ratchet_never_lowers_a_higher_minimum(self, repo):
+        await self._stamp(repo, "0.17.0", client_min_version="0.16.0")
+        with patch("zae_limiter.__version__", "0.17.0"):
+            await repo.set_limits("user-1", [self.SESSION], resource="gpt-4")
+        assert (await repo.get_version_record())["client_min_version"] == "0.16.0"
+
+    async def test_the_ratchet_initializes_a_minimum_the_record_lacks(self, repo):
+        await self._stamp(repo, "0.15.0")
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={"PK": {"S": "_/SYSTEM#"}, "SK": {"S": "#VERSION"}},
+            UpdateExpression="REMOVE client_min_version",
+        )
+        with patch("zae_limiter.__version__", "0.15.0"):
+            await repo.set_limits("user-1", [self.SESSION], resource="gpt-4")
+        assert (await repo.get_version_record())["client_min_version"] == "0.15.0"
+
+    async def test_a_lost_ratchet_race_re_reads_and_keeps_the_higher_value(self, repo):
+        await self._stamp(repo, "0.16.0")
+        client = await repo._get_client()
+        original = client.update_item
+        attempts: list[dict] = []
+
+        async def racing(*args, **kwargs):
+            attempts.append(kwargs)
+            if len(attempts) == 1:
+                # Another writer raises the minimum past ours between our
+                # read and our conditional write.
+                await original(
+                    TableName=repo.table_name,
+                    Key=kwargs["Key"],
+                    UpdateExpression="SET client_min_version = :v",
+                    ExpressionAttributeValues={":v": {"S": "0.16.0"}},
+                )
+                raise _ccf("UpdateItem")
+            return await original(*args, **kwargs)
+
+        client.update_item = racing
+        try:
+            with patch("zae_limiter.__version__", "0.16.0"):
+                await repo.set_limits("user-1", [self.SESSION], resource="gpt-4")
+        finally:
+            client.update_item = original
+        # The re-read found 0.16.0 >= 0.15.0: no second write, nothing lowered.
+        assert len(attempts) == 1
+        assert (await repo.get_version_record())["client_min_version"] == "0.16.0"
+        assert await repo.get_limits("user-1", resource="gpt-4") != []
+
+    async def test_a_ratchet_that_keeps_losing_raises_and_writes_nothing(self, repo):
+        await self._stamp(repo, "0.15.0")
+        client = await repo._get_client()
+        original = client.update_item
+
+        async def always_raced(*args, **kwargs):
+            raise _ccf("UpdateItem")
+
+        client.update_item = always_raced
+        try:
+            with patch("zae_limiter.__version__", "0.15.0"):
+                with pytest.raises(ClientError):
+                    await repo.set_limits("user-1", [self.SESSION], resource="gpt-4")
+        finally:
+            client.update_item = original
+        assert await repo.get_limits("user-1", resource="gpt-4") == []
+
+    async def test_a_ratchet_failure_other_than_a_race_propagates(self, repo):
+        await self._stamp(repo, "0.15.0")
+        client = await repo._get_client()
+        original = client.update_item
+
+        async def throttled(*args, **kwargs):
+            raise ClientError(
+                {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": "x"}},
+                "UpdateItem",
+            )
+
+        client.update_item = throttled
+        try:
+            with patch("zae_limiter.__version__", "0.15.0"):
+                with pytest.raises(ClientError) as exc_info:
+                    await repo.set_limits("user-1", [self.SESSION], resource="gpt-4")
+        finally:
+            client.update_item = original
+        assert exc_info.value.response["Error"]["Code"] == (
+            "ProvisionedThroughputExceededException"
+        )
+
+
+class TestResetAfterGateAfterConnect:
+    """``connect()`` never updates the Lambdas, so the gate is what stops it (#638 A)."""
+
+    async def test_a_downgrade_after_connect_is_refused_naming_upgrade(self, mock_dynamodb):
+        from zae_limiter.version import get_schema_version
+
+        setup = Repository(name="gate-connect", region="us-east-1", _skip_deprecation_warning=True)
+        await setup.create_table()
+        await setup._register_namespace("default")
+        await setup.set_version_record(schema_version=get_schema_version(), lambda_version="0.15.0")
+        try:
+            with patch("zae_limiter.__version__", "0.15.0"):
+                repo = await Repository.connect(stack="gate-connect")
+                try:
+                    # A v0.14 CLI `deploy` / `upgrade --force` after connect()
+                    # puts the old Lambdas back and stamps their version.
+                    await setup.set_version_record(
+                        schema_version=get_schema_version(), lambda_version="0.14.0"
+                    )
+                    with pytest.raises(VersionMismatchError) as exc_info:
+                        await repo.set_limits(
+                            "user-1", [TestResetAfterVersionGate.SESSION], resource="gpt-4"
+                        )
+                finally:
+                    await repo.close()
+        finally:
+            await setup.close()
+        assert "zae-limiter upgrade" in str(exc_info.value)
+
+
+class TestClientMinVersionIsEnforced:
+    """A client below ``client_min_version`` refuses to start (#638 C).
+
+    Before #638 ``check_compatibility`` returned ``is_compatible=False`` with no
+    flag set, and both version checks fell off the end without raising.
+    """
+
+    @staticmethod
+    async def _stamp(repo, lambda_version, client_min_version):
+        from zae_limiter.version import get_schema_version
+
+        await repo.set_version_record(
+            schema_version=get_schema_version(),
+            lambda_version=lambda_version,
+            client_min_version=client_min_version,
+        )
+
+    @pytest.mark.parametrize("check", ["_check_version_strict", "_check_and_update_version_auto"])
+    async def test_a_client_below_the_minimum_raises(self, repo, check):
+        await self._stamp(repo, "0.16.0", "0.16.0")
+        with patch("zae_limiter.__version__", "0.15.0"):
+            with pytest.raises(VersionMismatchError) as exc_info:
+                await getattr(repo, check)()
+        assert "below minimum required version 0.16.0" in str(exc_info.value)
+        assert exc_info.value.can_auto_update is False
+
+    @pytest.mark.parametrize("check", ["_check_version_strict", "_check_and_update_version_auto"])
+    async def test_a_client_at_the_minimum_starts(self, repo, check):
+        await self._stamp(repo, "0.15.0", "0.15.0")
+        with patch("zae_limiter.__version__", "0.15.0"):
+            await getattr(repo, check)()
+
+    async def test_a_lambda_update_keeps_a_raised_minimum(self, repo):
+        await self._stamp(repo, "0.15.0", "0.15.0")
+        manager = AsyncMock()
+        manager.__aenter__ = AsyncMock(return_value=manager)
+        manager.__aexit__ = AsyncMock(return_value=False)
+        with (
+            patch("zae_limiter.__version__", "0.15.1"),
+            patch("zae_limiter.infra.stack_manager.StackManager", return_value=manager),
+        ):
+            await repo._check_and_update_version_auto()
+        record = await repo.get_version_record()
+        assert record["lambda_version"] == "0.15.1"
+        assert record["client_min_version"] == "0.15.0"
+
+
+class TestSetVersionRecordMinimum:
+    """``set_version_record`` keeps the stored minimum unless given one (#638 C)."""
+
+    async def test_an_unspecified_minimum_is_kept(self, repo):
+        await repo.set_version_record(schema_version="0.10.0", client_min_version="0.15.0")
+        await repo.set_version_record(schema_version="0.10.0", lambda_version="0.15.2")
+        record = await repo.get_version_record()
+        assert record["client_min_version"] == "0.15.0"
+        assert record["lambda_version"] == "0.15.2"
+
+    async def test_an_unspecified_minimum_on_a_new_record_is_zero(self, repo):
+        await repo.set_version_record(schema_version="0.10.0", lambda_version="0.15.0")
+        assert (await repo.get_version_record())["client_min_version"] == "0.0.0"
+
+    async def test_an_explicit_minimum_is_written(self, repo):
+        await repo.set_version_record(schema_version="0.10.0", client_min_version="0.15.0")
+        await repo.set_version_record(schema_version="0.10.0", client_min_version="0.1.0")
+        assert (await repo.get_version_record())["client_min_version"] == "0.1.0"

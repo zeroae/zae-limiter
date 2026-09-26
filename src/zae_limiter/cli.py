@@ -47,13 +47,20 @@ async def _connect(
     Handles ValidationError and NamespaceNotFoundError with user-friendly messages.
     Always returns a valid Repository or exits with an error.
     """
-    from .exceptions import NamespaceNotFoundError, ValidationError
+    from .exceptions import NamespaceNotFoundError, ValidationError, VersionMismatchError
     from .repository import Repository
 
     try:
         return await Repository.open(
             namespace, stack=name, region=region, endpoint_url=endpoint_url
         )
+    except VersionMismatchError as e:
+        # A client below the stack's client_min_version (#638). Caught here so
+        # every command — `upgrade` above all, which would otherwise downgrade
+        # the Lambdas the minimum protects — stops with the reason, not a
+        # traceback.
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
     except ValidationError as e:
         click.echo(f"Error: {e.reason}", err=True)
         sys.exit(1)
@@ -526,10 +533,11 @@ def deploy(
                         manager.table_name, region, endpoint_url, _skip_deprecation_warning=True
                     )
                     try:
+                        # client_min_version is left as stored (#638): a
+                        # redeploy must never lower a raised minimum.
                         await repo.set_version_record(
                             schema_version=get_schema_version(),
                             lambda_version=__version__,
-                            client_min_version="0.0.0",
                             updated_by=f"cli:{__version__}",
                         )
                         click.echo(f"✓ Version record initialized (schema {get_schema_version()})")
@@ -1382,6 +1390,9 @@ def upgrade(
     Updates Lambda code and version records to match the current client.
     Use --force to update even when versions already match.
 
+    The stack's minimum client version is kept, never lowered, and a client
+    below it is refused rather than allowed to downgrade the Lambdas.
+
     \f
 
     **Examples:**
@@ -1476,10 +1487,10 @@ def upgrade(
 
                 # Step 4: Update version record
                 click.echo("[4/4] Updating version record...")
+                # client_min_version is left as stored (#638 C).
                 await repo.set_version_record(
                     schema_version=get_schema_version(),
                     lambda_version=__version__,
-                    client_min_version="0.0.0",
                     updated_by=f"cli:{__version__}",
                 )
                 click.echo("      Version record updated")

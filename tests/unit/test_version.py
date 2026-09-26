@@ -4,11 +4,14 @@ import pytest
 
 from zae_limiter.version import (
     CURRENT_SCHEMA_VERSION,
+    MIN_READER_VERSION_FOR_RESET_AFTER,
     InfrastructureVersion,
     ParsedVersion,
     check_compatibility,
     get_schema_version,
     parse_version,
+    ratcheted_client_min_version,
+    reads_reset_after,
 )
 
 
@@ -192,7 +195,14 @@ class TestCheckCompatibility:
         result = check_compatibility("1.2.0", infra)
 
         assert not result.is_compatible
+        assert result.requires_client_upgrade
         assert "upgrade" in result.message.lower()
+
+    def test_only_a_client_below_minimum_requires_a_client_upgrade(self):
+        """An unparseable client version is incompatible but not "too old" (#638)."""
+        infra = InfrastructureVersion("1.0.0", "1.0.0", None, "0.0.0")
+        assert not check_compatibility("invalid", infra).requires_client_upgrade
+        assert not check_compatibility("1.0.0", infra).requires_client_upgrade
 
     def test_invalid_client_version(self):
         """Test with invalid client version."""
@@ -227,3 +237,52 @@ class TestSchemaVersion:
         """Schema version >= 0.9.0 for bucket PK migration."""
         v = parse_version(CURRENT_SCHEMA_VERSION)
         assert v >= ParsedVersion(0, 9, 0)
+
+
+class TestReadsResetAfter:
+    """Whether a stack's Lambdas read ``reset_after`` limits (#638 A)."""
+
+    def test_the_constant_is_the_introducing_release(self):
+        assert MIN_READER_VERSION_FOR_RESET_AFTER == "0.15.0"
+
+    @pytest.mark.parametrize(
+        ("lambda_version", "expected"),
+        [
+            ("0.14.0", False),
+            ("0.14.9", False),
+            ("0.15.0", True),
+            ("0.15.0-rc1", True),  # release part only, as check_compatibility does
+            ("0.16.3", True),
+            ("1.0.0", True),
+            ("v0.15.0", True),
+            (None, False),
+            ("garbage", False),
+        ],
+    )
+    def test_against_a_release_client(self, lambda_version, expected):
+        assert reads_reset_after(lambda_version, "0.15.0") is expected
+
+    def test_a_development_build_trusts_only_its_own_lambdas(self):
+        dev = "0.14.1.dev99+gabcdef"
+        assert reads_reset_after(dev, dev)
+        assert not reads_reset_after("0.14.1.dev98+g000000", dev)
+
+
+class TestRatchetedClientMinVersion:
+    """The minimum a ``reset_after`` write leaves behind — never lowered (#638 C)."""
+
+    @pytest.mark.parametrize("stored", [None, "0.0.0", "0.14.0", "garbage"])
+    def test_raised_to_the_introducing_release(self, stored):
+        assert ratcheted_client_min_version(stored, "0.15.2") == "0.15.0"
+
+    @pytest.mark.parametrize("stored", ["0.15.0", "0.16.0"])
+    def test_left_alone_when_already_high_enough(self, stored):
+        assert ratcheted_client_min_version(stored, "0.16.0") is None
+
+    def test_capped_at_a_development_writer(self):
+        dev = "0.14.1.dev99+gabcdef"
+        assert ratcheted_client_min_version("0.0.0", dev) == dev
+        assert ratcheted_client_min_version(dev, dev) is None
+
+    def test_an_unparseable_writer_raises_nothing(self):
+        assert ratcheted_client_min_version("0.0.0", "0.0.0+unknown") is None
