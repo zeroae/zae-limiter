@@ -10892,9 +10892,6 @@ class TestWindowRollThroughAcquire:
         with cascade already treating limits, shards and `disabled` as
         per-entity state."""
         repo = limiter._repository
-        # Resource-level buckets carry a TTL, and a duration window's TTL
-        # horizon is Task 11 (#628); keep this test about anchoring.
-        repo._bucket_ttl_refill_multiplier = 0
         await repo.set_resource_defaults("gpt-4", [SESSION_10])
         await repo.create_entity("parent")
         await repo.create_entity("child", parent_id="parent", cascade=True)

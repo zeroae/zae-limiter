@@ -8737,7 +8737,6 @@ class TestWindowRollThroughAcquire:
         with cascade already treating limits, shards and `disabled` as
         per-entity state."""
         repo = sync_limiter._repository
-        repo._bucket_ttl_refill_multiplier = 0
         repo.set_resource_defaults("gpt-4", [SESSION_10])
         repo.create_entity("parent")
         repo.create_entity("child", parent_id="parent", cascade=True)
