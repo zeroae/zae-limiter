@@ -77,8 +77,12 @@ class LeaseEntry:
     # seen, and `rf` is stamped at the *later* reading.
     _reset_edge_ms: int | None = None
     # The duration window this pass opened, epoch ms, or None when it opened
-    # none (ADR-139). Set by `_open_window_if_elapsed` at the acquire path's
-    # clock reading — never re-derived at commit time, for the same reason
+    # none (ADR-139) — i.e. an anchor `_commit_initial` must fan out to the
+    # item's siblings. Set by `_open_window_if_elapsed` on an existing bucket,
+    # and on a create only for a shard N>0 whose sibling window had ended or
+    # was absent (a shard joining a live window has nothing to propagate).
+    # Taken at the acquire path's clock reading — never re-derived at commit
+    # time, for the same reason
     # `_boundary_ms` is not: the two readings are a round trip apart, and a
     # window that elapsed in between must not silently move the anchor forward
     # past the boundary the admission was gated on.
