@@ -1,6 +1,7 @@
 """Unit tests for Repository."""
 
 import time
+from asyncio import CancelledError
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
@@ -1371,9 +1372,9 @@ class TestPropagateWindowStart:
         cancellation must still unwind the caller."""
         with patch.object(repo, "_get_client") as mock_get_client:
             mock_client = AsyncMock()
-            mock_client.update_item.side_effect = KeyboardInterrupt()
+            mock_client.update_item.side_effect = CancelledError()
             mock_get_client.return_value = mock_client
-            with pytest.raises(KeyboardInterrupt):
+            with pytest.raises(CancelledError):
                 await repo._propagate_window_start(
                     "e1", "gpt-4", shard_id=0, shard_count=2, windows=self._windows(self.NEW)
                 )
