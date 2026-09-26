@@ -28,6 +28,7 @@ from .exceptions import (
     RateLimitExceeded,
     ResourceDisabled,
     ValidationError,
+    VersionMismatchError,
 )
 from .lease import Lease, LeaseEntry, persist_transfer_seeds
 from .models import (
@@ -714,19 +715,24 @@ class RateLimiter:
                 stacklevel=2,
             )
 
-        # #638: an override carrying `reset_after` is written onto the bucket by
-        # the slow path, where a pre-v0.15 aggregator over-admits it. Checked
-        # outside the `try` below: a refusal is a configuration error, and
-        # `on_unavailable` must neither wrap it nor turn it into a degraded
-        # (unlimited) lease. No I/O unless an override carries `reset_after`.
-        if limits is not None:
-            await self._repository.require_reset_after_readers(limits)
-
         # Resolve on_unavailable mode
         mode = await self._resolve_on_unavailable(on_unavailable)
 
         # Acquire the lease (this may fail due to rate limit or infrastructure)
         try:
+            # #638: an override carrying `reset_after` is written onto the
+            # bucket by the slow path, where a pre-v0.15 aggregator over-admits
+            # it. The pre-check is here, not in the backend, so a backend is
+            # only asked when an override actually carries one — getattr,
+            # because the override is caller input not yet validated. Inside
+            # the `try` so a failed version read is a backend error like any
+            # other (RateLimiterUnavailable, or a degraded lease that writes
+            # nothing under ALLOW); a refusal itself is re-raised below.
+            if limits is not None and any(
+                getattr(limit, "reset_after", None) is not None for limit in limits
+            ):
+                await self._repository.require_reset_after_readers(limits)
+
             lease: Lease | None = None
             # Shard the fast path selected, and the shard_count it observed on
             # the failure image; the slow path must read and create that same
@@ -772,7 +778,13 @@ class RateLimiter:
             # to roll back. Its consumption-only retry still raises
             # `RateLimitExceeded`, which the clause below passes through.
             await lease._commit_initial()
-        except (RateLimitExceeded, ValidationError, ResourceDisabled, Warning):
+        except (
+            RateLimitExceeded,
+            ValidationError,
+            ResourceDisabled,
+            VersionMismatchError,
+            Warning,
+        ):
             # `Warning`: under warnings-as-errors (-W error, or a
             # simplefilter("error")) the FutureWarnings this module emits
             # (Issue #455) are raised as exceptions. They are the caller's

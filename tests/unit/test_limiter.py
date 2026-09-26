@@ -12323,6 +12323,40 @@ class TestResetAfterOverrideGate:
             await self._acquire(limiter)
         assert repo._lambda_version == "0.15.0"
 
+    async def test_the_backend_is_asked_only_for_a_reset_after_override(self, repo):
+        """RepositoryProtocol is public: a backend without the method still
+        serves every override that carries no reset_after."""
+        limiter = RateLimiter(repository=repo)
+        with patch.object(repo, "require_reset_after_readers", AsyncMock()) as asked:
+            async with limiter.acquire(
+                "user-1", "gpt-4", {"rpm": 1}, limits=[Limit.per_minute("rpm", 10)]
+            ):
+                pass
+        asked.assert_not_called()
+
+    @pytest.mark.parametrize("on_unavailable", [OnUnavailable.ALLOW, OnUnavailable.BLOCK])
+    async def test_a_failed_version_read_is_a_backend_error(self, repo, on_unavailable):
+        """Routed like any other backend failure, never a raw ClientError."""
+        await self._stamp(repo, "0.15.0")
+        limiter = RateLimiter(repository=repo)
+        outage = ClientError(
+            {"Error": {"Code": "InternalServerError", "Message": "down"}}, "GetItem"
+        )
+        with patch.object(repo, "require_reset_after_readers", AsyncMock(side_effect=outage)):
+            if on_unavailable is OnUnavailable.ALLOW:
+                async with limiter.acquire(
+                    "user-1",
+                    "gpt-4",
+                    {"session": 1},
+                    limits=[self.SESSION],
+                    on_unavailable=on_unavailable,
+                ) as lease:
+                    assert lease.degraded
+                assert await self._buckets(repo) == []
+            else:
+                with pytest.raises(RateLimiterUnavailable):
+                    await self._acquire(limiter, on_unavailable)
+
     async def test_an_override_without_reset_after_reads_nothing(self, repo):
         limiter = RateLimiter(repository=repo)
         client = await repo._get_client()

@@ -27,7 +27,13 @@ from .bucket import (
     window_end_in_force,
     would_refill_satisfy,
 )
-from .exceptions import RateLimiterUnavailable, RateLimitExceeded, ResourceDisabled, ValidationError
+from .exceptions import (
+    RateLimiterUnavailable,
+    RateLimitExceeded,
+    ResourceDisabled,
+    ValidationError,
+    VersionMismatchError,
+)
 from .models import (
     AuditEvent,
     Availability,
@@ -619,10 +625,12 @@ class SyncRateLimiter:
                 DeprecationWarning,
                 stacklevel=2,
             )
-        if limits is not None:
-            self._repository.require_reset_after_readers(limits)
         mode = self._resolve_on_unavailable(on_unavailable)
         try:
+            if limits is not None and any(
+                getattr(limit, "reset_after", None) is not None for limit in limits
+            ):
+                self._repository.require_reset_after_readers(limits)
             lease: SyncLease | None = None
             slow_path_shard: int | None = None
             slow_path_shard_count: int | None = None
@@ -644,7 +652,13 @@ class SyncRateLimiter:
                     parent_shard_id=slow_path_parent_shard,
                 )
             lease._commit_initial()
-        except (RateLimitExceeded, ValidationError, ResourceDisabled, Warning):
+        except (
+            RateLimitExceeded,
+            ValidationError,
+            ResourceDisabled,
+            VersionMismatchError,
+            Warning,
+        ):
             raise
         except Exception as e:
             if mode == OnUnavailable.ALLOW:

@@ -1456,9 +1456,7 @@ class Repository:
         Raises:
             VersionMismatchError: as for the config writers.
         """
-        # getattr: an override is caller input that has not been validated
-        # yet; anything that is not a Limit is left to fail where it did before.
-        if not any(getattr(limit, "reset_after", None) is not None for limit in limits):
+        if not any(limit.reset_after is not None for limit in limits):
             return
 
         from . import __version__
