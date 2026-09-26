@@ -163,6 +163,78 @@ class TestCompositeBuilders:
         )["Update"]
         assert_expression_safe(update)
 
+    @staticmethod
+    def _seed_states() -> dict:
+        """A scheduled rate limit, a calendar quota and a session quota, all
+        missing from an existing item (#633)."""
+        from datetime import timedelta
+
+        from zae_limiter.models import BucketState
+
+        limits = [
+            Limit.per_minute(DOTTED, 100).with_schedule(
+                (ScheduleEntry(cron="* 9-17 * * *", scale=0.5),)
+            ),
+            Limit.quota(HYPHENATED, 1000, cron="0 0 * * *"),
+            Limit.quota("sess.v1", 10, reset_after=timedelta(hours=5)),
+        ]
+        return {
+            limit.name: BucketState.from_limit("user-1", "api", limit, 2_000) for limit in limits
+        }
+
+    def test_normal_with_seeds(self) -> None:
+        """#633: the seed branch shares one expression with the ADD branch,
+        the windows and the lock without a token collision."""
+        seeds = self._seed_states()
+        update = _repo().build_composite_normal(
+            "user-1",
+            "api",
+            consumed={"rpm": 1000, "wcu": 0},
+            refill_amounts={"rpm": 500},
+            now_ms=2_000,
+            expected_rf=1_000,
+            ttl_seconds=60,
+            vu=9_000,
+            windows={"sess.v1": (2_000, 18_000)},
+            seeds=seeds,
+        )["Update"]
+        assert_expression_safe(update)
+        for name in (DOTTED, HYPHENATED, "sess.v1"):
+            assert name not in update["UpdateExpression"]
+
+    def test_normal_with_only_seeds(self) -> None:
+        """No ADD clause at all when every limit written is a seed."""
+        update = _repo().build_composite_normal(
+            "user-1",
+            "api",
+            consumed={},
+            refill_amounts={},
+            now_ms=2_000,
+            expected_rf=1_000,
+            seeds={HYPHENATED: self._seed_states()[HYPHENATED]},
+        )["Update"]
+        assert_expression_safe(update)
+        assert " ADD " not in update["UpdateExpression"]
+
+    def test_retry_with_seeds(self) -> None:
+        seeds = self._seed_states()
+        update = _repo().build_composite_retry(
+            "user-1",
+            "api",
+            consumed={"rpm": 1000, DOTTED: 1000},
+            seeds=seeds,
+        )["Update"]
+        assert_expression_safe(update)
+        assert update["ReturnValuesOnConditionCheckFailure"] == "ALL_OLD"
+
+    def test_retry_with_only_unconsumed_seeds(self) -> None:
+        """A seed nothing consumes needs no condition at all."""
+        update = _repo().build_composite_retry(
+            "user-1", "api", consumed={}, seeds={HYPHENATED: self._seed_states()[HYPHENATED]}
+        )["Update"]
+        assert_expression_safe(update)
+        assert "ConditionExpression" not in update
+
     def test_adjust(self) -> None:
         update = _repo().build_composite_adjust(
             "user-1", "api", deltas={DOTTED: 1000, "rpm": 0, HYPHENATED: -2000}

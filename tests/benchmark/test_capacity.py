@@ -15,6 +15,7 @@ import pytest
 
 from tests.fixtures.sharding import pinned_shard
 from zae_limiter import Limit, RateLimitExceeded, schema
+from zae_limiter.models import BucketState
 from zae_limiter.schedule import ScheduleEntry
 
 pytestmark = pytest.mark.benchmark
@@ -984,3 +985,111 @@ class TestDurationWindowCapacity:
             for i in range(window_limits):
                 starts.add(int(item[schema.bucket_attr(f"session{i}", "ws")]["N"]))
         assert starts == {self.T0 + self.WINDOW_MS + 100}
+
+
+class TestLimitAddedToExistingBucketCapacity:
+    """#633: seeding a limit added after its bucket existed is a one-off cost.
+
+    The seed rides the slow pass the fast path's failed condition already
+    routes to — the same reads, and the one rf-locked ``UpdateItem`` it would
+    have written anyway, now carrying the missing limit's attributes. After it
+    the fast path is back to 0 RCU + 1 WCU. A quota added to a *sharded* entity
+    additionally reads its siblings once (#587: a seed must never mint), and a
+    session quota reads shard 0's window once (ADR-139).
+    """
+
+    T0 = 1_757_000_000_000
+
+    @staticmethod
+    def _counts(counter) -> dict:
+        return {
+            "get_item": counter.get_item,
+            "batch_get_item": list(counter.batch_get_item),
+            "query": counter.query,
+            "put_item": counter.put_item,
+            "update_item": counter.update_item,
+            "transact_write_items": list(counter.transact_write_items),
+        }
+
+    def _item_then(self, sync_limiter, entity_id, new_limits):
+        repo = sync_limiter._repository
+        repo._now_ms = lambda: self.T0
+        repo.set_resource_defaults("api", [Limit.per_minute("rpm", 1_000_000)])
+        with sync_limiter.acquire(entity_id, "api", consume={"rpm": 1}):
+            pass
+        repo.set_resource_defaults("api", new_limits)
+        repo.invalidate_config_cache()
+        # Warm the config cache so only the acquire itself is counted.
+        sync_limiter._resolve_limits(entity_id, "api", None)
+
+    def test_the_seed_is_the_slow_pass_write_and_the_fast_path_returns(
+        self, sync_limiter, capacity_counter
+    ):
+        limits = [Limit.per_minute("rpm", 1_000_000), Limit.per_minute("tpm", 1_000_000)]
+        self._item_then(sync_limiter, "seed-cap", limits)
+
+        capacity_counter.reset()
+        with capacity_counter.counting():
+            with sync_limiter.acquire("seed-cap", "api", consume={"rpm": 1, "tpm": 1}):
+                pass
+        # The failed speculative UpdateItem, the disabled walk, META + bucket,
+        # and one rf-locked write that seeds `tpm` — no retry, no extra read.
+        assert self._counts(capacity_counter) == {
+            "get_item": 0,
+            "batch_get_item": [3, 2],
+            "query": 0,
+            "put_item": 0,
+            "update_item": 2,
+            "transact_write_items": [],
+        }
+
+        capacity_counter.reset()
+        with capacity_counter.counting():
+            with sync_limiter.acquire("seed-cap", "api", consume={"rpm": 1, "tpm": 1}):
+                pass
+        assert self._counts(capacity_counter) == {
+            "get_item": 0,
+            "batch_get_item": [],
+            "query": 0,
+            "put_item": 0,
+            "update_item": 1,
+            "transact_write_items": [],
+        }
+
+    def test_a_session_quota_on_a_sharded_entity_reads_once_more(
+        self, sync_limiter, capacity_counter
+    ):
+        """Two shards: the seed adds the sibling read (1 Query + 1 BatchGetItem)
+        and shard 0's strongly consistent window read (1 GetItem), once."""
+        session = Limit.quota("session", 10, reset_after=timedelta(hours=5))
+        repo = sync_limiter._repository
+        repo._now_ms = lambda: self.T0
+        rpm = Limit.per_minute("rpm", 1_000_000)
+        repo.set_resource_defaults("api", [rpm])
+        for shard_id in (0, 1):
+            state = BucketState.from_limit("seed-shard", "api", rpm, self.T0, shard_count=2)
+            repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        "seed-shard", "api", [state], self.T0, shard_id=shard_id, shard_count=2
+                    )
+                ]
+            )
+        repo._entity_cache[(repo._namespace_id, "seed-shard")] = (False, None, {"api": 2})
+        repo.set_resource_defaults("api", [rpm, session])
+        repo.invalidate_config_cache()
+        sync_limiter._resolve_limits("seed-shard", "api", None)
+
+        capacity_counter.reset()
+        with capacity_counter.counting(), pinned_shard(1):
+            with sync_limiter.acquire("seed-shard", "api", consume={"session": 1}):
+                pass
+        counts = self._counts(capacity_counter)
+        assert counts["get_item"] == 1, "shard 0's window, strongly consistent"
+        assert counts["query"] == 1 and counts["batch_get_item"] == [3, 2, 2], (
+            "the sibling read a quota seed takes on a sharded entity"
+        )
+        # The failed speculative write, one failed probe of the other shard
+        # (the missing limit reads as an exhausted one, #633 notes), the seed,
+        # and the fan-out of the window it opened to shard 0.
+        assert counts["update_item"] == 4

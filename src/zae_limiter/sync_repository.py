@@ -53,6 +53,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 _BATCH_GET_MAX_RETRIES = 3
 _BATCH_GET_RETRY_BASE_DELAY = 0.05
+_SEED_TOKEN = {
+    schema.BUCKET_FIELD_TK: "t",
+    schema.BUCKET_FIELD_TC: "c",
+    schema.BUCKET_FIELD_CP: "p",
+    schema.BUCKET_FIELD_RA: "a",
+    schema.BUCKET_FIELD_RP: "r",
+    schema.BUCKET_FIELD_SCHED: "h",
+    schema.BUCKET_FIELD_RSCHED: "x",
+    schema.BUCKET_FIELD_RSA: "y",
+    schema.BUCKET_FIELD_WS: "w",
+}
 
 
 class SyncRepository:
@@ -1842,6 +1853,76 @@ class SyncRepository:
             for name, compact in overrides.items():
                 item[schema.bucket_attr(name, field)] = {"S": compact}
 
+    @staticmethod
+    def _limit_item_attrs(
+        state: BucketState, *, include_window: bool = True
+    ) -> dict[str, dict[str, str]]:
+        """The per-limit attributes a bucket item carries for one limit.
+
+        ``{field: AttributeValue}`` for ``tk``, ``cp``, ``ra``, ``rp`` and
+        ``tc``, plus the ADR-139 ``rsa`` / ``ws`` pair when the limit has a
+        duration window. The single source for both writers that bring a limit
+        into existence on an item: :meth:`build_composite_create` (a new item)
+        and the seed branch of :meth:`build_composite_normal` /
+        :meth:`build_composite_retry` (a limit missing from an existing item,
+        #633). Two copies would drift, and a drifted seed is a limit whose
+        balance the next reader interprets against the wrong parameters.
+
+        ``cp``/``ra``/``rp`` are the undivided base (#222 §2.1); only ``tk`` is
+        the per-shard, schedule-effective balance. ``rsa`` is entity-wide and
+        never divided.
+
+        Args:
+            state: The limit's bucket state, balance already materialised.
+            include_window: Emit ``rsa``/``ws``. The normal write path stamps
+                those through its ``windows`` argument instead, so that one
+                expression never SETs the same path twice.
+        """
+        tc = state.total_consumed_milli if state.total_consumed_milli is not None else 0
+        attrs: dict[str, dict[str, str]] = {
+            schema.BUCKET_FIELD_TK: {"N": str(state.tokens_milli)},
+            schema.BUCKET_FIELD_CP: {"N": str(state.capacity_milli)},
+            schema.BUCKET_FIELD_RA: {"N": str(state.refill_amount_milli)},
+            schema.BUCKET_FIELD_RP: {"N": str(state.refill_period_ms)},
+            schema.BUCKET_FIELD_TC: {"N": str(tc)},
+        }
+        if include_window:
+            if state.reset_after_seconds is not None:
+                attrs[schema.BUCKET_FIELD_RSA] = {"N": str(state.reset_after_seconds)}
+            if state.window_start_ms is not None:
+                attrs[schema.BUCKET_FIELD_WS] = {"N": str(state.window_start_ms)}
+        return attrs
+
+    @staticmethod
+    def _explicit_schedule_attrs(state: BucketState) -> tuple[str | None, dict[str, str]]:
+        """A seeded limit's own schedule overrides, spelled out (#633, #541).
+
+        A limit added to an existing item cannot rely on the item-level
+        ``sched`` / ``rsched`` default: that default was chosen for the limits
+        already on the item, and absence of an override means "inherit it". So
+        the seed writes **both** overrides explicitly — the limit's own compact
+        encoding, or ``schema.BUCKET_SCHED_NONE`` when it has none of that kind
+        — and the item default can never leak onto it.
+
+        Returns:
+            ``(tz, {field: compact})``: the zone the limit's schedules are
+            written in, or ``None`` when it has none, and one entry per field
+            (``sched`` and ``rsched``).
+        """
+        tz: str | None = None
+        overrides: dict[str, str] = {}
+        for field, entries, encoder in (
+            (schema.BUCKET_FIELD_SCHED, state.sched, schedule.encode),
+            (schema.BUCKET_FIELD_RSCHED, state.reset_sched, schedule.encode_reset),
+        ):
+            if entries:
+                compact, entry_tz = encoder(entries)
+                overrides[field] = compact
+                tz = tz or entry_tz
+            else:
+                overrides[field] = schema.BUCKET_SCHED_NONE
+        return (tz, overrides)
+
     def build_composite_create(
         self,
         entity_id: str,
@@ -1911,27 +1992,8 @@ class SyncRepository:
         item[schema.bucket_attr(wcu_name, schema.BUCKET_FIELD_RP)] = {"N": str(wcu_rp_ms)}
         item[schema.bucket_attr(wcu_name, schema.BUCKET_FIELD_TC)] = {"N": "0"}
         for state in states:
-            name = state.limit_name
-            item[schema.bucket_attr(name, schema.BUCKET_FIELD_TK)] = {"N": str(state.tokens_milli)}
-            item[schema.bucket_attr(name, schema.BUCKET_FIELD_CP)] = {
-                "N": str(state.capacity_milli)
-            }
-            item[schema.bucket_attr(name, schema.BUCKET_FIELD_RA)] = {
-                "N": str(state.refill_amount_milli)
-            }
-            item[schema.bucket_attr(name, schema.BUCKET_FIELD_RP)] = {
-                "N": str(state.refill_period_ms)
-            }
-            tc = state.total_consumed_milli if state.total_consumed_milli is not None else 0
-            item[schema.bucket_attr(name, schema.BUCKET_FIELD_TC)] = {"N": str(tc)}
-            if state.reset_after_seconds is not None:
-                item[schema.bucket_attr(name, schema.BUCKET_FIELD_RSA)] = {
-                    "N": str(state.reset_after_seconds)
-                }
-            if state.window_start_ms is not None:
-                item[schema.bucket_attr(name, schema.BUCKET_FIELD_WS)] = {
-                    "N": str(state.window_start_ms)
-                }
+            for field, value in self._limit_item_attrs(state).items():
+                item[schema.bucket_attr(state.limit_name, field)] = value
         return {
             "Put": {
                 "TableName": self.table_name,
@@ -1955,6 +2017,7 @@ class SyncRepository:
         windows: dict[str, tuple[int, int]] | None = None,
         rf_ms: int | None = None,
         window_lengths: dict[str, int] | None = None,
+        seeds: dict[str, BucketState] | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -2012,6 +2075,26 @@ class SyncRepository:
                 path then read an end the slow path no longer enforces. A name
                 also in ``windows`` is skipped — that pair already carries the
                 length, and two SETs on one path are a ValidationException.
+            seeds: Limit name -> the state of a limit **missing** from this
+                existing item (#633): configured after the item was created,
+                so no ``b_{name}_*`` attribute exists to ``ADD`` to. Each is
+                SET in full on this same write — ``tk`` (its starting share
+                less this acquire's consumption, already on the state), ``tc``,
+                ``cp``/``ra``/``rp`` and explicit ``sched``/``rsched``
+                overrides (:meth:`_explicit_schedule_attrs`) — through
+                :meth:`_limit_item_attrs`, the helper the create shares. A
+                seeded name must not also appear in ``consumed``. Its window,
+                if any, travels in ``windows`` like any other.
+
+                Each seed is guarded by ``attribute_not_exists(cp) OR
+                attribute_not_exists(tk)``, so it can never overwrite a limit
+                another writer seeded first — the ``rf`` lock already
+                serialises two slow-path seeders, but ``rf`` does not move when
+                both commit inside one millisecond. ``cp`` in the guard is what
+                lets a seed repair ``tk = 0`` left without parameters by an
+                older client. Explicit ``SET`` rather than ``if_not_exists``:
+                the guard makes it exact, and the same attribute cannot also
+                be ``ADD``ed in one expression (#168).
         """
         add_parts: list[str] = []
         set_parts: list[str] = ["#rf = :now"]
@@ -2068,7 +2151,30 @@ class SyncRepository:
                 floor_val = f":bf{i}"
                 attr_values[floor_val] = {"N": str(floor)}
                 condition_parts.append(f"{tk_alias} >= {floor_val}")
-        update_expr = f"SET {', '.join(set_parts)} ADD {', '.join(add_parts)}"
+        seeded_tz: str | None = None
+        for j, (name, state) in enumerate(sorted((seeds or {}).items())):
+            tz, overrides = self._explicit_schedule_attrs(state)
+            seeded_tz = seeded_tz or tz
+            fields = {
+                **self._limit_item_attrs(state, include_window=False),
+                **{field: {"S": compact} for field, compact in overrides.items()},
+            }
+            for field, value in fields.items():
+                alias = f"#s{_SEED_TOKEN[field]}{j}"
+                placeholder = f":s{_SEED_TOKEN[field]}{j}"
+                attr_names[alias] = schema.bucket_attr(name, field)
+                attr_values[placeholder] = value
+                set_parts.append(f"{alias} = {placeholder}")
+            condition_parts.append(
+                f"(attribute_not_exists(#sp{j}) OR attribute_not_exists(#st{j}))"
+            )
+        if seeded_tz is not None:
+            set_parts.append("#stz = :stz")
+            attr_names["#stz"] = schema.BUCKET_FIELD_SCHED_TZ
+            attr_values[":stz"] = {"S": seeded_tz}
+        update_expr = f"SET {', '.join(set_parts)}"
+        if add_parts:
+            update_expr += f" ADD {', '.join(add_parts)}"
         if remove_parts:
             update_expr += f" REMOVE {', '.join(remove_parts)}"
         return {
@@ -2088,7 +2194,12 @@ class SyncRepository:
         }
 
     def build_composite_retry(
-        self, entity_id: str, resource: str, consumed: dict[str, int], shard_id: int = 0
+        self,
+        entity_id: str,
+        resource: str,
+        consumed: dict[str, int],
+        shard_id: int = 0,
+        seeds: dict[str, BucketState] | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the retry write path (ADR-115 path 3).
 
@@ -2100,12 +2211,25 @@ class SyncRepository:
         rejection, and the lease reports it from the item's real balance rather
         than from the in-memory state that just proved stale (#633). Free — the
         image rides on the failure response.
+
+        Args:
+            seeds: Limit name -> state of a limit missing from the item (#633),
+                exactly as passed to :meth:`build_composite_normal`. The lock
+                that write lost may have been lost to a writer that does not
+                seed (the aggregator), so the limit can still be missing here:
+                ``tk`` is written as ``if_not_exists(tk, :seed) - :c`` under
+                ``attribute_not_exists(tk) OR tk >= :c``, and every parameter
+                as ``if_not_exists``. A limit another writer seeded first is
+                therefore debited, never re-seeded.
         """
         add_parts: list[str] = []
+        set_parts: list[str] = []
         condition_parts: list[str] = []
         attr_names: dict[str, str] = {}
         attr_values: dict[str, Any] = {}
         for i, name in enumerate(consumed):
+            if seeds and name in seeds:
+                continue
             c = consumed[name]
             tk_alias = f"#bt{i}"
             tc_alias = f"#bc{i}"
@@ -2120,24 +2244,54 @@ class SyncRepository:
             add_parts.append(f"{tk_alias} {tk_neg_val}")
             add_parts.append(f"{tc_alias} {tc_val}")
             condition_parts.append(f"{tk_alias} >= {tk_threshold}")
-        update_expr = f"ADD {', '.join(add_parts)}"
-        condition_expr = " AND ".join(condition_parts)
-        return {
-            "Update": {
-                "TableName": self.table_name,
-                "Key": {
-                    "PK": {
-                        "S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)
-                    },
-                    "SK": {"S": schema.sk_state()},
-                },
-                "UpdateExpression": update_expr,
-                "ConditionExpression": condition_expr,
-                "ExpressionAttributeNames": attr_names,
-                "ExpressionAttributeValues": attr_values,
-                "ReturnValuesOnConditionCheckFailure": "ALL_OLD",
+        seeded_tz: str | None = None
+        for j, (name, state) in enumerate(sorted((seeds or {}).items())):
+            c = consumed.get(name, 0)
+            tz, overrides = self._explicit_schedule_attrs(state)
+            seeded_tz = seeded_tz or tz
+            fields = {
+                **self._limit_item_attrs(state),
+                **{field: {"S": compact} for field, compact in overrides.items()},
             }
+            fields[schema.BUCKET_FIELD_TK] = {"N": str(state.tokens_milli + c)}
+            for field, value in fields.items():
+                alias = f"#s{_SEED_TOKEN[field]}{j}"
+                placeholder = f":s{_SEED_TOKEN[field]}{j}"
+                attr_names[alias] = schema.bucket_attr(name, field)
+                attr_values[placeholder] = value
+                if field == schema.BUCKET_FIELD_TC:
+                    attr_values[placeholder] = {"N": str(c)}
+                    add_parts.append(f"{alias} {placeholder}")
+                elif field == schema.BUCKET_FIELD_TK and c:
+                    set_parts.append(f"{alias} = if_not_exists({alias}, {placeholder}) - :sq{j}")
+                else:
+                    set_parts.append(f"{alias} = if_not_exists({alias}, {placeholder})")
+            if c:
+                attr_values[f":sq{j}"] = {"N": str(c)}
+                condition_parts.append(f"(attribute_not_exists(#st{j}) OR #st{j} >= :sq{j})")
+        if seeded_tz is not None:
+            set_parts.append("#stz = if_not_exists(#stz, :stz)")
+            attr_names["#stz"] = schema.BUCKET_FIELD_SCHED_TZ
+            attr_values[":stz"] = {"S": seeded_tz}
+        clauses = []
+        if set_parts:
+            clauses.append(f"SET {', '.join(set_parts)}")
+        if add_parts:
+            clauses.append(f"ADD {', '.join(add_parts)}")
+        update: dict[str, Any] = {
+            "TableName": self.table_name,
+            "Key": {
+                "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)},
+                "SK": {"S": schema.sk_state()},
+            },
+            "UpdateExpression": " ".join(clauses),
+            "ExpressionAttributeNames": attr_names,
+            "ExpressionAttributeValues": attr_values,
+            "ReturnValuesOnConditionCheckFailure": "ALL_OLD",
         }
+        if condition_parts:
+            update["ConditionExpression"] = " AND ".join(condition_parts)
+        return {"Update": update}
 
     def build_composite_adjust(
         self, entity_id: str, resource: str, deltas: dict[str, int], shard_id: int = 0
@@ -4546,7 +4700,7 @@ class SyncRepository:
         for attr_name in item:
             if attr_name.startswith(schema.BUCKET_ATTR_PREFIX) and attr_name.endswith(suffix):
                 name = attr_name[len(schema.BUCKET_ATTR_PREFIX) : -len(suffix)]
-                if name:
+                if name and schema.bucket_attr(name, schema.BUCKET_FIELD_CP) in item:
                     limit_names.append(name)
         buckets: list[BucketState] = []
         for name in limit_names:
@@ -5061,10 +5215,19 @@ class SyncRepository:
         reclaimed: dict[str, int] = dict.fromkeys(shares_milli, 0)
         if not shares_milli:
             return (0, reclaimed)
+        items = self._entity_bucket_items(entity_id, resource)
+        if not items:
+            return (0, reclaimed)
+        for item in items:
+            for name, share in shares_milli.items():
+                reclaimed[name] += self._clamp_quota_shard(item, name, share)
+        return (len(items), reclaimed)
+
+    def _entity_bucket_items(self, entity_id: str, resource: str) -> list[dict[str, Any]]:
+        """Every shard item of one (entity, resource): GSI3 discovery + BatchGetItem."""
         pks = self._discover_entity_bucket_pks(entity_id, resource)
         if not pks:
-            return (0, reclaimed)
-        client = self._get_client()
+            return []
         keys = [{"PK": {"S": pk}, "SK": {"S": schema.sk_state()}} for pk in pks]
         items: list[dict[str, Any]] = []
         for start in range(0, len(keys), 100):
@@ -5075,30 +5238,107 @@ class SyncRepository:
                     entity_id=entity_id,
                 )
             )
-        for item in items:
-            pk = item["PK"]["S"]
-            for name, share in shares_milli.items():
-                attr = schema.bucket_attr(name, schema.BUCKET_FIELD_TK)
-                raw = item.get(attr, {}).get("N")
-                if raw is None or int(raw) <= share:
+        return items
+
+    def _clamp_quota_shard(self, item: dict[str, Any], name: str, share: int) -> int:
+        """Clamp one shard's quota balance to ``share``; return what it took (#587).
+
+        ``SET tk = :share`` under ``tk > :share``, ``ReturnValues=UPDATED_OLD``.
+        A shard not carrying the limit, or already at or under the share,
+        costs nothing and yields 0.
+        """
+        attr = schema.bucket_attr(name, schema.BUCKET_FIELD_TK)
+        raw = item.get(attr, {}).get("N")
+        if raw is None or int(raw) <= share:
+            return 0
+        client = self._get_client()
+        try:
+            response = client.update_item(
+                TableName=self.table_name,
+                Key={"PK": item["PK"], "SK": {"S": schema.sk_state()}},
+                UpdateExpression="SET #tk = :share",
+                ConditionExpression="#tk > :share",
+                ExpressionAttributeNames={"#tk": attr},
+                ExpressionAttributeValues={":share": {"N": str(share)}},
+                ReturnValues="UPDATED_OLD",
+            )
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                return 0
+            raise
+        return int(response["Attributes"][attr]["N"]) - share
+
+    def reclaim_quota_seed(
+        self, entity_id: str, resource: str, shares_milli: dict[str, int]
+    ) -> dict[str, int]:
+        """What a quota missing from an existing shard may be seeded with (#633, #587).
+
+        A quota configured after an entity's shards already existed is missing
+        from every one of them, and each is seeded once, on its own next
+        slow-path write. Seeded at the share in force (``capacity //
+        shard_count``), the seeds sum to the capacity: nothing of the new
+        allowance has been spent anywhere, and a shard's seed is its own
+        slice, not one granted elsewhere. That is the common case and it
+        costs nothing beyond this read.
+
+        It stops holding when a sibling was granted **more** than its current
+        share — seeded or created while ``shard_count`` was lower (a client
+        with a stale config created a shard without the quota after a sibling
+        had it, then the entity doubled). That sibling's grant already covers
+        part of this shard's slice, and a fresh share here would mint it a
+        second time (#587). A sibling's grant is not stored, but within one
+        period it is ``tk + tc``: a quota never drips, so every token it was
+        given is either still held or was consumed. So:
+
+        * no sibling was granted more than the share → the full share
+          (the limit is absent from the result);
+        * otherwise → a **transfer**: every sibling holding more than the
+          share is clamped to it, exactly as :meth:`reclaim_quota_surplus`
+          does for a new shard, and the seed is what that took (capped at one
+          share by the caller). A sibling that already spent into the surplus
+          leaves nothing to take, which is the point.
+
+        ``tc`` counts every period, not just this one, so a sibling that
+        crossed a reset edge since it was seeded looks over-granted and the
+        seed takes a transfer where a full share was due: a one-period
+        under-grant, never an over-admission.
+
+        Cost: 1 GSI3 KEYS_ONLY query + 1 ``BatchGetItem`` + one conditional
+        ``UpdateItem`` per sibling holding a surplus. Paid once per (shard,
+        new quota), only for a quota, and only when ``shard_count > 1``.
+
+        Args:
+            entity_id: Entity owning the shards.
+            resource: Resource the shards belong to.
+            shares_milli: ``{limit_name: capacity_milli // shard_count}`` for
+                the quota limits missing from the shard being seeded.
+
+        Returns:
+            ``{limit_name: reclaimed_milli}`` for the limits that must take a
+            transfer. A name absent from the result is granted its full share.
+        """
+        items = self._entity_bucket_items(entity_id, resource)
+        transfers: dict[str, int] = {}
+        for name, share in shares_milli.items():
+            tk_attr = schema.bucket_attr(name, schema.BUCKET_FIELD_TK)
+            tc_attr = schema.bucket_attr(name, schema.BUCKET_FIELD_TC)
+            over_granted = False
+            for item in items:
+                raw_tk = item.get(tk_attr, {}).get("N")
+                if raw_tk is None:
                     continue
-                try:
-                    response = client.update_item(
-                        TableName=self.table_name,
-                        Key={"PK": {"S": pk}, "SK": {"S": schema.sk_state()}},
-                        UpdateExpression="SET #tk = :share",
-                        ConditionExpression="#tk > :share",
-                        ExpressionAttributeNames={"#tk": attr},
-                        ExpressionAttributeValues={":share": {"N": str(share)}},
-                        ReturnValues="UPDATED_OLD",
-                    )
-                except ClientError as e:
-                    if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-                        continue
-                    raise
-                previous = int(response["Attributes"][attr]["N"])
-                reclaimed[name] += previous - share
-        return (len(pks), reclaimed)
+                tk = int(raw_tk)
+                tc = int(item.get(tc_attr, {}).get("N", "0"))
+                if max(tk, tk + tc) > share:
+                    over_granted = True
+                    break
+            if not over_granted:
+                continue
+            taken = 0
+            for item in items:
+                taken += self._clamp_quota_shard(item, name, share)
+            transfers[name] = taken
+        return transfers
 
     def get_shard_window_starts(
         self, entity_id: str, resource: str, limit_names: list[str], shard_id: int = 0

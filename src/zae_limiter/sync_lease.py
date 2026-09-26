@@ -54,6 +54,7 @@ class LeaseEntry:
     _window_start_ms: int | None = None
     _window_end_ms: int | None = None
     _stored_reset_after_seconds: int | None = None
+    _seed: bool = False
 
 
 @dataclass
@@ -324,11 +325,42 @@ class SyncLease:
                 refill_amounts: dict[str, int] = {}
                 windows: dict[str, tuple[int, int]] = {}
                 window_lengths: dict[str, int] = {}
-                expected_rf = group_entries[0]._original_rf_ms
+                seeds: dict[str, BucketState] = {}
+                seed_windows: dict[str, tuple[int, int]] = {}
+                expected_rf = next(
+                    (e._original_rf_ms for e in group_entries if not e._seed),
+                    group_entries[0]._original_rf_ms,
+                )
                 for entry in group_entries:
                     name = entry.limit.name
-                    consumed[name] = entry.consumed * 1000
                     consumed_milli = entry.consumed * 1000
+                    if entry._seed:
+                        seeds[name] = entry.state
+                        restarted = (
+                            entry._reset_edge_ms is not None
+                            and entry._reset_edge_ms <= now_ms
+                            or (entry._window_end_ms is not None and entry._window_end_ms <= now_ms)
+                        )
+                        if restarted:
+                            entry.state.tokens_milli = (
+                                entry.state.effective_capacity_milli(now_ms) - consumed_milli
+                            )
+                            if entry._window_end_ms is not None and entry._window_end_ms <= now_ms:
+                                entry._window_start_ms = now_ms
+                                entry.state.window_start_ms = now_ms
+                        rsa = entry.state.reset_after_seconds
+                        ws = entry.state.window_start_ms
+                        if (
+                            entry.limit.reset_after is not None
+                            and rsa is not None
+                            and (ws is not None)
+                        ):
+                            if entry._window_start_ms is not None:
+                                windows[name] = (entry._window_start_ms, rsa)
+                            else:
+                                seed_windows[name] = (ws, rsa)
+                        continue
+                    consumed[name] = consumed_milli
                     refill_amounts[name] = (
                         entry.state.tokens_milli - entry._original_tokens_milli + consumed_milli
                     )
@@ -364,8 +396,9 @@ class SyncLease:
                         ttl_seconds=ttl_seconds,
                         shard_id=shard_id,
                         vu=vu,
-                        windows=windows,
+                        windows={**seed_windows, **windows},
                         window_lengths=window_lengths,
+                        seeds=seeds,
                         rf_ms=_monotonic_rf(now_ms, expected_rf, group_entries),
                         clear_vu=not boundaries,
                     )
@@ -414,10 +447,15 @@ class SyncLease:
                 consumed = {
                     e.limit.name: e.consumed * 1000 for e in group_entries if e.consumed > 0
                 }
-                if not consumed:
+                seeds = {e.limit.name: e.state for e in group_entries if e._seed}
+                if not consumed and (not seeds):
                     return None
                 return repo.build_composite_retry(
-                    entity_id=entity_id, resource=resource, consumed=consumed, shard_id=shard_id
+                    entity_id=entity_id,
+                    resource=resource,
+                    consumed=consumed,
+                    shard_id=shard_id,
+                    seeds=seeds or None,
                 )
 
             retry_items: list[dict[str, Any]] = []

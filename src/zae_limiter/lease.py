@@ -106,6 +106,12 @@ class LeaseEntry:
     # item would keep the old length — and the fast path read a window end
     # the slow path no longer enforces — until the window next moved.
     _stored_reset_after_seconds: int | None = None
+    # True when the bucket item exists but this limit is missing from it —
+    # configured after the item was created (#633). Newness is per limit:
+    # `_is_new` stays the item-level create flag (a `Put` of the whole item),
+    # while a seeded limit rides the normal `UpdateItem` and is SET in full
+    # there instead of `ADD`ed to, since there is nothing to add to.
+    _seed: bool = False
 
 
 @dataclass
@@ -463,12 +469,54 @@ class Lease:
                 # The configured length where it differs from the item's and
                 # the window did not move (a moved window carries it already).
                 window_lengths: dict[str, int] = {}
-                expected_rf = group_entries[0]._original_rf_ms
+                # Limits missing from this existing item, seeded in full on
+                # this write (#633), and the windows they stamp without
+                # anchoring the entity's next one (joined, or unsharded).
+                seeds: dict[str, BucketState] = {}
+                seed_windows: dict[str, tuple[int, int]] = {}
+                # The lock compares the `rf` the item really holds, so it is
+                # taken from a limit the item really has — never from a seed,
+                # whose fresh state is stamped `now` (#633, mode 3). Every
+                # entry read off the item shares one `rf`; the seed's own
+                # `_original_rf_ms` is the item's too, as the last resort.
+                expected_rf = next(
+                    (e._original_rf_ms for e in group_entries if not e._seed),
+                    group_entries[0]._original_rf_ms,
+                )
 
                 for entry in group_entries:
                     name = entry.limit.name
-                    consumed[name] = entry.consumed * 1000  # to millitokens
                     consumed_milli = entry.consumed * 1000
+                    if entry._seed:
+                        seeds[name] = entry.state
+                        # An edge or a window end crossed between the acquire
+                        # path's reading and this one restarts the allowance:
+                        # the seed starts at the share in force now, less this
+                        # acquire's consumption — the same re-expression the
+                        # branches below apply to a limit the item carries.
+                        restarted = (
+                            entry._reset_edge_ms is not None and entry._reset_edge_ms <= now_ms
+                        ) or (entry._window_end_ms is not None and entry._window_end_ms <= now_ms)
+                        if restarted:
+                            entry.state.tokens_milli = (
+                                entry.state.effective_capacity_milli(now_ms) - consumed_milli
+                            )
+                            if entry._window_end_ms is not None and entry._window_end_ms <= now_ms:
+                                entry._window_start_ms = now_ms
+                                entry.state.window_start_ms = now_ms
+                        rsa = entry.state.reset_after_seconds
+                        ws = entry.state.window_start_ms
+                        if (
+                            entry.limit.reset_after is not None
+                            and rsa is not None
+                            and ws is not None
+                        ):
+                            if entry._window_start_ms is not None:
+                                windows[name] = (entry._window_start_ms, rsa)
+                            else:
+                                seed_windows[name] = (ws, rsa)
+                        continue
+                    consumed[name] = consumed_milli  # to millitokens
                     refill_amounts[name] = (
                         entry.state.tokens_milli - entry._original_tokens_milli + consumed_milli
                     )
@@ -550,8 +598,9 @@ class Lease:
                         ttl_seconds=ttl_seconds,
                         shard_id=shard_id,
                         vu=vu,
-                        windows=windows,
+                        windows={**seed_windows, **windows},
                         window_lengths=window_lengths,
+                        seeds=seeds,
                         # Computed after the loop above, which can anchor a
                         # window at this reading; the lock still compares the
                         # stored `expected_rf`.
@@ -631,10 +680,17 @@ class Lease:
                 consumed = {
                     e.limit.name: e.consumed * 1000 for e in group_entries if e.consumed > 0
                 }
-                if not consumed:
+                # A limit the lost write was to seed may still be missing —
+                # the lock can be lost to a writer that does not seed (#633).
+                seeds = {e.limit.name: e.state for e in group_entries if e._seed}
+                if not consumed and not seeds:
                     return None
                 return repo.build_composite_retry(
-                    entity_id=entity_id, resource=resource, consumed=consumed, shard_id=shard_id
+                    entity_id=entity_id,
+                    resource=resource,
+                    consumed=consumed,
+                    shard_id=shard_id,
+                    seeds=seeds or None,
                 )
 
             retry_items: list[dict[str, Any]] = []
