@@ -783,6 +783,19 @@ def _recovery_seconds(limit: "Limit") -> float:
     """
     if limit.is_quota:
         if limit.reset_after is not None:
+            # A duration window's cycle is `reset_after`, exactly and by
+            # construction (ADR-139): no cron parse, no `cycle_seconds`
+            # ladder, no rounding-up approximation, and — decisively — no
+            # clock, which this function does not have and none of
+            # `calculate_bucket_ttl_seconds`'s three production callers can
+            # supply. Strictly sharper than the calendar branch below, which
+            # rounds a monthly pattern up to 31 days.
+            #
+            # The two spellings are mutually exclusive (ADR-137/ADR-139), so
+            # this is an either/or rather than a `max` — and it must come
+            # first, because a duration quota's `reset_schedule` is empty and
+            # `min()` over an empty sequence raises.
+            #
             # `reset_after_seconds` is `None` only when `reset_after` is —
             # asserted rather than re-derived from `reset_after.total_seconds()`
             # so this stays the single reader of the stored granularity.
