@@ -86,10 +86,19 @@ _MANIFEST_SCHEDULE_KEY = {
 # trio above (a plain "N" attribute), but it is optional — a limit carries it
 # only when it is a session quota — so it is kept out of
 # `_MANIFEST_NUMERIC_KEY` / `_REQUIRED_MANIFEST_KEYS`: folding it in there
-# would make every decoded limit need a `reset_after`, rejecting every
+# would make every decoded limit need a `reset_after_seconds`, rejecting every
 # ordinary rate limit as malformed.
+#
+# Spelled `reset_after_seconds`, matching `LimitDecl.reset_after_seconds`
+# (Task 13) and `Limit.reset_after_seconds` (Task 2) — not the bare
+# `reset_after` this dict shape used before Task 13 gave it a manifest-level
+# counterpart. `Change.data["limits"]` (built from `LimitDecl.to_dict()`) and
+# this decoder produce the SAME dict shape and both feed `build_bucket_param_update`
+# below, so the two must agree on the key or an entity-level manifest apply of
+# a session quota would silently strip the window it just wrote to config
+# (the #487 class of bug, for this field).
 _MANIFEST_OPTIONAL_NUMERIC_KEY = {
-    LIMIT_FIELD_RSA: "reset_after",
+    LIMIT_FIELD_RSA: "reset_after_seconds",
 }
 
 # A limit missing any of these is malformed and is dropped rather than given a
@@ -240,10 +249,10 @@ def build_bucket_param_update(
         # anchors a first window or leaves an existing one alone.
         rsa_alias = f"#rsa{i}"
         expr_names[rsa_alias] = bucket_attr(name, BUCKET_FIELD_RSA)
-        reset_after = decl.get("reset_after")
-        if reset_after is not None:
+        reset_after_seconds = decl.get("reset_after_seconds")
+        if reset_after_seconds is not None:
             set_parts.append(f"{rsa_alias} = :{rsa_alias[1:]}")
-            expr_values[f":{rsa_alias[1:]}"] = {"N": str(reset_after)}
+            expr_values[f":{rsa_alias[1:]}"] = {"N": str(reset_after_seconds)}
         else:
             remove_parts.append(rsa_alias)
 
@@ -341,8 +350,8 @@ def build_bucket_param_update(
                         schedule=sched,
                         reset_schedule=reset_sched,
                         reset_after=(
-                            timedelta(seconds=limits[n]["reset_after"])
-                            if limits[n].get("reset_after") is not None
+                            timedelta(seconds=limits[n]["reset_after_seconds"])
+                            if limits[n].get("reset_after_seconds") is not None
                             else None
                         ),
                     )

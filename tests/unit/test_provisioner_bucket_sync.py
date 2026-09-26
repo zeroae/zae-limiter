@@ -150,7 +150,7 @@ class TestDurationWindowParamSync:
             "capacity": 10_000,
             "refill_amount": 0,
             "refill_period": 1,
-            "reset_after": 18_000,
+            "reset_after_seconds": 18_000,
         }
     }
 
@@ -207,7 +207,7 @@ class TestDurationWindowParamSync:
         item[limit_attr("session", "rsa")] = {"N": "18000"}
         client.get_item.side_effect = _levels({(pk_resource("ns123", "gpt-4"), sk_config()): item})
         limits, _level = resolve_bucket_limits(client, "tbl", "ns123", "user-1", "gpt-4")
-        assert limits["session"]["reset_after"] == 18_000
+        assert limits["session"]["reset_after_seconds"] == 18_000
 
         _expr, names, values = build_bucket_param_update(
             limits, ttl_multiplier=None, stale_limit_names=None, now_ms=0
@@ -223,7 +223,7 @@ class TestDurationWindowParamSync:
             {(pk_resource("ns123", "gpt-4"), sk_config()): _limits_item(rpm=(10, 10, 60))}
         )
         limits = resolve_effective_limits(client, "tbl", "ns123", "user-1", "gpt-4")
-        assert "reset_after" not in limits["rpm"]
+        assert "reset_after_seconds" not in limits["rpm"]
 
     def test_entity_wide_fanout_stamps_the_resolved_window(self):
         """The #487 blast radius, for `rsa`: under `_default_` every bucket is
