@@ -24,7 +24,9 @@ Two callers that first use it at 09:00 and 14:30 get windows ending at 14:00 and
     aggregator would treat the quota as a dripping limit and grant each shard it pre-creates a
     fresh share. `Repository.open()` updates old Lambdas for you; after `Repository.connect()`
     or `auto_update=False`, run `zae-limiter upgrade` first. A stack deployed with
-    `--no-aggregator` is fixed by re-running `zae-limiter deploy` from v0.15.0 instead. The
+    `--no-aggregator` is fixed by re-running `zae-limiter deploy` from v0.15.0 instead, with
+    the provisioner enabled — `deploy` pushes code to an existing stack's functions but never
+    removes one, so an old provisioner left in place keeps the stack refused. The
     config writers pay one strongly consistent read per write that carries `reset_after`; the
     `acquire()` override pays nothing, trusting the version read when the repository was opened.
 

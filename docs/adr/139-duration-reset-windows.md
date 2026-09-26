@@ -146,14 +146,18 @@ deferred to #640.
   writes it created the stack, pushed aggregator code, or found **no aggregator function at
   all** (a `lambda:GetFunctionConfiguration` probe on `{stack}-aggregator` — the function
   itself rather than the stack's `EnableAggregator` parameter, because the function is what
-  reads the stream and the template creates it only when a role is also available). With an
-  aggregator present, or a probe that cannot tell, `open()` of a table with no record records
-  the version as unknown and CLI `deploy --no-aggregator` keeps the stored value. An unknown
+  reads the stream and the template creates it only when a role is also available) **and** no
+  provisioner older than it — its code pushed in the same run, or `{stack}-limits-provisioner`
+  probed absent. `deploy` on an existing stack adds and removes no functions (`create_stack`
+  never updates one), so `--no-provisioner` or `--no-iam` leaves a live pre-v0.15 provisioner,
+  which stores a `reset_after` manifest limit as a dripping one. With either function present,
+  or a probe that cannot tell, `open()` of a table with no record records the version as
+  unknown and CLI `deploy` keeps the stored value. An unknown
   version asks for no Lambda update, so `open(auto_update=True)` neither loops nor pushes code;
   the remedy is `zae-limiter upgrade`, which treats unknown as out of date. A `--no-aggregator`
-  stack's remedy is re-running `zae-limiter deploy` from `0.15.0`: it finds no aggregator and
-  stamps its own version, where `upgrade` would push code to an aggregator that does not
-  exist.
+  stack's remedy is re-running `zae-limiter deploy` from `0.15.0` with the provisioner enabled:
+  it finds no aggregator, pushes provisioner code and stamps its own version, where `upgrade`
+  would push code to an aggregator that does not exist.
 - **C — `client_min_version` becomes a real gate.** Clients from v0.15.0 on raise
   `VersionMismatchError` when below it (before, `check_compatibility` returned an incompatible
   result with no flag set and both version checks fell through). A Lambda update, `deploy` and

@@ -1051,14 +1051,18 @@ mints `cp // new_count` per new shard (#587 again).
 - **The stamp must be earned.** `_initialize_version_record` stamps `lambda_version` with
   `_deployed_lambda_version` — set by `_ensure_infrastructure_internal` when `create_stack`
   returned `created: True` (a new flag: an existing stack also reports `CREATE_COMPLETE`), when
-  aggregator code was pushed, or when **no aggregator function exists**
-  (`StackManager.aggregator_exists` / module-level `aggregator_function_exists`, a
-  `GetFunctionConfiguration` probe on `{stack}-aggregator`: True / False / None = cannot
-  tell). The init path runs the same probe itself (without constructing a `StackManager`), so
-  an application role without Lambda permissions gets None and records **unknown** (`NULL`).
-  CLI `deploy` follows the same rule, keeping the stored value only when an aggregator exists
-  or the probe cannot tell — so re-running v0.15 `deploy` is the way out for a v0.14-stamped
-  `--no-aggregator` stack (whose `upgrade` / auto-update hit #644). An unknown stamp asks for
+  aggregator code was pushed, or when **no aggregator function exists and no provisioner is
+  older than this build** (`StackManager.aggregator_exists` / `provisioner_exists`, both
+  backed by module-level `lambda_function_exists`, a `GetFunctionConfiguration` probe:
+  True / False / None = cannot tell; the provisioner counts as not older when its code was
+  pushed in the same run, else it must probe absent). `create_stack` never updates an existing
+  stack, so `deploy --no-provisioner` / `--no-iam` leaves a live pre-v0.15 provisioner that
+  would store a `reset_after` manifest limit as a dripping one — the fix-round-3 hole. The init
+  path probes both functions itself (without constructing a `StackManager`), so an application
+  role without Lambda permissions gets None and records **unknown** (`NULL`). CLI `deploy`
+  follows the same rule, keeping the stored value otherwise — so re-running v0.15 `deploy`
+  **with the provisioner enabled** is the way out for a v0.14-stamped `--no-aggregator` stack
+  (whose `upgrade` / auto-update hit #644). An unknown stamp asks for
   no Lambda update, so `open(auto_update=True)` neither loops nor pushes code; CLI `upgrade`
   treats unknown as out of date (no `--force` needed); the gate refuses it naming `upgrade`. The init write is a conditional `PutItem`
   (`attribute_not_exists(PK)`): it follows an eventually consistent miss, and a stale miss must
@@ -1068,8 +1072,9 @@ mints `cp // new_count` per new shard (#587 again).
   remedy `zae-limiter deploy`).
 - **`--no-aggregator` gets no exemption in the gate** — the record cannot say the aggregator
   is absent. A v0.15-deployed no-aggregator stack passes naturally; a v0.14-deployed one is
-  refused until redeployed by v0.15, whose probe finds no aggregator and stamps its own version
-  (`upgrade` pushes code to an aggregator that does not exist).
+  refused until redeployed by v0.15 with the provisioner enabled, whose probe finds no
+  aggregator and stamps its own version (`upgrade` pushes code to an aggregator that does not
+  exist).
 - **Ratchet (C).** A write the gate admits raises `client_min_version` to
   `ratcheted_client_min_version()` — `0.15.0`, capped at the writer's own version for a dev
   build — with a conditional `UpdateItem` on the value just read, **never lowering it**; a

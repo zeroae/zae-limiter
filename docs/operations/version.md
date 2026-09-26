@@ -174,10 +174,14 @@ so nothing is written. Three cases:
 | Missing | Never initialized | `zae-limiter deploy` from v0.15.0 or later |
 
 On a stack deployed with `--no-aggregator`, `upgrade` cannot help (it pushes code to an
-aggregator that does not exist): re-run `zae-limiter deploy` from v0.15.0 or later instead.
-It finds no aggregator function (`lambda:GetFunctionConfiguration`, which a deployer already
-holds) and stamps its own version, since no aggregator exists to be older. When the function
-exists, or the probe cannot tell, `deploy --no-aggregator` keeps the stored stamp.
+aggregator that does not exist): re-run `zae-limiter deploy` from v0.15.0 or later instead,
+**with the provisioner enabled** (no `--no-provisioner`, no `--no-iam`). `deploy` on an
+existing stack adds and removes no functions — it only pushes code — so it stamps its own
+version only when no Lambda older than it can remain: it finds no aggregator function
+(`lambda:GetFunctionConfiguration`, which a deployer already holds), and the provisioner either
+got this build's code in the same run or does not exist either. If either function exists
+untouched, or a probe cannot tell, `deploy` keeps the stored stamp: a pre-v0.15 provisioner
+stores a `reset_after` manifest limit as a dripping one, silently.
 
 An unknown `lambda_version` also turns off Lambda auto-update: `Repository.open()` has no
 version to compare, so it never pushes code. `zae-limiter upgrade` (no `--force` needed) deploys
