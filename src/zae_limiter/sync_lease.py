@@ -447,8 +447,16 @@ class SyncLease:
                 consumed = {
                     e.limit.name: e.consumed * 1000 for e in group_entries if e.consumed > 0
                 }
-                seeds = {e.limit.name: e.state for e in group_entries if e._seed}
-                if not consumed and (not seeds):
+                seeds = {
+                    e.limit.name: e.state
+                    for e in group_entries
+                    if e._seed
+                    and e.consumed > 0
+                    and (not e.state.sched)
+                    and (not e.state.reset_sched)
+                    and (e.state.reset_after_seconds is None)
+                }
+                if not consumed:
                     return None
                 return repo.build_composite_retry(
                     entity_id=entity_id,

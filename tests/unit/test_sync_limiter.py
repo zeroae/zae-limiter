@@ -9426,6 +9426,73 @@ class TestLimitAddedToExistingBucket:
         assert item[bucket_attr("tpm", BUCKET_FIELD_TK)]["N"] == "999000"
         assert item[bucket_attr("tpm", "cp")]["N"] == "1000000"
 
+    def _lose_the_lock(self, slow, repo, entity_id):
+        """Read the item, then move its `rf` the way a non-seeding writer
+        (an aggregator refill) would, so the rf-locked write loses its lock."""
+        stale = slow._fetch_entity_and_buckets(entity_id, "gpt-4", 0)
+        client = repo._get_client()
+        client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "gpt-4", 0)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="SET #rf = :rf",
+            ExpressionAttributeNames={"#rf": BUCKET_FIELD_RF},
+            ExpressionAttributeValues={":rf": {"N": str(T0 + 1)}},
+        )
+        repo._now_ms = lambda: T0 + 1
+        return stale
+
+    def test_the_retry_leaves_a_scheduled_seed_to_the_next_locked_pass(self, sync_limiter):
+        """The retry stamps no `vu`, so it must not seed a quota: a quota seeded
+        there could be spent by the fast path past its reset edge. One extra
+        rejection, then the next rf-locked pass seeds it with its `vu`."""
+        slow = SyncRateLimiter(repository=sync_limiter._repository, speculative_writes=False)
+        rpd = Limit.quota("rpd", 1000, cron="0 0 * * *")
+        repo = self._item_then_new_limit(slow, "resource", "retry-quota", [self.RPM, rpd])
+        stale = self._lose_the_lock(slow, repo, "retry-quota")
+        with patch.object(slow, "_fetch_entity_and_buckets", MagicMock(return_value=stale)):
+            with pytest.raises(RateLimitExceeded) as exc_info:
+                with slow.acquire("retry-quota", "gpt-4", consume={"rpd": 1}):
+                    pass
+        assert exc_info.value.retry_after_seconds > 0
+        assert bucket_attr("rpd", BUCKET_FIELD_TK) not in _raw_bucket(repo, "retry-quota")
+        with slow.acquire("retry-quota", "gpt-4", consume={"rpd": 1}):
+            pass
+        item = _raw_bucket(repo, "retry-quota")
+        assert item[bucket_attr("rpd", BUCKET_FIELD_TK)]["N"] == "999000"
+        assert BUCKET_FIELD_VU in item
+
+    def test_the_retry_does_not_bake_in_a_damaged_limit_it_does_not_debit(self, sync_limiter):
+        """A stray `tk = 0` without `cp` (an older client's mode 2) on a limit
+        the retry does not debit is left alone, so the next locked pass can
+        still recognise and repair it; writing `cp` beside it would make it
+        read as a genuinely spent balance."""
+        slow = SyncRateLimiter(repository=sync_limiter._repository, speculative_writes=False)
+        repo = self._item_then_new_limit(slow, "resource", "retry-damaged", [self.RPM, self.TPM])
+        client = repo._get_client()
+        client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, "retry-damaged", "gpt-4", 0)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="ADD #tk :z",
+            ExpressionAttributeNames={"#tk": bucket_attr("tpm", BUCKET_FIELD_TK)},
+            ExpressionAttributeValues={":z": {"N": "0"}},
+        )
+        stale = self._lose_the_lock(slow, repo, "retry-damaged")
+        with patch.object(slow, "_fetch_entity_and_buckets", MagicMock(return_value=stale)):
+            with slow.acquire("retry-damaged", "gpt-4", consume={"rpm": 1}):
+                pass
+        assert bucket_attr("tpm", "cp") not in _raw_bucket(repo, "retry-damaged")
+        with slow.acquire("retry-damaged", "gpt-4", consume={"rpm": 1}):
+            pass
+        item = _raw_bucket(repo, "retry-damaged")
+        assert item[bucket_attr("tpm", BUCKET_FIELD_TK)]["N"] == "1000000"
+        assert item[bucket_attr("tpm", "cp")]["N"] == "1000000"
+
 
 class TestLimitAddedToExistingShards:
     """#633 on a sharded entity: each shard is seeded once, and a quota's seeds

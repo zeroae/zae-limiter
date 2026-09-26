@@ -682,8 +682,25 @@ class Lease:
                 }
                 # A limit the lost write was to seed may still be missing —
                 # the lock can be lost to a writer that does not seed (#633).
-                seeds = {e.limit.name: e.state for e in group_entries if e._seed}
-                if not consumed and not seeds:
+                # Only a limit this retry debits is seeded here, and only an
+                # unscheduled one. Any other is left to the next rf-locked
+                # pass: this write stamps no `vu`, so a quota, session window
+                # or schedule seeded here could be spent by the fast path past
+                # its first boundary; and seeding a limit it does not debit
+                # would write `cp` beside a stray `tk = 0` an older client
+                # left, turning a repairable item into one that reads as
+                # genuinely spent. The cost is one extra rejection, at most,
+                # when the lock was lost on the very pass that would seed.
+                seeds = {
+                    e.limit.name: e.state
+                    for e in group_entries
+                    if e._seed
+                    and e.consumed > 0
+                    and not e.state.sched
+                    and not e.state.reset_sched
+                    and e.state.reset_after_seconds is None
+                }
+                if not consumed:
                     return None
                 return repo.build_composite_retry(
                     entity_id=entity_id,
