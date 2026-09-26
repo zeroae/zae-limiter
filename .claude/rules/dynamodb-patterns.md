@@ -80,3 +80,6 @@ Before writing any `UpdateExpression`:
 2. Do SET and ADD target non-overlapping paths?
 3. Are all first-write attributes guarded with `if_not_exists`?
 4. Are reserved words aliased via `ExpressionAttributeNames`?
+5. Is every `#…` / `:…` token built from a loop index, never from a limit name (#634)? A name
+   may contain `.` or `-`, neither legal in a token; only the alias *value* may carry it. Add the
+   new builder to `tests/unit/test_expression_tokens.py`.
