@@ -1069,27 +1069,50 @@ class LimitStatus:
     """
 
     entity_id: str
+    """The entity the limit was checked for."""
+
     resource: str
+    """The resource the limit was checked on."""
+
     limit_name: str
+    """Name of the limit, e.g. ``"rpm"``."""
+
     limit: Limit
-    available: int  # current available (can be negative)
-    requested: int  # amount requested
-    exceeded: bool  # True if this limit was exceeded
-    retry_after_seconds: float  # time until `requested` is available (0 if not exceeded)
-    # The absolute instant this limit's allowance returns, epoch ms, or None:
-    # for a rate limit, for a calendar quota (whose edge is recoverable from
-    # the clock plus the cron, so `RateLimitExceeded.as_dict` scans for it),
-    # and for a duration quota with no live window.
-    #
+    """The limit as checked. Inside ``RateLimitExceeded`` this is one shard's
+    in-window share (``Limit.per_shard``, #475); inside ``Availability`` it is
+    the undivided configuration."""
+
+    available: int
+    """Tokens currently available. Can be negative (debt)."""
+
+    requested: int
+    """Tokens requested."""
+
+    exceeded: bool
+    """True if ``requested`` exceeds ``available``."""
+
+    retry_after_seconds: float
+    """Seconds until ``requested`` is available; 0 if not exceeded."""
+
     # It has to live here rather than being derived from `limit` because a
     # duration window's anchor (`ws`) is on the BUCKET, not in the config
-    # (ADR-139). A per-entity window is recoverable from nothing but the item.
-    #
-    # Populated at all four construction sites — `bucket.declared_statuses`,
-    # `RateLimiter._admit_limit`, `lease._build_retry_failure_statuses` and
+    # (ADR-139). Populated at all four construction sites —
+    # `bucket.declared_statuses`, `RateLimiter._admit_limit`,
+    # `lease._build_retry_failure_statuses` and
     # `RateLimiter.check_availability` — the same four #222 §7 wired the
     # boundary-aware `retry_after_seconds` at.
     resets_at_ms: int | None = None
+    """When a **session quota's** current window ends, as absolute epoch
+    milliseconds (``Limit.reset_after``, ADR-139).
+
+    Read off the bucket item, where the window's start is stored, and never an
+    instant at or before the moment it was computed. ``None`` for a rate
+    limit, for a calendar quota (``reset_schedule`` — its next edge is
+    recoverable from the cron, and ``RateLimitExceeded.as_dict`` computes it
+    there), and for a session quota with no live window, whose allowance is
+    already back. Inside ``RateLimitExceeded`` it describes the shard the
+    request was tried on; inside ``Availability`` it is the latest live window
+    end across the entity's shards."""
 
     @property
     def deficit(self) -> int:
