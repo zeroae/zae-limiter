@@ -5304,7 +5304,10 @@ class TestStaleLimitAliasesAreExpressionSafe:
         # names lose both schedule overrides along with everything else, and
         # the unscheduled branch clears the item-level `sched` / `rsched` pair
         # and `sched_tz` plus the surviving limit's own overrides (#222 Task
-        # 13 for `sched`, surface Task 4 for `rsched`).
+        # 13 for `sched`, surface Task 4 for `rsched`) and its `rsa` (plan
+        # Task 9, ADR-139): `rpm` has no window, so its `rsa` is REMOVEd
+        # exactly as an unscheduled limit's `sched`/`rsched` overrides are —
+        # absence means "no window", full stop, with no default to inherit.
         removed = {names[alias] for alias in aliases}
         assert removed == {
             bucket_attr(name, field)
@@ -5316,6 +5319,7 @@ class TestStaleLimitAliasesAreExpressionSafe:
             "sched_tz",
             bucket_attr("rpm", "sched"),
             bucket_attr("rpm", "rsched"),
+            bucket_attr("rpm", "rsa"),
         }
 
     @pytest.mark.asyncio
@@ -6767,6 +6771,117 @@ class TestDurationWindowReachesConfigStorage:
         system_limits, _on_unavailable = await repo.get_system_defaults()
         assert from_resource.reset_after == timedelta(hours=5)
         assert system_limits[0].reset_after == timedelta(hours=5)
+
+
+class TestDurationWindowParamSync:
+    """`_build_bucket_param_update` carries `rsa` and never touches `ws`
+    (ADR-139, plan Task 9).
+
+    `set_limits()` fans a limit change out to every shard of every affected
+    bucket (#468/#481/#487); a duration window's length has to ride along or
+    a shard keeps enforcing the window it was born with forever. `ws` is
+    deliberately excluded: a config change is not a rollover, and stamping it
+    here would restart every caller's window on an unrelated `rpm` edit — the
+    failure ADR-138 warned about, and the reason ADR-139 keeps the anchor in
+    its own attribute rather than deriving it from `vu`.
+    """
+
+    WINDOW = Limit.quota("session", 10_000, reset_after=timedelta(hours=5))
+
+    def test_a_window_limit_gets_rsa_set(self, repo):
+        expr, names, values = repo._build_bucket_param_update([self.WINDOW], None, None)
+        alias = next(a for a, attr in names.items() if attr == bucket_attr("session", "rsa"))
+        set_clause = expr.split("REMOVE")[0]
+        assert f"{alias} = :" in set_clause
+        value_alias = next(part for part in set_clause.split(",") if part.strip().startswith(alias))
+        value_key = value_alias.split("=")[1].strip()
+        assert values[value_key] == {"N": "18000"}
+
+    def test_a_limit_without_a_window_gets_rsa_removed(self, repo):
+        """A quota converted to a dripping limit must lose `rsa`, or the item
+        keeps reconstructing as a quota forever. Absence means "no window",
+        so this is a plain REMOVE — unlike `sched`, where absence means
+        "inherit the item default" and #541 needs the explicit
+        `BUCKET_SCHED_NONE` marker."""
+        expr, names, _values = repo._build_bucket_param_update(
+            [Limit.per_minute("session", 100)], None, None
+        )
+        alias = next(a for a, attr in names.items() if attr == bucket_attr("session", "rsa"))
+        remove_clause = expr.split("REMOVE")[1]
+        assert alias in [a.strip() for a in remove_clause.split(",")]
+
+    def test_ws_is_never_written(self, repo):
+        for limits in (
+            [self.WINDOW],
+            [Limit.per_minute("rpm", 100)],
+            [Limit.quota("rpd", 10_000, cron="0 0 * * *")],
+        ):
+            expr, names, _values = repo._build_bucket_param_update(limits, None, None)
+            ws_attrs = {attr for attr in names.values() if attr.endswith("_ws")}
+            assert not ws_attrs, limits
+            assert "_ws" not in expr, limits
+
+    def test_rsa_is_never_set_and_removed_together(self, repo):
+        """#488's rule extended to `rsa`: SET and REMOVE on one attribute in
+        one expression is a ValidationException."""
+        for limits in (
+            [Limit.per_minute("rpm", 100)],
+            [self.WINDOW],
+            [self.WINDOW, Limit.per_minute("rpm", 100)],
+        ):
+            expr, _names, _values = repo._build_bucket_param_update(limits, None, {"gone"})
+            set_clause = expr.split("REMOVE")[0].removeprefix("SET")
+            remove_clause = expr.split("REMOVE")[1]
+            set_aliases = {part.split("=")[0].strip() for part in set_clause.split(",")}
+            remove_aliases = {part.strip() for part in remove_clause.split(",")}
+            assert not (set_aliases & remove_aliases), limits
+
+    async def test_the_fan_out_stamps_rsa_on_an_existing_bucket(self, repo):
+        window = Limit.quota("rpd", 10_000, reset_after=timedelta(hours=5))
+        await repo.create_entity("dw-fan-1")
+        await repo.set_limits("dw-fan-1", [Limit.per_day("rpd", 10_000)], resource="gpt-4")
+        now_ms = int(time.time() * 1000)
+        states = [BucketState.from_limit("dw-fan-1", "gpt-4", Limit.per_day("rpd", 10_000), now_ms)]
+        await repo.transact_write(
+            [repo.build_composite_create("dw-fan-1", "gpt-4", states, now_ms)]
+        )
+
+        await repo.set_limits("dw-fan-1", [window], resource="gpt-4")
+
+        item = await self._raw_bucket(repo, "dw-fan-1", "gpt-4")
+        assert item[bucket_attr("rpd", "rsa")]["N"] == "18000"
+        assert bucket_attr("rpd", "ws") not in item
+
+    async def test_removing_a_window_removes_the_stamp(self, repo):
+        window = Limit.quota("rpd", 10_000, reset_after=timedelta(hours=5))
+        await repo.create_entity("dw-fan-2")
+        await repo.set_limits("dw-fan-2", [window], resource="gpt-4")
+        now_ms = int(time.time() * 1000)
+        states = [BucketState.from_limit("dw-fan-2", "gpt-4", window, now_ms)]
+        await repo.transact_write(
+            [repo.build_composite_create("dw-fan-2", "gpt-4", states, now_ms)]
+        )
+        item = await self._raw_bucket(repo, "dw-fan-2", "gpt-4")
+        assert item[bucket_attr("rpd", "rsa")]["N"] == "18000"
+
+        await repo.set_limits("dw-fan-2", [Limit.per_day("rpd", 10_000)], resource="gpt-4")
+
+        item = await self._raw_bucket(repo, "dw-fan-2", "gpt-4")
+        assert bucket_attr("rpd", "rsa") not in item
+
+    @staticmethod
+    async def _raw_bucket(repo, entity_id, resource, shard=0):
+        from zae_limiter import schema
+
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, resource, shard)},
+                "SK": {"S": schema.sk_state()},
+            },
+        )
+        return response.get("Item") or {}
 
 
 class TestDeserialisedBucketsCarryBothSchedules:

@@ -3076,6 +3076,13 @@ class SyncRepository:
             set_parts.append(f"#rp{i} = :rp{i}")
             expr_names[f"#rp{i}"] = rp_attr
             expr_values[f":rp{i}"] = {"N": str(limit.refill_period_seconds * 1000)}
+            rsa_attr = schema.bucket_attr(name, schema.BUCKET_FIELD_RSA)
+            expr_names[f"#rsa{i}"] = rsa_attr
+            if limit.reset_after_seconds is not None:
+                set_parts.append(f"#rsa{i} = :rsa{i}")
+                expr_values[f":rsa{i}"] = {"N": str(limit.reset_after_seconds)}
+            else:
+                remove_parts.append(f"#rsa{i}")
         encoded = self._encode_item_schedules(
             [(limit.name, limit.schedule, limit.reset_schedule) for limit in limits]
         )

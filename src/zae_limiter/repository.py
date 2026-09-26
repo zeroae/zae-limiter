@@ -3722,6 +3722,32 @@ class Repository:
             expr_names[f"#rp{i}"] = rp_attr
             expr_values[f":rp{i}"] = {"N": str(limit.refill_period_seconds * 1000)}
 
+            # Duration window length in seconds (ADR-139). SET where the
+            # resolved limit has one, REMOVE where it does not. Absence means
+            # "this limit has no duration window", full stop — there is no
+            # item-level default to inherit, so this needs no
+            # BUCKET_SCHED_NONE analogue (#541). A `rsa` left behind on a
+            # limit converted back to a drip would keep the item
+            # reconstructing as a quota forever.
+            #
+            # `ws` (window start) is deliberately NOT written here. A config
+            # change is not a rollover, and stamping it would restart every
+            # caller's window on an unrelated edit — the failure ADR-138
+            # warned about for a window read off `vu`, and the reason
+            # ADR-139 keeps the anchor in its own attribute rather than
+            # deriving it there. The `vu = 0` this write already stamps
+            # unconditionally (below) forces exactly one materialising pass,
+            # which anchors a first window if none exists yet
+            # (`_open_window_if_elapsed`'s `end is None` branch) or leaves an
+            # existing one alone if it has not elapsed.
+            rsa_attr = schema.bucket_attr(name, schema.BUCKET_FIELD_RSA)
+            expr_names[f"#rsa{i}"] = rsa_attr
+            if limit.reset_after_seconds is not None:
+                set_parts.append(f"#rsa{i} = :rsa{i}")
+                expr_values[f":rsa{i}"] = {"N": str(limit.reset_after_seconds)}
+            else:
+                remove_parts.append(f"#rsa{i}")
+
         # Re-stamp both schedules (#222 §2.2, §3.6). The aggregator reads the
         # item and nothing else, so a bucket left holding a superseded `sched`
         # is refilled toward a ceiling the operator has already changed, and
