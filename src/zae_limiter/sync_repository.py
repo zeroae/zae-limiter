@@ -2049,14 +2049,14 @@ class SyncRepository:
             set_parts.append(f"#wl{i} = :wl{i}")
             attr_values[f":wl{i}"] = {"N": str(rsa)}
         condition_parts: list[str] = ["#rf = :expected_rf"]
-        for name in consumed:
+        for i, name in enumerate(consumed):
             c = consumed[name]
             r = refill_amounts.get(name, 0)
             tk_delta = r - c
-            tk_alias = f"#b_{name}_tk"
-            tc_alias = f"#b_{name}_tc"
-            tk_val = f":b_{name}_tk_delta"
-            tc_val = f":b_{name}_tc_delta"
+            tk_alias = f"#bt{i}"
+            tc_alias = f"#bc{i}"
+            tk_val = f":bd{i}"
+            tc_val = f":bcd{i}"
             attr_names[tk_alias] = schema.bucket_attr(name, schema.BUCKET_FIELD_TK)
             attr_names[tc_alias] = schema.bucket_attr(name, schema.BUCKET_FIELD_TC)
             attr_values[tk_val] = {"N": str(tk_delta)}
@@ -2065,7 +2065,7 @@ class SyncRepository:
             add_parts.append(f"{tc_alias} {tc_val}")
             floor = max(0, c - r)
             if floor > 0:
-                floor_val = f":b_{name}_tk_floor"
+                floor_val = f":bf{i}"
                 attr_values[floor_val] = {"N": str(floor)}
                 condition_parts.append(f"{tk_alias} >= {floor_val}")
         update_expr = f"SET {', '.join(set_parts)} ADD {', '.join(add_parts)}"
@@ -2100,13 +2100,13 @@ class SyncRepository:
         condition_parts: list[str] = []
         attr_names: dict[str, str] = {}
         attr_values: dict[str, Any] = {}
-        for name in consumed:
+        for i, name in enumerate(consumed):
             c = consumed[name]
-            tk_alias = f"#b_{name}_tk"
-            tc_alias = f"#b_{name}_tc"
-            tk_neg_val = f":b_{name}_tk_neg"
-            tc_val = f":b_{name}_tc_delta"
-            tk_threshold = f":b_{name}_tk_min"
+            tk_alias = f"#bt{i}"
+            tc_alias = f"#bc{i}"
+            tk_neg_val = f":bd{i}"
+            tc_val = f":bcd{i}"
+            tk_threshold = f":bf{i}"
             attr_names[tk_alias] = schema.bucket_attr(name, schema.BUCKET_FIELD_TK)
             attr_names[tc_alias] = schema.bucket_attr(name, schema.BUCKET_FIELD_TC)
             attr_values[tk_neg_val] = {"N": str(-c)}
@@ -2145,13 +2145,13 @@ class SyncRepository:
         add_parts: list[str] = []
         attr_names: dict[str, str] = {}
         attr_values: dict[str, Any] = {}
-        for name, delta in deltas.items():
+        for i, (name, delta) in enumerate(deltas.items()):
             if delta == 0:
                 continue
-            tk_alias = f"#b_{name}_tk"
-            tc_alias = f"#b_{name}_tc"
-            tk_val = f":b_{name}_tk_delta"
-            tc_val = f":b_{name}_tc_delta"
+            tk_alias = f"#bt{i}"
+            tc_alias = f"#bc{i}"
+            tk_val = f":bd{i}"
+            tc_val = f":bcd{i}"
             attr_names[tk_alias] = schema.bucket_attr(name, schema.BUCKET_FIELD_TK)
             attr_names[tc_alias] = schema.bucket_attr(name, schema.BUCKET_FIELD_TC)
             attr_values[tk_val] = {"N": str(-delta)}
@@ -2342,15 +2342,15 @@ class SyncRepository:
         condition_parts: list[str] = ["attribute_exists(PK)"]
         attr_names: dict[str, str] = {}
         attr_values: dict[str, Any] = {}
-        for limit_name, amount in consume.items():
+        for i, (limit_name, amount) in enumerate(consume.items()):
             amount_milli = amount * 1000
             tk_attr = schema.bucket_attr(limit_name, schema.BUCKET_FIELD_TK)
             tc_attr = schema.bucket_attr(limit_name, schema.BUCKET_FIELD_TC)
-            tk_alias = f"#tk_{limit_name}"
-            tc_alias = f"#tc_{limit_name}"
-            neg_val = f":neg_{limit_name}"
-            pos_val = f":pos_{limit_name}"
-            thresh_val = f":thresh_{limit_name}"
+            tk_alias = f"#t{i}"
+            tc_alias = f"#c{i}"
+            neg_val = f":n{i}"
+            pos_val = f":p{i}"
+            thresh_val = f":h{i}"
             attr_names[tk_alias] = tk_attr
             attr_names[tc_alias] = tc_attr
             attr_values[neg_val] = {"N": str(-amount_milli)}

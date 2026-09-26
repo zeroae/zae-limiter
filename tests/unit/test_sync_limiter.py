@@ -9073,3 +9073,65 @@ class TestRfNeverMovesBackward:
         assert (
             _stored_tk(repo, "reset-skew", "gpt-4", "rpd") == 10000000 - 3000000 - 2000000 - 1000
         ), "the 5,000 spent since midnight must not be refunded by the skewed write"
+
+
+class TestLimitNamesWithDotsAndHyphens:
+    """#634: every name `NAME_PATTERN` accepts works on every write path.
+
+    `rpm.v2` and `req-min` are legal limit names, and neither `.` nor `-` is
+    legal in a DynamoDB expression token. moto rejects them the way DynamoDB
+    does, so each path below failed on main with a `ValidationException`
+    (the fast path as `RateLimiterUnavailable`, the rest as a raw
+    `ClientError`) — only the create `Put` succeeded.
+
+    The clock is frozen and advanced one second between acquires, which is
+    what tells the paths apart on the stored item: a fast-path success never
+    touches `rf`, the slow path's rf-locked write stamps it.
+    """
+
+    T0 = 1800000000000
+    LIMITS = [Limit.per_minute("rpm.v2", 100), Limit.per_minute("req-min", 1000)]
+    CONSUME = {"rpm.v2": 1, "req-min": 10}
+
+    def _seed(self, sync_limiter, entity_id):
+        repo = sync_limiter._repository
+        repo._now_ms = lambda: self.T0
+        repo.set_limits(entity_id, self.LIMITS, resource="gpt-4")
+        with sync_limiter.acquire(entity_id, "gpt-4", consume=self.CONSUME):
+            pass
+        repo._now_ms = lambda: self.T0 + 1000
+        return repo
+
+    def test_fast_path(self, sync_limiter):
+        repo = self._seed(sync_limiter, "dots-fast")
+        with sync_limiter.acquire("dots-fast", "gpt-4", consume=self.CONSUME):
+            pass
+        item = _raw_bucket(repo, "dots-fast")
+        assert int(item[BUCKET_FIELD_RF]["N"]) == self.T0, "the fast path took the write"
+        assert _stored_tk(repo, "dots-fast", "gpt-4", "rpm.v2") == 98000
+        assert _stored_tk(repo, "dots-fast", "gpt-4", "req-min") == 980000
+
+    def test_slow_path(self, sync_limiter):
+        slow = SyncRateLimiter(repository=sync_limiter._repository, speculative_writes=False)
+        repo = self._seed(slow, "dots-slow")
+        with slow.acquire("dots-slow", "gpt-4", consume=self.CONSUME):
+            pass
+        item = _raw_bucket(repo, "dots-slow")
+        assert int(item[BUCKET_FIELD_RF]["N"]) == self.T0 + 1000, "the rf-locked write landed"
+        assert _stored_tk(repo, "dots-slow", "gpt-4", "rpm.v2") == 100000 - 1000
+        assert _stored_tk(repo, "dots-slow", "gpt-4", "req-min") == 1000000 - 10000
+
+    def test_adjust(self, sync_limiter):
+        repo = self._seed(sync_limiter, "dots-adjust")
+        with sync_limiter.acquire("dots-adjust", "gpt-4", consume=self.CONSUME) as lease:
+            lease.adjust(**{"rpm.v2": 4, "req-min": -5})
+        assert _stored_tk(repo, "dots-adjust", "gpt-4", "rpm.v2") == 100000 - 2000 - 4000
+        assert _stored_tk(repo, "dots-adjust", "gpt-4", "req-min") == 1000000 - 20000 + 5000
+
+    def test_rollback(self, sync_limiter):
+        repo = self._seed(sync_limiter, "dots-rollback")
+        with pytest.raises(RuntimeError, match="boom"):
+            with sync_limiter.acquire("dots-rollback", "gpt-4", consume=self.CONSUME):
+                raise RuntimeError("boom")
+        assert _stored_tk(repo, "dots-rollback", "gpt-4", "rpm.v2") == 99000
+        assert _stored_tk(repo, "dots-rollback", "gpt-4", "req-min") == 990000

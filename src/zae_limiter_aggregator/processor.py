@@ -898,6 +898,11 @@ def try_refill_bucket(
     expr_names: dict[str, str] = {}
     any_needs_refill = False
     rolled: list[str] = []
+    # Limits given a reset or drip delta, in token order: `refilled[i]` is the
+    # limit behind `#rt{i}` / `:rd{i}`. Positional tokens, never the limit
+    # name (#634) — `NAME_PATTERN` allows `.` and `-`, and an inline
+    # `b_rpm.v2_tk` parses as a nested document path.
+    refilled: list[str] = []
 
     for limit_name, info in state.limits.items():
         if limit_name == WCU_LIMIT_NAME:
@@ -993,8 +998,11 @@ def try_refill_bucket(
                 reset_delta = effective_cp - info.tk_milli
                 if reset_delta != 0:
                     any_needs_refill = True
-                    add_parts.append(f"{bucket_attr(limit_name, BUCKET_FIELD_TK)} :rd_{limit_name}")
-                    expr_values[f":rd_{limit_name}"] = reset_delta
+                    idx = len(refilled)
+                    add_parts.append(f"#rt{idx} :rd{idx}")
+                    expr_names[f"#rt{idx}"] = bucket_attr(limit_name, BUCKET_FIELD_TK)
+                    expr_values[f":rd{idx}"] = reset_delta
+                    refilled.append(limit_name)
                 continue
 
         # A stored rate that is not an accrual rate has nothing to refill. That
@@ -1037,10 +1045,11 @@ def try_refill_bucket(
         # consumption subtracts independently (#222 §3.3, replaces #469).
 
         any_needs_refill = True
-        tk_attr = bucket_attr(limit_name, BUCKET_FIELD_TK)
-        placeholder = f":rd_{limit_name}"
-        add_parts.append(f"{tk_attr} {placeholder}")
-        expr_values[placeholder] = refill_delta
+        idx = len(refilled)
+        add_parts.append(f"#rt{idx} :rd{idx}")
+        expr_names[f"#rt{idx}"] = bucket_attr(limit_name, BUCKET_FIELD_TK)
+        expr_values[f":rd{idx}"] = refill_delta
+        refilled.append(limit_name)
 
     if not any_needs_refill:
         logger.debug(
@@ -1158,7 +1167,7 @@ def try_refill_bucket(
             "Bucket refilled",
             entity_id=state.entity_id,
             resource=state.resource,
-            limits_refilled=list(name for name in state.limits if f":rd_{name}" in expr_values),
+            limits_refilled=refilled,
             windows_rolled=rolled,
         )
         return True
