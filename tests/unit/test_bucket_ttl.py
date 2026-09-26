@@ -120,6 +120,13 @@ class TestDurationWindowTtlHorizon:
     call at a level that expires) started round-tripping `reset_after`.
     """
 
+    def test_recovery_horizon_of_a_duration_quota_is_its_window(self):
+        # `_recovery_seconds` exactly, not the multiplied TTL: pins that the
+        # window is the horizon with no rounding-up ladder and no clock,
+        # unlike the calendar branch which rounds a monthly pattern to 31 days.
+        window = Limit.quota("session", 10_000, reset_after=timedelta(hours=5))
+        assert schema._recovery_seconds(window) == 18_000.0
+
     def test_the_window_length_is_the_horizon(self):
         window = Limit.quota("session", 10_000, reset_after=timedelta(hours=5))
         assert schema.calculate_bucket_ttl_seconds([window], 7) == 5 * HOUR * 7
@@ -139,6 +146,15 @@ class TestDurationWindowTtlHorizon:
         calendar = Limit.quota("rpd", 10_000, cron="0 0 * * *")  # DAY
         window = Limit.quota("session", 10_000, reset_after=timedelta(hours=1))  # HOUR
         assert schema.calculate_bucket_ttl_seconds([calendar, window], 7) == DAY * 7
+
+    def test_mixed_item_takes_the_max_across_both_quota_spellings(self):
+        # Three shapes at once: a drip (6000s time-to-fill), a duration-window
+        # quota (18000s = reset_after itself), and a calendar quota (86400s =
+        # the daily reset period). The daily quota wins.
+        slow = Limit.custom("slow", capacity=1000, refill_amount=10, refill_period_seconds=60)
+        session = Limit.quota("session", 10_000, reset_after=timedelta(hours=5))
+        daily = Limit.quota("rpd", 10_000, cron="0 0 * * *")
+        assert schema.calculate_bucket_ttl_seconds([slow, session, daily], multiplier=1) == 86_400
 
 
 class TestMixedBucketTakesTheMax:
