@@ -6307,8 +6307,11 @@ class Repository:
         A **separate** read rather than an extra key in the create path's
         ``BatchGetItem``: that call returns a dict keyed by ``(entity_id,
         resource, limit_name)`` with no shard component, so shard 0 and shard N
-        would collide on every key. **Strongly consistent**, so 1 RCU (the
-        projected item is well under 4 KB), **once per shard ever** (≤ 31 per
+        would collide on every key. **Strongly consistent**, so 1 RCU:
+        DynamoDB charges a ``GetItem`` on the **full** item size, not on the
+        projection, and bucket items stay inside the ~1 KB budget (#222 §4.2),
+        well under the 4 KB a single strongly consistent RCU covers. The
+        projection only trims the response. **Once per shard ever** (≤ 31 per
         (entity, resource), plus TTL recreations) on a path already priced at
         2.5 RCU + 2 WCU.
 

@@ -11,6 +11,17 @@ Data models for rate limit configuration and status.
       members_order: source
       heading_level: 3
 
+### Session windows: `Limit.reset_after`
+
+`reset_after: timedelta | None` is the second spelling of a quota's reset
+([ADR-139](../adr/139-duration-reset-windows.md)): the allowance returns this long after the
+entity's **own** first admitted use, and the next admitted request after that opens a fresh
+window. Build one with `Limit.quota(name, capacity, reset_after=timedelta(...))`; `quota()` takes
+exactly one of `cron` or `reset_after`. It must be a positive whole number of seconds, at most
+10⁹. `Limit.reset_after_seconds` is the same value as an `int`, the spelling used by `to_dict()`,
+YAML manifests (`reset_after_seconds`) and CloudFormation (`ResetAfterSeconds`). See
+[Session Quotas](../guide/session-quotas.md).
+
 ## ScheduleEntry
 
 One window of a limit's `schedule`, or one edge of its `reset_schedule`. Build reset entries

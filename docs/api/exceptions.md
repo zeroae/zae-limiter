@@ -298,7 +298,7 @@ Read `kind` directly — do **not** infer a quota from `refill_amount == 0`.
 | `kind` | Recovery fields | Meaning |
 |--------|-----------------|---------|
 | `"rate"` | `refill_amount`, `refill_period_seconds` | Drips back continuously at `refill_amount` per `refill_period_seconds`. |
-| `"quota"` | `resets_at_ms` | Does not drip at all ([ADR-137](https://github.com/zeroae/zae-limiter/blob/main/docs/adr/137-reset-replaces-drip.md)). The whole allowance returns at a calendar instant. |
+| `"quota"` | `resets_at_ms` | Does not drip at all ([ADR-137](https://github.com/zeroae/zae-limiter/blob/main/docs/adr/137-reset-replaces-drip.md)). The whole allowance returns in one lump — at a calendar instant (`cron`), or when the entity's own [session window](../guide/session-quotas.md) ends (`reset_after`). |
 
 `capacity`, `available`, `requested`, `exceeded` and `retry_after_seconds` are
 present on both kinds.
@@ -308,10 +308,17 @@ schedule a retry without parsing cron and without a reference clock of its own.
 The key is always present on a quota entry, and carries a real instant for every
 practical quota period — session, daily, weekly, monthly, quarterly, annual.
 
-It is `null` only when the next reset is further out than the reset pattern's own
-cycle — in practice only a pattern that skips whole years, such as `0 0 29 2 *`
-firing on a leap day. Treat `null` as "no scheduled reset in reach", not as
-"never resets", and fall back to `retry_after_seconds`.
+For a calendar quota (`cron`) it is `null` only when the next reset is further out
+than the reset pattern's own cycle — in practice only a pattern that skips whole
+years, such as `0 0 29 2 *` firing on a leap day. Treat `null` as "no scheduled
+reset in reach", not as "never resets", and fall back to `retry_after_seconds`.
+
+For a session quota (`reset_after`, [ADR-139](https://github.com/zeroae/zae-limiter/blob/main/docs/adr/139-duration-reset-windows.md))
+it is the end of the entity's current window, read off the bucket rather than
+computed from a pattern, and never an instant in the past. It is `null` only when
+no window is live — the previous one has ended, so the allowance is already back
+and the next admitted request opens a fresh window. A session quota that caused the
+rejection carries an instant in practice, since a rejection happens inside a live window.
 
 !!! warning "A quota never reports `refill_amount`"
     A quota's stored `refill_amount` is fixed at 0 and its `refill_period_seconds`

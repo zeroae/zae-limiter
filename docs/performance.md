@@ -311,6 +311,32 @@ await limiter.create_entity(
 )
 ```
 
+#### Session Quotas
+
+A [session quota](guide/session-quotas.md) (`Limit.quota(..., reset_after=...)`,
+[ADR-139](adr/139-duration-reset-windows.md)) keeps every shard of an entity on one window,
+and that coherence is the only cost it adds. Where S is the entity's `shard_count` and L the
+number of `reset_after` limits on the bucket:
+
+| Event | Cost | How often |
+|-------|------|-----------|
+| Acquire inside a window | **Unchanged**: 1 WCU, 0 reads on the speculative path. The fast path's condition is byte-identical to any other limit's | Every request |
+| A new window opening | One slow-path acquire **per shard** — the first request to reach each shard after the rollover re-materialises it, as at any schedule boundary | S per window per entity |
+| The fan-out by the request that opened the window | **(S − 1) × L** conditional writes, one per (sibling shard, window limit) | Once per window per entity |
+| Opening a window, unsharded entity (S = 1) | One slow-path acquire; **no** fan-out writes and no requests issued | Once per window per entity |
+| Creating shard N > 0 | **+1 RCU**: one strongly consistent `GetItem` of shard 0's window start, projected to the window attributes, on top of the ADR-133 create cost | Once per shard |
+
+At `MAX_SHARD_COUNT` (32) with one session limit, a rollover is 31 extra WCU (~$19 per million
+rollovers) — paid once per window, not per request. The fan-out writes a scalar (the window
+start) and never tokens: each sibling restores its own balance on its next materialising pass.
+
+The shard-creation read is strongly consistent on purpose: an eventually consistent read could
+return shard 0's pre-rollover window, which looks ended, and the new shard would open a window
+of its own at a full share on top of the one shard 0 just opened.
+
+A cascade slow path that creates a **parent** shard reads the parent's own window (parent and
+child windows are independent), so it pays the same +1 RCU once per parent shard.
+
 #### Stored Limits Optimization
 
 ```python

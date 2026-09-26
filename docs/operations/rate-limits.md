@@ -299,6 +299,8 @@ use the `b_{limit_name}_{field}` naming convention:
 | Reset schedule | `rsched` | Item-level reset schedule, compact encoding | `1m0h0` |
 | Timezone | `sched_tz` | IANA zone shared by every schedule on this item | `America/New_York` |
 | Per-limit overrides | `b_rpm_sched`, `b_rpm_rsched` | That limit's own schedule, when it differs from the item default. A literal `-` means that limit has **no** schedule; a missing attribute means it inherits the item default | `1h0-6c2000` or `-` |
+| Session window start | `b_session_ws` | A [session quota's](../guide/session-quotas.md) current window start (epoch ms). The window ends at `ws + rsa × 1000`; a start later than `rf` means a new window has been opened and this shard has not yet restored its balance | `1705312800000` |
+| Session window length | `b_session_rsa` | The session window's length in seconds, copied from config so readers need no config lookup | `18000` |
 
 The ceiling actually enforced is **not** `b_rpm_cp`. The schedule in force at the current
 instant is applied to the base first, and the result is then divided by `shard_count`. An
@@ -333,6 +335,9 @@ The recovery horizon is the longest a limit could need to come back:
   the TTL for the whole item.
 - A quota uses its **reset period** — the cycle its reset cron repeats on, rounded up (31 days
   for a monthly pattern, 366 for an annual one).
+- A [session quota](../guide/session-quotas.md) uses its `reset_after` exactly — 5 hours for a
+  5-hour window, so 35 hours at the default multiplier. An expired item simply means the next
+  request opens a fresh window, which is what an idle entity would get anyway.
 
 Across limits sharing one item the largest horizon wins.
 

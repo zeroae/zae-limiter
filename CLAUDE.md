@@ -927,6 +927,100 @@ upper half it is.
 See [ADR-135](docs/adr/135-scheduled-limits.md) for the decision and the alternatives
 considered, and `docs/plans/2026-09-13-scheduled-limits-design.md` for the full design.
 
+### Session Quotas (#597, ADR-139)
+
+`Limit.quota(name, capacity, reset_after=timedelta(...))` is the second spelling of a quota's
+reset: the allowance returns `reset_after` after the entity's **own** first admitted use, not at
+a calendar instant. `quota()` takes exactly one of `cron` / `reset_after`, and
+`Limit.__post_init__` rejects both together — a limit has one recovery mechanism (ADR-137), so
+these are alternatives, not companions. `Limit.is_quota` is true for either, and stays the
+structural predicate. `reset_after` is a `timedelta` (positive, whole seconds, at most
+`MAX_PERIOD_SECONDS`); everywhere the type cannot carry the unit it is spelled
+`reset_after_seconds` and is an `int` — `Limit.reset_after_seconds`, `to_dict()`, the manifest,
+`BucketState`, and CFN's `ResetAfterSeconds`. **The unit lives in the name wherever the type
+cannot carry it**; a new serialization boundary that takes a bare `reset_after` int is wrong by
+the unit it forgot. User guide: `docs/guide/session-quotas.md`.
+
+**Idle-restarting, not tiling.** A window that ends while the entity is quiet is over; the next
+admitted request opens a fresh one at its own `now` (`RateLimiter._open_window_if_elapsed`,
+half-open `[ws, ws + rsa)`). Only an admitted, committed pass anchors — an exhausted quota's
+rejection writes nothing (fast rejection, or `RateLimitExceeded` before any write), so hammering
+does not restart the clock.
+
+**Storage.** Config carries `l_{name}_rsa` (seconds). The bucket item carries **`b_{name}_ws`**
+(window start, epoch ms, per limit, per shard) and **`b_{name}_rsa`** (seconds, denormalised from
+config so the aggregator and the shard-create read need no config). The window **end** is
+derived (`BucketState.window_end_ms = ws + rsa × 1000`) and never stored, so the pair cannot
+disagree after a partial write. The acquire path stamps `rsa` beside every `ws` it writes and
+re-stamps `rsa` on the locked write when the config length changed; the limit-change sync SETs /
+REMOVEs `rsa` and **never writes `ws`**. The anchor is **not** `vu` — `vu = 0` is the param
+sync's marker and the aggregator's #508 pin, so reading a window end off it would turn every
+`set_limits()` into an elapsed window. `vu` gains `ws + rsa` as a third voting member of its
+minimum (`_materialisation_stamps`, aggregator `_item_next_boundary`), which is all it needs.
+
+**The roll rule is `ws > rf`** (`BucketState.window_rolled`, `RateLimiter._apply_window_roll`):
+`_apply_reset_edge` with the backwards cron scan replaced by an attribute read — a set to the
+shard's effective share, idempotent, one reset however many windows an idle shard slept through,
+`tc` untouched. The **opener** resets unconditionally (`opened=True`) under its own `rf` lock;
+`ws > rf` is the rule for a shard that *sees* a window someone else opened.
+
+**`rf` is monotonic on every item, windowed or not.** Every materialising write — client create
+and normal path (`lease._monotonic_rf`), aggregator refill — stamps `rf = max(now, stored rf,
+every applied ws on the item)`, never `rf = now`. A slow-clock writer moving `rf` back past `ws`
+would make the next pass read `ws > rf` and reset again, refunding the window's spend on every
+request from that clock (#635). On an item with no window it reduces to `max(now, stored rf)`,
+free because `refill_bucket` treats non-positive elapsed time as zero.
+
+**Rollover fan-out** (`Repository._propagate_window_start`, called from
+`Lease._fan_out_windows` after the rf-locked write landed — never after the consumption-only
+retry, which stamps no `ws`). **One `UpdateItem` per (sibling shard, window limit)**:
+`SET b_{n}_ws = :new, b_{n}_rsa = :rsa, vu = :zero` under
+`attribute_exists(PK) AND rf < :new AND (attribute_not_exists(b_{n}_ws) OR b_{n}_ws <= :open_floor)`,
+`:open_floor = new_ws − rsa × 1000` — a sibling moves only if its own window had already ended by
+`new_ws`, the opener's own half-open rule. It moves `ws` and **never `tk`**: a fan-out cannot
+`ADD` (it does not know the sibling's balance) and a blind `SET` races the sibling's own slow
+path in both orderings; each sibling resets itself on its next pass by reading `ws > rf`. The
+`rf < :new` term keeps a sibling already materialised at or past `new_ws` from taking the new
+`ws` as already applied. Cost **(S − 1) × L** WCU per rollover (L = window limits on the item),
+**zero requests at S = 1**; non-condition failures are logged and counted, the caller is never
+failed, and a shortfall is logged at debug. **Shards can be staggered by milliseconds**: two
+openers crossing the boundary together each open on their own shard and each fan-out no-ops on
+the other's (the floor is what stops them resetting each other — a plain `ws < :new` admitted 15
+against a quota of 10). A lost write leaves one shard staggered until the next rollover, never
+over-admitting. Do not claim every shard carries the identical `ws`.
+
+**New shard N > 0** (`RateLimiter._sibling_window_starts` → `Repository.get_shard_window_starts`):
+one **strongly consistent**, projected `GetItem` of shard 0's `b_{n}_ws` (1 RCU, once per shard
+creation; separate from the create path's `BatchGetItem`, whose keys carry no shard). Live window
+⇒ the new shard joins it (inherits `ws`, `rf = now`, so `ws > rf` is false) and takes tokens by
+the #587 transfer. Ended or absent ⇒ it opens its own window at a full share and fans that out
+like any rollover. Consistency is load-bearing: a stale pre-roll `ws` looks ended and the new
+shard would mint a full share on top of the window shard 0 just opened (measured 15 vs 10). A
+cascade creating a **parent** shard reads the parent's own window — parent and child anchor
+independently.
+
+**Aggregator** (`processor._window_in_force`): applies client-anchored rolls (`ws > rf`) and
+never anchors or fans out; `rsa` present is what says a window is in force. Its refill
+stamps `rf` by the same `max(...)` rule and pins each rolled limit's `ws` in the condition
+(`#wws{i} = :ews{i}`) beside the `rf` and `vu` pins, because two fan-outs are indistinguishable
+to those two. `processor._is_quota_limit` counts a window as a quota, so a clone gets the #587
+transfer rather than a minted share.
+
+**Readers.** `LimitStatus.resets_at_ms` is the live window end from the bucket
+(`bucket.window_end_in_force`, never an instant at or before `now`), set at all four status
+sites; `None` for rate limits and calendar quotas. `check_availability` reports the **latest**
+live window end across shards (`None` if none). The TTL horizon is `reset_after` exactly
+(`schema._recovery_seconds`). The CLI renders `session: 10,000 quota (resets 5h after first
+use)` (`cli._format_duration`); `-l` cannot express it.
+
+**Known limitations:** #475 (a single request above `capacity // shard_count` is unadmittable
+on every shard); millisecond stagger across shards (above); a client predating ADR-139 cannot
+reconstruct a `reset_after` limit and raises, or under `on_unavailable=allow` **fails open for
+the whole level** (a degraded no-op lease, so the level's other limits go unenforced too); an
+aggregator predating it treats the quota as a dripping limit and its proactive-sharding clone
+mints `cp // new_count` per new shard (#587 again). Nothing checks versions, so the whole fleet
+must upgrade before one is stored.
+
 ### Combined Capacity Check (Issue #472)
 
 `RateLimiter.check_availability(entity_id, resource, needed=None, limits=None) -> Availability`
@@ -975,7 +1069,9 @@ crossed a reset edge and has not been written to since reports the balance the n
 will restore (`RateLimiter._readable_balance`), decided **per shard** rather than per limit
 name, so one stale shard cannot report the whole entity restored. Without that, the display
 reads "0 remaining, resets at midnight tomorrow" while the very next `acquire()` restores the
-quota immediately.
+quota immediately. A **session** quota (ADR-139) reports the wait to, and `resets_at_ms` of, the
+**latest** live window end across shards — `max` is the conservative "whole quota back" instant
+when shards are staggered — and `None` when no shard has a live window.
 
 Non-consuming and write-free, and **not** a pre-flight gate for `acquire()`: check-then-acquire
 is TOCTOU and costs an extra read, where `acquire()` answers the same question in 1 WCU (0 RCU +
@@ -990,7 +1086,7 @@ count or shard count. A missing bucket means full capacity and no wait.
 - `retry_after_seconds` **walks schedule boundaries** rather than dividing by the rate in force now (`schedule.retry_after_with_schedule`, #222 §7). The flat estimate over-reports when a boundary raises the limit and under-reports when one lowers it, which is the headline use case: empty bucket, 500 needed, 1000/min now, a boundary in 10 s dropping to 500/min is **50 s**, not 30. A `reset_schedule` edge landing before the deficit clears **is** the answer — a quota has no drip at all under ADR-137, so "at midnight" is the only finite answer. Capped at eight windows, then the flat estimate (which still carries #530's reset branch). Wired at all **four** `LimitStatus` sites, not the three the plan named: `bucket.try_consume` covers the speculative fast rejection (`declared_statuses` / `would_refill_satisfy`) and slow-path admission (`_admit_limit`) at once, and `lease._build_retry_failure_statuses` and `RateLimiter.check_availability` convert individually
 - `Limit.from_bucket_state()` reconstructs a **quota** as a quota: the `max(1, …)` rate floor and `reset_schedule` move together (a floored `refill_amount=1` beside a reset is what ADR-137 rejects), keyed on the stored shape `refill_amount_milli == 0 and reset_sched`. A corrupt item carrying a reset beside a positive rate keeps the floor and drops the tuple rather than raising from inside a rejection path
 - `bucket.calculate_retry_after` and `BucketState.retry_refill_amount_milli` have **no production callers** since #222 §7; both remain as the definitions the walk is pinned against. The walk cannot call either — `bucket` imports `models` imports `schedule`, and `schedule` may import neither (that one-way dependency is what lets both Lambdas vendor it), so the arithmetic and the #475 floored-share rule are re-derived there and held identical by test
-- **`as_dict()` shapes each limit by how it recovers (#545).** Every entry carries a `kind`, and the recovery fields follow it: `"rate"` keeps `refill_amount` / `refill_period_seconds`, `"quota"` **omits both** and carries `resets_at_ms` instead — the absolute epoch-ms instant of the next reset edge (`schedule.next_reset_edge`), `null` when no edge is inside the forward-scan horizon. A quota's `refill_amount` is 0 by ADR-137 and its `refill_period_seconds` is the inert `_QUOTA_REFILL_PERIOD_SECONDS`, so serializing them put "refills 0 tokens every 1 second" into 429 bodies — false about a limit that returns whole at a calendar instant, and acted on programmatically rather than merely squinted at. `kind` is on **both** shapes so no consumer infers a quota from `refill_amount == 0`, which is unsafe in both directions (a dripping limit's share can floor to zero, #475; #556 gives a scaled quota a phantom 1-milli drip). Derived from `Limit.is_quota`, the structural predicate. `as_dict()` reads the clock **once** for the whole body, so two quotas on one rejection cannot report edges scanned from different instants. An absolute instant rather than the cron string the CLI shows (`cli._format_limit`): an operator reading a terminal wants the recurrence, an HTTP client wants a timestamp it can schedule against without a cron parser — and being absolute it needs no companion `checked_at_ms`. `resets_at_ms: null` is genuinely rare since #574 — see below
+- **`as_dict()` shapes each limit by how it recovers (#545).** Every entry carries a `kind`, and the recovery fields follow it: `"rate"` keeps `refill_amount` / `refill_period_seconds`, `"quota"` **omits both** and carries `resets_at_ms` instead — the absolute epoch-ms instant the allowance returns. `_limit_shape` takes the `LimitStatus`, not the `Limit`: a **session** quota's instant is `LimitStatus.resets_at_ms`, the window end read off the bucket (ADR-139; never a past instant, `null` when no window is live); a **calendar** quota's `LimitStatus.resets_at_ms` is `None` and falls back to the next reset edge (`schedule.next_reset_edge`), `null` when no edge is inside the forward-scan horizon. Dropping that fallback silently nulls every calendar quota's `resets_at_ms`. A quota's `refill_amount` is 0 by ADR-137 and its `refill_period_seconds` is the inert `_QUOTA_REFILL_PERIOD_SECONDS`, so serializing them put "refills 0 tokens every 1 second" into 429 bodies — false about a limit that returns whole at a calendar instant, and acted on programmatically rather than merely squinted at. `kind` is on **both** shapes so no consumer infers a quota from `refill_amount == 0`, which is unsafe in both directions (a dripping limit's share can floor to zero, #475; #556 gives a scaled quota a phantom 1-milli drip). Derived from `Limit.is_quota`, the structural predicate. `as_dict()` reads the clock **once** for the whole body, so two quotas on one rejection cannot report edges scanned from different instants. An absolute instant rather than the cron string the CLI shows (`cli._format_limit`): an operator reading a terminal wants the recurrence, an HTTP client wants a timestamp it can schedule against without a cron parser — and being absolute it needs no companion `checked_at_ms`. `resets_at_ms: null` is genuinely rare since #574 — see below
 - **The reset scan reaches the reset's own cycle (#574).** `schedule._reset_scan` takes the probe *step* from the finest constrained cron field and the *horizon* from the coarsest (`cycle_seconds`); conflating the two gave every reset a 7-day horizon, because every practical reset pattern pins the minute. Both forward surfaces were wrong past that: `next_reset_edge` returned `None` for a monthly `0 0 1 * *` for ~24 days out of every 30 (so `resets_at_ms` was `null` exactly where a client most needs it), and an **annual quota's `retry_after_seconds` was `0.0`** — "retry immediately" against a limit that could not admit anything for months, i.e. a hot retry loop driven by the 429 itself. The old reach on that surface was 56 days, the product of the 7-day cap and `retry_after_with_schedule`'s `max_windows = 8`; `max_windows` is **unchanged** and was never the fix, because a quota's rate is zero in every window and the zero-rate branch returns the edge on iteration *one* as soon as the scan can see it. The backwards twin `prev_reset_edge` is widened by the same change, which is what stops a bucket idle across a monthly edge from never resetting at all. Cost went **down**: skipping whole local days and hours that the date and hour fields rule out (`_unreachable_block`) bounds a search at (days in horizon) + 24 + 60 ≈ 450 probes, against the 10,080 a flat 7-day minute walk cost — an annual quota's rejection path measured 171,377 `matches` calls and 413 ms before, 222 calls and 1.8 ms after. Residual: a pattern that skips whole years (`0 0 29 2 *`) is still out of reach three years in four, and still reports `None`, which is the documented reading
 - Both `violations` (exceeded) and `passed` (ok) are available
 - `retry_after_seconds` calculated from primary bottleneck
@@ -998,7 +1094,7 @@ count or shard count. A missing bucket means full capacity and no wait.
 ## Common Tasks
 
 ### Adding a New Limit Type
-1. No code changes needed for any **dripping** shape - `Limit.custom()` covers it. A calendar allowance needs `Limit.quota()` (it takes `cron`/`tz`, and `refill_amount=0` without a `reset_schedule` is rejected by `__post_init__` under ADR-137); a cron-varied limit needs `.with_schedule()`
+1. No code changes needed for any **dripping** shape - `Limit.custom()` covers it. A calendar allowance needs `Limit.quota(..., cron=...)` and a first-use-anchored one `Limit.quota(..., reset_after=timedelta(...))` (exactly one of the two; `refill_amount=0` without a reset is rejected by `__post_init__` under ADR-137); a cron-varied limit needs `.with_schedule()`
 2. For convenience, add factory method to `Limit` class in `models.py`
 
 ### Modifying the Schema
@@ -1097,6 +1193,7 @@ Speculative non-cascade `acquire()` (success) = 0 RCU + 1 WCU = **$0.625/M** (~1
 Speculative fast rejection (exhausted) = 0 RCU + 0 WCU = **$0/M** (free).
 Speculative fallback (refill helps) = 1 RCU + 2 WCU = $0.125 + $1.25 = **$1.375/M** (worse than normal).
 Client shard create (`BUCKET_MISSING` on shard N, ADR-133, warm config cache) = 2.5 RCU + 2 WCU (1 failed conditional + disable-walk BatchGet 1.5 RCU + META/bucket BatchGet 1 RCU + single-item `PutItem`) = $0.3125 + $1.25 = **$1.56/M**, paid **once per shard** (+1 WCU when a wcu bump precedes it: **$2.19/M**); the previous broken fallback cost the same on every acquire that drew a missing shard.
+Session quota (ADR-139): an acquire inside a window costs exactly what any acquire does (fast path unchanged). A rollover adds **(S − 1) × L** WCU once per window (S = `shard_count`, L = window limits on the item; 0 at S = 1, 31 at `MAX_SHARD_COUNT` with one limit = ~$19/M rollovers). Creating shard N>0 of a windowed bucket adds **1 RCU** (strongly consistent projected `GetItem` of shard 0), once per shard, and once per parent shard on a cascade.
 Speculative cascade (both succeed, sequential) = 0 RCU + 2 WCU = **$1.25/M** (vs $1.75/M normal cascade).
 Speculative cascade (both succeed, parallel, issue #318) = 0 RCU + 2 WCU = **$1.25/M** (same cost, lower latency).
 Speculative cascade fallback (parent refill helps) = 0.5 RCU + 3 WCU = **$1.94/M** (deferred compensation).
@@ -1115,6 +1212,7 @@ All PK and GSI PK values are prefixed with `{ns}/` where `{ns}` is the opaque na
 |---------|-------|
 | Get entity | `PK={ns}/ENTITY#{id}, SK=#META` |
 | Get bucket (single shard) | `PK={ns}/BUCKET#{id}#{resource}#{shard}, SK=#STATE` |
+| Read shard 0's session-window starts (ADR-139, shard create) | `GetItem PK={ns}/BUCKET#{id}#{resource}#0, SK=#STATE`, `ProjectionExpression` = the `b_{n}_ws` attributes, `ConsistentRead=True` |
 | Get buckets (all for entity) | GSI3: `GSI3PK={ns}/ENTITY#{id}` → BatchGetItem (GHSA-76rv) |
 | Batch get buckets | `BatchGetItem` with `PK={ns}/BUCKET#{id}#{resource}#{shard}, SK=#STATE` pairs |
 | Batch get configs | `BatchGetItem` with entity/resource/system config keys (issue #298) |
@@ -1184,16 +1282,17 @@ All PK and GSI PK values are prefixed with `{ns}/` where `{ns}` is the opaque na
 | Writer | UpdateExpression | Condition | Touches `rf`? |
 |--------|-----------------|-----------|---------------|
 | Speculative consume | `ADD tk -consumed` | `attribute_exists(PK) AND tk >= consumed AND (attribute_not_exists(vu) OR vu > :now)` | No |
-| Normal path (initial) | `SET rf = :new_rf (+ vu) ADD tk -consumed` (`REMOVE vu` when nothing on the item is scheduled) | `rf = :expected_rf` | Yes (optimistic lock) |
+| Normal path (initial) | `SET rf = :new_rf (+ vu) ADD tk -consumed` (`REMOVE vu` when nothing on the item is scheduled); `:new_rf = max(now, stored rf, applied ws)` (ADR-139, #635); `+ b_{n}_ws, b_{n}_rsa` when this pass opened a window, `+ b_{n}_rsa` when the config length changed | `rf = :expected_rf` | Yes (optimistic lock) |
 | Normal path (retry) | `ADD tk -consumed` | `tk >= consumed` | No (skips refill) |
-| Client shard create (ADR-133) | `Put` full item, `tk = effective cp // shard_count` (a quota: what the reclaim below took, #587), `wcu` undivided, `sched`/`rsched`/`sched_tz`/`vu` when scheduled | `attribute_not_exists(PK)` | Sets `rf = now` |
+| Client shard create (ADR-133) | `Put` full item, `tk = effective cp // shard_count` (a quota: what the reclaim below took, #587), `wcu` undivided, `sched`/`rsched`/`sched_tz`/`vu` when scheduled, `b_{n}_ws`/`b_{n}_rsa` for a session quota — shard N>0 first reads shard 0's `ws` (strongly consistent `GetItem`, 1 RCU) and joins a live window or opens its own (ADR-139) | `attribute_not_exists(PK)` | Sets `rf = max(now, ws)` |
 | Quota surplus reclaim, per existing shard (#587) | `SET tk = :share`, `ReturnValues=UPDATED_OLD` | `tk > :share` (client) / `attribute_exists(PK) AND tk > :share` (aggregator) | No |
 | Adjustment / rollback | `ADD tk +/-delta` | (unconditional) | No |
-| Aggregator refill | `ADD tk +refill SET rf = :now` | `rf = :expected_rf AND vu = :expected_vu` (#508) | Yes (optimistic lock) |
+| Window rollover fan-out, per (sibling shard, window limit) (ADR-139) | `SET b_{n}_ws = :new, b_{n}_rsa = :rsa, vu = :zero` | `attribute_exists(PK) AND rf < :new AND (attribute_not_exists(b_{n}_ws) OR b_{n}_ws <= :open_floor)`, `:open_floor = :new − rsa × 1000` | No |
+| Aggregator refill | `ADD tk +refill SET rf = :new_rf`, `:new_rf = max(now, stored rf, ws in force)` (ADR-139) | `rf = :expected_rf AND vu = :expected_vu` (#508) `AND b_{n}_ws = :expected_ws` per rolled window (ADR-139) | Yes (optimistic lock) |
 | Aggregator proactive shard | `SET shard_count = :new` | `shard_count = :old` | No |
 | Aggregator shard propagation | `SET shard_count = :new` | `attribute_not_exists(shard_count) OR shard_count < :new` | No |
 | Client shard propagation (#439) | `SET shard_count = :new` | `shard_count < :new` | No |
-| Limit-change sync, per shard (#468), per resource under `_default_` (#487) | `SET cp/ra/rp, sched/rsched/sched_tz, per-limit sched/rsched (compact, or "-" for unscheduled), vu = 0 (+ ttl) REMOVE stale, per-limit overrides that now match the item default` | `attribute_exists(PK)` | No |
+| Limit-change sync, per shard (#468), per resource under `_default_` (#487) | `SET cp/ra/rp, sched/rsched/sched_tz, per-limit sched/rsched (compact, or "-" for unscheduled), b_{n}_rsa for a session quota, vu = 0 (+ ttl) REMOVE stale, per-limit overrides that now match the item default, b_{n}_rsa for a limit without a window` (never writes `ws`, ADR-139) | `attribute_exists(PK)` | No |
 | Disable stamp (ADR-125) | `SET disabled = :true` / `REMOVE disabled` | `attribute_exists(PK)` | No |
 
 **Hot partition risk with cascade (issue #116):** See [Hot Partition Risk Mitigation](#hot-partition-risk-mitigation-issue-116) above.
@@ -1250,7 +1349,7 @@ zae-limiter entity set-limits user-123 --resource gpt-4 -l rpm:1000
 
 **`-l` flag format:** `name:rate[/period][:burst]` where `period` defaults to `/min`. Supported periods: `/sec`, `/min`, `/hour`, `/day`.
 
-**`-l` cannot express a schedule, and a set is a full replace.** `cli._parse_limit()` builds a `Limit` with `schedule=()` / `reset_schedule=()`, and every config level is written with a full-replace `PutItem`, so `entity set-limits user-123 -r gpt-4 -l rpm:1000` against a level whose stored `rpm` is scheduled silently drops the schedule — and turns a stored quota into a dripping limit. Nothing in the output signals it: `_echo_limit` renders the *new* limit. Deliberate per #222 §1.5 (the flag was not grown a cron mini-syntax; `limits apply` is the CLI path), but the erasure is the sharp edge, not the absence.
+**`-l` cannot express a schedule or a session window, and a set is a full replace.** `cli._parse_limit()` builds a `Limit` with `schedule=()` / `reset_schedule=()` / `reset_after=None`, and every config level is written with a full-replace `PutItem`, so `entity set-limits user-123 -r gpt-4 -l rpm:1000` against a level whose stored `rpm` is scheduled silently drops the schedule — and turns a stored quota, calendar or session, into a dripping limit. Nothing in the output signals it: `_echo_limit` renders the *new* limit. Deliberate per #222 §1.5 (the flag was not grown a cron mini-syntax; `limits apply` is the CLI path), but the erasure is the sharp edge, not the absence.
 
 ```bash
 # Equivalent: 1000 per minute
@@ -1323,6 +1422,7 @@ Limit configs use composite items (v0.8.0+, ADR-114 for configs). All limits for
 - `cp` (capacity), `ra` (refill_amount), `rp` (refill_period_seconds)
 - `sched` (string, #222): the limit's schedule in the compact storage encoding (`schedule.encode()`), written only when that limit has one. `cp`/`ra`/`rp` stay the **base** parameters; the schedule is applied on top of them at read time, never materialised onto the item.
 - `rsched` (string, #222 §3.6): the limit's **reset** schedule in the compact storage encoding (`schedule.encode_reset()`), written only when that limit has one. Same grammar as `sched` minus the modifier tokens, because a reset overrides no parameters — `0 0 * * *` is `m0h0`, four bytes. A separate attribute rather than a tag inside `sched`, mirroring the separate tuple on `Limit` and keeping the decoder from partitioning one list into two meanings (§4.1). `decode_reset` **rejects** a modifier token found here rather than ignoring it: it means corruption, or a parameter schedule stored under the wrong key, and an entry that silently reset a balance on a schedule meant only to scale it is the worst available reading. Without this attribute a quota (`refill_amount = 0`, ADR-137) does not merely lose its reset — it fails to reconstruct at all, and the read raises (#538).
+- `rsa` (number, ADR-139): a session quota's `reset_after` window length in **seconds**, written only when that limit has one. The alternative to `rsched`, never beside it. Decoded as an integer; a non-integral value is corruption and becomes `RateLimiterUnavailable`. Bucket items carry the per-shard pair `b_{name}_ws` (window start, epoch ms) and `b_{name}_rsa` (copied from here) — see [Session Quotas](#session-quotas-597-adr-139).
 
 **Config fields:**
 - `config_version` (int): Atomic counter for cache invalidation
@@ -1456,7 +1556,8 @@ Buckets using system/resource default limits have TTL for auto-expiration:
 | Limit shape | Recovery horizon |
 |-------------|------------------|
 | Drips (`refill_amount > 0`) | `time_to_fill = (capacity / refill_amount) × refill_period_seconds`, at its **slowest** over the base parameters and every `schedule` window (#557) |
-| Quota (`Limit.is_quota`, ADR-137) | the **reset period** — the cycle over which its `reset_schedule` cron repeats |
+| Quota, calendar (`reset_schedule`, ADR-137) | the **reset period** — the cycle over which its `reset_schedule` cron repeats |
+| Quota, session (`reset_after`, ADR-139) | `reset_after` **exactly** — no rounding and no clock. A swept item means the entity was idle ~`reset_after × multiplier`, and a fresh window on the next request is exactly what idle-restarting specifies |
 
 The dripping formula is unchanged, and still ensures slow-refill limits (where `capacity >> refill_amount`) have time to fully refill before expiring. A quota needs its own horizon because ADR-137 fixes `refill_amount = 0` for every one of them, and time-to-fill divides by exactly that field — the `ZeroDivisionError` of #532. "No TTL for a quota" is not available as an answer: ADR-136 makes TTL the **propagation mechanism** for resource- and system-level limits, so a quota with no TTL would enforce its original allowance forever.
 
@@ -1490,6 +1591,7 @@ limiter = RateLimiter(
 - Slow refill: capacity=1000, refill_amount=10, period=60s → time_to_fill = 6000s, TTL = 42000s (11.7 hours)
 - `Limit.quota("rpd", 10000, cron="0 0 * * *")`: reset period = 86400s, TTL = 86400×7 = 604800s (7 days)
 - `Limit.quota("rpmo", 10000, cron="0 0 1 * *")`: reset period = 31 days, TTL = 217 days
+- `Limit.quota("session", 10000, reset_after=timedelta(hours=5))`: horizon = 18000s, TTL = 126000s (35 hours) — resource/system level only; entity-level configs carry no TTL (ADR-136)
 - Mixed item, slow refill (42000s) beside an hourly quota (3600×7 = 25200s): TTL = 42000s — the `max` spans both shapes
 
 **TTL behavior on upgrade/downgrade:**
