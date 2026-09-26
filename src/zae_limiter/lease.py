@@ -245,7 +245,7 @@ class Lease:
                 requested=amount,
                 exceeded=not result.success,
                 retry_after_seconds=result.retry_after_seconds,
-                resets_at_ms=window_end_in_force(entry.limit, entry.state),
+                resets_at_ms=window_end_in_force(entry.limit, entry.state, now_ms),
             )
             statuses.append(status)
 
@@ -266,7 +266,7 @@ class Lease:
                         requested=0,
                         exceeded=False,
                         retry_after_seconds=0.0,
-                        resets_at_ms=window_end_in_force(entry.limit, entry.state),
+                        resets_at_ms=window_end_in_force(entry.limit, entry.state, now_ms),
                     )
                 )
 
@@ -968,7 +968,7 @@ def _build_retry_failure_statuses(entries: list[LeaseEntry], now_ms: int) -> lis
                 requested=entry.consumed,
                 exceeded=entry.consumed > 0,
                 retry_after_seconds=retry_after,
-                resets_at_ms=window_end_in_force(entry.limit, entry.state),
+                resets_at_ms=window_end_in_force(entry.limit, entry.state, now_ms),
             )
         )
     return statuses

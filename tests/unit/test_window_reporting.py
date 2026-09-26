@@ -24,12 +24,21 @@ from zae_limiter.bucket import (
     retry_after_for_deficit,
     try_consume,
     window_end_in_force,
+    would_refill_satisfy,
 )
 from zae_limiter.lease import Lease, LeaseEntry, _build_retry_failure_statuses
 from zae_limiter.models import BucketState
+from zae_limiter.schema import BUCKET_FIELD_RSA, bucket_attr, pk_bucket, sk_state
 
 RESOURCE = "gpt-4"
 ONE_HOUR_MS = 3_600_000
+
+
+def _bucket_key(repo, entity_id, shard=0):
+    return {
+        "PK": {"S": pk_bucket(repo._namespace_id, entity_id, RESOURCE, shard)},
+        "SK": {"S": sk_state()},
+    }
 
 
 def _window_shard(**kwargs) -> BucketState:
@@ -111,8 +120,84 @@ class TestBucketReportsTheWindow:
 
     def test_only_the_resolved_limit_decides_a_window_is_in_force(self):
         """A stale `ws`/`rsa` left by a limit that lost its window does not vote."""
-        assert window_end_in_force(Limit.per_minute("session", 10), _window_shard()) is None
-        assert window_end_in_force(SESSION_10, _window_shard()) == T0 + FIVE_HOURS_MS
+        rpm = Limit.per_minute("session", 10)
+        assert window_end_in_force(rpm, _window_shard(), T0) is None
+        assert window_end_in_force(SESSION_10, _window_shard(), T0) == T0 + FIVE_HOURS_MS
+
+    @pytest.mark.parametrize("offset", [0, 1, ONE_HOUR_MS])
+    def test_an_end_at_or_before_now_is_never_reported(self, offset):
+        """Clamped in the one place every site reads it: "returns at <a moment
+        already past>" reads as "retry now" (#574's hot loop)."""
+        now = T0 + FIVE_HOURS_MS + offset
+        assert window_end_in_force(SESSION_10, _window_shard(), now) is None
+
+    def test_a_positive_rate_beside_a_stray_window_waits_for_the_drip(self):
+        """A corrupt item: positive stored rate plus a leftover `ws`/`rsa`.
+        `Limit.from_bucket_state` reads it as dripping, so the wait is the
+        drip's (1 token at 60/min ~ 1 s), not the 4 h to the stray end."""
+        state = _window_shard(
+            capacity_milli=60_000, refill_amount_milli=60_000, refill_period_ms=60_000
+        )
+        wait = retry_after_for_deficit(state, 1_000, T0 + ONE_HOUR_MS)
+        assert wait == pytest.approx(1.0, abs=0.01)
+
+
+class TestFastPathReadsAnEndedWindowAsRestored:
+    """Ruling (a): an image whose window has ended is not a fast rejection.
+
+    Reachable when a resource- or system-level `reset_after` is lengthened:
+    the item keeps the short `rsa`, the slow path stamped `vu` from the long
+    config end, so the spent bucket fast-rejects between the two ends.
+    """
+
+    def test_the_reviewers_image_goes_to_the_slow_path(self):
+        now = T0 + 2 * ONE_HOUR_MS
+        stale = _window_shard(window_start_ms=now - 2 * ONE_HOUR_MS, reset_after_seconds=3600)
+        would_help, statuses = would_refill_satisfy([stale], {"session": 1}, now)
+        assert would_help, "an ended window is restored on the next pass: not a fast rejection"
+        for status in statuses:
+            assert not (
+                status.retry_after_seconds == 0.0
+                and status.resets_at_ms is not None
+                and status.resets_at_ms <= now
+            )
+        (status,) = statuses
+        assert status.available == 10
+        assert status.resets_at_ms is None
+
+    def test_a_live_window_on_the_image_still_fast_rejects(self):
+        now = T0 + ONE_HOUR_MS
+        would_help, (status,) = would_refill_satisfy([_window_shard()], {"session": 1}, now)
+        assert not would_help
+        assert status.resets_at_ms == T0 + FIVE_HOURS_MS
+        assert status.retry_after_seconds == pytest.approx(4 * 3600.0)
+
+    async def test_through_acquire_the_slow_path_rejects_at_the_config_end(self, limiter):
+        """End to end: the item says 1 h, config says 5 h, the clock is 2 h in.
+        The rejection quotes the config end, 3 h away — never "retry now"."""
+        repo = limiter._repository
+        await repo.set_limits("user-1", [SESSION_10], resource=RESOURCE)
+        repo._now_ms = lambda: T0
+        async with limiter.acquire("user-1", RESOURCE, consume={"session": 10}):
+            pass
+        # Simulate the non-fanned-out lengthening: the item keeps the short rsa.
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key=_bucket_key(repo, "user-1"),
+            UpdateExpression="SET #rsa = :short",
+            ExpressionAttributeNames={"#rsa": bucket_attr("session", BUCKET_FIELD_RSA)},
+            ExpressionAttributeValues={":short": {"N": "3600"}},
+        )
+
+        now = T0 + 2 * ONE_HOUR_MS
+        repo._now_ms = lambda: now
+        with pytest.raises(RateLimitExceeded) as exc:
+            async with limiter.acquire("user-1", RESOURCE, consume={"session": 1}):
+                pass
+        status = next(s for s in exc.value.statuses if s.limit_name == "session")
+        assert status.resets_at_ms == T0 + FIVE_HOURS_MS
+        assert status.retry_after_seconds == pytest.approx(3 * 3600.0, abs=1.0)
 
 
 def _entry(limit: Limit, state: BucketState, consumed: int = 0) -> LeaseEntry:
@@ -296,6 +381,31 @@ class TestCheckAvailabilityReportsOneWindow:
         status = check.status("session")
         assert status.resets_at_ms == T0 + FIVE_HOURS_MS
         assert status.available == 7
+
+    async def test_a_shortened_config_waits_for_the_items_longer_end(self, limiter):
+        """Ruling (e): config shortened to 1 h, item still carries 5 h, and the
+        clock is between the two ends. The item's `vu` still gates the fast
+        path to the long end, so the shard is NOT restored yet and the reset
+        instant is the item end."""
+        one_hour = Limit.quota("session", 10, reset_after=timedelta(hours=1))
+        now = T0 + 2 * ONE_HOUR_MS
+        shards = [self._shard(0, T0, T0, shard_count=1)]
+        check = await self._check(limiter, shards, now, needed={"session": 1}, limits=(one_hour,))
+        status = check.status("session")
+        assert status.available == 0
+        assert status.exceeded
+        assert status.resets_at_ms == T0 + FIVE_HOURS_MS
+        assert status.retry_after_seconds == pytest.approx(3 * 3600.0)
+
+    async def test_a_lengthened_config_waits_for_the_configs_longer_end(self, limiter):
+        """The mirror: item 1 h, config 5 h, 2 h in. The slow path pairs `ws`
+        with the config length, so the window is still live until then."""
+        now = T0 + 2 * ONE_HOUR_MS
+        shards = [self._shard(0, T0, T0, shard_count=1, reset_after_seconds=3600)]
+        check = await self._check(limiter, shards, now, needed={"session": 1})
+        status = check.status("session")
+        assert status.available == 0
+        assert status.resets_at_ms == T0 + FIVE_HOURS_MS
 
     async def test_an_exhausted_live_window_waits_for_its_end(self, limiter):
         now = T0 + ONE_HOUR_MS

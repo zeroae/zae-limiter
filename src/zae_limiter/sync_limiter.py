@@ -68,18 +68,38 @@ def _is_custom_config(config_source: str | None) -> bool:
     return config_source in _ENTITY_CONFIG_SOURCES
 
 
-def _config_window_end(limit: Limit, bucket: BucketState) -> int | None:
-    """When ``bucket``'s duration window ends under ``limit``'s length (ADR-139).
+def _reader_window_end(limit: Limit, bucket: BucketState) -> int | None:
+    """When a read-only view should treat ``bucket``'s duration window as over (ADR-139).
 
-    The item's ``ws`` paired with the resolved config's ``reset_after`` — the
-    pairing the slow path uses, since ``_do_acquire`` overwrites the item's
-    ``rsa`` with the config's before ``_open_window_if_elapsed`` reads it. A
-    read-only view built on the same pairing therefore agrees with the next
-    writer about when the window ends. ``None`` for a bucket with no window.
+    The item's ``ws`` paired with the **later** of two lengths: the resolved
+    config's ``reset_after`` and the item's own ``rsa``. The two disagree only
+    after an operator changes a resource- or system-level ``reset_after``,
+    which never fans out (#271/#296), and in either direction the later end is
+    the one ``acquire()`` is actually still enforcing:
+
+    - **Lengthened** (item short, config long): the slow path pairs ``ws``
+      with the config length — ``_do_acquire`` overwrites the item's ``rsa``
+      before ``_open_window_if_elapsed`` reads it — so the window runs to the
+      config end.
+    - **Shortened** (item long, config short): the item's ``vu`` was stamped
+      from the old, longer end, so the fast path keeps rejecting until it.
+      Reporting the shorter config end would show "restored" while the next
+      ``acquire()`` still fast-rejects — the display contradicting the
+      limiter, which is the thing :meth:`SyncRateLimiter.check_availability`
+      exists to prevent.
+
+    Erring late costs a display that says "not yet" slightly too long; erring
+    early promises tokens that are not there. ``None`` for a bucket with no
+    window.
     """
-    if limit.reset_after_seconds is None or bucket.window_start_ms is None:
+    if bucket.window_start_ms is None:
         return None
-    return bucket.window_start_ms + limit.reset_after_seconds * 1000
+    ends = [
+        bucket.window_start_ms + seconds * 1000
+        for seconds in (limit.reset_after_seconds, bucket.reset_after_seconds)
+        if seconds is not None
+    ]
+    return max(ends) if ends else None
 
 
 class SyncRateLimiter:
@@ -1326,7 +1346,7 @@ class SyncRateLimiter:
             requested=amount,
             exceeded=not result.success,
             retry_after_seconds=result.retry_after_seconds,
-            resets_at_ms=window_end_in_force(limit, state),
+            resets_at_ms=window_end_in_force(limit, state, now_ms),
         )
         if not result.success:
             return (status, 0)
@@ -1439,7 +1459,7 @@ class SyncRateLimiter:
                     _boundary_ms=parent_boundary_ms,
                     _reset_edge_ms=parent_reset_edge_ms,
                     _window_start_ms=parent_new_ws,
-                    _window_end_ms=window_end_in_force(limit, existing),
+                    _window_end_ms=window_end_in_force(limit, existing, now_ms),
                 )
             )
         carrier = self._wcu_carrier(
@@ -1622,7 +1642,7 @@ class SyncRateLimiter:
                         _boundary_ms=boundary_ms,
                         _reset_edge_ms=reset_edge_ms,
                         _window_start_ms=new_ws,
-                        _window_end_ms=window_end_in_force(limit, state),
+                        _window_end_ms=window_end_in_force(limit, state, now_ms),
                     )
                 )
             carrier = self._wcu_carrier(
@@ -1897,7 +1917,7 @@ class SyncRateLimiter:
             if edge is not None and edge > bucket.last_refill_ms:
                 return bucket.effective_capacity_milli(now_ms) // 1000
         if limit is not None and limit.reset_after is not None:
-            end = _config_window_end(limit, bucket)
+            end = _reader_window_end(limit, bucket)
             if end is None or now_ms >= end or bucket.window_rolled:
                 return bucket.effective_capacity_milli(now_ms) // 1000
         return calculate_available(bucket, now_ms)
@@ -2008,7 +2028,7 @@ class SyncRateLimiter:
                 bucket, limit_for_bucket, now_ms
             )
             if limit_for_bucket is not None and limit_for_bucket.reset_after is not None:
-                end = _config_window_end(limit_for_bucket, bucket)
+                end = _reader_window_end(limit_for_bucket, bucket)
                 if end is not None and end > now_ms:
                     window_ends[name] = max(end, window_ends.get(name, end))
         statuses: list[LimitStatus] = []
