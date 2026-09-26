@@ -465,8 +465,10 @@ With speculative writes, `acquire()` attempts a conditional UpdateItem directly 
 The speculative path falls back to the normal read-write path when:
 
 - The bucket does not exist yet (first acquire for an entity)
-- A new limit was added that is not in the bucket. That fallback adds the limit to the bucket,
-  starting full (its per-shard share), so it happens once per bucket, not on every request
+- A new limit was added that is not in the bucket. The first admitted fallback on each bucket
+  shard adds the limit, starting at its per-shard share, and later requests take the fast path
+  again. Until then, a request that names only the old limits can stay on the fast path and
+  leaves the new one unadded
 - Token refill since last access would provide enough capacity
 - The bucket crossed a schedule boundary, so its balance was worked out under parameters no
   longer in force. One request per bucket per boundary pays this
