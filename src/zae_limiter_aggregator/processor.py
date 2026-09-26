@@ -877,6 +877,11 @@ def try_refill_bucket(
     # matters: `vu` on such an item is at or before the window's end, so the
     # fast path is already closed and the next acquire takes the slow path,
     # which refills every limit on the item itself.
+    #
+    # "Ended" is judged by this Lambda's own clock, which can run behind the
+    # clients'. A skewed judgement is made harmless by the `ws` pin on the
+    # roll below, not by this check: a window this pass wrongly believes is
+    # live can only be restored if the item still carries that same `ws`.
     for name, (ws, rsa) in windows.items():
         if ws is not None and ws > state.rf_ms and ws + rsa * 1000 <= now_ms:
             logger.debug(
@@ -959,6 +964,9 @@ def try_refill_bucket(
                 add_parts.append(f"#wtk{idx} :wd{idx}")
                 expr_names[f"#wtk{idx}"] = bucket_attr(limit_name, BUCKET_FIELD_TK)
                 expr_values[f":wd{idx}"] = roll_delta
+                # Pin the window being restored (see the condition below).
+                expr_names[f"#wws{idx}"] = bucket_attr(limit_name, BUCKET_FIELD_WS)
+                expr_values[f":ews{idx}"] = window[0]
                 rolled.append(limit_name)
             continue
 
@@ -1089,6 +1097,19 @@ def try_refill_bucket(
     else:
         condition += " AND #vu = :expected_vu"
         expr_values[":expected_vu"] = state.vu_ms
+
+    # Each window this write restores is pinned to the `ws` the image carried.
+    # The `rf` and `vu` pins cannot tell two window fan-outs apart: a client
+    # that opens the *next* window on another shard fans it out with
+    # `SET ws, rsa, vu = 0`, which leaves `rf` alone and rewrites `vu` to the
+    # same 0 an earlier fan-out left. An aggregator whose clock runs behind
+    # would then restore the dead window's balance under an `rf` still below
+    # the new `ws` — spendable by the consumption-only retry before the next
+    # pass rolls the new window in full, one share of over-admission. With
+    # the pin that write fails its condition and is skipped like any other
+    # lost lock. One term per rolled limit, positional aliases only.
+    for idx in range(len(rolled)):
+        condition += f" AND #wws{idx} = :ews{idx}"
 
     # An expired `vu` means this pass is the materialisation the fast path is
     # waiting on: stamp the next boundary so it can resume. A `vu` still in the

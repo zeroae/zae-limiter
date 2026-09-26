@@ -3699,7 +3699,66 @@ class TestAggregatorRollsAWindow:
         write = self._write(table)
         assert write["Key"]["PK"] == "ns123/BUCKET#user-1#gpt-4#0"
         assert "_ws" not in write["UpdateExpression"]
-        assert not any(v.endswith("_ws") for v in write["ExpressionAttributeNames"].values())
+        # `ws` is named only by the condition's pin, never by the update.
+        written = {
+            v
+            for k, v in write["ExpressionAttributeNames"].items()
+            if k in write["UpdateExpression"]
+        }
+        assert not any(v.endswith("_ws") for v in written)
+
+
+class TestTheRollIsPinnedToTheWindowItRestores:
+    """The `rf` and `vu` pins cannot tell two window fan-outs apart.
+
+    A fan-out of the *next* window writes `SET ws, rsa, vu = 0`: `rf` is
+    untouched and `vu` is rewritten to the same 0 the image carried. An
+    aggregator whose clock runs behind would restore the dead window under an
+    `rf` still below the new `ws`. Pinning `ws` refuses that write.
+    """
+
+    def test_a_roll_pins_the_ws_it_read(self) -> None:
+        table = MagicMock()
+        state = _window_state(_session_record(rf_ms=WS - 60_000, vu_ms=0))
+        assert try_refill_bucket(table, state, now_ms=WS + 30_000) is True
+        write = table.update_item.call_args.kwargs
+        assert " AND #wws0 = :ews0" in write["ConditionExpression"]
+        assert write["ExpressionAttributeNames"]["#wws0"] == "b_session_ws"
+        assert write["ExpressionAttributeValues"][":ews0"] == WS
+
+    def test_each_rolled_limit_carries_its_own_pin(self) -> None:
+        table = MagicMock()
+        record = _session_record(
+            rf_ms=WS - 60_000,
+            limits={"session": _session_limit(), "s.q-1": _session_limit(ws=WS + 5)},
+        )
+        assert try_refill_bucket(table, _window_state(record), now_ms=WS + 30_000) is True
+        write = table.update_item.call_args.kwargs
+        names = write["ExpressionAttributeNames"]
+        values = write["ExpressionAttributeValues"]
+        pins = {names[f"#wws{i}"]: values[f":ews{i}"] for i in range(2)}
+        assert pins == {"b_session_ws": WS, "b_s.q-1_ws": WS + 5}
+        assert "s.q-1" not in write["ConditionExpression"]
+
+    def test_no_roll_carries_no_pin(self) -> None:
+        """An applied window beside a drip top-up: nothing restored, nothing pinned."""
+        table = MagicMock()
+        record = _session_record(
+            rf_ms=WS + 1_000, limits={"session": _session_limit(), "rpm": _rpm_limit()}
+        )
+        assert try_refill_bucket(table, _window_state(record), now_ms=WS + 60_000) is True
+        write = table.update_item.call_args.kwargs
+        assert "#wws" not in write["ConditionExpression"]
+        assert not any(k.startswith("#wws") for k in write["ExpressionAttributeNames"])
+
+    def test_a_refused_pin_is_skipped_like_any_lost_lock(self) -> None:
+        table = MagicMock()
+        table.update_item.side_effect = ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException", "Message": "ws moved"}},
+            "UpdateItem",
+        )
+        state = _window_state(_session_record(rf_ms=WS - 60_000, vu_ms=0))
+        assert try_refill_bucket(table, state, now_ms=WS + 30_000) is False
 
 
 class TestAggregatorRfNeverUnappliesAWindow:

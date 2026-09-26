@@ -833,3 +833,58 @@ class TestDurationWindowRollIntegration:
         # The same stale image again: the rf lock refuses it, so the roll
         # cannot be applied twice.
         assert try_refill_bucket(dynamodb_table, state, now_ms + 1_000) is False
+
+    def test_a_roll_is_refused_once_the_next_window_is_fanned_out(self, dynamodb_table) -> None:
+        """The image shows W1 unapplied with `vu = 0`. Before the aggregator
+        writes, a client fans W2 out the way `_propagate_window_start` does —
+        `SET ws, rsa, vu = 0`, `rf` untouched — so the `rf` and `vu` pins
+        still match. Only the `ws` pin tells the two windows apart."""
+        entity_id = f"entity-{uuid.uuid4().hex[:8]}"
+        resource = "gpt-4"
+        now_ms = int(time.time() * 1000)
+        old_rf_ms = now_ms - 30_000
+        ws = now_ms - 10_000
+        limits = {self.SESSION: {"tk": 7, "cp": 10_000_000, "ra": 0, "rp": 1_000, "tc": 0}}
+        _seed_bucket(dynamodb_table, entity_id, resource, limits=limits, rf_ms=old_rf_ms)
+        key = {"PK": pk_bucket("default", entity_id, resource, 0), "SK": sk_state()}
+        fan_out = {
+            "UpdateExpression": "SET #ws = :ws, #rsa = :rsa, #vu = :zero",
+            "ExpressionAttributeNames": {
+                "#ws": bucket_attr(self.SESSION, BUCKET_FIELD_WS),
+                "#rsa": bucket_attr(self.SESSION, BUCKET_FIELD_RSA),
+                "#vu": BUCKET_FIELD_VU,
+            },
+        }
+        dynamodb_table.update_item(
+            Key=key, ExpressionAttributeValues={":ws": ws, ":rsa": self.RSA, ":zero": 0}, **fan_out
+        )
+        state = BucketRefillState(
+            namespace_id="default",
+            entity_id=entity_id,
+            resource=resource,
+            rf_ms=old_rf_ms,
+            limits={
+                self.SESSION: LimitRefillInfo(
+                    tc_delta=0,
+                    tk_milli=7,
+                    cp_milli=10_000_000,
+                    ra_milli=0,
+                    rp_ms=1_000,
+                    window_start_ms=ws,
+                    reset_after_seconds=self.RSA,
+                )
+            },
+            vu_ms=0,
+        )
+
+        # W2 lands after the image was taken.
+        dynamodb_table.update_item(
+            Key=key,
+            ExpressionAttributeValues={":ws": ws + 5_000, ":rsa": self.RSA, ":zero": 0},
+            **fan_out,
+        )
+
+        assert try_refill_bucket(dynamodb_table, state, now_ms) is False
+        item = _get_bucket(dynamodb_table, entity_id, resource)
+        assert int(item[bucket_attr(self.SESSION, BUCKET_FIELD_TK)]) == 7
+        assert int(item["rf"]) == old_rf_ms
