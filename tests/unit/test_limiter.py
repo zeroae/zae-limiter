@@ -12101,6 +12101,71 @@ class TestLimitAddedToExistingShards:
         assert await _stored_tk(repo, "r2-lock", "gpt-4", "rpd", shard=1) == 199_000
         assert await _stored_tk(repo, "r2-lock", "gpt-4", "rpd", shard=0) == 500_000
 
+    async def _spent_sibling_after_midnight(self, limiter, entity_id):
+        """Shard 0 granted the whole quota at count 1 and materialised after
+        midnight (its grant is today's); shard 1 last materialised before it."""
+        day = 86_400_000
+        midnight = (T0 // day + 1) * day
+        repo = await self._two_shards(limiter, entity_id, extra_on_shard0=(700_000, 300_000))
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "gpt-4", 0)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="SET #rf = :rf",
+            ExpressionAttributeNames={"#rf": BUCKET_FIELD_RF},
+            ExpressionAttributeValues={":rf": {"N": str(midnight + 1_000)}},
+        )
+        repo._now_ms = lambda: midnight + 2_000
+        return repo, midnight
+
+    async def test_no_persist_behind_a_reset_edge_on_a_rejection(self, limiter):
+        """Re-review of #633: `persist_seed` leaves `rf` alone. On an item whose
+        `rf` is older than the last reset edge, the fast path spent the
+        persisted transfer and the next slow pass then applied the edge it
+        thought it missed, resetting the shard to a full share: 1200+ in one
+        period. Such a seed is not persisted."""
+        repo, _ = await self._spent_sibling_after_midnight(limiter, "edge-reject")
+        with pytest.raises(RateLimitExceeded):
+            await self._acquire_on(limiter, "edge-reject", 1, {"rpd": 300})
+        shard1 = await _raw_bucket(repo, "edge-reject", shard=1)
+        assert bucket_attr("rpd", BUCKET_FIELD_TK) not in shard1
+
+        admitted = 0
+        while True:
+            try:
+                await self._acquire_on(limiter, "edge-reject", 1, {"rpd": 100})
+            except RateLimitExceeded:
+                break
+            admitted += 100
+        tk0 = await _stored_tk(repo, "edge-reject", "gpt-4", "rpd", shard=0)
+        assert admitted + tk0 // 1000 == 1_000
+
+    async def test_no_persist_behind_a_reset_edge_on_a_lost_lock(self, limiter):
+        repo, midnight = await self._spent_sibling_after_midnight(limiter, "edge-lock")
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        stale = await slow._fetch_entity_and_buckets("edge-lock", "gpt-4", 1)
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, "edge-lock", "gpt-4", 1)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="SET #rf = :rf",
+            ExpressionAttributeNames={"#rf": BUCKET_FIELD_RF},
+            ExpressionAttributeValues={":rf": {"N": str(T0 + 1)}},
+        )
+        with patch.object(slow, "_fetch_entity_and_buckets", AsyncMock(return_value=stale)):
+            with patch("zae_limiter.repository.random.randrange", return_value=1):
+                with pytest.raises(RateLimitExceeded):
+                    async with slow.acquire("edge-lock", "gpt-4", consume={"rpd": 1}):
+                        pass
+        shard1 = await _raw_bucket(repo, "edge-lock", shard=1)
+        assert bucket_attr("rpd", BUCKET_FIELD_TK) not in shard1
+
 
 class TestPersistSeed:
     """`Repository.persist_seed` (#633): write-once, pinned, `vu` only lowered."""

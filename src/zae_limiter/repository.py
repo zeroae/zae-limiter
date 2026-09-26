@@ -2852,6 +2852,12 @@ class Repository:
         So the seed is persisted here, at ``state.tokens_milli`` (what the
         clamp took, capped at one share) with nothing consumed.
 
+        The caller skips the persist when the item's ``rf`` is behind the
+        limit's current period (a calendar reset edge, or a joined window's
+        start, after ``rf``): this write leaves ``rf`` alone, so the next slow
+        pass would apply that edge and reset the shard to a full share on top
+        of the persisted transfer the fast path had already spent.
+
         This does not weaken write-on-enter further than #587 already did: the
         clamp already writes on the rejection path, and this completes that
         same transfer rather than admitting anything. It is a separate write
@@ -6671,12 +6677,18 @@ class Repository:
         into the surplus above its current share. Its spent part is gone from
         ``tk`` and cannot be told from a legitimate earlier-period spend without
         a per-period grant record, so the full share is granted on top of it.
-        Preconditions: that lower-count grant, *and* this shard created without
-        the quota after it. With the pin in place, the aggregator's clone cannot
-        be that shard (a seed at the old count no longer lands after the bump
-        the clone is taken from), which leaves a create by a client whose
-        config cache has not yet seen the quota — within ``config_cache_ttl``
-        of configuring it, and a doubling in that window. Bound: at most the part of that
+        Preconditions: that lower-count grant, *and* a shard that lacks the quota
+        after it. Two sources produce such a shard, neither needing a race:
+
+        * a create by a client whose config cache has not yet seen the quota
+          (within ``config_cache_ttl`` of configuring it) across a doubling; and
+        * the aggregator's proactive doubling cloning new shards from an
+          **unseeded shard 0**'s image — the clone carries only the quotas that
+          image carries and reclaims only those, so a sibling seeded before
+          shard 0 keeps a surplus nobody reclaims (measured 1250 against 1000
+          with shard 1 seeded at count 2, then a doubling to 4).
+
+        Bound: at most the part of that
         sibling's surplus it had spent, once, in the period of the doubling
         (``C · (1/S' − 1/S)`` per such sibling for a grant at count ``S'``). A
         transfer can also under-grant for the rest of a period (a surplus

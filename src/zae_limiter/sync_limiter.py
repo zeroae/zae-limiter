@@ -1622,10 +1622,17 @@ class SyncRateLimiter:
                     )
                     if window_live:
                         state.window_start_ms = inherited_ws
+                    period_start = (
+                        state.window_start_ms
+                        if limit.reset_after is not None
+                        else prev_reset_edge(limit.reset_schedule, now_ms)
+                        if limit.reset_schedule
+                        else None
+                    )
                     if (
                         limit.name in seed_transfer
                         and window_live is not False
-                        and (state.window_start_ms is None or state.window_start_ms <= item_rf)
+                        and (period_start is None or period_start <= item_rf)
                     ):
                         seed_initial = replace(state)
                     created_anchor = (

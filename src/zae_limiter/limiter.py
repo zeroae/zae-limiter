@@ -2115,14 +2115,28 @@ class RateLimiter:
                         state.window_start_ms = inherited_ws
                     # A transfer's clamp has already written; keep the seed
                     # as it stands before admission so it can be persisted if
-                    # this pass ends up writing no seed (#633). A joined window
-                    # starting after the item's `rf` is not persisted: without
-                    # the locked write moving `rf` past it, the next pass would
-                    # read `ws > rf` and reset the balance to a full share.
+                    # this pass ends up writing no seed (#633). The persist
+                    # leaves `rf` where it is, so it is skipped whenever `rf`
+                    # sits behind the limit's current period: the next slow
+                    # pass would then apply the reset it thinks it missed and
+                    # hand the shard a full share on top of the persisted
+                    # transfer the fast path had already spent (measured 1200
+                    # against 1000). For a session quota that is a joined
+                    # window starting after `rf` (`ws > rf` rolls it); for a
+                    # calendar quota, a reset edge after `rf`. Skipping falls
+                    # back to the unpersisted transfer, whose over-grant is
+                    # inside the residual tracked separately.
+                    period_start = (
+                        state.window_start_ms
+                        if limit.reset_after is not None
+                        else prev_reset_edge(limit.reset_schedule, now_ms)
+                        if limit.reset_schedule
+                        else None
+                    )
                     if (
                         limit.name in seed_transfer
                         and window_live is not False
-                        and (state.window_start_ms is None or state.window_start_ms <= item_rf)
+                        and (period_start is None or period_start <= item_rf)
                     ):
                         seed_initial = replace(state)
                     # A seed that opens its own window on a sharded entity

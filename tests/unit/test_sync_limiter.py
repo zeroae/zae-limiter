@@ -9826,6 +9826,70 @@ class TestLimitAddedToExistingShards:
         assert _stored_tk(repo, "r2-lock", "gpt-4", "rpd", shard=1) == 199000
         assert _stored_tk(repo, "r2-lock", "gpt-4", "rpd", shard=0) == 500000
 
+    def _spent_sibling_after_midnight(self, sync_limiter, entity_id):
+        """Shard 0 granted the whole quota at count 1 and materialised after
+        midnight (its grant is today's); shard 1 last materialised before it."""
+        day = 86400000
+        midnight = (T0 // day + 1) * day
+        repo = self._two_shards(sync_limiter, entity_id, extra_on_shard0=(700000, 300000))
+        client = repo._get_client()
+        client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "gpt-4", 0)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="SET #rf = :rf",
+            ExpressionAttributeNames={"#rf": BUCKET_FIELD_RF},
+            ExpressionAttributeValues={":rf": {"N": str(midnight + 1000)}},
+        )
+        repo._now_ms = lambda: midnight + 2000
+        return (repo, midnight)
+
+    def test_no_persist_behind_a_reset_edge_on_a_rejection(self, sync_limiter):
+        """Re-review of #633: `persist_seed` leaves `rf` alone. On an item whose
+        `rf` is older than the last reset edge, the fast path spent the
+        persisted transfer and the next slow pass then applied the edge it
+        thought it missed, resetting the shard to a full share: 1200+ in one
+        period. Such a seed is not persisted."""
+        repo, _ = self._spent_sibling_after_midnight(sync_limiter, "edge-reject")
+        with pytest.raises(RateLimitExceeded):
+            self._acquire_on(sync_limiter, "edge-reject", 1, {"rpd": 300})
+        shard1 = _raw_bucket(repo, "edge-reject", shard=1)
+        assert bucket_attr("rpd", BUCKET_FIELD_TK) not in shard1
+        admitted = 0
+        while True:
+            try:
+                self._acquire_on(sync_limiter, "edge-reject", 1, {"rpd": 100})
+            except RateLimitExceeded:
+                break
+            admitted += 100
+        tk0 = _stored_tk(repo, "edge-reject", "gpt-4", "rpd", shard=0)
+        assert admitted + tk0 // 1000 == 1000
+
+    def test_no_persist_behind_a_reset_edge_on_a_lost_lock(self, sync_limiter):
+        repo, midnight = self._spent_sibling_after_midnight(sync_limiter, "edge-lock")
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        stale = slow._fetch_entity_and_buckets("edge-lock", "gpt-4", 1)
+        client = repo._get_client()
+        client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, "edge-lock", "gpt-4", 1)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="SET #rf = :rf",
+            ExpressionAttributeNames={"#rf": BUCKET_FIELD_RF},
+            ExpressionAttributeValues={":rf": {"N": str(T0 + 1)}},
+        )
+        with patch.object(slow, "_fetch_entity_and_buckets", MagicMock(return_value=stale)):
+            with patch("zae_limiter.sync_repository.random.randrange", return_value=1):
+                with pytest.raises(RateLimitExceeded):
+                    with slow.acquire("edge-lock", "gpt-4", consume={"rpd": 1}):
+                        pass
+        shard1 = _raw_bucket(repo, "edge-lock", shard=1)
+        assert bucket_attr("rpd", BUCKET_FIELD_TK) not in shard1
+
 
 class TestPersistSeed:
     """`SyncRepository.persist_seed` (#633): write-once, pinned, `vu` only lowered."""
