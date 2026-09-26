@@ -2544,6 +2544,11 @@ class Repository:
         Lost optimistic lock — skip refill, only consume.
         ADD tk:(-consumed), tc:consumed for each limit.
         CONDITION: tk >= consumed per limit (prevent negative on acquire).
+
+        ``ReturnValuesOnConditionCheckFailure=ALL_OLD``: a failure here is a
+        rejection, and the lease reports it from the item's real balance rather
+        than from the in-memory state that just proved stale (#633). Free — the
+        image rides on the failure response.
         """
         add_parts: list[str] = []
         condition_parts: list[str] = []
@@ -2586,6 +2591,7 @@ class Repository:
                 "ConditionExpression": condition_expr,
                 "ExpressionAttributeNames": attr_names,
                 "ExpressionAttributeValues": attr_values,
+                "ReturnValuesOnConditionCheckFailure": "ALL_OLD",
             }
         }
 

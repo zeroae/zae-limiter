@@ -571,6 +571,9 @@ class SyncRepositoryProtocol(Protocol):
     ) -> dict[str, Any]:
         """Build an UpdateItem for the retry write path (ADR-115 path 3).
 
+        Must ask for ``ReturnValuesOnConditionCheckFailure=ALL_OLD``: the lease
+        reports a failure here from the item's real balance (#633).
+
         Args:
             entity_id: Entity owning the bucket
             resource: Resource name

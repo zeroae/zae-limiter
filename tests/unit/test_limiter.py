@@ -11418,3 +11418,49 @@ class TestSlowPathCommitErrorsHonourOnUnavailable:
                     on_unavailable=OnUnavailable.ALLOW,
                 ):
                     pass
+
+
+class TestRetryRejectionReportsTheRealWait:
+    """A consumption-only retry that fails is reported from the item it failed
+    against, not from the in-memory state that just proved stale (#633). From
+    memory the deficit was always 0, so every such rejection quoted
+    ``retry_after_seconds == 0.0``: a hot retry loop driven by the 429 itself."""
+
+    async def test_retry_rejection_reports_the_real_wait(self, limiter):
+        """A consumption-only retry that fails reports the item's real balance
+        and the wait to refill it, not the in-memory ``0.0``."""
+        slow = RateLimiter(repository=limiter._repository, speculative_writes=False)
+        repo = limiter._repository
+        repo._now_ms = lambda: T0
+        await repo.set_resource_defaults("gpt-4", [Limit.per_minute("rpm", 100)])
+        async with slow.acquire("real-wait", "gpt-4", consume={"rpm": 1}):
+            pass
+        stale = await slow._fetch_entity_and_buckets("real-wait", "gpt-4", 0)
+
+        # Another writer drains the item and moves `rf` after our read.
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, "real-wait", "gpt-4", 0)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="SET #tk = :z, #rf = :rf",
+            ExpressionAttributeNames={
+                "#tk": bucket_attr("rpm", BUCKET_FIELD_TK),
+                "#rf": BUCKET_FIELD_RF,
+            },
+            ExpressionAttributeValues={":z": {"N": "0"}, ":rf": {"N": str(T0 + 1)}},
+        )
+        repo._now_ms = lambda: T0 + 1
+
+        with patch.object(slow, "_fetch_entity_and_buckets", AsyncMock(return_value=stale)):
+            with pytest.raises(RateLimitExceeded) as exc_info:
+                async with slow.acquire("real-wait", "gpt-4", consume={"rpm": 1}):
+                    pass
+
+        status = exc_info.value.statuses[0]
+        assert status.exceeded
+        assert status.available == 0
+        # One token at 100/min is 600 ms.
+        assert status.retry_after_seconds == pytest.approx(0.6, abs=0.01)

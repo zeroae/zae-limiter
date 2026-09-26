@@ -402,3 +402,74 @@ class TestWindowEndingBetweenTheReadingsThroughAcquire:
         assert bucket.last_refill_ms == commit_now, "`ws == rf`, so nothing re-applies it"
         assert bucket.tokens_milli == 10_000, "the new window's allowance"
         assert bucket.total_consumed_milli == 10_000, "and `tc` is still monotonic"
+
+
+class TestRetryFailureImages:
+    """#633: the consumption-only retry asks for ``ALL_OLD`` and the lease maps
+    each failure image back to its bucket, for a single write and a transaction."""
+
+    KEYS = [("user-1", "gpt-4", 0), ("parent-1", "gpt-4", 1)]
+
+    def test_single_item_write(self) -> None:
+        from zae_limiter.lease import _retry_failure_images
+
+        exc = ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException"}, "Item": {"rf": {"N": "1"}}},
+            "UpdateItem",
+        )
+        assert _retry_failure_images(exc, self.KEYS[:1]) == {self.KEYS[0]: {"rf": {"N": "1"}}}
+
+    def test_transaction_maps_each_reason_to_its_bucket(self) -> None:
+        from zae_limiter.lease import _retry_failure_images
+
+        exc = ClientError(
+            {
+                "Error": {"Code": "TransactionCanceledException"},
+                "CancellationReasons": [
+                    {"Code": "None"},
+                    {"Code": "ConditionalCheckFailed", "Item": {"rf": {"N": "2"}}},
+                ],
+            },
+            "TransactWriteItems",
+        )
+        assert _retry_failure_images(exc, self.KEYS) == {self.KEYS[1]: {"rf": {"N": "2"}}}
+
+    def test_no_image_falls_back_to_nothing(self) -> None:
+        from zae_limiter.lease import _retry_failure_images
+
+        assert _retry_failure_images(RuntimeError("boom"), self.KEYS) == {}
+
+
+class TestRetryFailureStatusesFromImages:
+    """#633: the rejection is reported from the item's real balance."""
+
+    RPM = Limit.per_minute("rpm", 100)
+
+    def _entry(self) -> LeaseEntry:
+        state = BucketState.from_limit("user-1", "gpt-4", self.RPM, T0)
+        state.tokens_milli = 99_000  # what the stale read believed
+        return LeaseEntry(
+            entity_id="user-1", resource="gpt-4", limit=self.RPM, state=state, consumed=1
+        )
+
+    def test_a_short_image_reports_the_real_wait(self) -> None:
+        from zae_limiter.lease import _build_retry_failure_statuses
+
+        image = {"b_rpm_tk": {"N": "0"}, "rf": {"N": str(T0)}}
+        [status] = _build_retry_failure_statuses(
+            [self._entry()], T0, {("user-1", "gpt-4", 0): image}
+        )
+        assert status.exceeded and status.available == 0
+        assert status.retry_after_seconds == pytest.approx(0.6, abs=0.01)
+
+    def test_an_image_that_is_not_short_keeps_the_rejection(self) -> None:
+        """An image that could not have failed the write cannot be the one that
+        did: the verdict stands, reported from the in-memory state."""
+        from zae_limiter.lease import _build_retry_failure_statuses
+
+        image = {"b_rpm_tk": {"N": "50000"}, "rf": {"N": str(T0)}}
+        [status] = _build_retry_failure_statuses(
+            [self._entry()], T0, {("user-1", "gpt-4", 0): image}
+        )
+        assert status.exceeded
+        assert status.available == 99

@@ -9,7 +9,7 @@ Changes should be made to the source file, then regenerated.
 import logging
 import time
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from .bucket import (
@@ -21,7 +21,7 @@ from .bucket import (
 )
 from .exceptions import LeaseExpiredError, RateLimitExceeded
 from .models import BucketState, Limit, LimitStatus
-from .schema import calculate_bucket_ttl_seconds
+from .schema import BUCKET_FIELD_RF, BUCKET_FIELD_TK, bucket_attr, calculate_bucket_ttl_seconds
 
 _CONFLICT_MAX_RETRIES = 3
 _CONFLICT_BASE_DELAY_S = 0.025
@@ -447,6 +447,7 @@ class SyncLease:
                         raise
                     codes = _get_cancellation_reason_codes(retry_exc)
                     downgraded: list[dict[str, Any]] = []
+                    downgraded_groups: list[tuple[tuple[str, str, int], list[LeaseEntry]]] = []
                     lost_put = False
                     for i, item in enumerate(retry_items):
                         failed_here = (
@@ -457,16 +458,22 @@ class SyncLease:
                             fallback = _consumption_only(*key, group_entries)
                             if fallback is not None:
                                 downgraded.append(fallback)
+                                downgraded_groups.append(retry_groups[i])
                                 lost_put = True
                             continue
                         if failed_here:
                             lost_put = False
                             break
                         downgraded.append(item)
+                        downgraded_groups.append(retry_groups[i])
                     if not lost_put or retry_attempt == 1:
-                        statuses = _build_retry_failure_statuses(self.entries, now_ms)
+                        images = _retry_failure_images(
+                            retry_exc, [key for key, _group in retry_groups]
+                        )
+                        statuses = _build_retry_failure_statuses(self.entries, now_ms, images)
                         raise RateLimitExceeded(statuses) from retry_exc
                     retry_items = downgraded
+                    retry_groups = downgraded_groups
         self._initial_committed = True
         for entry in self.entries:
             entry._initial_consumed = entry.consumed
@@ -684,7 +691,34 @@ def _monotonic_rf(now_ms: int, stored_rf: int | None, group: list[LeaseEntry]) -
     return max(candidates)
 
 
-def _build_retry_failure_statuses(entries: list[LeaseEntry], now_ms: int) -> list[LimitStatus]:
+def _retry_failure_images(
+    exc: Exception, keys: list[tuple[str, str, int]]
+) -> dict[tuple[str, str, int], dict[str, Any]]:
+    """The ``ALL_OLD`` image each failed retry write returned, by bucket key (#633).
+
+    ``build_composite_retry`` asks for ``ReturnValuesOnConditionCheckFailure``,
+    so a single-item ``UpdateItem`` carries the item under ``Item`` on the
+    error response and a transaction under ``CancellationReasons[i].Item``.
+    Missing either way (a backend that returns none) yields ``{}``, and the
+    statuses fall back to the in-memory state.
+    """
+    response = getattr(exc, "response", None) or {}
+    reasons = response.get("CancellationReasons")
+    if reasons is None:
+        item = response.get("Item")
+        return {keys[0]: item} if item and len(keys) == 1 else {}
+    return {
+        keys[i]: reason["Item"]
+        for i, reason in enumerate(reasons)
+        if i < len(keys) and reason.get("Item")
+    }
+
+
+def _build_retry_failure_statuses(
+    entries: list[LeaseEntry],
+    now_ms: int,
+    images: dict[tuple[str, str, int], dict[str, Any]] | None = None,
+) -> list[LimitStatus]:
     """Build LimitStatus list for a retry failure (rate limit exceeded).
 
     Only declared entries are reported (Issue #455): undeclared entries are
@@ -694,10 +728,58 @@ def _build_retry_failure_statuses(entries: list[LeaseEntry], now_ms: int) -> lis
     §3.5): a scheduled limit's effective refill rate depends on when you ask,
     so a second reading could quote a different window than the rejection it
     describes.
+
+    ``images`` holds the item each failed retry write saw (#633). The in-memory
+    state is exactly what just proved stale — the lock was lost because another
+    writer moved the item — so where an image is available each status is
+    built from the item's real balance and ``rf`` instead: ``exceeded`` is the
+    condition the retry actually failed (``tk < consumed``) and
+    ``retry_after_seconds`` the wait for that balance to cover the request.
+    From the in-memory state the deficit was always 0, so every such rejection
+    quoted ``0.0`` — a hot retry loop driven by the 429 itself.
     """
+    if images:
+        from_items = _retry_statuses(entries, now_ms, images)
+        if any(status.exceeded for status in from_items):
+            return from_items
+    return _retry_statuses(entries, now_ms, None)
+
+
+def _retry_statuses(
+    entries: list[LeaseEntry],
+    now_ms: int,
+    images: dict[tuple[str, str, int], dict[str, Any]] | None,
+) -> list[LimitStatus]:
+    """One status per declared entry: from its image where there is one, else
+    from the in-memory state (see :func:`_build_retry_failure_statuses`)."""
     statuses: list[LimitStatus] = []
     for entry in entries:
         if not entry._declared:
+            continue
+        item = (images or {}).get((entry.entity_id, entry.resource, entry._shard_id))
+        raw_tk = (
+            item.get(bucket_attr(entry.limit.name, BUCKET_FIELD_TK), {}).get("N") if item else None
+        )
+        if item is not None and raw_tk is not None:
+            real = replace(
+                entry.state,
+                tokens_milli=int(raw_tk),
+                last_refill_ms=int(item.get(BUCKET_FIELD_RF, {}).get("N", now_ms)),
+            )
+            result = try_consume(real, entry.consumed, now_ms)
+            statuses.append(
+                LimitStatus(
+                    entity_id=entry.entity_id,
+                    resource=entry.resource,
+                    limit_name=entry.limit.name,
+                    limit=entry.limit.per_shard(real.shard_count, now_ms),
+                    available=result.available,
+                    requested=entry.consumed,
+                    exceeded=entry.consumed > 0 and int(raw_tk) < entry.consumed * 1000,
+                    retry_after_seconds=result.retry_after_seconds,
+                    resets_at_ms=window_end_in_force(entry.limit, real, now_ms),
+                )
+            )
             continue
         deficit_milli = max(0, entry.consumed * 1000 - entry.state.tokens_milli)
         retry_after = retry_after_for_deficit(entry.state, deficit_milli, now_ms)
