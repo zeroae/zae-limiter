@@ -484,6 +484,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../guide/session-quotas/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Session Quotas
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../guide/hierarchical/" class="md-nav__link">
         
   
@@ -1202,6 +1230,17 @@
     <span class="md-ellipsis">
       
         Write Sharding (Automatic Pre-Shard Buckets)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#session-quotas" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Session Quotas
       
     </span>
   </a>
@@ -4375,6 +4414,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#session-quotas" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Session Quotas
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#stored-limits-optimization" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -5418,6 +5468,55 @@ load balancing, you can still use manual entity sharding:</p>
 </span><span id="__span-8-11"><a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>    <span class="n">cascade</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
 </span><span id="__span-8-12"><a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a><span class="p">)</span>
 </span></code></pre></div>
+<h4 id="session-quotas">Session Quotas<a class="headerlink" href="#session-quotas" title="Permanent link">&para;</a></h4>
+<p>A <a href="../guide/session-quotas/">session quota</a> (<code>Limit.quota(..., reset_after=...)</code>,
+<a href="../adr/139-duration-reset-windows/">ADR-139</a>) keeps every shard of an entity on one window,
+and that coherence is the only cost it adds. Where S is the entity's <code>shard_count</code> and L the
+number of <code>reset_after</code> limits on the bucket:</p>
+<table>
+<thead>
+<tr>
+<th>Event</th>
+<th>Cost</th>
+<th>How often</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Acquire inside a window</td>
+<td><strong>Unchanged</strong>: 1 WCU, 0 reads on the speculative path. The fast path's condition is byte-identical to any other limit's</td>
+<td>Every request</td>
+</tr>
+<tr>
+<td>A new window opening</td>
+<td>One slow-path acquire <strong>per shard</strong> — the first request to reach each shard after the rollover re-materialises it, as at any schedule boundary</td>
+<td>S per window per entity</td>
+</tr>
+<tr>
+<td>The fan-out by the request that opened the window</td>
+<td><strong>(S − 1) × L</strong> conditional writes, one per (sibling shard, window limit)</td>
+<td>Once per window per entity</td>
+</tr>
+<tr>
+<td>Opening a window, unsharded entity (S = 1)</td>
+<td>One slow-path acquire; <strong>no</strong> fan-out writes and no requests issued</td>
+<td>Once per window per entity</td>
+</tr>
+<tr>
+<td>Creating shard N &gt; 0</td>
+<td><strong>+1 RCU</strong>: one strongly consistent <code>GetItem</code> of shard 0's window start, projected to the window attributes, on top of the ADR-133 create cost</td>
+<td>Once per shard</td>
+</tr>
+</tbody>
+</table>
+<p>At <code>MAX_SHARD_COUNT</code> (32) with one session limit, a rollover is 31 extra WCU (~$19 per million
+rollovers) — paid once per window, not per request. The fan-out writes a scalar (the window
+start) and never tokens: each sibling restores its own balance on its next materialising pass.</p>
+<p>The shard-creation read is strongly consistent on purpose: an eventually consistent read could
+return shard 0's pre-rollover window, which looks ended, and the new shard would open a window
+of its own at a full share on top of the one shard 0 just opened.</p>
+<p>A cascade slow path that creates a <strong>parent</strong> shard reads the parent's own window (parent and
+child windows are independent), so it pays the same +1 RCU once per parent shard.</p>
 <h4 id="stored-limits-optimization">Stored Limits Optimization<a class="headerlink" href="#stored-limits-optimization" title="Permanent link">&para;</a></h4>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="c1"># Config caching reduces RCUs (60s TTL by default)</span>
 </span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="n">repo</span> <span class="o">=</span> <span class="k">await</span> <span class="n">Repository</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="n">config_cache_ttl</span><span class="o">=</span><span class="mi">60</span><span class="p">)</span>  <span class="c1"># seconds (0 to disable)</span>

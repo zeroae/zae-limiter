@@ -810,6 +810,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../session-quotas/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Session Quotas
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../hierarchical/" class="md-nav__link">
         
   
@@ -4271,6 +4299,9 @@ This parameter is now deprecated - limits are always resolved automatically.</p>
 <code>refill_amount</code> and <code>refill_period_seconds</code>, or <code>"quota"</code>, which reports <code>resets_at_ms</code> and no
 drip fields at all. Read <code>kind</code> rather than inferring the shape from the fields present. See
 <a href="../../api/exceptions/#as_dict-output"><code>as_dict()</code> Output</a> for the full body.</p>
+<p>For an allowance that resets a fixed time after each caller's own first use — "10,000 tokens per
+five-hour session" — see <a href="../session-quotas/">Session Quotas</a>. For one that resets on the
+calendar, see <a href="../scheduled-limits/#quotas">Scheduled (Cron) Limits</a>.</p>
 <h3 id="service-unavailable">Service Unavailable<a class="headerlink" href="#service-unavailable" title="Permanent link">&para;</a></h3>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">zae_limiter</span><span class="w"> </span><span class="kn">import</span> <span class="n">RateLimiterUnavailable</span>
 </span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>

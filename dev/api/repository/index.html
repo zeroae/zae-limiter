@@ -484,6 +484,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../../guide/session-quotas/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Session Quotas
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../guide/hierarchical/" class="md-nav__link">
         
   
@@ -13548,8 +13576,11 @@ more.</p>
 <p>A <strong>separate</strong> read rather than an extra key in the create path's
 <code>BatchGetItem</code>: that call returns a dict keyed by <code>(entity_id,
 resource, limit_name)</code> with no shard component, so shard 0 and shard N
-would collide on every key. <strong>Strongly consistent</strong>, so 1 RCU (the
-projected item is well under 4 KB), <strong>once per shard ever</strong> (≤ 31 per
+would collide on every key. <strong>Strongly consistent</strong>, so 1 RCU:
+DynamoDB charges a <code>GetItem</code> on the <strong>full</strong> item size, not on the
+projection, and bucket items stay inside the ~1 KB budget (#222 §4.2),
+well under the 4 KB a single strongly consistent RCU covers. The
+projection only trims the response. <strong>Once per shard ever</strong> (≤ 31 per
 (entity, resource), plus TTL recreations) on a path already priced at
 2.5 RCU + 2 WCU.</p>
 <p>Consistency is load-bearing, not a nicety. A shard is usually created

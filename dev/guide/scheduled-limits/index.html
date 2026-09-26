@@ -18,7 +18,7 @@
         <link rel="prev" href="../config-hierarchy/">
       
       
-        <link rel="next" href="../hierarchical/">
+        <link rel="next" href="../session-quotas/">
       
       
         
@@ -664,6 +664,34 @@
   
 </nav>
       
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../session-quotas/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Session Quotas
+  
+
+    
+  </span>
+  
+  
+
+      </a>
     </li>
   
 
@@ -3860,6 +3888,13 @@ and does not recover in between — spend it, and you wait for the reset.</p>
 </span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="n">Limit</span><span class="o">.</span><span class="n">quota</span><span class="p">(</span><span class="s2">"weekly"</span><span class="p">,</span> <span class="mi">50_000</span><span class="p">,</span> <span class="n">cron</span><span class="o">=</span><span class="s2">"0 0 * * MON"</span><span class="p">,</span> <span class="n">tz</span><span class="o">=</span><span class="s2">"America/New_York"</span><span class="p">)</span>  <span class="c1"># Monday midnight</span>
 </span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="n">Limit</span><span class="o">.</span><span class="n">quota</span><span class="p">(</span><span class="s2">"daily"</span><span class="p">,</span> <span class="mi">10_000</span><span class="p">,</span> <span class="n">cron</span><span class="o">=</span><span class="s2">"0 0 * * *"</span><span class="p">,</span> <span class="n">tz</span><span class="o">=</span><span class="s2">"America/New_York"</span><span class="p">)</span>  <span class="c1"># local midnight</span>
 </span></code></pre></div>
+<div class="admonition tip">
+<p class="admonition-title">Five hours from each caller's first request is a different quota</p>
+<p><code>0 */5 * * *</code> resets at 00:00, 05:00, 10:00 … for <strong>every</strong> caller alike. To give each caller
+a window that starts at their own first request, use
+<code>Limit.quota("session", 500, reset_after=timedelta(hours=5))</code> instead — see
+<a href="../session-quotas/">Session Quotas</a>.</p>
+</div>
 <p>A quota has no refill rate: a limit either drips or resets, never both
 (<a href="../../adr/137-reset-replaces-drip/">ADR-137</a>). Pairing a positive <code>refill_amount</code> with a
 <code>reset_schedule</code> raises <code>ValueError</code> at construction, because the drip running underneath the
@@ -3975,12 +4010,13 @@ which has no rate to divide by, the wait is the time to the next reset edge — 
 <code>0 0 * * *</code> quota at 18:00 in New York and it reports six hours.</p>
 <h2 id="limitations">Limitations<a class="headerlink" href="#limitations" title="Permanent link">&para;</a></h2>
 <ul>
-<li><strong>A quota period is a fixed calendar window, shared by everyone on it.</strong> The cron expression
-  names wall-clock instants, so <code>0 */5 * * *</code> resets at 00:00, 05:00, 10:00 … for <strong>every</strong>
-  entity alike — not five hours after each caller's own first request. A window anchored to each
-  caller's own activity is not supported; it may arrive in a later release
-  (<a href="../../adr/138-fixed-reset-windows-only/">ADR-138</a>). Note also that resetting every entity at
-  the same instant concentrates load at the boundary.</li>
+<li><strong>A cron quota period is a fixed calendar window, shared by everyone on it.</strong> The cron
+  expression names wall-clock instants, so <code>0 */5 * * *</code> resets at 00:00, 05:00, 10:00 … for
+  <strong>every</strong> entity alike — not five hours after each caller's own first request
+  (<a href="../../adr/138-fixed-reset-windows-only/">ADR-138</a>). Resetting every entity at the same instant
+  also concentrates load at the boundary. For a window anchored to each caller's own activity,
+  use a <a href="../session-quotas/">session quota</a> (<code>reset_after</code>,
+  <a href="../../adr/139-duration-reset-windows/">ADR-139</a>) — a limit takes one or the other, never both.</li>
 <li><strong>One time-varying mechanism per bucket.</strong> A bucket uses cron scheduling or another dynamic
   mechanism, not both. This keeps "why is my limit this number" answerable.</li>
 <li><strong>Extended cron syntax is not supported.</strong> <code>L</code> (last), <code>W</code> (weekday) and <code>#</code> (nth weekday) are
@@ -4056,13 +4092,13 @@ which has no rate to divide by, the wait is the time to the next reset edge — 
         
         
           
-          <a href="../hierarchical/" class="md-footer__link md-footer__link--next" aria-label="Next: Hierarchical Limits">
+          <a href="../session-quotas/" class="md-footer__link md-footer__link--next" aria-label="Next: Session Quotas">
             <div class="md-footer__title">
               <span class="md-footer__direction">
                 Next
               </span>
               <div class="md-ellipsis">
-                Hierarchical Limits
+                Session Quotas
               </div>
             </div>
             <div class="md-footer__button md-icon">

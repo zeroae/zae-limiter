@@ -482,6 +482,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../../guide/session-quotas/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Session Quotas
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../guide/hierarchical/" class="md-nav__link">
         
   
@@ -3919,10 +3947,16 @@ silently becoming its parent's.</p>
   concurrent openers (above), which is the common case, not a failure. A lengthened <code>rsa</code> can
   likewise no-op on a sibling still inside a longer window; it opens its own when that ends.
   The fan-out counts its writes and logs a shortfall at debug level rather than swallowing it.
-- A <code>reset_after</code> limit is not backward-readable by a client predating it, which reads
-  <code>refill_amount = 0</code> with no reset and raises. This is a property of ADR-137 rather than of this
-  record — a pre-#222 client reading a <em>calendar</em> quota raises identically — and the
-  fleet-upgrade requirement already exists.</p>
+- A <code>reset_after</code> limit is not backward-readable by a client predating it, which ignores
+  <code>l_{name}_rsa</code>, reads <code>refill_amount = 0</code> with no reset, and raises <code>ValueError</code> under
+  ADR-137. What the caller sees depends on <code>on_unavailable</code>: under <code>block</code> every acquire
+  against that level raises <code>RateLimiterUnavailable</code>; under <code>allow</code> every acquire is admitted
+  as a degraded no-op lease — <strong>no limiting at all on that level</strong>, including its other limits.
+  An aggregator predating this record reads the quota as a dripping limit, so its
+  proactive-sharding clone mints <code>cp // new_count</code> per new shard — the #587 over-admission.
+  The incompatibility itself is a property of ADR-137 rather than of this record — a pre-#222
+  client reading a <em>calendar</em> quota fails identically — but nothing checks versions, so the
+  whole fleet must be upgraded before a <code>reset_after</code> limit is stored.</p>
 <h2 id="alternatives-considered">Alternatives Considered<a class="headerlink" href="#alternatives-considered" title="Permanent link">&para;</a></h2>
 <h3 id="duration-based-windows-anchored-to-the-entity-expressed-in-cron">Duration-based windows anchored to the entity, expressed in cron<a class="headerlink" href="#duration-based-windows-anchored-to-the-entity-expressed-in-cron" title="Permanent link">&para;</a></h3>
 <p>Rejected because: cron names instants on a wall clock, so it cannot express "five hours after

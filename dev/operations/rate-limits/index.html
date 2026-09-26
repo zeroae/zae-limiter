@@ -480,6 +480,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../../guide/session-quotas/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Session Quotas
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../guide/hierarchical/" class="md-nav__link">
         
   
@@ -3924,6 +3952,18 @@ use the <code>b_{limit_name}_{field}</code> naming convention:</p>
 <td>That limit's own schedule, when it differs from the item default. A literal <code>-</code> means that limit has <strong>no</strong> schedule; a missing attribute means it inherits the item default</td>
 <td><code>1h0-6c2000</code> or <code>-</code></td>
 </tr>
+<tr>
+<td>Session window start</td>
+<td><code>b_session_ws</code></td>
+<td>A <a href="../../guide/session-quotas/">session quota's</a> current window start (epoch ms). The window ends at <code>ws + rsa × 1000</code>; a start later than <code>rf</code> means a new window has been opened and this shard has not yet restored its balance</td>
+<td><code>1705312800000</code></td>
+</tr>
+<tr>
+<td>Session window length</td>
+<td><code>b_session_rsa</code></td>
+<td>The session window's length in seconds, copied from config so readers need no config lookup</td>
+<td><code>18000</code></td>
+</tr>
 </tbody>
 </table>
 <p>The ceiling actually enforced is <strong>not</strong> <code>b_rpm_cp</code>. The schedule in force at the current
@@ -3976,6 +4016,9 @@ when it expires and is recreated. Entity-level changes fan out immediately and n
   the TTL for the whole item.</li>
 <li>A quota uses its <strong>reset period</strong> — the cycle its reset cron repeats on, rounded up (31 days
   for a monthly pattern, 366 for an annual one).</li>
+<li>A <a href="../../guide/session-quotas/">session quota</a> uses its <code>reset_after</code> exactly — 5 hours for a
+  5-hour window, so 35 hours at the default multiplier. An expired item simply means the next
+  request opens a fresh window, which is what an idle entity would get anyway.</li>
 </ul>
 <p>Across limits sharing one item the largest horizon wins.</p>
 <h3 id="verification-after-changes">Verification After Changes<a class="headerlink" href="#verification-after-changes" title="Permanent link">&para;</a></h3>

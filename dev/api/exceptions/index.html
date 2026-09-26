@@ -484,6 +484,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../../guide/session-quotas/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Session Quotas
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../guide/hierarchical/" class="md-nav__link">
         
   
@@ -5778,7 +5806,7 @@ Read <code>kind</code> directly — do <strong>not</strong> infer a quota from <
 <tr>
 <td><code>"quota"</code></td>
 <td><code>resets_at_ms</code></td>
-<td>Does not drip at all (<a href="https://github.com/zeroae/zae-limiter/blob/main/docs/adr/137-reset-replaces-drip.md">ADR-137</a>). The whole allowance returns at a calendar instant.</td>
+<td>Does not drip at all (<a href="https://github.com/zeroae/zae-limiter/blob/main/docs/adr/137-reset-replaces-drip.md">ADR-137</a>). The whole allowance returns in one lump — at a calendar instant (<code>cron</code>), or when the entity's own <a href="../../guide/session-quotas/">session window</a> ends (<code>reset_after</code>).</td>
 </tr>
 </tbody>
 </table>
@@ -5788,10 +5816,16 @@ present on both kinds.</p>
 schedule a retry without parsing cron and without a reference clock of its own.
 The key is always present on a quota entry, and carries a real instant for every
 practical quota period — session, daily, weekly, monthly, quarterly, annual.</p>
-<p>It is <code>null</code> only when the next reset is further out than the reset pattern's own
-cycle — in practice only a pattern that skips whole years, such as <code>0 0 29 2 *</code>
-firing on a leap day. Treat <code>null</code> as "no scheduled reset in reach", not as
-"never resets", and fall back to <code>retry_after_seconds</code>.</p>
+<p>For a calendar quota (<code>cron</code>) it is <code>null</code> only when the next reset is further out
+than the reset pattern's own cycle — in practice only a pattern that skips whole
+years, such as <code>0 0 29 2 *</code> firing on a leap day. Treat <code>null</code> as "no scheduled
+reset in reach", not as "never resets", and fall back to <code>retry_after_seconds</code>.</p>
+<p>For a session quota (<code>reset_after</code>, <a href="https://github.com/zeroae/zae-limiter/blob/main/docs/adr/139-duration-reset-windows.md">ADR-139</a>)
+it is the end of the entity's current window, read off the bucket rather than
+computed from a pattern, and never an instant in the past. It is <code>null</code> only when
+no window is live — the previous one has ended, so the allowance is already back
+and the next admitted request opens a fresh window. A session quota that caused the
+rejection carries an instant in practice, since a rejection happens inside a live window.</p>
 <div class="admonition warning">
 <p class="admonition-title">A quota never reports <code>refill_amount</code></p>
 <p>A quota's stored <code>refill_amount</code> is fixed at 0 and its <code>refill_period_seconds</code>
