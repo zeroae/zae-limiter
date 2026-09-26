@@ -567,6 +567,7 @@ class RepositoryProtocol(Protocol):
         shard_id: int = 0,
         shard_count: int = 1,
         vu: int | None = None,
+        rf_ms: int | None = None,
     ) -> dict[str, Any]:
         """Build a PutItem for creating a new composite bucket.
 
@@ -579,6 +580,7 @@ class RepositoryProtocol(Protocol):
             cascade: Whether the entity has cascade enabled
             parent_id: The entity's parent_id (if any)
             vu: Valid-until stamp in epoch ms, or None to omit (#222 §2.1)
+            rf_ms: The ``rf`` to stamp, or None for ``now_ms`` (ADR-139)
         """
         ...
 
@@ -594,6 +596,9 @@ class RepositoryProtocol(Protocol):
         shard_id: int = 0,
         vu: int | None = None,
         clear_vu: bool = False,
+        windows: dict[str, tuple[int, int]] | None = None,
+        rf_ms: int | None = None,
+        window_lengths: dict[str, int] | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -608,6 +613,15 @@ class RepositoryProtocol(Protocol):
             vu: Valid-until stamp in epoch ms, or None to leave it untouched
             clear_vu: REMOVE `vu` rather than leaving it, for a pass that
                 knows nothing on the item is scheduled (#222 §2.1)
+            windows: Limit name -> ``(window_start_ms, reset_after_seconds)``
+                (ADR-139). Only limits whose window rolled on this pass
+                appear; ``None`` leaves every `ws` untouched. `ws` and `rsa`
+                travel as one pair so neither is ever stamped alone.
+            rf_ms: The ``rf`` to stamp, or None for ``now_ms``. The lock still
+                compares against ``expected_rf`` (ADR-139)
+            window_lengths: Limit name -> ``reset_after_seconds`` to stamp as
+                ``rsa`` alone, where the configured length differs from the
+                item's and the window did not move (ADR-139)
         """
         ...
 
@@ -732,6 +746,39 @@ class RepositoryProtocol(Protocol):
         """
         ...
 
+    async def _propagate_window_start(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int,
+        shard_count: int,
+        windows: dict[str, tuple[int, int]],
+    ) -> int:
+        """Stamp a newly anchored duration window on the entity's other shards (ADR-139).
+
+        One conditional ``SET ws = :new, rsa = :rsa, vu = 0`` per (sibling,
+        limit) under ``attribute_exists(PK) AND (attribute_not_exists(ws) OR
+        ws <= :new - rsa)`` — a sibling moves only if its own window had ended
+        by the new start, so two concurrent openers never re-reset each
+        other's shard. Monotonic and idempotent, never touching ``tk``. Each sibling resets
+        its own balance under its own ``rf`` lock the next time it
+        materialises. Called by ``Lease._commit_initial()`` after a rollover
+        write has persisted, which is why it sits on the protocol despite
+        being private.
+
+        Args:
+            entity_id: Entity owning the shards
+            resource: Resource the shards belong to
+            shard_id: The writer's own shard, which is skipped
+            shard_count: The entity's shard count for this resource
+            windows: Limit name -> ``(new_ws_ms, reset_after_seconds)``
+
+        Returns:
+            The number of (shard, limit) writes that applied; 0 without any
+            request at ``shard_count <= 1``.
+        """
+        ...
+
     async def reclaim_quota_surplus(
         self,
         entity_id: str,
@@ -759,6 +806,36 @@ class RepositoryProtocol(Protocol):
             ``(shards_found, {limit_name: reclaimed_milli})``. ``shards_found``
             is 0 when nothing is materialised for this (entity, resource),
             which is not the same as reclaiming nothing.
+        """
+        ...
+
+    async def get_shard_window_starts(
+        self,
+        entity_id: str,
+        resource: str,
+        limit_names: list[str],
+        shard_id: int = 0,
+    ) -> dict[str, int]:
+        """Read one shard's duration-window starts, to seed a shard being created (ADR-139).
+
+        A shard created mid-window joins the window in progress rather than
+        opening its own, so the create path reads the ``ws`` it would inherit
+        from shard 0 — the source of truth for ``shard_count`` already.
+
+        The read must be **strongly consistent**: a stale pre-roll ``ws`` looks
+        ended, and the caller would then grant the new shard a fresh full share
+        instead of the #587 transfer from the window shard 0 just opened.
+
+        Args:
+            entity_id: Entity whose shard is being created. On a cascade create
+                this is the parent for the parent's shard, never the child.
+            resource: Resource name
+            limit_names: The limits to look for
+            shard_id: The shard to read. Defaults to 0.
+
+        Returns:
+            ``{limit_name: window_start_ms}``. A limit absent from the result
+            has no window on that shard, or the shard does not exist.
         """
         ...
 

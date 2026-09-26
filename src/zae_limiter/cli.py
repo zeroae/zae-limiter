@@ -19,6 +19,8 @@ from .models import StackOptions
 from .naming import DEFAULT_STACK_NAME
 
 if TYPE_CHECKING:
+    from datetime import timedelta
+
     from .models import Limit
     from .repository import Repository
     from .schedule import ScheduleEntry
@@ -2281,6 +2283,23 @@ def _format_schedule_lines(limit: Limit, indent: str) -> list[str]:
     return lines
 
 
+def _format_duration(td: timedelta) -> str:
+    """Render a duration compactly, largest unit first: ``5h``, ``90s``, ``5h30m``.
+
+    Zero components are omitted, so an exact number of hours reads ``5h``
+    rather than ``5h0m0s``. ``Limit`` validates ``reset_after`` as a positive
+    whole number of seconds, so the seconds component is exact and a non-zero
+    duration can never render as ``0s``.
+    """
+    remaining = int(td.total_seconds())
+    parts: list[str] = []
+    for suffix, size in (("d", 86400), ("h", 3600), ("m", 60), ("s", 1)):
+        count, remaining = divmod(remaining, size)
+        if count:
+            parts.append(f"{count}{suffix}")
+    return "".join(parts) or "0s"
+
+
 def _format_limit(limit: Limit) -> str:
     """Format a limit for display."""
     if limit.is_quota:
@@ -2293,11 +2312,20 @@ def _format_limit(limit: Limit) -> str:
         # The reset stays *here*, on the headline, rather than moving into the
         # indented block beside the parameter schedule. This line renders what a
         # limit allows and how it recovers — a rate limit's `/min`, a quota's
-        # reset cron — and `Limit.is_quota` is literally `bool(reset_schedule)`,
-        # so the word "quota" and the cron that justifies it belong together.
-        # The block is for *modifiers*, whose per-entry gloss differs entry by
-        # entry; a reset overrides nothing, so a reset block's only payload
-        # would be the cron this line already carries.
+        # reset — and the word "quota" and the reset that justifies it belong
+        # together. The block is for *modifiers*, whose per-entry gloss differs
+        # entry by entry; a reset overrides nothing, so a reset block's only
+        # payload would be what this line already carries.
+        #
+        # A duration window's recovery is a duration (ADR-139), and "after
+        # first use" is the part an operator would otherwise get wrong: the
+        # obvious misreading of "resets 5h" is "every 5 hours on the clock",
+        # which is the calendar form.
+        if limit.reset_after is not None:
+            return (
+                f"{limit.name}: {limit.capacity:,} quota "
+                f"(resets {_format_duration(limit.reset_after)} after first use)"
+            )
         resets = ", ".join(_format_cron_entry(entry) for entry in limit.reset_schedule)
         return f"{limit.name}: {limit.capacity:,} quota (resets {resets})"
     suffix = _format_period(limit.refill_period_seconds)

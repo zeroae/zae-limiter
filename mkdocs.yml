@@ -202,3 +202,4 @@ nav:
           - ADR-136 Entity Configuration Determines Bucket TTL: adr/136-entity-config-bucket-ttl.md
           - ADR-137 A limit drips or resets, never both: adr/137-reset-replaces-drip.md
           - ADR-138 Calendar reset covers fixed windows only: adr/138-fixed-reset-windows-only.md
+          - ADR-139 Duration reset windows anchored to first use: adr/139-duration-reset-windows.md

@@ -22,7 +22,7 @@ For conceptual explanation, see docs/guide/token-bucket.md
 For implementation details, see docs/contributing/architecture.md
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .models import BucketState, Limit, LimitStatus, is_accrual_rate
 from .schedule import retry_after_with_schedule
@@ -152,28 +152,142 @@ def try_consume(
         )
     else:
         # Failure - calculate retry time
-        deficit_milli = requested_milli - current_tokens_milli
-        # The **undivided base** goes in, with `shard_count` alongside: the
-        # walk re-evaluates `effective_params` per window and takes the shard
-        # share afterwards, so handing it the pre-scaled, pre-divided
-        # `effective_*` values would apply both narrowings twice (#222 §7).
-        retry_after = retry_after_with_schedule(
-            deficit_milli=deficit_milli,
-            cp_milli=state.capacity_milli,
-            ra_milli=state.refill_amount_milli,
-            rp_ms=state.refill_period_ms,
-            sched=state.sched,
-            reset_sched=state.reset_sched,
-            now_ms=now_ms,
-            shard_count=state.shard_count,
-        )
         return ConsumeResult(
             success=False,
             new_tokens_milli=current_tokens_milli,
             new_last_refill_ms=refill.new_last_refill_ms,
             available=available,
-            retry_after_seconds=retry_after,
+            retry_after_seconds=retry_after_for_deficit(
+                state, requested_milli - current_tokens_milli, now_ms
+            ),
         )
+
+
+def window_end_in_force(limit: Limit, state: BucketState, now_ms: int) -> int | None:
+    """The live end of the duration window in force on ``state``, or ``None`` (ADR-139).
+
+    The instant a duration quota's allowance returns, which is what
+    :attr:`LimitStatus.resets_at_ms` carries for it. On the slow path it is
+    read **after** ``RateLimiter._open_window_if_elapsed`` has run, so it is
+    the end of the window this pass admitted against — a rejection at a
+    boundary reports the window just opened, not the one that elapsed. Only
+    the resolved ``limit`` decides whether a window is in force: a stale
+    ``ws``/``rsa`` left on the item by a limit that no longer has one does
+    not vote.
+
+    **Never an instant at or before ``now_ms``.** An ended window's allowance
+    is back on the next acquire, so "it returns at <a moment already past>"
+    is not an answer a client can act on — it reads as "retry now", the hot
+    loop #574 removed from the calendar form. Clamped here, the one place
+    every status site reads it from, so a caller holding a later clock (the
+    lease's retry-failure path reads the commit's) cannot surface one either.
+    """
+    if limit.reset_after is None:
+        return None
+    end = state.window_end_ms
+    return end if end is not None and end > now_ms else None
+
+
+def _duration_window_end(state: BucketState) -> int | None:
+    """The window end a retry wait may be read from, or ``None``.
+
+    Only a bucket of the **quota shape** — zero stored refill rate, the same
+    stored-shape test :meth:`Limit.from_bucket_state` makes — answers a wait
+    from its window. A corrupt item carrying a positive rate beside a stray
+    ``ws``/``rsa`` is reconstructed as a dripping limit there, and must be
+    quoted the drip's wait here, not a window's.
+    """
+    if state.refill_amount_milli != 0:
+        return None
+    return state.window_end_ms
+
+
+def _restored_if_window_ended(state: BucketState, now_ms: int) -> BucketState:
+    """The balance a fast-path image's shard will actually have on its next pass.
+
+    A duration window that has ended on the **image** is over: the next
+    materialising pass opens a new one and restores the balance (ADR-139).
+    Judging the image's burnt balance instead would fast-reject with a wait to
+    an end already past — ``retry_after_seconds = 0.0`` beside a
+    ``resets_at_ms`` in the past, a hot retry loop.
+
+    That is reachable, not theoretical: a resource- or system-level
+    ``reset_after`` lengthened after the item was stamped leaves the item's
+    ``rsa`` short while the slow path stamped ``vu`` from the longer config
+    length, so the item fast-rejects (its ``vu`` is still in the future)
+    between the two ends. Reading it as restored sends the request to the
+    slow path, which resolves the config and either admits or rejects against
+    the correct end.
+    """
+    end = _duration_window_end(state)
+    if end is None or now_ms < end:
+        return state
+    return replace(state, tokens_milli=state.effective_capacity_milli(now_ms))
+
+
+def retry_after_for_deficit(state: BucketState, deficit_milli: int, now_ms: int) -> float:
+    """Seconds until ``deficit_milli`` clears on this shard.
+
+    A **duration window** answers from the item: the balance returns in one
+    lump at ``ws + reset_after`` and a quota has no drip at all (ADR-137), so
+    the wait to the window's end is the only finite answer — the same call the
+    calendar form's reset branch makes, but a constant rather than a scan. The
+    window is half-open, ``[ws, ws + rsa)``, so the end instant is already the
+    next window's and no ``+1`` is added.
+
+    An **ended** window reports 0 only when the restore actually clears the
+    deficit: the next acquire opens a fresh window at the full share and is
+    admitted, so "retry now" is true. A request larger than one shard's share
+    (#475) is not cleared by any restore, and 0 there is a hot retry loop the
+    429 itself drives (#574) — reachable on the fast path whenever an item's
+    stored ``rsa`` is shorter than config while ``vu`` is still in the
+    future. It is quoted the length of the window the next pass would open
+    instead, the same answer the slow path gives after it rolls that window
+    at ``now``. Routing such an image to the slow path was the alternative,
+    and was rejected: it cannot answer better, it pays a read on every
+    retry, and a ``BOTH_EXHAUSTED`` failure that passes the gate is doubled on
+    its way to a rejection, which #480 forbids.
+
+    Decided here rather than in ``schedule.retry_after_with_schedule`` because
+    ``schedule.py`` may import nothing from ``models.py`` — that one-way
+    dependency is what lets both Lambda packages vendor it — and the window
+    anchor lives on the ``BucketState``. On the slow path ``rsa`` is the
+    resolved config's (``_do_acquire`` attaches it), so a limit that lost its
+    window carries none here.
+
+    Everything else walks the schedule. The **undivided base** goes in, with
+    ``shard_count`` alongside: the walk re-evaluates ``effective_params`` per
+    window and takes the shard share afterwards, so handing it the pre-scaled,
+    pre-divided ``effective_*`` values would apply both narrowings twice
+    (#222 §7).
+    """
+    if deficit_milli <= 0:
+        return 0.0
+    end = _duration_window_end(state)
+    if end is not None:
+        if end > now_ms:
+            return (end - now_ms) / 1000.0
+        # The window has ended, so the next pass restores the full share. What
+        # the request still lacks after that is ``requested - share``, with
+        # ``requested`` recovered as the deficit plus the balance it was
+        # measured against — the caller may hand in the burnt image or the
+        # already-restored one, and both must agree.
+        still_short = deficit_milli + state.tokens_milli - state.effective_capacity_milli(now_ms)
+        if still_short <= 0:
+            return 0.0
+        # `end` is not None, so the window length is on the state.
+        assert state.reset_after_seconds is not None
+        return float(state.reset_after_seconds)
+    return retry_after_with_schedule(
+        deficit_milli=deficit_milli,
+        cp_milli=state.capacity_milli,
+        ra_milli=state.refill_amount_milli,
+        rp_ms=state.refill_period_ms,
+        sched=state.sched,
+        reset_sched=state.reset_sched,
+        now_ms=now_ms,
+        shard_count=state.shard_count,
+    )
 
 
 def calculate_retry_after(
@@ -321,19 +435,7 @@ def calculate_time_until_available(
     if refill.new_tokens_milli >= needed_milli:
         return 0.0
 
-    deficit_milli = needed_milli - refill.new_tokens_milli
-    # Undivided base plus `shard_count`, as in `try_consume` — the walk does
-    # both narrowings itself.
-    return retry_after_with_schedule(
-        deficit_milli=deficit_milli,
-        cp_milli=state.capacity_milli,
-        ra_milli=state.refill_amount_milli,
-        rp_ms=state.refill_period_ms,
-        sched=state.sched,
-        reset_sched=state.reset_sched,
-        now_ms=now_ms,
-        shard_count=state.shard_count,
-    )
+    return retry_after_for_deficit(state, needed_milli - refill.new_tokens_milli, now_ms)
 
 
 def force_consume(
@@ -403,6 +505,7 @@ def build_limit_status(
         requested=requested,
         exceeded=not result.success,
         retry_after_seconds=result.retry_after_seconds,
+        resets_at_ms=window_end_in_force(limit, state, now_ms),
     )
 
 
@@ -453,9 +556,10 @@ def declared_statuses(
         now_ms: Current timestamp for refill calculation
     """
     statuses: list[LimitStatus] = []
-    for state in buckets:
-        if state.limit_name not in consume:
+    for image in buckets:
+        if image.limit_name not in consume:
             continue
+        state = _restored_if_window_ended(image, now_ms)
         statuses.append(
             build_limit_status(
                 entity_id=state.entity_id,

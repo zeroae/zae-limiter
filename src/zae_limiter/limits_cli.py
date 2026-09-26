@@ -274,6 +274,11 @@ def _limits_to_cfn(limits: dict[str, Any]) -> dict[str, Any]:
             cfn_limit["RefillAmount"] = limit["refill_amount"]
         if "refill_period" in limit:
             cfn_limit["RefillPeriod"] = limit["refill_period"]
+        # ADR-139: the third recovery spelling, mirroring
+        # `zae_limiter_provisioner.handler._CFN_LIMIT_OPTIONAL_KEYS`'s
+        # `"ResetAfterSeconds": ("reset_after_seconds", _coerce_int)`.
+        if "reset_after_seconds" in limit:
+            cfn_limit["ResetAfterSeconds"] = limit["reset_after_seconds"]
         # Emitted only when non-empty, matching `LimitDecl.to_dict()`: an
         # unscheduled limit's template is byte-identical to what it was before
         # schedules existed, and an empty list never stands in for "absent".

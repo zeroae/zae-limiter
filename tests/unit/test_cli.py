@@ -4235,6 +4235,47 @@ class TestLimitParsing:
         assert monthly == 'rpd: 10,000 quota (resets "0 0 1 * *" UTC)'
         assert daily != monthly
 
+    # --- Duration-window quota formatting (ADR-139, #629) ---
+
+    def test_format_limit_renders_a_duration_window(self) -> None:
+        """Saying "after first use" stops it being read as "every 5h on the clock"."""
+        from datetime import timedelta
+
+        from zae_limiter.cli import _format_limit
+        from zae_limiter.models import Limit
+
+        limit = Limit.quota("session", 10_000, reset_after=timedelta(hours=5))
+        assert _format_limit(limit) == "session: 10,000 quota (resets 5h after first use)"
+
+    def test_format_limit_still_renders_a_cron_quota(self) -> None:
+        from zae_limiter.cli import _format_limit
+        from zae_limiter.models import Limit
+
+        formatted = _format_limit(Limit.quota("rpd", 10_000, cron="0 0 * * *"))
+        assert "resets" in formatted
+        assert "after first use" not in formatted
+
+    @pytest.mark.parametrize(
+        ("seconds", "expected"),
+        [
+            (5 * 3600, "5h"),
+            (30 * 60, "30m"),
+            (90, "1m30s"),
+            (45, "45s"),
+            (86400, "1d"),
+            (5 * 3600 + 30 * 60, "5h30m"),
+            (86400 + 1, "1d1s"),
+            (0, "0s"),
+        ],
+    )
+    def test_format_duration(self, seconds: int, expected: str) -> None:
+        """Largest unit first, zero components omitted, never ``0s`` for non-zero."""
+        from datetime import timedelta
+
+        from zae_limiter.cli import _format_duration
+
+        assert _format_duration(timedelta(seconds=seconds)) == expected
+
     def test_format_limit_quota_renders_weekday_as_names(self) -> None:
         """Canonical cron at the user-facing boundary: ``1-5`` comes back ``MON-FRI``."""
         from zae_limiter.cli import _format_limit

@@ -303,6 +303,27 @@ properties; `limits_cli._SCHEDULE_KEYS` and `handler._CFN_SCHEDULE_KEYS` are exa
 pinned by a unit test, and cannot share a module because the provisioner zip carries only the
 four-file `zae_limiter` stub.
 
+**`reset_after_seconds` (ADR-139):** A third recovery spelling on any `limits.<name>` mapping,
+at every level — a window anchored to the entity's own **first use** rather than to fixed
+calendar instants. Mutually exclusive with `reset_schedule` (a limit has one recovery
+mechanism); like `reset_schedule`, it flips the `refill_amount` shorthand default from
+`capacity` to **0**, so the natural manifest names only the allowance and the window:
+
+```yaml
+resources:
+  claude-sonnet:
+    limits:
+      session:
+        capacity: 10000
+        reset_after_seconds: 18000   # 5h, from each entity's own first use
+```
+
+Round-trips through the CloudFormation `Custom::ZaeLimiterLimits` resource as a
+`ResetAfterSeconds` property (`handler._CFN_LIMIT_OPTIONAL_KEYS`); `limits_cli._limits_to_cfn`
+emits it from the same key. Spelled `..._seconds` and typed `int` in the manifest and in
+CloudFormation because neither carries a type, matching `Limit.reset_after_seconds` rather than
+the Python API's `Limit.reset_after: timedelta`.
+
 **`disabled` (ADR-125):** Optional tri-state boolean on `resources.<name>` and
 `entities.<id>.resources.<name>` entries (omit to inherit; `true`/`false` to set explicitly).
 Not supported on `system`. Round-trips through the generated CloudFormation
@@ -840,8 +861,8 @@ cron fields as sets, first match wins, no match means the base. `reset_schedule`
 on the transition *into* matching, which is why `0 0 * * *` is correct there and would be a
 one-minute window in `schedule`. `Limit.quota()` is the only constructor for the second
 (ADR-137: a limit drips or resets, never both, so the allowance and the reset must arrive
-together); windows are fixed calendar windows, never anchored to an entity's own first use
-(ADR-138).
+together); `reset_schedule` windows are fixed calendar windows (ADR-138), and the one
+first-use-anchored form is the separate `Limit.reset_after` duration window (ADR-139).
 
 Both ride on the `Limit` through the existing four-level resolution, so no setter signature
 changed and inheritance is **override, not merge** — an entity-level limit with no schedule

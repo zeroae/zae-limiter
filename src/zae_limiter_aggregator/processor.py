@@ -26,12 +26,14 @@ from zae_limiter.schema import (
     BUCKET_FIELD_CP,
     BUCKET_FIELD_RA,
     BUCKET_FIELD_RP,
+    BUCKET_FIELD_RSA,
     BUCKET_FIELD_RSCHED,
     BUCKET_FIELD_SCHED,
     BUCKET_FIELD_SCHED_TZ,
     BUCKET_FIELD_TC,
     BUCKET_FIELD_TK,
     BUCKET_FIELD_VU,
+    BUCKET_FIELD_WS,
     BUCKET_PREFIX,
     BUCKET_SCHED_NONE,
     SK_BUCKET,
@@ -126,6 +128,11 @@ class LimitRefillInfo:
     # way from `rsched` / `b_{name}_rsched`. Empty means the balance only ever
     # drips back.
     reset_sched: tuple[ScheduleEntry, ...] = ()
+    # Duration window (ADR-139): `b_{name}_ws` (window start, epoch ms) and
+    # `b_{name}_rsa` (window length, seconds). Per-limit only — there is no
+    # item-level default to inherit. None when the attribute is absent.
+    window_start_ms: int | None = None
+    reset_after_seconds: int | None = None
 
 
 @dataclass
@@ -331,6 +338,8 @@ class ParsedBucketLimit:
     rp_ms: int  # refill_period from NewImage
     sched: tuple[ScheduleEntry, ...] = ()  # per-limit schedule (#222)
     reset_sched: tuple[ScheduleEntry, ...] = ()  # per-limit reset schedule (#222 §3.6)
+    window_start_ms: int | None = None  # b_{name}_ws, epoch ms (ADR-139)
+    reset_after_seconds: int | None = None  # b_{name}_rsa, seconds (ADR-139)
 
 
 @dataclass
@@ -532,6 +541,16 @@ def _parse_bucket_record(record: dict[str, Any]) -> ParsedBucketRecord | None:
             if reset_decode_error:
                 sched_error = f"{limit_name} reset schedule {reset_decode_error}"
 
+        # The duration window (ADR-139). Integers rather than a compact
+        # grammar, so unlike `sched` / `rsched` there is no decode step and no
+        # `sched_error` analogue: nothing here can poison the batch that a
+        # malformed `tc` could not already (and the per-record guard in
+        # `aggregate_bucket_states` covers that). Per-limit only — `ws` has no
+        # item-level default — which is also why `wcu` is exempt structurally
+        # rather than by a carve-out: no writer ever stamps one on it.
+        ws_raw = new_image.get(bucket_attr(limit_name, BUCKET_FIELD_WS), {}).get("N")
+        rsa_raw = new_image.get(bucket_attr(limit_name, BUCKET_FIELD_RSA), {}).get("N")
+
         limits[limit_name] = ParsedBucketLimit(
             tc_delta=tc_delta,
             tk_milli=int(new_image.get(tk_attr, {}).get("N", "0")),
@@ -540,6 +559,8 @@ def _parse_bucket_record(record: dict[str, Any]) -> ParsedBucketRecord | None:
             rp_ms=int(new_image.get(rp_attr, {}).get("N", "0")),
             sched=limit_sched,
             reset_sched=limit_reset_sched,
+            window_start_ms=int(ws_raw) if ws_raw is not None else None,
+            reset_after_seconds=int(rsa_raw) if rsa_raw is not None else None,
         )
 
     if not limits:
@@ -690,6 +711,8 @@ def aggregate_bucket_states(
                 existing.rp_ms = parsed_limit.rp_ms
                 existing.sched = parsed_limit.sched
                 existing.reset_sched = parsed_limit.reset_sched
+                existing.window_start_ms = parsed_limit.window_start_ms
+                existing.reset_after_seconds = parsed_limit.reset_after_seconds
             else:
                 state.limits[limit_name] = LimitRefillInfo(
                     tc_delta=parsed_limit.tc_delta,
@@ -699,9 +722,37 @@ def aggregate_bucket_states(
                     rp_ms=parsed_limit.rp_ms,
                     sched=parsed_limit.sched,
                     reset_sched=parsed_limit.reset_sched,
+                    window_start_ms=parsed_limit.window_start_ms,
+                    reset_after_seconds=parsed_limit.reset_after_seconds,
                 )
 
     return bucket_states
+
+
+def _window_in_force(limit_name: str, info: LimitRefillInfo) -> tuple[int | None, int] | None:
+    """``(ws, rsa)`` for a limit whose duration window is in force, else None (ADR-139).
+
+    ``rsa`` is what says a window is in force: every client write that stamps
+    ``ws`` stamps ``rsa`` beside it, and the param sync REMOVEs ``rsa`` (never
+    ``ws``) when a limit loses its window, so a ``ws`` with no ``rsa`` is a
+    stale start that no client applies either (``_monotonic_rf`` lets only
+    windows in force vote). ``ws`` may still be None beside an ``rsa``: the
+    param sync stamped the length on a bucket whose first window has not been
+    anchored yet.
+
+    Two exclusions, both structural rather than behavioural:
+
+    - ``wcu`` never carries a window — no writer stamps one on it — and is
+      excluded anyway so a corrupt item cannot reset the per-partition write
+      ceiling.
+    - A limit carrying a ``reset_schedule`` as well is a corrupt item
+      (``Limit`` makes the two spellings of the reset half mutually
+      exclusive). The calendar branch keeps it, exactly as it did before
+      windows existed, rather than two reset rules racing over one balance.
+    """
+    if limit_name == WCU_LIMIT_NAME or info.reset_after_seconds is None or info.reset_sched:
+        return None
+    return info.window_start_ms, info.reset_after_seconds
 
 
 def _item_next_boundary(state: BucketRefillState, now_ms: int) -> int | None:
@@ -727,6 +778,22 @@ def _item_next_boundary(state: BucketRefillState, now_ms: int) -> int | None:
     contributes no boundary of its own, but the default still does — some limit
     on the item carries it, and `vu` is one item-level attribute, so the
     earliest change *anywhere* is the one that has to force the pass.
+
+    Duration windows (ADR-139) are the third voting member, exactly as on the
+    client (``RateLimiter._materialisation_stamps``): each window in force
+    contributes its end, ``ws + rsa * 1000``. Leaving it out would let a
+    re-stamp push ``vu`` past the window's end, and the fast path — which
+    evaluates nothing — would keep spending the old window's balance after it
+    closed, where the client means the first use past the end to take the slow
+    path and anchor the next window. The #541 "item-level pair votes in its
+    own right" reasoning does not apply: ``ws`` has no item-level default, so
+    only the per-limit values vote.
+
+    Unlike the cron members, a window's contribution can already lie at or
+    before ``now_ms``: a window that has ended, or an ``rsa`` with no ``ws``
+    (a window due to open on the next client pass). Either means the fast
+    path must stay closed until a client anchors, so the result is then
+    ``<= now_ms`` and the caller must not re-stamp ``vu`` at all.
     """
     pairs = {(state.sched, state.reset_sched)} | {
         (info.sched, info.reset_sched) for info in state.limits.values()
@@ -736,6 +803,12 @@ def _item_next_boundary(state: BucketRefillState, now_ms: int) -> int | None:
         for sched, reset in pairs
         if (sched or reset) and (b := next_boundary(sched, reset, now_ms=now_ms)) is not None
     ]
+    for limit_name, info in state.limits.items():
+        window = _window_in_force(limit_name, info)
+        if window is None:
+            continue
+        ws, rsa = window
+        boundaries.append(now_ms if ws is None else ws + rsa * 1000)
     return min(boundaries) if boundaries else None
 
 
@@ -781,11 +854,50 @@ def try_refill_bucket(
         # setting to the same item (§6). Already logged at parse time.
         return False
 
+    windows = {
+        name: window
+        for name, info in state.limits.items()
+        if (window := _window_in_force(name, info)) is not None
+    }
+
+    # A window this shard has not applied (`ws > rf`) that has also already
+    # ended at `now` (ADR-139). The aggregator must not apply it: the balance
+    # it would restore belongs to a window that is over, and the client's next
+    # pass opens a *new* window (`_open_window_if_elapsed`) and resets
+    # unconditionally. Anything spent from a late-restored dead window in the
+    # gap — the consumption-only retry after a lost `rf` lock stamps no `ws`,
+    # so it can spend it — would be admitted on top of the new window's full
+    # allowance. Two allowances inside one window's span is over-admission.
+    #
+    # Nor may it write at all: `rf` would have to move past `ws` (the rf rule
+    # below), which records the window as applied when it was not — and a
+    # write that held `rf` below `ws` would stamp a drip refill computed to
+    # `now` against an `rf` in the past, crediting the same interval twice on
+    # the next pass. So the whole item is skipped. That costs nothing that
+    # matters: `vu` on such an item is at or before the window's end, so the
+    # fast path is already closed and the next acquire takes the slow path,
+    # which refills every limit on the item itself.
+    #
+    # "Ended" is judged by this Lambda's own clock, which can run behind the
+    # clients'. A skewed judgement is made harmless by the `ws` pin on the
+    # roll below, not by this check: a window this pass wrongly believes is
+    # live can only be restored if the item still carries that same `ws`.
+    for name, (ws, rsa) in windows.items():
+        if ws is not None and ws > state.rf_ms and ws + rsa * 1000 <= now_ms:
+            logger.debug(
+                "Refill skipped - an unapplied duration window has already ended",
+                entity_id=state.entity_id,
+                resource=state.resource,
+                limit_name=name,
+            )
+            return False
+
     # Compute per-limit refill deltas
     add_parts: list[str] = []
     expr_values: dict[str, Any] = {}
     expr_names: dict[str, str] = {}
     any_needs_refill = False
+    rolled: list[str] = []
 
     for limit_name, info in state.limits.items():
         if limit_name == WCU_LIMIT_NAME:
@@ -818,6 +930,45 @@ def try_refill_bucket(
             effective_cp = scaled_cp // state.shard_count
             effective_ra = scaled_ra // state.shard_count
             reset_sched = info.reset_sched
+
+        # A duration window rolled since this item was last refilled sets the
+        # balance to the effective capacity (ADR-139), which as an `ADD` is
+        # `eff_cp - tk_observed` — the identical delta shape the reset branch
+        # below and the unconditional clamp use, and safe for the identical
+        # commutativity reason. It is the same `ws > rf` comparison, against
+        # the same stored `rf`, that `BucketState.window_rolled` makes on the
+        # client, so whichever writer gets there first stamps `rf` at or past
+        # `ws` and the other one skips. A window that has already ended never
+        # reaches here (the whole item was skipped above).
+        #
+        # Evaluated **before** the accrual-rate guard further down, not after
+        # it: a duration quota's stored rate is 0 since ADR-137, so that guard
+        # would skip exactly the limits this exists for.
+        #
+        # It applies a window the CLIENT anchored; it never anchors one. The
+        # aggregator acts only on stream records, and an exhausted quota
+        # produces none (a fast rejection is 0 WCU), so it could not anchor for
+        # an idle entity even if it tried — which is correct, since the window
+        # must be anchored to a *use*. And it does not fan out: it processes
+        # one shard per record and would issue S² writes per batch rather than
+        # S. The client's fan-out plus `ws > rf` already converges every shard.
+        #
+        # Positional aliases, never the limit name: `NAME_PATTERN` allows `-`
+        # and `.`, neither legal in an expression token or an inline path.
+        window = windows.get(limit_name)
+        if window is not None and window[0] is not None and window[0] > state.rf_ms:
+            roll_delta = effective_cp - info.tk_milli
+            if roll_delta != 0:
+                any_needs_refill = True
+                idx = len(rolled)
+                add_parts.append(f"#wtk{idx} :wd{idx}")
+                expr_names[f"#wtk{idx}"] = bucket_attr(limit_name, BUCKET_FIELD_TK)
+                expr_values[f":wd{idx}"] = roll_delta
+                # Pin the window being restored (see the condition below).
+                expr_names[f"#wws{idx}"] = bucket_attr(limit_name, BUCKET_FIELD_WS)
+                expr_values[f":ews{idx}"] = window[0]
+                rolled.append(limit_name)
+            continue
 
         # A reset edge crossed since this item was last refilled sets the
         # balance to the effective capacity, which as an `ADD` is
@@ -901,8 +1052,22 @@ def try_refill_bucket(
 
     # Build single UpdateItem for the composite bucket
     # ADD is commutative with concurrent speculative writes (Issue #317)
+    #
+    # `rf` is stamped exactly as the client stamps it (`lease._monotonic_rf`,
+    # ADR-139): `max(now, stored rf, every window start in force on the item)`.
+    # A window rolls when `ws > rf`, so `rf` is the only record that a shard
+    # has applied its window. An aggregator clock behind the one that stamped
+    # the item would otherwise move `rf` backward past `ws`, and the next pass
+    # would reset the balance again — refunding everything spent since. And
+    # every `ws > rf` still on the item at this point is a live window the
+    # loop above has applied (or found already at the effective capacity), so
+    # stamping `rf` past it records a roll that really happened. The cost is
+    # the one the client already accepts: `refill_bucket` treats a
+    # non-positive elapsed time as zero, so an `rf` ahead of a later reader's
+    # clock grants nothing rather than a negative refill.
+    new_rf = max([now_ms, state.rf_ms] + [ws for ws, _rsa in windows.values() if ws is not None])
     set_parts = ["rf = :new_rf"]
-    expr_values[":new_rf"] = now_ms
+    expr_values[":new_rf"] = new_rf
     expr_values[":expected_rf"] = state.rf_ms
     condition = "rf = :expected_rf"
 
@@ -933,13 +1098,28 @@ def try_refill_bucket(
         condition += " AND #vu = :expected_vu"
         expr_values[":expected_vu"] = state.vu_ms
 
+    # Each window this write restores is pinned to the `ws` the image carried.
+    # The `rf` and `vu` pins cannot tell two window fan-outs apart: a client
+    # that opens the *next* window on another shard fans it out with
+    # `SET ws, rsa, vu = 0`, which leaves `rf` alone and rewrites `vu` to the
+    # same 0 an earlier fan-out left. An aggregator whose clock runs behind
+    # would then restore the dead window's balance under an `rf` still below
+    # the new `ws` — spendable by the consumption-only retry before the next
+    # pass rolls the new window in full, one share of over-admission. With
+    # the pin that write fails its condition and is skipped like any other
+    # lost lock. One term per rolled limit, positional aliases only.
+    for idx in range(len(rolled)):
+        condition += f" AND #wws{idx} = :ews{idx}"
+
     # An expired `vu` means this pass is the materialisation the fast path is
     # waiting on: stamp the next boundary so it can resume. A `vu` still in the
     # future is left alone — re-stamping it would move the gate the client is
-    # already honouring.
+    # already honouring. A boundary at or before `now` means a duration window
+    # is waiting for a client to anchor it (ended, or never opened): the gate
+    # must stay shut, so the stamp is left exactly as it is.
     if state.vu_ms is not None and state.vu_ms <= now_ms:
         boundary = _item_next_boundary(state, now_ms)
-        if boundary is not None:
+        if boundary is not None and boundary > now_ms:
             set_parts.append("#vu = :new_vu")
             expr_values[":new_vu"] = boundary
             # The stream image the boundary was computed from can be older than
@@ -979,6 +1159,7 @@ def try_refill_bucket(
             entity_id=state.entity_id,
             resource=state.resource,
             limits_refilled=list(name for name in state.limits if f":rd_{name}" in expr_values),
+            windows_rolled=rolled,
         )
         return True
 
@@ -1115,7 +1296,8 @@ def _is_quota_limit(limit_name: str, image: dict[str, Any]) -> bool:
     The aggregator holds attributes rather than a ``Limit``, so it cannot ask
     :attr:`Limit.is_quota` directly. This is the same key
     ``Limit.from_bucket_state`` reconstructs one by: a zero refill rate paired
-    with a reset schedule. Both halves are required — a zero rate on its own is
+    with a reset — a calendar ``reset_schedule`` or, since ADR-139, a duration
+    window's ``b_{name}_rsa``. Both halves are required — a zero rate on its own is
     a corrupt item, and granting it a quota's transfer rule would starve a limit
     that does recover; a reset beside a positive rate is the mirror corruption
     that ``Limit.__post_init__`` rejects.
@@ -1130,6 +1312,20 @@ def _is_quota_limit(limit_name: str, image: dict[str, Any]) -> bool:
     ra_attr = bucket_attr(limit_name, BUCKET_FIELD_RA)
     if int(image.get(ra_attr, {}).get("N", "0")) != 0:
         return False
+    # Since ADR-139 there are **two** spellings of the reset half on an item:
+    # the calendar `rsched` below and the duration window's `b_{name}_rsa`.
+    # Both must be recognised, because the caller uses this to decide whether
+    # a shard coming into existence is filled by transfer or minted a fresh
+    # share (#587), and a duration quota misread as a dripping limit is #587
+    # reintroduced for exactly the shape ADR-139 adds.
+    #
+    # Asked **before** the `BUCKET_SCHED_NONE` test, not after it: a duration
+    # quota sharing an item with a calendar quota declares no `reset_schedule`
+    # of its own, so its `b_{name}_rsched` holds the #541 marker to block the
+    # item's calendar default — and that marker says nothing about its window.
+    # `rsa` is per-limit only, with no item-level default to inherit.
+    if bucket_attr(limit_name, BUCKET_FIELD_RSA) in image:
+        return True
     own = image.get(bucket_attr(limit_name, BUCKET_FIELD_RSCHED), {}).get("S")
     if own == BUCKET_SCHED_NONE:
         return False

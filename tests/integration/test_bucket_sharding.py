@@ -1041,7 +1041,7 @@ class TestQuotaShardCreationIsATransfer:
         await limiter.set_system_defaults([limit])
         now_ms = repo._now_ms()
         state = BucketState.from_limit(entity_id, "gpt-4", limit, now_ms)
-        vu, _reset = RateLimiter._materialisation_stamps(limit, now_ms)
+        vu, _reset = RateLimiter._materialisation_stamps(limit, state, now_ms)
         await repo.transact_write(
             [
                 repo.build_composite_create(
@@ -1129,3 +1129,205 @@ class TestQuotaShardCreationIsATransfer:
 
         assert await self._tokens(repo, entity_id, 0, "rpm") == 2_000  # not clamped early
         assert await self._tokens(repo, entity_id, 1, "rpm") == 499_000  # full share, less one
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+class TestDurationWindowRolloverFanOut:
+    """One rollover converges every shard on one window (ADR-139, #624).
+
+    Exercises the real conditional `UpdateItem`s `_propagate_window_start`
+    issues -- `attribute_exists(PK) AND (attribute_not_exists(ws) OR ws <= :open_floor)`
+    -- which moto only approximates.
+    """
+
+    SHARDS = 4
+    WINDOW_MS = 2_000
+
+    @staticmethod
+    async def _raw(repo, entity_id: str, shard_id: int) -> dict:
+        client = await repo._get_client()
+        resp = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "gpt-4", shard_id)},
+                "SK": {"S": sk_state()},
+            },
+        )
+        return resp.get("Item") or {}
+
+    async def _seed(self, limiter, entity_id: str, now_ms: int):
+        """Four shards of a 2-second session quota, all anchored at ``now_ms``."""
+        from datetime import timedelta
+
+        from zae_limiter import RateLimiter
+        from zae_limiter.models import BucketState, Limit
+
+        repo = limiter._repository
+        limit = Limit.quota("session", 4_000, reset_after=timedelta(seconds=2))
+        await limiter.create_entity(entity_id)
+        await limiter.set_limits(entity_id, [limit], resource="gpt-4")
+        for shard in range(self.SHARDS):
+            state = BucketState.from_limit(
+                entity_id, "gpt-4", limit, now_ms, shard_count=self.SHARDS
+            )
+            vu, _reset = RateLimiter._materialisation_stamps(limit, state, now_ms)
+            await repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        entity_id,
+                        "gpt-4",
+                        [state],
+                        now_ms,
+                        ttl_seconds=None,
+                        shard_id=shard,
+                        shard_count=self.SHARDS,
+                        vu=vu,
+                    )
+                ]
+            )
+        repo._entity_cache[(repo._namespace_id, entity_id)] = (
+            False,
+            None,
+            {"gpt-4": self.SHARDS},
+        )
+        return repo
+
+    async def test_a_rollover_converges_every_shard_on_one_window(
+        self, localstack_limiter, monkeypatch, unique_name
+    ):
+        """Without the fan-out the entity has four windows drifting apart and
+        no honest answer to "when does mine reset"."""
+        import random as _random
+
+        limiter = localstack_limiter
+        entity_id = f"window-fanout-{unique_name}"
+        t0 = int(time.time() * 1000)
+        repo = await self._seed(limiter, entity_id, t0)
+
+        # A sibling that spent part of its share before the rollover: the
+        # fan-out must leave that balance exactly as it found it.
+        await repo.write_each(
+            [repo.build_composite_adjust(entity_id, "gpt-4", {"session": 300_000}, shard_id=1)]
+        )
+
+        rolled_at = t0 + self.WINDOW_MS + 100
+        monkeypatch.setattr(repo, "_now_ms", lambda: rolled_at)
+        monkeypatch.setattr(_random, "randrange", lambda *a: 2)
+        async with limiter.acquire(entity_id, "gpt-4", {"session": 1}):
+            pass
+
+        ws_attr = bucket_attr("session", "ws")
+        items = [await self._raw(repo, entity_id, s) for s in range(self.SHARDS)]
+        starts = {int(item[ws_attr]["N"]) for item in items}
+        assert starts == {rolled_at}, f"shards anchored different windows: {starts}"
+        tk_attr = bucket_attr("session", BUCKET_FIELD_TK)
+        for shard in (0, 1, 3):
+            assert int(items[shard]["vu"]["N"]) == 0, f"shard {shard} kept its fast path"
+            assert items[shard][bucket_attr("session", "rsa")] == {"N": "2"}
+        # The fan-out moves `ws` only; each sibling restores its own share
+        # under its own lock, so the spent one still holds what it held.
+        assert int(items[1][tk_attr]["N"]) == 700_000
+        assert int(items[0][tk_attr]["N"]) == 1_000_000
+
+    async def test_a_delayed_stale_rollover_does_not_drag_the_entity_back(
+        self, localstack_limiter, unique_name
+    ):
+        limiter = localstack_limiter
+        entity_id = f"window-stale-{unique_name}"
+        t0 = int(time.time() * 1000)
+        repo = await self._seed(limiter, entity_id, t0)
+
+        assert (
+            await repo._propagate_window_start(
+                entity_id, "gpt-4", 0, self.SHARDS, {"session": (t0 + 10_000, 2)}
+            )
+            == self.SHARDS - 1
+        )
+        assert (
+            await repo._propagate_window_start(
+                entity_id, "gpt-4", 0, self.SHARDS, {"session": (t0 + 5_000, 2)}
+            )
+            == 0
+        )
+        ws_attr = bucket_attr("session", "ws")
+        for shard in range(1, self.SHARDS):
+            item = await self._raw(repo, entity_id, shard)
+            assert int(item[ws_attr]["N"]) == t0 + 10_000
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+class TestNewShardJoinsTheWindow:
+    """A shard created mid-window inherits shard 0's `ws` (ADR-139, #625).
+
+    Exercises the real projected `GetItem` behind `get_shard_window_starts`,
+    which moto only approximates.
+    """
+
+    LIMIT_NAME = "session"
+
+    async def test_a_created_shard_joins_the_window_in_progress(
+        self, localstack_limiter, monkeypatch, unique_name
+    ):
+        import random as _random
+        from datetime import timedelta
+
+        from zae_limiter.models import Limit
+
+        limiter = localstack_limiter
+        repo = limiter._repository
+        entity_id = f"window-join-{unique_name}"
+        limit = Limit.quota(self.LIMIT_NAME, 1_000, reset_after=timedelta(hours=5))
+        await limiter.create_entity(entity_id)
+        await limiter.set_limits(entity_id, [limit], resource="gpt-4")
+
+        t0 = int(time.time() * 1000)
+        monkeypatch.setattr(repo, "_now_ms", lambda: t0)
+        async with limiter.acquire(entity_id, "gpt-4", {self.LIMIT_NAME: 1}):
+            pass
+        assert await repo.get_shard_window_starts(entity_id, "gpt-4", [self.LIMIT_NAME]) == {
+            self.LIMIT_NAME: t0
+        }
+        assert await repo.bump_shard_count(entity_id, "gpt-4", 1) == 2
+
+        monkeypatch.setattr(repo, "_now_ms", lambda: t0 + 60_000)
+        monkeypatch.setattr(_random, "randrange", lambda *a: 1)
+        async with limiter.acquire(entity_id, "gpt-4", {self.LIMIT_NAME: 1}):
+            pass
+
+        client = await repo._get_client()
+        resp = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "gpt-4", 1)},
+                "SK": {"S": sk_state()},
+            },
+        )
+        item = resp["Item"]
+        assert int(item[bucket_attr(self.LIMIT_NAME, "ws")]["N"]) == t0
+        assert int(item["rf"]["N"]) == t0 + 60_000
+        assert int(item["vu"]["N"]) == t0 + 5 * 3_600_000
+        # Shard 0 held 999 against a new share of 500: 499 transferred, 1 spent.
+        assert int(item[bucket_attr(self.LIMIT_NAME, BUCKET_FIELD_TK)]["N"]) == 498_000
+
+    async def test_the_projection_aliases_a_dotted_limit_name(
+        self, localstack_limiter, unique_name
+    ):
+        """`NAME_PATTERN` allows `.`, a document-path separator: written bare
+        into the projection it would name a nested path and read nothing."""
+        from datetime import timedelta
+
+        from zae_limiter.models import BucketState, Limit
+
+        repo = localstack_limiter._repository
+        entity_id = f"window-dotted-{unique_name}"
+        limit = Limit.quota("sess.v1", 1_000, reset_after=timedelta(hours=5))
+        t0 = int(time.time() * 1000)
+        state = BucketState.from_limit(entity_id, "gpt-4", limit, t0)
+        await repo.transact_write(
+            [repo.build_composite_create(entity_id, "gpt-4", [state], t0, shard_id=0)]
+        )
+        assert await repo.get_shard_window_starts(entity_id, "gpt-4", ["sess.v1"]) == {
+            "sess.v1": t0
+        }

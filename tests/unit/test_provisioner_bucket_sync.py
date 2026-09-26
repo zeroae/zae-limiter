@@ -139,6 +139,133 @@ class TestBuildBucketParamUpdate:
         assert "-" not in expr
 
 
+class TestDurationWindowParamSync:
+    """`l_{name}_rsa` / `b_{name}_rsa` — the provisioner mirror (ADR-139, plan
+    Task 9). Mirrors `TestBuildBucketParamUpdate`'s scheduling tests, scoped to
+    the duration-window field.
+    """
+
+    WINDOW = {
+        "session": {
+            "capacity": 10_000,
+            "refill_amount": 0,
+            "refill_period": 1,
+            "reset_after_seconds": 18_000,
+        }
+    }
+
+    def test_a_window_limit_gets_rsa_set(self):
+        expr, names, values = build_bucket_param_update(
+            self.WINDOW, ttl_multiplier=None, stale_limit_names=None, now_ms=0
+        )
+        alias = next(a for a, attr in names.items() if attr == bucket_attr("session", "rsa"))
+        set_clause = expr.split("REMOVE")[0]
+        assert f"{alias} = :" in set_clause
+        assert values[f":{alias[1:]}"] == {"N": "18000"}
+
+    def test_a_limit_without_a_window_gets_rsa_removed(self):
+        """A quota converted to a drip must lose `rsa`, or the item keeps
+        reconstructing as a quota forever. Absence means "no window", so this
+        is a plain REMOVE — unlike `sched`, where absence means "inherit the
+        item default" and #541 needs the explicit `BUCKET_SCHED_NONE`
+        marker."""
+        expr, names, _values = build_bucket_param_update(
+            LIMITS, ttl_multiplier=None, stale_limit_names=None, now_ms=0
+        )
+        alias = next(a for a, attr in names.items() if attr == bucket_attr("rpm", "rsa"))
+        remove_clause = expr.split("REMOVE")[1]
+        assert alias in [a.strip() for a in remove_clause.split(",")]
+
+    def test_ws_is_never_written(self):
+        for limits in (self.WINDOW, LIMITS, QUOTA):
+            expr, names, _values = build_bucket_param_update(
+                limits, ttl_multiplier=None, stale_limit_names=None, now_ms=0
+            )
+            ws_attrs = {attr for attr in names.values() if attr.endswith("_ws")}
+            assert not ws_attrs, limits
+            assert "_ws" not in expr, limits
+
+    def test_rsa_is_never_set_and_removed_together(self):
+        """#488's rule extended to `rsa`."""
+        mixed = {**self.WINDOW, **LIMITS}
+        expr, names, _values = build_bucket_param_update(
+            mixed, ttl_multiplier=0, stale_limit_names={"gone"}, now_ms=0
+        )
+        set_clause, remove_clause = expr.split(" REMOVE ")
+        set_aliases = {
+            part.split("=")[0].strip() for part in set_clause.removeprefix("SET ").split(",")
+        }
+        remove_aliases = {part.strip() for part in remove_clause.split(",")}
+        assert not (set_aliases & remove_aliases)
+
+    def test_the_decoded_window_reaches_the_update(self):
+        """`_decode_limits` must read `l_{name}_rsa` off a raw config item, or
+        an entity-wide fan-out re-resolving a session quota silently drops its
+        window (the #487 class of bug, for this field)."""
+        client = _make_client()
+        item = _limits_item(session=(10_000, 0, 1))
+        item[limit_attr("session", "rsa")] = {"N": "18000"}
+        client.get_item.side_effect = _levels({(pk_resource("ns123", "gpt-4"), sk_config()): item})
+        limits, _level = resolve_bucket_limits(client, "tbl", "ns123", "user-1", "gpt-4")
+        assert limits["session"]["reset_after_seconds"] == 18_000
+
+        _expr, names, values = build_bucket_param_update(
+            limits, ttl_multiplier=None, stale_limit_names=None, now_ms=0
+        )
+        alias = next(a for a, attr in names.items() if attr == bucket_attr("session", "rsa"))
+        assert values[f":{alias[1:]}"] == {"N": "18000"}
+
+    def test_an_ordinary_limit_decodes_with_no_window(self):
+        """The trio alone must not manufacture a `reset_after` — the
+        optional-key split must stay off `_REQUIRED_MANIFEST_KEYS`."""
+        client = _make_client()
+        client.get_item.side_effect = _levels(
+            {(pk_resource("ns123", "gpt-4"), sk_config()): _limits_item(rpm=(10, 10, 60))}
+        )
+        limits = resolve_effective_limits(client, "tbl", "ns123", "user-1", "gpt-4")
+        assert "reset_after_seconds" not in limits["rpm"]
+
+    def test_entity_wide_fanout_stamps_the_resolved_window(self):
+        """The #487 blast radius, for `rsa`: under `_default_` every bucket is
+        re-resolved from config, so a dropped window is not merely unread —
+        it is actively stripped off the bucket enforcing it."""
+        client = _make_client()
+        client.query.side_effect = _query_pages({"Items": [{"PK": {"S": _pk(resource="gpt-4")}}]})
+        entity_default = _limits_item(session=(10_000, 0, 1))
+        entity_default[limit_attr("session", "rsa")] = {"N": "18000"}
+        client.get_item.side_effect = _levels(
+            {(pk_entity("ns123", "user-1"), sk_config("_default_")): entity_default}
+        )
+        written = sync_bucket_params(
+            client,
+            "tbl",
+            "ns123",
+            "user-1",
+            "_default_",
+            {"session": {"capacity": 10_000, "refill_amount": 0, "refill_period": 1}},
+            ttl_multiplier=0,
+            stale_limit_names=None,
+            now_ms=0,
+        )
+        assert written == 1
+        names = client.update_item.call_args.kwargs["ExpressionAttributeNames"]
+        values = client.update_item.call_args.kwargs["ExpressionAttributeValues"]
+        alias = next(a for a, attr in names.items() if attr == bucket_attr("session", "rsa"))
+        assert values[f":{alias[1:]}"] == {"N": "18000"}
+
+    def test_ttl_reconstruction_does_not_crash_on_a_duration_quota(self):
+        """The TTL branch rebuilds a `Limit` from the manifest-shaped decl;
+        before `reset_after` was threaded through it, a session quota raised
+        `ValueError: min() iterable argument is empty` out of
+        `schema._recovery_seconds` (no `reset_schedule` to scan)."""
+        expr, _names, values = build_bucket_param_update(
+            self.WINDOW, ttl_multiplier=7, stale_limit_names=None, now_ms=1_789_000_000_000
+        )
+        # 18000s window x 7 multiplier.
+        assert values[":ttl_val"] == {"N": str(1_789_000_000 + 18_000 * 7)}
+        assert "#ttl = :ttl_val" in expr
+
+
 def _query_pages(*pages):
     """client.query side_effect returning the given pages, then repeating the last.
 

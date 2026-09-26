@@ -7,7 +7,8 @@ Changes should be made to the source file, then regenerated.
 """
 
 import time
-from datetime import datetime
+from asyncio import CancelledError
+from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 
@@ -20,13 +21,17 @@ from zae_limiter.models import BucketState
 from zae_limiter.schedule import ScheduleEntry
 from zae_limiter.schema import (
     BUCKET_FIELD_DISABLED,
+    BUCKET_FIELD_RF,
+    BUCKET_FIELD_RSA,
     BUCKET_FIELD_RSCHED,
     BUCKET_FIELD_SCHED,
     BUCKET_FIELD_SCHED_TZ,
     BUCKET_FIELD_TK,
     BUCKET_FIELD_VU,
+    BUCKET_FIELD_WS,
     BUCKET_SCHED_NONE,
     CONFIG_FIELD_SCHED_TZ,
+    LIMIT_FIELD_RSA,
     LIMIT_FIELD_RSCHED,
     WCU_LIMIT_NAME,
     bucket_attr,
@@ -671,6 +676,508 @@ class TestCompositeWritePaths:
         repo.create_entity("entity-no-buckets")
         result = repo.get_buckets("entity-no-buckets")
         assert result == []
+
+
+class TestDurationWindowStamp:
+    """Tests for stamping/reading the ADR-139 duration window on bucket items."""
+
+    def test_create_stamps_the_window(self, repo):
+        """build_composite_create writes b_{name}_ws/rsa from the state, unsharded."""
+        limit = Limit.quota("session", 10000, reset_after=timedelta(hours=5))
+        now = 1757000000000
+        state = BucketState.from_limit("e1", "gpt-4", limit, now_ms=now, shard_count=1)
+        item = repo.build_composite_create("e1", "gpt-4", [state], now_ms=now)["Put"]["Item"]
+        assert item[bucket_attr("session", BUCKET_FIELD_WS)] == {"N": str(now)}
+        assert item[bucket_attr("session", BUCKET_FIELD_RSA)] == {"N": "18000"}
+
+    def test_create_never_divides_rsa_by_shard_count(self, repo):
+        """`rsa` is NEVER divided by shard_count -- only the balance is."""
+        limit = Limit.quota("session", 10000, reset_after=timedelta(hours=5))
+        now = 1757000000000
+        sharded = BucketState.from_limit("e1", "gpt-4", limit, now_ms=now, shard_count=4)
+        item4 = repo.build_composite_create("e1", "gpt-4", [sharded], now_ms=now, shard_count=4)[
+            "Put"
+        ]["Item"]
+        assert item4[bucket_attr("session", BUCKET_FIELD_RSA)] == {"N": "18000"}
+        assert item4[bucket_attr("session", "tk")] == {"N": "2500000"}
+
+    def test_normal_write_sets_a_new_window_start(self, repo):
+        """build_composite_normal SETs b_{name}_ws via an alias when `windows` is given."""
+        upd = repo.build_composite_normal(
+            "e1",
+            "gpt-4",
+            consumed={"session": 1000},
+            refill_amounts={"session": 0},
+            now_ms=2000,
+            expected_rf=1000,
+            windows={"session": (2000, 18000)},
+        )["Update"]
+        expr = upd["UpdateExpression"]
+        names = upd["ExpressionAttributeNames"]
+        values = upd["ExpressionAttributeValues"]
+        ws_aliases = [
+            alias
+            for alias, target in names.items()
+            if target == bucket_attr("session", BUCKET_FIELD_WS)
+        ]
+        assert len(ws_aliases) == 1
+        alias = ws_aliases[0]
+        assert f"{alias} = " in expr
+        placeholder = expr.split(f"{alias} = ")[1].split(",")[0].split(" ")[0]
+        assert values[placeholder] == {"N": "2000"}
+
+    def test_normal_write_stamps_rsa_beside_every_ws(self, repo):
+        """`ws` never lands without `rsa` (ADR-139). The aggregator and a new
+        shard's inheritance read only the item, and a resource- or
+        system-level `reset_after` never reaches an existing bucket through
+        the param sync -- so an item holding `ws` alone has a window whose
+        end nothing can compute. The pair is one argument, so it cannot be
+        half-passed either. A limit named with `.` still goes through an
+        alias: the raw name never appears in the expression text."""
+        upd = repo.build_composite_normal(
+            "e1",
+            "gpt-4",
+            consumed={"session": 1000},
+            refill_amounts={"session": 0},
+            now_ms=2000,
+            expected_rf=1000,
+            windows={"session": (2000, 18000), "a.b": (2000, 60)},
+        )["Update"]
+        expr = upd["UpdateExpression"]
+        names = upd["ExpressionAttributeNames"]
+        values = upd["ExpressionAttributeValues"]
+
+        def stamped(attr):
+            (alias,) = [a for a, target in names.items() if target == attr]
+            assert f"{alias} = " in expr
+            placeholder = expr.split(f"{alias} = ")[1].split(",")[0].split(" ")[0]
+            return int(values[placeholder]["N"])
+
+        assert stamped(bucket_attr("session", BUCKET_FIELD_WS)) == 2000
+        assert stamped(bucket_attr("session", BUCKET_FIELD_RSA)) == 18000
+        assert stamped(bucket_attr("a.b", BUCKET_FIELD_WS)) == 2000
+        assert stamped(bucket_attr("a.b", BUCKET_FIELD_RSA)) == 60
+        assert "a.b" not in expr
+
+    def test_normal_write_stamps_a_changed_length_alone(self, repo):
+        """`window_lengths` SETs `rsa` without `ws` for a limit whose window
+        did not move but whose configured length changed (#629). A name also
+        in `windows` is skipped: its pair already carries the length, and two
+        SETs on one path are a ValidationException."""
+        upd = repo.build_composite_normal(
+            "e1",
+            "gpt-4",
+            consumed={"session": 1000},
+            refill_amounts={"session": 0},
+            now_ms=2000,
+            expected_rf=1000,
+            windows={"session": (2000, 18000)},
+            window_lengths={"session": 99, "a.b": 60},
+        )["Update"]
+        expr = upd["UpdateExpression"]
+        names = upd["ExpressionAttributeNames"]
+        values = upd["ExpressionAttributeValues"]
+
+        def stamped(attr):
+            aliases = [a for a, target in names.items() if target == attr]
+            assert len(aliases) == 1, aliases
+            placeholder = expr.split(f"{aliases[0]} = ")[1].split(",")[0].split(" ")[0]
+            return int(values[placeholder]["N"])
+
+        assert stamped(bucket_attr("session", BUCKET_FIELD_RSA)) == 18000
+        assert stamped(bucket_attr("a.b", BUCKET_FIELD_RSA)) == 60
+        assert not [a for a, t in names.items() if t == bucket_attr("a.b", BUCKET_FIELD_WS)]
+        assert "a.b" not in expr
+
+    def test_a_normal_write_carrying_ws_and_rsa_round_trips(self, repo):
+        """Executed, not just built: an item created with no window at all
+        (stamped before its limit gained one) gets both attributes from the
+        rollover write, and reads back with a computable window end."""
+        now = 1757000000000
+        rpm = Limit.per_minute("rpm", 100)
+        state = BucketState.from_limit("e1", "gpt-4", rpm, now_ms=now)
+        repo.transact_write([repo.build_composite_create("e1", "gpt-4", [state], now)])
+        later = now + 1000
+        repo.transact_write(
+            [
+                repo.build_composite_normal(
+                    "e1",
+                    "gpt-4",
+                    consumed={"rpm": 1000},
+                    refill_amounts={"rpm": 0},
+                    now_ms=later,
+                    expected_rf=now,
+                    windows={"rpm": (later, 18000)},
+                )
+            ]
+        )
+        back = repo.get_bucket("e1", "gpt-4", "rpm")
+        assert back is not None
+        assert back.window_start_ms == later
+        assert back.reset_after_seconds == 18000
+        assert back.window_end_ms == later + 18000000
+
+    def test_create_stamps_rsa_wherever_it_stamps_ws(self, repo):
+        """The create path already carries both from the state; pinned so
+        the pairing holds on both acquire-path writers, not just the normal one."""
+        limit = Limit.quota("session", 10000, reset_after=timedelta(hours=5))
+        now = 1757000000000
+        for shard_count in (1, 4):
+            state = BucketState.from_limit(
+                "e1", "gpt-4", limit, now_ms=now, shard_count=shard_count
+            )
+            item = repo.build_composite_create(
+                "e1", "gpt-4", [state], now_ms=now, shard_count=shard_count
+            )["Put"]["Item"]
+            assert bucket_attr("session", BUCKET_FIELD_WS) in item
+            assert item[bucket_attr("session", BUCKET_FIELD_RSA)] == {"N": "18000"}
+
+    def test_normal_write_omits_ws_when_no_window_rolled(self, repo):
+        """No `windows` means no `ws` attribute is touched at all."""
+        upd = repo.build_composite_normal(
+            "e1",
+            "gpt-4",
+            consumed={"session": 1000},
+            refill_amounts={"session": 0},
+            now_ms=2000,
+            expected_rf=1000,
+        )["Update"]
+        assert (
+            bucket_attr("session", BUCKET_FIELD_WS) not in upd["ExpressionAttributeNames"].values()
+        )
+
+    def test_deserialize_reads_the_window_back(self, repo):
+        """_deserialize_composite_bucket reads ws/rsa back into BucketState."""
+        limit = Limit.quota("session", 10000, reset_after=timedelta(hours=5))
+        now = 1757000000000
+        state = BucketState.from_limit("e1", "gpt-4", limit, now_ms=now, shard_count=1)
+        item = repo.build_composite_create("e1", "gpt-4", [state], now_ms=now)["Put"]["Item"]
+        back = {s.limit_name: s for s in repo._deserialize_composite_bucket(item)}
+        assert back["session"].window_start_ms == now
+        assert back["session"].reset_after_seconds == 18000
+        assert back["session"].window_end_ms == now + 18000000
+        assert back["wcu"].window_start_ms is None
+        assert back["wcu"].reset_after_seconds is None
+
+    def test_deserialize_missing_window_attrs_reads_as_none(self, repo):
+        """A pre-#622 bucket item (no ws/rsa attrs at all) still deserializes."""
+        limit = Limit.per_minute("rpm", 100)
+        now = 1757000000000
+        state = BucketState.from_limit("e1", "gpt-4", limit, now_ms=now, shard_count=1)
+        item = repo.build_composite_create("e1", "gpt-4", [state], now_ms=now)["Put"]["Item"]
+        assert bucket_attr("rpm", BUCKET_FIELD_WS) not in item
+        assert bucket_attr("rpm", BUCKET_FIELD_RSA) not in item
+        back = {s.limit_name: s for s in repo._deserialize_composite_bucket(item)}
+        assert back["rpm"].window_start_ms is None
+        assert back["rpm"].reset_after_seconds is None
+
+    def test_deserialize_raises_unavailable_on_corrupt_ws(self, repo):
+        """A non-integral b_{name}_ws surfaces as RateLimiterUnavailable, not a bare ValueError."""
+        limit = Limit.quota("session", 10000, reset_after=timedelta(hours=5))
+        now = 1757000000000
+        state = BucketState.from_limit("e1", "gpt-4", limit, now_ms=now, shard_count=1)
+        item = repo.build_composite_create("e1", "gpt-4", [state], now_ms=now)["Put"]["Item"]
+        item[bucket_attr("session", BUCKET_FIELD_WS)] = {"N": "18000.5"}
+        with pytest.raises(RateLimiterUnavailable, match="18000.5"):
+            repo._deserialize_composite_bucket(item)
+
+    def test_deserialize_raises_unavailable_on_corrupt_rsa(self, repo):
+        """A non-integral b_{name}_rsa surfaces as RateLimiterUnavailable, not a bare ValueError."""
+        limit = Limit.quota("session", 10000, reset_after=timedelta(hours=5))
+        now = 1757000000000
+        state = BucketState.from_limit("e1", "gpt-4", limit, now_ms=now, shard_count=1)
+        item = repo.build_composite_create("e1", "gpt-4", [state], now_ms=now)["Put"]["Item"]
+        item[bucket_attr("session", BUCKET_FIELD_RSA)] = {"N": "not-a-number"}
+        with pytest.raises(RateLimiterUnavailable, match="not-a-number"):
+            repo._deserialize_composite_bucket(item)
+
+
+class TestPropagateWindowStart:
+    """The rollover fan-out (ADR-139 "Storage and shard coherence", #624).
+
+    One conditional write per (sibling, limit), moving ``ws`` (with ``rsa``
+    and ``vu = 0``) only onto a sibling whose own window had already ended by
+    the new start -- never ``tk``.
+    """
+
+    SESSION = Limit.quota("session", 1000, reset_after=timedelta(hours=5))
+    W_MS = 5 * 3600000
+    OLD = 1000
+    NEW = OLD + W_MS
+
+    def _create_shards(self, repo, entity_id, count, ws, limits=None):
+        """``count`` real shard items of ``entity_id``/gpt-4, each stamped ``ws``."""
+        for shard in range(count):
+            states = [
+                BucketState.from_limit(entity_id, "gpt-4", limit, ws, shard_count=count)
+                for limit in limits or [self.SESSION]
+            ]
+            repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        entity_id, "gpt-4", states, ws, shard_id=shard, shard_count=count
+                    )
+                ]
+            )
+
+    @staticmethod
+    def _raw(repo, entity_id, shard):
+        client = repo._get_client()
+        response = client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "gpt-4", shard)},
+                "SK": {"S": sk_state()},
+            },
+        )
+        return response["Item"]
+
+    def _stored_ws(self, repo, entity_id, limit_name, shard):
+        item = self._raw(repo, entity_id, shard)
+        return int(item[bucket_attr(limit_name, BUCKET_FIELD_WS)]["N"])
+
+    def _windows(self, ws, rsa=18000):
+        return {"session": (ws, rsa)}
+
+    def test_writes_every_other_shard(self, repo):
+        self._create_shards(repo, "e1", count=4, ws=self.OLD)
+        written = repo._propagate_window_start(
+            "e1", "gpt-4", shard_id=2, shard_count=4, windows=self._windows(self.NEW)
+        )
+        assert written == 3
+        for shard in (0, 1, 3):
+            assert self._stored_ws(repo, "e1", "session", shard) == self.NEW
+        assert self._stored_ws(repo, "e1", "session", 2) == self.OLD
+
+    def test_the_boundary_is_the_half_open_window_end(self, repo):
+        """A sibling moves iff its window had elapsed at the new start, by the
+        same `ws + rsa <= now` rule the opener applied to itself."""
+        self._create_shards(repo, "e1", count=2, ws=self.OLD)
+        assert (
+            repo._propagate_window_start(
+                "e1", "gpt-4", shard_id=0, shard_count=2, windows=self._windows(self.NEW - 1)
+            )
+            == 0
+        ), "one millisecond before the sibling's window ends"
+        assert (
+            repo._propagate_window_start(
+                "e1", "gpt-4", shard_id=0, shard_count=2, windows=self._windows(self.NEW)
+            )
+            == 1
+        )
+
+    def _set_rf(self, repo, entity_id, shard, rf):
+        client = repo._get_client()
+        client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "gpt-4", shard)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="SET #rf = :rf",
+            ExpressionAttributeNames={"#rf": BUCKET_FIELD_RF},
+            ExpressionAttributeValues={":rf": {"N": str(rf)}},
+        )
+
+    @pytest.mark.parametrize("rf_offset", [0, 10])
+    def test_a_sibling_already_past_the_new_start_is_left_alone(self, repo, rf_offset):
+        """An aggregator refill after the old window ended (or a writer with a
+        clock ahead) left the sibling's `rf` at or past the new `ws`. Moved,
+        it would read `ws > rf` as false, treat the window as applied and keep
+        its burnt balance for all of it. Left alone, it opens its own."""
+        self._create_shards(repo, "e1", count=2, ws=self.OLD)
+        self._set_rf(repo, "e1", 1, self.NEW + rf_offset)
+        written = repo._propagate_window_start(
+            "e1", "gpt-4", shard_id=0, shard_count=2, windows=self._windows(self.NEW)
+        )
+        assert written == 0
+        assert self._stored_ws(repo, "e1", "session", 1) == self.OLD
+
+    def test_a_sibling_behind_the_new_start_still_moves(self, repo):
+        self._create_shards(repo, "e1", count=2, ws=self.OLD)
+        self._set_rf(repo, "e1", 1, self.NEW - 1)
+        written = repo._propagate_window_start(
+            "e1", "gpt-4", shard_id=0, shard_count=2, windows=self._windows(self.NEW)
+        )
+        assert written == 1
+        assert self._stored_ws(repo, "e1", "session", 1) == self.NEW
+
+    def test_a_concurrent_opener_does_not_move_the_other_openers_shard(self, repo):
+        """Two clients cross the boundary milliseconds apart and each opens a
+        window on its own shard. Moving the earlier opener's shard to the
+        later value would make it read `ws > rf` and reset a second time in
+        one window. Each keeps its own; the stagger lasts one window."""
+        self._create_shards(repo, "e1", count=2, ws=self.NEW)
+        written = repo._propagate_window_start(
+            "e1", "gpt-4", shard_id=0, shard_count=2, windows=self._windows(self.NEW + 5)
+        )
+        assert written == 0
+        assert self._stored_ws(repo, "e1", "session", 1) == self.NEW
+
+    def test_is_monotonic(self, repo):
+        """A delayed write carrying a stale `ws` must not drag a shard back."""
+        self._create_shards(repo, "e1", count=2, ws=self.NEW)
+        written = repo._propagate_window_start(
+            "e1", "gpt-4", shard_id=0, shard_count=2, windows=self._windows(self.OLD)
+        )
+        assert written == 0
+        assert self._stored_ws(repo, "e1", "session", 1) == self.NEW
+
+    def test_is_idempotent(self, repo):
+        self._create_shards(repo, "e1", count=2, ws=self.OLD)
+        first = repo._propagate_window_start(
+            "e1", "gpt-4", shard_id=0, shard_count=2, windows=self._windows(self.NEW)
+        )
+        second = repo._propagate_window_start(
+            "e1", "gpt-4", shard_id=0, shard_count=2, windows=self._windows(self.NEW)
+        )
+        assert (first, second) == (1, 0)
+
+    def test_stamps_vu_zero(self, repo):
+        """`vu = 0` forces every sibling off the fast path and through one
+        materialising pass, which is where `ws > rf` is evaluated. Without it
+        a sibling keeps spending its OLD window's balance on a pure ADD."""
+        self._create_shards(repo, "e1", count=2, ws=self.OLD)
+        repo._propagate_window_start(
+            "e1", "gpt-4", shard_id=0, shard_count=2, windows=self._windows(self.NEW)
+        )
+        item = self._raw(repo, "e1", 1)
+        assert int(item[BUCKET_FIELD_VU]["N"]) == 0
+
+    def test_lands_rsa_beside_ws_on_a_sibling_that_had_none(self, repo):
+        """A sibling stamped before its limit gained a window carries neither
+        attribute. The aggregator and a new shard's inheritance read only the
+        item, so `ws` without `rsa` would leave the window end unknowable."""
+        self._create_shards(repo, "e1", count=2, ws=self.OLD)
+        client = repo._get_client()
+        client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, "e1", "gpt-4", 1)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="REMOVE #ws, #rsa",
+            ExpressionAttributeNames={
+                "#ws": bucket_attr("session", BUCKET_FIELD_WS),
+                "#rsa": bucket_attr("session", BUCKET_FIELD_RSA),
+            },
+        )
+        written = repo._propagate_window_start(
+            "e1", "gpt-4", shard_id=0, shard_count=2, windows=self._windows(self.NEW)
+        )
+        assert written == 1
+        item = self._raw(repo, "e1", 1)
+        assert item[bucket_attr("session", BUCKET_FIELD_WS)] == {"N": str(self.NEW)}
+        assert item[bucket_attr("session", BUCKET_FIELD_RSA)] == {"N": "18000"}
+
+    def test_is_a_noop_at_shard_count_one(self, repo):
+        """(S-1) x L writes per rollover: zero when the entity is unsharded."""
+        with patch.object(repo, "_get_client") as mock_get_client:
+            assert (
+                repo._propagate_window_start(
+                    "e1", "gpt-4", shard_id=0, shard_count=1, windows=self._windows(self.NEW)
+                )
+                == 0
+            )
+            mock_get_client.assert_not_called()
+
+    def test_is_a_noop_with_no_window(self, repo):
+        with patch.object(repo, "_get_client") as mock_get_client:
+            assert (
+                repo._propagate_window_start("e1", "gpt-4", shard_id=0, shard_count=4, windows={})
+                == 0
+            )
+            mock_get_client.assert_not_called()
+
+    def test_never_touches_tk(self, repo):
+        """A fan-out cannot use ADD (it does not know each sibling's balance)
+        and a blind SET races the sibling's own slow path in both orderings.
+        Each sibling resets ITSELF, under its own `rf` lock."""
+        self._create_shards(repo, "e1", count=2, ws=self.OLD)
+        repo.transact_write(
+            [repo.build_composite_adjust("e1", "gpt-4", {"session": 400000}, shard_id=1)]
+        )
+        before = self._raw(repo, "e1", 1)
+        repo._propagate_window_start(
+            "e1", "gpt-4", shard_id=0, shard_count=2, windows=self._windows(self.NEW)
+        )
+        after = self._raw(repo, "e1", 1)
+        tk = bucket_attr("session", BUCKET_FIELD_TK)
+        assert after[tk] == before[tk]
+        assert after["rf"] == before["rf"], "the sibling's own lock is untouched"
+
+    def test_writes_once_per_sibling_and_limit(self, repo):
+        """Two windows on one item can roll at different instants, so each
+        limit is its own conditional write: one not yet due must not no-op
+        the other."""
+        daily = Limit.quota("daily", 1000, reset_after=timedelta(hours=24))
+        self._create_shards(repo, "e1", count=3, ws=self.OLD, limits=[self.SESSION, daily])
+        written = repo._propagate_window_start(
+            "e1",
+            "gpt-4",
+            shard_id=0,
+            shard_count=3,
+            windows={"session": (self.NEW, 18000), "daily": (self.NEW, 86400)},
+        )
+        assert written == 2, "session on shards 1 and 2; the daily window has not ended"
+        for shard in (1, 2):
+            assert self._stored_ws(repo, "e1", "session", shard) == self.NEW
+            assert self._stored_ws(repo, "e1", "daily", shard) == self.OLD
+
+    def test_does_not_create_a_missing_shard(self, repo):
+        """A sibling that does not exist yet is created later by whoever
+        draws it; the fan-out must not conjure a half-item holding only
+        `ws`, `rsa` and `vu`."""
+        self._create_shards(repo, "e1", count=1, ws=self.OLD)
+        written = repo._propagate_window_start(
+            "e1", "gpt-4", shard_id=0, shard_count=2, windows=self._windows(self.NEW)
+        )
+        assert written == 0
+        assert repo.get_bucket("e1", "gpt-4", "session", shard_id=1) is None
+
+    def test_a_failed_sibling_write_does_not_abandon_the_rest(self, repo, caplog):
+        """A throttled write is logged and counted as not landed. Raising
+        would abandon the siblings not yet written under the serial and gevent
+        sync strategies (#491). The entity id is never logged."""
+        with patch.object(repo, "_get_client") as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.update_item.side_effect = [
+                ClientError(
+                    {"Error": {"Code": "ProvisionedThroughputExceededException"}}, "UpdateItem"
+                ),
+                {},
+                {},
+            ]
+            mock_get_client.return_value = mock_client
+            with caplog.at_level("WARNING", logger="zae_limiter"):
+                written = repo._propagate_window_start(
+                    "sk-secret", "gpt-4", shard_id=0, shard_count=4, windows=self._windows(self.NEW)
+                )
+        assert written == 2
+        assert mock_client.update_item.call_count == 3, "every sibling was attempted"
+        assert "fan-out write failed" in caplog.text
+        assert "sk-secret" not in caplog.text
+
+    def test_a_conditional_miss_is_not_logged(self, repo, caplog):
+        self._create_shards(repo, "e1", count=2, ws=self.NEW)
+        with caplog.at_level("WARNING", logger="zae_limiter"):
+            written = repo._propagate_window_start(
+                "e1", "gpt-4", shard_id=0, shard_count=2, windows=self._windows(self.NEW)
+            )
+        assert written == 0
+        assert "fan-out write failed" not in caplog.text
+
+    def test_cancellation_still_propagates(self, repo):
+        """Only `Exception` is absorbed; a `BaseException` such as a
+        cancellation must still unwind the caller."""
+        with patch.object(repo, "_get_client") as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.update_item.side_effect = CancelledError()
+            mock_get_client.return_value = mock_client
+            with pytest.raises(CancelledError):
+                repo._propagate_window_start(
+                    "e1", "gpt-4", shard_id=0, shard_count=2, windows=self._windows(self.NEW)
+                )
 
 
 class TestCompositeBucketTTL:
@@ -3702,6 +4209,7 @@ class TestStaleLimitAliasesAreExpressionSafe:
             "sched_tz",
             bucket_attr("rpm", "sched"),
             bucket_attr("rpm", "rsched"),
+            bucket_attr("rpm", "rsa"),
         }
 
     def test_scoped_reconcile_with_a_hyphenated_stale_name(self, repo):
@@ -4954,6 +5462,175 @@ class TestResetScheduleReachesStorage:
             )
 
 
+class TestDurationWindowReachesConfigStorage:
+    """`l_{name}_rsa` — a duration quota's window length (ADR-139, plan Task 4).
+
+    The alternative spelling of the reset half: a window anchored to the
+    entity's own first use rather than a calendar instant. Mirrors
+    `TestResetScheduleReachesStorage`, scoped to config items only — bucket
+    items are Task 3's concern.
+    """
+
+    WINDOW = Limit.quota("session", 10000, reset_after=timedelta(hours=5))
+
+    @staticmethod
+    def _raw_config(repo, entity_id, resource):
+        from zae_limiter import schema
+
+        client = repo._get_client()
+        response = client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_entity(repo._namespace_id, entity_id)},
+                "SK": {"S": schema.sk_config(resource)},
+            },
+        )
+        return response.get("Item") or {}
+
+    def test_entity_limits_round_trip_a_duration_window(self, repo):
+        repo.set_limits("dw-1", [self.WINDOW], resource="gpt-4")
+        repo.invalidate_config_cache()
+        stored = repo.get_limits("dw-1", resource="gpt-4")
+        assert stored == [self.WINDOW]
+        assert stored[0].reset_after == timedelta(hours=5)
+        resolved, _on_unavailable, source = repo.resolve_limits("dw-1", "gpt-4")
+        assert resolved is not None
+        assert resolved[0].reset_after == timedelta(hours=5)
+        assert source == "entity"
+
+    def test_the_window_is_stored_under_its_own_attribute(self, repo):
+        """Seconds, not the `timedelta` — the field name carries no unit, so
+        storage has to spell it (`l_{name}_rsa`), and it is a sibling of
+        `rsched`, not a tag inside it (a quota has one or the other, ADR-139)."""
+        repo.set_limits("dw-2", [self.WINDOW], resource="gpt-4")
+        item = self._raw_config(repo, "dw-2", "gpt-4")
+        assert item[limit_attr("session", LIMIT_FIELD_RSA)]["N"] == "18000"
+        assert limit_attr("session", LIMIT_FIELD_RSCHED) not in item
+
+    def test_rewriting_a_limit_without_a_window_drops_it(self, repo):
+        """Config storage is override-not-merge (full-replace PutItem), so this
+        needs no explicit REMOVE — the same property `sched` relies on."""
+        repo.set_limits("dw-3", [self.WINDOW], resource="gpt-4")
+        repo.set_limits("dw-3", [Limit.per_minute("session", 100)], resource="gpt-4")
+        repo.invalidate_config_cache()
+        stored = repo.get_limits("dw-3", resource="gpt-4")
+        assert stored[0].reset_after is None
+        assert stored[0].is_quota is False
+
+    def test_resource_and_system_levels_round_trip_too(self, repo):
+        """All three config levels share one serialiser, but only one of them
+        is exercised by the entity tests above."""
+        repo.set_resource_defaults("gpt-4", [self.WINDOW])
+        repo.set_system_defaults([self.WINDOW])
+        (from_resource,) = repo.get_resource_defaults("gpt-4")
+        system_limits, _on_unavailable = repo.get_system_defaults()
+        assert from_resource.reset_after == timedelta(hours=5)
+        assert system_limits[0].reset_after == timedelta(hours=5)
+
+
+class TestDurationWindowParamSync:
+    """`_build_bucket_param_update` carries `rsa` and never touches `ws`
+    (ADR-139, plan Task 9).
+
+    `set_limits()` fans a limit change out to every shard of every affected
+    bucket (#468/#481/#487); a duration window's length has to ride along or
+    a shard keeps enforcing the window it was born with forever. `ws` is
+    deliberately excluded: a config change is not a rollover, and stamping it
+    here would restart every caller's window on an unrelated `rpm` edit — the
+    failure ADR-138 warned about, and the reason ADR-139 keeps the anchor in
+    its own attribute rather than deriving it from `vu`.
+    """
+
+    WINDOW = Limit.quota("session", 10000, reset_after=timedelta(hours=5))
+
+    def test_a_window_limit_gets_rsa_set(self, repo):
+        expr, names, values = repo._build_bucket_param_update([self.WINDOW], None, None)
+        alias = next((a for a, attr in names.items() if attr == bucket_attr("session", "rsa")))
+        set_clause = expr.split("REMOVE")[0]
+        assert f"{alias} = :" in set_clause
+        value_alias = next(part for part in set_clause.split(",") if part.strip().startswith(alias))
+        value_key = value_alias.split("=")[1].strip()
+        assert values[value_key] == {"N": "18000"}
+
+    def test_a_limit_without_a_window_gets_rsa_removed(self, repo):
+        """A quota converted to a dripping limit must lose `rsa`, or the item
+        keeps reconstructing as a quota forever. Absence means "no window",
+        so this is a plain REMOVE — unlike `sched`, where absence means
+        "inherit the item default" and #541 needs the explicit
+        `BUCKET_SCHED_NONE` marker."""
+        expr, names, _values = repo._build_bucket_param_update(
+            [Limit.per_minute("session", 100)], None, None
+        )
+        alias = next((a for a, attr in names.items() if attr == bucket_attr("session", "rsa")))
+        remove_clause = expr.split("REMOVE")[1]
+        assert alias in [a.strip() for a in remove_clause.split(",")]
+
+    def test_ws_is_never_written(self, repo):
+        for limits in (
+            [self.WINDOW],
+            [Limit.per_minute("rpm", 100)],
+            [Limit.quota("rpd", 10000, cron="0 0 * * *")],
+        ):
+            expr, names, _values = repo._build_bucket_param_update(limits, None, None)
+            ws_attrs = {attr for attr in names.values() if attr.endswith("_ws")}
+            assert not ws_attrs, limits
+            assert "_ws" not in expr, limits
+
+    def test_rsa_is_never_set_and_removed_together(self, repo):
+        """#488's rule extended to `rsa`: SET and REMOVE on one attribute in
+        one expression is a ValidationException."""
+        for limits in (
+            [Limit.per_minute("rpm", 100)],
+            [self.WINDOW],
+            [self.WINDOW, Limit.per_minute("rpm", 100)],
+        ):
+            expr, _names, _values = repo._build_bucket_param_update(limits, None, {"gone"})
+            set_clause = expr.split("REMOVE")[0].removeprefix("SET")
+            remove_clause = expr.split("REMOVE")[1]
+            set_aliases = {part.split("=")[0].strip() for part in set_clause.split(",")}
+            remove_aliases = {part.strip() for part in remove_clause.split(",")}
+            assert not set_aliases & remove_aliases, limits
+
+    def test_the_fan_out_stamps_rsa_on_an_existing_bucket(self, repo):
+        window = Limit.quota("rpd", 10000, reset_after=timedelta(hours=5))
+        repo.create_entity("dw-fan-1")
+        repo.set_limits("dw-fan-1", [Limit.per_day("rpd", 10000)], resource="gpt-4")
+        now_ms = int(time.time() * 1000)
+        states = [BucketState.from_limit("dw-fan-1", "gpt-4", Limit.per_day("rpd", 10000), now_ms)]
+        repo.transact_write([repo.build_composite_create("dw-fan-1", "gpt-4", states, now_ms)])
+        repo.set_limits("dw-fan-1", [window], resource="gpt-4")
+        item = self._raw_bucket(repo, "dw-fan-1", "gpt-4")
+        assert item[bucket_attr("rpd", "rsa")]["N"] == "18000"
+        assert bucket_attr("rpd", "ws") not in item
+
+    def test_removing_a_window_removes_the_stamp(self, repo):
+        window = Limit.quota("rpd", 10000, reset_after=timedelta(hours=5))
+        repo.create_entity("dw-fan-2")
+        repo.set_limits("dw-fan-2", [window], resource="gpt-4")
+        now_ms = int(time.time() * 1000)
+        states = [BucketState.from_limit("dw-fan-2", "gpt-4", window, now_ms)]
+        repo.transact_write([repo.build_composite_create("dw-fan-2", "gpt-4", states, now_ms)])
+        item = self._raw_bucket(repo, "dw-fan-2", "gpt-4")
+        assert item[bucket_attr("rpd", "rsa")]["N"] == "18000"
+        repo.set_limits("dw-fan-2", [Limit.per_day("rpd", 10000)], resource="gpt-4")
+        item = self._raw_bucket(repo, "dw-fan-2", "gpt-4")
+        assert bucket_attr("rpd", "rsa") not in item
+
+    @staticmethod
+    def _raw_bucket(repo, entity_id, resource, shard=0):
+        from zae_limiter import schema
+
+        client = repo._get_client()
+        response = client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, resource, shard)},
+                "SK": {"S": schema.sk_state()},
+            },
+        )
+        return response.get("Item") or {}
+
+
 class TestDeserialisedBucketsCarryBothSchedules:
     """`_deserialize_composite_bucket` reads `sched` / `rsched` off the item.
 
@@ -5146,6 +5823,29 @@ def _corrupt_config_sched(repo, entity_id, resource, limit_name, value, field="s
     )
 
 
+def _corrupt_config_rsa(repo, entity_id, resource, limit_name, value):
+    """Overwrite `l_{name}_rsa` with a value `Limit.__post_init__` rejects.
+
+    Mirrors `_corrupt_config_sched`, but `rsa` has no grammar to fail
+    decoding — a plain `int()` on a DynamoDB `N` cannot realistically fail —
+    so the realistic corruption is a stored value the constructor itself
+    rejects (zero, negative, or over `MAX_PERIOD_SECONDS`).
+    """
+    from zae_limiter import schema
+
+    client = repo._get_client()
+    client.update_item(
+        TableName=repo.table_name,
+        Key={
+            "PK": {"S": schema.pk_entity(repo._namespace_id, entity_id)},
+            "SK": {"S": schema.sk_config(resource)},
+        },
+        UpdateExpression="SET #a = :v",
+        ExpressionAttributeNames={"#a": limit_attr(limit_name, LIMIT_FIELD_RSA)},
+        ExpressionAttributeValues={":v": {"N": str(value)}},
+    )
+
+
 def _corrupt_bucket_sched(repo, entity_id, resource, value, shard=0, field=BUCKET_FIELD_SCHED):
     from zae_limiter import schema
 
@@ -5308,6 +6008,64 @@ class TestUnreadableStoredSchedule:
         repo.invalidate_config_cache()
         with pytest.raises(RateLimiterUnavailable, match="cannot be reconstructed"):
             repo.get_limits("corrupt-4e", resource="gpt-4")
+
+    def test_a_rejected_reconstruction_names_every_schedule_it_carries(self, repo):
+        """A limit carrying a parameter schedule *and* a stored reset beside its
+        positive rate: both attributes parse, `Limit.__post_init__` rejects the
+        pair (ADR-137), and the unavailability names both stored attributes —
+        either could be the one an operator has to repair."""
+        self._seed(repo, "corrupt-4f", [Limit.per_minute("rpm", 1000).with_schedule(self.BUSINESS)])
+        _corrupt_config_sched(repo, "corrupt-4f", "gpt-4", "rpm", "1m0h0", field="rsched")
+        repo.invalidate_config_cache()
+        with pytest.raises(RateLimiterUnavailable, match="cannot be reconstructed") as excinfo:
+            repo.get_limits("corrupt-4f", resource="gpt-4")
+        message = str(excinfo.value)
+        assert "l_rpm_sched" in message
+        assert "l_rpm_rsched" in message
+        assert isinstance(excinfo.value.cause, ValueError)
+
+    def test_a_corrupt_duration_window_raises_unavailable(self, repo):
+        """`rsa` has no grammar of its own — a bare `N` — but a stored value
+        `Limit.__post_init__` rejects outright (zero here) must still convert
+        exactly like a schedule that fails to parse or a reset stored beside
+        a positive rate, for the same reason: silently reading "no window"
+        would run the limit as an unbounded drip at its base rate."""
+        window = Limit.quota("session", 10000, reset_after=timedelta(hours=5))
+        self._seed(repo, "corrupt-4g", [window])
+        _corrupt_config_rsa(repo, "corrupt-4g", "gpt-4", "session", 0)
+        repo.invalidate_config_cache()
+        with pytest.raises(RateLimiterUnavailable) as excinfo:
+            repo.get_limits("corrupt-4g", resource="gpt-4")
+        message = str(excinfo.value)
+        assert "l_session_rsa" in message
+        assert "positive whole number of seconds" in message
+        assert isinstance(excinfo.value.cause, ValueError)
+
+    def test_a_negative_duration_window_raises_unavailable_too(self, repo):
+        window = Limit.quota("session", 10000, reset_after=timedelta(hours=5))
+        self._seed(repo, "corrupt-4h", [window])
+        _corrupt_config_rsa(repo, "corrupt-4h", "gpt-4", "session", -5)
+        repo.invalidate_config_cache()
+        with pytest.raises(RateLimiterUnavailable, match="l_session_rsa"):
+            repo.get_limits("corrupt-4h", resource="gpt-4")
+
+    def test_a_non_integral_duration_window_raises_unavailable_too(self, repo):
+        """A DynamoDB `N` legally holds `"1.5"` — `rsa` has no grammar to
+        reject it before `int()` runs, so this is a distinct failure mode
+        from the value-range checks above: the parse itself raises, inside
+        the guarded region, before `Limit.__post_init__` is ever reached
+        (#621 — a fix round found this escaping as a bare `ValueError`)."""
+        window = Limit.quota("session", 10000, reset_after=timedelta(hours=5))
+        self._seed(repo, "corrupt-4i", [window])
+        _corrupt_config_rsa(repo, "corrupt-4i", "gpt-4", "session", "1.5")
+        repo.invalidate_config_cache()
+        with pytest.raises(RateLimiterUnavailable) as excinfo:
+            repo.get_limits("corrupt-4i", resource="gpt-4")
+        assert not isinstance(excinfo.value, ValueError)
+        message = str(excinfo.value)
+        assert "l_session_rsa" in message
+        assert "1.5" in message
+        assert isinstance(excinfo.value.cause, ValueError)
 
     def test_an_unscheduled_limit_that_will_not_reconstruct_still_raises_value_error(self, repo):
         """The scoping decision, from the other side.

@@ -6,10 +6,15 @@ import warnings
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from .bucket import calculate_available, force_consume, try_consume
+from .bucket import (
+    calculate_available,
+    force_consume,
+    retry_after_for_deficit,
+    try_consume,
+    window_end_in_force,
+)
 from .exceptions import LeaseExpiredError, RateLimitExceeded
 from .models import BucketState, Limit, LimitStatus
-from .schedule import retry_after_with_schedule
 from .schema import calculate_bucket_ttl_seconds
 
 # TransactionConflict retry constants (Issue #332)
@@ -76,6 +81,31 @@ class LeaseEntry:
     # commit's is the one case `RateLimiter._apply_reset_edge()` cannot have
     # seen, and `rf` is stamped at the *later* reading.
     _reset_edge_ms: int | None = None
+    # The duration window this pass opened, epoch ms, or None when it opened
+    # none (ADR-139) — i.e. an anchor `_commit_initial` must fan out to the
+    # item's siblings. Set by `_open_window_if_elapsed` on an existing bucket,
+    # and on a create only for a shard N>0 whose sibling window had ended or
+    # was absent (a shard joining a live window has nothing to propagate).
+    # Taken at the acquire path's clock reading — never re-derived at commit
+    # time, for the same reason
+    # `_boundary_ms` is not: the two readings are a round trip apart, and a
+    # window that elapsed in between must not silently move the anchor forward
+    # past the boundary the admission was gated on.
+    _window_start_ms: int | None = None
+    # The end of the window in force at that same reading, or None when the
+    # limit has no duration window. Set for every window-carrying entry, not
+    # only the ones that opened a window, so `_commit_initial` can detect one
+    # that elapsed **between** the two readings — the exact analogue of
+    # `_reset_edge_ms`, and silent in the same way if unhandled.
+    _window_end_ms: int | None = None
+    # The `rsa` stored on the item as read, before the acquire path replaced
+    # it on the state with the resolved config's length (ADR-139). None for a
+    # create, or an item that carried none. `_commit_initial` compares the two
+    # and re-stamps `rsa` when the config length changed: a resource- or
+    # system-level `reset_after` change never fans out, and without this the
+    # item would keep the old length — and the fast path read a window end
+    # the slow path no longer enforces — until the window next moved.
+    _stored_reset_after_seconds: int | None = None
 
 
 @dataclass
@@ -223,6 +253,7 @@ class Lease:
                 requested=amount,
                 exceeded=not result.success,
                 retry_after_seconds=result.retry_after_seconds,
+                resets_at_ms=window_end_in_force(entry.limit, entry.state, now_ms),
             )
             statuses.append(status)
 
@@ -243,6 +274,7 @@ class Lease:
                         requested=0,
                         exceeded=False,
                         retry_after_seconds=0.0,
+                        resets_at_ms=window_end_in_force(entry.limit, entry.state, now_ms),
                     )
                 )
 
@@ -357,6 +389,10 @@ class Lease:
 
         # Build transaction items
         items: list[dict[str, Any]] = []
+        # Rollovers this commit persists, per bucket item, for the fan-out
+        # after the write (ADR-139). Keyed with the item's shard count so a
+        # cascade's child and parent each fan out over their own.
+        window_fanouts: dict[tuple[str, str, int, int], dict[str, tuple[int, int]]] = {}
         for (entity_id, resource, shard_id), group_entries in groups.items():
             is_new = group_entries[0]._is_new
 
@@ -395,11 +431,38 @@ class Lease:
                         shard_id=shard_id,
                         shard_count=first_entry._shard_count,
                         vu=vu,
+                        rf_ms=_monotonic_rf(now_ms, None, group_entries),
                     )
                 )
+                # A create fans out only when it anchored the entity's next
+                # window: a shard N>0 whose sibling window had ended or was
+                # absent (the limiter sets `_window_start_ms` for exactly that
+                # case). A shard that joined a live window, or a shard 0, has
+                # nothing to propagate — fanning its `now` out mid-window would
+                # drag every sibling's window forward, a reset nobody earned.
+                created = {
+                    e.limit.name: (e._window_start_ms, e.state.reset_after_seconds)
+                    for e in group_entries
+                    if e._window_start_ms is not None and e.state.reset_after_seconds is not None
+                }
+                if created:
+                    window_fanouts[(entity_id, resource, shard_id, first_entry._shard_count)] = (
+                        created
+                    )
             else:
                 consumed: dict[str, int] = {}
                 refill_amounts: dict[str, int] = {}
+                # Every entry in the group participates, declared or not:
+                # `ws` is per-limit but the write is one item, exactly as `vu`
+                # is, and an undeclared quota sharing the item must still have
+                # its window stamped or it will never roll. `rsa` rides with
+                # every `ws`: the aggregator and a new shard's inheritance read
+                # only the item, and a resource- or system-level `reset_after`
+                # never reaches an existing bucket through the param sync.
+                windows: dict[str, tuple[int, int]] = {}
+                # The configured length where it differs from the item's and
+                # the window did not move (a moved window carries it already).
+                window_lengths: dict[str, int] = {}
                 expected_rf = group_entries[0]._original_rf_ms
 
                 for entry in group_entries:
@@ -436,6 +499,45 @@ class Lease:
                             entry.state.effective_capacity_milli(now_ms)
                             - entry._original_tokens_milli
                         )
+                    # A duration window that elapsed between the acquire
+                    # path's reading and this one is the mirror of the edge
+                    # case above. `_open_window_if_elapsed()` saw a live window
+                    # at the earlier reading, yet this write persists at a
+                    # reading already past its end — and ADR-139's anchoring
+                    # rule is that the first *persisted* materialising pass
+                    # past the end anchors the next window. Left alone, this
+                    # write would be that pass without anchoring: `ws` stays
+                    # on the dead window, the request is charged to a window
+                    # that has closed, and the anchor slips to whichever
+                    # request happens to come next.
+                    #
+                    # So anchor here, at this reading, and restore the balance
+                    # the same way the reset edge does. `ws == rf` after the
+                    # write, so no later pass re-applies it, and it cannot
+                    # double-apply: the acquire path covers every window end
+                    # at or before its own reading, and `_window_end_ms` is
+                    # strictly after it. Admission was gated against the
+                    # pre-roll balance, the conservative direction. `vu` for
+                    # this item was computed from the dead window's end and so
+                    # is already `<= rf`: the next acquire takes one slow pass
+                    # and re-stamps it, the same cost a param boundary crossed
+                    # in the gap already pays.
+                    if entry._window_end_ms is not None and entry._window_end_ms <= now_ms:
+                        entry._window_start_ms = now_ms
+                        entry.state.window_start_ms = now_ms
+                        refill_amounts[name] = (
+                            entry.state.effective_capacity_milli(now_ms)
+                            - entry._original_tokens_milli
+                        )
+                    rsa = entry.state.reset_after_seconds
+                    if entry._window_start_ms is not None and rsa is not None:
+                        windows[name] = (entry._window_start_ms, rsa)
+                    elif (
+                        entry.limit.reset_after is not None
+                        and rsa is not None
+                        and rsa != entry._stored_reset_after_seconds
+                    ):
+                        window_lengths[name] = rsa
 
                 items.append(
                     repo.build_composite_normal(
@@ -448,6 +550,12 @@ class Lease:
                         ttl_seconds=ttl_seconds,
                         shard_id=shard_id,
                         vu=vu,
+                        windows=windows,
+                        window_lengths=window_lengths,
+                        # Computed after the loop above, which can anchor a
+                        # window at this reading; the lock still compares the
+                        # stored `expected_rf`.
+                        rf_ms=_monotonic_rf(now_ms, expected_rf, group_entries),
                         # No boundary anywhere in the group means nothing on
                         # this item is scheduled — the group covers every
                         # limit sharing it, declared or not. Leaving `vu`
@@ -458,6 +566,16 @@ class Lease:
                         clear_vu=not boundaries,
                     )
                 )
+                # The rollover fan-out. A create fans out only in the one case
+                # above (it anchored the entity's next window). The item's
+                # own `shard_count` is consulted beside the cached one, which
+                # can lag it; a sibling the cache has not learned about yet
+                # would otherwise keep its old window.
+                if windows:
+                    fanout_count = max(
+                        max(e._shard_count, e.state.shard_count) for e in group_entries
+                    )
+                    window_fanouts[(entity_id, resource, shard_id, fanout_count)] = dict(windows)
 
         if not items:
             self._initial_committed = True
@@ -579,6 +697,62 @@ class Lease:
         self._initial_committed = True
         for entry in self.entries:
             entry._initial_consumed = entry.consumed
+
+        # The lease is committed before the fan-out runs: nothing the fan-out
+        # does (it swallows its own failures) can leave it half-recorded.
+        # Only when the rf-locked write itself landed -- the retry path stamps
+        # no `ws`, so a rollover that fell back to it was never persisted.
+        if not condition_failed:
+            await self._fan_out_windows(window_fanouts)
+
+    async def _fan_out_windows(
+        self, window_fanouts: dict[tuple[str, str, int, int], dict[str, tuple[int, int]]]
+    ) -> None:
+        """Propagate each rollover this commit persisted to the item's siblings (ADR-139).
+
+        After the commit, never inside it. The transaction is what makes the
+        roll durable on this shard; the fan-out is what stops the entity's
+        other shards anchoring windows of their own. Called only when the
+        rf-locked write itself landed: the consumption-only retry stamps no
+        `ws`, so a rollover that fell back to it -- including one the
+        re-expression anchored in memory -- was never persisted, and the next
+        pass on this shard re-opens the window and fans out then.
+
+        A failure here is not a failed acquire -- the caller was admitted and
+        the write landed -- so it is logged and swallowed. A sibling left on
+        the old `ws` opens its own window when that one elapses, which is the
+        behaviour without a fan-out; the next rollover re-converges the
+        entity. Cost: ``(S - 1) × L`` conditional writes per rollover, none at
+        all for an unsharded entity. It runs after `_initial_committed` is
+        recorded, so the lease's bookkeeping never depends on it.
+
+        The entity id is never logged: it is routinely an API key
+        (`py/clear-text-logging-sensitive-data`), the same rule
+        ``bump_shard_count``'s ``MAX_SHARD_COUNT`` warning follows.
+        """
+        for (entity_id, resource, shard_id, shard_count), windows in window_fanouts.items():
+            if shard_count <= 1:
+                continue
+            try:
+                written = await self.repository._propagate_window_start(
+                    entity_id, resource, shard_id, shard_count, windows
+                )
+            except Exception:
+                logger.warning(
+                    "duration-window fan-out failed for resource=%s; siblings will "
+                    "anchor their own windows until one converges them",
+                    resource,
+                    exc_info=True,
+                )
+                continue
+            expected = (shard_count - 1) * len(windows)
+            if written < expected:
+                logger.debug(
+                    "duration-window fan-out wrote %d of %d for resource=%s",
+                    written,
+                    expected,
+                    resource,
+                )
 
     async def _commit_adjustments(self) -> None:
         """Write post-enter adjustment deltas to DynamoDB on context exit (Issue #309).
@@ -732,6 +906,45 @@ def _is_transaction_conflict(exc: Exception) -> bool:
     return False
 
 
+def _monotonic_rf(now_ms: int, stored_rf: int | None, group: list[LeaseEntry]) -> int:
+    """The ``rf`` a materialising write stamps: never backward, never below a window (ADR-139).
+
+    ``max(now, stored rf, every applied window start on the item)``. A duration
+    window rolls when ``ws > rf`` (``BucketState.window_rolled``), so ``rf`` is
+    the only record that a shard has applied its window, and a writer whose
+    clock runs **behind** the one that stamped the item would otherwise erase
+    that record:
+
+    * on an existing item, ``rf = now`` moves ``rf`` backward past ``ws``, the
+      next pass reads ``ws > rf`` and resets the balance again, and every
+      request from the slow clock refunds everything spent before it — an
+      unbounded quota;
+    * on a created shard, the inherited ``ws`` of a window a faster clock
+      opened lands above ``rf = now``, so the shard re-rolls on its next pass.
+
+    Holding ``rf`` at or above both closes each. Refill is unaffected in the
+    direction that matters: ``bucket.refill_bucket`` treats a non-positive
+    elapsed time as zero, so an ``rf`` ahead of a later reader's clock grants
+    nothing rather than a negative refill. Only entries whose limit has a
+    window vote with their ``ws``: a stale start left behind by a limit that no
+    longer has one is not a window in force.
+
+    Args:
+        now_ms: The commit's clock reading.
+        stored_rf: The ``rf`` read off the item, or ``None`` for a create.
+        group: Every entry written to this one bucket item.
+    """
+    candidates = [now_ms]
+    if stored_rf is not None:
+        candidates.append(stored_rf)
+    candidates.extend(
+        e.state.window_start_ms
+        for e in group
+        if e.limit.reset_after is not None and e.state.window_start_ms is not None
+    )
+    return max(candidates)
+
+
 def _build_retry_failure_statuses(entries: list[LeaseEntry], now_ms: int) -> list[LimitStatus]:
     """Build LimitStatus list for a retry failure (rate limit exceeded).
 
@@ -752,24 +965,17 @@ def _build_retry_failure_statuses(entries: list[LeaseEntry], now_ms: int) -> lis
         # rate would under-report the wait by shard_count. The walk takes the
         # undivided base and does both narrowings — schedule, then shard —
         # itself (#222 §7), and returns the next reset edge outright when one
-        # lands before the deficit clears.
+        # lands before the deficit clears. A duration window answers with the
+        # wait to its end instead (ADR-139), the same helper `try_consume`
+        # uses, so the fast and slow paths cannot answer it differently.
         #
-        # Both schedules come off the **state**, not off `entry.limit`. In
-        # production they are the same tuples — `_do_acquire` attaches the
-        # resolved config's schedules to each state before admission, and
-        # `BucketState.from_limit` stamps them onto a new one — but the state
-        # is the single source `try_consume` also reads, so the fast and slow
-        # paths cannot answer the same question from different fields.
-        retry_after = retry_after_with_schedule(
-            deficit_milli=deficit_milli,
-            cp_milli=entry.state.capacity_milli,
-            ra_milli=entry.state.refill_amount_milli,
-            rp_ms=entry.state.refill_period_ms,
-            sched=entry.state.sched,
-            reset_sched=entry.state.reset_sched,
-            now_ms=now_ms,
-            shard_count=entry.state.shard_count,
-        )
+        # Both schedules and the window come off the **state**, not off
+        # `entry.limit`. In production they are the same values —
+        # `_do_acquire` attaches the resolved config's schedules and window
+        # length to each state before admission, and `BucketState.from_limit`
+        # stamps them onto a new one — but the state is the single source
+        # `try_consume` also reads.
+        retry_after = retry_after_for_deficit(entry.state, deficit_milli, now_ms)
         statuses.append(
             LimitStatus(
                 entity_id=entry.entity_id,
@@ -780,6 +986,7 @@ def _build_retry_failure_statuses(entries: list[LeaseEntry], now_ms: int) -> lis
                 requested=entry.consumed,
                 exceeded=entry.consumed > 0,
                 retry_after_seconds=retry_after,
+                resets_at_ms=window_end_in_force(entry.limit, entry.state, now_ms),
             )
         )
     return statuses

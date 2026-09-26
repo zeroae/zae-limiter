@@ -18,6 +18,7 @@ from .bucket import (
     declared_statuses,
     force_consume,
     try_consume,
+    window_end_in_force,
     would_refill_satisfy,
 )
 from .config_cache import ConfigSource
@@ -75,6 +76,40 @@ def _is_custom_config(config_source: str | None) -> bool:
     out. Kept in one place so the call sites cannot drift apart again (#489).
     """
     return config_source in _ENTITY_CONFIG_SOURCES
+
+
+def _reader_window_end(limit: Limit, bucket: BucketState) -> int | None:
+    """When a read-only view should treat ``bucket``'s duration window as over (ADR-139).
+
+    The item's ``ws`` paired with the **later** of two lengths: the resolved
+    config's ``reset_after`` and the item's own ``rsa``. The two disagree only
+    after an operator changes a resource- or system-level ``reset_after``,
+    which never fans out (#271/#296), and in either direction the later end is
+    the one ``acquire()`` is actually still enforcing:
+
+    - **Lengthened** (item short, config long): the slow path pairs ``ws``
+      with the config length — ``_do_acquire`` overwrites the item's ``rsa``
+      before ``_open_window_if_elapsed`` reads it — so the window runs to the
+      config end.
+    - **Shortened** (item long, config short): the item's ``vu`` was stamped
+      from the old, longer end, so the fast path keeps rejecting until it.
+      Reporting the shorter config end would show "restored" while the next
+      ``acquire()`` still fast-rejects — the display contradicting the
+      limiter, which is the thing :meth:`RateLimiter.check_availability`
+      exists to prevent.
+
+    Erring late costs a display that says "not yet" slightly too long; erring
+    early promises tokens that are not there. ``None`` for a bucket with no
+    window.
+    """
+    if bucket.window_start_ms is None:
+        return None
+    ends = [
+        bucket.window_start_ms + seconds * 1000
+        for seconds in (limit.reset_after_seconds, bucket.reset_after_seconds)
+        if seconds is not None
+    ]
+    return max(ends) if ends else None
 
 
 class OnUnavailable(Enum):
@@ -1473,12 +1508,121 @@ class RateLimiter:
         return True
 
     @staticmethod
-    def _materialisation_stamps(limit: Limit, now_ms: int) -> tuple[int | None, int | None]:
-        """``(vu, next reset edge)`` for one limit at one clock reading (#222).
+    def _apply_window_roll(
+        limit: Limit, state: BucketState, now_ms: int, *, opened: bool = False
+    ) -> bool:
+        """Restore the balance if a duration window has been rolled (ADR-139).
 
-        ``vu`` is the minimum of the two futures — the next parameter change and
-        the next reset edge — because either invalidates the materialised
-        ``tk``. A limit carrying a ``reset_schedule`` and **no** ``schedule`` is
+        :meth:`_apply_reset_edge` with the backwards cron scan replaced by an
+        attribute read (:attr:`BucketState.window_rolled`, ``ws > rf``), and
+        every property that one was designed for carries over verbatim:
+
+        - **Idempotent.** It is a set, not an add, so two shards applying the
+          same ``ws``, or one shard seeing it on two successive passes,
+          converge.
+        - **Idle buckets are correct for free.** A shard idle across three
+          window boundaries applies one roll on wake, because ``ws`` holds only
+          the *current* window's start.
+        - **Strictly ``>``.** The pass that applies the roll stamps ``rf`` at or
+          after ``ws``, so ``>=`` would re-fire on every later request and
+          refund everything spent since — an unbounded quota.
+        - **Per shard, to the shard's share.** ``effective_capacity_milli``
+          applies the parameter schedule and then divides by ``shard_count``.
+          Resetting every shard to the undivided capacity would multiply the
+          entity's quota by ``shard_count``.
+        - **``tc`` untouched**, so the consumption counter stays monotonic.
+
+        The *anchoring* of a new window is **not** here. This applies a window
+        another writer (or an earlier pass) already opened. Opening one is
+        :meth:`_open_window_if_elapsed`, which runs immediately before this and
+        mutates the same ``state``; the caller passes ``opened=True`` when it
+        did, and the reset is then **unconditional**. ``ws > rf`` is the rule
+        for a shard that *sees* a window another writer opened; the opener
+        applies its own reset under its own ``rf`` lock (ADR-139). Gating the
+        opener on ``ws > rf`` too would fail whenever another writer's clock
+        stamped ``rf`` after this client's ``now``: the window would be anchored
+        over the dead window's leftovers, and because ``rf >= ws`` after the
+        commit, ``ws > rf`` would never hold again — the entity held to those
+        leftovers for a whole new window. Nudging ``ws`` past ``rf`` instead is
+        wrong the other way: the reset would re-fire after the commit and
+        refund everything spent in between.
+
+        Must be called **before** :meth:`_admit_limit`, so the restored balance
+        gates the request that crossed the boundary rather than the one after
+        it. Mutates ``state`` in place and returns whether it did;
+        ``_original_tokens_milli`` and ``_original_rf_ms`` must already have
+        been captured, because they are the *stored* values the ``ADD`` delta
+        and the ``rf`` lock are built from.
+        """
+        if limit.reset_after is None or not (opened or state.window_rolled):
+            return False
+        state.tokens_milli = state.effective_capacity_milli(now_ms)
+        return True
+
+    @staticmethod
+    def _open_window_if_elapsed(limit: Limit, state: BucketState, now_ms: int) -> int | None:
+        """Anchor a new duration window when the current one has elapsed (ADR-139).
+
+        Idle-restarting, not tiling: the new window starts at ``now_ms`` — the
+        first use after expiry — rather than at ``ws_old + rsa``. Anchoring to
+        the old end would be a fixed grid offset by the first-ever use, which
+        cannot express "go idle long enough and your window restarts", the
+        thing anchoring to the entity is *for*.
+
+        The window is half-open, ``[ws, ws + rsa)``: its end instant already
+        belongs to the next window, which is also the instant ``vu`` stops
+        admitting fast-path writes.
+
+        A limit with no window, or one whose window has not elapsed, is left
+        alone — which is how "exhaustion inside the current window does not
+        move the anchor" is enforced: an exhausted quota is still inside its
+        window, so nothing here fires and :meth:`_admit_limit` rejects against
+        the balance on disk. And a pass that *does* open a window but is then
+        rejected writes nothing (write-on-enter invariant 1), so the anchor
+        moves only when a request is admitted and committed.
+
+        A bucket carrying ``rsa`` but **no** ``ws`` (a shard stamped before its
+        limit gained a window, e.g. by the param sync) opens its first window
+        here. A client-created bucket never lacks one, since
+        ``BucketState.from_limit`` stamps it at creation.
+
+        Mutates ``state`` in place. Returns the new ``ws`` when it opened one,
+        so the caller can stamp it; ``None`` otherwise.
+        """
+        if limit.reset_after is None or state.reset_after_seconds is None:
+            return None
+        end = state.window_end_ms
+        if end is not None and now_ms < end:
+            return None
+        state.window_start_ms = now_ms
+        return now_ms
+
+    @staticmethod
+    def _materialisation_stamps(
+        limit: Limit, state: BucketState, now_ms: int
+    ) -> tuple[int | None, int | None]:
+        """``(vu, next reset edge)`` for one limit at one clock reading (#222, ADR-139).
+
+        ``vu`` is the minimum of the futures that invalidate the materialised
+        ``tk``: the next parameter change, the next reset edge, and — since
+        ADR-139 — the end of the current duration window. All three are
+        boundaries past which the fast path must not spend tokens minted under
+        conditions no longer in force.
+
+        The window member is what keeps the speculative condition
+        byte-identical. An elapsed window makes ``vu <= now``, the pre-existing
+        ``(attribute_not_exists(vu) OR vu > :now)`` term fails, the failure
+        classifies as ``SCHEDULE_BOUNDARY``, and the limiter routes it to the
+        slow path — the only place that re-materialises, and therefore the only
+        place that anchors. No new condition term, no new expression value, no
+        config read on the fast path. Read the window end off ``state``
+        **after** :meth:`_open_window_if_elapsed` has run, so a pass that just
+        anchored a new window stamps ``vu`` at the *new* window's end. Only the
+        resolved ``limit`` decides whether a window is in force; a stale
+        ``ws``/``rsa`` left on the item by a limit that no longer has one does
+        not vote.
+
+        A limit carrying a ``reset_schedule`` and **no** ``schedule`` is
         the daily-quota shape, and it must still produce a ``vu``: without one
         the speculative condition never fails, the slow path never runs, and the
         reset fires only when something unrelated forces a materialising pass.
@@ -1499,7 +1643,8 @@ class RateLimiter:
         reset_ms = (
             next_boundary((), limit.reset_schedule, now_ms=now_ms) if limit.reset_schedule else None
         )
-        candidates = [b for b in (param_ms, reset_ms) if b is not None]
+        window_ms = state.window_end_ms if limit.reset_after is not None else None
+        candidates = [b for b in (param_ms, reset_ms, window_ms) if b is not None]
         return (min(candidates) if candidates else None), reset_ms
 
     @staticmethod
@@ -1542,6 +1687,10 @@ class RateLimiter:
             requested=amount,
             exceeded=not result.success,
             retry_after_seconds=result.retry_after_seconds,
+            # Read after `_open_window_if_elapsed` (the caller runs it first),
+            # so a rejection at a boundary reports the window just opened,
+            # not the one that elapsed (ADR-139).
+            resets_at_ms=window_end_in_force(limit, state, now_ms),
         )
         if not result.success:
             return status, 0
@@ -1644,6 +1793,12 @@ class RateLimiter:
             # (#222 §7). Attaching one without the other would leave a quota's
             # rejection quoting a drip that ADR-137 says does not exist.
             existing.reset_sched = limit.reset_schedule
+            # And the duration window's length (ADR-139), from config for the
+            # same reason: a resource- or system-level `reset_after` never
+            # fans out, so an item created before it was configured carries no
+            # `rsa`, and without this its window would never open.
+            stored_rsa = existing.reset_after_seconds
+            existing.reset_after_seconds = limit.reset_after_seconds
 
             original_tk = existing.tokens_milli
             original_rf = existing.last_refill_ms
@@ -1653,7 +1808,13 @@ class RateLimiter:
             # rejected on the parent without this. Every bucket here exists by
             # construction — the method returns None above when one is missing
             # — so there is no `is_new` case to guard (#222 §3.6).
+            #
+            # A duration window is the same seam (ADR-139). The parent anchors
+            # its own window, independently of the child's: this reads the
+            # parent's `ws` off the parent's item and nothing else.
+            parent_new_ws = self._open_window_if_elapsed(limit, existing, now_ms)
             self._apply_reset_edge(limit, existing, now_ms)
+            self._apply_window_roll(limit, existing, now_ms, opened=parent_new_ws is not None)
 
             status, consumed = self._admit_limit(
                 parent_id, resource, limit, existing, consume, now_ms
@@ -1664,7 +1825,9 @@ class RateLimiter:
             # The parent schedules independently of the child: this is a
             # different item, so it gets its own `vu` from its own limits
             # (#222 §2.2).
-            parent_boundary_ms, parent_reset_edge_ms = self._materialisation_stamps(limit, now_ms)
+            parent_boundary_ms, parent_reset_edge_ms = self._materialisation_stamps(
+                limit, existing, now_ms
+            )
 
             # Every resolved limit gets an entry so _commit_initial() persists
             # refill for all of them; only the declared ones are adjustable
@@ -1684,6 +1847,9 @@ class RateLimiter:
                     _shard_count=parent_shard_count,
                     _boundary_ms=parent_boundary_ms,
                     _reset_edge_ms=parent_reset_edge_ms,
+                    _window_start_ms=parent_new_ws,
+                    _window_end_ms=window_end_in_force(limit, existing, now_ms),
+                    _stored_reset_after_seconds=stored_rsa,
                 )
             )
 
@@ -1868,11 +2034,19 @@ class RateLimiter:
             quota_transfer = await self._quota_transfer(
                 eid, resource, entity_limits[eid], eid_shard_count, any_existing, now_ms
             )
+            # The window a shard being created joins, read off shard 0 with
+            # `eid`'s own read — on a cascade that is the parent's, never the
+            # child's (ADR-139). Empty unless a shard N>0 is being created.
+            sibling_ws = await self._sibling_window_starts(
+                eid, resource, entity_limits[eid], eid_shard, any_existing
+            )
 
             for limit in entity_limits[eid]:
                 # Get existing bucket from batch result or create new one
                 bucket_key = (eid, resource, limit.name)
                 existing = existing_buckets.get(bucket_key)
+                created_anchor: int | None = None
+                stored_rsa: int | None = None
                 if existing is None:
                     is_new = True
                     # A new shard of a sharded *dripping* bucket starts at its
@@ -1889,13 +2063,55 @@ class RateLimiter:
                     # the next reset edge (#587). It is handed the surplus just
                     # clamped off its siblings instead, which conserves the
                     # entity-wide spendable total exactly.
+                    #
+                    # A shard created mid-window joins the window in progress
+                    # rather than opening its own (ADR-139): `from_limit`
+                    # stamps `ws = now_ms`, right for the FIRST shard and
+                    # wrong for every later one, since an entity whose shards
+                    # each opened their own window has no single
+                    # `resets_at_ms`. Only a window still live at `now_ms`
+                    # is joined — the half-open `[ws, ws + rsa)` rule
+                    # `_open_window_if_elapsed` applies, with `rsa` from the
+                    # config just resolved. Inheriting an ended one would
+                    # force an immediate re-roll.
+                    #
+                    # An ended window means the entity is owed a fresh
+                    # allowance, so the shard opens its own at full share
+                    # instead of taking the transfer: its siblings' balances
+                    # belong to the window that ended, and each restores its
+                    # own share when it next rolls. Taking the transfer there
+                    # would leave this shard holding the dead window's
+                    # leftovers for the whole of the new one.
+                    inherited_ws = sibling_ws.get(limit.name)
+                    window_live: bool | None = None
+                    if inherited_ws is not None and limit.reset_after_seconds is not None:
+                        window_live = inherited_ws + limit.reset_after_seconds * 1000 > now_ms
                     state = BucketState.from_limit(
                         eid,
                         resource,
                         limit,
                         now_ms,
                         shard_count=eid_shard_count,
-                        reclaimed_milli=quota_transfer.get(limit.name),
+                        reclaimed_milli=(
+                            None if window_live is False else quota_transfer.get(limit.name)
+                        ),
+                    )
+                    if window_live:
+                        state.window_start_ms = inherited_ws
+                    # A shard N>0 that opens its own window (shard 0's has
+                    # ended, or shard 0 carries none) anchors the entity's
+                    # next window, so it fans out like a rollover: otherwise
+                    # shard 0 later anchors a window of its own at t', the
+                    # fan-out leaves this shard alone, and the entity runs two
+                    # phases. Only siblings whose window has ended move. The
+                    # live-inherit case and a shard-0 create never fan out.
+                    created_anchor = (
+                        state.window_start_ms
+                        if eid_shard != 0
+                        and not any_existing
+                        and limit.reset_after is not None
+                        and not window_live
+                        else None
                     )
                 else:
                     is_new = False
@@ -1915,6 +2131,16 @@ class RateLimiter:
                     # carried `sched` alone would report a quota's wait as the
                     # drip ADR-137 gives it — which is none.
                     state.reset_sched = limit.reset_schedule
+                    # The duration window's length travels with them (ADR-139).
+                    # Config is the fresher source, and it is the *only* source
+                    # for an item created before a resource- or system-level
+                    # `reset_after` was configured: those levels never fan out
+                    # (#271/#296), so the item carries no `rsa` and its window
+                    # would never open. `ws` stays the item's — it is state,
+                    # not config. The item's own length is kept aside so the
+                    # commit can re-stamp it when the config has changed.
+                    stored_rsa = state.reset_after_seconds
+                    state.reset_after_seconds = limit.reset_after_seconds
 
                 # Capture original values before try_consume modifies them (ADR-115)
                 original_tk = state.tokens_milli
@@ -1926,8 +2152,18 @@ class RateLimiter:
                 # restored quota rather than the burnt one (#222 §3.6). A
                 # brand-new bucket starts at its full share already and has no
                 # stored `rf` an edge could be compared against.
+                #
+                # A duration window elapsed since the last use is the same seam
+                # (ADR-139): anchor the new window at this reading, then restore
+                # the balance under `ws > rf`. Exhaustion inside the window
+                # moves nothing — `_open_window_if_elapsed` fires only past the
+                # window's end — and a pass that anchors and is then rejected
+                # writes nothing at all (write-on-enter invariant 1).
+                new_ws: int | None = created_anchor
                 if not is_new:
+                    new_ws = self._open_window_if_elapsed(limit, state, now_ms)
                     self._apply_reset_edge(limit, state, now_ms)
+                    self._apply_window_roll(limit, state, now_ms, opened=new_ws is not None)
 
                 status, consumed = self._admit_limit(eid, resource, limit, state, consume, now_ms)
                 if status is not None:
@@ -1944,7 +2180,7 @@ class RateLimiter:
                 # at commit time would point past the window just entered and
                 # leave the fast path spending pre-boundary tokens for a whole
                 # window.
-                boundary_ms, reset_edge_ms = self._materialisation_stamps(limit, now_ms)
+                boundary_ms, reset_edge_ms = self._materialisation_stamps(limit, state, now_ms)
 
                 # Every resolved limit gets an entry: _commit_initial() needs
                 # them all to create the composite bucket and to credit refill
@@ -1970,6 +2206,9 @@ class RateLimiter:
                         _declared=status is not None,
                         _boundary_ms=boundary_ms,
                         _reset_edge_ms=reset_edge_ms,
+                        _window_start_ms=new_ws,
+                        _window_end_ms=window_end_in_force(limit, state, now_ms),
+                        _stored_reset_after_seconds=stored_rsa,
                     )
                 )
 
@@ -2092,6 +2331,49 @@ class RateLimiter:
             entity_id, resource, shares_milli
         )
         return reclaimed if shards_found else {}
+
+    async def _sibling_window_starts(
+        self,
+        entity_id: str,
+        resource: str,
+        limits: list[Limit],
+        shard_id: int,
+        any_existing: bool,
+    ) -> dict[str, int]:
+        """The duration windows a shard about to be created would join (ADR-139).
+
+        Reads shard 0's ``ws`` for every limit carrying a ``reset_after``, via
+        :meth:`Repository.get_shard_window_starts`. Whether each window is still
+        live is decided by the caller against the ``rsa`` it resolved.
+
+        Returns ``{}`` — costing nothing — in each case that cannot need it:
+
+        * a bucket item already exists on the shard being acquired, so nothing
+          is being created;
+        * the shard being created **is** shard 0, which has no sibling to
+          inherit from: it is the source of truth, and a shard 0 being created
+          is either the entity's first bucket or a TTL recreation, both of which
+          rightly open a new window; or
+        * no resolved limit carries a duration window.
+
+        Args:
+            entity_id: Entity whose shard is about to be created. On a cascade
+                this is the parent for the parent's shard — parent and child
+                anchor independently (ADR-139).
+            resource: Resource the acquire is for.
+            limits: Limits resolved for this entity and resource.
+            shard_id: The shard about to be created.
+            any_existing: Whether a bucket item already exists on that shard.
+
+        Returns:
+            ``{limit_name: window_start_ms}`` as stored on shard 0.
+        """
+        if any_existing or shard_id == 0:
+            return {}
+        window_limits = [limit.name for limit in limits if limit.reset_after is not None]
+        if not window_limits:
+            return {}
+        return await self._repository.get_shard_window_starts(entity_id, resource, window_limits)
 
     async def _fetch_buckets(
         self,
@@ -2238,6 +2520,28 @@ class RateLimiter:
             edge = prev_reset_edge(limit.reset_schedule, now_ms)
             if edge is not None and edge > bucket.last_refill_ms:
                 return bucket.effective_capacity_milli(now_ms) // 1000
+        # A duration window is the same seam (ADR-139), at the same per-shard
+        # granularity, and it has two ways to be stale on disk:
+        #
+        # - **This shard's window is over** (or it never had one — a shard the
+        #   param sync stamped with `rsa` alone). The next `acquire()` on it
+        #   opens a fresh window and restores the balance
+        #   (`_open_window_if_elapsed`, then `_apply_window_roll(opened=True)`).
+        # - **It received a rollover fan-out it has not applied yet.** The
+        #   fan-out moves `ws` and never `tk`, so the shard holds a new window
+        #   start beside a burnt balance until it is drawn — and the next
+        #   `acquire()` on it restores the quota immediately. This is the case
+        #   a reader would omit, and it asks the one shared predicate
+        #   (`BucketState.window_rolled`) rather than restating `ws > rf`.
+        #
+        # The window's end pairs the item's `ws` with the later of the
+        # config's length and the item's `rsa` (`_reader_window_end` says
+        # why), so this view never reports a shard restored while `acquire()`
+        # would still reject on it.
+        if limit is not None and limit.reset_after is not None:
+            end = _reader_window_end(limit, bucket)
+            if end is None or now_ms >= end or bucket.window_rolled:
+                return bucket.effective_capacity_milli(now_ms) // 1000
         return calculate_available(bucket, now_ms)
 
     async def check_availability(
@@ -2343,13 +2647,28 @@ class RateLimiter:
         # One GSI3 pass discovers every shard of every resource for this
         # entity (GHSA-76rv); shard 0 alone holds at most capacity // N.
         totals: dict[str, int] = {}
+        # The latest live duration-window end per limit name (ADR-139). The
+        # rollover fan-out keeps every shard on one window, so there is one
+        # honest `resets_at_ms` — but shards can still be staggered: by
+        # milliseconds when two openers race, or by longer when one missed
+        # the fan-out. `max` is the conservative "whole quota back" instant: a
+        # lagging shard cannot report the window ending sooner than it does.
+        # An end at or before `now` is dropped, because that shard's allowance
+        # is back on its next acquire (`_readable_balance` reports it so), and
+        # a shard with no window contributes nothing for the same reason.
+        window_ends: dict[str, int] = {}
         for bucket in await self._repository.get_buckets(entity_id):
             if bucket.resource != resource:
                 continue
             name = bucket.limit_name
+            limit_for_bucket = resolved_by_name.get(name)
             totals[name] = totals.get(name, 0) + self._readable_balance(
-                bucket, resolved_by_name.get(name), now_ms
+                bucket, limit_for_bucket, now_ms
             )
+            if limit_for_bucket is not None and limit_for_bucket.reset_after is not None:
+                end = _reader_window_end(limit_for_bucket, bucket)
+                if end is not None and end > now_ms:
+                    window_ends[name] = max(end, window_ends.get(name, end))
 
         statuses: list[LimitStatus] = []
         for limit in resolved_limits:
@@ -2375,8 +2694,16 @@ class RateLimiter:
             requested = needed.get(limit.name, 0)
             exceeded = requested > 0 and available < requested
 
+            resets_at_ms = window_ends.get(limit.name)
             wait = 0.0
-            if exceeded:
+            if exceeded and limit.reset_after is not None:
+                # A duration window: the balance comes back in one lump at the
+                # window's end and never drips (ADR-137), so that is the wait.
+                # No live end means every shard's allowance is back on its next
+                # acquire — `available` already says so — and the wait is 0.
+                if resets_at_ms is not None:
+                    wait = (resets_at_ms - now_ms) / 1000.0
+            elif exceeded:
                 # Derive the wait from the same `available` that is reported,
                 # so the two numbers on screen can never disagree.
                 #
@@ -2404,6 +2731,7 @@ class RateLimiter:
                     requested=requested,
                     exceeded=exceeded,
                     retry_after_seconds=wait,
+                    resets_at_ms=resets_at_ms,
                 )
             )
 

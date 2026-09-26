@@ -12,10 +12,15 @@ import warnings
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from .bucket import calculate_available, force_consume, try_consume
+from .bucket import (
+    calculate_available,
+    force_consume,
+    retry_after_for_deficit,
+    try_consume,
+    window_end_in_force,
+)
 from .exceptions import LeaseExpiredError, RateLimitExceeded
 from .models import BucketState, Limit, LimitStatus
-from .schedule import retry_after_with_schedule
 from .schema import calculate_bucket_ttl_seconds
 
 _CONFLICT_MAX_RETRIES = 3
@@ -46,6 +51,9 @@ class LeaseEntry:
     _declared: bool = True
     _boundary_ms: int | None = None
     _reset_edge_ms: int | None = None
+    _window_start_ms: int | None = None
+    _window_end_ms: int | None = None
+    _stored_reset_after_seconds: int | None = None
 
 
 @dataclass
@@ -156,6 +164,7 @@ class SyncLease:
                 requested=amount,
                 exceeded=not result.success,
                 retry_after_seconds=result.retry_after_seconds,
+                resets_at_ms=window_end_in_force(entry.limit, entry.state, now_ms),
             )
             statuses.append(status)
             if result.success:
@@ -173,6 +182,7 @@ class SyncLease:
                         requested=0,
                         exceeded=False,
                         retry_after_seconds=0.0,
+                        resets_at_ms=window_end_in_force(entry.limit, entry.state, now_ms),
                     )
                 )
         violations = [s for s in statuses if s.exceeded]
@@ -269,6 +279,7 @@ class SyncLease:
             key = (entry.entity_id, entry.resource, entry._shard_id)
             groups.setdefault(key, []).append(entry)
         items: list[dict[str, Any]] = []
+        window_fanouts: dict[tuple[str, str, int, int], dict[str, tuple[int, int]]] = {}
         for (entity_id, resource, shard_id), group_entries in groups.items():
             is_new = group_entries[0]._is_new
             has_custom_config = group_entries[0]._has_custom_config
@@ -296,11 +307,23 @@ class SyncLease:
                         shard_id=shard_id,
                         shard_count=first_entry._shard_count,
                         vu=vu,
+                        rf_ms=_monotonic_rf(now_ms, None, group_entries),
                     )
                 )
+                created = {
+                    e.limit.name: (e._window_start_ms, e.state.reset_after_seconds)
+                    for e in group_entries
+                    if e._window_start_ms is not None and e.state.reset_after_seconds is not None
+                }
+                if created:
+                    window_fanouts[entity_id, resource, shard_id, first_entry._shard_count] = (
+                        created
+                    )
             else:
                 consumed: dict[str, int] = {}
                 refill_amounts: dict[str, int] = {}
+                windows: dict[str, tuple[int, int]] = {}
+                window_lengths: dict[str, int] = {}
                 expected_rf = group_entries[0]._original_rf_ms
                 for entry in group_entries:
                     name = entry.limit.name
@@ -314,6 +337,22 @@ class SyncLease:
                             entry.state.effective_capacity_milli(now_ms)
                             - entry._original_tokens_milli
                         )
+                    if entry._window_end_ms is not None and entry._window_end_ms <= now_ms:
+                        entry._window_start_ms = now_ms
+                        entry.state.window_start_ms = now_ms
+                        refill_amounts[name] = (
+                            entry.state.effective_capacity_milli(now_ms)
+                            - entry._original_tokens_milli
+                        )
+                    rsa = entry.state.reset_after_seconds
+                    if entry._window_start_ms is not None and rsa is not None:
+                        windows[name] = (entry._window_start_ms, rsa)
+                    elif (
+                        entry.limit.reset_after is not None
+                        and rsa is not None
+                        and (rsa != entry._stored_reset_after_seconds)
+                    ):
+                        window_lengths[name] = rsa
                 items.append(
                     repo.build_composite_normal(
                         entity_id=entity_id,
@@ -325,9 +364,17 @@ class SyncLease:
                         ttl_seconds=ttl_seconds,
                         shard_id=shard_id,
                         vu=vu,
+                        windows=windows,
+                        window_lengths=window_lengths,
+                        rf_ms=_monotonic_rf(now_ms, expected_rf, group_entries),
                         clear_vu=not boundaries,
                     )
                 )
+                if windows:
+                    fanout_count = max(
+                        max(e._shard_count, e.state.shard_count) for e in group_entries
+                    )
+                    window_fanouts[entity_id, resource, shard_id, fanout_count] = dict(windows)
         if not items:
             self._initial_committed = True
             return
@@ -423,6 +470,56 @@ class SyncLease:
         self._initial_committed = True
         for entry in self.entries:
             entry._initial_consumed = entry.consumed
+        if not condition_failed:
+            self._fan_out_windows(window_fanouts)
+
+    def _fan_out_windows(
+        self, window_fanouts: dict[tuple[str, str, int, int], dict[str, tuple[int, int]]]
+    ) -> None:
+        """Propagate each rollover this commit persisted to the item's siblings (ADR-139).
+
+        After the commit, never inside it. The transaction is what makes the
+        roll durable on this shard; the fan-out is what stops the entity's
+        other shards anchoring windows of their own. Called only when the
+        rf-locked write itself landed: the consumption-only retry stamps no
+        `ws`, so a rollover that fell back to it -- including one the
+        re-expression anchored in memory -- was never persisted, and the next
+        pass on this shard re-opens the window and fans out then.
+
+        A failure here is not a failed acquire -- the caller was admitted and
+        the write landed -- so it is logged and swallowed. A sibling left on
+        the old `ws` opens its own window when that one elapses, which is the
+        behaviour without a fan-out; the next rollover re-converges the
+        entity. Cost: ``(S - 1) × L`` conditional writes per rollover, none at
+        all for an unsharded entity. It runs after `_initial_committed` is
+        recorded, so the lease's bookkeeping never depends on it.
+
+        The entity id is never logged: it is routinely an API key
+        (`py/clear-text-logging-sensitive-data`), the same rule
+        ``bump_shard_count``'s ``MAX_SHARD_COUNT`` warning follows.
+        """
+        for (entity_id, resource, shard_id, shard_count), windows in window_fanouts.items():
+            if shard_count <= 1:
+                continue
+            try:
+                written = self.repository._propagate_window_start(
+                    entity_id, resource, shard_id, shard_count, windows
+                )
+            except Exception:
+                logger.warning(
+                    "duration-window fan-out failed for resource=%s; siblings will anchor their own windows until one converges them",
+                    resource,
+                    exc_info=True,
+                )
+                continue
+            expected = (shard_count - 1) * len(windows)
+            if written < expected:
+                logger.debug(
+                    "duration-window fan-out wrote %d of %d for resource=%s",
+                    written,
+                    expected,
+                    resource,
+                )
 
     def _commit_adjustments(self) -> None:
         """Write post-enter adjustment deltas to DynamoDB on context exit (Issue #309).
@@ -548,6 +645,45 @@ def _is_transaction_conflict(exc: Exception) -> bool:
     return False
 
 
+def _monotonic_rf(now_ms: int, stored_rf: int | None, group: list[LeaseEntry]) -> int:
+    """The ``rf`` a materialising write stamps: never backward, never below a window (ADR-139).
+
+    ``max(now, stored rf, every applied window start on the item)``. A duration
+    window rolls when ``ws > rf`` (``BucketState.window_rolled``), so ``rf`` is
+    the only record that a shard has applied its window, and a writer whose
+    clock runs **behind** the one that stamped the item would otherwise erase
+    that record:
+
+    * on an existing item, ``rf = now`` moves ``rf`` backward past ``ws``, the
+      next pass reads ``ws > rf`` and resets the balance again, and every
+      request from the slow clock refunds everything spent before it — an
+      unbounded quota;
+    * on a created shard, the inherited ``ws`` of a window a faster clock
+      opened lands above ``rf = now``, so the shard re-rolls on its next pass.
+
+    Holding ``rf`` at or above both closes each. Refill is unaffected in the
+    direction that matters: ``bucket.refill_bucket`` treats a non-positive
+    elapsed time as zero, so an ``rf`` ahead of a later reader's clock grants
+    nothing rather than a negative refill. Only entries whose limit has a
+    window vote with their ``ws``: a stale start left behind by a limit that no
+    longer has one is not a window in force.
+
+    Args:
+        now_ms: The commit's clock reading.
+        stored_rf: The ``rf`` read off the item, or ``None`` for a create.
+        group: Every entry written to this one bucket item.
+    """
+    candidates = [now_ms]
+    if stored_rf is not None:
+        candidates.append(stored_rf)
+    candidates.extend(
+        e.state.window_start_ms
+        for e in group
+        if e.limit.reset_after is not None and e.state.window_start_ms is not None
+    )
+    return max(candidates)
+
+
 def _build_retry_failure_statuses(entries: list[LeaseEntry], now_ms: int) -> list[LimitStatus]:
     """Build LimitStatus list for a retry failure (rate limit exceeded).
 
@@ -564,16 +700,7 @@ def _build_retry_failure_statuses(entries: list[LeaseEntry], now_ms: int) -> lis
         if not entry._declared:
             continue
         deficit_milli = max(0, entry.consumed * 1000 - entry.state.tokens_milli)
-        retry_after = retry_after_with_schedule(
-            deficit_milli=deficit_milli,
-            cp_milli=entry.state.capacity_milli,
-            ra_milli=entry.state.refill_amount_milli,
-            rp_ms=entry.state.refill_period_ms,
-            sched=entry.state.sched,
-            reset_sched=entry.state.reset_sched,
-            now_ms=now_ms,
-            shard_count=entry.state.shard_count,
-        )
+        retry_after = retry_after_for_deficit(entry.state, deficit_milli, now_ms)
         statuses.append(
             LimitStatus(
                 entity_id=entry.entity_id,
@@ -584,6 +711,7 @@ def _build_retry_failure_statuses(entries: list[LeaseEntry], now_ms: int) -> lis
                 requested=entry.consumed,
                 exceeded=entry.consumed > 0,
                 retry_after_seconds=retry_after,
+                resets_at_ms=window_end_in_force(entry.limit, entry.state, now_ms),
             )
         )
     return statuses

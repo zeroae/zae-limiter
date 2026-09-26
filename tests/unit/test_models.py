@@ -1,7 +1,7 @@
 """Tests for models."""
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -46,6 +46,7 @@ def _state(
     shard_count: int = 1,
     sched: tuple[ScheduleEntry, ...] = (),
     reset_sched: tuple[ScheduleEntry, ...] = (),
+    reset_after_seconds: int | None = None,
 ) -> BucketState:
     """A bucket item's stored state: base parameters, never the effective ones."""
     return BucketState(
@@ -60,6 +61,7 @@ def _state(
         shard_count=shard_count,
         sched=sched,
         reset_sched=reset_sched,
+        reset_after_seconds=reset_after_seconds,
     )
 
 
@@ -401,6 +403,97 @@ class TestQuotaFactory:
         assert q.refill_amount == 0
 
 
+class TestQuotaDuration:
+    """`Limit.reset_after` is the duration spelling of the reset half (ADR-139).
+
+    A window anchored to the entity's own first use, rather than to the wall
+    clock. The alternative spelling of `reset_schedule`, never a companion to
+    it: a limit has one recovery mechanism (ADR-137).
+    """
+
+    def test_quota_takes_a_duration(self):
+        limit = Limit.quota("session", 10_000, reset_after=timedelta(hours=5))
+        assert limit.capacity == 10_000
+        assert limit.refill_amount == 0
+        assert limit.reset_after == timedelta(hours=5)
+        assert limit.reset_after_seconds == 18_000
+        assert limit.reset_schedule == ()
+        assert limit.is_quota is True
+
+    def test_quota_still_takes_a_cron(self):
+        limit = Limit.quota("rpd", 10_000, cron="0 0 * * *")
+        assert limit.reset_after is None
+        assert limit.is_quota is True
+
+    def test_quota_requires_exactly_one_of_cron_and_reset_after(self):
+        with pytest.raises(ValueError, match="exactly one of `cron` or `reset_after`"):
+            Limit.quota("x", 10, cron="0 0 * * *", reset_after=timedelta(hours=5))
+        with pytest.raises(ValueError, match="exactly one of `cron` or `reset_after`"):
+            Limit.quota("x", 10)
+
+    def test_reset_after_and_reset_schedule_are_mutually_exclusive(self):
+        # ADR-137/ADR-139: one recovery mechanism per limit. Two resets would
+        # restore the allowance twice over some periods and once over others.
+        with pytest.raises(ValueError, match="one recovery mechanism"):
+            Limit(
+                name="x",
+                capacity=10,
+                refill_amount=0,
+                refill_period_seconds=1,
+                reset_schedule=(ScheduleEntry.reset(cron="0 0 * * *"),),
+                reset_after=timedelta(hours=5),
+            )
+
+    def test_reset_after_beside_a_positive_rate_is_rejected(self):
+        # The same ADR-137 pairing rule the cron form already enforces.
+        with pytest.raises(ValueError, match="drips or resets"):
+            Limit(
+                name="x",
+                capacity=10,
+                refill_amount=10,
+                refill_period_seconds=60,
+                reset_after=timedelta(hours=5),
+            )
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            timedelta(0),  # zero
+            timedelta(seconds=-1),  # negative
+            timedelta(milliseconds=1500),  # not a whole number of seconds
+        ],
+    )
+    def test_reset_after_must_be_a_positive_whole_number_of_seconds(self, bad):
+        # #569's whole-number rule and #564's finiteness rule, restated for a
+        # duration: sub-second windows are not expressible in storage (`rsa` is
+        # seconds) and would truncate silently.
+        with pytest.raises(ValueError, match="whole number of seconds"):
+            Limit(
+                name="x",
+                capacity=10,
+                refill_amount=0,
+                refill_period_seconds=1,
+                reset_after=bad,
+            )
+
+    def test_reset_after_shares_the_period_ceiling(self):
+        # #570 bounds every duration on a limit at MAX_PERIOD_SECONDS (10**9 s,
+        # about 31.7 years). The check runs after the whole-seconds rule, so a
+        # fractional window still reports its own message; the bound itself is
+        # legal.
+        with pytest.raises(ValueError, match="reset_after must be at most"):
+            Limit.quota("session", 10, reset_after=timedelta(seconds=MAX_PERIOD_SECONDS + 1))
+        Limit.quota("session", 10, reset_after=timedelta(seconds=MAX_PERIOD_SECONDS))
+
+    def test_a_duration_quota_round_trips_through_dict(self):
+        limit = Limit.quota("session", 10_000, reset_after=timedelta(hours=5))
+        assert limit.to_dict()["reset_after_seconds"] == 18_000
+        assert Limit.from_dict(limit.to_dict()) == limit
+
+    def test_a_dripping_limit_omits_reset_after_from_its_dict(self):
+        assert "reset_after_seconds" not in Limit.per_minute("rpm", 100).to_dict()
+
+
 class TestResetSchedule:
     """`reset_schedule` is a second, independent tuple on `Limit` (#222 §3.6).
 
@@ -608,6 +701,17 @@ class TestResetScheduleSurvivesNarrowing:
         """The zero case is carved out; the floor it was carved out of stays."""
         limit = Limit.per_minute("rpm", 2)
         assert limit.per_shard(32, TUE_1400).refill_amount == 1
+
+    def test_per_shard_keeps_reset_after_through_the_division(self):
+        """`replace` preserves `reset_after` by default — the identical reason
+        `reset_schedule` survives above: nothing here applies it, so dropping
+        it would make the result unconstructible (a zero `refill_amount` with
+        neither spelling of the reset, ADR-139)."""
+        limit = Limit.quota("session", 10_000, reset_after=timedelta(hours=5))
+        shard = limit.per_shard(4, TUE_1400)
+        assert shard.reset_after == timedelta(hours=5)
+        assert shard.refill_amount == 0
+        assert shard.capacity == 2500
 
 
 class TestResetScheduleSerialisation:
@@ -2517,3 +2621,102 @@ class TestBucketStateCarriesTheResetSchedule:
         the carrier must set the field explicitly rather than inherit."""
         state = BucketState.from_limit("e1", "gpt-4", Limit.per_minute("rpm", 100), 0)
         assert Limit._carrier(state).reset_schedule == ()
+
+
+class TestBucketStateWindowFields:
+    """`BucketState.window_start_ms` / `reset_after_seconds` (ADR-139, Task 3).
+
+    `ws` is entity-wide and replicated verbatim to every shard — only the
+    balance is divided — so a `from_limit` call at any `shard_count` stamps
+    the same, undivided window length and start.
+    """
+
+    def test_bucket_state_from_limit_stamps_the_window(self):
+        limit = Limit.quota("session", 10_000, reset_after=timedelta(hours=5))
+        now = 1_757_000_000_000
+        state = BucketState.from_limit("e1", "gpt-4", limit, now_ms=now, shard_count=1)
+        assert state.reset_after_seconds == 18_000
+        assert state.window_start_ms == now  # a bucket is created BY a use
+        assert state.window_end_ms == now + 18_000_000
+        assert state.tokens_milli == 10_000_000
+
+    def test_bucket_state_window_end_is_none_without_a_window(self):
+        state = BucketState.from_limit(
+            "e1", "gpt-4", Limit.per_minute("rpm", 100), now_ms=0, shard_count=1
+        )
+        assert state.window_start_ms is None
+        assert state.reset_after_seconds is None
+        assert state.window_end_ms is None
+
+    def test_bucket_state_window_is_divided_by_shard_count_like_any_quota(self):
+        # The window is entity-wide; only the BALANCE is per-shard. `ws` and
+        # `rsa` are replicated verbatim to every shard.
+        limit = Limit.quota("session", 10_000, reset_after=timedelta(hours=5))
+        state = BucketState.from_limit("e1", "gpt-4", limit, now_ms=0, shard_count=4)
+        assert state.reset_after_seconds == 18_000  # NOT divided
+        assert state.tokens_milli == 2_500_000  # 10_000 // 4, in milli
+
+    def test_window_rolled_is_ws_strictly_after_rf(self):
+        """The one shared "window opened but not yet applied here" predicate
+        (ADR-139). The slow-path roll and the read-only balance both ask it,
+        so it lives in one place: strictly ``>``, because the pass that
+        applies a roll stamps ``rf`` at or after ``ws``."""
+        limit = Limit.quota("session", 10_000, reset_after=timedelta(hours=5))
+        state = BucketState.from_limit("e1", "gpt-4", limit, now_ms=1_000, shard_count=1)
+        state.last_refill_ms = 999
+        assert state.window_rolled is True
+        state.last_refill_ms = 1_000
+        assert state.window_rolled is False
+        state.last_refill_ms = 1_001
+        assert state.window_rolled is False
+
+    def test_window_rolled_is_false_without_a_window(self):
+        state = BucketState.from_limit(
+            "e1", "gpt-4", Limit.per_minute("rpm", 100), now_ms=0, shard_count=1
+        )
+        state.last_refill_ms = -1
+        assert state.window_rolled is False
+
+    def test_from_bucket_state_reconstructs_a_duration_quota(self):
+        """Task 2 Step 6 (deferred here): a duration quota read back off a
+        `BucketState` must reconstruct as a quota, not a phantom one-token
+        drip — `Limit.is_quota` asks both spellings of the reset."""
+        limit = Limit.quota("session", 10_000, reset_after=timedelta(hours=5))
+        state = BucketState.from_limit("e1", "gpt-4", limit, now_ms=0, shard_count=1)
+        reconstructed = Limit.from_bucket_state(state)
+        assert reconstructed.reset_after == timedelta(hours=5)
+        assert reconstructed.reset_schedule == ()
+        assert reconstructed.refill_amount == 0
+        assert reconstructed.is_quota
+
+    def test_from_bucket_state_degrades_both_reset_spellings_at_once(self):
+        """A corrupt item carrying both `reset_sched` and
+        `reset_after_seconds` beside a zero rate is unconstructible under
+        ADR-139 (a limit resets one way, never both) — no `BucketState.from_limit`
+        call can produce it, since `Limit.__post_init__` already enforces
+        that exclusivity on any `Limit` that reaches it. Round trip it anyway
+        rather than raise from inside a rejection path (fix round 1, #620):
+        `reset_sched`, the pre-ADR-139 reading, wins and the duration
+        spelling is dropped."""
+        state = _state(
+            refill_amount_milli=0,
+            reset_sched=DAILY_RESET,
+            reset_after_seconds=18_000,
+        )
+        limit = Limit.from_bucket_state(state)  # must not raise
+        assert limit.reset_schedule == DAILY_RESET
+        assert limit.reset_after is None
+        assert limit.refill_amount == 0
+        assert limit.is_quota
+
+    def test_from_bucket_state_degrades_reset_after_beside_a_positive_rate(self):
+        """The mirror-image corruption: `reset_after_seconds` set beside a
+        positive stored rate is unconstructible under ADR-137 exactly as a
+        `reset_sched` beside a positive rate already was — same fix round,
+        same behaviour: keep the rate floor, drop the reset entirely."""
+        state = _state(refill_amount_milli=1_000_000, reset_after_seconds=18_000)
+        limit = Limit.from_bucket_state(state)  # must not raise
+        assert limit.reset_schedule == ()
+        assert limit.reset_after is None
+        assert limit.refill_amount == 1000  # the stored rate, floored — not the quota shape
+        assert not limit.is_quota

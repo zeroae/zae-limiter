@@ -508,3 +508,12 @@ class TestWCULimitConstants:
 
     def test_wcu_shard_warn_threshold_constant(self):
         assert schema.WCU_SHARD_WARN_THRESHOLD == 32
+
+
+class TestDurationResetWindowConstants:
+    """Attribute names for ADR-139's duration reset window (Task 3)."""
+
+    def test_window_attribute_names(self):
+        assert schema.bucket_attr("session", schema.BUCKET_FIELD_WS) == "b_session_ws"
+        assert schema.bucket_attr("session", schema.BUCKET_FIELD_RSA) == "b_session_rsa"
+        assert schema.limit_attr("session", schema.LIMIT_FIELD_RSA) == "l_session_rsa"

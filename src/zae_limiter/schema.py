@@ -92,6 +92,32 @@ BUCKET_FIELD_RSCHED = "rsched"  # item-level default reset schedule (§3.6, §4.
 BUCKET_FIELD_SCHED_TZ = "sched_tz"  # IANA name, hoisted out of every entry
 BUCKET_FIELD_VU = "vu"  # valid-until, epoch ms — schedule materialisation stamp
 
+# Duration reset windows (ADR-139). Two plain numbers rather than a token
+# inside `rsched`: `decode_reset` rejects unknown modifier tags by design, so a
+# token would make every stored entry conditionally-a-cron and grow a branch in
+# `cycle_seconds`, `prev_reset_edge`, `next_reset_edge` and `to_cron`.
+#
+# Deliberately OUTSIDE the versioned compact encoding (#515). That marker lives
+# inside the string `encode()` / `encode_reset()` produce; these are plain `N`
+# attributes and are never part of it, so the marker neither covers them nor
+# needs to — a number has no grammar to version. Staying outside is also what
+# keeps them readable by the aggregator without a decoder.
+#
+# `ws` is the window START, per limit, epoch ms. Absent means the window has
+# not started. It is an ENTITY-WIDE fact replicated verbatim to every shard —
+# only the balance is per-shard — and it is monotonic. The rollover fan-out
+# (`Repository._propagate_window_start()`) does NOT use a plain `ws < :new`:
+# it moves a sibling only if that sibling's own window had ENDED by the new
+# start (`ws <= :new - rsa * 1000`, the half-open rule the opener applied to
+# itself) and only if the sibling's `rf < :new`, since a sibling applies the
+# window by reading `ws > rf` and one already past the new start would
+# otherwise keep its burnt balance for the whole window.
+#
+# The window END is derived (`ws + rsa * 1000`) and never stored, so the pair
+# cannot disagree after a partial write.
+BUCKET_FIELD_WS = "ws"  # b_{name}_ws — window start, epoch ms
+BUCKET_FIELD_RSA = "rsa"  # b_{name}_rsa — window length, seconds
+
 # The explicit spelling of "this limit has no schedule of its own" (#541).
 #
 # Absence of a `b_{name}_sched` still means "inherit the item default" — that is
@@ -140,6 +166,7 @@ LIMIT_FIELD_RA = "ra"  # refill_amount
 LIMIT_FIELD_RP = "rp"  # refill_period_seconds
 LIMIT_FIELD_SCHED = "sched"  # compact-encoded schedule (#222 §4.1)
 LIMIT_FIELD_RSCHED = "rsched"  # compact-encoded reset schedule (#222 §4.1)
+LIMIT_FIELD_RSA = "rsa"  # l_{name}_rsa — duration window length, seconds (ADR-139)
 
 # IANA timezone name for every schedule on the item, hoisted out of the
 # individual entries (#222 §4.1). One attribute per item, not per limit: it is
@@ -750,8 +777,35 @@ def _recovery_seconds(limit: "Limit") -> float:
     a quota's rate is zero by ADR-137 and dividing by a window's version of it
     would be #532 again, while the reset restores the balance in full within
     the reset period no matter what the windows do to the ceiling.
+
+    A **duration-window** quota (``reset_after``, ADR-139) is the other
+    spelling of the same reset half, and it needs no scan at all: the window
+    length itself is the recovery horizon — the balance is restored in full
+    at most ``reset_after`` after it was last spent, whichever bucket that
+    lands on. ``ScheduleEntry.reset_schedule`` is empty for this shape
+    (ADR-139: a quota carries `reset_after` or `reset_schedule`, never both),
+    so folding it into the ``min()`` below would be ``min()`` over nothing.
     """
     if limit.is_quota:
+        if limit.reset_after is not None:
+            # A duration window's cycle is `reset_after`, exactly and by
+            # construction (ADR-139): no cron parse, no `cycle_seconds`
+            # ladder, no rounding-up approximation, and — decisively — no
+            # clock, which this function does not have and none of
+            # `calculate_bucket_ttl_seconds`'s three production callers can
+            # supply. Strictly sharper than the calendar branch below, which
+            # rounds a monthly pattern up to 31 days.
+            #
+            # The two spellings are mutually exclusive (ADR-137/ADR-139), so
+            # this is an either/or rather than a `max` — and it must come
+            # first, because a duration quota's `reset_schedule` is empty and
+            # `min()` over an empty sequence raises.
+            #
+            # `reset_after_seconds` is `None` only when `reset_after` is —
+            # asserted rather than re-derived from `reset_after.total_seconds()`
+            # so this stays the single reader of the stored granularity.
+            assert limit.reset_after_seconds is not None
+            return float(limit.reset_after_seconds)
         return float(min(_reset_cycle_seconds(entry) for entry in limit.reset_schedule))
 
     cp_milli = limit.capacity * 1000
@@ -783,7 +837,9 @@ def calculate_bucket_ttl_seconds(
     Drips (``refill_amount > 0``)        ``(capacity / refill_amount) × refill_period_seconds``,
                                          taken at its **slowest** over the base
                                          parameters and every ``schedule`` window (#557)
-    Quota (``is_quota``, ADR-137)        the reset period — the cycle of its ``reset_schedule``
+    Quota, calendar (``reset_schedule``) the reset period — the cycle of its ``reset_schedule``
+    Quota, duration (``reset_after``,    ``reset_after`` itself (ADR-139) — the window is the
+    ADR-139)                             horizon, no cron scan needed
     ===================================  ==========================================
 
     A single ``max`` still spans both shapes, so a composite bucket carrying a

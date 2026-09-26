@@ -7,13 +7,14 @@ Changes should be made to the source file, then regenerated.
 """
 
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 
 import pytest
 from botocore.exceptions import ClientError
 
+from tests.fixtures.windows import FIVE_HOURS_MS, SESSION_10, T0
 from zae_limiter import (
     CacheStats,
     Limit,
@@ -29,7 +30,16 @@ from zae_limiter.exceptions import InvalidIdentifierError, InvalidNameError, Lea
 from zae_limiter.infra.sync_discovery import SyncInfrastructureDiscovery
 from zae_limiter.models import BucketState
 from zae_limiter.schedule import ScheduleEntry, retry_after_with_schedule
-from zae_limiter.schema import BUCKET_FIELD_TK, BUCKET_FIELD_VU, bucket_attr, pk_bucket, sk_state
+from zae_limiter.schema import (
+    BUCKET_FIELD_RF,
+    BUCKET_FIELD_RSA,
+    BUCKET_FIELD_TK,
+    BUCKET_FIELD_VU,
+    BUCKET_FIELD_WS,
+    bucket_attr,
+    pk_bucket,
+    sk_state,
+)
 from zae_limiter.sync_repository_protocol import SpeculativeResult
 
 
@@ -640,6 +650,7 @@ class TestLeaseRetryPath:
         state.sched = ()
         state.reset_sched = ()
         state.shard_count = 1
+        state.window_end_ms = None
         entry = LeaseEntry(entity_id="e1", resource="gpt-4", limit=limit, state=state, consumed=60)
         undeclared_state = MagicMock()
         undeclared_state.tokens_milli = 0
@@ -8398,3 +8409,667 @@ class TestSlowPathRejectionWalksBoundaries:
             with slow.acquire("slow-d", "gpt-4", consume={"rpm": 50}):
                 pass
         assert exc.value.retry_after_seconds == pytest.approx(30.001, abs=0.5)
+
+
+SESSION = Limit.quota("session", 1000, reset_after=timedelta(hours=5))
+
+
+def _window_state(**kwargs) -> BucketState:
+    """A shard of ``SESSION`` whose balance is spent, window opened at 5_000."""
+    base = dict(
+        entity_id="e1",
+        resource="gpt-4",
+        limit_name="session",
+        tokens_milli=0,
+        last_refill_ms=1000,
+        capacity_milli=1000000,
+        refill_amount_milli=0,
+        refill_period_ms=1000,
+        total_consumed_milli=1000000,
+        shard_count=1,
+        window_start_ms=5000,
+        reset_after_seconds=18000,
+    )
+    base.update(kwargs)
+    return BucketState(**base)
+
+
+class TestApplyWindowRoll:
+    """The duration-window reset, isolated from DynamoDB (ADR-139).
+
+    ``_apply_reset_edge`` with the backwards cron scan replaced by the
+    attribute read ``ws > rf``.
+    """
+
+    def test_window_roll_fires_when_ws_is_newer_than_rf(self):
+        state = _window_state()
+        assert SyncRateLimiter._apply_window_roll(SESSION, state, now_ms=6000) is True
+        assert state.tokens_milli == 1000000
+
+    def test_window_roll_is_strictly_greater_than(self):
+        state = _window_state(last_refill_ms=5000)
+        assert SyncRateLimiter._apply_window_roll(SESSION, state, now_ms=6000) is False
+        assert state.tokens_milli == 0
+
+    def test_window_roll_resets_to_the_shard_share(self):
+        state = _window_state(shard_count=4)
+        assert SyncRateLimiter._apply_window_roll(SESSION, state, now_ms=6000) is True
+        assert state.tokens_milli == 250000
+
+    def test_window_roll_does_nothing_for_a_cron_quota(self):
+        limit = Limit.quota("rpd", 1000, cron="0 0 * * *")
+        state = _window_state(limit_name="rpd", window_start_ms=None, reset_after_seconds=None)
+        assert SyncRateLimiter._apply_window_roll(limit, state, now_ms=6000) is False
+        assert state.tokens_milli == 0
+
+    def test_window_roll_leaves_tc_alone(self):
+        state = _window_state()
+        before = state.total_consumed_milli
+        assert SyncRateLimiter._apply_window_roll(SESSION, state, now_ms=6000) is True
+        assert state.total_consumed_milli == before
+
+    def test_window_roll_clears_debt_rather_than_carrying_it(self):
+        state = _window_state(tokens_milli=-3000000)
+        assert SyncRateLimiter._apply_window_roll(SESSION, state, now_ms=6000) is True
+        assert state.tokens_milli == 1000000
+
+
+class TestOpenWindowIfElapsed:
+    """Anchoring a new window: idle-restarting, never tiling (ADR-139)."""
+
+    def test_open_window_does_nothing_inside_the_window(self):
+        state = _window_state()
+        assert SyncRateLimiter._open_window_if_elapsed(SESSION, state, now_ms=6000) is None
+        assert state.window_start_ms == 5000
+
+    def test_open_window_anchors_at_now_once_elapsed(self):
+        now = 5000 + 3 * 18000000 + 7
+        state = _window_state()
+        assert SyncRateLimiter._open_window_if_elapsed(SESSION, state, now_ms=now) == now
+        assert state.window_start_ms == now
+        assert state.window_end_ms == now + 18000000
+
+    def test_open_window_fires_exactly_at_the_end(self):
+        end = 5000 + 18000000
+        state = _window_state()
+        assert SyncRateLimiter._open_window_if_elapsed(SESSION, state, now_ms=end) == end
+
+    def test_open_window_opens_the_first_window_when_ws_is_absent(self):
+        state = _window_state(window_start_ms=None)
+        assert SyncRateLimiter._open_window_if_elapsed(SESSION, state, now_ms=9000) == 9000
+        assert state.window_start_ms == 9000
+
+    def test_open_window_ignores_a_limit_without_reset_after(self):
+        limit = Limit.quota("rpd", 1000, cron="0 0 * * *")
+        state = _window_state(limit_name="rpd", window_start_ms=None)
+        assert SyncRateLimiter._open_window_if_elapsed(limit, state, now_ms=9000) is None
+        assert state.window_start_ms is None
+
+    def test_open_then_roll_compose_into_one_pass(self):
+        now = 5000 + 18000000 + 1
+        state = _window_state(last_refill_ms=5000)
+        assert SyncRateLimiter._open_window_if_elapsed(SESSION, state, now_ms=now) == now
+        assert SyncRateLimiter._apply_window_roll(SESSION, state, now_ms=now) is True
+        assert state.tokens_milli == 1000000
+
+
+class TestTheOpenerResetsItsOwnWindow:
+    """The pass that anchors a window resets unconditionally (ADR-139).
+
+    `ws > rf` is the rule for a shard that *sees* a window someone else
+    opened. The opener "applies its own reset under its own rf lock": with
+    another writer's clock ahead of this one, `rf` can sit after the `now` the
+    opener anchors at, and gating its reset on `ws > rf` would anchor a fresh
+    window over the dead one's leftovers — and since `ws > rf` never holds
+    again after the commit, hold the entity to them for the whole new window.
+    """
+
+    def test_the_opener_resets_even_when_rf_is_ahead_of_its_clock(self):
+        end = 5000 + 18000000
+        now = end + 20
+        state = _window_state(tokens_milli=300000, last_refill_ms=end + 50)
+        assert SyncRateLimiter._open_window_if_elapsed(SESSION, state, now_ms=now) == now
+        assert state.window_rolled is False, "the shard-side rule would not fire"
+        assert SyncRateLimiter._apply_window_roll(SESSION, state, now_ms=now, opened=True) is True
+        assert state.tokens_milli == 1000000
+
+    def test_opened_does_nothing_for_a_limit_without_a_window(self):
+        plain = Limit.per_minute("session", 1000)
+        state = _window_state(tokens_milli=7)
+        assert SyncRateLimiter._apply_window_roll(plain, state, now_ms=6000, opened=True) is False
+        assert state.tokens_milli == 7
+
+
+class TestMaterialisationStampsWindow:
+    """`ws + rsa` is the third voting member of `vu`'s minimum (ADR-139)."""
+
+    def test_vu_is_the_window_end_for_a_duration_quota(self):
+        state = _window_state()
+        vu, reset_ms = SyncRateLimiter._materialisation_stamps(SESSION, state, 6000)
+        assert vu == 5000 + 18000000
+        assert reset_ms is None
+
+    def test_vu_is_the_earlier_of_a_param_boundary_and_the_window_end(self):
+        limit = SESSION.with_schedule((ScheduleEntry(cron="* 0-6 * * *", tz="UTC", scale=0.5),))
+        now = int(datetime(2026, 9, 16, 3, 0, tzinfo=UTC).timestamp() * 1000)
+        state = _window_state(window_start_ms=now - 17000000)
+        vu, _ = SyncRateLimiter._materialisation_stamps(limit, state, now)
+        assert vu == now - 17000000 + 18000000
+
+    def test_a_window_on_the_state_alone_does_not_vote(self):
+        plain = Limit.per_minute("session", 1000)
+        vu, _ = SyncRateLimiter._materialisation_stamps(plain, _window_state(), 6000)
+        assert vu is None
+
+
+def _raw_bucket(repo, entity_id, resource="gpt-4", shard=0):
+    """The raw item of one bucket shard, straight off the table."""
+    client = repo._get_client()
+    response = client.get_item(
+        TableName=repo.table_name,
+        Key={
+            "PK": {"S": pk_bucket(repo._namespace_id, entity_id, resource, shard)},
+            "SK": {"S": sk_state()},
+        },
+    )
+    return response["Item"]
+
+
+def _stored_ws(repo, entity_id, resource, limit_name, shard=0):
+    """``b_{limit}_ws`` off one shard's raw item, or None when absent."""
+    item = _raw_bucket(repo, entity_id, resource, shard)
+    attr = item.get(bucket_attr(limit_name, BUCKET_FIELD_WS))
+    return None if attr is None else int(attr["N"])
+
+
+def _stored_tk(repo, entity_id, resource, limit_name, shard=0):
+    item = _raw_bucket(repo, entity_id, resource, shard)
+    return int(item[bucket_attr(limit_name, BUCKET_FIELD_TK)]["N"])
+
+
+def _strip_window(repo, entity_id, resource, limit_name, shard=0):
+    """REMOVE ``b_{limit}_ws`` and ``b_{limit}_rsa``: an item stamped before
+    its limit gained a window (a resource-level `reset_after` never fans out)."""
+    client = repo._get_client()
+    client.update_item(
+        TableName=repo.table_name,
+        Key={
+            "PK": {"S": pk_bucket(repo._namespace_id, entity_id, resource, shard)},
+            "SK": {"S": sk_state()},
+        },
+        UpdateExpression="REMOVE #ws, #rsa",
+        ExpressionAttributeNames={
+            "#ws": bucket_attr(limit_name, BUCKET_FIELD_WS),
+            "#rsa": bucket_attr(limit_name, BUCKET_FIELD_RSA),
+        },
+    )
+
+
+class TestWindowRollThroughAcquire:
+    """Duration windows through `acquire()` (ADR-139).
+
+    The fast path is left on: an elapsed window reaches the slow path through
+    `vu`, which `ws + rsa` votes into, so these exercise the real route.
+    """
+
+    def test_first_use_anchors_and_stamps_vu_at_the_window_end(self, sync_limiter):
+        repo = sync_limiter._repository
+        repo.set_limits("user-1", [SESSION_10], resource="gpt-4")
+        repo._now_ms = lambda: T0
+        with sync_limiter.acquire("user-1", "gpt-4", consume={"session": 1}):
+            pass
+        item = _raw_bucket(repo, "user-1")
+        assert _stored_ws(repo, "user-1", "gpt-4", "session") == T0
+        assert int(item[BUCKET_FIELD_VU]["N"]) == T0 + FIVE_HOURS_MS
+
+    def test_exhaustion_inside_the_window_does_not_move_the_anchor(self, sync_limiter):
+        """ADR-139: only a persisted materialising pass anchors. An exhausted
+        quota is still inside the window it already anchored, so a caller
+        retrying against it must not keep restarting its own five hours."""
+        repo = sync_limiter._repository
+        repo.set_limits("user-1", [SESSION_10], resource="gpt-4")
+        repo._now_ms = lambda: T0
+        with sync_limiter.acquire("user-1", "gpt-4", consume={"session": 10}):
+            pass
+        assert _stored_ws(repo, "user-1", "gpt-4", "session") == T0
+        repo._now_ms = lambda: T0 + 3600000
+        for _ in range(3):
+            with pytest.raises(RateLimitExceeded):
+                with sync_limiter.acquire("user-1", "gpt-4", consume={"session": 1}):
+                    pass
+        assert _stored_ws(repo, "user-1", "gpt-4", "session") == T0
+
+    def test_exhaustion_on_the_slow_path_does_not_move_the_anchor_either(self, sync_limiter):
+        """The same reading with the fast path off, so the rejection is the
+        slow path's `RateLimitExceeded` rather than a 0-WCU fast rejection."""
+        repo = sync_limiter._repository
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        repo.set_limits("user-1", [SESSION_10], resource="gpt-4")
+        repo._now_ms = lambda: T0
+        with slow.acquire("user-1", "gpt-4", consume={"session": 10}):
+            pass
+        repo._now_ms = lambda: T0 + 3600000
+        with pytest.raises(RateLimitExceeded):
+            with slow.acquire("user-1", "gpt-4", consume={"session": 1}):
+                pass
+        assert _stored_ws(repo, "user-1", "gpt-4", "session") == T0
+
+    def test_the_window_rolls_the_balance_back_in_one_lump(self, sync_limiter):
+        """Spend the allowance, cross the window's end, spend it all again.
+        A quota does not drip, so without the roll the second acquire raises."""
+        repo = sync_limiter._repository
+        repo.set_limits("user-1", [SESSION_10], resource="gpt-4")
+        repo._now_ms = lambda: T0
+        with sync_limiter.acquire("user-1", "gpt-4", consume={"session": 10}):
+            pass
+        now = T0 + FIVE_HOURS_MS + 1
+        repo._now_ms = lambda: now
+        with sync_limiter.acquire("user-1", "gpt-4", consume={"session": 10}):
+            pass
+        bucket = next(b for b in repo.get_buckets("user-1", resource="gpt-4"))
+        assert bucket.tokens_milli == 0
+        assert bucket.total_consumed_milli == 20000, "`tc` stays monotonic across the roll"
+        assert _stored_ws(repo, "user-1", "gpt-4", "session") == now
+        item = _raw_bucket(repo, "user-1")
+        assert int(item[BUCKET_FIELD_VU]["N"]) == now + FIVE_HOURS_MS
+
+    def test_a_rejection_at_a_boundary_writes_nothing(self, sync_limiter):
+        """A pass that crosses a boundary and is then rejected for another
+        reason (here: asking for more than the whole allowance) leaves the item
+        unchanged. See the plan's "anchoring rule": write-on-enter raises
+        before any write, so the restored balance is in-memory only and there
+        is no half-applied state. The window anchors at the next request that
+        writes.
+
+        **This test encodes a decision.** If the owner prefers the rollover to
+        be persisted on a rejection path, this is the test to change, and the
+        change is visible rather than silent.
+        """
+        repo = sync_limiter._repository
+        repo.set_limits("user-1", [SESSION_10], resource="gpt-4")
+        repo._now_ms = lambda: T0
+        with sync_limiter.acquire("user-1", "gpt-4", consume={"session": 10}):
+            pass
+        before = _raw_bucket(repo, "user-1")
+        repo._now_ms = lambda: T0 + FIVE_HOURS_MS + 1
+        with pytest.raises(RateLimitExceeded):
+            with sync_limiter.acquire("user-1", "gpt-4", consume={"session": 999999}):
+                pass
+        assert _raw_bucket(repo, "user-1") == before, "nothing was written"
+        assert _stored_ws(repo, "user-1", "gpt-4", "session") == T0
+        repo._now_ms = lambda: T0 + FIVE_HOURS_MS + 2
+        with sync_limiter.acquire("user-1", "gpt-4", consume={"session": 1}):
+            pass
+        assert _stored_ws(repo, "user-1", "gpt-4", "session") == T0 + FIVE_HOURS_MS + 2
+        assert _stored_tk(repo, "user-1", "gpt-4", "session") == 9000
+
+    def test_a_rejection_at_a_boundary_reports_the_rolled_view(self, sync_limiter):
+        """Even though nothing is written, the rejection tells the truth about
+        what the caller would have got: the restored balance, not the burnt
+        one. `resets_at_ms` for the new window is pinned in test_window_reporting."""
+        repo = sync_limiter._repository
+        repo.set_limits("user-1", [SESSION_10], resource="gpt-4")
+        repo._now_ms = lambda: T0
+        with sync_limiter.acquire("user-1", "gpt-4", consume={"session": 10}):
+            pass
+        repo._now_ms = lambda: T0 + FIVE_HOURS_MS + 1
+        with pytest.raises(RateLimitExceeded) as exc:
+            with sync_limiter.acquire("user-1", "gpt-4", consume={"session": 999999}):
+                pass
+        status = next(s for s in exc.value.statuses if s.limit_name == "session")
+        assert status.available == 10
+
+    def test_an_idle_entity_restarts_its_window(self, sync_limiter):
+        """Window ends at t0+5h, entity quiet, calls again at t0+11h -> a FRESH
+        window starting t0+11h, not a grid tile at t0+10h."""
+        repo = sync_limiter._repository
+        repo.set_limits("user-1", [SESSION_10], resource="gpt-4")
+        repo._now_ms = lambda: T0
+        with sync_limiter.acquire("user-1", "gpt-4", consume={"session": 1}):
+            pass
+        repo._now_ms = lambda: T0 + 11 * 3600000
+        with sync_limiter.acquire("user-1", "gpt-4", consume={"session": 1}):
+            pass
+        assert _stored_ws(repo, "user-1", "gpt-4", "session") == T0 + 11 * 3600000
+        assert _stored_tk(repo, "user-1", "gpt-4", "session") == 9000
+
+    def test_cascade_parent_and_child_anchor_independently(self, sync_limiter):
+        """ADR-139: the parent's window does not track the child's, consistent
+        with cascade already treating limits, shards and `disabled` as
+        per-entity state."""
+        repo = sync_limiter._repository
+        repo.set_resource_defaults("gpt-4", [SESSION_10])
+        repo.create_entity("parent")
+        repo.create_entity("child", parent_id="parent", cascade=True)
+        repo._now_ms = lambda: T0
+        with sync_limiter.acquire("child", "gpt-4", consume={"session": 1}):
+            pass
+        repo.create_entity("child2", parent_id="parent", cascade=True)
+        repo._now_ms = lambda: T0 + 3600000
+        with sync_limiter.acquire("child2", "gpt-4", consume={"session": 1}):
+            pass
+        assert _stored_ws(repo, "parent", "gpt-4", "session") == T0
+        assert _stored_ws(repo, "child", "gpt-4", "session") == T0
+        assert _stored_ws(repo, "child2", "gpt-4", "session") == T0 + 3600000
+        assert _stored_tk(repo, "parent", "gpt-4", "session") == 8000
+
+    def test_config_reset_after_reaches_an_item_carrying_no_window(self, sync_limiter):
+        """The slow path takes `reset_after_seconds` from resolved config, as
+        it does `sched` and `reset_sched`. A resource-level `reset_after` never
+        fans out, so an item created before it carries no `rsa`/`ws`; without
+        the config value its window would never open."""
+        repo = sync_limiter._repository
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        repo.set_limits("user-1", [SESSION_10], resource="gpt-4")
+        repo._now_ms = lambda: T0
+        with slow.acquire("user-1", "gpt-4", consume={"session": 10}):
+            pass
+        _strip_window(repo, "user-1", "gpt-4", "session")
+        repo._now_ms = lambda: T0 + 60000
+        with slow.acquire("user-1", "gpt-4", consume={"session": 1}):
+            pass
+        assert _stored_ws(repo, "user-1", "gpt-4", "session") == T0 + 60000
+        item = _raw_bucket(repo, "user-1")
+        assert item[bucket_attr("session", BUCKET_FIELD_RSA)] == {"N": "18000"}
+
+    def test_the_opener_resets_even_when_rf_is_ahead_of_its_clock(self, sync_limiter):
+        """Another writer (a client or the aggregator with a faster clock)
+        stamped `rf` after this client's `now`. The window has elapsed by this
+        client's clock, so this pass anchors — and must restore the allowance
+        rather than admit against the dead window's 3 leftover tokens."""
+        repo = sync_limiter._repository
+        repo.set_limits("user-1", [SESSION_10], resource="gpt-4")
+        repo._now_ms = lambda: T0
+        with sync_limiter.acquire("user-1", "gpt-4", consume={"session": 7}):
+            pass
+        end = T0 + FIVE_HOURS_MS
+        client = repo._get_client()
+        client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, "user-1", "gpt-4", 0)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="SET #rf = :rf",
+            ExpressionAttributeNames={"#rf": BUCKET_FIELD_RF},
+            ExpressionAttributeValues={":rf": {"N": str(end + 50)}},
+        )
+        now = end + 20
+        repo._now_ms = lambda: now
+        with sync_limiter.acquire("user-1", "gpt-4", consume={"session": 5}):
+            pass
+        assert _stored_ws(repo, "user-1", "gpt-4", "session") == now
+        assert _stored_tk(repo, "user-1", "gpt-4", "session") == 5000
+
+    def test_the_parent_only_path_rolls_the_parents_window(self, sync_limiter):
+        """`_try_parent_only_acquire` is the second slow-path seam. It is
+        reached when a parent's speculative write failed for a reason refill
+        could fix; a boundary-expired parent normally reaches the full slow
+        path through `vu` instead, so it is driven directly here."""
+        repo = sync_limiter._repository
+        repo.set_limits("parent", [SESSION_10], resource="gpt-4")
+        repo._now_ms = lambda: T0
+        with sync_limiter.acquire("parent", "gpt-4", consume={"session": 10}):
+            pass
+        _strip_window(repo, "parent", "gpt-4", "session")
+        now = T0 + 60000
+        repo._now_ms = lambda: now
+        lease = sync_limiter._try_parent_only_acquire(
+            "parent",
+            "gpt-4",
+            {"session": 4},
+            child_entries=[],
+            parent_shard=0,
+            parent_shard_count=1,
+        )
+        assert lease is not None
+        assert _stored_ws(repo, "parent", "gpt-4", "session") == now
+        assert _stored_tk(repo, "parent", "gpt-4", "session") == 6000
+
+
+class TestWindowRolloverFansOut:
+    """A rollover on one shard reaches the entity's other shards (ADR-139, #624).
+
+    Driven through `acquire()` on moto so the sync twin exercises the same
+    fan-out through `_run_in_executor`.
+    """
+
+    def _seed_shards(self, repo, entity_id, count):
+        """``count`` shards of ``entity_id``'s session quota, anchored at T0."""
+        repo.set_limits(entity_id, [SESSION_10], resource="gpt-4")
+        for shard in range(count):
+            state = BucketState.from_limit(entity_id, "gpt-4", SESSION_10, T0, shard_count=count)
+            repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        entity_id,
+                        "gpt-4",
+                        [state],
+                        T0,
+                        ttl_seconds=None,
+                        shard_id=shard,
+                        shard_count=count,
+                        vu=T0 + FIVE_HOURS_MS,
+                    )
+                ]
+            )
+        repo._entity_cache[repo._namespace_id, entity_id] = (False, None, {"gpt-4": count})
+
+    def test_a_rollover_on_one_shard_stamps_every_sibling(self, sync_limiter):
+        repo = sync_limiter._repository
+        self._seed_shards(repo, "user-1", 2)
+        before = _raw_bucket(repo, "user-1", shard=1)
+        rolled_at = T0 + FIVE_HOURS_MS + 1
+        repo._now_ms = lambda: rolled_at
+        with patch("zae_limiter.sync_repository.random.randrange", return_value=0):
+            with sync_limiter.acquire("user-1", "gpt-4", consume={"session": 1}):
+                pass
+        assert _stored_ws(repo, "user-1", "gpt-4", "session", shard=0) == rolled_at
+        assert _stored_ws(repo, "user-1", "gpt-4", "session", shard=1) == rolled_at
+        sibling = _raw_bucket(repo, "user-1", shard=1)
+        assert int(sibling[BUCKET_FIELD_VU]["N"]) == 0, "the sibling's fast path demotes"
+        tk = bucket_attr("session", BUCKET_FIELD_TK)
+        assert sibling[tk] == before[tk], "the fan-out never touches a balance"
+        assert sibling["rf"] == before["rf"], "nor the sibling's own lock"
+
+    def test_the_sibling_resets_itself_on_its_next_pass(self, sync_limiter):
+        """The fan-out only moves `ws`; the sibling sees `ws > rf` on its own
+        next materialising pass and restores its share under its own lock --
+        into the window the entity already opened, not a new one of its own."""
+        repo = sync_limiter._repository
+        self._seed_shards(repo, "user-1", 2)
+        repo._now_ms = lambda: T0
+        with patch("zae_limiter.sync_repository.random.randrange", return_value=1):
+            with sync_limiter.acquire("user-1", "gpt-4", consume={"session": 5}):
+                pass
+        assert _stored_tk(repo, "user-1", "gpt-4", "session", shard=1) == 0
+        rolled_at = T0 + FIVE_HOURS_MS + 1
+        repo._now_ms = lambda: rolled_at
+        with patch("zae_limiter.sync_repository.random.randrange", return_value=0):
+            with sync_limiter.acquire("user-1", "gpt-4", consume={"session": 1}):
+                pass
+        repo._now_ms = lambda: rolled_at + 60000
+        with patch("zae_limiter.sync_repository.random.randrange", return_value=1):
+            with sync_limiter.acquire("user-1", "gpt-4", consume={"session": 2}):
+                pass
+        assert _stored_tk(repo, "user-1", "gpt-4", "session", shard=1) == 3000
+        assert _stored_ws(repo, "user-1", "gpt-4", "session", shard=1) == rolled_at
+        item = _raw_bucket(repo, "user-1", shard=1)
+        assert int(item[BUCKET_FIELD_VU]["N"]) == rolled_at + FIVE_HOURS_MS
+
+    def test_concurrent_openers_never_reset_one_shard_twice(self, sync_limiter):
+        """Two clients cross the boundary 5 ms apart, each opening a window on
+        its own shard; the first one's fan-out is still in flight when the
+        second's lands. Moving the first opener's shard to the later start
+        made it read `ws > rf` and restore a second time in one window --
+        15 admitted against a quota of 10. The entity admits at most one
+        allowance per window."""
+        repo = sync_limiter._repository
+        self._seed_shards(repo, "user-1", 2)
+        t1 = T0 + FIVE_HOURS_MS + 1
+        t2 = t1 + 5
+        admitted = 0
+        repo._now_ms = lambda: t1
+        real_fan_out = repo._propagate_window_start
+        with (
+            patch.object(repo, "_propagate_window_start", MagicMock(return_value=0)),
+            patch("zae_limiter.sync_repository.random.randrange", return_value=0),
+        ):
+            with sync_limiter.acquire("user-1", "gpt-4", consume={"session": 5}):
+                admitted += 5
+        repo._now_ms = lambda: t2
+        with patch("zae_limiter.sync_repository.random.randrange", return_value=1):
+            with sync_limiter.acquire("user-1", "gpt-4", consume={"session": 5}):
+                admitted += 5
+        assert real_fan_out("user-1", "gpt-4", 0, 2, {"session": (t1, 18000)}) == 0
+        repo._now_ms = lambda: t2 + 1000
+        for shard in (0, 1):
+            with patch("zae_limiter.sync_repository.random.randrange", return_value=shard):
+                try:
+                    with sync_limiter.acquire("user-1", "gpt-4", consume={"session": 5}):
+                        admitted += 5
+                except RateLimitExceeded:
+                    pass
+        assert admitted <= 10, f"admitted {admitted} against a quota of 10 in one window"
+        assert _stored_ws(repo, "user-1", "gpt-4", "session", shard=0) == t1
+        assert _stored_ws(repo, "user-1", "gpt-4", "session", shard=1) == t2
+
+    def test_the_fan_out_lands_rsa_on_a_sibling_that_had_none(self, sync_limiter):
+        repo = sync_limiter._repository
+        self._seed_shards(repo, "user-1", 2)
+        _strip_window(repo, "user-1", "gpt-4", "session", shard=1)
+        rolled_at = T0 + FIVE_HOURS_MS + 1
+        repo._now_ms = lambda: rolled_at
+        with patch("zae_limiter.sync_repository.random.randrange", return_value=0):
+            with sync_limiter.acquire("user-1", "gpt-4", consume={"session": 1}):
+                pass
+        item = _raw_bucket(repo, "user-1", shard=1)
+        assert item[bucket_attr("session", BUCKET_FIELD_WS)] == {"N": str(rolled_at)}
+        assert item[bucket_attr("session", BUCKET_FIELD_RSA)] == {"N": "18000"}
+
+    def test_an_unsharded_entity_issues_no_fan_out(self, sync_limiter):
+        """(S-1) x L writes per rollover: zero at S = 1."""
+        repo = sync_limiter._repository
+        self._seed_shards(repo, "user-1", 1)
+        repo._now_ms = lambda: T0 + FIVE_HOURS_MS + 1
+        with patch.object(
+            repo, "_propagate_window_start", wraps=repo._propagate_window_start
+        ) as spy:
+            with sync_limiter.acquire("user-1", "gpt-4", consume={"session": 1}):
+                pass
+        spy.assert_not_called()
+        assert _stored_ws(repo, "user-1", "gpt-4", "session") == T0 + FIVE_HOURS_MS + 1
+
+
+class TestRfNeverMovesBackward:
+    """A slow-path write stamps ``rf = max(now, stored rf, applied ws)`` (ADR-139).
+
+    A window rolls when ``ws > rf``, so a client whose clock runs behind the one
+    that stamped the item must not move ``rf`` back below ``ws``: the next pass
+    would read a fresh roll and refund everything spent.
+    """
+
+    def test_a_lagging_clock_cannot_re_roll_the_window(self, sync_limiter):
+        """The review repro: window opened at T0, then 20 slow-path acquires
+        from a clock 900 ms behind. Before the clamp all 20 were admitted and
+        the balance stayed at 9."""
+        repo = sync_limiter._repository
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        repo.set_limits("user-1", [SESSION_10], resource="gpt-4")
+        repo._now_ms = lambda: T0
+        with slow.acquire("user-1", "gpt-4", consume={"session": 1}):
+            pass
+        admitted = 1
+        for i in range(20):
+            repo._now_ms = lambda i=i: T0 - 900 + i
+            try:
+                with slow.acquire("user-1", "gpt-4", consume={"session": 1}):
+                    admitted += 1
+            except RateLimitExceeded:
+                pass
+        assert admitted == 10, f"admitted {admitted} against a quota of 10 in one window"
+        item = _raw_bucket(repo, "user-1")
+        assert int(item[BUCKET_FIELD_RF]["N"]) == T0, "rf never moves backward"
+        assert _stored_tk(repo, "user-1", "gpt-4", "session") == 0
+
+    def test_a_lagging_creator_stamps_rf_at_the_inherited_window(self, sync_limiter):
+        """A new shard inherits the `ws` a faster clock opened; `rf = now` from
+        a slower one would sit below it and the shard would re-roll."""
+        repo = sync_limiter._repository
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        repo.set_limits("user-1", [SESSION_10], resource="gpt-4")
+        repo._now_ms = lambda: T0
+        with slow.acquire("user-1", "gpt-4", consume={"session": 1}):
+            pass
+        assert repo.bump_shard_count("user-1", "gpt-4", 1) == 2
+        with patch("zae_limiter.sync_repository.random.randrange", return_value=1):
+            repo._now_ms = lambda: T0 - 900
+            with slow.acquire("user-1", "gpt-4", consume={"session": 1}):
+                pass
+            item = _raw_bucket(repo, "user-1", shard=1)
+            assert _stored_ws(repo, "user-1", "gpt-4", "session", shard=1) == T0
+            assert int(item[BUCKET_FIELD_RF]["N"]) == T0
+            repo._now_ms = lambda: T0 - 800
+            with slow.acquire("user-1", "gpt-4", consume={"session": 1}):
+                pass
+        assert _stored_tk(repo, "user-1", "gpt-4", "session", shard=1) == 2000
+
+    def test_a_drip_limit_behind_rf_gets_no_negative_refill(self, sync_limiter):
+        """`refill_bucket` treats a non-positive elapsed time as zero, and the
+        write keeps `rf` where it was rather than rewinding it."""
+        repo = sync_limiter._repository
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        repo.set_limits("user-1", [Limit.per_minute("rpm", 60)], resource="gpt-4")
+        repo._now_ms = lambda: T0
+        with slow.acquire("user-1", "gpt-4", consume={"rpm": 30}):
+            pass
+        repo._now_ms = lambda: T0 - 30000
+        with slow.acquire("user-1", "gpt-4", consume={"rpm": 1}):
+            pass
+        assert _stored_tk(repo, "user-1", "gpt-4", "rpm") == 29000
+        item = _raw_bucket(repo, "user-1")
+        assert int(item[BUCKET_FIELD_RF]["N"]) == T0
+        repo._now_ms = lambda: T0 + 1000
+        with slow.acquire("user-1", "gpt-4", consume={"rpm": 1}):
+            pass
+        assert _stored_tk(repo, "user-1", "gpt-4", "rpm") == 29000
+
+    def test_a_lagging_clock_before_the_edge_cannot_re_apply_a_calendar_reset(self, sync_limiter):
+        """(#635) The general form of the bug above, for a calendar
+        ``reset_schedule`` rather than a duration window.
+
+        A correct-clock writer already applied today's midnight edge (its own
+        edge scan compares against the *stored* ``rf``, so it decides
+        correctly regardless of the clamp) and stamped ``rf`` just after it.
+        A slower writer, whose own clock reads *before* the edge, does not
+        mis-admit itself either -- but on `main`, its unclamped `rf = now`
+        write erases the record that the edge was ever applied. The next
+        correct-clock write then reads a stale, pre-edge `rf`, sees a fresh
+        edge, and refunds the quota a second time -- exactly #635's
+        reproduction, generalised from a window start to a calendar edge.
+        """
+        repo = sync_limiter._repository
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        repo.set_limits("reset-skew", [RPD], resource="gpt-4")
+        repo._now_ms = lambda: _ny("2026-09-15 23:00")
+        with slow.acquire("reset-skew", "gpt-4", consume={"rpd": 6000}):
+            pass
+        repo._now_ms = lambda: _ny("2026-09-16 00:05")
+        repo.invalidate_config_cache()
+        with slow.acquire("reset-skew", "gpt-4", consume={"rpd": 3000}):
+            pass
+        repo._now_ms = lambda: _ny("2026-09-15 23:58")
+        repo.invalidate_config_cache()
+        with slow.acquire("reset-skew", "gpt-4", consume={"rpd": 2000}):
+            pass
+        item = _raw_bucket(repo, "reset-skew", "gpt-4")
+        assert int(item[BUCKET_FIELD_RF]["N"]) == _ny("2026-09-16 00:05"), (
+            "rf never moves backward, even before the edge it already passed"
+        )
+        repo._now_ms = lambda: _ny("2026-09-16 00:10")
+        repo.invalidate_config_cache()
+        with slow.acquire("reset-skew", "gpt-4", consume={"rpd": 1}):
+            pass
+        assert (
+            _stored_tk(repo, "reset-skew", "gpt-4", "rpd") == 10000000 - 3000000 - 2000000 - 1000
+        ), "the 5,000 spent since midnight must not be refunded by the skewed write"

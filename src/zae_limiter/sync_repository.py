@@ -1854,6 +1854,7 @@ class SyncRepository:
         shard_id: int = 0,
         shard_count: int = 1,
         vu: int | None = None,
+        rf_ms: int | None = None,
     ) -> dict[str, Any]:
         """Build a PutItem for creating a new composite bucket.
 
@@ -1874,13 +1875,16 @@ class SyncRepository:
                 instant at which any limit on this item changes effective
                 params. ``None`` omits the attribute, which the fast path
                 reads as "no schedule, never expires".
+            rf_ms: The ``rf`` to stamp, when the caller has clamped it above
+                ``now_ms`` so that ``rf`` never sits below a window start the
+                item carries (ADR-139). ``None`` stamps ``now_ms``.
         """
         item: dict[str, Any] = {
             "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)},
             "SK": {"S": schema.sk_state()},
             "entity_id": {"S": entity_id},
             "resource": {"S": resource},
-            schema.BUCKET_FIELD_RF: {"N": str(now_ms)},
+            schema.BUCKET_FIELD_RF: {"N": str(now_ms if rf_ms is None else rf_ms)},
             "GSI2PK": {"S": schema.gsi2_pk_resource(self._namespace_id, resource)},
             "GSI2SK": {"S": schema.gsi2_sk_bucket(entity_id, shard_id)},
             "cascade": {"BOOL": cascade},
@@ -1920,6 +1924,14 @@ class SyncRepository:
             }
             tc = state.total_consumed_milli if state.total_consumed_milli is not None else 0
             item[schema.bucket_attr(name, schema.BUCKET_FIELD_TC)] = {"N": str(tc)}
+            if state.reset_after_seconds is not None:
+                item[schema.bucket_attr(name, schema.BUCKET_FIELD_RSA)] = {
+                    "N": str(state.reset_after_seconds)
+                }
+            if state.window_start_ms is not None:
+                item[schema.bucket_attr(name, schema.BUCKET_FIELD_WS)] = {
+                    "N": str(state.window_start_ms)
+                }
         return {
             "Put": {
                 "TableName": self.table_name,
@@ -1940,6 +1952,9 @@ class SyncRepository:
         shard_id: int = 0,
         vu: int | None = None,
         clear_vu: bool = False,
+        windows: dict[str, tuple[int, int]] | None = None,
+        rf_ms: int | None = None,
+        window_lengths: dict[str, int] | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -1968,13 +1983,42 @@ class SyncRepository:
                 group covers every limit sharing the item. This is the half of
                 the #468 fan-out's `vu = 0` that makes it self-clearing rather
                 than a permanent fast-path demotion.
+            windows: Limit name -> ``(window_start_ms, reset_after_seconds)``
+                to stamp as ``b_{name}_ws`` and ``b_{name}_rsa`` (ADR-139).
+                Only limits whose window rolled on **this** pass appear; an
+                empty dict or ``None`` leaves every `ws` untouched. This is the
+                only client write that moves a window start — the speculative
+                fast path stays byte-identical — so `_commit_initial()` is
+                where anchoring is decided, which is what makes "only admitted
+                use anchors" fall out rather than being enforced.
+
+                The pair is one argument so that `ws` can never land without
+                `rsa`. The aggregator and a new shard's inheritance read only
+                the item, and a resource- or system-level `reset_after` never
+                reaches an existing bucket through the param sync (#271/#296)
+                — so an item holding `ws` alone would carry a window whose end
+                nothing but a config-resolving client could compute.
+            rf_ms: The ``rf`` to stamp, when the caller has clamped it so that
+                it never moves backward and never sits below a window start
+                the item carries (ADR-139). ``None`` stamps ``now_ms``. The
+                lock still compares against ``expected_rf``, the stored value.
+            window_lengths: Limit name -> ``reset_after_seconds`` to stamp as
+                ``b_{name}_rsa`` **alone**, for a limit whose window did not
+                move on this pass but whose configured length differs from
+                the one on the item (ADR-139). A resource- or system-level
+                ``reset_after`` change never fans out (#271/#296), and
+                ``windows`` stamps ``rsa`` only when ``ws`` moves, so without
+                this the item kept the old length for a whole window: the fast
+                path then read an end the slow path no longer enforces. A name
+                also in ``windows`` is skipped — that pair already carries the
+                length, and two SETs on one path are a ValidationException.
         """
         add_parts: list[str] = []
         set_parts: list[str] = ["#rf = :now"]
         remove_parts: list[str] = []
         attr_names: dict[str, str] = {"#rf": schema.BUCKET_FIELD_RF}
         attr_values: dict[str, Any] = {
-            ":now": {"N": str(now_ms)},
+            ":now": {"N": str(now_ms if rf_ms is None else rf_ms)},
             ":expected_rf": {"N": str(expected_rf)},
         }
         if ttl_seconds is not None:
@@ -1991,6 +2035,19 @@ class SyncRepository:
         elif clear_vu:
             remove_parts.append("#vu")
             attr_names["#vu"] = schema.BUCKET_FIELD_VU
+        for i, (name, (ws, rsa)) in enumerate(sorted((windows or {}).items())):
+            attr_names[f"#ws{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_WS)
+            attr_names[f"#rsa{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_RSA)
+            set_parts.append(f"#ws{i} = :ws{i}")
+            set_parts.append(f"#rsa{i} = :rsa{i}")
+            attr_values[f":ws{i}"] = {"N": str(ws)}
+            attr_values[f":rsa{i}"] = {"N": str(rsa)}
+        rolled = windows or {}
+        lengths = sorted(((n, v) for n, v in (window_lengths or {}).items() if n not in rolled))
+        for i, (name, rsa) in enumerate(lengths):
+            attr_names[f"#wl{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_RSA)
+            set_parts.append(f"#wl{i} = :wl{i}")
+            attr_values[f":wl{i}"] = {"N": str(rsa)}
         condition_parts: list[str] = ["#rf = :expected_rf"]
         for name in consumed:
             c = consumed[name]
@@ -2605,6 +2662,162 @@ class SyncRepository:
         results = self._run_in_executor(*[lambda n=n: stamp(n) for n in range(1, old_count)])
         return sum(results)
 
+    def _propagate_window_start(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int,
+        shard_count: int,
+        windows: dict[str, tuple[int, int]],
+    ) -> int:
+        """Stamp a newly anchored duration window on the entity's other shards (ADR-139).
+
+        Without it, shard A drawn at 20:00 and shard B at 20:03 anchor
+        different windows and the entity's windows stagger — at which point
+        "when does mine reset" has no honest answer: ``min(ws) + W``
+        over-promises and ``max(ws) + W`` under-promises.
+
+        Shaped like :meth:`_propagate_shard_count`: one conditional write per
+        target, idempotent and monotonic. The condition is **not** "the
+        sibling's ``ws`` is older" but "the sibling's window had already
+        *ended* by the new start"::
+
+            attribute_not_exists(ws) OR ws <= :open_floor
+            :open_floor = new_ws - rsa * 1000
+
+        which is exactly :meth:`SyncRateLimiter._open_window_if_elapsed`'s rule
+        (the window is half-open, ``[ws, ws + rsa)``, so it has elapsed at
+        ``now`` iff ``ws + rsa <= now``) evaluated at ``new_ws``. A sibling
+        moves only when it would itself have opened a window at that instant.
+        What that buys:
+
+        - **Idempotent.** Once stamped, ``new_ws <= new_ws - W`` is false.
+        - **No double reset between concurrent openers.** Two clients crossing
+          the boundary milliseconds apart each open a window on their own
+          shard and each fan out. A plain ``ws < :new`` let the later value
+          overwrite the earlier opener's own shard, whose ``rf`` is its own
+          ``now`` — so ``ws > rf`` held and that shard reset a *second* time
+          in one window (a moto repro admitted 15 against a quota of 10).
+          Under the floor, both fan-outs no-op on the other's shard: the two
+          shards stay staggered by the openers' few milliseconds until the
+          next window, which is the whole residual cost.
+        - **No drag-back from a delayed write.** A write carrying a stale
+          ``ws`` has a floor below the stored start, and is rejected.
+        - **Safe under ``--no-aggregator``.** The client owns this, exactly as
+          :meth:`bump_shard_count` owns shard-count propagation.
+
+        A sibling whose window is *longer* than ``rsa`` (the length was just
+        raised) may not have elapsed by the floor and no-ops; it opens its own
+        window when it does elapse, which is the pre-fan-out behaviour.
+
+        The floor is ANDed with ``rf < :new``. A sibling applies a fanned-out
+        window only by reading ``ws > rf`` (``BucketState.window_rolled``), so
+        one whose ``rf`` is already at or past ``new_ws`` — an aggregator
+        refill that landed after its old window ended, or a writer whose clock
+        runs ahead — would take the new ``ws`` as *already applied* and carry
+        its burnt balance through the whole new window. Left alone instead,
+        its window stays ended and it opens its own when next drawn: one
+        stagger, never an under-admission.
+
+        **It writes ``ws`` and never ``tk``**, which is the coherence argument.
+        A fan-out cannot use ``ADD`` — it does not know each sibling's
+        balance — and the blind ``SET`` it would otherwise need races the
+        sibling's own slow path in both orderings: landing after, it clobbers
+        the sibling's committed consumption; landing before, the sibling's
+        ``rf`` lock still holds and its own ``ADD`` applies on top, leaving it
+        at twice its share. Each sibling resets itself, under its own ``rf``
+        lock, in the write it was going to make anyway: it reads ``ws > rf``
+        (``BucketState.window_rolled``).
+
+        ``rsa`` rides with ``ws``, as on every acquire-path write: a sibling
+        created before its limit gained a window carries none, and the
+        aggregator and a new shard's inheritance read only the item, so a
+        ``ws`` alone would leave the window's end unknowable to them.
+
+        ``vu = 0`` rides along too. The fast path is a pure ``ADD`` with no
+        ceiling arithmetic, so without it a sibling whose ``vu`` still lies in
+        the future (gated by a cron boundary, say) would keep spending its
+        *old* window's balance against a bucket the entity has already
+        rolled. The cost is one skipped aggregator refill per shard per
+        rollover (#508's ``vu = :expected_vu`` pin sees the change).
+
+        ``attribute_exists(PK)`` keeps a sibling that does not exist yet from
+        being conjured as a half-item; whoever draws it creates it.
+
+        One write per (sibling, limit) rather than one per sibling: two
+        duration limits on one item can have different lengths and so roll at
+        different instants, and an ANDed condition would no-op the whole
+        write whenever one was not due — leaving the other staggered.
+
+        A write that fails for any reason other than its condition is logged
+        and counted as not landed rather than raised: under the serial and
+        gevent sync strategies a raise would abandon the siblings not yet
+        written (the portable ``_safe`` shape, #491). The caller was already
+        admitted; a sibling left behind opens its own window later.
+
+        Args:
+            windows: Limit name -> ``(new_ws_ms, reset_after_seconds)``.
+
+        Returns:
+            The number of writes that applied. Zero, with no request issued,
+            at ``shard_count == 1``: the cost is ``(S - 1) × L`` WCU per
+            rollover, and nothing at all for an unsharded entity.
+        """
+        if shard_count <= 1 or not windows:
+            return 0
+        client = self._get_client()
+
+        def stamp(target_shard: int, name: str, window: tuple[int, int]) -> int:
+            new_ws, rsa = window
+            try:
+                client.update_item(
+                    TableName=self.table_name,
+                    Key={
+                        "PK": {
+                            "S": schema.pk_bucket(
+                                self._namespace_id, entity_id, resource, target_shard
+                            )
+                        },
+                        "SK": {"S": schema.sk_state()},
+                    },
+                    UpdateExpression="SET #ws = :new, #rsa = :rsa, #vu = :zero",
+                    ConditionExpression="attribute_exists(PK) AND #rf < :new AND (attribute_not_exists(#ws) OR #ws <= :open_floor)",
+                    ExpressionAttributeNames={
+                        "#ws": schema.bucket_attr(name, schema.BUCKET_FIELD_WS),
+                        "#rsa": schema.bucket_attr(name, schema.BUCKET_FIELD_RSA),
+                        "#vu": schema.BUCKET_FIELD_VU,
+                        "#rf": schema.BUCKET_FIELD_RF,
+                    },
+                    ExpressionAttributeValues={
+                        ":new": {"N": str(new_ws)},
+                        ":rsa": {"N": str(rsa)},
+                        ":open_floor": {"N": str(new_ws - rsa * 1000)},
+                        ":zero": {"N": "0"},
+                    },
+                )
+                return 1
+            except Exception as e:
+                code = (
+                    e.response.get("Error", {}).get("Code") if isinstance(e, ClientError) else None
+                )
+                if code != "ConditionalCheckFailedException":
+                    logger.warning(
+                        "duration-window fan-out write failed for resource=%s shard=%d",
+                        resource,
+                        target_shard,
+                        exc_info=True,
+                    )
+                return 0
+
+        targets = [
+            (n, name, window)
+            for n in range(shard_count)
+            if n != shard_id
+            for name, window in sorted(windows.items())
+        ]
+        results = self._run_in_executor(*[lambda t=t: stamp(*t) for t in targets])
+        return sum(results)
+
     def set_limits(
         self,
         entity_id: str,
@@ -2890,6 +3103,13 @@ class SyncRepository:
             set_parts.append(f"#rp{i} = :rp{i}")
             expr_names[f"#rp{i}"] = rp_attr
             expr_values[f":rp{i}"] = {"N": str(limit.refill_period_seconds * 1000)}
+            rsa_attr = schema.bucket_attr(name, schema.BUCKET_FIELD_RSA)
+            expr_names[f"#rsa{i}"] = rsa_attr
+            if limit.reset_after_seconds is not None:
+                set_parts.append(f"#rsa{i} = :rsa{i}")
+                expr_values[f":rsa{i}"] = {"N": str(limit.reset_after_seconds)}
+            else:
+                remove_parts.append(f"#rsa{i}")
         encoded = self._encode_item_schedules(
             [(limit.name, limit.schedule, limit.reset_schedule) for limit in limits]
         )
@@ -4229,6 +4449,35 @@ class SyncRepository:
                 stack_name=self.stack_name,
             ) from exc
 
+    def _decode_stored_window_int(self, attr_name: str, raw: str | None) -> int | None:
+        """Parse a `b_{name}_ws` / `b_{name}_rsa` value, or declare the limiter
+        unavailable (ADR-139).
+
+        Same shape and reasoning as `_decode_stored_schedule`: unlike `sched`/
+        `rsched`, `ws`/`rsa` have no grammar of their own -- they are bare `N`
+        attributes, so DynamoDB legally stores a non-integral value like
+        `"18000.5"` and `int()` itself can raise. Converting that to
+        `RateLimiterUnavailable` (rather than letting a bare `ValueError`
+        escape, or silently reading it as `None`) matters beyond the slow
+        path: the ALL_OLD / ALL_NEW images behind the speculative path go
+        through `_deserialize_composite_bucket`, which calls this, so an
+        unguarded corruption there would raise out of a hot path with no
+        indication of which attribute or item was at fault. `None` (the
+        attribute is simply absent) is not corruption -- it is every bucket
+        written before this attribute existed, and every `wcu` limit, which
+        never carries one -- so it is returned, not raised.
+        """
+        if raw is None:
+            return None
+        try:
+            return int(raw)
+        except ValueError as exc:
+            raise RateLimiterUnavailable(
+                f"stored duration window in {attr_name} could not be decoded: {raw!r}: {exc}",
+                cause=exc,
+                stack_name=self.stack_name,
+            ) from exc
+
     def _deserialize_composite_bucket(self, item: dict[str, Any]) -> list[BucketState]:
         """Deserialize a composite DynamoDB item to a list of BucketStates.
 
@@ -4302,6 +4551,14 @@ class SyncRepository:
 
             tc_attr = item.get(schema.bucket_attr(name, schema.BUCKET_FIELD_TC), {})
             total_consumed = int(tc_attr["N"]) if "N" in tc_attr else None
+            ws_name = schema.bucket_attr(name, schema.BUCKET_FIELD_WS)
+            window_start_ms = self._decode_stored_window_int(
+                ws_name, item.get(ws_name, {}).get("N")
+            )
+            rsa_name = schema.bucket_attr(name, schema.BUCKET_FIELD_RSA)
+            reset_after_seconds = self._decode_stored_window_int(
+                rsa_name, item.get(rsa_name, {}).get("N")
+            )
             is_wcu = name == schema.WCU_LIMIT_NAME
             sched = (
                 () if is_wcu else _schedule_for(name, schema.BUCKET_FIELD_SCHED, item_sched, False)
@@ -4323,6 +4580,8 @@ class SyncRepository:
                     shard_count=1 if is_wcu else shard_count,
                     sched=sched,
                     reset_sched=reset_sched,
+                    window_start_ms=window_start_ms,
+                    reset_after_seconds=reset_after_seconds,
                 )
             )
         return buckets
@@ -4365,6 +4624,10 @@ class SyncRepository:
             if limit.reset_schedule:
                 compact, _tz = schedule.encode_reset(limit.reset_schedule)
                 base_item[schema.limit_attr(name, schema.LIMIT_FIELD_RSCHED)] = {"S": compact}
+            if limit.reset_after_seconds is not None:
+                base_item[schema.limit_attr(name, schema.LIMIT_FIELD_RSA)] = {
+                    "N": str(limit.reset_after_seconds)
+                }
         if hoisted_tz is not None:
             base_item[schema.CONFIG_FIELD_SCHED_TZ] = {"S": hoisted_tz}
         return base_item
@@ -4396,9 +4659,12 @@ class SyncRepository:
 
         Raises:
             RateLimiterUnavailable: A stored schedule on this item cannot be
-                decoded, or a limit carrying one cannot be reconstructed from
-                what is stored.
+                decoded, or a limit carrying one — or a stored `rsa` duration
+                window (ADR-139) — cannot be reconstructed from what is
+                stored.
         """
+        from datetime import timedelta
+
         limit_names: list[str] = []
         suffix = f"_{schema.LIMIT_FIELD_CP}"
         for attr_name in item:
@@ -4416,8 +4682,10 @@ class SyncRepository:
 
             sched_name = schema.limit_attr(name, schema.LIMIT_FIELD_SCHED)
             rsched_name = schema.limit_attr(name, schema.LIMIT_FIELD_RSCHED)
+            rsa_name = schema.limit_attr(name, schema.LIMIT_FIELD_RSA)
             sched_attr = item.get(sched_name, {}).get("S")
             rsched_attr = item.get(rsched_name, {}).get("S")
+            rsa_attr = item.get(rsa_name, {}).get("N")
             sched = (
                 self._decode_stored_schedule(sched_name, sched_attr, sched_tz) if sched_attr else ()
             )
@@ -4427,6 +4695,7 @@ class SyncRepository:
                 else ()
             )
             try:
+                reset_after = timedelta(seconds=int(rsa_attr)) if rsa_attr is not None else None
                 limits.append(
                     Limit(
                         name=name,
@@ -4435,13 +4704,21 @@ class SyncRepository:
                         refill_period_seconds=_get(schema.LIMIT_FIELD_RP),
                         schedule=sched,
                         reset_schedule=reset_sched,
+                        reset_after=reset_after,
                     )
                 )
             except ValueError as exc:
-                if not sched and (not reset_sched):
+                culprits = []
+                if sched:
+                    culprits.append(sched_name)
+                if reset_sched:
+                    culprits.append(rsched_name)
+                if rsa_attr is not None:
+                    culprits.append(f"{rsa_name}={rsa_attr!r}")
+                if not culprits:
                     raise
                 raise RateLimiterUnavailable(
-                    f"stored limit {name!r} carries a schedule but cannot be reconstructed: {exc}",
+                    f"stored limit {name!r} carries {', '.join(culprits)} but cannot be reconstructed: {exc}",
                     cause=exc,
                     stack_name=self.stack_name,
                 ) from exc
@@ -4816,6 +5093,86 @@ class SyncRepository:
                 previous = int(response["Attributes"][attr]["N"])
                 reclaimed[name] += previous - share
         return (len(pks), reclaimed)
+
+    def get_shard_window_starts(
+        self, entity_id: str, resource: str, limit_names: list[str], shard_id: int = 0
+    ) -> dict[str, int]:
+        """Read one shard's duration-window starts, to seed a shard being created (ADR-139).
+
+        Shard 0 by default, because :meth:`bump_shard_count` already treats it
+        as the source of truth for ``shard_count``. A created shard inherits
+        ``ws`` verbatim and sets ``rf = now``, so ``ws > rf`` is **false** on
+        the new item and it does not immediately re-roll itself: it joins the
+        window in progress rather than opening one. Whether the window read
+        here is still *live* is the caller's decision, against the ``rsa`` of
+        the config it resolved — this returns the stored start and nothing
+        more.
+
+        A **separate** read rather than an extra key in the create path's
+        ``BatchGetItem``: that call returns a dict keyed by ``(entity_id,
+        resource, limit_name)`` with no shard component, so shard 0 and shard N
+        would collide on every key. **Strongly consistent**, so 1 RCU (the
+        projected item is well under 4 KB), **once per shard ever** (≤ 31 per
+        (entity, resource), plus TTL recreations) on a path already priced at
+        2.5 RCU + 2 WCU.
+
+        Consistency is load-bearing, not a nicety. A shard is usually created
+        right after a ``wcu`` doubling, which is usually right after shard 0
+        was written — including the write that rolled its window. An eventually
+        consistent read can return the *pre-roll* ``ws``, which looks ended, so
+        the caller opens a fresh window at full share instead of taking the
+        #587 transfer from the window shard 0 just opened: measured at 15
+        admitted against a quota of 10. The extra 0.5 RCU per shard creation
+        is the whole price of closing that.
+
+        A limit absent from the result has no window on that shard — either it
+        carries none, or the shard has been swept. The caller then opens a fresh
+        window, which is the degraded case ADR-139 records under Consequences
+        and which idle-restarting makes correct rather than merely tolerable.
+
+        Args:
+            entity_id: Entity owning the bucket. On a **cascade** create this is
+                the entity whose shard is being created — the parent for a
+                parent shard, never the child. Parent and child windows are
+                independent (ADR-139).
+            resource: Resource name.
+            limit_names: The limits to look for; only these attributes are
+                projected, so the read stays a fraction of the item.
+            shard_id: The shard to read. Defaults to 0.
+
+        Returns:
+            ``{limit_name: window_start_ms}`` for the limits whose ``ws`` is on
+            the item.
+
+        Raises:
+            RateLimiterUnavailable: A stored ``ws`` is not an integer, the same
+                treatment every other reader gives a corrupt window.
+        """
+        if not limit_names:
+            return {}
+        client = self._get_client()
+        names = {
+            f"#w{i}": schema.bucket_attr(name, schema.BUCKET_FIELD_WS)
+            for i, name in enumerate(limit_names)
+        }
+        response = client.get_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)},
+                "SK": {"S": schema.sk_state()},
+            },
+            ProjectionExpression=", ".join(names),
+            ExpressionAttributeNames=names,
+            ConsistentRead=True,
+        )
+        item = response.get("Item") or {}
+        out: dict[str, int] = {}
+        for i, name in enumerate(limit_names):
+            attr = names[f"#w{i}"]
+            ws = self._decode_stored_window_int(attr, item.get(attr, {}).get("N"))
+            if ws is not None:
+                out[name] = ws
+        return out
 
     def _fanout_resource(self, resource: str, disabled: bool) -> int:
         """Stamp every bucket for a resource, honoring per-entity overrides.

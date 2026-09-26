@@ -17,6 +17,7 @@ from zae_limiter_aggregator.processor import (
     LimitRefillInfo,
     ProcessResult,
     StructuredLogger,
+    _is_quota_limit,
     _parse_bucket_record,
     aggregate_bucket_states,
     calculate_snapshot_ttl,
@@ -3015,6 +3016,59 @@ class TestAggregatorAppliesResets:
         assert values[":new_vu"] == int(datetime(2026, 9, 17, 0, 0, tzinfo=NY).timestamp() * 1000)
 
 
+class TestAggregatorNeverDoubleResetsACalendarQuota:
+    """(#635) `new_rf` never moves below the stored `rf`, so a slow-clock
+    refill pass cannot un-apply a calendar reset another writer already
+    committed. General form of `TestAggregatorRfNeverUnappliesAWindow`, for
+    `reset_sched` rather than a duration window: `new_rf = max([now_ms,
+    state.rf_ms] + ...)` is unconditional and does not special-case either
+    recovery shape.
+    """
+
+    def test_a_slow_clock_pass_does_not_move_rf_before_the_edge(self) -> None:
+        """A correct-clock writer already applied the midnight edge and
+        stamped `rf` at WED_0030. A pass whose own clock reads TUE_2300 --
+        before the edge itself -- must not stamp that `now` onto `rf`, or it
+        erases the record that the edge was applied. The companion `rph`
+        limit forces a write via the unconditional negative clamp, so the
+        clamp is observable even though the quota itself (`ra_milli=0`,
+        ADR-137) yields no drip delta on its own."""
+        table = MagicMock()
+        state = _quota_state(
+            rf_ms=WED_0030,
+            limits={
+                "rpd": LimitRefillInfo(
+                    tc_delta=0, tk_milli=3_000_000, cp_milli=10_000_000, ra_milli=0, rp_ms=1_000
+                ),
+                "rph": LimitRefillInfo(
+                    tc_delta=0,
+                    tk_milli=11_000_000,
+                    cp_milli=10_000_000,
+                    ra_milli=1_000_000,
+                    rp_ms=3_600_000,
+                ),
+            },
+        )
+        state.limits["rpd"].reset_sched = DAILY_RESET
+        assert try_refill_bucket(table, state, now_ms=TUE_2300) is True
+        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+        assert values[":new_rf"] == WED_0030, "a slow-clock pass must not move rf before the edge"
+
+    def test_the_next_correct_clock_pass_does_not_re_apply_the_edge(self) -> None:
+        """Feed the `rf` the slow-clock pass above actually stamps back in as
+        the stored `rf` for a later, correct-clock pass: the edge must not
+        fire a second time. Pinned against `WED_0030` directly (rather than
+        chained through the first test) so this test still fails on its own
+        if the fix ever regresses to `new_rf = now_ms`."""
+        table = MagicMock()
+        state = _quota_state(reset_sched=DAILY_RESET, rf_ms=WED_0030)
+        state.limits["rpd"].tk_milli = 5_000_000
+        later = WED_0030 + 3_600_000  # still Wednesday, no edge since rf
+        assert try_refill_bucket(table, state, now_ms=later) is False, (
+            "no edge since rf: a bug here would refund the quota a second time"
+        )
+
+
 class TestResetSchedIsCarriedFromTheStreamImage:
     """`rsched` / `b_{name}_rsched` reach the refill state."""
 
@@ -3397,3 +3451,524 @@ class TestQuotaShardCloneIsATransfer:
         record["dynamodb"]["OldImage"]["shard_count"] = {"N": "1"}
         assert propagate_shard_count(table, record, TUE_1400) == 1
         assert table.put_item.call_args.kwargs["Item"]["b_rpd_tk"] == 5_000_000
+
+
+# ---------------------------------------------------------------------------
+# Duration windows (ADR-139, #627) — the aggregator applies a window a client
+# anchored and fanned out, reads it off the stream image, and never anchors or
+# fans out one of its own.
+# ---------------------------------------------------------------------------
+
+# A 5-hour session window that opened at WS. Epoch values are arbitrary: an
+# unscheduled item evaluates no cron, so nothing here depends on a calendar.
+WS = 1_800_000_000_000
+RSA = 18_000  # seconds
+WINDOW_END = WS + RSA * 1000
+SESSION_CP = 10_000_000
+
+
+def _session_limit(**overrides: int) -> dict[str, int]:
+    fields = {"tk": 0, "cp": SESSION_CP, "ra": 0, "rp": 1_000, "tc": 0, "ws": WS, "rsa": RSA}
+    fields.update(overrides)
+    return fields
+
+
+def _rpm_limit(**overrides: int) -> dict[str, int]:
+    """A dripping limit whose batch consumption outruns one period of refill."""
+    fields = {"tk": 0, "cp": 1_000_000, "ra": 1_000_000, "rp": 60_000, "tc": 2_000_000}
+    fields.update(overrides)
+    return fields
+
+
+def _window_state(record: dict) -> BucketRefillState:
+    """Aggregate one real stream record, exactly as `process_stream_records` does."""
+    states = aggregate_bucket_states([record])
+    assert len(states) == 1
+    return next(iter(states.values()))
+
+
+def _session_record(*, rf_ms: int, **kwargs) -> dict:
+    limits = kwargs.pop("limits", None) or {"session": _session_limit()}
+    return _sched_record(limits=limits, rf_ms=rf_ms, **kwargs)
+
+
+class TestWindowIsCarriedFromTheStreamImage:
+    def test_parse_reads_the_window_off_the_image(self) -> None:
+        parsed = _parse_bucket_record(_session_record(rf_ms=WS - 1))
+        assert parsed is not None
+        assert parsed.limits["session"].window_start_ms == WS
+        assert parsed.limits["session"].reset_after_seconds == RSA
+
+    def test_a_limit_without_a_window_parses_to_none(self) -> None:
+        parsed = _parse_bucket_record(_session_record(rf_ms=0, limits={"rpm": _rpm_limit()}))
+        assert parsed is not None
+        assert parsed.limits["rpm"].window_start_ms is None
+        assert parsed.limits["rpm"].reset_after_seconds is None
+
+    def test_wcu_never_carries_a_window(self) -> None:
+        """`rsched` is item-level and needed an explicit carve-out, or a user's
+        midnight reset would hand `wcu` its per-partition write ceiling back at
+        every edge. `ws` is per-limit, so the exemption is STRUCTURAL: no writer
+        stamps one on `wcu`, and a session window beside it leaves it bare."""
+        record = _session_record(
+            rf_ms=WS - 1,
+            limits={
+                "session": _session_limit(),
+                "wcu": {"tk": 1_000_000, "cp": 1_000_000, "ra": 1_000_000, "rp": 1_000, "tc": 0},
+            },
+        )
+        parsed = _parse_bucket_record(record)
+        assert parsed is not None
+        assert parsed.limits["wcu"].window_start_ms is None
+        assert parsed.limits["wcu"].reset_after_seconds is None
+
+    def test_the_last_image_in_a_batch_wins(self) -> None:
+        first = _session_record(rf_ms=WS - 1, limits={"session": _session_limit(ws=WS - 5)})
+        second = _session_record(rf_ms=WS - 1)
+        state = aggregate_bucket_states([first, second])[("ns123", "user-1", "gpt-4", 0)]
+        assert state.limits["session"].window_start_ms == WS
+        assert state.limits["session"].reset_after_seconds == RSA
+
+
+class TestIsQuotaLimitRecognisesADurationWindow:
+    """Reads the STREAM IMAGE, not a `Limit`, so it tests stored attributes. A
+    duration quota misread as a dripping limit here would be minted a fresh
+    share at shard-create time — #587 again, for this feature."""
+
+    @staticmethod
+    def _image(record: dict) -> dict:
+        return record["dynamodb"]["NewImage"]
+
+    def test_a_zero_rate_beside_an_rsa_is_a_quota(self) -> None:
+        image = self._image(_session_record(rf_ms=WS))
+        assert _is_quota_limit("session", image) is True
+
+    def test_an_rsa_without_a_ws_is_still_a_quota(self) -> None:
+        """The param sync stamps `rsa` before any window is anchored."""
+        limit = _session_limit()
+        del limit["ws"]
+        image = self._image(_session_record(rf_ms=WS, limits={"session": limit}))
+        assert _is_quota_limit("session", image) is True
+
+    def test_an_rsa_beside_a_positive_rate_is_not(self) -> None:
+        """The mirror corruption `Limit.__post_init__` rejects (ADR-137)."""
+        image = self._image(_session_record(rf_ms=WS, limits={"session": _session_limit(ra=5)}))
+        assert _is_quota_limit("session", image) is False
+
+    def test_the_unscheduled_marker_does_not_hide_a_window(self) -> None:
+        """A duration quota sharing an item with a calendar quota: the item's
+        `rsched` default belongs to the calendar quota, so the duration quota
+        is stamped with the #541 marker to block inheriting it. The marker
+        speaks for its calendar reset only — it declares no window either way."""
+        record = _session_record(
+            rf_ms=WS,
+            limits={
+                "session": _session_limit(),
+                "rpd": {"tk": 0, "cp": SESSION_CP, "ra": 0, "rp": 1_000, "tc": 0},
+            },
+            rsched=DAILY_RESET_COMPACT,
+            limit_rsched={"session": BUCKET_SCHED_NONE},
+        )
+        image = self._image(record)
+        assert _is_quota_limit("session", image) is True
+        assert _is_quota_limit("rpd", image) is True
+
+    def test_a_shard_clone_fills_the_duration_quota_by_transfer(self) -> None:
+        """The #587 guard end to end, on the shared item above. The existing
+        shard is spent, so the clamp reclaims nothing and the clone gets
+        nothing — not the 5_000_000 fresh share a dripping limit would get."""
+        table = MagicMock()
+        table.update_item.side_effect = ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException", "Message": "no surplus"}},
+            "UpdateItem",
+        )
+        record = _session_record(
+            rf_ms=TUE_1400,
+            limits={
+                "session": _session_limit(tk=2_000),
+                "rpd": {"tk": 2_000, "cp": SESSION_CP, "ra": 0, "rp": 1_000, "tc": 0},
+            },
+            rsched=DAILY_RESET_COMPACT,
+            limit_rsched={"session": BUCKET_SCHED_NONE},
+            shard_count=2,
+        )
+        record["dynamodb"]["OldImage"]["shard_count"] = {"N": "1"}
+        assert propagate_shard_count(table, record, TUE_1400) == 1
+        item = table.put_item.call_args.kwargs["Item"]
+        assert item["b_session_tk"] == 0
+        assert item["b_rpd_tk"] == 0
+        clamped = {
+            c.kwargs["ExpressionAttributeNames"]["#tk"] for c in table.update_item.call_args_list
+        }
+        assert clamped == {"b_session_tk", "b_rpd_tk"}
+
+
+class TestAggregatorRollsAWindow:
+    """The aggregator applies a window it sees, as the client's `ws > rf` does."""
+
+    @staticmethod
+    def _write(table: MagicMock) -> dict:
+        return table.update_item.call_args.kwargs
+
+    def test_aggregator_rolls_an_elapsed_window(self) -> None:
+        """`rf` before `ws` -> this shard has not applied the window. tk = 0,
+        effective cp = 10_000_000 -> ADD +10_000_000. Evaluated BEFORE the
+        accrual-rate guard: a duration quota's stored rate is 0 (ADR-137) and
+        that guard would skip exactly the limits the feature exists for."""
+        table = MagicMock()
+        state = _window_state(_session_record(rf_ms=WS - 60_000, vu_ms=0))
+        assert try_refill_bucket(table, state, now_ms=WS + 30_000) is True
+        write = self._write(table)
+        assert write["UpdateExpression"].endswith("ADD #wtk0 :wd0")
+        assert write["ExpressionAttributeNames"]["#wtk0"] == "b_session_tk"
+        assert write["ExpressionAttributeValues"][":wd0"] == SESSION_CP
+        assert write["ExpressionAttributeValues"][":new_rf"] == WS + 30_000
+
+    def test_the_roll_bypasses_the_consumption_threshold(self) -> None:
+        """A hot bucket has the largest tc_delta and is where the aggregator,
+        not the client, is the refiller."""
+        table = MagicMock()
+        state = _window_state(
+            _session_record(rf_ms=WS - 1, limits={"session": _session_limit(tc=9_000_000)})
+        )
+        assert try_refill_bucket(table, state, now_ms=WS + 1) is True
+
+    def test_the_roll_is_to_the_per_shard_share(self) -> None:
+        table = MagicMock()
+        state = _window_state(
+            _session_record(
+                rf_ms=WS - 1, limits={"session": _session_limit(tk=1_000)}, shard_count=2
+            )
+        )
+        assert try_refill_bucket(table, state, now_ms=WS + 1) is True
+        assert self._write(table)["ExpressionAttributeValues"][":wd0"] == SESSION_CP // 2 - 1_000
+
+    def test_a_roll_trims_a_balance_above_the_share(self) -> None:
+        table = MagicMock()
+        state = _window_state(
+            _session_record(
+                rf_ms=WS - 1, limits={"session": _session_limit(tk=SESSION_CP)}, shard_count=2
+            )
+        )
+        assert try_refill_bucket(table, state, now_ms=WS + 1) is True
+        assert self._write(table)["ExpressionAttributeValues"][":wd0"] == -(SESSION_CP // 2)
+
+    def test_an_applied_window_writes_nothing(self) -> None:
+        """`rf` already past `ws`: the window is in the balance."""
+        table = MagicMock()
+        state = _window_state(_session_record(rf_ms=WS + 1))
+        assert try_refill_bucket(table, state, now_ms=WS + 60_000) is False
+        table.update_item.assert_not_called()
+
+    def test_a_ws_exactly_at_rf_does_not_re_fire(self) -> None:
+        """Strictly `>`, as `BucketState.window_rolled`: the pass that applies
+        a roll stamps `rf` at `ws`, so `>=` would refund everything spent since."""
+        table = MagicMock()
+        state = _window_state(_session_record(rf_ms=WS))
+        assert try_refill_bucket(table, state, now_ms=WS + 60_000) is False
+        table.update_item.assert_not_called()
+
+    def test_a_balance_already_at_the_share_writes_nothing(self) -> None:
+        table = MagicMock()
+        state = _window_state(
+            _session_record(rf_ms=WS - 1, limits={"session": _session_limit(tk=SESSION_CP)})
+        )
+        assert try_refill_bucket(table, state, now_ms=WS + 1) is False
+        table.update_item.assert_not_called()
+
+    def test_an_rsa_without_a_ws_is_not_rolled(self) -> None:
+        """No window has been anchored yet; opening one is the client's job."""
+        limit = _session_limit()
+        del limit["ws"]
+        table = MagicMock()
+        state = _window_state(_session_record(rf_ms=WS - 1, limits={"session": limit}))
+        assert try_refill_bucket(table, state, now_ms=WS + 1) is False
+        table.update_item.assert_not_called()
+
+    def test_a_stale_ws_without_an_rsa_is_not_rolled(self) -> None:
+        """The param sync REMOVEs `rsa` (never `ws`) when a limit loses its
+        window; the start left behind is not a window in force."""
+        limit = _session_limit()
+        del limit["rsa"]
+        table = MagicMock()
+        state = _window_state(_session_record(rf_ms=WS - 1, limits={"session": limit}))
+        assert try_refill_bucket(table, state, now_ms=WS + 1) is False
+        table.update_item.assert_not_called()
+
+    def test_a_limit_carrying_both_resets_keeps_the_calendar_branch(self) -> None:
+        """Corrupt (`Limit` makes the two spellings exclusive): no edge since
+        `rf`, so the calendar branch writes nothing, and the window is not
+        allowed to reset the same balance under a second rule."""
+        table = MagicMock()
+        state = _window_state(
+            _session_record(
+                rf_ms=TUE_2300,
+                limits={"session": _session_limit(ws=TUE_2300 + 1)},
+                limit_rsched={"session": DAILY_RESET_COMPACT},
+            )
+        )
+        assert try_refill_bucket(table, state, now_ms=TUE_2300 + 60_000) is False
+        table.update_item.assert_not_called()
+
+    def test_wcu_carrying_a_window_is_never_rolled(self) -> None:
+        """No writer stamps one; a corrupt item must still not hand `wcu` its
+        per-partition ceiling back."""
+        table = MagicMock()
+        wcu = {
+            "tk": 0,
+            "cp": 1_000_000,
+            "ra": 1_000_000,
+            "rp": 1_000,
+            "tc": 0,
+            "ws": WS,
+            "rsa": RSA,
+        }
+        state = _window_state(_session_record(rf_ms=WS - 1, limits={"wcu": wcu}))
+        # One millisecond of drip is 1_000 milli: the rate refill, not a roll.
+        assert try_refill_bucket(table, state, now_ms=WS) is False
+        table.update_item.assert_not_called()
+
+    def test_a_limit_name_never_reaches_an_expression_token(self) -> None:
+        """`NAME_PATTERN` allows `-` and `.`, neither legal in a token (#634
+        tracks the pre-existing `:rd_{name}` spelling; the roll adds none)."""
+        table = MagicMock()
+        state = _window_state(_session_record(rf_ms=WS - 1, limits={"s.q-1": _session_limit()}))
+        assert try_refill_bucket(table, state, now_ms=WS + 1) is True
+        write = self._write(table)
+        assert "s.q-1" not in write["UpdateExpression"]
+        assert not any("s.q-1" in token for token in write["ExpressionAttributeValues"])
+        assert write["ExpressionAttributeNames"]["#wtk0"] == "b_s.q-1_tk"
+
+    def test_the_aggregator_does_not_fan_out(self) -> None:
+        """It processes one bucket shard per stream record and would fan out
+        once per shard per batch — S² writes rather than S. The client's
+        fan-out plus the `ws > rf` rule already converges every shard; this is
+        an optimisation on top. So one write, to this shard, and no `ws`."""
+        table = MagicMock()
+        state = _window_state(_session_record(rf_ms=WS - 1, shard_count=4, vu_ms=0))
+        assert try_refill_bucket(table, state, now_ms=WS + 1) is True
+        assert table.update_item.call_count == 1
+        table.put_item.assert_not_called()
+        write = self._write(table)
+        assert write["Key"]["PK"] == "ns123/BUCKET#user-1#gpt-4#0"
+        assert "_ws" not in write["UpdateExpression"]
+        # `ws` is named only by the condition's pin, never by the update.
+        written = {
+            v
+            for k, v in write["ExpressionAttributeNames"].items()
+            if k in write["UpdateExpression"]
+        }
+        assert not any(v.endswith("_ws") for v in written)
+
+
+class TestTheRollIsPinnedToTheWindowItRestores:
+    """The `rf` and `vu` pins cannot tell two window fan-outs apart.
+
+    A fan-out of the *next* window writes `SET ws, rsa, vu = 0`: `rf` is
+    untouched and `vu` is rewritten to the same 0 the image carried. An
+    aggregator whose clock runs behind would restore the dead window under an
+    `rf` still below the new `ws`. Pinning `ws` refuses that write.
+    """
+
+    def test_a_roll_pins_the_ws_it_read(self) -> None:
+        table = MagicMock()
+        state = _window_state(_session_record(rf_ms=WS - 60_000, vu_ms=0))
+        assert try_refill_bucket(table, state, now_ms=WS + 30_000) is True
+        write = table.update_item.call_args.kwargs
+        assert " AND #wws0 = :ews0" in write["ConditionExpression"]
+        assert write["ExpressionAttributeNames"]["#wws0"] == "b_session_ws"
+        assert write["ExpressionAttributeValues"][":ews0"] == WS
+
+    def test_each_rolled_limit_carries_its_own_pin(self) -> None:
+        table = MagicMock()
+        record = _session_record(
+            rf_ms=WS - 60_000,
+            limits={"session": _session_limit(), "s.q-1": _session_limit(ws=WS + 5)},
+        )
+        assert try_refill_bucket(table, _window_state(record), now_ms=WS + 30_000) is True
+        write = table.update_item.call_args.kwargs
+        names = write["ExpressionAttributeNames"]
+        values = write["ExpressionAttributeValues"]
+        pins = {names[f"#wws{i}"]: values[f":ews{i}"] for i in range(2)}
+        assert pins == {"b_session_ws": WS, "b_s.q-1_ws": WS + 5}
+        assert "s.q-1" not in write["ConditionExpression"]
+
+    def test_no_roll_carries_no_pin(self) -> None:
+        """An applied window beside a drip top-up: nothing restored, nothing pinned."""
+        table = MagicMock()
+        record = _session_record(
+            rf_ms=WS + 1_000, limits={"session": _session_limit(), "rpm": _rpm_limit()}
+        )
+        assert try_refill_bucket(table, _window_state(record), now_ms=WS + 60_000) is True
+        write = table.update_item.call_args.kwargs
+        assert "#wws" not in write["ConditionExpression"]
+        assert not any(k.startswith("#wws") for k in write["ExpressionAttributeNames"])
+
+    def test_a_refused_pin_is_skipped_like_any_lost_lock(self) -> None:
+        table = MagicMock()
+        table.update_item.side_effect = ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException", "Message": "ws moved"}},
+            "UpdateItem",
+        )
+        state = _window_state(_session_record(rf_ms=WS - 60_000, vu_ms=0))
+        assert try_refill_bucket(table, state, now_ms=WS + 30_000) is False
+
+
+class TestAggregatorRfNeverUnappliesAWindow:
+    """`rf` is stamped as the client stamps it (`lease._monotonic_rf`)."""
+
+    def test_a_drip_limit_beside_an_unapplied_window_applies_the_roll_too(self) -> None:
+        """The Task 7 carry: the client's `_propagate_window_start` wrote
+        `SET ws, rsa, vu = 0` on this sibling, and a drip limit on the same
+        item needs a top-up. The one write that advances `rf` past `ws` must
+        be the write that applies the roll, or the window is recorded as
+        applied without its reset — the entity held to the dead window's
+        leftovers for a whole window."""
+        table = MagicMock()
+        record = _session_record(
+            rf_ms=WS - 60_000,
+            limits={"session": _session_limit(), "rpm": _rpm_limit()},
+            vu_ms=0,
+        )
+        now = WS + 30_000
+        assert try_refill_bucket(table, _window_state(record), now_ms=now) is True
+        write = table.update_item.call_args.kwargs
+        values = write["ExpressionAttributeValues"]
+        assert values[":wd0"] == SESSION_CP
+        assert values[":rd_rpm"] == 1_000_000
+        assert values[":new_rf"] >= WS
+        # The #508 pin still matches the fan-out's `vu = 0` ...
+        assert values[":expected_vu"] == 0
+        # ... and the re-stamp is the window's end, so the fast path resumes
+        # inside the window and closes again when it does.
+        assert values[":new_vu"] == WINDOW_END
+
+    def test_an_aggregator_clock_behind_ws_stamps_rf_at_ws(self) -> None:
+        """A client with a faster clock anchored the window. Stamping `rf =
+        now` would leave `ws > rf`, and the next pass would reset again —
+        refunding everything spent in between."""
+        table = MagicMock()
+        state = _window_state(_session_record(rf_ms=WS - 60_000))
+        assert try_refill_bucket(table, state, now_ms=WS - 5_000) is True
+        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+        assert values[":wd0"] == SESSION_CP
+        assert values[":new_rf"] == WS
+
+    def test_an_aggregator_clock_behind_rf_never_moves_it_backward(self) -> None:
+        """An applied window (`ws <= rf`): moving `rf` below `ws` would un-apply
+        it. The drip limit's surplus is still trimmed."""
+        table = MagicMock()
+        record = _session_record(
+            rf_ms=WS + 60_000,
+            limits={"session": _session_limit(tk=5), "rpm": _rpm_limit(tk=2_000_000, tc=0)},
+        )
+        assert try_refill_bucket(table, _window_state(record), now_ms=WS - 1_000) is True
+        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+        assert values[":new_rf"] == WS + 60_000
+        assert values[":rd_rpm"] == -1_000_000
+        assert ":wd0" not in values
+
+    def test_an_unwindowed_item_is_never_moved_backward_either(self) -> None:
+        table = MagicMock()
+        record = _session_record(rf_ms=WS, limits={"rpm": _rpm_limit(tk=2_000_000, tc=0)})
+        assert try_refill_bucket(table, _window_state(record), now_ms=WS - 1_000) is True
+        assert table.update_item.call_args.kwargs["ExpressionAttributeValues"][":new_rf"] == WS
+
+
+class TestAnEndedUnappliedWindowIsLeftToTheClient:
+    """`ws > rf` but the window has already closed at `now` (ruling 5).
+
+    The client's next pass opens a *new* window and resets unconditionally.
+    Restoring the dead window here would put an allowance on the item that the
+    consumption-only retry (which stamps no `ws`) can spend before that pass,
+    on top of the new window's full allowance. So the aggregator writes
+    nothing to the item at all: advancing `rf` past `ws` would record the dead
+    window as applied, and holding `rf` below it would double-credit the drip.
+    """
+
+    def test_the_whole_item_is_skipped(self) -> None:
+        table = MagicMock()
+        record = _session_record(
+            rf_ms=WS - 60_000,
+            limits={"session": _session_limit(), "rpm": _rpm_limit()},
+            vu_ms=0,
+        )
+        assert try_refill_bucket(table, _window_state(record), now_ms=WINDOW_END) is False
+        table.update_item.assert_not_called()
+
+    def test_one_millisecond_before_the_end_it_still_rolls(self) -> None:
+        """Half-open `[ws, ws + rsa)`: the end instant belongs to the next window."""
+        table = MagicMock()
+        state = _window_state(_session_record(rf_ms=WS - 60_000))
+        assert try_refill_bucket(table, state, now_ms=WINDOW_END - 1) is True
+
+
+class TestVuHonoursTheWindowEnd:
+    """`_item_next_boundary` carries each window's end (ruling 3)."""
+
+    def test_the_window_end_is_the_restamp_when_it_is_earliest(self) -> None:
+        table = MagicMock()
+        record = _session_record(
+            rf_ms=WS + 1_000,
+            limits={"session": _session_limit(), "rpm": _rpm_limit()},
+            vu_ms=WS,
+        )
+        assert try_refill_bucket(table, _window_state(record), now_ms=WS + 60_000) is True
+        assert (
+            table.update_item.call_args.kwargs["ExpressionAttributeValues"][":new_vu"] == WINDOW_END
+        )
+
+    def test_a_param_boundary_before_the_window_end_wins(self) -> None:
+        """The `min` rule: HOUR_14's window closes at 15:00, well inside a
+        window opened at 14:00 that runs five hours."""
+        table = MagicMock()
+        ws = TUE_1400
+        record = _session_record(
+            rf_ms=ws + 1_000,
+            limits={"session": _session_limit(ws=ws), "rpm": _rpm_limit()},
+            limit_sched={"rpm": HOUR_14_COMPACT},
+            vu_ms=ws,
+        )
+        # `_sched_record` stamps the zone only beside an item-level schedule.
+        record["dynamodb"]["NewImage"]["sched_tz"] = {"S": "America/New_York"}
+        assert try_refill_bucket(table, _window_state(record), now_ms=ws + 60_000) is True
+        new_vu = table.update_item.call_args.kwargs["ExpressionAttributeValues"][":new_vu"]
+        assert new_vu == ws + 3_600_000 < ws + RSA * 1000
+
+    def test_an_ended_applied_window_keeps_the_fast_path_closed(self) -> None:
+        """The window is in the balance but over: the next use must take the
+        slow path and anchor. The drip limit is still topped up, but `vu` is
+        left where it was — a re-stamp past the end would let the fast path
+        spend the dead window's balance."""
+        table = MagicMock()
+        ws = TUE_1400 - RSA * 1000 - 60_000  # the window closed at 13:59
+        record = _session_record(
+            rf_ms=ws + 1_000,
+            limits={"session": _session_limit(ws=ws), "rpm": _rpm_limit()},
+            # A scheduled neighbour whose own boundary (15:00) is in the
+            # future: without the window's vote, that is what `vu` would get.
+            limit_sched={"rpm": HOUR_14_COMPACT},
+            vu_ms=ws + RSA * 1000,
+        )
+        record["dynamodb"]["NewImage"]["sched_tz"] = {"S": "America/New_York"}
+        assert try_refill_bucket(table, _window_state(record), now_ms=TUE_1400) is True
+        write = table.update_item.call_args.kwargs
+        assert ":new_vu" not in write["ExpressionAttributeValues"]
+        assert "#vu = :new_vu" not in write["UpdateExpression"]
+        assert ":wd0" not in write["ExpressionAttributeValues"]
+
+    def test_an_rsa_without_a_ws_keeps_the_fast_path_closed(self) -> None:
+        """A window due to open on the next client pass, beside a scheduled
+        limit whose own boundary is hours away."""
+        limit = _session_limit()
+        del limit["ws"]
+        table = MagicMock()
+        record = _session_record(
+            rf_ms=TUE_1400 - 60_000,
+            limits={"session": limit, "rpm": _rpm_limit()},
+            limit_sched={"rpm": HOUR_14_COMPACT},
+            vu_ms=0,
+        )
+        record["dynamodb"]["NewImage"]["sched_tz"] = {"S": "America/New_York"}
+        assert try_refill_bucket(table, _window_state(record), now_ms=TUE_1400) is True
+        assert ":new_vu" not in table.update_item.call_args.kwargs["ExpressionAttributeValues"]

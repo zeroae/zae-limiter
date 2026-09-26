@@ -616,6 +616,11 @@ _CFN_SCHEDULE_COERCERS: dict[str, Any] = {
 _CFN_LIMIT_OPTIONAL_KEYS: dict[str, tuple[str, Any]] = {
     "RefillAmount": ("refill_amount", _coerce_int),
     "RefillPeriod": ("refill_period", _coerce_int),
+    # ADR-139: a duration-window quota's window length. CloudFormation
+    # delivers every property as a string (#554); `_coerce_int` parses it
+    # back and rejects a bool and a non-integral value (#569). The manifest
+    # key mirrors `LimitDecl.reset_after_seconds`.
+    "ResetAfterSeconds": ("reset_after_seconds", _coerce_int),
 }
 
 

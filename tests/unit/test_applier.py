@@ -436,3 +436,70 @@ class TestScheduleReachesTheConfigItem:
         )
         item = client.put_item.call_args.kwargs["Item"]
         assert item["l_rpm_sched"] == {"S": "1h9-17w1-5s500"}
+
+
+class TestDurationWindowReachesTheConfigItem:
+    """`reset_after_seconds` (ADR-139) must reach `l_{name}_rsa`, mirroring
+    `TestScheduleReachesTheConfigItem` for the third recovery spelling."""
+
+    @staticmethod
+    def _item(limits, level="entity", target="user-1/gpt-4"):
+        client = MagicMock()
+        result = apply_changes(
+            [Change(action="update", level=level, target=target, data={"limits": limits})],
+            table_name="test",
+            namespace_id="ns123",
+            client=client,
+        )
+        assert result.errors == []
+        return client.put_item.call_args.kwargs["Item"]
+
+    def test_a_duration_window_is_stored(self):
+        item = self._item(
+            {
+                "session": {
+                    "capacity": 10_000,
+                    "refill_amount": 0,
+                    "refill_period": 1,
+                    "reset_after_seconds": 18_000,
+                }
+            }
+        )
+        assert item["l_session_rsa"] == {"N": "18000"}
+        # cp/ra/rp stay the base params.
+        assert item["l_session_cp"] == {"N": "10000"}
+        assert item["l_session_ra"] == {"N": "0"}
+
+    def test_a_limit_without_a_window_writes_no_rsa_attribute(self):
+        item = self._item({"rpm": {"capacity": 1000, "refill_amount": 1000, "refill_period": 60}})
+        assert "l_rpm_rsa" not in item
+
+    def test_only_the_windowed_limit_on_a_shared_item_is_stamped(self):
+        item = self._item(
+            {
+                "session": {
+                    "capacity": 10_000,
+                    "refill_amount": 0,
+                    "refill_period": 1,
+                    "reset_after_seconds": 18_000,
+                },
+                "rpm": {"capacity": 1000, "refill_amount": 1000, "refill_period": 60},
+            }
+        )
+        assert item["l_session_rsa"] == {"N": "18000"}
+        assert "l_rpm_rsa" not in item
+
+    def test_the_resource_level_carries_a_duration_window_too(self):
+        item = self._item(
+            {
+                "session": {
+                    "capacity": 10_000,
+                    "refill_amount": 0,
+                    "refill_period": 1,
+                    "reset_after_seconds": 18_000,
+                }
+            },
+            level="resource",
+            target="claude-sonnet",
+        )
+        assert item["l_session_rsa"] == {"N": "18000"}

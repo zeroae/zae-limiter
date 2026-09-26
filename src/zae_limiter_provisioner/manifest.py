@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from zae_limiter.schedule import ScheduleEntry
+from zae_limiter.schedule import MAX_PERIOD_SECONDS, ScheduleEntry
 
 # The fields a YAML schedule entry may carry, mirroring `ScheduleEntry`'s public
 # ones. `_reset` is deliberately absent: it is what separates the two tuples, and
@@ -116,6 +116,15 @@ class LimitDecl:
     ``schedule`` answers "what is the limit right now?" and ``reset_schedule``
     "when does the balance go back to full, in one lump?" (#222 §1.1). They are
     independent tuples: a quota may also be scaled by a parameter schedule.
+
+    ``reset_after_seconds`` is the third recovery spelling (ADR-139): a window
+    anchored to the entity's own first use rather than to the wall clock. It
+    is mutually exclusive with ``reset_schedule`` — a limit has one recovery
+    mechanism — and, like ``reset_schedule``, flips the ``refill_amount``
+    shorthand default from ``capacity`` to 0. Spelled ``..._seconds`` and typed
+    ``int`` here (matching ``Limit.reset_after_seconds``, not
+    ``Limit.reset_after``) because a YAML scalar carries no type where the
+    Python API's ``timedelta`` does.
     """
 
     capacity: int
@@ -123,6 +132,7 @@ class LimitDecl:
     refill_period: int
     schedule: tuple[ScheduleEntry, ...] = ()
     reset_schedule: tuple[ScheduleEntry, ...] = ()
+    reset_after_seconds: int | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> LimitDecl:
@@ -135,12 +145,44 @@ class LimitDecl:
         schedule = _parse_entries(d.get("schedule"), key="schedule", reset=False)
         reset_schedule = _parse_entries(d.get("reset_schedule"), key="reset_schedule", reset=True)
 
-        # ADR-137: a limit drips or resets, never both. A reset flips the
-        # shorthand default from `capacity` to 0 so the natural manifest — one
-        # that names only the allowance and the schedule — is the valid one,
-        # rather than failing with a message about a field the author never
-        # wrote. That single boolean is the whole discriminator.
-        resets = bool(reset_schedule)
+        # ADR-139: a window anchored to the entity's own first use, the third
+        # spelling of the reset half alongside `reset_schedule`. Validated
+        # before the `resets` discriminator below, which needs to know whether
+        # it is set.
+        reset_after_seconds = d.get("reset_after_seconds")
+        if reset_after_seconds is not None:
+            # `bool` is an `int` subclass in Python; a window of `true` is a
+            # mistake, not one second. Same call `_coerce_int` makes (#569).
+            if isinstance(reset_after_seconds, bool) or not isinstance(reset_after_seconds, int):
+                raise ValueError(
+                    f"reset_after_seconds must be a whole number of seconds, got "
+                    f"{reset_after_seconds!r}. Limits are rejected at parse time so "
+                    "`limits plan` surfaces the problem before anything is written."
+                )
+            if reset_after_seconds <= 0:
+                raise ValueError(
+                    f"reset_after_seconds must be positive, got {reset_after_seconds}."
+                )
+            if reset_after_seconds > MAX_PERIOD_SECONDS:
+                raise ValueError(
+                    f"reset_after_seconds must be at most {MAX_PERIOD_SECONDS}, got "
+                    f"{reset_after_seconds}. Every duration on a limit shares this "
+                    "ceiling (#570)."
+                )
+            if reset_schedule:
+                raise ValueError(
+                    "a limit has one recovery mechanism: `reset_after_seconds` names a "
+                    "window anchored to the entity's own first use and `reset_schedule` "
+                    "names fixed calendar instants (ADR-137, ADR-139). Use one."
+                )
+
+        # ADR-137: a limit drips or resets, never both. A reset of EITHER
+        # spelling flips the shorthand default from `capacity` to 0 so the
+        # natural manifest — one that names only the allowance and the
+        # window/schedule — is the valid one, rather than failing with a
+        # message about a field the author never wrote. That single boolean
+        # is the whole discriminator.
+        resets = bool(reset_schedule) or reset_after_seconds is not None
         refill_amount = d.get("refill_amount", 0 if resets else capacity)
 
         for field_name, value in (
@@ -193,6 +235,7 @@ class LimitDecl:
             refill_period=refill_period,
             schedule=schedule,
             reset_schedule=reset_schedule,
+            reset_after_seconds=reset_after_seconds,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -207,6 +250,8 @@ class LimitDecl:
             result["schedule"] = [_entry_to_dict(e) for e in self.schedule]
         if self.reset_schedule:
             result["reset_schedule"] = [_entry_to_dict(e) for e in self.reset_schedule]
+        if self.reset_after_seconds is not None:
+            result["reset_after_seconds"] = self.reset_after_seconds
         return result
 
 

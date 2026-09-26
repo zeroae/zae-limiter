@@ -16,6 +16,7 @@ from zae_limiter.schedule import encode, encode_reset
 from zae_limiter.schema import (
     CONFIG_FIELD_DISABLED,
     CONFIG_FIELD_SCHED_TZ,
+    LIMIT_FIELD_RSA,
     LIMIT_FIELD_RSCHED,
     LIMIT_FIELD_SCHED,
     limit_attr,
@@ -82,6 +83,15 @@ def _build_limit_item(
         ):
             if entries:
                 item[limit_attr(name, attr_field)] = {"S": encoder(entries)[0]}
+
+        # ADR-139: a duration-window quota's window length, in seconds. Same
+        # storage rule as cp/ra/rp — written only when the decl carries it,
+        # and config items are full-replace `PutItem`s, so a limit converted
+        # back to a drip loses `rsa` simply by omitting it here, no REMOVE
+        # needed.
+        reset_after_seconds = decl.get("reset_after_seconds")
+        if reset_after_seconds is not None:
+            item[limit_attr(name, LIMIT_FIELD_RSA)] = {"N": str(reset_after_seconds)}
 
     if hoisted_tz is not None:
         item[CONFIG_FIELD_SCHED_TZ] = {"S": hoisted_tz}

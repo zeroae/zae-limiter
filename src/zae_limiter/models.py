@@ -3,6 +3,7 @@
 import re
 import warnings
 from dataclasses import dataclass, field, replace
+from datetime import timedelta
 from typing import Any, Literal
 
 from .exceptions import InvalidIdentifierError, InvalidNameError
@@ -400,6 +401,15 @@ class Limit:
     refill_period_seconds: int
     schedule: tuple[ScheduleEntry, ...] = ()
     reset_schedule: tuple[ScheduleEntry, ...] = ()
+    # A window anchored to the entity's own first use, rather than to the wall
+    # clock (ADR-139). The alternative spelling of `reset_schedule`, never a
+    # companion to it: a limit has one recovery mechanism (ADR-137). A
+    # `timedelta` rather than a bare integer because the field name carries no
+    # unit, so the type has to — `reset_after=timedelta(hours=5)` is
+    # self-documenting where `reset_after=18000` is a puzzle. Storage,
+    # manifests and CloudFormation all spell it `..._seconds` and take an int,
+    # because a bare scalar there cannot carry a type.
+    reset_after: timedelta | None = None
 
     def __post_init__(self) -> None:
         validate_name(self.name, "name")
@@ -451,18 +461,55 @@ class Limit:
                 f"instant the balance goes back to the effective capacity; it overrides "
                 f"no parameters."
             )
+        # A duration has to be expressible in the storage unit, which is whole
+        # seconds (`l_{name}_rsa` / `b_{name}_rsa`). Rejecting here rather
+        # than truncating is the same call #569 made for the schedule
+        # absolutes: a silently-truncated window is a limit that resets at a
+        # time the operator never wrote.
+        if self.reset_after is not None:
+            total = self.reset_after.total_seconds()
+            if total <= 0 or total != int(total):
+                raise ValueError(
+                    f"reset_after must be a positive whole number of seconds, got "
+                    f"{self.reset_after!r} ({total}s). The window length is stored in "
+                    f"seconds, so a fraction of one cannot be represented."
+                )
+            # The upper half of the positivity test, ordered after it as #570
+            # orders its own bounds: every duration on a limit shares one
+            # ceiling, so a window cannot outlive what `refill_period_seconds`
+            # is allowed to be.
+            if total > MAX_PERIOD_SECONDS:
+                raise ValueError(
+                    f"reset_after must be at most {MAX_PERIOD_SECONDS} seconds, got "
+                    f"{self.reset_after!r} ({int(total)}s). Every duration on a limit "
+                    f"shares this ceiling (#570)."
+                )
+        # ADR-139: `reset_after` and `reset_schedule` are two spellings of the
+        # reset half, not two mechanisms that compose. A limit that both reset
+        # at midnight and rolled five hours from first use would restore its
+        # allowance twice over some periods and once over others, with no
+        # reading of "the allowance" faithful to either.
+        if self.reset_after is not None and self.reset_schedule:
+            raise ValueError(
+                "a limit has one recovery mechanism: `reset_after` names a window "
+                "anchored to the entity's own first use and `reset_schedule` names "
+                "fixed calendar instants, so they are alternatives rather than "
+                "companions (ADR-137, ADR-139). Pass one of `cron=` or "
+                "`reset_after=` to Limit.quota()."
+            )
         # ADR-137: a limit drips or resets, never both and never neither. The
         # two fields can no longer be validated independently, so the message
         # has to explain the pairing rather than the field. Checked *after* the
         # structural checks above: an entry in the wrong tuple is a more
         # specific diagnosis than the pairing it happens to violate.
-        if self.refill_amount == 0 and not self.reset_schedule:
+        if self.refill_amount == 0 and not self.reset_schedule and self.reset_after is None:
             raise ValueError(
                 "refill_amount=0 means the limit does not drip, which is only valid "
                 "with a reset_schedule; otherwise the bucket can never recover. "
-                "Use Limit.quota(name, amount, cron=..., tz=...) (ADR-137)."
+                "Use Limit.quota(name, amount, cron=...) or "
+                "Limit.quota(name, amount, reset_after=...) (ADR-137, ADR-139)."
             )
-        if self.refill_amount > 0 and self.reset_schedule:
+        if self.refill_amount > 0 and (self.reset_schedule or self.reset_after is not None):
             raise ValueError(
                 "a limit drips or resets, never both: a positive refill_amount "
                 "alongside a reset_schedule grants roughly twice the intended "
@@ -586,47 +633,62 @@ class Limit:
         name: str,
         amount: int,
         *,
-        cron: str,
+        cron: str | None = None,
         tz: str = "UTC",
+        reset_after: timedelta | None = None,
     ) -> "Limit":
-        """An allowance of ``amount`` per calendar window, restored at each edge.
+        """An allowance of ``amount`` per window, restored in one lump.
 
-        A quota does not drip: the balance is *set* to the capacity when the
-        window opens and does not recover in between (ADR-137). That is what
-        makes "10,000 a day, and when they are gone you wait for midnight"
-        different from ``per_day("rpd", 10_000)``, which returns roughly seven
-        tokens a minute all day.
+        Two window shapes, and **exactly one** of them per limit:
 
-        The window is a **fixed calendar window** — every entity on this
+        ``cron`` gives a **fixed calendar window** — every entity on this
         schedule resets at the same wall-clock instant, in ``tz`` (ADR-138).
+        That is what a billing period needs: "10,000 per calendar month" is a
+        statement about the calendar, not about the caller.
 
-        The amount and the reset have to arrive together, which is the whole
-        reason this factory exists. Building the limit first and attaching the
-        reset afterwards cannot work at any spelling: the intermediate value is
-        either a drip with a reset or a zero rate with none, and ``Limit``
-        rejects both. :meth:`with_reset_schedule` is therefore a *replacement*
-        operator on a limit that is already a quota, never the way one is made.
+        ``reset_after`` gives a **window anchored to the entity's own first
+        use** (ADR-139): five hours from when *you* started, not from midnight.
+        That is what a session cap needs. The window is idle-restarting — go
+        quiet past its end and the next call opens a fresh one. ``tz`` is
+        meaningless here and is ignored.
 
-        ``refill_period_seconds`` is stored as
-        ``_QUOTA_REFILL_PERIOD_SECONDS`` and is inert while ``refill_amount``
-        is 0; it exists only because the field is validated positive.
+        Either way the limit does not drip: the balance is *set* to the
+        capacity when the window opens and does not recover in between
+        (ADR-137). The amount and the reset have to arrive together, which is
+        why this factory exists — the intermediate value in any two-step
+        spelling is either a drip with a reset or a zero rate with none, and
+        ``Limit`` rejects both.
 
         Args:
-            name: Limit name (e.g., "rpd")
+            name: Limit name (e.g. "rpd", "session")
             amount: The whole allowance for one window (also the ceiling)
-            cron: Standard 5-field cron naming the instant the window opens
-            tz: IANA timezone the expression is read in
+            cron: Standard 5-field cron naming the instant the window opens.
+                Mutually exclusive with ``reset_after``.
+            tz: IANA timezone ``cron`` is read in. Ignored with ``reset_after``.
+            reset_after: Window length, anchored to first use. Mutually
+                exclusive with ``cron``.
 
         Example: 10,000 a day, back to 10,000 at New York midnight
             Limit.quota("rpd", 10_000, cron="0 0 * * *",
                         tz="America/New_York")
+
+        Example: 10,000 a session, five hours from your own first call
+            Limit.quota("session", 10_000, reset_after=timedelta(hours=5))
         """
+        if (cron is None) == (reset_after is None):
+            raise ValueError(
+                "Limit.quota() takes exactly one of `cron` or `reset_after`: a "
+                "calendar window resets every entity at the same instant (ADR-138) "
+                "and a duration window resets each entity relative to its own first "
+                "use (ADR-139), and a limit has one recovery mechanism (ADR-137)."
+            )
         return cls(
             name=name,
             capacity=amount,
             refill_amount=0,
             refill_period_seconds=_QUOTA_REFILL_PERIOD_SECONDS,
-            reset_schedule=(ScheduleEntry.reset(cron=cron, tz=tz),),
+            reset_schedule=((ScheduleEntry.reset(cron=cron, tz=tz),) if cron is not None else ()),
+            reset_after=reset_after,
         )
 
     @classmethod
@@ -667,6 +729,11 @@ class Limit:
         ``reset_schedule`` is also the half that survives
         :meth:`per_shard`, which must return a quota whose rate is still zero.
 
+        Since ADR-139 there are two spellings of the reset half — a cron and a
+        duration — and this is true of both. It stays structural: a property
+        of the configuration and of nothing else, so ``per_shard`` and
+        ``from_bucket_state`` can rely on it without a clock.
+
         Consumers are the ones that must treat a quota as a different *kind* of
         thing no matter what the clock says: display (``10,000 per day``, never
         ``0/sec``), validation, documentation. Anything asking "is this
@@ -674,7 +741,19 @@ class Limit:
         is only one of the two ways to get a zero rate, and the other one
         carries no ``reset_schedule`` to be found by.
         """
-        return bool(self.reset_schedule)
+        return bool(self.reset_schedule) or self.reset_after is not None
+
+    @property
+    def reset_after_seconds(self) -> int | None:
+        """:attr:`reset_after` in the unit everything below the API uses.
+
+        Storage (``l_{name}_rsa``, ``b_{name}_rsa``), the manifest
+        (``reset_after_seconds``) and CloudFormation (``ResetAfterSeconds``)
+        all carry whole seconds, because a bare scalar cannot carry a type.
+        ``__post_init__`` has already rejected anything that is not a positive
+        whole number of them, so this cannot lose information.
+        """
+        return None if self.reset_after is None else int(self.reset_after.total_seconds())
 
     @property
     def refill_rate(self) -> float:
@@ -734,11 +813,17 @@ class Limit:
         # byte-identical to the record for attaching nothing.
         if self.reset_schedule:
             result["reset_schedule"] = [_schedule_entry_to_dict(e) for e in self.reset_schedule]
+        # Whole seconds at every boundary below the API, for the reason in
+        # `reset_after_seconds`. Omitted when unset so existing payloads —
+        # audit events included — are byte-identical.
+        if self.reset_after is not None:
+            result["reset_after_seconds"] = self.reset_after_seconds
         return result
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Limit":
         """Deserialize from dictionary."""
+        reset_after_seconds = data.get("reset_after_seconds")
         return cls(
             name=data["name"],
             capacity=data["capacity"],
@@ -750,6 +835,9 @@ class Limit:
             # exactly one.
             reset_schedule=tuple(
                 ScheduleEntry.reset(**entry) for entry in data.get("reset_schedule", ())
+            ),
+            reset_after=(
+                timedelta(seconds=reset_after_seconds) if reset_after_seconds is not None else None
             ),
         )
 
@@ -779,21 +867,44 @@ class Limit:
         one-token drip beside a ``retry_after_seconds`` computed from the
         calendar edge.
 
-        The pairing is decided by the **stored** shape, ``refill_amount_milli
-        == 0 and reset_sched``, not by either half alone. A bucket item
-        carrying a reset beside a positive rate is unconstructible under
-        ADR-137 and so means corruption; it keeps the floor and loses the
-        tuple, preserving the pre-#222 reading rather than raising where a
-        rejection is already being reported — the same call
-        ``bucket.calculate_retry_after``'s last branch makes.
+        The pairing is decided by the **stored** shape, not by either half
+        alone. Since ADR-139 a quota item can carry either spelling of the
+        reset — ``reset_sched`` (a cron) or ``reset_after_seconds`` (a
+        duration) — so both are consulted, and two shapes are corrupt rather
+        than legally constructible. Neither may reach the constructor call
+        below, which would raise from inside a rejection path instead of
+        round-tripping — the same discipline the positive-rate case already
+        followed, now stated for both:
 
-        Note that ``state.reset_sched`` is populated by the slow path (from the
-        resolved config) and by ``BucketState.from_limit``, but **not yet** by
+        * **A reset beside a positive rate** (``refill_amount_milli > 0``)
+          is unconstructible under ADR-137: it keeps the rate floor and drops
+          *both* reset tuples, preserving the pre-#222 reading — the same
+          call ``bucket.calculate_retry_after``'s last branch makes. A
+          duration window read back as a dripping limit would advertise a
+          phantom one-token drip beside a ``retry_after_seconds`` computed
+          from a rate that does not exist.
+        * **Both reset tuples at once** beside a zero rate is unconstructible
+          under ADR-139 (§Negatives: a limit resets one way, never both).
+          ``reset_sched`` — the pre-ADR-139 reading — wins and
+          ``reset_after_seconds`` is dropped, so the bucket still reconstructs
+          as the quota it is rather than raising two-recovery-mechanisms from
+          inside a rejection path.
+
+        Note that ``state.reset_sched`` and ``state.reset_after_seconds`` are
+        populated by the slow path (from the resolved config) and by
+        ``BucketState.from_limit``, but **not yet** by
         ``_deserialize_composite_bucket`` — so for a bucket read back off the
         item this is still the old behaviour exactly, and becomes live with no
-        further edit once that deserialiser decodes ``rsched``.
+        further edit once that deserialiser decodes ``rsched`` / ``rsa``.
         """
-        is_quota = state.refill_amount_milli == 0 and bool(state.reset_sched)
+        is_quota = state.refill_amount_milli == 0 and (
+            bool(state.reset_sched) or state.reset_after_seconds is not None
+        )
+        # `reset_sched` wins when a corrupt item carries both spellings at
+        # once (see above) — never pass both to the constructor.
+        reset_after = None
+        if is_quota and not state.reset_sched and state.reset_after_seconds is not None:
+            reset_after = timedelta(seconds=state.reset_after_seconds)
         return cls(
             name=state.limit_name,
             capacity=max(1, state.capacity_milli // 1000),
@@ -801,6 +912,7 @@ class Limit:
             refill_period_seconds=max(1, state.refill_period_ms // 1000),
             schedule=state.sched,
             reset_schedule=state.reset_sched if is_quota else (),
+            reset_after=reset_after,
         )
 
     def per_shard(self, shard_count: int, now_ms: int) -> "Limit":
@@ -835,6 +947,10 @@ class Limit:
         lump at a calendar instant rather than dripping back at
         ``refill_amount``. Dropping it would leave a daily-quota rejection
         quoting a wait computed from the drip alone.
+
+        ``reset_after`` is carried through for the identical reason, and the
+        ``is_quota`` carve-out on the rate floor already covers it because that
+        predicate is structural and asks both spellings.
 
         Shares are floored to one whole token because ``Limit`` is whole-token
         and must stay constructible; ``schema.MAX_SHARD_COUNT`` bounds how
@@ -895,6 +1011,7 @@ class Limit:
         # remove out from under this constructor.
         object.__setattr__(obj, "schedule", ())
         object.__setattr__(obj, "reset_schedule", ())
+        object.__setattr__(obj, "reset_after", None)
         return obj
 
 
@@ -949,6 +1066,20 @@ class LimitStatus:
     requested: int  # amount requested
     exceeded: bool  # True if this limit was exceeded
     retry_after_seconds: float  # time until `requested` is available (0 if not exceeded)
+    # The absolute instant this limit's allowance returns, epoch ms, or None:
+    # for a rate limit, for a calendar quota (whose edge is recoverable from
+    # the clock plus the cron, so `RateLimitExceeded.as_dict` scans for it),
+    # and for a duration quota with no live window.
+    #
+    # It has to live here rather than being derived from `limit` because a
+    # duration window's anchor (`ws`) is on the BUCKET, not in the config
+    # (ADR-139). A per-entity window is recoverable from nothing but the item.
+    #
+    # Populated at all four construction sites — `bucket.declared_statuses`,
+    # `RateLimiter._admit_limit`, `lease._build_retry_failure_statuses` and
+    # `RateLimiter.check_availability` — the same four #222 §7 wired the
+    # boundary-aware `retry_after_seconds` at.
+    resets_at_ms: int | None = None
 
     @property
     def deficit(self) -> int:
@@ -1078,6 +1209,21 @@ class BucketState:
     # reads the base params and neither tuple (surface plan Task 5).
     reset_sched: tuple[ScheduleEntry, ...] = ()
 
+    # Start of the current duration window, epoch ms (ADR-139). `None` means
+    # the window has not started — which for a client-created bucket never
+    # happens, because a bucket is created BY a use, but which a shard stamped
+    # before the limit gained its window can carry until the next fan-out.
+    #
+    # Entity-wide, replicated verbatim to every shard: only the balance is
+    # divided. Each shard resets itself when it observes `ws > rf`, the same
+    # rule `RateLimiter._apply_reset_edge` uses for a cron, so the rollover
+    # fan-out moves this scalar and never `tk`.
+    window_start_ms: int | None = None
+    # The window's length in seconds, denormalised from config so a
+    # materialiser needs no config read — the aggregator reads the item and
+    # nothing else. Never divided by `shard_count`.
+    reset_after_seconds: int | None = None
+
     @property
     def tokens(self) -> int:
         """Current tokens (not millitokens)."""
@@ -1131,6 +1277,35 @@ class BucketState:
         """
         _cp, _ra, rp = self._scheduled_params(now_ms)
         return rp
+
+    @property
+    def window_end_ms(self) -> int | None:
+        """When the current duration window closes, or ``None`` (ADR-139).
+
+        Derived rather than stored, so the start and the end cannot disagree
+        after a partial write, and because ``reset_after_seconds`` has to be on
+        the item anyway for the next window's length.
+        """
+        if self.window_start_ms is None or self.reset_after_seconds is None:
+            return None
+        return self.window_start_ms + self.reset_after_seconds * 1000
+
+    @property
+    def window_rolled(self) -> bool:
+        """Has a window opened that this shard's balance does not reflect yet?
+
+        ``ws > rf`` (ADR-139): a shard whose window start is newer than its own
+        last materialisation has not applied that window. This is the single
+        statement of the rule — the slow-path roll
+        (``RateLimiter._apply_window_roll``) and every read-only view of the
+        balance ask it here rather than restating the comparison, so the two
+        cannot drift (the #489 lesson).
+
+        Strictly ``>``: the pass that applies a roll stamps ``rf`` at or after
+        ``ws``, so ``>=`` would re-fire on every later request and refund
+        everything spent since. ``False`` for a bucket with no window.
+        """
+        return self.window_start_ms is not None and self.window_start_ms > self.last_refill_ms
 
     def accrues(self, now_ms: int) -> bool:
         """Is this shard gaining tokens at ``now_ms``?
@@ -1248,6 +1423,16 @@ class BucketState:
             # schedules off the item and nothing else, so a bucket born
             # carrying `vu` but no `rsched` would never reset.
             reset_sched=limit.reset_schedule,
+            # Stamped beside `rsched` and for the identical reason: both
+            # refillers read the schedules off the item and nothing else, so a
+            # bucket born carrying `vu` but no window is a bucket whose
+            # `refill_amount` is 0 and which nothing ever resets.
+            reset_after_seconds=limit.reset_after_seconds,
+            # A bucket is created BY a use, so its window starts now. The one
+            # caller that must override this is the shard-create path, which
+            # inherits the entity's existing `ws` from a sibling (Task 8) —
+            # a new shard joins the window in progress rather than opening one.
+            window_start_ms=(now_ms if limit.reset_after is not None else None),
         )
         # Start at full capacity *as of now* — the scheduled share, not the
         # base one. A bucket born inside a `0.5x` window that started at the
