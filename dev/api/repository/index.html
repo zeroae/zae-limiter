@@ -2061,6 +2061,34 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.repository.Repository.get_shard_window_starts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;get_shard_window_starts
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label=" get_shard_window_starts">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.repository.Repository.get_shard_window_starts--587-transfer-from-the-window-shard-0-just-opened-measured-at-15" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        587 transfer from the window shard 0 just opened: measured at 15
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.repository.Repository.disable_resource" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2638,6 +2666,17 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;reclaim_quota_surplus
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.repository_protocol.RepositoryProtocol.get_shard_window_starts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;get_shard_window_starts
       
     </span>
   </a>
@@ -5130,6 +5169,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/139-duration-reset-windows/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-139 Duration reset windows anchored to first use
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -6027,6 +6094,34 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.repository.Repository.get_shard_window_starts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;get_shard_window_starts
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label=" get_shard_window_starts">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.repository.Repository.get_shard_window_starts--587-transfer-from-the-window-shard-0-just-opened-measured-at-15" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        587 transfer from the window shard 0 just opened: measured at 15
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.repository.Repository.disable_resource" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6604,6 +6699,17 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;reclaim_quota_surplus
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.repository_protocol.RepositoryProtocol.get_shard_window_starts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;get_shard_window_starts
       
     </span>
   </a>
@@ -9905,7 +10011,7 @@ composite writes. This updates one limit's tk within the composite item.</p>
 
 
 <a href="#zae_limiter.repository.Repository.build_composite_create" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_create</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">states</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="mi">86400</span><span class="p">,</span> <span class="n">cascade</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">parent_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">shard_count</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">vu</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_create</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">states</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="mi">86400</span><span class="p">,</span> <span class="n">cascade</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">parent_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">shard_count</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">vu</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">rf_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -10094,6 +10200,24 @@ reads as "no schedule, never expires".</p>
                   <code>None</code>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>rf_ms</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The <code>rf</code> to stamp, when the caller has clamped it above
+<code>now_ms</code> so that <code>rf</code> never sits below a window start the
+item carries (ADR-139). <code>None</code> stamps <code>now_ms</code>.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -10110,7 +10234,7 @@ reads as "no schedule, never expires".</p>
 
 
 <a href="#zae_limiter.repository.Repository.build_composite_normal" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_normal</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consumed</span><span class="p">,</span> <span class="n">refill_amounts</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="n">expected_rf</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">vu</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">clear_vu</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_normal</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consumed</span><span class="p">,</span> <span class="n">refill_amounts</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="n">expected_rf</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">vu</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">clear_vu</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">windows</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">rf_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">window_lengths</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -10300,6 +10424,79 @@ than a permanent fast-path demotion.</p>
             </td>
             <td>
                   <code>False</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>windows</code>
+            </td>
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="tuple">tuple</span>[<span title="int">int</span>, <span title="int">int</span>]] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Limit name -&gt; <code>(window_start_ms, reset_after_seconds)</code>
+to stamp as <code>b_{name}_ws</code> and <code>b_{name}_rsa</code> (ADR-139).
+Only limits whose window rolled on <strong>this</strong> pass appear; an
+empty dict or <code>None</code> leaves every <code>ws</code> untouched. This is the
+only client write that moves a window start — the speculative
+fast path stays byte-identical — so <code>_commit_initial()</code> is
+where anchoring is decided, which is what makes "only admitted
+use anchors" fall out rather than being enforced.</p>
+<p>The pair is one argument so that <code>ws</code> can never land without
+<code>rsa</code>. The aggregator and a new shard's inheritance read only
+the item, and a resource- or system-level <code>reset_after</code> never
+reaches an existing bucket through the param sync (#271/#296)
+— so an item holding <code>ws</code> alone would carry a window whose end
+nothing but a config-resolving client could compute.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>rf_ms</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The <code>rf</code> to stamp, when the caller has clamped it so that
+it never moves backward and never sits below a window start
+the item carries (ADR-139). <code>None</code> stamps <code>now_ms</code>. The
+lock still compares against <code>expected_rf</code>, the stored value.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>window_lengths</code>
+            </td>
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="int">int</span>] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Limit name -&gt; <code>reset_after_seconds</code> to stamp as
+<code>b_{name}_rsa</code> <strong>alone</strong>, for a limit whose window did not
+move on this pass but whose configured length differs from
+the one on the item (ADR-139). A resource- or system-level
+<code>reset_after</code> change never fans out (#271/#296), and
+<code>windows</code> stamps <code>rsa</code> only when <code>ws</code> moves, so without
+this the item kept the old length for a whole window: the fast
+path then read an end the slow path no longer enforces. A name
+also in <code>windows</code> is skipped — that pair already carries the
+length, and two SETs on one path are a ValidationException.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
             </td>
           </tr>
       </tbody>
@@ -13325,6 +13522,197 @@ the quota limits only — the ceiling each shard is clamped to.</p>
 <div class="doc doc-object doc-function">
 
 
+<h4 id="zae_limiter.repository.Repository.get_shard_window_starts" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">get_shard_window_starts</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+  </span>
+
+<a href="#zae_limiter.repository.Repository.get_shard_window_starts" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">get_shard_window_starts</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">limit_names</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Read one shard's duration-window starts, to seed a shard being created (ADR-139).</p>
+<p>Shard 0 by default, because :meth:<code>bump_shard_count</code> already treats it
+as the source of truth for <code>shard_count</code>. A created shard inherits
+<code>ws</code> verbatim and sets <code>rf = now</code>, so <code>ws &gt; rf</code> is <strong>false</strong> on
+the new item and it does not immediately re-roll itself: it joins the
+window in progress rather than opening one. Whether the window read
+here is still <em>live</em> is the caller's decision, against the <code>rsa</code> of
+the config it resolved — this returns the stored start and nothing
+more.</p>
+<p>A <strong>separate</strong> read rather than an extra key in the create path's
+<code>BatchGetItem</code>: that call returns a dict keyed by <code>(entity_id,
+resource, limit_name)</code> with no shard component, so shard 0 and shard N
+would collide on every key. <strong>Strongly consistent</strong>, so 1 RCU (the
+projected item is well under 4 KB), <strong>once per shard ever</strong> (≤ 31 per
+(entity, resource), plus TTL recreations) on a path already priced at
+2.5 RCU + 2 WCU.</p>
+<p>Consistency is load-bearing, not a nicety. A shard is usually created
+right after a <code>wcu</code> doubling, which is usually right after shard 0
+was written — including the write that rolled its window. An eventually
+consistent read can return the <em>pre-roll</em> <code>ws</code>, which looks ended, so
+the caller opens a fresh window at full share instead of taking the</p>
+<h5 id="zae_limiter.repository.Repository.get_shard_window_starts--587-transfer-from-the-window-shard-0-just-opened-measured-at-15">587 transfer from the window shard 0 just opened: measured at 15<a class="headerlink" href="#zae_limiter.repository.Repository.get_shard_window_starts--587-transfer-from-the-window-shard-0-just-opened-measured-at-15" title="Permanent link">&para;</a></h5>
+<p>admitted against a quota of 10. The extra 0.5 RCU per shard creation
+is the whole price of closing that.</p>
+<p>A limit absent from the result has no window on that shard — either it
+carries none, or the shard has been swept. The caller then opens a fresh
+window, which is the degraded case ADR-139 records under Consequences
+and which idle-restarting makes correct rather than merely tolerable.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>entity_id</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Entity owning the bucket. On a <strong>cascade</strong> create this is
+the entity whose shard is being created — the parent for a
+parent shard, never the child. Parent and child windows are
+independent (ADR-139).</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>resource</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Resource name.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>limit_names</code>
+            </td>
+            <td>
+                  <code><span title="list">list</span>[<span title="str">str</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The limits to look for; only these attributes are
+projected, so the read stays a fraction of the item.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>shard_id</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The shard to read. Defaults to 0.</p>
+              </div>
+            </td>
+            <td>
+                  <code>0</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="int">int</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>{limit_name: window_start_ms}</code> for the limits whose <code>ws</code> is on</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="int">int</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>the item.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            RateLimiterUnavailable (zae_limiter.exceptions.RateLimiterUnavailable)" href="../exceptions/#zae_limiter.exceptions.RateLimiterUnavailable">RateLimiterUnavailable</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>A stored <code>ws</code> is not an integer, the same
+treatment every other reader gives a corrupt window.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
 <h4 id="zae_limiter.repository.Repository.disable_resource" class="doc doc-heading">
 <code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">disable_resource</span>
 
@@ -15864,7 +16252,7 @@ image), or None to read the entity cache</p>
 
 
 <a href="#zae_limiter.repository_protocol.RepositoryProtocol.build_composite_create" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_create</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">states</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="mi">86400</span><span class="p">,</span> <span class="n">cascade</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">parent_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">shard_count</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">vu</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_create</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">states</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="mi">86400</span><span class="p">,</span> <span class="n">cascade</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">parent_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">shard_count</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">vu</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">rf_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -16016,6 +16404,22 @@ image), or None to read the entity cache</p>
                   <code>None</code>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>rf_ms</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The <code>rf</code> to stamp, or None for <code>now_ms</code> (ADR-139)</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -16032,7 +16436,7 @@ image), or None to read the entity cache</p>
 
 
 <a href="#zae_limiter.repository_protocol.RepositoryProtocol.build_composite_normal" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_normal</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consumed</span><span class="p">,</span> <span class="n">refill_amounts</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="n">expected_rf</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">vu</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">clear_vu</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_normal</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consumed</span><span class="p">,</span> <span class="n">refill_amounts</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="n">expected_rf</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">vu</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">clear_vu</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">windows</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">rf_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">window_lengths</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -16194,6 +16598,60 @@ knows nothing on the item is scheduled (#222 §2.1)</p>
             </td>
             <td>
                   <code>False</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>windows</code>
+            </td>
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="tuple">tuple</span>[<span title="int">int</span>, <span title="int">int</span>]] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Limit name -&gt; <code>(window_start_ms, reset_after_seconds)</code>
+(ADR-139). Only limits whose window rolled on this pass
+appear; <code>None</code> leaves every <code>ws</code> untouched. <code>ws</code> and <code>rsa</code>
+travel as one pair so neither is ever stamped alone.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>rf_ms</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The <code>rf</code> to stamp, or None for <code>now_ms</code>. The lock still
+compares against <code>expected_rf</code> (ADR-139)</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>window_lengths</code>
+            </td>
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="int">int</span>] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Limit name -&gt; <code>reset_after_seconds</code> to stamp as
+<code>rsa</code> alone, where the configured length differs from the
+item's and the window did not move (ADR-139)</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
             </td>
           </tr>
       </tbody>
@@ -16981,6 +17439,149 @@ rightly starts full.</p>
             <td>
               <div class="doc-md-description">
                 <p>which is not the same as reclaiming nothing.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="zae_limiter.repository_protocol.RepositoryProtocol.get_shard_window_starts" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">get_shard_window_starts</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+  </span>
+
+<a href="#zae_limiter.repository_protocol.RepositoryProtocol.get_shard_window_starts" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">get_shard_window_starts</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">limit_names</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Read one shard's duration-window starts, to seed a shard being created (ADR-139).</p>
+<p>A shard created mid-window joins the window in progress rather than
+opening its own, so the create path reads the <code>ws</code> it would inherit
+from shard 0 — the source of truth for <code>shard_count</code> already.</p>
+<p>The read must be <strong>strongly consistent</strong>: a stale pre-roll <code>ws</code> looks
+ended, and the caller would then grant the new shard a fresh full share
+instead of the #587 transfer from the window shard 0 just opened.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>entity_id</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Entity whose shard is being created. On a cascade create
+this is the parent for the parent's shard, never the child.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>resource</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Resource name</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>limit_names</code>
+            </td>
+            <td>
+                  <code><span title="list">list</span>[<span title="str">str</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The limits to look for</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>shard_id</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The shard to read. Defaults to 0.</p>
+              </div>
+            </td>
+            <td>
+                  <code>0</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="int">int</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>{limit_name: window_start_ms}</code>. A limit absent from the result</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="int">int</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>has no window on that shard, or the shard does not exist.</p>
               </div>
             </td>
           </tr>

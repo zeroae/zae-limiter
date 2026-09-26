@@ -1269,6 +1269,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.models.Limit.reset_after_seconds" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;reset_after_seconds
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.models.Limit.refill_rate" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1729,6 +1740,28 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;capacity
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.BucketState.window_end_ms" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;window_end_ms
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.BucketState.window_rolled" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;window_rolled
       
     </span>
   </a>
@@ -4471,6 +4504,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/139-duration-reset-windows/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-139 Duration reset windows anchored to first use
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -4541,6 +4602,17 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;is_quota
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.Limit.reset_after_seconds" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;reset_after_seconds
       
     </span>
   </a>
@@ -5008,6 +5080,28 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;capacity
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.BucketState.window_end_ms" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;window_end_ms
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.BucketState.window_rolled" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;window_rolled
       
     </span>
   </a>
@@ -5699,7 +5793,7 @@
   </span>
 
 <a href="#zae_limiter.models.Limit" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">Limit</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">capacity</span><span class="p">,</span> <span class="n">refill_amount</span><span class="p">,</span> <span class="n">refill_period_seconds</span><span class="p">,</span> <span class="n">schedule</span><span class="o">=</span><span class="p">(),</span> <span class="n">reset_schedule</span><span class="o">=</span><span class="p">())</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">Limit</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">capacity</span><span class="p">,</span> <span class="n">refill_amount</span><span class="p">,</span> <span class="n">refill_period_seconds</span><span class="p">,</span> <span class="n">schedule</span><span class="o">=</span><span class="p">(),</span> <span class="n">reset_schedule</span><span class="o">=</span><span class="p">(),</span> <span class="n">reset_after</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
@@ -5868,12 +5962,45 @@ consequence <code>__post_init__</code> pairs with it, and the pairing is what
 makes the two spellings interchangeable for any constructible limit.
 <code>reset_schedule</code> is also the half that survives
 :meth:<code>per_shard</code>, which must return a quota whose rate is still zero.</p>
+<p>Since ADR-139 there are two spellings of the reset half — a cron and a
+duration — and this is true of both. It stays structural: a property
+of the configuration and of nothing else, so <code>per_shard</code> and
+<code>from_bucket_state</code> can rely on it without a clock.</p>
 <p>Consumers are the ones that must treat a quota as a different <em>kind</em> of
 thing no matter what the clock says: display (<code>10,000 per day</code>, never
 <code>0/sec</code>), validation, documentation. Anything asking "is this
 accruing right now" wants :meth:<code>BucketState.accrues</code> instead — a quota
 is only one of the two ways to get a zero rate, and the other one
 carries no <code>reset_schedule</code> to be found by.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h4 id="zae_limiter.models.Limit.reset_after_seconds" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-attribute"></code>            <span class="doc doc-object-name doc-attribute-name">reset_after_seconds</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#zae_limiter.models.Limit.reset_after_seconds" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">reset_after_seconds</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>:attr:<code>reset_after</code> in the unit everything below the API uses.</p>
+<p>Storage (<code>l_{name}_rsa</code>, <code>b_{name}_rsa</code>), the manifest
+(<code>reset_after_seconds</code>) and CloudFormation (<code>ResetAfterSeconds</code>)
+all carry whole seconds, because a bare scalar cannot carry a type.
+<code>__post_init__</code> has already rejected anything that is not a positive
+whole number of them, so this cannot lose information.</p>
 
     </div>
 
@@ -6274,28 +6401,28 @@ temporary spikes above the sustained rate.</p>
   </span>
 
 <a href="#zae_limiter.models.Limit.quota" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">quota</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">amount</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">cron</span><span class="p">,</span> <span class="n">tz</span><span class="o">=</span><span class="s1">'UTC'</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">quota</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">amount</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">cron</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">tz</span><span class="o">=</span><span class="s1">'UTC'</span><span class="p">,</span> <span class="n">reset_after</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
 
-        <p>An allowance of <code>amount</code> per calendar window, restored at each edge.</p>
-<p>A quota does not drip: the balance is <em>set</em> to the capacity when the
-window opens and does not recover in between (ADR-137). That is what
-makes "10,000 a day, and when they are gone you wait for midnight"
-different from <code>per_day("rpd", 10_000)</code>, which returns roughly seven
-tokens a minute all day.</p>
-<p>The window is a <strong>fixed calendar window</strong> — every entity on this
-schedule resets at the same wall-clock instant, in <code>tz</code> (ADR-138).</p>
-<p>The amount and the reset have to arrive together, which is the whole
-reason this factory exists. Building the limit first and attaching the
-reset afterwards cannot work at any spelling: the intermediate value is
-either a drip with a reset or a zero rate with none, and <code>Limit</code>
-rejects both. :meth:<code>with_reset_schedule</code> is therefore a <em>replacement</em>
-operator on a limit that is already a quota, never the way one is made.</p>
-<p><code>refill_period_seconds</code> is stored as
-<code>_QUOTA_REFILL_PERIOD_SECONDS</code> and is inert while <code>refill_amount</code>
-is 0; it exists only because the field is validated positive.</p>
+        <p>An allowance of <code>amount</code> per window, restored in one lump.</p>
+<p>Two window shapes, and <strong>exactly one</strong> of them per limit:</p>
+<p><code>cron</code> gives a <strong>fixed calendar window</strong> — every entity on this
+schedule resets at the same wall-clock instant, in <code>tz</code> (ADR-138).
+That is what a billing period needs: "10,000 per calendar month" is a
+statement about the calendar, not about the caller.</p>
+<p><code>reset_after</code> gives a <strong>window anchored to the entity's own first
+use</strong> (ADR-139): five hours from when <em>you</em> started, not from midnight.
+That is what a session cap needs. The window is idle-restarting — go
+quiet past its end and the next call opens a fresh one. <code>tz</code> is
+meaningless here and is ignored.</p>
+<p>Either way the limit does not drip: the balance is <em>set</em> to the
+capacity when the window opens and does not recover in between
+(ADR-137). The amount and the reset have to arrive together, which is
+why this factory exists — the intermediate value in any two-step
+spelling is either a drip with a reset or a zero rate with none, and
+<code>Limit</code> rejects both.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -6318,7 +6445,7 @@ is 0; it exists only because the field is validated positive.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Limit name (e.g., "rpd")</p>
+                <p>Limit name (e.g. "rpd", "session")</p>
               </div>
             </td>
             <td>
@@ -6346,15 +6473,16 @@ is 0; it exists only because the field is validated positive.</p>
                 <code>cron</code>
             </td>
             <td>
-                  <code><span title="str">str</span></code>
+                  <code><span title="str">str</span> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Standard 5-field cron naming the instant the window opens</p>
+                <p>Standard 5-field cron naming the instant the window opens.
+Mutually exclusive with <code>reset_after</code>.</p>
               </div>
             </td>
             <td>
-                <em>required</em>
+                  <code>None</code>
             </td>
           </tr>
           <tr class="doc-section-item">
@@ -6366,11 +6494,28 @@ is 0; it exists only because the field is validated positive.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>IANA timezone the expression is read in</p>
+                <p>IANA timezone <code>cron</code> is read in. Ignored with <code>reset_after</code>.</p>
               </div>
             </td>
             <td>
                   <code>&#39;UTC&#39;</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>reset_after</code>
+            </td>
+            <td>
+                  <code><span title="datetime.timedelta">timedelta</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Window length, anchored to first use. Mutually
+exclusive with <code>cron</code>.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
             </td>
           </tr>
       </tbody>
@@ -6381,6 +6526,11 @@ is 0; it exists only because the field is validated positive.</p>
   <summary>10,000 a day, back to 10,000 at New York midnight</summary>
   <p>Limit.quota("rpd", 10_000, cron="0 0 * * *",
             tz="America/New_York")</p>
+</details>
+
+<details class="example" open>
+  <summary>10,000 a session, five hours from your own first call</summary>
+  <p>Limit.quota("session", 10_000, reset_after=timedelta(hours=5))</p>
 </details>
 
     </div>
@@ -6558,18 +6708,35 @@ Carried together, a quota bucket reconstructs as the quota it is —
 <code>refill_amount=0</code>, reset intact — instead of advertising a phantom
 one-token drip beside a <code>retry_after_seconds</code> computed from the
 calendar edge.</p>
-<p>The pairing is decided by the <strong>stored</strong> shape, <code>refill_amount_milli
-== 0 and reset_sched</code>, not by either half alone. A bucket item
-carrying a reset beside a positive rate is unconstructible under
-ADR-137 and so means corruption; it keeps the floor and loses the
-tuple, preserving the pre-#222 reading rather than raising where a
-rejection is already being reported — the same call
-<code>bucket.calculate_retry_after</code>'s last branch makes.</p>
-<p>Note that <code>state.reset_sched</code> is populated by the slow path (from the
-resolved config) and by <code>BucketState.from_limit</code>, but <strong>not yet</strong> by
+<p>The pairing is decided by the <strong>stored</strong> shape, not by either half
+alone. Since ADR-139 a quota item can carry either spelling of the
+reset — <code>reset_sched</code> (a cron) or <code>reset_after_seconds</code> (a
+duration) — so both are consulted, and two shapes are corrupt rather
+than legally constructible. Neither may reach the constructor call
+below, which would raise from inside a rejection path instead of
+round-tripping — the same discipline the positive-rate case already
+followed, now stated for both:</p>
+<ul>
+<li><strong>A reset beside a positive rate</strong> (<code>refill_amount_milli &gt; 0</code>)
+  is unconstructible under ADR-137: it keeps the rate floor and drops
+  <em>both</em> reset tuples, preserving the pre-#222 reading — the same
+  call <code>bucket.calculate_retry_after</code>'s last branch makes. A
+  duration window read back as a dripping limit would advertise a
+  phantom one-token drip beside a <code>retry_after_seconds</code> computed
+  from a rate that does not exist.</li>
+<li><strong>Both reset tuples at once</strong> beside a zero rate is unconstructible
+  under ADR-139 (§Negatives: a limit resets one way, never both).
+  <code>reset_sched</code> — the pre-ADR-139 reading — wins and
+  <code>reset_after_seconds</code> is dropped, so the bucket still reconstructs
+  as the quota it is rather than raising two-recovery-mechanisms from
+  inside a rejection path.</li>
+</ul>
+<p>Note that <code>state.reset_sched</code> and <code>state.reset_after_seconds</code> are
+populated by the slow path (from the resolved config) and by
+<code>BucketState.from_limit</code>, but <strong>not yet</strong> by
 <code>_deserialize_composite_bucket</code> — so for a bucket read back off the
 item this is still the old behaviour exactly, and becomes live with no
-further edit once that deserialiser decodes <code>rsched</code>.</p>
+further edit once that deserialiser decodes <code>rsched</code> / <code>rsa</code>.</p>
 
 
     </div>
@@ -6615,6 +6782,9 @@ the only thing that tells a reported status the balance returns in a
 lump at a calendar instant rather than dripping back at
 <code>refill_amount</code>. Dropping it would leave a daily-quota rejection
 quoting a wait computed from the drip alone.</p>
+<p><code>reset_after</code> is carried through for the identical reason, and the
+<code>is_quota</code> carve-out on the rate floor already covers it because that
+predicate is structural and asks both spellings.</p>
 <p>Shares are floored to one whole token because <code>Limit</code> is whole-token
 and must stay constructible; <code>schema.MAX_SHARD_COUNT</code> bounds how
 small a real share can get, and a <code>0.5x</code> window on a share of one
@@ -6866,7 +7036,7 @@ in Repository.create_entity() at the API boundary.</p>
   </span>
 
 <a href="#zae_limiter.models.LimitStatus" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">LimitStatus</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">limit_name</span><span class="p">,</span> <span class="n">limit</span><span class="p">,</span> <span class="n">available</span><span class="p">,</span> <span class="n">requested</span><span class="p">,</span> <span class="n">exceeded</span><span class="p">,</span> <span class="n">retry_after_seconds</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">LimitStatus</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">limit_name</span><span class="p">,</span> <span class="n">limit</span><span class="p">,</span> <span class="n">available</span><span class="p">,</span> <span class="n">requested</span><span class="p">,</span> <span class="n">exceeded</span><span class="p">,</span> <span class="n">retry_after_seconds</span><span class="p">,</span> <span class="n">resets_at_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
@@ -7206,7 +7376,7 @@ echoed back, since nothing was evaluated for them.</p>
   </span>
 
 <a href="#zae_limiter.models.BucketState" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">BucketState</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">limit_name</span><span class="p">,</span> <span class="n">tokens_milli</span><span class="p">,</span> <span class="n">last_refill_ms</span><span class="p">,</span> <span class="n">capacity_milli</span><span class="p">,</span> <span class="n">refill_amount_milli</span><span class="p">,</span> <span class="n">refill_period_ms</span><span class="p">,</span> <span class="n">total_consumed_milli</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_count</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">sched</span><span class="o">=</span><span class="p">(),</span> <span class="n">reset_sched</span><span class="o">=</span><span class="p">())</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">BucketState</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">limit_name</span><span class="p">,</span> <span class="n">tokens_milli</span><span class="p">,</span> <span class="n">last_refill_ms</span><span class="p">,</span> <span class="n">capacity_milli</span><span class="p">,</span> <span class="n">refill_amount_milli</span><span class="p">,</span> <span class="n">refill_period_ms</span><span class="p">,</span> <span class="n">total_consumed_milli</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_count</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">sched</span><span class="o">=</span><span class="p">(),</span> <span class="n">reset_sched</span><span class="o">=</span><span class="p">(),</span> <span class="n">window_start_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">reset_after_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
@@ -7280,6 +7450,66 @@ deserialization and avoid performance overhead on frequent operations.</p>
     <div class="doc doc-contents ">
 
         <p>Capacity / ceiling (not millitokens).</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h4 id="zae_limiter.models.BucketState.window_end_ms" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-attribute"></code>            <span class="doc doc-object-name doc-attribute-name">window_end_ms</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#zae_limiter.models.BucketState.window_end_ms" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">window_end_ms</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>When the current duration window closes, or <code>None</code> (ADR-139).</p>
+<p>Derived rather than stored, so the start and the end cannot disagree
+after a partial write, and because <code>reset_after_seconds</code> has to be on
+the item anyway for the next window's length.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h4 id="zae_limiter.models.BucketState.window_rolled" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-attribute"></code>            <span class="doc doc-object-name doc-attribute-name">window_rolled</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#zae_limiter.models.BucketState.window_rolled" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">window_rolled</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Has a window opened that this shard's balance does not reflect yet?</p>
+<p><code>ws &gt; rf</code> (ADR-139): a shard whose window start is newer than its own
+last materialisation has not applied that window. This is the single
+statement of the rule — the slow-path roll
+(<code>RateLimiter._apply_window_roll</code>) and every read-only view of the
+balance ask it here rather than restating the comparison, so the two
+cannot drift (the #489 lesson).</p>
+<p>Strictly <code>&gt;</code>: the pass that applies a roll stamps <code>rf</code> at or after
+<code>ws</code>, so <code>&gt;=</code> would re-fire on every later request and refund
+everything spent since. <code>False</code> for a bucket with no window.</p>
 
     </div>
 
