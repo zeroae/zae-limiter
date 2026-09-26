@@ -11,7 +11,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import boto3
+from botocore.exceptions import ClientError
 
+from zae_limiter.exceptions import VersionMismatchError
 from zae_limiter.schedule import encode, encode_reset
 from zae_limiter.schema import (
     CONFIG_FIELD_DISABLED,
@@ -19,15 +21,30 @@ from zae_limiter.schema import (
     LIMIT_FIELD_RSA,
     LIMIT_FIELD_RSCHED,
     LIMIT_FIELD_SCHED,
+    RESERVED_NAMESPACE,
     limit_attr,
     pk_entity,
     pk_resource,
     pk_system,
     sk_config,
+    sk_version,
+)
+from zae_limiter.version import (
+    MIN_READER_VERSION_FOR_RESET_AFTER,
+    ratcheted_client_min_version,
+    reads_reset_after,
 )
 
 from .differ import Change
 from .manifest import entries_from_manifest
+
+try:
+    # The provisioner zip carries no full `zae_limiter/__init__.py`, so the
+    # build's version comes from the vendored `_version.py` (#638), with the
+    # same fallback the package itself uses when hatch-vcs wrote none.
+    from zae_limiter._version import __version__
+except ImportError:  # pragma: no cover - only a source tree without hatch-vcs
+    __version__ = "0.0.0+unknown"
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +145,106 @@ def _hoisted_timezone(limits: dict[str, Any]) -> str | None:
             f"not per limit."
         )
     return zones.pop() if zones else None
+
+
+# Mirrors `Repository._CLIENT_MIN_RATCHET_ATTEMPTS`.
+_CLIENT_MIN_RATCHET_ATTEMPTS = 3
+
+
+def require_reset_after_readers(
+    changes: list[Change],
+    table_name: str,
+    client: Any | None = None,
+) -> None:
+    """Refuse an apply that stores a ``reset_after`` limit the stack cannot read (#638 A).
+
+    Boto3 mirror of ``Repository._require_reset_after_readers``: called before
+    ``apply_changes`` writes anything, so a refusal leaves the table exactly as
+    it was. Free unless a create/update change declares ``reset_after``; then
+    one strongly consistent ``GetItem`` of the version record, and — the first
+    time only — one conditional ``UpdateItem`` raising ``client_min_version``
+    (never lowering it).
+
+    Mostly a guard for a hand-deployed provisioner: the provisioner that parses
+    ``reset_after`` is normally deployed by the same step that deploys a
+    ``reset_after``-aware aggregator and stamps ``lambda_version``.
+
+    Raises:
+        VersionMismatchError: the version record is missing, or its
+            ``lambda_version`` predates ``reset_after``. Out of the Lambda
+            handler this is a CloudFormation FAILED, or an ``errorMessage`` the
+            ``limits apply`` CLI prints before exiting 1.
+    """
+    declares_reset_after = any(
+        decl.get("reset_after_seconds") is not None
+        for change in changes
+        if change.action in ("create", "update")
+        for decl in ((change.data or {}).get("limits") or {}).values()
+    )
+    if not declares_reset_after:
+        return
+
+    if client is None:
+        client = boto3.client("dynamodb")
+
+    key = {"PK": {"S": pk_system(RESERVED_NAMESPACE)}, "SK": {"S": sk_version()}}
+    last_error: ClientError | None = None
+    for _ in range(_CLIENT_MIN_RATCHET_ATTEMPTS):
+        item = client.get_item(TableName=table_name, Key=key, ConsistentRead=True).get("Item")
+        if not item:
+            raise VersionMismatchError(
+                client_version=__version__,
+                schema_version="unknown",
+                lambda_version=None,
+                message=(
+                    "Refusing to store a reset_after limit: the stack has no version "
+                    "record, so nothing proves its aggregator reads reset_after (added "
+                    f"in {MIN_READER_VERSION_FOR_RESET_AFTER}). Re-run 'zae-limiter "
+                    "deploy', which writes it."
+                ),
+                can_auto_update=True,
+            )
+        lambda_version = item.get("lambda_version", {}).get("S")
+        if not reads_reset_after(lambda_version, __version__):
+            raise VersionMismatchError(
+                client_version=__version__,
+                schema_version=item.get("schema_version", {}).get("S", "unknown"),
+                lambda_version=lambda_version,
+                message=(
+                    "Refusing to store a reset_after limit: the deployed Lambdas "
+                    f"predate {MIN_READER_VERSION_FOR_RESET_AFTER} and would misread "
+                    "it (the aggregator over-admits it). Run 'zae-limiter upgrade' "
+                    "first."
+                ),
+                can_auto_update=True,
+            )
+        stored_min = item.get("client_min_version", {}).get("S")
+        new_min = ratcheted_client_min_version(stored_min, __version__)
+        if new_min is None:
+            return
+        condition = (
+            "client_min_version = :stored"
+            if stored_min is not None
+            else "attribute_not_exists(client_min_version)"
+        )
+        values: dict[str, Any] = {":new": {"S": new_min}}
+        if stored_min is not None:
+            values[":stored"] = {"S": stored_min}
+        try:
+            client.update_item(
+                TableName=table_name,
+                Key=key,
+                UpdateExpression="SET client_min_version = :new",
+                ConditionExpression=f"attribute_exists(PK) AND {condition}",
+                ExpressionAttributeValues=values,
+            )
+            return
+        except ClientError as e:
+            if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+            last_error = e
+    assert last_error is not None
+    raise last_error
 
 
 def apply_changes(

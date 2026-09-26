@@ -1,8 +1,12 @@
 """Tests for the provisioner applier."""
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
-from zae_limiter_provisioner.applier import apply_changes
+import pytest
+from botocore.exceptions import ClientError
+
+from zae_limiter.exceptions import VersionMismatchError
+from zae_limiter_provisioner.applier import apply_changes, require_reset_after_readers
 from zae_limiter_provisioner.differ import Change
 
 
@@ -503,3 +507,190 @@ class TestDurationWindowReachesTheConfigItem:
             target="claude-sonnet",
         )
         assert item["l_session_rsa"] == {"N": "18000"}
+
+
+class TestResetAfterVersionGate:
+    """The provisioner refuses a ``reset_after`` limit the stack cannot read (#638 A).
+
+    Moto-backed: the gate's consistent read and conditional ratchet are
+    DynamoDB semantics, not call shapes.
+    """
+
+    TABLE = "prov-gate"
+    SESSION = {
+        "capacity": 10,
+        "refill_amount": 0,
+        "refill_period": 1,
+        "reset_after_seconds": 18_000,
+    }
+    RPM = {"capacity": 100, "refill_amount": 100, "refill_period": 60}
+
+    @pytest.fixture
+    def client(self, mock_dynamodb):
+        import boto3
+
+        from zae_limiter.sync_repository import SyncRepository
+
+        setup = SyncRepository(name=self.TABLE, region="us-east-1", _skip_deprecation_warning=True)
+        setup.create_table()
+        setup.close()
+        return boto3.client("dynamodb", region_name="us-east-1")
+
+    def _stamp(self, client, lambda_version, client_min_version="0.0.0"):
+        item = {
+            "PK": {"S": "_/SYSTEM#"},
+            "SK": {"S": "#VERSION"},
+            "schema_version": {"S": "0.10.0"},
+            "client_min_version": {"S": client_min_version},
+        }
+        if lambda_version is not None:
+            item["lambda_version"] = {"S": lambda_version}
+        client.put_item(TableName=self.TABLE, Item=item)
+
+    def _record(self, client):
+        return client.get_item(
+            TableName=self.TABLE, Key={"PK": {"S": "_/SYSTEM#"}, "SK": {"S": "#VERSION"}}
+        )["Item"]
+
+    def _changes(self, limits, action="create", level="resource", target="gpt-4"):
+        return [Change(action=action, level=level, target=target, data={"limits": limits})]
+
+    def test_refused_while_the_lambdas_predate_reset_after(self, client):
+        self._stamp(client, "0.14.0")
+        with patch("zae_limiter_provisioner.applier.__version__", "0.15.0"):
+            with pytest.raises(VersionMismatchError) as exc_info:
+                require_reset_after_readers(
+                    self._changes({"rpm": self.RPM, "session": self.SESSION}),
+                    self.TABLE,
+                    client=client,
+                )
+        assert "zae-limiter upgrade" in str(exc_info.value)
+        assert self._record(client)["client_min_version"]["S"] == "0.0.0"
+
+    @pytest.mark.parametrize("level,target", [("system", None), ("entity", "u1/gpt-4")])
+    @pytest.mark.parametrize("action", ["create", "update"])
+    def test_every_level_and_write_action_is_gated(self, client, level, target, action):
+        self._stamp(client, "0.14.0")
+        with patch("zae_limiter_provisioner.applier.__version__", "0.15.0"):
+            with pytest.raises(VersionMismatchError):
+                require_reset_after_readers(
+                    self._changes({"session": self.SESSION}, action, level, target),
+                    self.TABLE,
+                    client=client,
+                )
+
+    @pytest.mark.parametrize("lambda_version", ["0.15.0", "0.16.1"])
+    def test_admitted_and_ratcheted_once_the_lambdas_read_it(self, client, lambda_version):
+        self._stamp(client, lambda_version)
+        with patch("zae_limiter_provisioner.applier.__version__", "0.16.1"):
+            require_reset_after_readers(
+                self._changes({"session": self.SESSION}), self.TABLE, client=client
+            )
+        assert self._record(client)["client_min_version"]["S"] == "0.15.0"
+
+    def test_the_ratchet_never_lowers_a_higher_minimum(self, client):
+        self._stamp(client, "0.17.0", client_min_version="0.16.0")
+        with patch("zae_limiter_provisioner.applier.__version__", "0.17.0"):
+            require_reset_after_readers(
+                self._changes({"session": self.SESSION}), self.TABLE, client=client
+            )
+        assert self._record(client)["client_min_version"]["S"] == "0.16.0"
+
+    def test_the_ratchet_initializes_a_minimum_the_record_lacks(self, client):
+        self._stamp(client, "0.15.0")
+        client.update_item(
+            TableName=self.TABLE,
+            Key={"PK": {"S": "_/SYSTEM#"}, "SK": {"S": "#VERSION"}},
+            UpdateExpression="REMOVE client_min_version",
+        )
+        with patch("zae_limiter_provisioner.applier.__version__", "0.15.0"):
+            require_reset_after_readers(
+                self._changes({"session": self.SESSION}), self.TABLE, client=client
+            )
+        assert self._record(client)["client_min_version"]["S"] == "0.15.0"
+
+    def test_a_missing_version_record_fails_closed(self, client):
+        with pytest.raises(VersionMismatchError, match="no version record"):
+            require_reset_after_readers(
+                self._changes({"session": self.SESSION}), self.TABLE, client=client
+            )
+
+    def test_the_version_read_is_strongly_consistent(self, client):
+        self._stamp(client, "0.15.0")
+        spy = MagicMock(wraps=client)
+        with patch("zae_limiter_provisioner.applier.__version__", "0.15.0"):
+            require_reset_after_readers(
+                self._changes({"session": self.SESSION}), self.TABLE, client=spy
+            )
+        assert spy.get_item.call_args.kwargs["ConsistentRead"] is True
+
+    def test_no_read_without_reset_after(self):
+        """Deletes and plain limits cost nothing — not even a client."""
+        client = MagicMock()
+        require_reset_after_readers(
+            [
+                *self._changes({"rpm": self.RPM}),
+                Change(action="delete", level="resource", target="old"),
+            ],
+            self.TABLE,
+            client=client,
+        )
+        client.get_item.assert_not_called()
+
+    def test_default_client_is_boto3(self):
+        with patch("zae_limiter_provisioner.applier.boto3") as mock_boto3:
+            mock_boto3.client.return_value.get_item.return_value = {}
+            with pytest.raises(VersionMismatchError):
+                require_reset_after_readers(self._changes({"session": self.SESSION}), self.TABLE)
+        mock_boto3.client.assert_called_once_with("dynamodb")
+
+    def test_a_lost_ratchet_race_re_reads(self, client):
+        self._stamp(client, "0.16.0")
+        spy = MagicMock(wraps=client)
+
+        def racing(**kwargs):
+            # Another writer raises the minimum past ours first.
+            client.update_item(
+                TableName=self.TABLE,
+                Key=kwargs["Key"],
+                UpdateExpression="SET client_min_version = :v",
+                ExpressionAttributeValues={":v": {"S": "0.16.0"}},
+            )
+            raise ClientError(
+                {"Error": {"Code": "ConditionalCheckFailedException", "Message": "x"}},
+                "UpdateItem",
+            )
+
+        spy.update_item.side_effect = racing
+        with patch("zae_limiter_provisioner.applier.__version__", "0.16.0"):
+            require_reset_after_readers(
+                self._changes({"session": self.SESSION}), self.TABLE, client=spy
+            )
+        assert spy.update_item.call_count == 1
+        assert self._record(client)["client_min_version"]["S"] == "0.16.0"
+
+    def test_a_ratchet_that_keeps_losing_raises(self, client):
+        self._stamp(client, "0.15.0")
+        spy = MagicMock(wraps=client)
+        spy.update_item.side_effect = ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException", "Message": "x"}},
+            "UpdateItem",
+        )
+        with patch("zae_limiter_provisioner.applier.__version__", "0.15.0"):
+            with pytest.raises(ClientError):
+                require_reset_after_readers(
+                    self._changes({"session": self.SESSION}), self.TABLE, client=spy
+                )
+        assert spy.update_item.call_count == 3
+
+    def test_a_ratchet_failure_other_than_a_race_propagates(self, client):
+        self._stamp(client, "0.15.0")
+        spy = MagicMock(wraps=client)
+        spy.update_item.side_effect = ClientError(
+            {"Error": {"Code": "InternalServerError", "Message": "x"}}, "UpdateItem"
+        )
+        with patch("zae_limiter_provisioner.applier.__version__", "0.15.0"):
+            with pytest.raises(ClientError, match="InternalServerError"):
+                require_reset_after_readers(
+                    self._changes({"session": self.SESSION}), self.TABLE, client=spy
+                )
