@@ -355,10 +355,19 @@ def _invoke_provisioner(
             finally:
                 await repo.close()
 
+    from .exceptions import StackOperationError, VersionError
+
     try:
         namespace_id = asyncio.run(_resolve())
-    except Exception:
+    except NamespaceNotFoundError:
         namespace_id = ""
+    except (VersionError, StackOperationError) as e:
+        # A client below the stack's minimum, or a failed Lambda auto-update
+        # (#638). Carrying on would hand the manifest to a provisioner whose
+        # version nothing checked — a pre-v0.15 one stores a reset_after limit
+        # as a dripping limit, silently.
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
 
     function_name = f"{name}-limits-provisioner"
 
