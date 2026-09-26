@@ -822,6 +822,10 @@ class RepositoryProtocol(Protocol):
         opening its own, so the create path reads the ``ws`` it would inherit
         from shard 0 — the source of truth for ``shard_count`` already.
 
+        The read must be **strongly consistent**: a stale pre-roll ``ws`` looks
+        ended, and the caller would then grant the new shard a fresh full share
+        instead of the #587 transfer from the window shard 0 just opened.
+
         Args:
             entity_id: Entity whose shard is being created. On a cascade create
                 this is the parent for the parent's shard, never the child.

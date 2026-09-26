@@ -238,6 +238,69 @@ class TestNewShardJoinsTheWindow:
         read.assert_not_called()
 
 
+class TestSiblingReadIsConsistent:
+    """The sibling ``ws`` read is strongly consistent (ADR-139).
+
+    A shard is usually created just after shard 0 was written — often by the
+    very acquire that rolled shard 0's window. An eventually consistent read can
+    return the pre-roll ``ws``, which looks ended, and the create path would
+    then grant a fresh full share on top of shard 0's new window.
+    """
+
+    async def test_the_read_asks_for_a_consistent_read(self, limiter):
+        repo = limiter._repository
+        await _first_use(limiter, "user-1", T0)
+        client = await repo._get_client()
+        real_get_item = client.get_item
+        calls = []
+
+        async def spy(**kwargs):
+            calls.append(kwargs)
+            return await real_get_item(**kwargs)
+
+        with patch.object(client, "get_item", spy):
+            await repo.get_shard_window_starts("user-1", RESOURCE, ["session"])
+        assert [c.get("ConsistentRead") for c in calls] == [True]
+
+    async def test_a_shard_created_right_after_a_roll_joins_the_new_window(self, limiter):
+        """Reviewer's shape: shard 0 spent, its window ends, one acquire rolls
+        it, and the next doubling creates shard 1. An eventually consistent
+        replica still holding the pre-roll ``ws`` is simulated by answering any
+        non-consistent window read with ``ws = T0``; the consistent read sees
+        the roll, so the new shard takes the transfer and the window's total
+        (admitted + still spendable) stays within the quota of 10.
+        """
+        repo = limiter._repository
+        await _first_use(limiter, "user-1", T0, consume=10)
+
+        rolled_at = T0 + FIVE_HOURS_MS + 3_600_000
+        repo._now_ms = lambda: rolled_at
+        assert await materialise(limiter, "user-1", "session", 0, resource=RESOURCE) == 1
+        assert await _stored_ws_on(repo, "user-1", "session", 0) == rolled_at
+        admitted = 1
+
+        await drain_wcu(repo, "user-1", 0, resource=RESOURCE)
+        now = rolled_at + 60_000
+        repo._now_ms = lambda: now
+
+        client = await repo._get_client()
+        real_get_item = client.get_item
+        ws_attr = bucket_attr("session", BUCKET_FIELD_WS)
+
+        async def stale_replica(**kwargs):
+            if "ProjectionExpression" in kwargs and not kwargs.get("ConsistentRead"):
+                return {"Item": {ws_attr: {"N": str(T0)}}}
+            return await real_get_item(**kwargs)
+
+        with patch.object(client, "get_item", stale_replica):
+            admitted += await materialise(limiter, "user-1", "session", 0, resource=RESOURCE)
+        assert repo._entity_cache[(repo._namespace_id, "user-1")][2][RESOURCE] == 2
+
+        assert await _stored_ws_on(repo, "user-1", "session", 1) == rolled_at
+        left = await spendable(repo, "user-1", "session", 2, resource=RESOURCE)
+        assert admitted + left <= 10, (admitted, left)
+
+
 class TestGetShardWindowStarts:
     """``Repository.get_shard_window_starts`` — the projected sibling read."""
 

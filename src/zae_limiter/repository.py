@@ -6296,9 +6296,19 @@ class Repository:
         A **separate** read rather than an extra key in the create path's
         ``BatchGetItem``: that call returns a dict keyed by ``(entity_id,
         resource, limit_name)`` with no shard component, so shard 0 and shard N
-        would collide on every key. 0.5 RCU, eventually consistent, **once per
-        shard ever** (≤ 31 per (entity, resource), plus TTL recreations) on a
-        path already priced at 2.5 RCU + 2 WCU.
+        would collide on every key. **Strongly consistent**, so 1 RCU (the
+        projected item is well under 4 KB), **once per shard ever** (≤ 31 per
+        (entity, resource), plus TTL recreations) on a path already priced at
+        2.5 RCU + 2 WCU.
+
+        Consistency is load-bearing, not a nicety. A shard is usually created
+        right after a ``wcu`` doubling, which is usually right after shard 0
+        was written — including the write that rolled its window. An eventually
+        consistent read can return the *pre-roll* ``ws``, which looks ended, so
+        the caller opens a fresh window at full share instead of taking the
+        #587 transfer from the window shard 0 just opened: measured at 15
+        admitted against a quota of 10. The extra 0.5 RCU per shard creation
+        is the whole price of closing that.
 
         A limit absent from the result has no window on that shard — either it
         carries none, or the shard has been swept. The caller then opens a fresh
@@ -6340,6 +6350,8 @@ class Repository:
             },
             ProjectionExpression=", ".join(names),
             ExpressionAttributeNames=names,
+            # See the docstring: a stale pre-roll ws over-grants the new shard.
+            ConsistentRead=True,
         )
         item = response.get("Item") or {}
         out: dict[str, int] = {}
