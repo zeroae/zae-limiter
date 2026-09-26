@@ -165,6 +165,28 @@ class TestFastPathReadsAnEndedWindowAsRestored:
         assert status.available == 10
         assert status.resets_at_ms is None
 
+    def test_an_oversized_request_on_an_ended_image_is_never_told_retry_now(self):
+        """The reviewer's shape: 11 against a share of 10 on an image whose
+        window ended. The restore cannot clear it, so "retry now" would be a
+        free hot loop (#574). It fast-rejects with the length of the window
+        the next pass opens — the slow path's own answer after it rolls."""
+        now = T0 + 2 * ONE_HOUR_MS
+        stale = _window_shard(window_start_ms=now - 2 * ONE_HOUR_MS, reset_after_seconds=3600)
+        would_help, (status,) = would_refill_satisfy([stale], {"session": 11}, now)
+        assert not would_help, "unadmittable even after the restore: no slow-path trip"
+        assert status.exceeded
+        assert status.retry_after_seconds == 3600.0
+
+    @pytest.mark.parametrize("tokens_milli", [0, 10_000])
+    def test_an_ended_window_quotes_the_same_wait_from_either_image(self, tokens_milli):
+        """Burnt or already restored, the ended branch recovers ``requested``
+        from the deficit plus the balance it was measured against."""
+        now = T0 + FIVE_HOURS_MS
+        state = _window_shard(tokens_milli=tokens_milli)
+        requested_milli = 11_000
+        wait = retry_after_for_deficit(state, requested_milli - tokens_milli, now)
+        assert wait == FIVE_HOURS_MS / 1000
+
     def test_a_live_window_on_the_image_still_fast_rejects(self):
         now = T0 + ONE_HOUR_MS
         would_help, (status,) = would_refill_satisfy([_window_shard()], {"session": 1}, now)

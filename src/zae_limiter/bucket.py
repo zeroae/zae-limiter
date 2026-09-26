@@ -233,8 +233,20 @@ def retry_after_for_deficit(state: BucketState, deficit_milli: int, now_ms: int)
     the wait to the window's end is the only finite answer — the same call the
     calendar form's reset branch makes, but a constant rather than a scan. The
     window is half-open, ``[ws, ws + rsa)``, so the end instant is already the
-    next window's and no ``+1`` is added. An ended window reports 0: the next
-    acquire opens a fresh one and restores the balance.
+    next window's and no ``+1`` is added.
+
+    An **ended** window reports 0 only when the restore actually clears the
+    deficit: the next acquire opens a fresh window at the full share and is
+    admitted, so "retry now" is true. A request larger than one shard's share
+    (#475) is not cleared by any restore, and 0 there is a hot retry loop the
+    429 itself drives (#574) — reachable on the fast path whenever an item's
+    stored ``rsa`` is shorter than config while ``vu`` is still in the
+    future. It is quoted the length of the window the next pass would open
+    instead, the same answer the slow path gives after it rolls that window
+    at ``now``. Routing such an image to the slow path was the alternative,
+    and was rejected: it cannot answer better, it pays a read on every
+    retry, and a ``BOTH_EXHAUSTED`` failure that passes the gate is doubled on
+    its way to a rejection, which #480 forbids.
 
     Decided here rather than in ``schedule.retry_after_with_schedule`` because
     ``schedule.py`` may import nothing from ``models.py`` — that one-way
@@ -253,7 +265,19 @@ def retry_after_for_deficit(state: BucketState, deficit_milli: int, now_ms: int)
         return 0.0
     end = _duration_window_end(state)
     if end is not None:
-        return max(0, end - now_ms) / 1000.0
+        if end > now_ms:
+            return (end - now_ms) / 1000.0
+        # The window has ended, so the next pass restores the full share. What
+        # the request still lacks after that is ``requested - share``, with
+        # ``requested`` recovered as the deficit plus the balance it was
+        # measured against — the caller may hand in the burnt image or the
+        # already-restored one, and both must agree.
+        still_short = deficit_milli + state.tokens_milli - state.effective_capacity_milli(now_ms)
+        if still_short <= 0:
+            return 0.0
+        # `end` is not None, so the window length is on the state.
+        assert state.reset_after_seconds is not None
+        return float(state.reset_after_seconds)
     return retry_after_with_schedule(
         deficit_milli=deficit_milli,
         cp_milli=state.capacity_milli,
