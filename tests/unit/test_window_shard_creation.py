@@ -14,7 +14,13 @@ from unittest.mock import patch
 
 import pytest
 
-from tests.fixtures.sharding import drain_wcu, materialise, spendable
+from tests.fixtures.sharding import (
+    drain_wcu,
+    materialise,
+    pinned_shard,
+    spendable,
+    walk_doublings,
+)
 from tests.fixtures.windows import FIVE_HOURS_MS, SESSION_10, T0
 from zae_limiter import RateLimiter, RateLimiterUnavailable
 from zae_limiter.schema import (
@@ -339,3 +345,185 @@ class TestGetShardWindowStarts:
         )
         with pytest.raises(RateLimiterUnavailable, match="b_session_ws"):
             await repo.get_shard_window_starts("user-1", RESOURCE, ["session"])
+
+
+class TestDoublingWalkConservesAWindow:
+    """PR #594's invariant, restated for a duration window and walked to
+    ``MAX_SHARD_COUNT``.
+
+    Measured as #594 measures it — ``sum(max(0, tk))`` across shards, debt
+    excluded — because debt is dead weight for a quota: its rate is zero and
+    its reset SETS the balance rather than adding to it. The single doubling is
+    pinned above; these walk every generation, where a created shard that
+    opened a fresh window instead of joining the live one would mint a share
+    per doubling.
+    """
+
+    LIMIT_NAME = "session"
+
+    async def _anchor(self, limiter, entity_id):
+        from datetime import timedelta
+
+        from zae_limiter import Limit
+
+        repo = limiter._repository
+        limit = Limit.quota(self.LIMIT_NAME, 1_000, reset_after=timedelta(hours=5))
+        await repo.set_limits(entity_id, [limit], resource=RESOURCE)
+        repo._now_ms = lambda: T0
+        async with limiter.acquire(entity_id, RESOURCE, consume={self.LIMIT_NAME: 1}):
+            pass
+
+    async def test_a_spent_entity_walk_mints_nothing(self, limiter):
+        """The issue's probe (`walk_doublings`): every shard drained, then
+        `wcu` tripped, five generations. Nothing is left to transfer, so no
+        created shard may start with anything."""
+        from zae_limiter import schema
+
+        repo = limiter._repository
+        await self._anchor(limiter, "walker")
+
+        admitted, shard_count, spends = await walk_doublings(
+            limiter, "walker", self.LIMIT_NAME, resource=RESOURCE
+        )
+
+        assert shard_count == schema.MAX_SHARD_COUNT
+        for index, (before, after) in enumerate(spends):
+            assert after == before, f"doubling {index}: {before} -> {after}"
+        left = await spendable(repo, "walker", self.LIMIT_NAME, shard_count, resource=RESOURCE)
+        assert 1 + admitted + left <= 1_000
+
+    async def test_a_full_entity_walk_joins_one_window_and_never_grows(self, limiter):
+        """The other end: nothing drained but `wcu`, so every doubling has a
+        surplus to transfer and every new shard is created (by a zero-token
+        draw, which spends nothing). All 32 must join the window anchored at
+        ``T0`` — a shard that opened its own would start at a fresh full share
+        — and the spendable total may only fall (a clamp's excess beyond one
+        share is discarded, #587), never rise."""
+        from zae_limiter import schema
+
+        repo = limiter._repository
+        await self._anchor(limiter, "full-walker")
+        nothing = {self.LIMIT_NAME: 0}
+        shard_count = 1
+        totals = [await spendable(repo, "full-walker", self.LIMIT_NAME, 1, resource=RESOURCE)]
+        assert totals == [999]
+
+        while shard_count < schema.MAX_SHARD_COUNT:
+            for shard in range(shard_count):
+                await drain_wcu(repo, "full-walker", shard, resource=RESOURCE)
+            with pinned_shard(0):
+                async with limiter.acquire("full-walker", RESOURCE, consume=nothing):
+                    pass
+            shard_count = repo._entity_cache[(repo._namespace_id, "full-walker")][2][RESOURCE]
+            for shard in range(shard_count):
+                if await _stored_ws_on(repo, "full-walker", self.LIMIT_NAME, shard) is None:
+                    with pinned_shard(shard):
+                        async with limiter.acquire("full-walker", RESOURCE, consume=nothing):
+                            pass
+            totals.append(
+                await spendable(
+                    repo, "full-walker", self.LIMIT_NAME, shard_count, resource=RESOURCE
+                )
+            )
+
+        assert shard_count == schema.MAX_SHARD_COUNT
+        assert totals[1] == 999, "the first doubling transfers the whole surplus"
+        assert all(b >= a for a, b in zip(totals[1:], totals, strict=False)), totals
+        assert totals[-1] > 0, totals
+        starts = {
+            await _stored_ws_on(repo, "full-walker", self.LIMIT_NAME, s) for s in range(shard_count)
+        }
+        assert starts == {T0}, "every created shard joined the live window"
+
+
+class TestAggregatorCloneOfAnUnappliedShardZero:
+    """Path 2 clones shard 0 while shard 0 carries a window it has not applied.
+
+    Shard 0 received a fan-out (``ws > rf``, ``vu = 0``) and the aggregator's
+    proactive sharding doubles it before any client draws it. The clone copies
+    ``ws``/``rsa``/``rf``/``vu`` verbatim, so it is unapplied too, and whatever
+    the #587 transfer granted it is overwritten when it rolls — a SET to the
+    share, never an ADD. After both shards roll the entity holds exactly one
+    allowance, whichever writer applies the roll.
+    """
+
+    WINDOW_S = FIVE_HOURS_MS // 1000
+    T1 = T0 + FIVE_HOURS_MS + 1_000  # the fanned-out window's start
+
+    @staticmethod
+    def _table(repo):
+        import boto3
+
+        return boto3.resource("dynamodb", region_name="us-east-1").Table(repo.table_name)
+
+    @staticmethod
+    def _record(new_image, old_image):
+        return {"eventName": "MODIFY", "dynamodb": {"NewImage": new_image, "OldImage": old_image}}
+
+    @pytest.mark.parametrize("aggregator_first", [False, True], ids=["client", "aggregator"])
+    @pytest.mark.parametrize("spent", [0, 8])
+    async def test_both_shards_rolling_restore_one_allowance(
+        self, limiter, spent, aggregator_first
+    ):
+        from zae_limiter_aggregator.processor import (
+            aggregate_bucket_states,
+            propagate_shard_count,
+            try_refill_bucket,
+        )
+
+        repo = limiter._repository
+        table = self._table(repo)
+        if spent:
+            await _first_use(limiter, "user-1", T0, consume=spent)
+        else:
+            # A zero-token first use anchors the window without spending.
+            await _first_use(limiter, "user-1", T0, consume=0)
+
+        # A sibling opened the next window and fanned it out: shard 0 now
+        # carries it unapplied.
+        written = await repo._propagate_window_start(
+            "user-1", RESOURCE, 1, 2, {"session": (self.T1, self.WINDOW_S)}
+        )
+        assert written == 1
+        old_image = await _raw(repo, "user-1", 0)
+        assert int(old_image[BUCKET_FIELD_RF]["N"]) < self.T1
+        assert int(old_image[BUCKET_FIELD_VU]["N"]) == 0
+
+        # Proactive sharding doubles shard 0; its stream record reaches Path 2.
+        assert await repo.bump_shard_count("user-1", RESOURCE, 1) == 2
+        new_image = await _raw(repo, "user-1", 0)
+        now = self.T1 + 60_000
+        assert propagate_shard_count(table, self._record(new_image, old_image), now) == 1
+
+        clone = await _raw(repo, "user-1", 1)
+        assert await _stored_ws_on(repo, "user-1", "session", 1) == self.T1
+        assert clone[BUCKET_FIELD_RF] == new_image[BUCKET_FIELD_RF], "rf copied: unapplied"
+        assert int(clone[BUCKET_FIELD_VU]["N"]) == 0
+
+        if aggregator_first:
+            # The aggregator applies the window it sees on each shard's image.
+            # A shard already holding exactly its share has nothing to restore
+            # and is left for the client, which then applies it as a SET.
+            rolled = []
+            for shard in (0, 1):
+                image = await _raw(repo, "user-1", shard)
+                (state,) = aggregate_bucket_states([self._record(image, image)]).values()
+                rolled.append(try_refill_bucket(table, state, now))
+            # Spent: shard 0 holds 2 and the clone was granted nothing, so both
+            # are below their share of 5 and both roll. Unspent: the transfer
+            # left both at exactly 5, so neither has anything to restore.
+            assert rolled == [bool(spent), bool(spent)]
+            assert await spendable(repo, "user-1", "session", 2, resource=RESOURCE) == 10
+
+        repo._now_ms = lambda: now
+        admitted = 0
+        for shard in (0, 1):
+            admitted += await materialise(limiter, "user-1", "session", shard, RESOURCE)
+        assert admitted == 2
+
+        for shard in (0, 1):
+            item = await _raw(repo, "user-1", shard)
+            assert int(item[BUCKET_FIELD_RF]["N"]) >= self.T1, f"shard {shard} never rolled"
+            assert await _stored_ws_on(repo, "user-1", "session", shard) == self.T1
+        left = await spendable(repo, "user-1", "session", 2, resource=RESOURCE)
+        assert admitted + left == 10, (admitted, left)
