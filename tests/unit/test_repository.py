@@ -7807,6 +7807,14 @@ class TestResetAfterVersionGate:
         assert reads == []
         assert [limit.name for limit in await self._read(repo, level)] == ["rpm"]
 
+    async def test_the_override_gate_is_free_without_reset_after(self, repo):
+        """The backend method is safe to call with plain limits: no record
+        (so a read would refuse), yet it returns without reading."""
+        reads = await self._counting_get_item(
+            repo, lambda: repo.require_reset_after_readers([self.RPM])
+        )
+        assert reads == []
+
     async def test_a_development_build_passes_against_its_own_lambdas(self, repo):
         dev = "0.14.1.dev99+gabcdef"
         await self._stamp(repo, dev)
