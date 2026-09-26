@@ -116,6 +116,35 @@ class LeaseEntry:
     # while a seeded limit rides the normal `UpdateItem` and is SET in full
     # there instead of `ADD`ed to, since there is nothing to add to.
     _seed: bool = False
+    # For a seed that took a **transfer** (#587): its state before admission,
+    # i.e. what the clamp took with nothing consumed. The clamp has already
+    # written; if this pass then writes no seed (a rejection, or a lost lock
+    # that falls to the retry), `persist_transfer_seeds` writes this instead,
+    # so the next pass does not seed a full share on top of the spent surplus
+    # (#633). None for every other entry.
+    _seed_initial: BucketState | None = None
+
+
+async def persist_transfer_seeds(repo: "RepositoryProtocol", entries: list[LeaseEntry]) -> None:
+    """Persist every transfer seed among ``entries`` that this pass will not write (#633).
+
+    Called on the two paths where a quota's transfer was taken but its seed is
+    not written by the pass itself: a slow-path rejection, and a lost `rf` lock
+    (before the consumption-only retry, which can then debit the persisted
+    seed). See :meth:`Repository.persist_seed` for why this does not weaken
+    write-on-enter beyond the clamp that already ran.
+    """
+    for entry in entries:
+        if entry._seed_initial is None:
+            continue
+        await repo.persist_seed(
+            entry.entity_id,
+            entry.resource,
+            entry._shard_id,
+            entry._seed_initial,
+            vu=entry._boundary_ms,
+            seed_shard_count=entry._seed_initial.shard_count,
+        )
 
 
 @dataclass
@@ -675,6 +704,10 @@ class Lease:
                 raise  # other errors propagate unchanged
 
         if condition_failed:
+            # A transfer seed the lost write carried is persisted first, so
+            # the surplus its clamp took is not destroyed — and the retry can
+            # then debit it (#633).
+            await persist_transfer_seeds(repo, self.entries)
             # Retry path: ADD consumption only, CONDITION tk>=consumed per limit
             logger.debug("Normal write failed (optimistic lock), retrying consumption-only")
             # A cancelled transaction rolls back every item, including a

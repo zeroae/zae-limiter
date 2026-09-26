@@ -12059,3 +12059,99 @@ class TestLimitAddedToExistingShards:
                     break
                 admitted += 100
         assert admitted == 1_000
+
+    async def test_a_rejected_transfer_seed_is_persisted(self, limiter):
+        """Re-review of #633 (R2): the seed's clamp already wrote, so a
+        rejected acquire persists the seed at what the clamp took; the next
+        pass must not seed a full share on top of the 300 already spent."""
+        repo = await self._two_shards(limiter, "r2-reject", extra_on_shard0=(700_000, 300_000))
+        with pytest.raises(RateLimitExceeded):
+            await self._acquire_on(limiter, "r2-reject", 1, {"rpd": 300})
+        assert await _stored_tk(repo, "r2-reject", "gpt-4", "rpd", shard=0) == 500_000
+        shard1 = await _raw_bucket(repo, "r2-reject", shard=1)
+        assert shard1[bucket_attr("rpd", BUCKET_FIELD_TK)]["N"] == "200000"
+        assert shard1[bucket_attr("rpd", "tc")]["N"] == "0"
+        assert BUCKET_FIELD_VU in shard1, "the reset edge still forces a pass"
+
+        await self._acquire_on(limiter, "r2-reject", 1, {"rpd": 1})
+        assert await _stored_tk(repo, "r2-reject", "gpt-4", "rpd", shard=1) == 199_000
+
+    async def test_a_transfer_seed_that_loses_its_lock_is_persisted_and_debited(self, limiter):
+        """R2's other half: the rf-locked write loses its lock, the seed is
+        persisted before the consumption-only retry, which then debits it."""
+        repo = await self._two_shards(limiter, "r2-lock", extra_on_shard0=(700_000, 300_000))
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        stale = await slow._fetch_entity_and_buckets("r2-lock", "gpt-4", 1)
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, "r2-lock", "gpt-4", 1)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="SET #rf = :rf",
+            ExpressionAttributeNames={"#rf": BUCKET_FIELD_RF},
+            ExpressionAttributeValues={":rf": {"N": str(T0 + 1)}},
+        )
+        repo._now_ms = lambda: T0 + 1
+        with patch.object(slow, "_fetch_entity_and_buckets", AsyncMock(return_value=stale)):
+            with patch("zae_limiter.repository.random.randrange", return_value=1):
+                async with slow.acquire("r2-lock", "gpt-4", consume={"rpd": 1}):
+                    pass
+        assert await _stored_tk(repo, "r2-lock", "gpt-4", "rpd", shard=1) == 199_000
+        assert await _stored_tk(repo, "r2-lock", "gpt-4", "rpd", shard=0) == 500_000
+
+
+class TestPersistSeed:
+    """`Repository.persist_seed` (#633): write-once, pinned, `vu` only lowered."""
+
+    RPD = Limit.quota("rpd", 1_000, cron="0 0 * * *")
+
+    async def _item(self, repo, entity_id, vu=None):
+        repo._now_ms = lambda: T0
+        rpm = Limit.per_minute("rpm", 100)
+        state = BucketState.from_limit(entity_id, "gpt-4", rpm, T0, shard_count=2)
+        await repo.transact_write(
+            [
+                repo.build_composite_create(
+                    entity_id, "gpt-4", [state], T0, shard_id=0, shard_count=2, vu=vu
+                )
+            ]
+        )
+        seed = BucketState.from_limit(entity_id, "gpt-4", self.RPD, T0, shard_count=2)
+        seed.tokens_milli = 123_000
+        return seed
+
+    async def test_lowers_a_later_vu(self, limiter):
+        repo = limiter._repository
+        seed = await self._item(repo, "ps-later", vu=T0 + 10**9)
+        assert await repo.persist_seed("ps-later", "gpt-4", 0, seed, vu=T0 + 5, seed_shard_count=2)
+        item = await _raw_bucket(repo, "ps-later")
+        assert item[bucket_attr("rpd", BUCKET_FIELD_TK)]["N"] == "123000"
+        assert int(item[BUCKET_FIELD_VU]["N"]) == T0 + 5
+
+    async def test_keeps_an_earlier_vu(self, limiter):
+        repo = limiter._repository
+        seed = await self._item(repo, "ps-earlier", vu=T0 + 1)
+        assert await repo.persist_seed("ps-earlier", "gpt-4", 0, seed, vu=T0 + 5)
+        item = await _raw_bucket(repo, "ps-earlier")
+        assert item[bucket_attr("rpd", BUCKET_FIELD_TK)]["N"] == "123000"
+        assert int(item[BUCKET_FIELD_VU]["N"]) == T0 + 1
+
+    async def test_never_overwrites_and_honours_the_pin(self, limiter):
+        repo = limiter._repository
+        seed = await self._item(repo, "ps-once")
+        assert not await repo.persist_seed("ps-once", "gpt-4", 0, seed, seed_shard_count=1)
+        assert await repo.persist_seed("ps-once", "gpt-4", 0, seed)
+        seed.tokens_milli = 999_000
+        assert not await repo.persist_seed("ps-once", "gpt-4", 0, seed, vu=T0 + 5)
+        assert await _stored_tk(repo, "ps-once", "gpt-4", "rpd") == 123_000
+
+    async def test_other_errors_propagate(self, limiter):
+        repo = limiter._repository
+        seed = await self._item(repo, "ps-error")
+        client = await repo._get_client()
+        boom = ClientError({"Error": {"Code": "ValidationException"}}, "UpdateItem")
+        with patch.object(client, "update_item", AsyncMock(side_effect=boom)):
+            with pytest.raises(ClientError):
+                await repo.persist_seed("ps-error", "gpt-4", 0, seed)

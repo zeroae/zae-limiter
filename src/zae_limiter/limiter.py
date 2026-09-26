@@ -6,6 +6,7 @@ import random
 import warnings
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal
@@ -28,7 +29,7 @@ from .exceptions import (
     ResourceDisabled,
     ValidationError,
 )
-from .lease import Lease, LeaseEntry
+from .lease import Lease, LeaseEntry, persist_transfer_seeds
 from .models import (
     AuditEvent,
     Availability,
@@ -2086,6 +2087,7 @@ class RateLimiter:
                 created_anchor: int | None = None
                 stored_rsa: int | None = None
                 seed = existing is None and any_existing
+                seed_initial: BucketState | None = None
                 if seed:
                     is_new = True
                     # Missing from an item that exists (#633): seeded at its
@@ -2111,6 +2113,18 @@ class RateLimiter:
                     )
                     if window_live:
                         state.window_start_ms = inherited_ws
+                    # A transfer's clamp has already written; keep the seed
+                    # as it stands before admission so it can be persisted if
+                    # this pass ends up writing no seed (#633). A joined window
+                    # starting after the item's `rf` is not persisted: without
+                    # the locked write moving `rf` past it, the next pass would
+                    # read `ws > rf` and reset the balance to a full share.
+                    if (
+                        limit.name in seed_transfer
+                        and window_live is not False
+                        and (state.window_start_ms is None or state.window_start_ms <= item_rf)
+                    ):
+                        seed_initial = replace(state)
                     # A seed that opens its own window on a sharded entity
                     # anchors the entity's next one, so it fans out like a
                     # rollover — the rule a created shard N>0 follows.
@@ -2278,6 +2292,7 @@ class RateLimiter:
                         _original_rf_ms=original_rf,
                         _is_new=is_new and not any_existing,
                         _seed=seed,
+                        _seed_initial=seed_initial,
                         _has_custom_config=has_custom_config,
                         _shard_id=eid_shard,
                         _shard_count=eid_shard_count,
@@ -2307,6 +2322,9 @@ class RateLimiter:
         # Check for any violations
         violations = [s for s in statuses if s.exceeded]
         if violations:
+            # A quota seed's transfer already clamped its siblings; persist
+            # the seed so a rejection does not destroy what it took (#633).
+            await persist_transfer_seeds(self._repository, entries)
             raise RateLimitExceeded(statuses)
 
         return Lease(

@@ -11,6 +11,7 @@ import random
 import warnings
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -47,7 +48,7 @@ from .models import (
 from .schedule import effective_params, next_boundary, prev_reset_edge, retry_after_with_schedule
 from .schema import DEFAULT_RESOURCE, WCU_LIMIT_NAME
 from .sync_config_cache import ConfigSource
-from .sync_lease import LeaseEntry, SyncLease
+from .sync_lease import LeaseEntry, SyncLease, persist_transfer_seeds
 from .sync_repository import SyncRepository
 from .sync_repository_protocol import SpeculativeFailureReason
 
@@ -1602,6 +1603,7 @@ class SyncRateLimiter:
                 created_anchor: int | None = None
                 stored_rsa: int | None = None
                 seed = existing is None and any_existing
+                seed_initial: BucketState | None = None
                 if seed:
                     is_new = True
                     inherited_ws = seed_ws.get(limit.name)
@@ -1620,6 +1622,12 @@ class SyncRateLimiter:
                     )
                     if window_live:
                         state.window_start_ms = inherited_ws
+                    if (
+                        limit.name in seed_transfer
+                        and window_live is not False
+                        and (state.window_start_ms is None or state.window_start_ms <= item_rf)
+                    ):
+                        seed_initial = replace(state)
                     created_anchor = (
                         state.window_start_ms
                         if limit.reset_after is not None
@@ -1683,6 +1691,7 @@ class SyncRateLimiter:
                         _original_rf_ms=original_rf,
                         _is_new=is_new and (not any_existing),
                         _seed=seed,
+                        _seed_initial=seed_initial,
                         _has_custom_config=has_custom_config,
                         _shard_id=eid_shard,
                         _shard_count=eid_shard_count,
@@ -1709,6 +1718,7 @@ class SyncRateLimiter:
                 carriers.append(carrier)
         violations = [s for s in statuses if s.exceeded]
         if violations:
+            persist_transfer_seeds(self._repository, entries)
             raise RateLimitExceeded(statuses)
         return SyncLease(
             repository=self._repository,

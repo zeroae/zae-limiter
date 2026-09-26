@@ -105,3 +105,61 @@ class TestLimitAddedToExistingBucket:
         assert item[bucket_attr("tpm", BUCKET_FIELD_CP)]["N"] == "1000000"
         # One second of refill (100/min) has topped `rpm` back up to 99.
         assert await slow.available(entity_id, resource) == {"rpm": 99, "tpm": 1000}
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+class TestQuotaAddedToExistingShards:
+    """The quota seed's LocalStack-evaluated conditions: the shard-count pin
+    and the transfer-seed persist (#633)."""
+
+    RPD = Limit.quota("rpd", 1_000, cron="0 0 * * *")
+
+    async def test_a_rejected_transfer_seed_is_persisted(self, localstack_limiter, unique_name):
+        from unittest.mock import patch
+
+        from zae_limiter import RateLimitExceeded
+        from zae_limiter.models import BucketState
+
+        entity_id = f"r2-{unique_name}"
+        resource = f"res-{unique_name}"
+        repo = localstack_limiter._repository
+        repo._now_ms = lambda: T0
+        await repo.set_resource_defaults(resource, [RPM])
+        for shard_id in (0, 1):
+            states = [BucketState.from_limit(entity_id, resource, RPM, T0, shard_count=2)]
+            if shard_id == 0:
+                rpd = BucketState.from_limit(entity_id, resource, self.RPD, T0, shard_count=2)
+                rpd.tokens_milli, rpd.total_consumed_milli = 700_000, 300_000
+                states.append(rpd)
+            await repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        entity_id, resource, states, T0, shard_id=shard_id, shard_count=2
+                    )
+                ]
+            )
+        repo._entity_cache[(repo._namespace_id, entity_id)] = (False, None, {resource: 2})
+        await repo.set_resource_defaults(resource, [RPM, self.RPD])
+        await repo.invalidate_config_cache()
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+
+        with patch("zae_limiter.repository.random.randrange", return_value=1):
+            with pytest.raises(RateLimitExceeded):
+                async with slow.acquire(entity_id, resource, consume={"rpd": 300}):
+                    pass
+            async with slow.acquire(entity_id, resource, consume={"rpd": 1}):
+                pass
+
+        client = await repo._get_client()
+        item = (
+            await client.get_item(
+                TableName=repo.table_name,
+                Key={
+                    "PK": {"S": pk_bucket(repo._namespace_id, entity_id, resource, 1)},
+                    "SK": {"S": sk_state()},
+                },
+                ConsistentRead=True,
+            )
+        )["Item"]
+        assert item[bucket_attr("rpd", BUCKET_FIELD_TK)]["N"] == "199000"

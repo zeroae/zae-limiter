@@ -230,6 +230,23 @@ class TestCompositeBuilders:
         assert_expression_safe(update)
         assert "#pinsc <= :pinsc" in update["ConditionExpression"]
 
+    async def test_persist_seed(self) -> None:
+        """Both attempts of the transfer-seed persist (#633), captured."""
+        from unittest.mock import AsyncMock
+
+        from botocore.exceptions import ClientError
+
+        repo = _repo()
+        client = MagicMock()
+        lost = ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")
+        client.update_item = AsyncMock(side_effect=[lost, {}])
+        with patch.object(repo, "_get_client", AsyncMock(return_value=client)):
+            assert await repo.persist_seed(
+                "user-1", "api", 0, self._seed_states()["sess.v1"], vu=9, seed_shard_count=2
+            )
+        for call in client.update_item.call_args_list:
+            assert_expression_safe(call.kwargs)
+
     def test_retry_with_seeds(self) -> None:
         seeds = self._seed_states()
         update = _repo().build_composite_retry(

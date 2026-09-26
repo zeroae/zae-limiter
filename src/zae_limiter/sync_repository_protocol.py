@@ -615,6 +615,26 @@ class SyncRepositoryProtocol(Protocol):
         """
         ...
 
+    def persist_seed(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int,
+        state: "BucketState",
+        vu: int | None = None,
+        seed_shard_count: int | None = None,
+    ) -> bool:
+        """Write a transfer seed on a pass that will not write it itself (#633).
+
+        ``SET`` the limit's attributes at ``state.tokens_milli`` with nothing
+        consumed, under ``attribute_exists(PK) AND attribute_not_exists(tk)``
+        and the shard-count pin; ``vu`` lowered when absent or later.
+
+        Returns:
+            Whether the seed was written.
+        """
+        ...
+
     def transact_write(self, items: list[dict[str, Any]]) -> None:
         """
         Execute a write of one or more items.

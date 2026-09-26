@@ -56,6 +56,29 @@ class LeaseEntry:
     _window_end_ms: int | None = None
     _stored_reset_after_seconds: int | None = None
     _seed: bool = False
+    _seed_initial: BucketState | None = None
+
+
+def persist_transfer_seeds(repo: "SyncRepositoryProtocol", entries: list[LeaseEntry]) -> None:
+    """Persist every transfer seed among ``entries`` that this pass will not write (#633).
+
+    Called on the two paths where a quota's transfer was taken but its seed is
+    not written by the pass itself: a slow-path rejection, and a lost `rf` lock
+    (before the consumption-only retry, which can then debit the persisted
+    seed). See :meth:`SyncRepository.persist_seed` for why this does not weaken
+    write-on-enter beyond the clamp that already ran.
+    """
+    for entry in entries:
+        if entry._seed_initial is None:
+            continue
+        repo.persist_seed(
+            entry.entity_id,
+            entry.resource,
+            entry._shard_id,
+            entry._seed_initial,
+            vu=entry._boundary_ms,
+            seed_shard_count=entry._seed_initial.shard_count,
+        )
 
 
 @dataclass
@@ -445,6 +468,7 @@ class SyncLease:
                     raise
                 raise
         if condition_failed:
+            persist_transfer_seeds(repo, self.entries)
             logger.debug("Normal write failed (optimistic lock), retrying consumption-only")
             reason_codes = (
                 _get_cancellation_reason_codes(condition_exc) if condition_exc is not None else None

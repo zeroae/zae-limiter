@@ -2830,6 +2830,111 @@ class Repository:
             }
         }
 
+    async def persist_seed(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int,
+        state: BucketState,
+        vu: int | None = None,
+        seed_shard_count: int | None = None,
+    ) -> bool:
+        """Write a transfer seed on a pass that will not write it itself (#633, #587).
+
+        A quota missing from an existing shard of a sharded entity may be
+        seeded by **transfer**: :meth:`reclaim_quota_seed` clamps the siblings
+        holding a surplus and the seed is what that took. The clamp is a
+        write, and it lands before admission. If this pass then writes no seed
+        — the acquire is rejected, or its rf-locked write loses the lock and
+        the consumption-only retry (which never seeds a quota) runs instead —
+        the surplus would be destroyed and the *next* pass, seeing none left,
+        would seed a full share on top of what the siblings already spent.
+        So the seed is persisted here, at ``state.tokens_milli`` (what the
+        clamp took, capped at one share) with nothing consumed.
+
+        This does not weaken write-on-enter further than #587 already did: the
+        clamp already writes on the rejection path, and this completes that
+        same transfer rather than admitting anything. It is a separate write
+        rather than one ``TransactWriteItems`` with the clamps because the
+        clamps run before admission is known (their result sizes the seed),
+        and a transaction would have to be rebuilt around the admission
+        decision for a path that is taken only on a rejection or a lost lock.
+
+        ``SET`` of the limit's attributes (``tk``, ``tc = 0``, ``cp``/``ra``/
+        ``rp``, explicit ``sched``/``rsched`` overrides, ``sched_tz``, and a
+        joined window's ``ws``/``rsa``) under ``attribute_exists(PK) AND
+        attribute_not_exists(tk)`` — a limit another writer seeded first, or a
+        stray ``tk`` an older client left, is never overwritten — plus the
+        shard-count pin of :meth:`build_composite_normal`. ``vu`` is lowered
+        to the seed's boundary when the item's is absent or later; an earlier
+        one is left alone (it forces a pass sooner, which is safe) by a second,
+        ``vu``-free attempt. So at most 2 WCU, once per transfer seed.
+
+        Returns:
+            Whether the seed was written.
+        """
+        tz, overrides = self._explicit_schedule_attrs(state)
+        fields = {
+            **self._limit_item_attrs(state),
+            **{field: {"S": compact} for field, compact in overrides.items()},
+            schema.BUCKET_FIELD_TC: {"N": "0"},
+        }
+        attr_names: dict[str, str] = {}
+        attr_values: dict[str, Any] = {}
+        set_parts: list[str] = []
+        for field, value in fields.items():
+            alias = f"#s{_SEED_TOKEN[field]}0"
+            placeholder = f":s{_SEED_TOKEN[field]}0"
+            attr_names[alias] = schema.bucket_attr(state.limit_name, field)
+            attr_values[placeholder] = value
+            set_parts.append(f"{alias} = {placeholder}")
+        if tz is not None:
+            set_parts.append("#stz = :stz")
+            attr_names["#stz"] = schema.BUCKET_FIELD_SCHED_TZ
+            attr_values[":stz"] = {"S": tz}
+        conditions = ["attribute_exists(PK)", "attribute_not_exists(#st0)"]
+        if seed_shard_count is not None:
+            attr_names["#pinsc"] = "shard_count"
+            attr_values[":pinsc"] = {"N": str(seed_shard_count)}
+            conditions.append("(attribute_not_exists(#pinsc) OR #pinsc <= :pinsc)")
+        key = {
+            "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)},
+            "SK": {"S": schema.sk_state()},
+        }
+        attempts: list[tuple[list[str], list[str], dict[str, Any]]] = []
+        if vu is None:
+            attempts.append((set_parts, conditions, {}))
+        else:
+            vu_values = {":vu": {"N": str(vu)}}
+            attempts.append(
+                (
+                    [*set_parts, "#vu = :vu"],
+                    [*conditions, "(attribute_not_exists(#vu) OR #vu >= :vu)"],
+                    vu_values,
+                )
+            )
+            attempts.append((set_parts, [*conditions, "#vu < :vu"], vu_values))
+        client = await self._get_client()
+        for parts, conds, extra_values in attempts:
+            names = dict(attr_names)
+            if extra_values:
+                names["#vu"] = schema.BUCKET_FIELD_VU
+            try:
+                await client.update_item(
+                    TableName=self.table_name,
+                    Key=key,
+                    UpdateExpression=f"SET {', '.join(parts)}",
+                    ConditionExpression=" AND ".join(conds),
+                    ExpressionAttributeNames=names,
+                    ExpressionAttributeValues={**attr_values, **extra_values},
+                )
+            except ClientError as e:
+                if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                    continue
+                raise
+            return True
+        return False
+
     async def transact_write(self, items: list[dict[str, Any]]) -> None:
         """Execute a write, using single-item API when possible to halve WCU cost."""
         if not items:
@@ -6545,28 +6650,43 @@ class Repository:
         in the period — seeded, created or reset before a doubling that has
         not yet been clamped away. While that grant is unspent it is held as
         a surplus above the share, and the transfer moves exactly the part of
-        it this shard's slice was carved from. Two residuals remain, both
-        needing that lower-count grant *and* a shard missing the quota after
-        it (only a client whose config cache has not seen the quota yet can
-        create one, so within ``config_cache_ttl`` of configuring it):
+        it this shard's slice was carved from.
 
-        * the sibling already **spent** into its surplus before this seed —
-          the spent part is gone from ``tk`` and cannot be seen without a
-          per-period grant record, so the full share is granted on top of it;
-        * a transfer seed whose acquire is then **rejected** writes nothing,
-          so the clamped surplus is destroyed and the next pass seeds in full.
+        Two ways a pass could still grant too much are closed elsewhere:
 
-        Either over-admits at most that sibling's surplus, once, in the period
-        the doubling happened. A transfer can also under-grant for the rest of
-        that period — a surplus carved for a shard not yet created can be
-        handed to this one — never beyond the next reset.
+        * **a transfer seed that is then not written** — the acquire is
+          rejected, or its rf-locked write loses the lock — would leave the
+          clamped surplus destroyed and the next pass seeding in full;
+          :meth:`persist_seed` writes it at what the clamp took instead;
+        * **a doubling racing the seed** (the aggregator's proactive doubling
+          lands between this read and the seed's write, and does not move
+          ``rf``) would leave the seed sized for the old count; the seed's
+          write pins ``shard_count <= :sized`` and a lost pin falls to the
+          retry, which never seeds a quota. The refill clamp would not have
+          saved it: a quota never drips, and the fast path (a pure ``ADD``)
+          spends the oversized share before any materialising pass trims it.
+
+        **One residual remains, tracked separately:** a sibling granted a share
+        at a **lower** shard count in this period that has **already spent**
+        into the surplus above its current share. Its spent part is gone from
+        ``tk`` and cannot be told from a legitimate earlier-period spend without
+        a per-period grant record, so the full share is granted on top of it.
+        Preconditions: that lower-count grant, *and* this shard created without
+        the quota after it. With the pin in place, the aggregator's clone cannot
+        be that shard (a seed at the old count no longer lands after the bump
+        the clone is taken from), which leaves a create by a client whose
+        config cache has not yet seen the quota — within ``config_cache_ttl``
+        of configuring it, and a doubling in that window. Bound: at most the part of that
+        sibling's surplus it had spent, once, in the period of the doubling
+        (``C · (1/S' − 1/S)`` per such sibling for a grant at count ``S'``). A
+        transfer can also under-grant for the rest of a period (a surplus
+        carved for a shard not yet created handed to this one), never beyond
+        the next reset.
 
         The shard count the share is taken at is the largest of ``shard_count``
         and every sibling's stored count, off the items already read (no extra
         read), so a doubling not yet propagated to the seeding item is still
-        honoured. A doubling that lands after these reads is not: the seed then
-        takes the pre-doubling share, and the refill clamp trims it on the
-        shard's next materialising pass.
+        honoured; one that lands after these reads is caught by the pin.
 
         Cost: 1 GSI3 KEYS_ONLY query + 1 ``BatchGetItem`` + one conditional
         ``UpdateItem`` per sibling holding a surplus. Paid only for a quota,
