@@ -11222,3 +11222,57 @@ class TestRfNeverMovesBackward:
         async with slow.acquire("user-1", "gpt-4", consume={"rpm": 1}):
             pass
         assert await _stored_tk(repo, "user-1", "gpt-4", "rpm") == 29_000
+
+    async def test_a_lagging_clock_before_the_edge_cannot_re_apply_a_calendar_reset(self, limiter):
+        """(#635) The general form of the bug above, for a calendar
+        ``reset_schedule`` rather than a duration window.
+
+        A correct-clock writer already applied today's midnight edge (its own
+        edge scan compares against the *stored* ``rf``, so it decides
+        correctly regardless of the clamp) and stamped ``rf`` just after it.
+        A slower writer, whose own clock reads *before* the edge, does not
+        mis-admit itself either -- but on `main`, its unclamped `rf = now`
+        write erases the record that the edge was ever applied. The next
+        correct-clock write then reads a stale, pre-edge `rf`, sees a fresh
+        edge, and refunds the quota a second time -- exactly #635's
+        reproduction, generalised from a window start to a calendar edge.
+        """
+        repo = limiter._repository
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        await repo.set_limits("reset-skew", [RPD], resource="gpt-4")
+
+        # Yesterday, before the edge: spend 6,000 of the 10,000.
+        repo._now_ms = lambda: _ny("2026-09-15 23:00")
+        async with slow.acquire("reset-skew", "gpt-4", consume={"rpd": 6_000}):
+            pass
+
+        # Correct clock, just after midnight: applies the edge (restoring the
+        # full 10,000), then spends 3,000. This stamps rf.
+        repo._now_ms = lambda: _ny("2026-09-16 00:05")
+        await repo.invalidate_config_cache()
+        async with slow.acquire("reset-skew", "gpt-4", consume={"rpd": 3_000}):
+            pass
+
+        # A slower clock, believing it is still before midnight: its own edge
+        # scan reads the correctly-stored rf (already past the edge) and does
+        # not re-fire -- it just spends another 2,000 against the 7,000 left.
+        repo._now_ms = lambda: _ny("2026-09-15 23:58")
+        await repo.invalidate_config_cache()
+        async with slow.acquire("reset-skew", "gpt-4", consume={"rpd": 2_000}):
+            pass
+        item = await _raw_bucket(repo, "reset-skew", "gpt-4")
+        assert int(item[BUCKET_FIELD_RF]["N"]) == _ny("2026-09-16 00:05"), (
+            "rf never moves backward, even before the edge it already passed"
+        )
+
+        # A later, correct-clock pass, still the same day: with rf rewound to
+        # before midnight (pre-#635) this reads a fresh edge and refunds the
+        # 5,000 already spent since -- an unbounded quota.
+        repo._now_ms = lambda: _ny("2026-09-16 00:10")
+        await repo.invalidate_config_cache()
+        async with slow.acquire("reset-skew", "gpt-4", consume={"rpd": 1}):
+            pass
+
+        assert await _stored_tk(repo, "reset-skew", "gpt-4", "rpd") == (
+            10_000_000 - 3_000_000 - 2_000_000 - 1_000
+        ), "the 5,000 spent since midnight must not be refunded by the skewed write"

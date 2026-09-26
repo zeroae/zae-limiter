@@ -9033,3 +9033,43 @@ class TestRfNeverMovesBackward:
         with slow.acquire("user-1", "gpt-4", consume={"rpm": 1}):
             pass
         assert _stored_tk(repo, "user-1", "gpt-4", "rpm") == 29000
+
+    def test_a_lagging_clock_before_the_edge_cannot_re_apply_a_calendar_reset(self, sync_limiter):
+        """(#635) The general form of the bug above, for a calendar
+        ``reset_schedule`` rather than a duration window.
+
+        A correct-clock writer already applied today's midnight edge (its own
+        edge scan compares against the *stored* ``rf``, so it decides
+        correctly regardless of the clamp) and stamped ``rf`` just after it.
+        A slower writer, whose own clock reads *before* the edge, does not
+        mis-admit itself either -- but on `main`, its unclamped `rf = now`
+        write erases the record that the edge was ever applied. The next
+        correct-clock write then reads a stale, pre-edge `rf`, sees a fresh
+        edge, and refunds the quota a second time -- exactly #635's
+        reproduction, generalised from a window start to a calendar edge.
+        """
+        repo = sync_limiter._repository
+        slow = SyncRateLimiter(repository=repo, speculative_writes=False)
+        repo.set_limits("reset-skew", [RPD], resource="gpt-4")
+        repo._now_ms = lambda: _ny("2026-09-15 23:00")
+        with slow.acquire("reset-skew", "gpt-4", consume={"rpd": 6000}):
+            pass
+        repo._now_ms = lambda: _ny("2026-09-16 00:05")
+        repo.invalidate_config_cache()
+        with slow.acquire("reset-skew", "gpt-4", consume={"rpd": 3000}):
+            pass
+        repo._now_ms = lambda: _ny("2026-09-15 23:58")
+        repo.invalidate_config_cache()
+        with slow.acquire("reset-skew", "gpt-4", consume={"rpd": 2000}):
+            pass
+        item = _raw_bucket(repo, "reset-skew", "gpt-4")
+        assert int(item[BUCKET_FIELD_RF]["N"]) == _ny("2026-09-16 00:05"), (
+            "rf never moves backward, even before the edge it already passed"
+        )
+        repo._now_ms = lambda: _ny("2026-09-16 00:10")
+        repo.invalidate_config_cache()
+        with slow.acquire("reset-skew", "gpt-4", consume={"rpd": 1}):
+            pass
+        assert (
+            _stored_tk(repo, "reset-skew", "gpt-4", "rpd") == 10000000 - 3000000 - 2000000 - 1000
+        ), "the 5,000 spent since midnight must not be refunded by the skewed write"

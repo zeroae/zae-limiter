@@ -3016,6 +3016,59 @@ class TestAggregatorAppliesResets:
         assert values[":new_vu"] == int(datetime(2026, 9, 17, 0, 0, tzinfo=NY).timestamp() * 1000)
 
 
+class TestAggregatorNeverDoubleResetsACalendarQuota:
+    """(#635) `new_rf` never moves below the stored `rf`, so a slow-clock
+    refill pass cannot un-apply a calendar reset another writer already
+    committed. General form of `TestAggregatorRfNeverUnappliesAWindow`, for
+    `reset_sched` rather than a duration window: `new_rf = max([now_ms,
+    state.rf_ms] + ...)` is unconditional and does not special-case either
+    recovery shape.
+    """
+
+    def test_a_slow_clock_pass_does_not_move_rf_before_the_edge(self) -> None:
+        """A correct-clock writer already applied the midnight edge and
+        stamped `rf` at WED_0030. A pass whose own clock reads TUE_2300 --
+        before the edge itself -- must not stamp that `now` onto `rf`, or it
+        erases the record that the edge was applied. The companion `rph`
+        limit forces a write via the unconditional negative clamp, so the
+        clamp is observable even though the quota itself (`ra_milli=0`,
+        ADR-137) yields no drip delta on its own."""
+        table = MagicMock()
+        state = _quota_state(
+            rf_ms=WED_0030,
+            limits={
+                "rpd": LimitRefillInfo(
+                    tc_delta=0, tk_milli=3_000_000, cp_milli=10_000_000, ra_milli=0, rp_ms=1_000
+                ),
+                "rph": LimitRefillInfo(
+                    tc_delta=0,
+                    tk_milli=11_000_000,
+                    cp_milli=10_000_000,
+                    ra_milli=1_000_000,
+                    rp_ms=3_600_000,
+                ),
+            },
+        )
+        state.limits["rpd"].reset_sched = DAILY_RESET
+        assert try_refill_bucket(table, state, now_ms=TUE_2300) is True
+        values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+        assert values[":new_rf"] == WED_0030, "a slow-clock pass must not move rf before the edge"
+
+    def test_the_next_correct_clock_pass_does_not_re_apply_the_edge(self) -> None:
+        """Feed the `rf` the slow-clock pass above actually stamps back in as
+        the stored `rf` for a later, correct-clock pass: the edge must not
+        fire a second time. Pinned against `WED_0030` directly (rather than
+        chained through the first test) so this test still fails on its own
+        if the fix ever regresses to `new_rf = now_ms`."""
+        table = MagicMock()
+        state = _quota_state(reset_sched=DAILY_RESET, rf_ms=WED_0030)
+        state.limits["rpd"].tk_milli = 5_000_000
+        later = WED_0030 + 3_600_000  # still Wednesday, no edge since rf
+        assert try_refill_bucket(table, state, now_ms=later) is False, (
+            "no edge since rf: a bug here would refund the quota a second time"
+        )
+
+
 class TestResetSchedIsCarriedFromTheStreamImage:
     """`rsched` / `b_{name}_rsched` reach the refill state."""
 
