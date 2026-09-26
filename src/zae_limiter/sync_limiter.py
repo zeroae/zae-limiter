@@ -1548,19 +1548,30 @@ class SyncRateLimiter:
             quota_transfer = self._quota_transfer(
                 eid, resource, entity_limits[eid], eid_shard_count, any_existing, now_ms
             )
+            sibling_ws = self._sibling_window_starts(
+                eid, resource, entity_limits[eid], eid_shard, any_existing
+            )
             for limit in entity_limits[eid]:
                 bucket_key = (eid, resource, limit.name)
                 existing = existing_buckets.get(bucket_key)
                 if existing is None:
                     is_new = True
+                    inherited_ws = sibling_ws.get(limit.name)
+                    window_live: bool | None = None
+                    if inherited_ws is not None and limit.reset_after_seconds is not None:
+                        window_live = inherited_ws + limit.reset_after_seconds * 1000 > now_ms
                     state = BucketState.from_limit(
                         eid,
                         resource,
                         limit,
                         now_ms,
                         shard_count=eid_shard_count,
-                        reclaimed_milli=quota_transfer.get(limit.name),
+                        reclaimed_milli=None
+                        if window_live is False
+                        else quota_transfer.get(limit.name),
                     )
+                    if window_live:
+                        state.window_start_ms = inherited_ws
                 else:
                     is_new = False
                     state = existing
@@ -1711,6 +1722,44 @@ class SyncRateLimiter:
             entity_id, resource, shares_milli
         )
         return reclaimed if shards_found else {}
+
+    def _sibling_window_starts(
+        self, entity_id: str, resource: str, limits: list[Limit], shard_id: int, any_existing: bool
+    ) -> dict[str, int]:
+        """The duration windows a shard about to be created would join (ADR-139).
+
+        Reads shard 0's ``ws`` for every limit carrying a ``reset_after``, via
+        :meth:`SyncRepository.get_shard_window_starts`. Whether each window is still
+        live is decided by the caller against the ``rsa`` it resolved.
+
+        Returns ``{}`` — costing nothing — in each case that cannot need it:
+
+        * a bucket item already exists on the shard being acquired, so nothing
+          is being created;
+        * the shard being created **is** shard 0, which has no sibling to
+          inherit from: it is the source of truth, and a shard 0 being created
+          is either the entity's first bucket or a TTL recreation, both of which
+          rightly open a new window; or
+        * no resolved limit carries a duration window.
+
+        Args:
+            entity_id: Entity whose shard is about to be created. On a cascade
+                this is the parent for the parent's shard — parent and child
+                anchor independently (ADR-139).
+            resource: Resource the acquire is for.
+            limits: Limits resolved for this entity and resource.
+            shard_id: The shard about to be created.
+            any_existing: Whether a bucket item already exists on that shard.
+
+        Returns:
+            ``{limit_name: window_start_ms}`` as stored on shard 0.
+        """
+        if any_existing or shard_id == 0:
+            return {}
+        window_limits = [limit.name for limit in limits if limit.reset_after is not None]
+        if not window_limits:
+            return {}
+        return self._repository.get_shard_window_starts(entity_id, resource, window_limits)
 
     def _fetch_buckets(
         self, entity_ids: list[str], resource: str, shard_id: int

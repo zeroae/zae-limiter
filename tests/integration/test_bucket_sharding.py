@@ -1267,6 +1267,50 @@ class TestNewShardJoinsTheWindow:
 
     LIMIT_NAME = "session"
 
+    async def test_a_created_shard_joins_the_window_in_progress(
+        self, localstack_limiter, monkeypatch, unique_name
+    ):
+        import random as _random
+        from datetime import timedelta
+
+        from zae_limiter.models import Limit
+
+        limiter = localstack_limiter
+        repo = limiter._repository
+        entity_id = f"window-join-{unique_name}"
+        limit = Limit.quota(self.LIMIT_NAME, 1_000, reset_after=timedelta(hours=5))
+        await limiter.create_entity(entity_id)
+        await limiter.set_limits(entity_id, [limit], resource="gpt-4")
+
+        t0 = int(time.time() * 1000)
+        monkeypatch.setattr(repo, "_now_ms", lambda: t0)
+        async with limiter.acquire(entity_id, "gpt-4", {self.LIMIT_NAME: 1}):
+            pass
+        assert await repo.get_shard_window_starts(entity_id, "gpt-4", [self.LIMIT_NAME]) == {
+            self.LIMIT_NAME: t0
+        }
+        assert await repo.bump_shard_count(entity_id, "gpt-4", 1) == 2
+
+        monkeypatch.setattr(repo, "_now_ms", lambda: t0 + 60_000)
+        monkeypatch.setattr(_random, "randrange", lambda *a: 1)
+        async with limiter.acquire(entity_id, "gpt-4", {self.LIMIT_NAME: 1}):
+            pass
+
+        client = await repo._get_client()
+        resp = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "gpt-4", 1)},
+                "SK": {"S": sk_state()},
+            },
+        )
+        item = resp["Item"]
+        assert int(item[bucket_attr(self.LIMIT_NAME, "ws")]["N"]) == t0
+        assert int(item["rf"]["N"]) == t0 + 60_000
+        assert int(item["vu"]["N"]) == t0 + 5 * 3_600_000
+        # Shard 0 held 999 against a new share of 500: 499 transferred, 1 spent.
+        assert int(item[bucket_attr(self.LIMIT_NAME, BUCKET_FIELD_TK)]["N"]) == 498_000
+
     async def test_the_projection_aliases_a_dotted_limit_name(
         self, localstack_limiter, unique_name
     ):

@@ -2005,6 +2005,12 @@ class RateLimiter:
             quota_transfer = await self._quota_transfer(
                 eid, resource, entity_limits[eid], eid_shard_count, any_existing, now_ms
             )
+            # The window a shard being created joins, read off shard 0 with
+            # `eid`'s own read — on a cascade that is the parent's, never the
+            # child's (ADR-139). Empty unless a shard N>0 is being created.
+            sibling_ws = await self._sibling_window_starts(
+                eid, resource, entity_limits[eid], eid_shard, any_existing
+            )
 
             for limit in entity_limits[eid]:
                 # Get existing bucket from batch result or create new one
@@ -2026,14 +2032,41 @@ class RateLimiter:
                     # the next reset edge (#587). It is handed the surplus just
                     # clamped off its siblings instead, which conserves the
                     # entity-wide spendable total exactly.
+                    #
+                    # A shard created mid-window joins the window in progress
+                    # rather than opening its own (ADR-139): `from_limit`
+                    # stamps `ws = now_ms`, right for the FIRST shard and
+                    # wrong for every later one, since an entity whose shards
+                    # each opened their own window has no single
+                    # `resets_at_ms`. Only a window still live at `now_ms`
+                    # is joined — the half-open `[ws, ws + rsa)` rule
+                    # `_open_window_if_elapsed` applies, with `rsa` from the
+                    # config just resolved. Inheriting an ended one would
+                    # force an immediate re-roll.
+                    #
+                    # An ended window means the entity is owed a fresh
+                    # allowance, so the shard opens its own at full share
+                    # instead of taking the transfer: its siblings' balances
+                    # belong to the window that ended, and each restores its
+                    # own share when it next rolls. Taking the transfer there
+                    # would leave this shard holding the dead window's
+                    # leftovers for the whole of the new one.
+                    inherited_ws = sibling_ws.get(limit.name)
+                    window_live: bool | None = None
+                    if inherited_ws is not None and limit.reset_after_seconds is not None:
+                        window_live = inherited_ws + limit.reset_after_seconds * 1000 > now_ms
                     state = BucketState.from_limit(
                         eid,
                         resource,
                         limit,
                         now_ms,
                         shard_count=eid_shard_count,
-                        reclaimed_milli=quota_transfer.get(limit.name),
+                        reclaimed_milli=(
+                            None if window_live is False else quota_transfer.get(limit.name)
+                        ),
                     )
+                    if window_live:
+                        state.window_start_ms = inherited_ws
                 else:
                     is_new = False
                     state = existing
@@ -2249,6 +2282,49 @@ class RateLimiter:
             entity_id, resource, shares_milli
         )
         return reclaimed if shards_found else {}
+
+    async def _sibling_window_starts(
+        self,
+        entity_id: str,
+        resource: str,
+        limits: list[Limit],
+        shard_id: int,
+        any_existing: bool,
+    ) -> dict[str, int]:
+        """The duration windows a shard about to be created would join (ADR-139).
+
+        Reads shard 0's ``ws`` for every limit carrying a ``reset_after``, via
+        :meth:`Repository.get_shard_window_starts`. Whether each window is still
+        live is decided by the caller against the ``rsa`` it resolved.
+
+        Returns ``{}`` — costing nothing — in each case that cannot need it:
+
+        * a bucket item already exists on the shard being acquired, so nothing
+          is being created;
+        * the shard being created **is** shard 0, which has no sibling to
+          inherit from: it is the source of truth, and a shard 0 being created
+          is either the entity's first bucket or a TTL recreation, both of which
+          rightly open a new window; or
+        * no resolved limit carries a duration window.
+
+        Args:
+            entity_id: Entity whose shard is about to be created. On a cascade
+                this is the parent for the parent's shard — parent and child
+                anchor independently (ADR-139).
+            resource: Resource the acquire is for.
+            limits: Limits resolved for this entity and resource.
+            shard_id: The shard about to be created.
+            any_existing: Whether a bucket item already exists on that shard.
+
+        Returns:
+            ``{limit_name: window_start_ms}`` as stored on shard 0.
+        """
+        if any_existing or shard_id == 0:
+            return {}
+        window_limits = [limit.name for limit in limits if limit.reset_after is not None]
+        if not window_limits:
+            return {}
+        return await self._repository.get_shard_window_starts(entity_id, resource, window_limits)
 
     async def _fetch_buckets(
         self,
