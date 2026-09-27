@@ -608,6 +608,30 @@ class TestInvokeProvisioner:
                 payload = json.loads(call_args[1]["Payload"])
                 assert payload["namespace_id"] == "new-ns-id"
 
+    def test_apply_still_sends_an_empty_namespace_id_when_unresolved(self):
+        """``apply`` keeps its pre-#648 fallback; only the previews changed."""
+        from zae_limiter.exceptions import NamespaceNotFoundError
+
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            yaml.dump({"namespace": "test-ns"}, f)
+            f.flush()
+            with (
+                patch("asyncio.run", side_effect=NamespaceNotFoundError("test-ns")),
+                patch("zae_limiter.limits_cli.boto3.client") as mock_boto3_client,
+            ):
+                mock_lambda = MagicMock()
+                mock_lambda.invoke.return_value = {
+                    "Payload": io.BytesIO(json.dumps({"changes": []}).encode()),
+                }
+                mock_boto3_client.return_value = mock_lambda
+                result = CliRunner().invoke(
+                    cli, ["limits", "apply", "--name", "test-app", "-f", f.name]
+                )
+        assert result.exit_code == 0, result.output
+        payload = json.loads(mock_lambda.invoke.call_args[1]["Payload"])
+        assert payload["action"] == "apply"
+        assert payload["namespace_id"] == ""
+
     def test_invoke_provisioner_missing_function_exits_cleanly(self):
         """A stack deployed without the provisioner gets an explanation, not a traceback."""
         yaml_content = {"namespace": "test-ns"}
