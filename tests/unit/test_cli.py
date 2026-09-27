@@ -1395,7 +1395,8 @@ class TestCLI:
         )
         mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
-        mock_repository.open = AsyncMock(return_value=mock_repo_instance)
+        # Read-only (#646): status builds the Repository directly, never open()
+        mock_repository.open = AsyncMock(side_effect=AssertionError("status called open()"))
 
         result = runner.invoke(cli, ["status", "--name", "test-stack"])
 
@@ -1453,7 +1454,8 @@ class TestCLI:
         )
         mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
-        mock_repository.open = AsyncMock(return_value=mock_repo_instance)
+        # Read-only (#646): status builds the Repository directly, never open()
+        mock_repository.open = AsyncMock(side_effect=AssertionError("status called open()"))
 
     @patch("zae_limiter.repository.Repository")
     @patch("zae_limiter.cli.StackManager")
@@ -1541,7 +1543,8 @@ class TestCLI:
         )
         mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
-        mock_repository.open = AsyncMock(return_value=mock_repo_instance)
+        # Read-only (#646): status builds the Repository directly, never open()
+        mock_repository.open = AsyncMock(side_effect=AssertionError("status called open()"))
 
         result = runner.invoke(cli, ["status", "--name", "nonexistent"])
 
@@ -1581,7 +1584,8 @@ class TestCLI:
         mock_repo_instance.get_version_record = AsyncMock(return_value=None)
         mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
-        mock_repository.open = AsyncMock(return_value=mock_repo_instance)
+        # Read-only (#646): status builds the Repository directly, never open()
+        mock_repository.open = AsyncMock(side_effect=AssertionError("status called open()"))
 
         result = runner.invoke(cli, ["status", "--name", "test-stack"])
 
@@ -1620,7 +1624,8 @@ class TestCLI:
         mock_repo_instance.get_version_record = AsyncMock(return_value=None)
         mock_repo_instance.close = AsyncMock(return_value=None)
         mock_repository.return_value = mock_repo_instance
-        mock_repository.open = AsyncMock(return_value=mock_repo_instance)
+        # Read-only (#646): status builds the Repository directly, never open()
+        mock_repository.open = AsyncMock(side_effect=AssertionError("status called open()"))
 
         result = runner.invoke(cli, ["status", "--name", "test-stack"])
 
@@ -7590,6 +7595,24 @@ class TestReportingCommandsAreReadOnly:
             result = runner.invoke(cli, [command, "--name", self.TABLE, "--region", "us-east-1"])
         return result, stack_manager
 
+    def _invoke_status(self, runner: CliRunner, cfn_status: str | None) -> tuple[object, Mock]:
+        """``status`` reads the stack through ``cli.StackManager`` by design, so
+        that one answers ``get_stack_status``; the provisioning path's
+        ``StackManager`` (the one ``open()`` imports) must never be touched."""
+        reader = TestCLI._deploy_stack_manager_mock()
+        reader.get_stack_status = AsyncMock(return_value=cfn_status)
+        provisioner = Mock(return_value=TestCLI._deploy_stack_manager_mock())
+        with (
+            patch("zae_limiter.__version__", "0.15.1"),
+            patch("zae_limiter.infra.stack_manager.StackManager", provisioner),
+            patch("zae_limiter.cli.StackManager", Mock(return_value=reader)),
+        ):
+            result = runner.invoke(cli, ["status", "--name", self.TABLE, "--region", "us-east-1"])
+        provisioner.assert_not_called()
+        for write in ("create_stack", "deploy_lambda_code", "deploy_provisioner_code"):
+            getattr(reader, write).assert_not_called()
+        return result, reader
+
     @pytest.mark.parametrize(
         ("command", "reported"),
         [
@@ -7684,3 +7707,57 @@ class TestReportingCommandsAreReadOnly:
         assert "Check failed" in result.output
         assert "AccessDeniedException" in result.output
         assert "NOT INITIALIZED" not in result.output
+
+    def test_status_reports_a_lambda_behind_the_client_without_updating_it(
+        self, mock_dynamodb, runner: CliRunner
+    ) -> None:
+        import asyncio
+
+        from zae_limiter.version import get_schema_version
+
+        record = {
+            "schema_version": get_schema_version(),
+            "lambda_version": "0.15.0",
+            "client_min_version": "0.0.0",
+        }
+        asyncio.run(self._table(namespace=True, record=record))
+        before = asyncio.run(self._items())
+
+        result, _ = self._invoke_status(runner, "CREATE_COMPLETE")
+
+        assert result.exit_code == 0, result.output
+        assert "Lambda:        0.15.0" in result.output
+        assert asyncio.run(self._items()) == before
+
+    def test_status_reports_a_missing_stack_without_deploying_one(
+        self, mock_dynamodb, runner: CliRunner
+    ) -> None:
+        import asyncio
+
+        result, _ = self._invoke_status(runner, None)
+
+        assert result.exit_code == 1, result.output
+        assert "Stack:         Not found" in result.output
+        assert "Infrastructure is not available" in result.output
+        assert asyncio.run(self._tables()) == []
+
+    def test_status_does_not_register_a_missing_namespace(
+        self, mock_dynamodb, runner: CliRunner
+    ) -> None:
+        import asyncio
+
+        from zae_limiter.version import get_schema_version
+
+        record = {
+            "schema_version": get_schema_version(),
+            "lambda_version": "0.15.1",
+            "client_min_version": "0.0.0",
+        }
+        asyncio.run(self._table(namespace=False, record=record))
+        before = asyncio.run(self._items())
+
+        result, _ = self._invoke_status(runner, "CREATE_COMPLETE")
+
+        assert result.exit_code == 0, result.output
+        assert "Infrastructure is ready" in result.output
+        assert asyncio.run(self._items()) == before

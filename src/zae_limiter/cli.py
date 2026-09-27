@@ -74,7 +74,7 @@ async def _connect(
 
 
 def _open_read_only(name: str, region: str | None, endpoint_url: str | None) -> Repository:
-    """A Repository for the reporting commands (``check``, ``version``) (#646).
+    """A Repository for the reporting commands (``check``, ``version``, ``status``) (#646).
 
     Constructed directly rather than through ``open()``: nothing here resolves
     or registers a namespace, provisions a stack, writes the version record or
@@ -1044,8 +1044,9 @@ def status(name: str, region: str | None, endpoint_url: str | None) -> None:
         except Exception:
             pass  # Stack status unavailable
 
-        # Connect to existing infrastructure
-        repository = await _connect(name, region, endpoint_url)
+        # Read-only (#646): open() would deploy a missing stack, register the
+        # namespace and push Lambda code before anything is reported.
+        repository = _open_read_only(name, region, endpoint_url)
 
         try:
             # Ping DynamoDB and measure latency
