@@ -5517,7 +5517,8 @@ class TestResetScheduleReachesStorage:
 
 
 class TestDurationWindowReachesConfigStorage:
-    """`l_{name}_rsa` — a duration quota's window length (ADR-139, plan Task 4).
+    """`w_{name}_rsa` (legacy `l_{name}_rsa`) — a duration quota's window length
+    (ADR-139, plan Task 4).
 
     The alternative spelling of the reset half: a window anchored to the
     entity's own first use rather than a calendar instant. Mirrors

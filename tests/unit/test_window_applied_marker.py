@@ -1,4 +1,4 @@
-"""The per-limit window-applied marker ``b_{name}_wa`` (#640, ADR-139).
+"""The per-limit window-applied marker ``b_{name}_wa`` (#640, ADR-140).
 
 Once a client predating ADR-139 can write a bucket that carries a duration
 window (option B of #638: the config is hidden from it, so it no longer fails
