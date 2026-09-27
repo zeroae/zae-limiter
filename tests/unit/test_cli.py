@@ -16,6 +16,28 @@ def runner() -> CliRunner:
     return CliRunner()
 
 
+def _serve_read_only(repo_class: Mock, repo: Mock, namespace_id: str | None = "ns-id") -> None:
+    """Hand ``repo`` to a read-only command through ``cli._connect_read_only`` (#648).
+
+    Read-only commands construct ``Repository(...)`` directly instead of calling
+    ``Repository.open()``, then read the version record and resolve the
+    namespace without registering it. This answers both as a current,
+    registered stack, so the command runs exactly as it did through ``open()``.
+    """
+    from zae_limiter import __version__
+    from zae_limiter.version import get_schema_version
+
+    repo_class.return_value = repo
+    repo.get_version_record = AsyncMock(
+        return_value={
+            "schema_version": get_schema_version(),
+            "lambda_version": __version__,
+            "client_min_version": "0.0.0",
+        }
+    )
+    repo._resolve_namespace = AsyncMock(return_value=namespace_id)
+
+
 class TestCLI:
     """Test CLI commands."""
 
@@ -2242,9 +2264,9 @@ class TestCLIValidationErrors:
     @patch("zae_limiter.repository.Repository")
     def test_audit_list_namespace_not_found(self, mock_repo_class: Mock, runner: CliRunner) -> None:
         """Test audit list shows error when namespace is not found."""
-        from zae_limiter.exceptions import NamespaceNotFoundError
-
-        mock_repo_class.open = AsyncMock(side_effect=NamespaceNotFoundError("missing-ns"))
+        mock_repo = Mock()
+        mock_repo.close = AsyncMock(return_value=None)
+        _serve_read_only(mock_repo_class, mock_repo, namespace_id=None)
 
         result = runner.invoke(
             cli,
@@ -2252,6 +2274,8 @@ class TestCLIValidationErrors:
         )
         assert result.exit_code == 1
         assert "Namespace 'missing-ns' not found" in result.output
+        mock_repo._resolve_namespace.assert_awaited_once_with("missing-ns")
+        mock_repo.get_audit_events.assert_not_called()
 
 
 class TestAuditCommands:
@@ -2285,7 +2309,7 @@ class TestAuditCommands:
         mock_repo.get_audit_events = AsyncMock(return_value=[])
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["audit", "list", "-e", "test-entity"])
 
@@ -2320,7 +2344,7 @@ class TestAuditCommands:
         mock_repo.get_audit_events = AsyncMock(return_value=mock_events)
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["audit", "list", "-e", "test-entity"])
 
@@ -2359,7 +2383,7 @@ class TestAuditCommands:
         mock_repo.get_audit_events = AsyncMock(return_value=mock_events)
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["audit", "list", "-e", "test-entity"])
 
@@ -2393,7 +2417,7 @@ class TestAuditCommands:
         mock_repo.get_audit_events = AsyncMock(return_value=mock_events)
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["audit", "list", "-e", "test-entity", "-l", "5"])
 
@@ -2408,7 +2432,7 @@ class TestAuditCommands:
         mock_repo.get_audit_events = AsyncMock(return_value=[])
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["audit", "list", "-e", "test-entity", "--limit", "50"])
 
@@ -2426,7 +2450,7 @@ class TestAuditCommands:
         mock_repo.get_audit_events = AsyncMock(return_value=[])
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(
             cli, ["audit", "list", "-e", "test-entity", "--start-event-id", "01ABCDEF"]
@@ -2446,7 +2470,7 @@ class TestAuditCommands:
         mock_repo.get_audit_events = AsyncMock(return_value=[])
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(
             cli,
@@ -2463,9 +2487,10 @@ class TestAuditCommands:
         )
 
         assert result.exit_code == 0
-        mock_repo_class.open.assert_called_once_with(
-            "default", stack="zae-limiter", region="us-east-1", endpoint_url="http://localhost:4566"
+        mock_repo_class.assert_called_once_with(
+            "zae-limiter", "us-east-1", "http://localhost:4566", _skip_deprecation_warning=True
         )
+        mock_repo._resolve_namespace.assert_awaited_once_with("default")
 
     @patch("zae_limiter.repository.Repository")
     def test_audit_list_handles_exception(self, mock_repo_class: Mock, runner: CliRunner) -> None:
@@ -2474,7 +2499,7 @@ class TestAuditCommands:
         mock_repo.get_audit_events = AsyncMock(side_effect=Exception("DynamoDB error"))
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["audit", "list", "-e", "test-entity"])
 
@@ -2504,7 +2529,7 @@ class TestAuditCommands:
         mock_repo.get_audit_events = AsyncMock(return_value=mock_events)
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["audit", "list", "-e", "test-entity"])
 
@@ -2560,7 +2585,7 @@ class TestUsageCommands:
         mock_repo.get_usage_snapshots = AsyncMock(return_value=([], None))
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["usage", "list", "-e", "test-entity"])
 
@@ -2597,7 +2622,7 @@ class TestUsageCommands:
         mock_repo.get_usage_snapshots = AsyncMock(return_value=(mock_snapshots, None))
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["usage", "list", "-e", "test-entity"])
 
@@ -2630,7 +2655,7 @@ class TestUsageCommands:
         mock_repo.get_usage_snapshots = AsyncMock(return_value=(mock_snapshots, None))
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["usage", "list", "-r", "gpt-4"])
 
@@ -2647,7 +2672,7 @@ class TestUsageCommands:
         mock_repo.get_usage_snapshots = AsyncMock(return_value=([], None))
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(
             cli,
@@ -2697,7 +2722,7 @@ class TestUsageCommands:
         mock_repo.get_usage_snapshots = AsyncMock(return_value=(mock_snapshots, next_key))
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["usage", "list", "-e", "test-entity", "-l", "1"])
 
@@ -2721,7 +2746,7 @@ class TestUsageCommands:
         mock_repo.get_usage_summary = AsyncMock(return_value=mock_summary)
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["usage", "summary", "-e", "test-entity"])
 
@@ -2745,7 +2770,7 @@ class TestUsageCommands:
         mock_repo.get_usage_summary = AsyncMock(return_value=mock_summary)
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["usage", "summary", "-e", "test-entity"])
 
@@ -2775,7 +2800,7 @@ class TestUsageCommands:
         mock_repo.get_usage_summary = AsyncMock(return_value=mock_summary)
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["usage", "summary", "-r", "gpt-4"])
 
@@ -2820,7 +2845,7 @@ class TestUsageCommands:
         mock_repo.get_usage_snapshots = AsyncMock(return_value=(mock_snapshots, None))
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["usage", "list", "-e", "long-entity"])
 
@@ -2854,7 +2879,7 @@ class TestUsageCommands:
         mock_repo.get_usage_snapshots = AsyncMock(return_value=(mock_snapshots, None))
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["usage", "list", "-e", "user-123"])
 
@@ -2871,7 +2896,7 @@ class TestUsageCommands:
         mock_repo.get_usage_snapshots = AsyncMock(side_effect=ValueError("Invalid input"))
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["usage", "list", "-e", "test-entity"])
 
@@ -2885,7 +2910,7 @@ class TestUsageCommands:
         mock_repo.get_usage_snapshots = AsyncMock(side_effect=RuntimeError("Connection failed"))
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["usage", "list", "-e", "test-entity"])
 
@@ -2911,7 +2936,7 @@ class TestUsageCommands:
         mock_repo.get_usage_summary = AsyncMock(return_value=mock_summary)
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["usage", "summary", "-e", "test-entity", "-w", "hourly"])
 
@@ -2926,7 +2951,7 @@ class TestUsageCommands:
         mock_repo.get_usage_summary = AsyncMock(side_effect=ValueError("Bad date format"))
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["usage", "summary", "-e", "test-entity"])
 
@@ -2942,7 +2967,7 @@ class TestUsageCommands:
         mock_repo.get_usage_summary = AsyncMock(side_effect=RuntimeError("Network timeout"))
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["usage", "summary", "-e", "test-entity"])
 
@@ -2986,7 +3011,7 @@ class TestUsageCommands:
         mock_repo.get_usage_snapshots = AsyncMock(return_value=(mock_snapshots, None))
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["usage", "list", "-e", "test-entity", "--plot"])
 
@@ -3012,7 +3037,7 @@ class TestUsageCommands:
         mock_repo.get_usage_snapshots = AsyncMock(return_value=([], None))
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["usage", "list", "-e", "test-entity", "--plot"])
 
@@ -3043,7 +3068,7 @@ class TestUsageCommands:
         mock_repo.get_usage_snapshots = AsyncMock(return_value=(mock_snapshots, None))
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         # Simulate asciichartpy not installed
         mock_plot_formatter.side_effect = ImportError(
@@ -3640,7 +3665,7 @@ class TestResourceCommands:
         mock_repo.get_resource_disabled = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["resource", "get-defaults", "gpt-4"])
 
@@ -3662,7 +3687,7 @@ class TestResourceCommands:
         mock_repo.get_resource_disabled = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["resource", "get-defaults", "gpt-4"])
 
@@ -3683,7 +3708,7 @@ class TestResourceCommands:
         mock_repo.get_resource_disabled = AsyncMock(return_value=True)
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["resource", "get-defaults", "gpt-4"])
 
@@ -3738,7 +3763,7 @@ class TestResourceCommands:
         )
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["resource", "list"])
 
@@ -3755,7 +3780,7 @@ class TestResourceCommands:
         mock_repo.list_resources_with_defaults = AsyncMock(return_value=[])
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["resource", "list"])
 
@@ -3783,7 +3808,7 @@ class TestResourceCommands:
         mock_repo.get_resource_defaults = AsyncMock(side_effect=Exception("Connection failed"))
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["resource", "get-defaults", "gpt-4"])
 
@@ -3937,7 +3962,7 @@ class TestSystemCommands:
         mock_repo.get_system_defaults = AsyncMock(return_value=(mock_limits, "allow"))
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["system", "get-defaults"])
 
@@ -3955,7 +3980,7 @@ class TestSystemCommands:
         mock_repo.get_system_defaults = AsyncMock(return_value=([], None))
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["system", "get-defaults"])
 
@@ -4013,7 +4038,7 @@ class TestSystemCommands:
         mock_repo.get_system_defaults = AsyncMock(side_effect=Exception("Connection failed"))
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["system", "get-defaults"])
 
@@ -4548,7 +4573,7 @@ class TestResourceCommandsEdgeCases:
         mock_repo.list_resources_with_defaults = AsyncMock(side_effect=Exception("Scan failed"))
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["resource", "list"])
 
@@ -4576,10 +4601,8 @@ class TestResourceCommandsEdgeCases:
         from zae_limiter.exceptions import ValidationError
 
         with patch("zae_limiter.repository.Repository") as mock_repo_class:
-            mock_repo_class.open = AsyncMock(
-                side_effect=ValidationError(
-                    field="name", value="invalid", reason="Invalid name format"
-                )
+            mock_repo_class.side_effect = ValidationError(
+                field="name", value="invalid", reason="Invalid name format"
             )
 
             result = runner.invoke(cli, ["resource", "get-defaults", "gpt-4"])
@@ -4608,10 +4631,8 @@ class TestResourceCommandsEdgeCases:
         from zae_limiter.exceptions import ValidationError
 
         with patch("zae_limiter.repository.Repository") as mock_repo_class:
-            mock_repo_class.open = AsyncMock(
-                side_effect=ValidationError(
-                    field="name", value="invalid", reason="Invalid name format"
-                )
+            mock_repo_class.side_effect = ValidationError(
+                field="name", value="invalid", reason="Invalid name format"
             )
 
             result = runner.invoke(cli, ["resource", "list"])
@@ -4665,10 +4686,8 @@ class TestSystemCommandsEdgeCases:
         from zae_limiter.exceptions import ValidationError
 
         with patch("zae_limiter.repository.Repository") as mock_repo_class:
-            mock_repo_class.open = AsyncMock(
-                side_effect=ValidationError(
-                    field="name", value="invalid", reason="Invalid name format"
-                )
+            mock_repo_class.side_effect = ValidationError(
+                field="name", value="invalid", reason="Invalid name format"
             )
 
             result = runner.invoke(cli, ["system", "get-defaults"])
@@ -4705,7 +4724,7 @@ class TestSystemCommandsEdgeCases:
         )
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["system", "get-defaults"])
 
@@ -4745,7 +4764,7 @@ class TestSystemCommandsEdgeCases:
         )
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["resource", "get-defaults", "invalid!resource"])
 
@@ -4967,7 +4986,7 @@ class TestEntityCommands:
         mock_repo.get_entity_disabled = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["entity", "get-limits", "user-123", "-r", "gpt-4"])
 
@@ -4990,7 +5009,7 @@ class TestEntityCommands:
         mock_repo.get_entity_disabled = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["entity", "get-limits", "user-123", "-r", "gpt-4"])
 
@@ -5012,7 +5031,7 @@ class TestEntityCommands:
         mock_repo.get_entity_disabled = AsyncMock(return_value=True)
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["entity", "get-limits", "user-123", "-r", "gpt-4"])
 
@@ -5035,7 +5054,7 @@ class TestEntityCommands:
         )
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["entity", "get-limits", "user-123", "-r", "gpt-4"])
 
@@ -5051,7 +5070,7 @@ class TestEntityCommands:
         mock_repo.get_limits = AsyncMock(side_effect=Exception("Connection failed"))
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["entity", "get-limits", "user-123", "-r", "gpt-4"])
 
@@ -5263,10 +5282,8 @@ class TestEntityCommandsEdgeCases:
         with patch("zae_limiter.repository.Repository") as mock_repo_class:
             from zae_limiter.exceptions import ValidationError
 
-            mock_repo_class.open = AsyncMock(
-                side_effect=ValidationError(
-                    field="name", value="invalid_name", reason="Invalid name format"
-                )
+            mock_repo_class.side_effect = ValidationError(
+                field="name", value="invalid_name", reason="Invalid name format"
             )
 
             result = runner.invoke(cli, ["entity", "get-limits", "user-123", "-r", "gpt-4"])
@@ -5430,7 +5447,7 @@ class TestEntityCommandsEdgeCases:
         )
         mock_repo.close = AsyncMock()
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["entity", "show", "key-1"])
 
@@ -5448,7 +5465,7 @@ class TestEntityCommandsEdgeCases:
         mock_repo.get_entity = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock()
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["entity", "show", "missing-entity"])
 
@@ -5462,7 +5479,7 @@ class TestEntityCommandsEdgeCases:
         mock_repo.get_entity = AsyncMock(side_effect=Exception("Connection failed"))
         mock_repo.close = AsyncMock()
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["entity", "show", "user-123"])
 
@@ -5474,10 +5491,8 @@ class TestEntityCommandsEdgeCases:
         with patch("zae_limiter.repository.Repository") as mock_repo_class:
             from zae_limiter.exceptions import ValidationError
 
-            mock_repo_class.open = AsyncMock(
-                side_effect=ValidationError(
-                    field="name", value="invalid", reason="Invalid name format"
-                )
+            mock_repo_class.side_effect = ValidationError(
+                field="name", value="invalid", reason="Invalid name format"
             )
 
             result = runner.invoke(cli, ["entity", "show", "user-123"])
@@ -5505,7 +5520,7 @@ class TestEntityListCommand:
         )
         mock_repo.close = AsyncMock()
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["entity", "list", "--with-custom-limits", "gpt-4"])
 
@@ -5521,7 +5536,7 @@ class TestEntityListCommand:
         mock_repo.list_entities_with_custom_limits = AsyncMock(return_value=(["entity-1"], None))
         mock_repo.close = AsyncMock()
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(
             cli, ["entity", "list", "--with-custom-limits", "gpt-4", "--limit", "1"]
@@ -5540,7 +5555,7 @@ class TestEntityListCommand:
         mock_repo.list_entities_with_custom_limits = AsyncMock(return_value=([], None))
         mock_repo.close = AsyncMock()
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["entity", "list", "--with-custom-limits", "gpt-4"])
 
@@ -5556,7 +5571,7 @@ class TestEntityListCommand:
         )
         mock_repo.close = AsyncMock()
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["entity", "list", "--with-custom-limits", "gpt-4"])
 
@@ -5574,10 +5589,8 @@ class TestEntityListCommand:
         with patch("zae_limiter.repository.Repository") as mock_repo_class:
             from zae_limiter.exceptions import ValidationError
 
-            mock_repo_class.open = AsyncMock(
-                side_effect=ValidationError(
-                    field="name", value="invalid", reason="Invalid name format"
-                )
+            mock_repo_class.side_effect = ValidationError(
+                field="name", value="invalid", reason="Invalid name format"
             )
 
             result = runner.invoke(cli, ["entity", "list", "--with-custom-limits", "gpt-4"])
@@ -5600,7 +5613,7 @@ class TestEntityListCommand:
         )
         mock_repo.close = AsyncMock()
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["entity", "list", "--with-custom-limits", "bad#name"])
 
@@ -5626,7 +5639,7 @@ class TestEntityListResourcesCommand:
         mock_repo.list_resources_with_entity_configs = AsyncMock(return_value=["claude-3", "gpt-4"])
         mock_repo.close = AsyncMock()
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["entity", "list-resources", "--name", "test-limiter"])
 
@@ -5642,7 +5655,7 @@ class TestEntityListResourcesCommand:
         mock_repo.list_resources_with_entity_configs = AsyncMock(return_value=[])
         mock_repo.close = AsyncMock()
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["entity", "list-resources", "--name", "test-limiter"])
 
@@ -5660,7 +5673,7 @@ class TestEntityListResourcesCommand:
         )
         mock_repo.close = AsyncMock()
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["entity", "list-resources", "--name", "test-limiter"])
 
@@ -5672,9 +5685,7 @@ class TestEntityListResourcesCommand:
         with patch("zae_limiter.repository.Repository") as mock_repo_class:
             from zae_limiter.exceptions import ValidationError
 
-            mock_repo_class.open = AsyncMock(
-                side_effect=ValidationError("name", "bad_name", "Invalid name format")
-            )
+            mock_repo_class.side_effect = ValidationError("name", "bad_name", "Invalid name format")
 
             result = runner.invoke(cli, ["entity", "list-resources", "--name", "bad_name"])
 
@@ -5881,7 +5892,7 @@ class TestNamespaceCommands:
         )
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["namespace", "list", "--name", "my-app"])
 
@@ -5900,7 +5911,7 @@ class TestNamespaceCommands:
         mock_repo.list_namespaces = AsyncMock(return_value=[])
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["namespace", "list", "--name", "my-app"])
 
@@ -5915,7 +5926,7 @@ class TestNamespaceCommands:
         mock_repo.list_namespaces = AsyncMock(side_effect=Exception("Connection refused"))
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["namespace", "list"])
 
@@ -5929,9 +5940,7 @@ class TestNamespaceCommands:
         with patch("zae_limiter.repository.Repository") as mock_repo_class:
             from zae_limiter.exceptions import ValidationError
 
-            mock_repo_class.open = AsyncMock(
-                side_effect=ValidationError("name", "bad_name", "Invalid name format")
-            )
+            mock_repo_class.side_effect = ValidationError("name", "bad_name", "Invalid name format")
 
             result = runner.invoke(cli, ["namespace", "list", "--name", "bad_name"])
 
@@ -5956,7 +5965,7 @@ class TestNamespaceCommands:
         )
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["namespace", "show", "tenant-alpha", "--name", "my-app"])
 
@@ -5974,7 +5983,7 @@ class TestNamespaceCommands:
         mock_repo.get_namespace = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["namespace", "show", "nonexistent", "--name", "my-app"])
 
@@ -5989,7 +5998,7 @@ class TestNamespaceCommands:
         mock_repo.get_namespace = AsyncMock(side_effect=Exception("Service unavailable"))
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["namespace", "show", "tenant-alpha", "--name", "my-app"])
 
@@ -6003,9 +6012,7 @@ class TestNamespaceCommands:
         with patch("zae_limiter.repository.Repository") as mock_repo_class:
             from zae_limiter.exceptions import ValidationError
 
-            mock_repo_class.open = AsyncMock(
-                side_effect=ValidationError("name", "bad_name", "Invalid name format")
-            )
+            mock_repo_class.side_effect = ValidationError("name", "bad_name", "Invalid name format")
 
             result = runner.invoke(cli, ["namespace", "show", "tenant-alpha", "--name", "bad_name"])
 
@@ -6224,7 +6231,7 @@ class TestNamespaceCommands:
         )
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["namespace", "orphans", "--name", "my-app"])
 
@@ -6243,7 +6250,7 @@ class TestNamespaceCommands:
         mock_repo.list_orphan_namespaces = AsyncMock(return_value=[])
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["namespace", "orphans", "--name", "my-app"])
 
@@ -6258,7 +6265,7 @@ class TestNamespaceCommands:
         mock_repo.list_orphan_namespaces = AsyncMock(side_effect=Exception("Throttled"))
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["namespace", "orphans"])
 
@@ -6272,9 +6279,7 @@ class TestNamespaceCommands:
         with patch("zae_limiter.repository.Repository") as mock_repo_class:
             from zae_limiter.exceptions import ValidationError
 
-            mock_repo_class.open = AsyncMock(
-                side_effect=ValidationError("name", "bad_name", "Invalid name format")
-            )
+            mock_repo_class.side_effect = ValidationError("name", "bad_name", "Invalid name format")
 
             result = runner.invoke(cli, ["namespace", "orphans", "--name", "bad_name"])
 
@@ -6390,98 +6395,98 @@ class TestNamespaceOption:
 
     @patch("zae_limiter.repository.Repository")
     def test_audit_list_with_namespace(self, mock_repo_class: Mock, runner: CliRunner) -> None:
-        """Test audit list passes namespace to Repository.open()."""
+        """Test audit list passes namespace to the read-only connection."""
         mock_repo = Mock()
         mock_repo.get_audit_events = AsyncMock(return_value=[])
         mock_repo.close = AsyncMock(return_value=None)
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(
             cli, ["audit", "list", "-e", "test-entity", "--namespace", "tenant-alpha"]
         )
 
         assert result.exit_code == 0
-        mock_repo_class.open.assert_called_once()
-        assert mock_repo_class.open.call_args[0][0] == "tenant-alpha"
+        mock_repo_class.assert_called_once()
+        assert mock_repo._resolve_namespace.call_args[0][0] == "tenant-alpha"
         mock_repo.get_audit_events.assert_called_once()
 
     @patch("zae_limiter.repository.Repository")
     def test_audit_list_default_namespace_skips_call(
         self, mock_repo_class: Mock, runner: CliRunner
     ) -> None:
-        """Test audit list passes 'default' namespace to Repository.open()."""
+        """Test audit list passes 'default' namespace to the read-only connection."""
         mock_repo = Mock()
         mock_repo.get_audit_events = AsyncMock(return_value=[])
         mock_repo.close = AsyncMock(return_value=None)
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["audit", "list", "-e", "test-entity"])
 
         assert result.exit_code == 0
-        assert mock_repo_class.open.call_args[0][0] == "default"
+        assert mock_repo._resolve_namespace.call_args[0][0] == "default"
         mock_repo.get_audit_events.assert_called_once()
 
     # --- usage group ---
 
     @patch("zae_limiter.repository.Repository")
     def test_usage_list_with_namespace(self, mock_repo_class: Mock, runner: CliRunner) -> None:
-        """Test usage list passes namespace to Repository.open()."""
+        """Test usage list passes namespace to the read-only connection."""
         mock_repo = Mock()
         mock_repo.get_usage_snapshots = AsyncMock(return_value=([], None))
         mock_repo.close = AsyncMock(return_value=None)
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["usage", "list", "-e", "test-entity", "-N", "tenant-alpha"])
 
         assert result.exit_code == 0
-        assert mock_repo_class.open.call_args[0][0] == "tenant-alpha"
+        assert mock_repo._resolve_namespace.call_args[0][0] == "tenant-alpha"
         mock_repo.get_usage_snapshots.assert_called_once()
 
     @patch("zae_limiter.repository.Repository")
     def test_usage_list_default_namespace_skips_call(
         self, mock_repo_class: Mock, runner: CliRunner
     ) -> None:
-        """Test usage list passes 'default' namespace to Repository.open()."""
+        """Test usage list passes 'default' namespace to the read-only connection."""
         mock_repo = Mock()
         mock_repo.get_usage_snapshots = AsyncMock(return_value=([], None))
         mock_repo.close = AsyncMock(return_value=None)
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["usage", "list", "-e", "test-entity"])
 
         assert result.exit_code == 0
-        assert mock_repo_class.open.call_args[0][0] == "default"
+        assert mock_repo._resolve_namespace.call_args[0][0] == "default"
 
     # --- resource group ---
 
     @patch("zae_limiter.repository.Repository")
     def test_resource_list_with_namespace(self, mock_repo_class: Mock, runner: CliRunner) -> None:
-        """Test resource list passes namespace to Repository.open()."""
+        """Test resource list passes namespace to the read-only connection."""
         mock_repo = Mock()
         mock_repo.list_resources_with_defaults = AsyncMock(return_value=[])
         mock_repo.close = AsyncMock(return_value=None)
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["resource", "list", "--namespace", "tenant-alpha"])
 
         assert result.exit_code == 0
-        assert mock_repo_class.open.call_args[0][0] == "tenant-alpha"
+        assert mock_repo._resolve_namespace.call_args[0][0] == "tenant-alpha"
         mock_repo.list_resources_with_defaults.assert_called_once()
 
     @patch("zae_limiter.repository.Repository")
     def test_resource_list_default_namespace_skips_call(
         self, mock_repo_class: Mock, runner: CliRunner
     ) -> None:
-        """Test resource list passes 'default' namespace to Repository.open()."""
+        """Test resource list passes 'default' namespace to the read-only connection."""
         mock_repo = Mock()
         mock_repo.list_resources_with_defaults = AsyncMock(return_value=[])
         mock_repo.close = AsyncMock(return_value=None)
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["resource", "list"])
 
         assert result.exit_code == 0
-        assert mock_repo_class.open.call_args[0][0] == "default"
+        assert mock_repo._resolve_namespace.call_args[0][0] == "default"
 
     # --- system group ---
 
@@ -6489,38 +6494,38 @@ class TestNamespaceOption:
     def test_system_get_defaults_with_namespace(
         self, mock_repo_class: Mock, runner: CliRunner
     ) -> None:
-        """Test system get-defaults passes namespace to Repository.open()."""
+        """Test system get-defaults passes namespace to the read-only connection."""
         mock_repo = Mock()
         mock_repo.get_system_defaults = AsyncMock(return_value=([], None))
         mock_repo.close = AsyncMock(return_value=None)
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["system", "get-defaults", "--namespace", "tenant-alpha"])
 
         assert result.exit_code == 0
-        assert mock_repo_class.open.call_args[0][0] == "tenant-alpha"
+        assert mock_repo._resolve_namespace.call_args[0][0] == "tenant-alpha"
         mock_repo.get_system_defaults.assert_called_once()
 
     @patch("zae_limiter.repository.Repository")
     def test_system_get_defaults_default_namespace_skips_call(
         self, mock_repo_class: Mock, runner: CliRunner
     ) -> None:
-        """Test system get-defaults passes 'default' namespace to Repository.open()."""
+        """Test system get-defaults passes 'default' namespace to the read-only connection."""
         mock_repo = Mock()
         mock_repo.get_system_defaults = AsyncMock(return_value=([], None))
         mock_repo.close = AsyncMock(return_value=None)
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["system", "get-defaults"])
 
         assert result.exit_code == 0
-        assert mock_repo_class.open.call_args[0][0] == "default"
+        assert mock_repo._resolve_namespace.call_args[0][0] == "default"
 
     # --- entity group ---
 
     @patch("zae_limiter.repository.Repository")
     def test_entity_show_with_namespace(self, mock_repo_class: Mock, runner: CliRunner) -> None:
-        """Test entity show passes namespace to Repository.open()."""
+        """Test entity show passes namespace to the read-only connection."""
         from zae_limiter.models import Entity
 
         mock_repo = Mock()
@@ -6529,19 +6534,19 @@ class TestNamespaceOption:
         )
         mock_repo.get_buckets = AsyncMock(return_value=[])
         mock_repo.close = AsyncMock(return_value=None)
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["entity", "show", "user-123", "--namespace", "tenant-alpha"])
 
         assert result.exit_code == 0
-        assert mock_repo_class.open.call_args[0][0] == "tenant-alpha"
+        assert mock_repo._resolve_namespace.call_args[0][0] == "tenant-alpha"
         mock_repo.get_entity.assert_called_once()
 
     @patch("zae_limiter.repository.Repository")
     def test_entity_show_default_namespace_skips_call(
         self, mock_repo_class: Mock, runner: CliRunner
     ) -> None:
-        """Test entity show passes 'default' namespace to Repository.open()."""
+        """Test entity show passes 'default' namespace to the read-only connection."""
         from zae_limiter.models import Entity
 
         mock_repo = Mock()
@@ -6550,12 +6555,12 @@ class TestNamespaceOption:
         )
         mock_repo.get_buckets = AsyncMock(return_value=[])
         mock_repo.close = AsyncMock(return_value=None)
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["entity", "show", "user-123"])
 
         assert result.exit_code == 0
-        assert mock_repo_class.open.call_args[0][0] == "default"
+        assert mock_repo._resolve_namespace.call_args[0][0] == "default"
 
     # --- short flag -N ---
 
@@ -6565,12 +6570,12 @@ class TestNamespaceOption:
         mock_repo = Mock()
         mock_repo.get_system_defaults = AsyncMock(return_value=([], None))
         mock_repo.close = AsyncMock(return_value=None)
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["system", "get-defaults", "-N", "tenant-beta"])
 
         assert result.exit_code == 0
-        assert mock_repo_class.open.call_args[0][0] == "tenant-beta"
+        assert mock_repo._resolve_namespace.call_args[0][0] == "tenant-beta"
 
 
 class TestDisableCommands:
@@ -6844,7 +6849,7 @@ class TestDisableCommands:
         )
         mock_repo.get_resource_disabled = AsyncMock(return_value=True)
         mock_repo.close = AsyncMock(return_value=None)
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["resource", "get-defaults", "gpt-4"])
 
@@ -6865,7 +6870,7 @@ class TestDisableCommands:
         )
         mock_repo.get_resource_disabled = AsyncMock(return_value=False)
         mock_repo.close = AsyncMock(return_value=None)
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["resource", "get-defaults", "gpt-4"])
 
@@ -6886,7 +6891,7 @@ class TestDisableCommands:
         )
         mock_repo.get_resource_disabled = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["resource", "get-defaults", "gpt-4"])
 
@@ -6907,7 +6912,7 @@ class TestDisableCommands:
         )
         mock_repo.get_entity_disabled = AsyncMock(return_value=True)
         mock_repo.close = AsyncMock(return_value=None)
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["entity", "get-limits", "user-123", "-r", "gpt-4"])
 
@@ -6928,7 +6933,7 @@ class TestDisableCommands:
         )
         mock_repo.get_entity_disabled = AsyncMock(return_value=False)
         mock_repo.close = AsyncMock(return_value=None)
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["entity", "get-limits", "user-123", "-r", "gpt-4"])
 
@@ -6949,7 +6954,7 @@ class TestDisableCommands:
         )
         mock_repo.get_entity_disabled = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
 
         result = runner.invoke(cli, ["entity", "get-limits", "user-123", "-r", "gpt-4"])
 
@@ -6983,8 +6988,7 @@ class TestScheduleDisplay:
         mock_repo.get_limits = AsyncMock(return_value=limits)
         mock_repo.get_entity_disabled = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
-        mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
         return runner.invoke(cli, ["entity", "get-limits", "user-123", "-r", "gpt-4"])
 
     @staticmethod
@@ -6993,8 +6997,7 @@ class TestScheduleDisplay:
         mock_repo.get_resource_defaults = AsyncMock(return_value=limits)
         mock_repo.get_resource_disabled = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
-        mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
         return runner.invoke(cli, ["resource", "get-defaults", "gpt-4"])
 
     @staticmethod
@@ -7002,8 +7005,7 @@ class TestScheduleDisplay:
         mock_repo = Mock()
         mock_repo.get_system_defaults = AsyncMock(return_value=(limits, None))
         mock_repo.close = AsyncMock(return_value=None)
-        mock_repo_class.return_value = mock_repo
-        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        _serve_read_only(mock_repo_class, mock_repo)
         return runner.invoke(cli, ["system", "get-defaults"])
 
     # --- the block itself ---

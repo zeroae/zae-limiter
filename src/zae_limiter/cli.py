@@ -1912,7 +1912,7 @@ def audit_list(
     """
 
     async def _list() -> None:
-        repo = await _connect(name, region, endpoint_url, namespace)
+        repo = await _connect_read_only(name, region, endpoint_url, namespace)
         try:
             events = await repo.get_audit_events(
                 entity_id=entity_id,
@@ -2095,7 +2095,7 @@ def usage_list(
         sys.exit(1)
 
     async def _list() -> None:
-        repo = await _connect(name, region, endpoint_url, namespace)
+        repo = await _connect_read_only(name, region, endpoint_url, namespace)
         try:
             snapshots, next_key = await repo.get_usage_snapshots(
                 entity_id=entity_id,
@@ -2269,7 +2269,7 @@ def usage_summary(
         sys.exit(1)
 
     async def _summary() -> None:
-        repo = await _connect(name, region, endpoint_url, namespace)
+        repo = await _connect_read_only(name, region, endpoint_url, namespace)
         try:
             summary = await repo.get_usage_summary(
                 entity_id=entity_id,
@@ -2705,7 +2705,7 @@ def resource_get_defaults(
     from .exceptions import ValidationError
 
     async def _get() -> None:
-        repo = await _connect(name, region, endpoint_url, namespace)
+        repo = await _connect_read_only(name, region, endpoint_url, namespace)
         try:
             limits = await repo.get_resource_defaults(resource_name)
             if not limits:
@@ -3047,7 +3047,7 @@ def resource_list(
     """
 
     async def _list() -> None:
-        repo = await _connect(name, region, endpoint_url, namespace)
+        repo = await _connect_read_only(name, region, endpoint_url, namespace)
         try:
             resources = await repo.list_resources_with_defaults()
             if not resources:
@@ -3242,7 +3242,7 @@ def system_get_defaults(
     from .exceptions import ValidationError
 
     async def _get() -> None:
-        repo = await _connect(name, region, endpoint_url, namespace)
+        repo = await _connect_read_only(name, region, endpoint_url, namespace)
         try:
             limits, on_unavailable = await repo.get_system_defaults()
             if not limits and not on_unavailable:
@@ -3519,7 +3519,7 @@ def entity_show(
     """
 
     async def _show() -> None:
-        repo = await _connect(name, region, endpoint_url, namespace)
+        repo = await _connect_read_only(name, region, endpoint_url, namespace)
         try:
             entity = await repo.get_entity(entity_id)
             if entity is None:
@@ -3712,7 +3712,7 @@ def entity_get_limits(
     from .exceptions import ValidationError
 
     async def _get() -> None:
-        repo = await _connect(name, region, endpoint_url, namespace)
+        repo = await _connect_read_only(name, region, endpoint_url, namespace)
         try:
             limits = await repo.get_limits(entity_id, resource=resource_name)
             if not limits:
@@ -4105,7 +4105,7 @@ def entity_list(
     from .exceptions import ValidationError
 
     async def _list() -> None:
-        repo = await _connect(name, region, endpoint_url, namespace)
+        repo = await _connect_read_only(name, region, endpoint_url, namespace)
         try:
             cursor: str | None = None
             total_count = 0
@@ -4190,7 +4190,7 @@ def entity_list_resources(
     """
 
     async def _list() -> None:
-        repo = await _connect(name, region, endpoint_url, namespace)
+        repo = await _connect_read_only(name, region, endpoint_url, namespace)
         try:
             resources = await repo.list_resources_with_entity_configs()
             if not resources:
@@ -4336,7 +4336,7 @@ def namespace_list(
     """
 
     async def _list() -> None:
-        repo = await _connect(name, region, endpoint_url)
+        repo = await _connect_read_only(name, region, endpoint_url, namespace=None)
         try:
             namespaces = await repo.list_namespaces()
             if not namespaces:
@@ -4402,11 +4402,15 @@ def namespace_show(
     """
 
     async def _show() -> None:
-        repo = await _connect(name, region, endpoint_url)
+        repo = await _connect_read_only(name, region, endpoint_url, namespace=None)
         try:
             ns = await repo.get_namespace(namespace_name)
             if not ns:
-                click.echo(f"Namespace '{namespace_name}' not found.", err=True)
+                click.echo(
+                    f"Error: Namespace '{namespace_name}' not found. Register it with "
+                    f"'zae-limiter namespace register {namespace_name}'.",
+                    err=True,
+                )
                 sys.exit(1)
 
             click.echo(f"Namespace:    {ns['name']}")
@@ -4601,7 +4605,7 @@ def namespace_orphans(
     """
 
     async def _orphans() -> None:
-        repo = await _connect(name, region, endpoint_url)
+        repo = await _connect_read_only(name, region, endpoint_url, namespace=None)
         try:
             orphans = await repo.list_orphan_namespaces()
             if not orphans:

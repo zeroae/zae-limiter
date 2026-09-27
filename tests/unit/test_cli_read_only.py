@@ -137,6 +137,94 @@ NAMESPACE_MISSING = (
 )
 
 
+class TestPlainReadsNeverProvision:
+    """1a: a read never creates, registers, stamps or pushes anything."""
+
+    @pytest.mark.parametrize("args", PLAIN_READS, ids=_ids(PLAIN_READS))
+    def test_a_missing_stack_is_an_error_not_a_deploy(self, mock_dynamodb, args) -> None:
+        result, stack_manager = _invoke(args)
+
+        assert result.exit_code == 1, result.output
+        assert STACK_MISSING in result.output
+        _assert_nothing_written(stack_manager, ([], []))
+
+    @pytest.mark.parametrize(
+        "args", NAMESPACED_READS + [REGISTRY_READS[2]], ids=_ids(NAMESPACED_READS) + ["ns show"]
+    )
+    def test_a_missing_namespace_is_an_error_not_a_registration(self, mock_dynamodb, args) -> None:
+        asyncio.run(_setup(namespace=False, record=_record(CLIENT)))
+        before = asyncio.run(_scan())
+
+        result, stack_manager = _invoke(args)
+
+        assert result.exit_code == 1, result.output
+        assert NAMESPACE_MISSING in result.output
+        _assert_nothing_written(stack_manager, before)
+
+    @pytest.mark.parametrize("args", REGISTRY_READS[:2], ids=_ids(REGISTRY_READS[:2]))
+    def test_registry_reads_need_no_namespace_and_register_none(self, mock_dynamodb, args) -> None:
+        """``namespace list``/``orphans`` read the registry, not a namespace:
+        an empty one is reported, and "default" is not registered on the way."""
+        asyncio.run(_setup(namespace=False, record=_record(CLIENT)))
+        before = asyncio.run(_scan())
+
+        result, stack_manager = _invoke(args)
+
+        assert result.exit_code == 0, result.output
+        assert "No " in result.output
+        _assert_nothing_written(stack_manager, before)
+
+    @pytest.mark.parametrize("args", PLAIN_READS, ids=_ids(PLAIN_READS))
+    def test_a_lambda_behind_the_client_is_left_alone(self, mock_dynamodb, args) -> None:
+        """2a: a plain read does not need the Lambda, so it neither refuses nor updates."""
+        asyncio.run(_setup(namespace=True, record=_record(BEHIND)))
+        before = asyncio.run(_scan())
+
+        result, stack_manager = _invoke(args)
+
+        assert result.exit_code == 0, result.output
+        assert "Error" not in result.output
+        _assert_nothing_written(stack_manager, before)
+
+    def test_a_missing_version_record_is_not_written(self, mock_dynamodb) -> None:
+        asyncio.run(_setup(namespace=True, record=None))
+        before = asyncio.run(_scan())
+
+        result, stack_manager = _invoke(["entity", "get-limits", "user-1", "-r", "gpt-4"])
+
+        assert result.exit_code == 0, result.output
+        _assert_nothing_written(stack_manager, before)
+
+    def test_the_region_defaults_to_the_clients(self, mock_dynamodb) -> None:
+        """Without --region the message names the region boto3 resolved."""
+        result, stack_manager = _invoke(["resource", "list"], region=False)
+
+        assert result.exit_code == 1, result.output
+        assert STACK_MISSING in result.output
+        stack_manager.assert_not_called()
+
+    def test_a_client_below_the_minimum_is_still_refused(self, mock_dynamodb) -> None:
+        """#638: reading does not excuse a client the stack has locked out."""
+        asyncio.run(_setup(namespace=True, record=_record(CLIENT, client_min_version="0.16.0")))
+        before = asyncio.run(_scan())
+
+        result, stack_manager = _invoke(["resource", "list"])
+
+        assert result.exit_code == 1, result.output
+        assert "below minimum required version 0.16.0" in result.output
+        _assert_nothing_written(stack_manager, before)
+
+    def test_an_incompatible_schema_is_refused(self, mock_dynamodb) -> None:
+        asyncio.run(_setup(namespace=True, record=_record(CLIENT, schema_version="9.0.0")))
+        before = asyncio.run(_scan())
+
+        result, stack_manager = _invoke(["resource", "list"])
+
+        assert result.exit_code == 1, result.output
+        assert "Schema migration required" in result.output
+        _assert_nothing_written(stack_manager, before)
+
+
 class TestConnectReadOnly:
     """The helper itself, for the paths the commands cannot reach."""
 
