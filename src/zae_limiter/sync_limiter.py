@@ -1194,7 +1194,7 @@ class SyncRateLimiter:
     def _apply_window_roll(
         limit: Limit, state: BucketState, now_ms: int, *, opened: bool = False
     ) -> bool:
-        """Restore the balance if a duration window has been rolled (ADR-139).
+        """Restore the balance if a duration window has been rolled (ADR-140).
 
         :meth:`_apply_reset_edge` with the backwards cron scan replaced by an
         attribute read (:attr:`BucketState.window_rolled`, ``ws > rf``), and
@@ -1221,7 +1221,7 @@ class SyncRateLimiter:
         mutates the same ``state``; the caller passes ``opened=True`` when it
         did, and the reset is then **unconditional**. ``ws > rf`` is the rule
         for a shard that *sees* a window another writer opened; the opener
-        applies its own reset under its own ``rf`` lock (ADR-139). Gating the
+        applies its own reset under its own ``rf`` lock (ADR-140). Gating the
         opener on ``ws > rf`` too would fail whenever another writer's clock
         stamped ``rf`` after this client's ``now``: the window would be anchored
         over the dead window's leftovers, and because ``rf >= ws`` after the
@@ -1846,7 +1846,7 @@ class SyncRateLimiter:
     def _sibling_window_starts(
         self, entity_id: str, resource: str, limits: list[Limit], shard_id: int, any_existing: bool
     ) -> dict[str, int]:
-        """The duration windows a shard about to be created would join (ADR-139).
+        """The duration windows a shard about to be created would join (ADR-140).
 
         Reads shard 0's ``ws`` for every limit carrying a ``reset_after``, via
         :meth:`SyncRepository.get_shard_window_starts`. Whether each window is still
@@ -1922,7 +1922,7 @@ class SyncRateLimiter:
     def _seed_window_starts(
         self, entity_id: str, resource: str, missing: list[Limit], shard_count: int
     ) -> dict[str, int]:
-        """The duration windows a session quota being seeded would join (#633, ADR-139).
+        """The duration windows a session quota being seeded would join (#633, ADR-140).
 
         The seed counterpart of :meth:`_sibling_window_starts`: one strongly
         consistent read of shard 0's ``ws``, once per (bucket, new session

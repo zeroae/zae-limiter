@@ -11002,7 +11002,7 @@ class TestWindowRollThroughAcquire:
 
 
 class TestWindowRolloverFansOut:
-    """A rollover on one shard reaches the entity's other shards (ADR-139, #624).
+    """A rollover on one shard reaches the entity's other shards (ADR-140, #624).
 
     Driven through `acquire()` on moto so the sync twin exercises the same
     fan-out through `_run_in_executor`.
@@ -11147,7 +11147,7 @@ class TestWindowRolloverFansOut:
 
 
 class TestRfNeverMovesBackward:
-    """A slow-path write stamps ``rf = max(now, stored rf, applied ws)`` (ADR-139).
+    """A slow-path write stamps ``rf = max(now, stored rf, applied ws)`` (ADR-140).
 
     A window rolls when ``ws > rf``, so a client whose clock runs behind the one
     that stamped the item must not move ``rf`` back below ``ws``: the next pass

@@ -1134,7 +1134,7 @@ class TestQuotaShardCreationIsATransfer:
 @pytest.mark.integration
 @pytest.mark.asyncio
 class TestDurationWindowRolloverFanOut:
-    """One rollover converges every shard on one window (ADR-139, #624).
+    """One rollover converges every shard on one window (ADR-140, #624).
 
     Exercises the real conditional `UpdateItem`s `_propagate_window_start`
     issues -- `attribute_exists(PK) AND (attribute_not_exists(ws) OR ws <= :open_floor)`
@@ -1259,7 +1259,7 @@ class TestDurationWindowRolloverFanOut:
 @pytest.mark.integration
 @pytest.mark.asyncio
 class TestNewShardJoinsTheWindow:
-    """A shard created mid-window inherits shard 0's `ws` (ADR-139, #625).
+    """A shard created mid-window inherits shard 0's `ws` (ADR-140, #625).
 
     Exercises the real projected `GetItem` behind `get_shard_window_starts`,
     which moto only approximates.
