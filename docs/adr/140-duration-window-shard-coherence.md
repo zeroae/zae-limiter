@@ -29,12 +29,12 @@ and costs are in CLAUDE.md "Session Quotas" and the DynamoDB writer table.
 
 ## Decision
 
-Every shard of an entity must converge on the same window start: the writer that opens a window
-propagates only the start, never tokens, to siblings whose own window had already ended, and each
-shard resets itself when it sees a window start newer than its own `rf`, which every
-materialising writer must advance monotonically. A shard created mid-window must join the live
-window read strongly consistently from shard 0, and opens and propagates its own only when that
-window has ended.
+Every shard of an entity must converge on one window start: the writer that opens a window must
+propagate only the start, never tokens, and only to siblings whose own window had ended and whose
+`rf` is older than the new start; each shard must reset itself to its share when its window start
+is newer than its own `rf`, and no materialising writer may move `rf` backward. A shard created
+mid-window must join shard 0's live window, read strongly consistently, and may open and
+propagate its own only when shard 0's window has ended or it has none.
 
 ## Consequences
 
@@ -55,7 +55,7 @@ window has ended.
   every shard carries an identical window start.
 - Creating a windowed shard costs a strongly consistent read, because a stale pre-roll start
   looks ended and would mint a full share on top of the window just opened.
-- The aggregator must pin each rolled window start in its refill condition, since two
+- The aggregator's refill condition grows one term per rolled window start, because two
   propagations are indistinguishable to its `rf` and `vu` pins alone.
 
 ## Alternatives Considered

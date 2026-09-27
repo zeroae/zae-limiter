@@ -27,12 +27,11 @@ a reinterpretation of `reset_schedule`. How an entity's shards agree on one wind
 
 ## Decision
 
-A limit may carry `reset_after`, a duration quota (ADR-137) whose balance is restored whole when
-a window of that length elapses, where the window opens at the first admitted, committed request
-after the previous window ended — idle-restarting, never tiling — and is anchored per entity,
-so a cascade parent's window never follows its child's. `reset_after` and `reset_schedule` are
-mutually exclusive on one limit, and the window start is stored per limit on the bucket item,
-never derived from the valid-until stamp `vu`.
+A limit may carry `reset_after`, a duration quota (ADR-137) that must not also carry
+`reset_schedule`, and its balance must be restored whole when its window ends. The window must
+open at the entity's first admitted, committed request after the previous window ended
+(idle-restarting, never tiling), must be anchored per entity so a cascade parent never follows
+its child, and its start must be stored per limit on the bucket item, never derived from `vu`.
 
 ## Consequences
 

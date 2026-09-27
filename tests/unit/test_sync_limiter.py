@@ -8549,7 +8549,10 @@ class TestTheOpenerResetsItsOwnWindow:
 
 
 class TestMaterialisationStampsWindow:
-    """`ws + rsa` is the third voting member of `vu`'s minimum (ADR-139)."""
+    """`ws + rsa` is the third voting member of `vu`'s minimum.
+
+    See #597 and CLAUDE.md "Session Quotas".
+    """
 
     def test_vu_is_the_window_end_for_a_duration_quota(self):
         state = _window_state()

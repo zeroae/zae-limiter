@@ -26,10 +26,12 @@ CLAUDE.md "Version gate (#638)".
 ## Decision
 
 Every writer of a `reset_after` limit — config setters, the provisioner, and an `acquire()`
-limits override — must refuse it unless the version record proves the Lambdas can read it, and
-`lambda_version` may record a build only when that stack was created in the same call or both its
-aggregator and provisioner are current or absent. `client_min_version` must only ever ratchet up,
-and clients from v0.15.0 on must refuse to run below it.
+limits override — must refuse it unless `lambda_version` is at least 0.15.0 or equals the
+writer's own build, and a config write it admits must raise `client_min_version` to 0.15.0
+(capped at a development writer's own build), which no writer may lower and below which clients
+from v0.15.0 on must refuse to run. A writer may stamp `lambda_version` with its build only when
+it created the stack in that call, or when the aggregator and the provisioner each either had
+code pushed in that run or do not exist.
 
 ## Consequences
 

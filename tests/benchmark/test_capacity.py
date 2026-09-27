@@ -786,8 +786,8 @@ class TestScheduledFastPathCapacity:
 
 
 class TestDurationWindowCapacity:
-    """The claim ADR-140 rests on: ``reset_after`` is a per-rollover cost, never
-    a per-acquire one.
+    """The claim session quotas rest on (ADR-139, ADR-140): ``reset_after`` is a
+    per-rollover cost, never a per-acquire one.
 
     Inside a live window the fast path is byte-identical to any other bucket's
     — 0 RCU + 1 WCU, no config read, no bucket read. A rollover costs exactly
