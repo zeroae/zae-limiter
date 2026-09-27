@@ -33,6 +33,7 @@ from zae_limiter.schema import (
     BUCKET_FIELD_SCHED_TZ,
     BUCKET_FIELD_TK,
     BUCKET_FIELD_VU,
+    BUCKET_FIELD_WA,
     BUCKET_FIELD_WS,
     BUCKET_SCHED_NONE,
     CONFIG_FIELD_SCHED_TZ,
@@ -996,19 +997,54 @@ class TestPropagateWindowStart:
             ExpressionAttributeValues={":rf": {"N": str(rf)}},
         )
 
+    def _unmark(self, repo, entity_id, shard, limit_name="session"):
+        """Strip the #640 window-applied marker: an item written before it."""
+        client = repo._get_client()
+        client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "gpt-4", shard)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="REMOVE #wa",
+            ExpressionAttributeNames={"#wa": bucket_attr(limit_name, BUCKET_FIELD_WA)},
+        )
+
     @pytest.mark.parametrize("rf_offset", [0, 10])
-    def test_a_sibling_already_past_the_new_start_is_left_alone(self, repo, rf_offset):
+    def test_an_unmarked_sibling_already_past_the_new_start_is_left_alone(self, repo, rf_offset):
         """An aggregator refill after the old window ended (or a writer with a
-        clock ahead) left the sibling's `rf` at or past the new `ws`. Moved,
-        it would read `ws > rf` as false, treat the window as applied and keep
-        its burnt balance for all of it. Left alone, it opens its own."""
+        clock ahead) left the sibling's `rf` at or past the new `ws`. A
+        sibling without the #640 marker applies a window by reading `ws > rf`:
+        moved, it would read that as false, treat the window as applied and
+        keep its burnt balance for all of it. Left alone, it opens its own."""
         self._create_shards(repo, "e1", count=2, ws=self.OLD)
+        self._unmark(repo, "e1", 1)
         self._set_rf(repo, "e1", 1, self.NEW + rf_offset)
         written = repo._propagate_window_start(
             "e1", "gpt-4", shard_id=0, shard_count=2, windows=self._windows(self.NEW)
         )
         assert written == 0
         assert self._stored_ws(repo, "e1", "session", 1) == self.OLD
+
+    @pytest.mark.parametrize("rf_offset", [0, 10])
+    def test_a_marked_sibling_already_past_the_new_start_still_moves(self, repo, rf_offset):
+        """#640: a marked sibling applies the window by reading `ws > wa`,
+        which no `rf` can mask — including an `rf` a pre-ADR-139 writer
+        stamped forward from its own clock. It moves, and rolls on its next
+        pass; the floor still guarantees its own window had ended."""
+        self._create_shards(repo, "e1", count=2, ws=self.OLD)
+        self._set_rf(repo, "e1", 1, self.NEW + rf_offset)
+        written = repo._propagate_window_start(
+            "e1", "gpt-4", shard_id=0, shard_count=2, windows=self._windows(self.NEW)
+        )
+        assert written == 1
+        assert self._stored_ws(repo, "e1", "session", 1) == self.NEW
+        item = self._raw(repo, "e1", 1)
+        (state,) = [
+            b for b in repo._deserialize_composite_bucket(item) if b.limit_name == "session"
+        ]
+        assert state.window_applied_ms == self.OLD
+        assert state.window_rolled
 
     def test_a_sibling_behind_the_new_start_still_moves(self, repo):
         self._create_shards(repo, "e1", count=2, ws=self.OLD)
@@ -5481,7 +5517,8 @@ class TestResetScheduleReachesStorage:
 
 
 class TestDurationWindowReachesConfigStorage:
-    """`l_{name}_rsa` — a duration quota's window length (ADR-139, plan Task 4).
+    """`w_{name}_rsa` (legacy `l_{name}_rsa`) — a duration quota's window length
+    (ADR-139, plan Task 4).
 
     The alternative spelling of the reset half: a window anchored to the
     entity's own first use rather than a calendar instant. Mirrors
@@ -5523,12 +5560,12 @@ class TestDurationWindowReachesConfigStorage:
 
     def test_the_window_is_stored_under_its_own_attribute(self, repo):
         """Seconds, not the `timedelta` — the field name carries no unit, so
-        storage has to spell it (`l_{name}_rsa`), and it is a sibling of
+        storage has to spell it (`w_{name}_rsa`, #640), and it is a sibling of
         `rsched`, not a tag inside it (a quota has one or the other, ADR-139)."""
         repo.set_limits("dw-2", [self.WINDOW], resource="gpt-4")
         item = self._raw_config(repo, "dw-2", "gpt-4")
-        assert item[limit_attr("session", LIMIT_FIELD_RSA)]["N"] == "18000"
-        assert limit_attr("session", LIMIT_FIELD_RSCHED) not in item
+        assert item[limit_attr("session", LIMIT_FIELD_RSA, windowed=True)]["N"] == "18000"
+        assert limit_attr("session", LIMIT_FIELD_RSCHED, windowed=True) not in item
 
     def test_rewriting_a_limit_without_a_window_drops_it(self, repo):
         """Config storage is override-not-merge (full-replace PutItem), so this
@@ -5852,7 +5889,7 @@ def _corrupt_config_sched(repo, entity_id, resource, limit_name, value, field="s
 
 
 def _corrupt_config_rsa(repo, entity_id, resource, limit_name, value):
-    """Overwrite `l_{name}_rsa` with a value `Limit.__post_init__` rejects.
+    """Overwrite `w_{name}_rsa` with a value `Limit.__post_init__` rejects.
 
     Mirrors `_corrupt_config_sched`, but `rsa` has no grammar to fail
     decoding — a plain `int()` on a DynamoDB `N` cannot realistically fail —
@@ -5869,7 +5906,7 @@ def _corrupt_config_rsa(repo, entity_id, resource, limit_name, value):
             "SK": {"S": schema.sk_config(resource)},
         },
         UpdateExpression="SET #a = :v",
-        ExpressionAttributeNames={"#a": limit_attr(limit_name, LIMIT_FIELD_RSA)},
+        ExpressionAttributeNames={"#a": limit_attr(limit_name, LIMIT_FIELD_RSA, windowed=True)},
         ExpressionAttributeValues={":v": {"N": str(value)}},
     )
 
@@ -6070,7 +6107,7 @@ class TestUnreadableStoredSchedule:
         with pytest.raises(RateLimiterUnavailable) as excinfo:
             repo.get_limits("corrupt-4g", resource="gpt-4")
         message = str(excinfo.value)
-        assert "l_session_rsa" in message
+        assert "w_session_rsa" in message
         assert "positive whole number of seconds" in message
         assert isinstance(excinfo.value.cause, ValueError)
 
@@ -6079,7 +6116,7 @@ class TestUnreadableStoredSchedule:
         self._seed(repo, "corrupt-4h", [window])
         _corrupt_config_rsa(repo, "corrupt-4h", "gpt-4", "session", -5)
         repo.invalidate_config_cache()
-        with pytest.raises(RateLimiterUnavailable, match="l_session_rsa"):
+        with pytest.raises(RateLimiterUnavailable, match="w_session_rsa"):
             repo.get_limits("corrupt-4h", resource="gpt-4")
 
     def test_a_non_integral_duration_window_raises_unavailable_too(self, repo):
@@ -6096,7 +6133,7 @@ class TestUnreadableStoredSchedule:
             repo.get_limits("corrupt-4i", resource="gpt-4")
         assert not isinstance(excinfo.value, ValueError)
         message = str(excinfo.value)
-        assert "l_session_rsa" in message
+        assert "w_session_rsa" in message
         assert "1.5" in message
         assert isinstance(excinfo.value.cause, ValueError)
 

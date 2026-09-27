@@ -82,6 +82,7 @@ _SEED_TOKEN = {
     schema.BUCKET_FIELD_RSCHED: "x",
     schema.BUCKET_FIELD_RSA: "y",
     schema.BUCKET_FIELD_WS: "w",
+    schema.BUCKET_FIELD_WA: "g",
 }
 
 
@@ -2480,12 +2481,15 @@ class Repository:
 
         ``{field: AttributeValue}`` for ``tk``, ``cp``, ``ra``, ``rp`` and
         ``tc``, plus the ADR-139 ``rsa`` / ``ws`` pair when the limit has a
-        duration window. The single source for both writers that bring a limit
-        into existence on an item: :meth:`build_composite_create` (a new item)
-        and the seed branch of :meth:`build_composite_normal` /
-        :meth:`build_composite_retry` (a limit missing from an existing item,
-        #633). Two copies would drift, and a drifted seed is a limit whose
-        balance the next reader interprets against the wrong parameters.
+        duration window, and the window-applied marker ``wa = ws`` beside
+        ``ws`` (#640): a limit brought into existence starts with the balance
+        of the window it is created in, opened or joined. The single source
+        for both writers that bring a limit into existence on an item:
+        :meth:`build_composite_create` (a new item) and the seed branch of
+        :meth:`build_composite_normal` / :meth:`build_composite_retry` (a limit
+        missing from an existing item, #633). Two copies would drift, and a
+        drifted seed is a limit whose balance the next reader interprets
+        against the wrong parameters.
 
         ``cp``/``ra``/``rp`` are the undivided base (#222 §2.1); only ``tk`` is
         the per-shard, schedule-effective balance. ``rsa`` is entity-wide and
@@ -2493,9 +2497,10 @@ class Repository:
 
         Args:
             state: The limit's bucket state, balance already materialised.
-            include_window: Emit ``rsa``/``ws``. The normal write path stamps
-                those through its ``windows`` argument instead, so that one
-                expression never SETs the same path twice.
+            include_window: Emit ``rsa``/``ws``/``wa``. The normal write path
+                stamps those through its ``windows`` and ``applied_windows``
+                arguments instead, so that one expression never SETs the same
+                path twice.
         """
         tc = state.total_consumed_milli if state.total_consumed_milli is not None else 0
         attrs: dict[str, dict[str, str]] = {
@@ -2510,6 +2515,7 @@ class Repository:
                 attrs[schema.BUCKET_FIELD_RSA] = {"N": str(state.reset_after_seconds)}
             if state.window_start_ms is not None:
                 attrs[schema.BUCKET_FIELD_WS] = {"N": str(state.window_start_ms)}
+                attrs[schema.BUCKET_FIELD_WA] = {"N": str(state.window_start_ms)}
         return attrs
 
     @staticmethod
@@ -2669,6 +2675,7 @@ class Repository:
         window_lengths: dict[str, int] | None = None,
         seeds: dict[str, BucketState] | None = None,
         seed_shard_count: int | None = None,
+        applied_windows: dict[str, int] | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -2759,6 +2766,17 @@ class Repository:
                 than ``=``: a share sized for a *higher* count (read off a
                 sibling the item has not caught up with) is the smaller one,
                 so only growth past it is unsafe.
+            applied_windows: Limit name -> the window start this write leaves
+                the limit's balance reflecting, stamped as ``b_{name}_wa``
+                (#640). Every window limit on the write appears, whether this
+                pass opened, rolled, seeded or merely carried its window — the
+                last is what marks an item written before the marker. Always
+                the ``ws`` *value* the pass read or opened, never a copy of
+                the ``ws`` path: a rollover fan-out can move ``ws`` between
+                this pass's read and its write without touching ``rf``, and
+                that window has to stay unapplied until a pass rolls it. No
+                condition term is needed: the ``rf`` lock already serialises
+                every other writer of the marker.
         """
         add_parts: list[str] = []
         set_parts: list[str] = ["#rf = :now"]
@@ -2818,6 +2836,13 @@ class Repository:
             set_parts.append(f"#rsa{i} = :rsa{i}")
             attr_values[f":ws{i}"] = {"N": str(ws)}
             attr_values[f":rsa{i}"] = {"N": str(rsa)}
+
+        # #640: the window-applied marker, one per window limit on the write.
+        # Positional tokens (`#wa{i}`), disjoint from `#ws{i}` / `#wl{i}`.
+        for i, (name, applied_ws) in enumerate(sorted((applied_windows or {}).items())):
+            attr_names[f"#wa{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_WA)
+            set_parts.append(f"#wa{i} = :wa{i}")
+            attr_values[f":wa{i}"] = {"N": str(applied_ws)}
 
         rolled = windows or {}
         lengths = sorted((n, v) for n, v in (window_lengths or {}).items() if n not in rolled)
@@ -3844,14 +3869,21 @@ class Repository:
         raised) may not have elapsed by the floor and no-ops; it opens its own
         window when it does elapse, which is the pre-fan-out behaviour.
 
-        The floor is ANDed with ``rf < :new``. A sibling applies a fanned-out
-        window only by reading ``ws > rf`` (``BucketState.window_rolled``), so
+        The floor is ANDed with ``attribute_exists(wa) OR rf < :new``. A
+        sibling carrying the window-applied marker (#640) applies a
+        fanned-out window by reading ``ws > wa``, which no ``rf`` can mask, so
+        it takes the window whatever its ``rf`` — including an ``rf`` a
+        writer predating ADR-139 stamped forward from its own clock, which is
+        why the marker exists. A sibling written before the marker applies it
+        by reading ``ws > rf`` (``BucketState.window_rolled``'s fallback), so
         one whose ``rf`` is already at or past ``new_ws`` — an aggregator
         refill that landed after its old window ended, or a writer whose clock
         runs ahead — would take the new ``ws`` as *already applied* and carry
         its burnt balance through the whole new window. Left alone instead,
         its window stays ended and it opens its own when next drawn: one
-        stagger, never an under-admission.
+        stagger, never an under-admission. Either way the floor guarantees
+        the sibling's own window had ended by ``new_ws``, so it is owed
+        exactly one fresh share.
 
         **It writes ``ws`` and never ``tk``**, which is the coherence argument.
         A fan-out cannot use ``ADD`` — it does not know each sibling's
@@ -3860,7 +3892,7 @@ class Repository:
         the sibling's committed consumption; landing before, the sibling's
         ``rf`` lock still holds and its own ``ADD`` applies on top, leaving it
         at twice its share. Each sibling resets itself, under its own ``rf``
-        lock, in the write it was going to make anyway: it reads ``ws > rf``
+        lock, in the write it was going to make anyway: it reads ``ws > wa``
         (``BucketState.window_rolled``).
 
         ``rsa`` rides with ``ws``, as on every acquire-path write: a sibling
@@ -3914,9 +3946,14 @@ class Repository:
                         },
                         "SK": {"S": schema.sk_state()},
                     },
-                    UpdateExpression="SET #ws = :new, #rsa = :rsa, #vu = :zero",
+                    # `wtc` is a path copy of the consumption counter as the
+                    # window lands (#640): the sibling's deferred roll charges
+                    # everything spent after this instant to the new window.
+                    UpdateExpression=(
+                        "SET #ws = :new, #rsa = :rsa, #vu = :zero, #wtc = if_not_exists(#tc, :zero)"
+                    ),
                     ConditionExpression=(
-                        "attribute_exists(PK) AND #rf < :new"
+                        "attribute_exists(PK) AND (attribute_exists(#wa) OR #rf < :new)"
                         " AND (attribute_not_exists(#ws) OR #ws <= :open_floor)"
                     ),
                     # Aliases, not bare names: `NAME_PATTERN` allows `-` and
@@ -3925,6 +3962,9 @@ class Repository:
                     ExpressionAttributeNames={
                         "#ws": schema.bucket_attr(name, schema.BUCKET_FIELD_WS),
                         "#rsa": schema.bucket_attr(name, schema.BUCKET_FIELD_RSA),
+                        "#wa": schema.bucket_attr(name, schema.BUCKET_FIELD_WA),
+                        "#wtc": schema.bucket_attr(name, schema.BUCKET_FIELD_WTC),
+                        "#tc": schema.bucket_attr(name, schema.BUCKET_FIELD_TC),
                         "#vu": schema.BUCKET_FIELD_VU,
                         "#rf": schema.BUCKET_FIELD_RF,
                     },
@@ -6214,6 +6254,17 @@ class Repository:
             reset_after_seconds = self._decode_stored_window_int(
                 rsa_name, item.get(rsa_name, {}).get("N")
             )
+            # The window-applied marker (#640), decoded the same way: absent
+            # on an item written before it, where `window_rolled` falls back
+            # to `rf`.
+            wa_name = schema.bucket_attr(name, schema.BUCKET_FIELD_WA)
+            window_applied_ms = self._decode_stored_window_int(
+                wa_name, item.get(wa_name, {}).get("N")
+            )
+            wtc_name = schema.bucket_attr(name, schema.BUCKET_FIELD_WTC)
+            window_consumed_mark = self._decode_stored_window_int(
+                wtc_name, item.get(wtc_name, {}).get("N")
+            )
 
             # `wcu` is never scheduled — it tracks partition write pressure,
             # not a user limit, and is the one limit `effective_params` must
@@ -6248,6 +6299,8 @@ class Repository:
                     reset_sched=reset_sched,
                     window_start_ms=window_start_ms,
                     reset_after_seconds=reset_after_seconds,
+                    window_applied_ms=window_applied_ms,
+                    window_consumed_mark_milli=window_consumed_mark,
                 )
             )
 
@@ -6262,7 +6315,14 @@ class Repository:
         limits: list[Limit],
         base_item: dict[str, Any],
     ) -> dict[str, Any]:
-        """Add l_* attributes to a DynamoDB item for composite limit storage.
+        """Add limit attributes to a DynamoDB item for composite limit storage.
+
+        A limit is stored as ``l_{name}_{field}``, or as ``w_{name}_{field}``
+        when it carries ``reset_after`` (ADR-142, #640): readers predating
+        ADR-139 discover limits by ``l_`` alone, so they keep enforcing the
+        level's other limits rather than failing the whole level on a quota
+        they cannot reconstruct. The prefix is a pure storage mapping, decided
+        here and undone in :meth:`_deserialize_composite_limits`.
 
         Every config level is written with a full-replace ``PutItem``, so an
         attribute this method omits (an unscheduled limit's ``l_{name}_sched``,
@@ -6275,7 +6335,7 @@ class Repository:
             base_item: Base DynamoDB item to add attributes to (mutated in place)
 
         Returns:
-            The modified base_item with l_{name}_{field} attributes added
+            The modified base_item with the limit attributes added
 
         Raises:
             ValueError: if two scheduled limits disagree on timezone; it is
@@ -6287,22 +6347,23 @@ class Repository:
 
         for limit in limits:
             name = limit.name
-            base_item[schema.limit_attr(name, schema.LIMIT_FIELD_CP)] = {"N": str(limit.capacity)}
-            base_item[schema.limit_attr(name, schema.LIMIT_FIELD_RA)] = {
-                "N": str(limit.refill_amount)
-            }
-            base_item[schema.limit_attr(name, schema.LIMIT_FIELD_RP)] = {
-                "N": str(limit.refill_period_seconds)
-            }
+            windowed = limit.reset_after_seconds is not None
+
+            def attr(field: str, name: str = name, windowed: bool = windowed) -> str:
+                return schema.limit_attr(name, field, windowed=windowed)
+
+            base_item[attr(schema.LIMIT_FIELD_CP)] = {"N": str(limit.capacity)}
+            base_item[attr(schema.LIMIT_FIELD_RA)] = {"N": str(limit.refill_amount)}
+            base_item[attr(schema.LIMIT_FIELD_RP)] = {"N": str(limit.refill_period_seconds)}
             if limit.schedule:
                 compact, _tz = schedule.encode(limit.schedule)
-                base_item[schema.limit_attr(name, schema.LIMIT_FIELD_SCHED)] = {"S": compact}
+                base_item[attr(schema.LIMIT_FIELD_SCHED)] = {"S": compact}
             # Without this leg a quota round-trips to `refill_amount=0` with no
             # reset, which `Limit.__post_init__` rejects — so the write poisons
             # the config item and every later read raises (#538).
             if limit.reset_schedule:
                 compact, _tz = schedule.encode_reset(limit.reset_schedule)
-                base_item[schema.limit_attr(name, schema.LIMIT_FIELD_RSCHED)] = {"S": compact}
+                base_item[attr(schema.LIMIT_FIELD_RSCHED)] = {"S": compact}
             # ADR-139: the alternative spelling of the reset half — a window
             # anchored to the entity's own first use rather than a calendar
             # instant. Written only when the limit has one, exactly like
@@ -6310,18 +6371,21 @@ class Repository:
             # limit re-written without a window loses the stored one with no
             # explicit REMOVE.
             if limit.reset_after_seconds is not None:
-                base_item[schema.limit_attr(name, schema.LIMIT_FIELD_RSA)] = {
-                    "N": str(limit.reset_after_seconds)
-                }
+                base_item[attr(schema.LIMIT_FIELD_RSA)] = {"N": str(limit.reset_after_seconds)}
 
         if hoisted_tz is not None:
             base_item[schema.CONFIG_FIELD_SCHED_TZ] = {"S": hoisted_tz}
         return base_item
 
     def _deserialize_composite_limits(self, item: dict[str, Any]) -> list[Limit]:
-        """Deserialize l_* attributes from a DynamoDB item to Limit objects.
+        """Deserialize limit attributes from a DynamoDB item to Limit objects.
 
-        Discovers limit names by scanning for l_{name}_cp attributes.
+        Discovers limit names by scanning for ``{prefix}{name}_cp`` under both
+        config prefixes (:func:`schema.config_limit_names`): ``l_``, and the
+        ``w_`` a ``reset_after`` limit is stored under (#640). Items written
+        under ``l_`` with an ``l_{name}_rsa`` (unreleased v0.15 builds, before
+        #640) read exactly as before; the next write of the level moves the
+        limit to ``w_``, since every level is a full-replace ``PutItem``.
 
         A stored schedule that will not decode raises ``RateLimiterUnavailable``
         (#222 §6) and takes **the whole item** with it, not just its own limit.
@@ -6347,18 +6411,19 @@ class Repository:
             RateLimiterUnavailable: A stored schedule on this item cannot be
                 decoded, or a limit carrying one — or a stored `rsa` duration
                 window (ADR-139) — cannot be reconstructed from what is
-                stored.
+                stored; or the item stores one limit under both prefixes, or
+                a ``w_`` limit with no ``rsa`` (#640).
         """
         from datetime import timedelta
 
-        # Discover limit names by scanning for l_{name}_cp attributes
-        limit_names: list[str] = []
-        suffix = f"_{schema.LIMIT_FIELD_CP}"
-        for attr_name in item:
-            if attr_name.startswith(schema.LIMIT_ATTR_PREFIX) and attr_name.endswith(suffix):
-                name = attr_name[len(schema.LIMIT_ATTR_PREFIX) : -len(suffix)]
-                if name:
-                    limit_names.append(name)
+        try:
+            limit_names = schema.config_limit_names(item)
+        except ValueError as exc:
+            raise RateLimiterUnavailable(
+                f"stored limit config is corrupt: {exc}",
+                cause=exc,
+                stack_name=self.stack_name,
+            ) from exc
 
         # One hoisted timezone for the whole item (#222 §4.1). Absent on items
         # written before schedules existed, and on items where nothing is
@@ -6367,15 +6432,15 @@ class Repository:
         sched_tz = item.get(schema.CONFIG_FIELD_SCHED_TZ, {}).get("S") or "UTC"
 
         limits: list[Limit] = []
-        for name in limit_names:
+        for name, windowed in limit_names.items():
 
             def _get(field: str) -> int:
-                attr = schema.limit_attr(name, field)
+                attr = schema.limit_attr(name, field, windowed=windowed)
                 return int(item.get(attr, {}).get("N", "0"))
 
-            sched_name = schema.limit_attr(name, schema.LIMIT_FIELD_SCHED)
-            rsched_name = schema.limit_attr(name, schema.LIMIT_FIELD_RSCHED)
-            rsa_name = schema.limit_attr(name, schema.LIMIT_FIELD_RSA)
+            sched_name = schema.limit_attr(name, schema.LIMIT_FIELD_SCHED, windowed=windowed)
+            rsched_name = schema.limit_attr(name, schema.LIMIT_FIELD_RSCHED, windowed=windowed)
+            rsa_name = schema.limit_attr(name, schema.LIMIT_FIELD_RSA, windowed=windowed)
             sched_attr = item.get(sched_name, {}).get("S")
             rsched_attr = item.get(rsched_name, {}).get("S")
             rsa_attr = item.get(rsa_name, {}).get("N")
@@ -7029,8 +7094,9 @@ class Repository:
 
         Shard 0 by default, because :meth:`bump_shard_count` already treats it
         as the source of truth for ``shard_count``. A created shard inherits
-        ``ws`` verbatim and sets ``rf = now``, so ``ws > rf`` is **false** on
-        the new item and it does not immediately re-roll itself: it joins the
+        ``ws`` verbatim and stamps it as applied (``wa = ws``, #640), so
+        ``ws > wa`` is **false** on the new item and it does not immediately
+        re-roll itself: it joins the
         window in progress rather than opening one. Whether the window read
         here is still *live* is the caller's decision, against the ``rsa`` of
         the config it resolved — this returns the stored start and nothing

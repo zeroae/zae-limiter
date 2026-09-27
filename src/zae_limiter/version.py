@@ -13,8 +13,10 @@ from dataclasses import dataclass
 CURRENT_SCHEMA_VERSION = "0.10.0"
 
 # The first release whose readers understand a `reset_after` limit (ADR-141).
-# A reader predating it ignores `l_{name}_rsa`, reads a quota with no reset, and
-# fails (clients) or over-admits (the aggregator's shard clone). Writers refuse
+# A client predating it cannot enforce one: the config is stored under `w_`
+# (ADR-142), which it does not scan, so it enforces the level's other limits
+# and ignores the session limit. The aggregator predating it over-admits (its
+# shard clone mints a fresh share per new shard). Writers refuse
 # to store one until the stack's `lambda_version` reaches it, and raise the
 # record's `client_min_version` to it when they do (#638).
 MIN_READER_VERSION_FOR_RESET_AFTER = "0.15.0"

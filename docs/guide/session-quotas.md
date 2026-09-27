@@ -14,7 +14,7 @@ session = Limit.quota("session", 10_000, reset_after=timedelta(hours=5))
 
 Two callers that first use it at 09:00 and 14:30 get windows ending at 14:00 and 19:30.
 
-!!! warning "Upgrade every client before storing one; the Lambdas are checked for you"
+!!! warning "Upgrade every client and admin tool before relying on one; the Lambdas are checked for you"
     `reset_after` is new in v0.15.0.
 
     **The aggregator is enforced.** `set_limits()`, `set_resource_defaults()`,
@@ -40,10 +40,20 @@ Two callers that first use it at 09:00 and 14:30 get windows ending at 14:00 and
 
     **Clients older than v0.15.0 are not enforced.** A successful write raises the stack's
     `client_min_version` to 0.15.0, and every client from v0.15.0 on refuses to start below it
-    — but v0.14 ignores that field. A v0.14 client cannot read a level that stores a
-    `reset_after` limit: with `on_unavailable="block"` every `acquire()` against that level
-    raises `RateLimiterUnavailable`, and with `on_unavailable="allow"` it **fails open** — each
-    acquire is admitted with no limiting at all, including the other limits on that level.
+    — but v0.14 ignores that field. A `reset_after` limit is stored where a v0.14 client does
+    not look, so a v0.14 client **does not see the session limit at all**: it keeps enforcing
+    every other limit on that level, under either `on_unavailable` setting, and simply does not
+    enforce the session limit for the requests it serves. If the level holds nothing but the
+    session limit, a v0.14 client falls through to the next level (resource, then system
+    defaults) and enforces that instead. With `on_unavailable="block"` that is a deliberate
+    trade: without it the same client would fail every `acquire()` on the level — an outage —
+    and with `"allow"` it would admit them with no limiting at all.
+
+    **Never run a v0.14 admin tool against a level that holds one.** A v0.14 `set_limits()`,
+    `delete_limits()`, `set_resource_defaults()` or CLI `set-*` command rewrites
+    the whole level from the limits *it* can see, so it **silently drops the session limit**
+    from config, and leaves the session balance behind on the buckets. Upgrade admin tooling
+    first.
 
     **Never run a v0.14 CLI against a stack that holds one.** The check runs only at write
     time, and v0.14 can undo it afterwards:
@@ -305,6 +315,28 @@ It round-trips through the `Custom::ZaeLimiterLimits` CloudFormation resource as
   The next request then opens a fresh window, which is exactly what idle-restarting specifies.
   Entity-level limits never expire.
 - **The CLI's `-l` flag cannot set one** (above).
+- **While v0.14 clients are still running** (they ignore the session limit; see the warning at
+  the top):
+    - A v0.14 client stamps a bucket's expiry from the limits **it** resolves, which can be
+      shorter than `reset_after × 7`. That covers resource- and system-level buckets, and also
+      an entity-level bucket whose entity level holds *only* the session limit: v0.14 sees that
+      level as empty, falls through to the resource or system defaults, and gives the bucket
+      their expiry — again after every idle gap that follows one of its writes, although v0.15
+      removes it on its own next write. If the bucket then expires in the middle of a window,
+      the next request starts a fresh one at the full allowance: the window restarts part-way,
+      admitting **at most one extra allowance**.
+    - A v0.14 client clears the marker that makes an ended window take the slow path, so a
+      shard can keep spending an ended window's leftover balance after the window's end, and
+      `resets_at_ms` / `retry_after_seconds` can be stale until a v0.15 request re-stamps it.
+      That spending never adds to a window's allowance on that shard: before the next window
+      reaches the shard it is the ended window's own leftover, and once another shard has
+      opened the next window there, it is charged against that window's share when the shard
+      applies it.
+    - A shard that a v0.14 client creates does not carry the session limit. The next v0.15
+      request on it adds the limit by moving surplus from the other shards, not by creating a
+      new share. The one exception is a shard whose siblings were given a larger share earlier
+      in the same window and have already spent part of it
+      ([#642](https://github.com/zeroae/zae-limiter/issues/642)).
 
 ## See also
 
@@ -314,4 +346,6 @@ It round-trips through the `Custom::ZaeLimiterLimits` CloudFormation resource as
   window
 - [ADR-141](../adr/141-reset-after-version-gate.md) — why storing a `reset_after` limit is gated
   on the stack's Lambda versions
+- [ADR-142](../adr/142-hide-reset-after-config.md) — why a session limit's configuration is
+  hidden from clients older than v0.15.0
 - [Basic Usage](basic-usage.md) — `acquire()`, leases, and handling `RateLimitExceeded`

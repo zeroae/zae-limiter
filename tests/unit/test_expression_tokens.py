@@ -21,7 +21,7 @@ import pytest
 
 from zae_limiter import Limit, RateLimiter, Repository
 from zae_limiter.schedule import ScheduleEntry
-from zae_limiter.schema import BUCKET_FIELD_TK, bucket_attr, pk_bucket
+from zae_limiter.schema import BUCKET_FIELD_TK, BUCKET_FIELD_WA, bucket_attr, pk_bucket
 from zae_limiter_aggregator.processor import (
     BucketRefillState,
     LimitRefillInfo,
@@ -141,8 +141,15 @@ class TestCompositeBuilders:
             vu=9_000,
             windows={DOTTED: (1_500, 3600)},
             window_lengths={HYPHENATED: 60},
+            applied_windows={DOTTED: 1_500, HYPHENATED: 900},
         )["Update"]
         assert_expression_safe(update)
+        # #640: the window-applied marker is aliased positionally too.
+        names = update["ExpressionAttributeNames"]
+        assert {names["#wa0"], names["#wa1"]} == {
+            bucket_attr(DOTTED, BUCKET_FIELD_WA),
+            bucket_attr(HYPHENATED, BUCKET_FIELD_WA),
+        }
 
     def test_normal_removing_ttl_and_vu(self) -> None:
         update = _repo().build_composite_normal(
@@ -348,6 +355,49 @@ class TestAggregatorWrites:
         assert {names["#rt0"], names["#rt1"]} == {
             bucket_attr(DOTTED, BUCKET_FIELD_TK),
             bucket_attr(HYPHENATED, BUCKET_FIELD_TK),
+        }
+
+    def test_window_roll_and_marker(self) -> None:
+        """#640: a rolled window and a carried one each stamp `wa` through a
+        positional alias beside the roll's own `#wtk`/`#wws` tokens."""
+        window = {
+            "cp_milli": 5_000_000,
+            "ra_milli": 0,
+            "rp_ms": 1_000,
+            "reset_after_seconds": 18_000,
+        }
+        state = BucketRefillState(
+            namespace_id="ns",
+            entity_id="user-1",
+            resource="api",
+            rf_ms=self.NOW - 60_000,
+            limits={
+                # Rolled: a window start after the one its balance reflects.
+                DOTTED: LimitRefillInfo(
+                    tc_delta=0,
+                    tk_milli=0,
+                    window_start_ms=self.NOW - 1_000,
+                    window_applied_ms=self.NOW - 18_000_000,
+                    **window,
+                ),
+                # Carried: applied under the pre-#640 `rf` rule, unmarked.
+                HYPHENATED: LimitRefillInfo(
+                    tc_delta=0,
+                    tk_milli=0,
+                    window_start_ms=self.NOW - 120_000,
+                    **window,
+                ),
+            },
+        )
+        table = MagicMock()
+        assert try_refill_bucket(table, state, self.NOW) is True
+        kwargs = table.update_item.call_args.kwargs
+        assert_expression_safe(kwargs)
+        names, values = kwargs["ExpressionAttributeNames"], kwargs["ExpressionAttributeValues"]
+        marked = {names[f"#wa{i}"]: values[f":wa{i}"] for i in range(2)}
+        assert marked == {
+            bucket_attr(DOTTED, BUCKET_FIELD_WA): self.NOW - 1_000,
+            bucket_attr(HYPHENATED, BUCKET_FIELD_WA): self.NOW - 120_000,
         }
 
     def test_reclaim(self) -> None:

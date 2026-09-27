@@ -109,14 +109,41 @@ BUCKET_FIELD_VU = "vu"  # valid-until, epoch ms — schedule materialisation sta
 # (`Repository._propagate_window_start()`) does NOT use a plain `ws < :new`:
 # it moves a sibling only if that sibling's own window had ENDED by the new
 # start (`ws <= :new - rsa * 1000`, the half-open rule the opener applied to
-# itself) and only if the sibling's `rf < :new`, since a sibling applies the
-# window by reading `ws > rf` and one already past the new start would
-# otherwise keep its burnt balance for the whole window.
+# itself). A sibling without the `wa` marker below must also have `rf < :new`,
+# since it applies the window by reading `ws > rf` and one already past the new
+# start would otherwise keep its burnt balance for the whole window; a marked
+# sibling reads `ws > wa`, which no `rf` masks.
 #
 # The window END is derived (`ws + rsa * 1000`) and never stored, so the pair
 # cannot disagree after a partial write.
 BUCKET_FIELD_WS = "ws"  # b_{name}_ws — window start, epoch ms
 BUCKET_FIELD_RSA = "rsa"  # b_{name}_rsa — window length, seconds
+
+# `wa` is the window-APPLIED marker (ADR-140, #640), per limit, per shard, epoch ms: the
+# `ws` whose allowance this shard's balance reflects, so `wa <= ws` always. A
+# shard has an unapplied window when `ws > wa` (`BucketState.window_rolled`).
+# It replaces the shared `ws > rf` comparison because a writer predating
+# ADR-139 stamps `rf` from its own clock and knows nothing of `ws`: a backward
+# stamp would roll a window twice, a forward one would skip it. Old writers
+# never touch `wa`. Absent on an item written before #640, where the rule
+# falls back to `ws > rf` until the first v0.15 write marks it.
+#
+# Stamped only by writers already serialised with the balance it describes —
+# under the `rf` lock, at item creation, or by the seed persist under
+# `attribute_not_exists(tk)` — and always as the `ws` VALUE the writer read or
+# opened, never as a copy of the `ws` path: a rollover fan-out moves `ws`
+# without touching `rf`, and must stay unapplied until a pass rolls it.
+BUCKET_FIELD_WA = "wa"  # b_{name}_wa — window applied, epoch ms
+
+# `wtc` is the consumption SNAPSHOT a rollover fan-out takes as it leaves a
+# shard unapplied (ADR-140): a path copy of `b_{name}_tc` at the instant the new
+# `ws` lands. The deferred roll targets `eff_cp - max(0, tc - wtc)` rather than
+# `eff_cp`, so whatever the shard spent while the roll was pending — from the
+# old window's leftover, once a writer predating ADR-139 removed `vu` — is
+# charged to the new window instead of being forgiven by the roll's SET. Every
+# debit path ADDs `tc`, so the result is exactly an immediate roll at the
+# snapshot instant. Only consulted while `ws > wa`.
+BUCKET_FIELD_WTC = "wtc"  # b_{name}_wtc — tc at the fan-out, millitokens
 
 # The explicit spelling of "this limit has no schedule of its own" (#541).
 #
@@ -161,12 +188,21 @@ MAX_SHARD_COUNT = 32
 
 # Composite limit config attribute prefix and field suffixes (ADR-114 for configs)
 LIMIT_ATTR_PREFIX = "l_"
+# The prefix a limit carrying `reset_after` (ADR-139) is stored under instead
+# (ADR-142, #640). Readers predating ADR-139 discover config limits by `l_` alone — the
+# client by `startswith("l_") and endswith("_cp")`, the provisioner through
+# `parse_limit_attr` — so a session limit stored here is simply not seen by
+# them, and they keep enforcing the level's other limits instead of failing the
+# whole level on a quota they cannot reconstruct. It must never start with `l_`,
+# and it collides with no other top-level config attribute. Config items only:
+# bucket attributes stay `b_*`.
+WINDOW_LIMIT_ATTR_PREFIX = "w_"
 LIMIT_FIELD_CP = "cp"  # capacity (ceiling)
 LIMIT_FIELD_RA = "ra"  # refill_amount
 LIMIT_FIELD_RP = "rp"  # refill_period_seconds
 LIMIT_FIELD_SCHED = "sched"  # compact-encoded schedule (#222 §4.1)
 LIMIT_FIELD_RSCHED = "rsched"  # compact-encoded reset schedule (#222 §4.1)
-LIMIT_FIELD_RSA = "rsa"  # l_{name}_rsa — duration window length, seconds (ADR-139)
+LIMIT_FIELD_RSA = "rsa"  # w_{name}_rsa — duration window length, seconds (ADR-142)
 
 # IANA timezone name for every schedule on the item, hoisted out of the
 # individual entries (#222 §4.1). One attribute per item, not per limit: it is
@@ -227,24 +263,84 @@ def parse_bucket_attr(attr_name: str) -> tuple[str, str] | None:
     return rest[:idx], rest[idx + 1 :]
 
 
-def limit_attr(limit_name: str, field: str) -> str:
-    """Build composite limit config attribute name: l_{limit_name}_{field}."""
-    return f"{LIMIT_ATTR_PREFIX}{limit_name}_{field}"
+def limit_attr(limit_name: str, field: str, *, windowed: bool = False) -> str:
+    """Build a composite limit config attribute name.
+
+    ``l_{limit_name}_{field}``, or ``w_{limit_name}_{field}`` for a limit
+    carrying ``reset_after`` (``windowed=True``, #640): the prefix a reader
+    predating ADR-139 does not scan.
+    """
+    prefix = WINDOW_LIMIT_ATTR_PREFIX if windowed else LIMIT_ATTR_PREFIX
+    return f"{prefix}{limit_name}_{field}"
 
 
 def parse_limit_attr(attr_name: str) -> tuple[str, str] | None:
     """Parse limit_name and field from a composite limit config attribute.
 
+    Accepts both config prefixes (``l_`` and the ``w_`` of a ``reset_after``
+    limit, #640); :func:`config_limit_names` says which one a name is stored
+    under, and rejects an item that stores one name under both.
+
     Returns (limit_name, field) or None if not a limit attribute.
     """
-    if not attr_name.startswith(LIMIT_ATTR_PREFIX):
+    for prefix in (LIMIT_ATTR_PREFIX, WINDOW_LIMIT_ATTR_PREFIX):
+        if attr_name.startswith(prefix):
+            rest = attr_name[len(prefix) :]
+            break
+    else:
         return None
-    rest = attr_name[len(LIMIT_ATTR_PREFIX) :]
     # Find the last underscore to split name from field
     idx = rest.rfind("_")
     if idx <= 0:
         return None
     return rest[:idx], rest[idx + 1 :]
+
+
+def config_limit_names(item: dict[str, Any]) -> dict[str, bool]:
+    """The limits a config item stores, and whether each is under ``w_`` (ADR-142).
+
+    Discovers a limit by its ``_cp`` attribute under either prefix, in item
+    order — the one discovery rule every config reader shares (the client's
+    ``Repository._deserialize_composite_limits`` and the provisioner's
+    ``bucket_sync._decode_limits``), so the two cannot disagree about which
+    limits a level holds. Every other field of a limit is then read under the
+    prefix returned here.
+
+    Raises:
+        ValueError: The item is corrupt in one of the two ways the prefix
+            makes possible. A name stored under **both** prefixes leaves the
+            reader no way to tell which copy is current; and a ``w_`` limit
+            carrying no ``rsa`` breaks the prefix's one promise, that the limit
+            has a duration window. Either one takes the whole item with it,
+            exactly as an undecodable schedule does: dropping the one limit
+            would let the level's other limits win outright and the dropped
+            one go unenforced.
+    """
+    names: dict[str, bool] = {}
+    suffix = f"_{LIMIT_FIELD_CP}"
+    for attr_name in item:
+        if not attr_name.endswith(suffix):
+            continue
+        for prefix, windowed in ((LIMIT_ATTR_PREFIX, False), (WINDOW_LIMIT_ATTR_PREFIX, True)):
+            if not attr_name.startswith(prefix):
+                continue
+            name = attr_name[len(prefix) : -len(suffix)]
+            if not name:
+                continue
+            if name in names:
+                raise ValueError(
+                    f"limit {name!r} is stored under both {LIMIT_ATTR_PREFIX!r} and "
+                    f"{WINDOW_LIMIT_ATTR_PREFIX!r}; cannot tell which one is current"
+                )
+            names[name] = windowed
+    for name, windowed in names.items():
+        if windowed and limit_attr(name, LIMIT_FIELD_RSA, windowed=True) not in item:
+            raise ValueError(
+                f"limit {name!r} is stored under {WINDOW_LIMIT_ATTR_PREFIX!r}, which is "
+                f"reserved for a reset_after limit, but carries no "
+                f"{limit_attr(name, LIMIT_FIELD_RSA, windowed=True)!r}"
+            )
+    return names
 
 
 def pk_entity(namespace_id: str, entity_id: str) -> str:
