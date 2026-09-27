@@ -4397,7 +4397,10 @@
 </span></code></pre></div>
 <p><strong>Major version mismatch</strong>: Always incompatible. Schema migration required before the client can operate.</p>
 <p><strong>Minor/patch version mismatch</strong>: Compatible. Client and infrastructure can operate together.</p>
-<p><strong>Minimum client version</strong>: Infrastructure can require a minimum client version. Older clients are rejected.</p>
+<p><strong>Minimum client version</strong>: Infrastructure can require a minimum client version. Clients from
+v0.15.0 on raise <code>VersionMismatchError</code> below it (earlier clients ignore it). Deploys, upgrades
+and Lambda auto-updates keep the stored minimum; storing a <code>reset_after</code> limit raises it to
+0.15.0 (#638).</p>
 <h3 id="checking-compatibility">Checking Compatibility<a class="headerlink" href="#checking-compatibility" title="Permanent link">&para;</a></h3>
 <p>Use the CLI to check compatibility without modifying anything:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># Check current compatibility status</span>

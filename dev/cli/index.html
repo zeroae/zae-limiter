@@ -8843,6 +8843,8 @@ System defaults are the lowest priority in the hierarchy.</p>
 <p>Upgrade infrastructure to match client version.</p>
 <p>Updates Lambda code and version records to match the current client.
 Use --force to update even when versions already match.</p>
+<p>The stack's minimum client version is kept, never lowered, and a client
+below it is refused rather than allowed to downgrade the Lambdas.</p>
 <p><strong>Examples:</strong>
     <div class="language-bash highlight"><pre><span></span><code><span id="__span-106-1"><a id="__codelineno-106-1" name="__codelineno-106-1" href="#__codelineno-106-1"></a><span class="c1"># Standard upgrade</span>
 </span><span id="__span-106-2"><a id="__codelineno-106-2" name="__codelineno-106-2" href="#__codelineno-106-2"></a>zae-limiter<span class="w"> </span>upgrade<span class="w"> </span>--name<span class="w"> </span>my-app<span class="w"> </span>--region<span class="w"> </span>us-east-1

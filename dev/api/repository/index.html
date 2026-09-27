@@ -1528,6 +1528,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.repository.Repository.require_reset_after_readers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;require_reset_after_readers
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.repository.Repository.create_entity" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2903,6 +2914,17 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;get_version_record
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.repository_protocol.RepositoryProtocol.require_reset_after_readers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;require_reset_after_readers
       
     </span>
   </a>
@@ -5605,6 +5627,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.repository.Repository.require_reset_after_readers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;require_reset_after_readers
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.repository.Repository.create_entity" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6980,6 +7013,17 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;get_version_record
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.repository_protocol.RepositoryProtocol.require_reset_after_readers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;require_reset_after_readers
       
     </span>
   </a>
@@ -9102,6 +9146,66 @@ batches, then removes the reverse record.</p>
               <div class="doc-md-description">
                 <p>If the namespace is <code>"active"</code> (cannot purge
 an active namespace).</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="zae_limiter.repository.Repository.require_reset_after_readers" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">require_reset_after_readers</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+  </span>
+
+<a href="#zae_limiter.repository.Repository.require_reset_after_readers" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">require_reset_after_readers</span><span class="p">(</span><span class="n">limits</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Refuse a <code>reset_after</code> limit passed to <code>acquire(limits=...)</code> (#638 A).</p>
+<p>An override is never stored as config, but the slow path writes it onto
+the bucket item (<code>b_{name}_rsa</code> beside a zero refill rate) — exactly
+the item a pre-v0.15 aggregator's shard clone mints a fresh share on. So
+it is gated like a config write, but on the hot path, so <strong>at no cost
+when it passes</strong>: the <code>lambda_version</code> that <code>open()</code>, <code>connect()</code>
+or <code>builder()</code> already read is trusted. Only a refusal re-reads, with
+one strongly consistent <code>GetItem</code>, so a stack upgraded since the
+repository was opened is not refused on stale knowledge.</p>
+<p>A repository that never read the record (the deprecated constructor)
+reads it once here, then trusts the cache like everyone else — one
+read per repository lifetime, against failing every such caller closed
+with no remedy on the same object. The ratchet does not run: nothing
+is stored as config, so no older client is made to misread a level.</p>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            VersionMismatchError (zae_limiter.exceptions.VersionMismatchError)" href="../exceptions/#zae_limiter.exceptions.VersionMismatchError">VersionMismatchError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>as for the config writers.</p>
               </div>
             </td>
           </tr>
@@ -11559,6 +11663,30 @@ exactly as <code>disable_entity()</code>/<code>enable_entity()</code> do.</p>
     </table>
 
 
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            VersionMismatchError (zae_limiter.exceptions.VersionMismatchError)" href="../exceptions/#zae_limiter.exceptions.VersionMismatchError">VersionMismatchError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>limits</code> carries a <code>reset_after</code> limit
+and the stack's Lambdas predate it (#638). Nothing is written.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
     </div>
 
 </div>
@@ -12109,6 +12237,30 @@ exactly as <code>disable_resource()</code>/<code>enable_resource()</code> do.</p
     </table>
 
 
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            VersionMismatchError (zae_limiter.exceptions.VersionMismatchError)" href="../exceptions/#zae_limiter.exceptions.VersionMismatchError">VersionMismatchError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>limits</code> carries a <code>reset_after</code> limit
+and the stack's Lambdas predate it (#638). Nothing is written.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
     </div>
 
 </div>
@@ -12366,6 +12518,30 @@ composite item with SK '#CONFIG'. This reduces cache-miss cost.</p>
             </td>
             <td>
                   <code>None</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            VersionMismatchError (zae_limiter.exceptions.VersionMismatchError)" href="../exceptions/#zae_limiter.exceptions.VersionMismatchError">VersionMismatchError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>limits</code> carries a <code>reset_after</code> limit
+and the stack's Lambdas predate it (#638). Nothing is written.</p>
+              </div>
             </td>
           </tr>
       </tbody>
@@ -12743,7 +12919,7 @@ Does not verify the table is initialized or has valid data.</p>
   </span>
 
 <a href="#zae_limiter.repository.Repository.set_version_record" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">set_version_record</span><span class="p">(</span><span class="n">schema_version</span><span class="p">,</span> <span class="n">lambda_version</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">client_min_version</span><span class="o">=</span><span class="s1">'0.0.0'</span><span class="p">,</span> <span class="n">updated_by</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">set_version_record</span><span class="p">(</span><span class="n">schema_version</span><span class="p">,</span> <span class="n">lambda_version</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">client_min_version</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">updated_by</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -12799,15 +12975,19 @@ Does not verify the table is initialized or has valid data.</p>
                 <code>client_min_version</code>
             </td>
             <td>
-                  <code><span title="str">str</span></code>
+                  <code><span title="str">str</span> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Minimum compatible client version</p>
+                <p>Minimum compatible client version. <code>None</code>
+(the default) <strong>keeps the stored minimum</strong> — <code>"0.0.0"</code> only
+when there is none — so a Lambda deploy or upgrade never lowers
+a minimum a <code>reset_after</code> write raised (#638 C). Pass a value
+only to set the minimum deliberately.</p>
               </div>
             </td>
             <td>
-                  <code>&#39;0.0.0&#39;</code>
+                  <code>None</code>
             </td>
           </tr>
           <tr class="doc-section-item">
@@ -19502,6 +19682,56 @@ unless overridden at the entity level.</p>
 <div class="doc doc-object doc-function">
 
 
+<h4 id="zae_limiter.repository_protocol.RepositoryProtocol.require_reset_after_readers" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">require_reset_after_readers</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+  </span>
+
+<a href="#zae_limiter.repository_protocol.RepositoryProtocol.require_reset_after_readers" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">require_reset_after_readers</span><span class="p">(</span><span class="n">limits</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Refuse <code>reset_after</code> limits the stack's Lambdas cannot read (#638).</p>
+<p>Called by <code>acquire(limits=...)</code> before anything is written. Free when
+no limit carries <code>reset_after</code>, and free when the backend already
+knows its readers are new enough.</p>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            VersionMismatchError (zae_limiter.exceptions.VersionMismatchError)" href="../exceptions/#zae_limiter.exceptions.VersionMismatchError">VersionMismatchError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>the readers predate <code>reset_after</code>.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
 <h4 id="zae_limiter.repository_protocol.RepositoryProtocol.set_version_record" class="doc doc-heading">
 <code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">set_version_record</span>
 
@@ -19511,7 +19741,7 @@ unless overridden at the entity level.</p>
   </span>
 
 <a href="#zae_limiter.repository_protocol.RepositoryProtocol.set_version_record" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">set_version_record</span><span class="p">(</span><span class="n">schema_version</span><span class="p">,</span> <span class="n">lambda_version</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">client_min_version</span><span class="o">=</span><span class="s1">'0.0.0'</span><span class="p">,</span> <span class="n">updated_by</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">set_version_record</span><span class="p">(</span><span class="n">schema_version</span><span class="p">,</span> <span class="n">lambda_version</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">client_min_version</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">updated_by</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -19567,15 +19797,17 @@ unless overridden at the entity level.</p>
                 <code>client_min_version</code>
             </td>
             <td>
-                  <code><span title="str">str</span></code>
+                  <code><span title="str">str</span> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Minimum compatible client version</p>
+                <p>Minimum compatible client version. <code>None</code>
+keeps the stored minimum (<code>"0.0.0"</code> when there is none), so
+a deploy or upgrade never lowers it (#638).</p>
               </div>
             </td>
             <td>
-                  <code>&#39;0.0.0&#39;</code>
+                  <code>None</code>
             </td>
           </tr>
           <tr class="doc-section-item">

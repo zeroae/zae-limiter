@@ -3683,13 +3683,47 @@ the same wall-clock instant for everyone.</p>
 </span></code></pre></div>
 <p>Two callers that first use it at 09:00 and 14:30 get windows ending at 14:00 and 19:30.</p>
 <div class="admonition warning">
-<p class="admonition-title">Upgrade every client and the aggregator before storing one</p>
-<p><code>reset_after</code> is new in v0.15.0, and nothing checks versions for you. A client older than
-v0.15.0 cannot read a level that stores a <code>reset_after</code> limit: with
-<code>on_unavailable="block"</code> every <code>acquire()</code> against that level raises
-<code>RateLimiterUnavailable</code>, and with <code>on_unavailable="allow"</code> it is admitted <strong>with no
-limiting at all</strong>, including the other limits on that level. An older aggregator Lambda
-treats the quota as a dripping limit and grants each shard it pre-creates a fresh share.</p>
+<p class="admonition-title">Upgrade every client before storing one; the Lambdas are checked for you</p>
+<p><code>reset_after</code> is new in v0.15.0.</p>
+<p><strong>The aggregator is enforced.</strong> <code>set_limits()</code>, <code>set_resource_defaults()</code>,
+<code>set_system_defaults()</code>, <code>zae-limiter limits apply</code> and an <code>acquire(limits=[...])</code>
+override refuse a <code>reset_after</code> limit with <code>VersionMismatchError</code> until the stack's version
+record says its Lambdas are v0.15.0 or newer (a 0.15.0 release candidate counts). An older
+aggregator would treat the quota as a dripping limit and grant each shard it pre-creates a
+fresh share. <code>Repository.open()</code> updates old Lambdas for you; after <code>Repository.connect()</code>
+or <code>auto_update=False</code>, run <code>zae-limiter upgrade</code> first. A stack deployed with
+<code>--no-aggregator</code> is fixed by re-running <code>zae-limiter deploy</code> from v0.15.0 instead, with
+the provisioner enabled. <code>deploy</code> records the new version only if the stack is new, or both
+the aggregator and the provisioner are current (code pushed in that run, or absent) — it
+pushes code to an existing stack's functions but never adds or removes one, so an old
+function left in place keeps the stack refused. The
+config writers pay one strongly consistent read per write that carries <code>reset_after</code>; the
+<code>acquire()</code> override pays nothing, trusting the version read when the repository was opened.</p>
+<p><strong>A stack whose Lambda version is unknown is refused too.</strong> When <code>Repository.open()</code> finds
+a table with no version record — say, one built from an older <code>cfn-template</code> — it writes
+one without claiming an aggregator it did not deploy (it claims its own version only when it
+finds no aggregator at all). Run <code>zae-limiter upgrade</code> to deploy the Lambdas and stamp the
+version.</p>
+<p><strong>Clients older than v0.15.0 are not enforced.</strong> A successful write raises the stack's
+<code>client_min_version</code> to 0.15.0, and every client from v0.15.0 on refuses to start below it
+— but v0.14 ignores that field. A v0.14 client cannot read a level that stores a
+<code>reset_after</code> limit: with <code>on_unavailable="block"</code> every <code>acquire()</code> against that level
+raises <code>RateLimiterUnavailable</code>, and with <code>on_unavailable="allow"</code> it <strong>fails open</strong> — each
+acquire is admitted with no limiting at all, including the other limits on that level.</p>
+<p><strong>Never run a v0.14 CLI against a stack that holds one.</strong> The check runs only at write
+time, and v0.14 can undo it afterwards:</p>
+<ul>
+<li><code>zae-limiter deploy</code> or <code>upgrade --force</code> from v0.14 puts the v0.14 Lambdas back and
+  stamps <code>lambda_version = 0.14.0</code>.</li>
+<li>A v0.14 <code>upgrade</code> treats the raised minimum as "not up to date", so it too downgrades the
+  Lambdas — and resets <code>client_min_version</code> to <code>0.0.0</code>.</li>
+</ul>
+<p>The next v0.15 <code>Repository.open()</code> re-upgrades the Lambdas; the minimum comes back only
+with the next <code>reset_after</code> write. A long-lived process that opened its repository before
+a downgrade keeps trusting the version it read for <code>acquire(limits=...)</code> overrides.</p>
+<p><strong>A refused CloudFormation update can leave the stack in <code>UPDATE_ROLLBACK_FAILED</code></strong> when
+the previous properties also carried a <code>reset_after</code> limit — the rollback is refused the
+same way. See <a href="../../operations/version/#refused-reset_after-write">Version Management</a>.</p>
 </div>
 <h2 id="which-one-do-i-want">Which one do I want?<a class="headerlink" href="#which-one-do-i-want" title="Permanent link">&para;</a></h2>
 <p><code>Limit.quota()</code> takes exactly one of <code>cron</code> or <code>reset_after</code>. Both build a <strong>quota</strong> — a limit
