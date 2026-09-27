@@ -2230,7 +2230,7 @@ async def _propagate_window_start(
         ``(shard_count - 1) * len(window_starts)`` is logged: a lost write
         leaves a sibling on a stale ``ws``, which costs at most one extra
         window's share on the shards that already rolled when that sibling
-        later anchors a window of its own (ADR-139 Consequences).
+        later anchors a window of its own (ADR-140 Consequences).
     """
     if shard_count <= 1 or not window_starts:
         return 0
@@ -3905,7 +3905,7 @@ What survives is the sequencing consequence: Tasks 1–5 are **inert** (a field 
 attribute nobody writes), so they can land ahead of the rest without changing any behaviour. If
 v0.15.0 needs to be split, that is where the seam is.
 
-**2. A lost fan-out write costs one extra window's share.** Recorded in ADR-139's Consequences
+**2. A lost fan-out write costs one extra window's share.** Recorded in ADR-140's Consequences
 and above. A sibling that misses the rollover keeps a stale `ws`, later anchors a window of its
 own, fans *that* out, and shards which already rolled see `ws > rf` a second time. Bounded (one
 extra share per affected shard per lost write) and self-converging, but real. The mitigation is

@@ -521,7 +521,7 @@ class SyncRepositoryProtocol(Protocol):
             cascade: Whether the entity has cascade enabled
             parent_id: The entity's parent_id (if any)
             vu: Valid-until stamp in epoch ms, or None to omit (#222 §2.1)
-            rf_ms: The ``rf`` to stamp, or None for ``now_ms`` (ADR-139)
+            rf_ms: The ``rf`` to stamp, or None for ``now_ms`` (ADR-140)
         """
         ...
 
@@ -561,7 +561,7 @@ class SyncRepositoryProtocol(Protocol):
                 appear; ``None`` leaves every `ws` untouched. `ws` and `rsa`
                 travel as one pair so neither is ever stamped alone.
             rf_ms: The ``rf`` to stamp, or None for ``now_ms``. The lock still
-                compares against ``expected_rf`` (ADR-139)
+                compares against ``expected_rf`` (ADR-140)
             window_lengths: Limit name -> ``reset_after_seconds`` to stamp as
                 ``rsa`` alone, where the configured length differs from the
                 item's and the window did not move (ADR-139)
@@ -723,7 +723,7 @@ class SyncRepositoryProtocol(Protocol):
         shard_count: int,
         windows: dict[str, tuple[int, int]],
     ) -> int:
-        """Stamp a newly anchored duration window on the entity's other shards (ADR-139).
+        """Stamp a newly anchored duration window on the entity's other shards (ADR-140).
 
         One conditional ``SET ws = :new, rsa = :rsa, vu = 0`` per (sibling,
         limit) under ``attribute_exists(PK) AND (attribute_not_exists(ws) OR
@@ -801,7 +801,7 @@ class SyncRepositoryProtocol(Protocol):
     def get_shard_window_starts(
         self, entity_id: str, resource: str, limit_names: list[str], shard_id: int = 0
     ) -> dict[str, int]:
-        """Read one shard's duration-window starts, to seed a shard being created (ADR-139).
+        """Read one shard's duration-window starts, to seed a shard being created (ADR-140).
 
         A shard created mid-window joins the window in progress rather than
         opening its own, so the create path reads the ``ws`` it would inherit

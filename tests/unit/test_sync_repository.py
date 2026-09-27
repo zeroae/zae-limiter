@@ -910,7 +910,7 @@ class TestDurationWindowStamp:
 
 
 class TestPropagateWindowStart:
-    """The rollover fan-out (ADR-139 "Storage and shard coherence", #624).
+    """The rollover fan-out (ADR-140, #624).
 
     One conditional write per (sibling, limit), moving ``ws`` (with ``rsa``
     and ``vu = 0``) only onto a sibling whose own window had already ended by
@@ -6306,7 +6306,7 @@ def _ccf(operation: str) -> ClientError:
 
 
 class TestResetAfterVersionGate:
-    """Storing a ``reset_after`` limit is gated on the readers' version (#638 A).
+    """Storing a ``reset_after`` limit is gated on the readers' version (#638 A, ADR-141).
 
     A reader predating ADR-139 misreads the limit — a v0.14 aggregator's shard
     clone mints ``cp // new_count`` per new shard (#587) — so every config

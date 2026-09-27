@@ -894,7 +894,7 @@ class Limit:
           phantom one-token drip beside a ``retry_after_seconds`` computed
           from a rate that does not exist.
         * **Both reset tuples at once** beside a zero rate is unconstructible
-          under ADR-139 (§Negatives: a limit resets one way, never both).
+          under ADR-139 (a limit resets one way, never both).
           ``reset_sched`` — the pre-ADR-139 reading — wins and
           ``reset_after_seconds`` is dropped, so the bucket still reconstructs
           as the quota it is rather than raising two-recovery-mechanisms from
@@ -1327,7 +1327,7 @@ class BucketState:
     def window_rolled(self) -> bool:
         """Has a window opened that this shard's balance does not reflect yet?
 
-        ``ws > rf`` (ADR-139): a shard whose window start is newer than its own
+        ``ws > rf`` (ADR-140): a shard whose window start is newer than its own
         last materialisation has not applied that window. This is the single
         statement of the rule — the slow-path roll
         (``RateLimiter._apply_window_roll``) and every read-only view of the

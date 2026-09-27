@@ -861,7 +861,7 @@ def try_refill_bucket(
     }
 
     # A window this shard has not applied (`ws > rf`) that has also already
-    # ended at `now` (ADR-139). The aggregator must not apply it: the balance
+    # ended at `now` (ADR-140). The aggregator must not apply it: the balance
     # it would restore belongs to a window that is over, and the client's next
     # pass opens a *new* window (`_open_window_if_elapsed`) and resets
     # unconditionally. Anything spent from a late-restored dead window in the
@@ -937,7 +937,7 @@ def try_refill_bucket(
             reset_sched = info.reset_sched
 
         # A duration window rolled since this item was last refilled sets the
-        # balance to the effective capacity (ADR-139), which as an `ADD` is
+        # balance to the effective capacity (ADR-140), which as an `ADD` is
         # `eff_cp - tk_observed` — the identical delta shape the reset branch
         # below and the unconditional clamp use, and safe for the identical
         # commutativity reason. It is the same `ws > rf` comparison, against
@@ -1063,7 +1063,7 @@ def try_refill_bucket(
     # ADD is commutative with concurrent speculative writes (Issue #317)
     #
     # `rf` is stamped exactly as the client stamps it (`lease._monotonic_rf`,
-    # ADR-139): `max(now, stored rf, every window start in force on the item)`.
+    # ADR-140): `max(now, stored rf, every window start in force on the item)`.
     # A window rolls when `ws > rf`, so `rf` is the only record that a shard
     # has applied its window. An aggregator clock behind the one that stamped
     # the item would otherwise move `rf` backward past `ws`, and the next pass
