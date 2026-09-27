@@ -7576,8 +7576,8 @@ class TestClientMinVersionSurvivesTheCli:
     ) -> None:
         """The #638 fix-round-2 repro, end to end: a v0.14-stamped stack with
         no aggregator is redeployed by v0.15, then opens with auto_update and
-        stores a reset_after limit — without ever pushing aggregator code,
-        which fails on such a stack (#644)."""
+        stores a reset_after limit — without ever pushing aggregator code, for
+        there is none to push to."""
         import asyncio
         from datetime import timedelta
 

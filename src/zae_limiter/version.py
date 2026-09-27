@@ -265,24 +265,15 @@ def reads_reset_after(lambda_version: str | None, own_version: str) -> bool:
 def reset_after_refusal(record_found: bool, lambda_version: str | None) -> tuple[str, bool]:
     """The message and ``can_auto_update`` for a refused ``reset_after`` write (#638).
 
-    One wording for the client and the provisioner. The version record cannot
-    say whether the stack has an aggregator, so each message names both
-    remedies: ``zae-limiter upgrade`` deploys new Lambda code, and a stack
-    deployed with ``--no-aggregator`` is fixed by re-running ``zae-limiter
-    deploy`` from a new enough release instead (``upgrade`` fails there, it
-    pushes code to an aggregator that does not exist).
+    One wording for the client and the provisioner. ``zae-limiter upgrade``
+    (and ``Repository.open(auto_update=True)``) pushes new code to every Lambda
+    the stack has and skips one it was deployed without (#644), so it is the
+    remedy whether or not the stack has an aggregator or a provisioner.
 
     ``can_auto_update`` is True only for a known, old ``lambda_version``: that
     is the one case ``Repository.open(auto_update=True)`` repairs by itself.
     """
     minimum = MIN_READER_VERSION_FOR_RESET_AFTER
-    no_aggregator = (
-        f"On a stack deployed with --no-aggregator, re-run 'zae-limiter deploy' "
-        f"from {minimum} or later instead, with the flags the stack was deployed "
-        "with: an existing provisioner must stay enabled so it gets new code "
-        "(deploy never removes one), and a stack deployed without one keeps "
-        "--no-provisioner / --no-iam."
-    )
     if not record_found:
         return (
             "Refusing to store a reset_after limit: the stack has no version record, "
@@ -295,14 +286,14 @@ def reset_after_refusal(record_found: bool, lambda_version: str | None) -> tuple
             "Refusing to store a reset_after limit: the version record does not say "
             "which Lambda code is deployed (it was initialized by a client that "
             "deployed none), so nothing proves the aggregator reads reset_after "
-            f"(added in {minimum}). Run 'zae-limiter upgrade' to deploy it. " + no_aggregator,
+            f"(added in {minimum}). Run 'zae-limiter upgrade' to deploy it.",
             False,
         )
     return (
         "Refusing to store a reset_after limit: the deployed Lambdas predate "
         f"{minimum} and would misread it (the aggregator over-admits it). Run "
         "'zae-limiter upgrade' first, or open the stack with Repository.open() "
-        "and auto_update=True. " + no_aggregator,
+        "and auto_update=True.",
         True,
     )
 

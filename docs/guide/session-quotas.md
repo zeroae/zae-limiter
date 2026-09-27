@@ -23,9 +23,9 @@ Two callers that first use it at 09:00 and 14:30 get windows ending at 14:00 and
     record says its Lambdas are v0.15.0 or newer (a 0.15.0 release candidate counts). An older
     aggregator would treat the quota as a dripping limit and grant each shard it pre-creates a
     fresh share. `Repository.open()` updates old Lambdas for you; after `Repository.connect()`
-    or `auto_update=False`, run `zae-limiter upgrade` first. A stack deployed with
-    `--no-aggregator` is fixed by re-running `zae-limiter deploy` from v0.15.0 instead, with
-    the provisioner enabled. `deploy` records the new version only if the stack is new, or both
+    or `auto_update=False`, run `zae-limiter upgrade` first — it works on a stack deployed with
+    `--no-aggregator`, `--no-provisioner` or `--no-iam` too, pushing code only to the Lambdas
+    the stack has. `deploy` records the new version only if the stack is new, or both
     the aggregator and the provisioner are current (code pushed in that run, or absent) — it
     pushes code to an existing stack's functions but never adds or removes one, so an old
     function left in place keeps the stack refused. The

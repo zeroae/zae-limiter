@@ -6350,7 +6350,7 @@ class TestResetAfterVersionGate:
             with pytest.raises(VersionMismatchError) as exc_info:
                 self._write(repo, level, [self.RPM, self.SESSION])
         assert "zae-limiter upgrade" in str(exc_info.value)
-        assert "--no-aggregator, re-run 'zae-limiter deploy'" in str(exc_info.value)
+        assert "zae-limiter deploy" not in str(exc_info.value)
         assert exc_info.value.lambda_version == "0.14.0"
         assert exc_info.value.can_auto_update is True
         assert self._read(repo, level) == []
@@ -6381,7 +6381,7 @@ class TestResetAfterVersionGate:
             with pytest.raises(VersionMismatchError) as exc_info:
                 self._write(repo, "entity", [self.SESSION])
         assert "Run 'zae-limiter upgrade' to deploy it" in str(exc_info.value)
-        assert "re-run 'zae-limiter deploy'" in str(exc_info.value)
+        assert "zae-limiter deploy" not in str(exc_info.value)
         assert exc_info.value.can_auto_update is False
 
     def _counting_get_item(self, repo, write):
