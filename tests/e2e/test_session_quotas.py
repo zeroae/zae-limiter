@@ -1,10 +1,18 @@
 """End-to-end tests for session quotas: ``Limit.quota(..., reset_after=...)`` (ADR-139).
 
 Unit tests drive a frozen clock through the window arithmetic. These use real
-elapsed time against LocalStack, with two-second windows, for what only a real
-clock shows: a window anchored at an entity's own first use, reported the same
-way by a rejection and by ``check_availability``, restored when it elapses, and
-restarted by the next use rather than tiled forward on a grid.
+elapsed time against LocalStack, for what only a real clock shows: a window
+anchored at an entity's own first use, reported the same way by a rejection and
+by ``check_availability``, restored when it elapses, and restarted by the next
+use rather than tiled forward on a grid.
+
+Windows here are wide (>= 10s, #645) and every timing-sensitive assertion
+brackets the call it judges with clock reads taken from this module's own
+``_now_ms()`` (the same clock the repository stamps ``ws``/``rf`` with) rather
+than comparing to an approximate slack: under xdist load, LocalStack slows
+while other workers create CloudFormation stacks (observed ~3s per DynamoDB
+round trip), and a short window or a slack-based approximation both let a
+"rejecting" call land after its window has already rolled over.
 
 The minimal stack has no aggregator, so everything there is the client's own
 work (the ``--no-aggregator`` case): the roll, the fan-out across shards, and
@@ -32,9 +40,11 @@ from zae_limiter import Limit, RateLimitExceeded, schema
 pytestmark = [pytest.mark.integration, pytest.mark.e2e]
 
 RESOURCE = "gpt-4"
-WINDOW = timedelta(seconds=2)
-WINDOW_MS = 2_000
-SLACK_S = 0.3
+WINDOW = timedelta(seconds=10)
+WINDOW_MS = 10_000
+"""#645: wide enough that a handful of ~3s-under-load round trips between the
+anchor write and a rejection-timing assertion cannot cross the window boundary."""
+SLACK_S = 1.0
 """Margin past a window's end before acting on it, for LocalStack round trips."""
 
 
@@ -82,27 +92,45 @@ async def _spend(limiter, entity_id: str, amount: int = 1) -> None:
 class TestSessionQuotaWithoutTheAggregator:
     """The client owns the whole feature: no Lambda runs on this stack."""
 
+    @pytest.mark.slow
     @pytest.mark.asyncio
     async def test_an_exhausted_session_reports_its_end_then_restores(self, localstack_limiter):
         """Spend the allowance; the rejection and ``check_availability`` both
-        name the window's end, and after it the allowance is back in full."""
+        name the window's end, and after it the allowance is back in full.
+
+        #645: ``check_availability`` drops a window end at or before its own
+        ``now_ms`` read (an elapsed window is simply over), so the risk here
+        is the *sum* of the round trips on the critical path before that
+        read -- configure, the exhausting spend, reading ``ws`` back, and the
+        rejecting spend -- landing at or past the window's end. Each round
+        trip measured up to ~3s under xdist load (4 of them: ~12s), so the
+        default module ``WINDOW_MS`` (10s) was not enough margin (observed:
+        this test's own ``check_availability`` call reported
+        ``resets_at_ms is None``). A local, wider window with margin, hence
+        @slow for the added wall time.
+        """
         limiter = localstack_limiter
-        await _configure(limiter, "spender", 3)
+        window = timedelta(seconds=30)
+        window_ms = 30_000
+        await _configure(limiter, "spender", 3, window=window)
         await _spend(limiter, "spender", 3)
         ws = await _ws(limiter._repository, "spender")
         assert ws is not None
-        end = ws + WINDOW_MS
+        end = ws + window_ms
 
+        t_before = _now_ms()
         with pytest.raises(RateLimitExceeded) as caught:
             await _spend(limiter, "spender")
-        rejected_at = _now_ms()
+        t_after = _now_ms()
         (violation,) = caught.value.violations
         assert violation.limit_name == "session"
         assert violation.resets_at_ms == end
-        assert 0 < caught.value.retry_after_seconds <= WINDOW_MS / 1000
-        assert caught.value.retry_after_seconds == pytest.approx(
-            (end - rejected_at) / 1000, abs=0.5
-        )
+        assert 0 < caught.value.retry_after_seconds <= window_ms / 1000
+        # Bracket the call with clock reads taken before/after it, rather than
+        # a single read-after-the-fact compared with an approximate slack
+        # (#645): under load the call itself can take seconds, so only a
+        # range bounded by both ends of the call is a property of the code.
+        assert (end - t_after) / 1000 <= caught.value.retry_after_seconds <= (end - t_before) / 1000
         (body,) = caught.value.as_dict()["limits"]
         assert body["kind"] == "quota"
         assert body["resets_at_ms"] == end
@@ -129,18 +157,19 @@ class TestSessionQuotaWithoutTheAggregator:
         first = await _ws(repo, "idler")
         assert first is not None
 
-        await asyncio.sleep(WINDOW_MS / 1000 + 1.0)  # a full second idle past the end
+        await asyncio.sleep(WINDOW_MS / 1000 + 2.0)  # a couple seconds idle past the end
         called_at = _now_ms()
         await _spend(limiter, "idler")
         second = await _ws(repo, "idler")
 
         assert second is not None
         assert second >= called_at, "anchored at the call that restarted it"
-        assert second - first >= WINDOW_MS + 900, "not the grid tile at first + W"
+        assert second - first >= WINDOW_MS + 1_900, "not the grid tile at first + W"
         availability = await limiter.check_availability("idler", RESOURCE)
         assert availability.available == {"session": 1}
         assert availability.status("session").resets_at_ms == second + WINDOW_MS
 
+    @pytest.mark.slow
     @pytest.mark.asyncio
     async def test_two_entities_get_independent_windows(self, localstack_limiter):
         """The feature in one test. A calendar quota would reset both entities
@@ -149,20 +178,31 @@ class TestSessionQuotaWithoutTheAggregator:
         Each first use is bracketed by the local clock rather than bounded
         from above: LocalStack latency can stretch the gap between the two
         uses arbitrarily, so only its lower bound is a property of the code.
-        A five-second window keeps the second entity's window live when the
-        first one's has ended, whatever that latency adds to the 1.5 s gap.
+
+        #645: ``check_availability`` drops a window end that is already at or
+        before its own ``now_ms`` read (a window that elapsed is simply
+        over), so unlike the other tests here the risk is not a single call
+        landing late -- it is the *sum* of every round trip on the critical
+        path before that read (two configures, the "early" spend, the
+        deliberate gap, the "late" spend) adding up to more than "early"'s
+        window before we ever get to check it. Each round trip measured up
+        to ~3 s under xdist load, so a 15 s window was not enough margin
+        (observed: "early"'s window had already rolled over by the time
+        ``check_availability`` read it, reporting ``resets_at_ms is None``).
+        A 30 s window and a 10 s deliberate gap give ample room, at the cost
+        of the test's wall time -- hence @slow.
         """
         limiter = localstack_limiter
         repo = limiter._repository
-        window = timedelta(seconds=5)
-        window_ms = 5_000
+        window = timedelta(seconds=30)
+        window_ms = 30_000
         for entity_id in ("early", "late"):
             await _configure(limiter, entity_id, 1, window=window)
 
         t0 = _now_ms()
         await _spend(limiter, "early")
         t1 = _now_ms()
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(10.0)
         t2 = _now_ms()
         await _spend(limiter, "late")
         t3 = _now_ms()
