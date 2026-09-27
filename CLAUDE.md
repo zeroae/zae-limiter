@@ -939,7 +939,9 @@ structural predicate. `reset_after` is a `timedelta` (positive, whole seconds, a
 `reset_after_seconds` and is an `int` — `Limit.reset_after_seconds`, `to_dict()`, the manifest,
 `BucketState`, and CFN's `ResetAfterSeconds`. **The unit lives in the name wherever the type
 cannot carry it**; a new serialization boundary that takes a bare `reset_after` int is wrong by
-the unit it forgot. User guide: `docs/guide/session-quotas.md`.
+the unit it forgot. User guide: `docs/guide/session-quotas.md`. Design records: ADR-139 (the
+window itself), ADR-140 (how an entity's shards share one window, including the `wa` marker
+and the `wtc` snapshot), ADR-141 (the version gate), ADR-142 (the hidden `w_` config prefix).
 
 **Idle-restarting, not tiling.** A window that ends while the entity is quiet is over; the next
 admitted request opens a fresh one at its own `now` (`RateLimiter._open_window_if_elapsed`,
@@ -960,16 +962,16 @@ sync's marker and the aggregator's #508 pin, so reading a window end off it woul
 `set_limits()` into an elapsed window. `vu` gains `ws + rsa` as a third voting member of its
 minimum (`_materialisation_stamps`, aggregator `_item_next_boundary`), which is all it needs.
 
-**The roll rule is `ws > wa`** (`BucketState.window_rolled`, `RateLimiter._apply_window_roll`,
+**The roll rule is `ws > wa`** (ADR-140; `BucketState.window_rolled`, `RateLimiter._apply_window_roll`,
 aggregator `processor._window_applied`): `_apply_reset_edge` with the backwards cron scan
 replaced by an attribute read — a set to the shard's effective share, idempotent, one reset
 however many windows an idle shard slept through, `tc` untouched. The **opener** resets
 unconditionally (`opened=True`) under its own `rf` lock and stamps `ws = wa = now`; `ws > wa` is
 the rule for a shard that *sees* a window someone else opened.
 
-**`b_{name}_wa`, the window-applied marker (#640)** — the `ws` this shard's balance reflects,
+**`b_{name}_wa`, the window-applied marker (ADR-140, #640)** — the `ws` this shard's balance reflects,
 per limit, per shard, `wa <= ws`. It replaces the shared `ws > rf` comparison because a client
-predating ADR-139 can now write a bucket carrying a window (hidden config, below) and stamps
+predating ADR-139 can now write a bucket carrying a window (hidden config, ADR-142, below) and stamps
 `rf` from its own clock: backward rolled a window twice (one share over-admitted), forward past
 a fanned-out `ws` hid it (a burnt shard for the whole window). An item with no `wa` falls back to
 `ws > rf` — the whole migration; the next v0.15 write marks it. Stamped, always as the `ws`
@@ -984,7 +986,7 @@ persist's `attribute_not_exists(tk)`. The fast path reads a live but unapplied w
 restored (`bucket._restored_if_window_ended`): an old writer REMOVEs `vu`, and judging that
 image as it stood fast-rejected the shard for the whole window.
 
-**A pending roll charges what was spent meanwhile (`b_{name}_wtc`, #640 review).** With `vu`
+**A pending roll charges what was spent meanwhile (`b_{name}_wtc`, ADR-140, #640 review).** With `vu`
 REMOVEd by an old writer, a fanned-out shard (`ws > wa`) spends the ended window's leftover
 inside the new window — on the fast path, or in a consumption-only retry whose `rf` lock an old
 write took — and a roll that SETs the share forgave all of it (13 admitted against 10). The
@@ -999,7 +1001,7 @@ seed apply their window in the same write and restore the full share. The Path 2
 `wtc = 0` beside `tc = 0`. The fast-path rejection check and `check_availability` report the
 same target for a pending roll. No `wtc` on the item → the share, as before.
 
-**`rf` is monotonic on every item, windowed or not.** Still load-bearing for an item without the
+**`rf` is monotonic on every item, windowed or not (ADR-140).** Still load-bearing for an item without the
 `wa` marker, and for refill timing. Every materialising write — client create
 and normal path (`lease._monotonic_rf`), aggregator refill — stamps `rf = max(now, stored rf,
 every applied ws on the item)`, never `rf = now`. A slow-clock writer moving `rf` back past `ws`
@@ -1007,7 +1009,7 @@ would make the next pass read `ws > rf` and reset again, refunding the window's 
 request from that clock (#635). On an item with no window it reduces to `max(now, stored rf)`,
 free because `refill_bucket` treats non-positive elapsed time as zero.
 
-**Rollover fan-out** (`Repository._propagate_window_start`, called from
+**Rollover fan-out** (ADR-140; `Repository._propagate_window_start`, called from
 `Lease._fan_out_windows` after the rf-locked write landed — never after the consumption-only
 retry, which stamps no `ws`). **One `UpdateItem` per (sibling shard, window limit)**:
 `SET b_{n}_ws = :new, b_{n}_rsa = :rsa, vu = :zero` under
@@ -1024,9 +1026,10 @@ failed, and a shortfall is logged at debug. **Shards can be staggered by millise
 openers crossing the boundary together each open on their own shard and each fan-out no-ops on
 the other's (the floor is what stops them resetting each other — a plain `ws < :new` admitted 15
 against a quota of 10). A lost write leaves one shard staggered until the next rollover, never
-over-admitting. Do not claim every shard carries the identical `ws`.
+over-admitting. A lengthened `rsa` can likewise no-op on a sibling still inside the longer
+window; that sibling opens its own when it ends. Do not claim every shard carries the identical `ws`.
 
-**New shard N > 0** (`RateLimiter._sibling_window_starts` → `Repository.get_shard_window_starts`):
+**New shard N > 0** (ADR-140; `RateLimiter._sibling_window_starts` → `Repository.get_shard_window_starts`):
 one **strongly consistent**, projected `GetItem` of shard 0's `b_{n}_ws` (1 RCU, once per shard
 creation; separate from the create path's `BatchGetItem`, whose keys carry no shard). Live window
 ⇒ the new shard joins it (inherits `ws` and stamps `wa = ws`, so it is not rolled) and takes tokens by
@@ -1059,7 +1062,7 @@ not the session limit; an aggregator predating it treats the quota as a dripping
 proactive-sharding clone mints `cp // new_count` per new shard (#587 again), which the version
 gate keeps away.
 
-<a id="hidden-config-640"></a>**Hidden config (#640, option B of #638).** A limit carrying
+<a id="hidden-config-640"></a>**Hidden config (ADR-142, #640, option B of #638).** A limit carrying
 `reset_after` stores its **config** as `w_{name}_{field}` instead of `l_{name}_{field}`
 (`schema.limit_attr(..., windowed=True)`, chosen by `limit.reset_after is not None` in
 `Repository._serialize_composite_limits` and the provisioner's `applier._build_limit_item`). Both
@@ -1071,14 +1074,14 @@ shared by `Repository._deserialize_composite_limits` and `bucket_sync._decode_li
 under both prefixes, or a `w_` limit with no `rsa`, is corrupt and takes the whole item
 (`RateLimiterUnavailable` / `ValueError`). `l_{name}_rsa` items from unreleased v0.15 builds are
 read forever and move to `w_` on the level's next (full-replace) write. **Bucket attributes stay
-`b_*`**: v0.14 already reads and rewrites them without error. Accepted risks (ADR-139,
+`b_*`**: v0.14 already reads and rewrites them without error. Accepted risks (ADR-142,
 session-quotas guide): an old client's shorter `ttl` can sweep an item mid-window (≤ one extra
 allowance); an old admin's full-replace write silently drops the hidden limit; an old client's
 `vu` re-stamp/REMOVE stretches an ended window; an old param sync can change the item-level
 `sched`/`rsched` a session limit without its own override inherits; and an old client's shard
 creation is seeded by #633's transfer, with #642's residual.
 
-**Version gate (#638).** The aggregator half is enforced; the client half is not.
+**Version gate (#638, ADR-141).** The aggregator half is enforced; the client half is not.
 - **Writer gate (A).** `Repository.set_limits` / `set_resource_defaults` /
   `set_system_defaults` (`_require_reset_after_readers`) and the provisioner
   (`applier.require_reset_after_readers`, run by `handler._apply_and_record` **before** any
@@ -1331,7 +1334,7 @@ Speculative non-cascade `acquire()` (success) = 0 RCU + 1 WCU = **$0.625/M** (~1
 Speculative fast rejection (exhausted) = 0 RCU + 0 WCU = **$0/M** (free).
 Speculative fallback (refill helps) = 1 RCU + 2 WCU = $0.125 + $1.25 = **$1.375/M** (worse than normal).
 Client shard create (`BUCKET_MISSING` on shard N, ADR-133, warm config cache) = 2.5 RCU + 2 WCU (1 failed conditional + disable-walk BatchGet 1.5 RCU + META/bucket BatchGet 1 RCU + single-item `PutItem`) = $0.3125 + $1.25 = **$1.56/M**, paid **once per shard** (+1 WCU when a wcu bump precedes it: **$2.19/M**); the previous broken fallback cost the same on every acquire that drew a missing shard.
-Session quota (ADR-139): an acquire inside a window costs exactly what any acquire does (fast path unchanged). A rollover adds **(S − 1) × L** WCU once per window (S = `shard_count`, L = window limits on the item; 0 at S = 1, 31 at `MAX_SHARD_COUNT` with one limit = ~$19/M rollovers). Creating shard N>0 of a windowed bucket adds **1 RCU** (strongly consistent projected `GetItem` of shard 0), once per shard, and once per parent shard on a cascade.
+Session quota (ADR-139, ADR-140): an acquire inside a window costs exactly what any acquire does (fast path unchanged). A rollover adds **(S − 1) × L** WCU once per window (S = `shard_count`, L = window limits on the item; 0 at S = 1, 31 at `MAX_SHARD_COUNT` with one limit = ~$19/M rollovers). Creating shard N>0 of a windowed bucket adds **1 RCU** (strongly consistent projected `GetItem` of shard 0), once per shard, and once per parent shard on a cascade.
 Speculative cascade (both succeed, sequential) = 0 RCU + 2 WCU = **$1.25/M** (vs $1.75/M normal cascade).
 Speculative cascade (both succeed, parallel, issue #318) = 0 RCU + 2 WCU = **$1.25/M** (same cost, lower latency).
 Speculative cascade fallback (parent refill helps) = 0.5 RCU + 3 WCU = **$1.94/M** (deferred compensation).
@@ -1350,7 +1353,7 @@ All PK and GSI PK values are prefixed with `{ns}/` where `{ns}` is the opaque na
 |---------|-------|
 | Get entity | `PK={ns}/ENTITY#{id}, SK=#META` |
 | Get bucket (single shard) | `PK={ns}/BUCKET#{id}#{resource}#{shard}, SK=#STATE` |
-| Read shard 0's session-window starts (ADR-139, shard create) | `GetItem PK={ns}/BUCKET#{id}#{resource}#0, SK=#STATE`, `ProjectionExpression` = the `b_{n}_ws` attributes, `ConsistentRead=True` |
+| Read shard 0's session-window starts (ADR-140, shard create) | `GetItem PK={ns}/BUCKET#{id}#{resource}#0, SK=#STATE`, `ProjectionExpression` = the `b_{n}_ws` attributes, `ConsistentRead=True` |
 | Get buckets (all for entity) | GSI3: `GSI3PK={ns}/ENTITY#{id}` → BatchGetItem (GHSA-76rv) |
 | Batch get buckets | `BatchGetItem` with `PK={ns}/BUCKET#{id}#{resource}#{shard}, SK=#STATE` pairs |
 | Batch get configs | `BatchGetItem` with entity/resource/system config keys (issue #298) |
@@ -1421,15 +1424,15 @@ All PK and GSI PK values are prefixed with `{ns}/` where `{ns}` is the opaque na
 | Writer | UpdateExpression | Condition | Touches `rf`? |
 |--------|-----------------|-----------|---------------|
 | Speculative consume | `ADD tk -consumed` | `attribute_exists(PK) AND tk >= consumed AND (attribute_not_exists(vu) OR vu > :now)` | No |
-| Normal path (initial) | `SET rf = :new_rf (+ vu) ADD tk -consumed` (`REMOVE vu` when nothing on the item is scheduled); `:new_rf = max(now, stored rf, applied ws)` (ADR-139, #635); `+ b_{n}_ws, b_{n}_rsa` when this pass opened a window, `+ b_{n}_rsa` when the config length changed; `+ b_{n}_wa = :ws` for every window limit on the write (#640) | `rf = :expected_rf` | Yes (optimistic lock) |
+| Normal path (initial) | `SET rf = :new_rf (+ vu) ADD tk -consumed` (`REMOVE vu` when nothing on the item is scheduled); `:new_rf = max(now, stored rf, applied ws)` (ADR-140, #635); `+ b_{n}_ws, b_{n}_rsa` when this pass opened a window, `+ b_{n}_rsa` when the config length changed; `+ b_{n}_wa = :ws` for every window limit on the write (#640) | `rf = :expected_rf` | Yes (optimistic lock) |
 | Normal path, seeding a limit missing from the item (#633) | `SET b_{n}_tk = :share − consumed, b_{n}_tc, cp/ra/rp, b_{n}_sched/rsched` (explicit, or `"-"`) `(+ sched_tz)` in the same write as the row above; `ws`/`rsa` ride its window argument | `+ (attribute_not_exists(b_{n}_cp) OR attribute_not_exists(b_{n}_tk))` per seed; a quota seed also `+ (attribute_not_exists(shard_count) OR shard_count <= :sized)` | Same write |
 | Transfer-seed persist (#633), on a rejection or a lost lock | `SET b_{n}_tk = :taken, b_{n}_tc = 0, cp/ra/rp, b_{n}_sched/rsched (+ sched_tz, joined ws/rsa/wa) (+ vu = :vu)` | `attribute_exists(PK) AND attribute_not_exists(b_{n}_tk)` + the shard-count pin; `vu` set only when absent or later (a second, `vu`-free attempt otherwise) | No |
 | Normal path (retry) | `ADD tk -consumed`; a still-missing limit it debits and that carries no schedule or window: `SET tk = if_not_exists(tk, :share) − :c`, params `if_not_exists` (#633). `ReturnValuesOnConditionCheckFailure=ALL_OLD` | `tk >= consumed` (a seed: `attribute_not_exists(tk) OR tk >= :c`) | No (skips refill) |
-| Client shard create (ADR-133) | `Put` full item, `tk = effective cp // shard_count` (a quota: what the reclaim below took, #587), `wcu` undivided, `sched`/`rsched`/`sched_tz`/`vu` when scheduled, `b_{n}_ws`/`b_{n}_rsa`/`b_{n}_wa = ws` for a session quota — shard N>0 first reads shard 0's `ws` (strongly consistent `GetItem`, 1 RCU) and joins a live window or opens its own (ADR-139) | `attribute_not_exists(PK)` | Sets `rf = max(now, ws)` |
+| Client shard create (ADR-133) | `Put` full item, `tk = effective cp // shard_count` (a quota: what the reclaim below took, #587), `wcu` undivided, `sched`/`rsched`/`sched_tz`/`vu` when scheduled, `b_{n}_ws`/`b_{n}_rsa`/`b_{n}_wa = ws` for a session quota — shard N>0 first reads shard 0's `ws` (strongly consistent `GetItem`, 1 RCU) and joins a live window or opens its own (ADR-140) | `attribute_not_exists(PK)` | Sets `rf = max(now, ws)` |
 | Quota surplus reclaim, per existing shard (#587) | `SET tk = :share`, `ReturnValues=UPDATED_OLD` | `tk > :share` (client) / `attribute_exists(PK) AND tk > :share` (aggregator) | No |
 | Adjustment / rollback | `ADD tk +/-delta` | (unconditional) | No |
-| Window rollover fan-out, per (sibling shard, window limit) (ADR-139) | `SET b_{n}_ws = :new, b_{n}_rsa = :rsa, vu = :zero, b_{n}_wtc = if_not_exists(b_{n}_tc, :zero)` (never `wa`, never `tk`) | `attribute_exists(PK) AND (attribute_exists(b_{n}_wa) OR rf < :new) AND (attribute_not_exists(b_{n}_ws) OR b_{n}_ws <= :open_floor)`, `:open_floor = :new − rsa × 1000` (#640) | No |
-| Aggregator refill | `ADD tk +refill SET rf = :new_rf`, `:new_rf = max(now, stored rf, ws in force)` (ADR-139), `+ b_{n}_wa = :ws` per window in force (#640) | `rf = :expected_rf AND vu = :expected_vu` (#508) `AND b_{n}_ws = :expected_ws` per rolled window (ADR-139) | Yes (optimistic lock) |
+| Window rollover fan-out, per (sibling shard, window limit) (ADR-140) | `SET b_{n}_ws = :new, b_{n}_rsa = :rsa, vu = :zero, b_{n}_wtc = if_not_exists(b_{n}_tc, :zero)` (never `wa`, never `tk`) | `attribute_exists(PK) AND (attribute_exists(b_{n}_wa) OR rf < :new) AND (attribute_not_exists(b_{n}_ws) OR b_{n}_ws <= :open_floor)`, `:open_floor = :new − rsa × 1000` (ADR-140, #640) | No |
+| Aggregator refill | `ADD tk +refill SET rf = :new_rf`, `:new_rf = max(now, stored rf, ws in force)` (ADR-140), `+ b_{n}_wa = :ws` per window in force (#640) | `rf = :expected_rf AND vu = :expected_vu` (#508) `AND b_{n}_ws = :expected_ws` per rolled window (ADR-140) | Yes (optimistic lock) |
 | Aggregator proactive shard | `SET shard_count = :new` | `shard_count = :old` | No |
 | Aggregator shard propagation | `SET shard_count = :new` | `attribute_not_exists(shard_count) OR shard_count < :new` | No |
 | Client shard propagation (#439) | `SET shard_count = :new` | `shard_count < :new` | No |
@@ -1578,12 +1581,12 @@ Limit configs use composite items (v0.8.0+, ADR-114 for configs). All limits for
 | Entity | `{ns}/ENTITY#{id}` | `#CONFIG#{resource}` | `entity_id`, `resource`, `l_rpm_cp`, ... |
 
 **Limit attribute format:** `l_{limit_name}_{field}` — or `w_{limit_name}_{field}` for a limit
-carrying `reset_after`, every field of it (#640: the prefix pre-v0.15 readers do not scan; read
+carrying `reset_after`, every field of it (ADR-142, #640: the prefix pre-v0.15 readers do not scan; read
 through `schema.config_limit_names`) — where field is one of:
 - `cp` (capacity), `ra` (refill_amount), `rp` (refill_period_seconds)
 - `sched` (string, #222): the limit's schedule in the compact storage encoding (`schedule.encode()`), written only when that limit has one. `cp`/`ra`/`rp` stay the **base** parameters; the schedule is applied on top of them at read time, never materialised onto the item.
 - `rsched` (string, #222 §3.6): the limit's **reset** schedule in the compact storage encoding (`schedule.encode_reset()`), written only when that limit has one. Same grammar as `sched` minus the modifier tokens, because a reset overrides no parameters — `0 0 * * *` is `m0h0`, four bytes. A separate attribute rather than a tag inside `sched`, mirroring the separate tuple on `Limit` and keeping the decoder from partitioning one list into two meanings (§4.1). `decode_reset` **rejects** a modifier token found here rather than ignoring it: it means corruption, or a parameter schedule stored under the wrong key, and an entry that silently reset a balance on a schedule meant only to scale it is the worst available reading. Without this attribute a quota (`refill_amount = 0`, ADR-137) does not merely lose its reset — it fails to reconstruct at all, and the read raises (#538).
-- `rsa` (number, ADR-139): a session quota's `reset_after` window length in **seconds**, written only when that limit has one, always as `w_{name}_rsa`. The alternative to `rsched`, never beside it. Decoded as an integer; a non-integral value is corruption and becomes `RateLimiterUnavailable`. Bucket items carry the per-shard pair `b_{name}_ws` (window start, epoch ms) and `b_{name}_rsa` (copied from here) — see [Session Quotas](#session-quotas-597-adr-139).
+- `rsa` (number, ADR-139): a session quota's `reset_after` window length in **seconds**, written only when that limit has one, always as `w_{name}_rsa` (ADR-142). The alternative to `rsched`, never beside it. Decoded as an integer; a non-integral value is corruption and becomes `RateLimiterUnavailable`. Bucket items carry the per-shard pair `b_{name}_ws` (window start, epoch ms) and `b_{name}_rsa` (copied from here) — see [Session Quotas](#session-quotas-597-adr-139).
 
 **Config fields:**
 - `config_version` (int): Atomic counter for cache invalidation

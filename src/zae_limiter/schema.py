@@ -119,7 +119,7 @@ BUCKET_FIELD_VU = "vu"  # valid-until, epoch ms — schedule materialisation sta
 BUCKET_FIELD_WS = "ws"  # b_{name}_ws — window start, epoch ms
 BUCKET_FIELD_RSA = "rsa"  # b_{name}_rsa — window length, seconds
 
-# `wa` is the window-APPLIED marker (#640), per limit, per shard, epoch ms: the
+# `wa` is the window-APPLIED marker (ADR-140, #640), per limit, per shard, epoch ms: the
 # `ws` whose allowance this shard's balance reflects, so `wa <= ws` always. A
 # shard has an unapplied window when `ws > wa` (`BucketState.window_rolled`).
 # It replaces the shared `ws > rf` comparison because a writer predating
@@ -136,7 +136,7 @@ BUCKET_FIELD_RSA = "rsa"  # b_{name}_rsa — window length, seconds
 BUCKET_FIELD_WA = "wa"  # b_{name}_wa — window applied, epoch ms
 
 # `wtc` is the consumption SNAPSHOT a rollover fan-out takes as it leaves a
-# shard unapplied (#640): a path copy of `b_{name}_tc` at the instant the new
+# shard unapplied (ADR-140): a path copy of `b_{name}_tc` at the instant the new
 # `ws` lands. The deferred roll targets `eff_cp - max(0, tc - wtc)` rather than
 # `eff_cp`, so whatever the shard spent while the roll was pending — from the
 # old window's leftover, once a writer predating ADR-139 removed `vu` — is
@@ -189,7 +189,7 @@ MAX_SHARD_COUNT = 32
 # Composite limit config attribute prefix and field suffixes (ADR-114 for configs)
 LIMIT_ATTR_PREFIX = "l_"
 # The prefix a limit carrying `reset_after` (ADR-139) is stored under instead
-# (#640). Readers predating ADR-139 discover config limits by `l_` alone — the
+# (ADR-142, #640). Readers predating ADR-139 discover config limits by `l_` alone — the
 # client by `startswith("l_") and endswith("_cp")`, the provisioner through
 # `parse_limit_attr` — so a session limit stored here is simply not seen by
 # them, and they keep enforcing the level's other limits instead of failing the
@@ -202,7 +202,7 @@ LIMIT_FIELD_RA = "ra"  # refill_amount
 LIMIT_FIELD_RP = "rp"  # refill_period_seconds
 LIMIT_FIELD_SCHED = "sched"  # compact-encoded schedule (#222 §4.1)
 LIMIT_FIELD_RSCHED = "rsched"  # compact-encoded reset schedule (#222 §4.1)
-LIMIT_FIELD_RSA = "rsa"  # w_{name}_rsa — duration window length, seconds (ADR-139, #640)
+LIMIT_FIELD_RSA = "rsa"  # w_{name}_rsa — duration window length, seconds (ADR-142)
 
 # IANA timezone name for every schedule on the item, hoisted out of the
 # individual entries (#222 §4.1). One attribute per item, not per limit: it is
@@ -297,7 +297,7 @@ def parse_limit_attr(attr_name: str) -> tuple[str, str] | None:
 
 
 def config_limit_names(item: dict[str, Any]) -> dict[str, bool]:
-    """The limits a config item stores, and whether each is under ``w_`` (#640).
+    """The limits a config item stores, and whether each is under ``w_`` (ADR-142).
 
     Discovers a limit by its ``_cp`` attribute under either prefix, in item
     order — the one discovery rule every config reader shares (the client's

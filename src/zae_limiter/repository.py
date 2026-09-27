@@ -1469,7 +1469,7 @@ class Repository:
     async def _require_reset_after_readers(
         self, limits: list[Limit], *, ratchet: bool = True
     ) -> None:
-        """Refuse to store a ``reset_after`` limit the stack cannot read (#638 A).
+        """Refuse to store a ``reset_after`` limit the stack cannot read (#638 A, ADR-141).
 
         A reader predating ADR-139 misreads a ``reset_after`` limit: a client
         fails every acquire on that level (or, under ``on_unavailable=allow``,
@@ -2583,7 +2583,7 @@ class Repository:
                 reads as "no schedule, never expires".
             rf_ms: The ``rf`` to stamp, when the caller has clamped it above
                 ``now_ms`` so that ``rf`` never sits below a window start the
-                item carries (ADR-139). ``None`` stamps ``now_ms``.
+                item carries (ADR-140). ``None`` stamps ``now_ms``.
         """
         item: dict[str, Any] = {
             "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)},
@@ -2721,7 +2721,7 @@ class Repository:
                 nothing but a config-resolving client could compute.
             rf_ms: The ``rf`` to stamp, when the caller has clamped it so that
                 it never moves backward and never sits below a window start
-                the item carries (ADR-139). ``None`` stamps ``now_ms``. The
+                the item carries (ADR-140). ``None`` stamps ``now_ms``. The
                 lock still compares against ``expected_rf``, the stored value.
             window_lengths: Limit name -> ``reset_after_seconds`` to stamp as
                 ``b_{name}_rsa`` **alone**, for a limit whose window did not
@@ -2819,7 +2819,7 @@ class Repository:
             remove_parts.append("#vu")
             attr_names["#vu"] = schema.BUCKET_FIELD_VU
 
-        # ADR-139 duration window rollover. Monotonic counters, not the limit
+        # ADR-140 duration window rollover. Monotonic counters, not the limit
         # name, mirroring the #487 stale-limit REMOVE aliases (`#stale{i}_{j}`):
         # `NAME_PATTERN` allows `-` and `.` in a limit name, and an
         # `ExpressionAttributeNames` *value* may legally contain either --
@@ -3829,7 +3829,7 @@ class Repository:
         shard_count: int,
         windows: dict[str, tuple[int, int]],
     ) -> int:
-        """Stamp a newly anchored duration window on the entity's other shards (ADR-139).
+        """Stamp a newly anchored duration window on the entity's other shards (ADR-140).
 
         Without it, shard A drawn at 20:00 and shard B at 20:03 anchor
         different windows and the entity's windows stagger — at which point
@@ -6318,7 +6318,7 @@ class Repository:
         """Add limit attributes to a DynamoDB item for composite limit storage.
 
         A limit is stored as ``l_{name}_{field}``, or as ``w_{name}_{field}``
-        when it carries ``reset_after`` (#640, ADR-139): readers predating
+        when it carries ``reset_after`` (ADR-142, #640): readers predating
         ADR-139 discover limits by ``l_`` alone, so they keep enforcing the
         level's other limits rather than failing the whole level on a quota
         they cannot reconstruct. The prefix is a pure storage mapping, decided
@@ -7090,7 +7090,7 @@ class Repository:
         limit_names: list[str],
         shard_id: int = 0,
     ) -> dict[str, int]:
-        """Read one shard's duration-window starts, to seed a shard being created (ADR-139).
+        """Read one shard's duration-window starts, to seed a shard being created (ADR-140).
 
         Shard 0 by default, because :meth:`bump_shard_count` already treats it
         as the source of truth for ``shard_count``. A created shard inherits

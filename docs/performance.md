@@ -314,7 +314,8 @@ await limiter.create_entity(
 #### Session Quotas
 
 A [session quota](guide/session-quotas.md) (`Limit.quota(..., reset_after=...)`,
-[ADR-139](adr/139-duration-reset-windows.md)) keeps every shard of an entity on one window,
+[ADR-139](adr/139-duration-reset-windows.md)) keeps every shard of an entity on one window
+([ADR-140](adr/140-duration-window-shard-coherence.md)),
 and that coherence is the only cost it adds. Where S is the entity's `shard_count` and L the
 number of `reset_after` limits on the bucket:
 

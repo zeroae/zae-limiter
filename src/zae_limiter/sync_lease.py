@@ -563,7 +563,7 @@ class SyncLease:
     def _fan_out_windows(
         self, window_fanouts: dict[tuple[str, str, int, int], dict[str, tuple[int, int]]]
     ) -> None:
-        """Propagate each rollover this commit persisted to the item's siblings (ADR-139).
+        """Propagate each rollover this commit persisted to the item's siblings (ADR-140).
 
         After the commit, never inside it. The transaction is what makes the
         roll durable on this shard; the fan-out is what stops the entity's
@@ -760,7 +760,7 @@ def _applied_windows(group: list[LeaseEntry]) -> dict[str, int]:
 
 
 def _monotonic_rf(now_ms: int, stored_rf: int | None, group: list[LeaseEntry]) -> int:
-    """The ``rf`` a materialising write stamps: never backward, never below a window (ADR-139).
+    """The ``rf`` a materialising write stamps: never backward, never below a window (ADR-140).
 
     ``max(now, stored rf, every applied window start on the item)``. On an item
     without the #640 ``wa`` marker a duration window rolls when ``ws > rf``

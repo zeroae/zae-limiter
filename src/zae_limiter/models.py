@@ -894,7 +894,7 @@ class Limit:
           phantom one-token drip beside a ``retry_after_seconds`` computed
           from a rate that does not exist.
         * **Both reset tuples at once** beside a zero rate is unconstructible
-          under ADR-139 (§Negatives: a limit resets one way, never both).
+          under ADR-139 (a limit resets one way, never both).
           ``reset_sched`` — the pre-ADR-139 reading — wins and
           ``reset_after_seconds`` is dropped, so the bucket still reconstructs
           as the quota it is rather than raising two-recovery-mechanisms from
@@ -1334,16 +1334,16 @@ class BucketState:
     def window_rolled(self) -> bool:
         """Has a window opened that this shard's balance does not reflect yet?
 
-        ``ws > wa`` (#640): a shard whose window start is newer than the window
-        its balance was last materialised for has not applied that window.
-        This is the single statement of the rule — the slow-path roll
+        ``ws > wa`` (ADR-140, #640): a shard whose window start is newer than
+        the window its balance was last materialised for has not applied that
+        window. This is the single statement of the rule — the slow-path roll
         (``RateLimiter._apply_window_roll``) and every read-only view of the
         balance ask it here rather than restating the comparison, so the two
         cannot drift (the #489 lesson). The aggregator mirrors it in
         ``processor._window_applied``.
 
         An item written before the marker existed carries no ``wa``, and falls
-        back to the ADR-139 rule it was written under, ``ws > rf``. The marker
+        back to the ADR-140 rule it was written under, ``ws > rf``. The marker
         exists because ``rf`` is shared: a writer predating ADR-139 stamps it
         from its own clock, backward (the next pass would roll again) or
         forward past a fanned-out ``ws`` (the shard would never roll it).

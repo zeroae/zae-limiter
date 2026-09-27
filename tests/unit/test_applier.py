@@ -443,7 +443,7 @@ class TestScheduleReachesTheConfigItem:
 
 
 class TestDurationWindowReachesTheConfigItem:
-    """`reset_after_seconds` (ADR-139) must reach `w_{name}_rsa` (#640), mirroring
+    """`reset_after_seconds` (ADR-139) must reach `w_{name}_rsa` (ADR-142), mirroring
     `TestScheduleReachesTheConfigItem` for the third recovery spelling."""
 
     @staticmethod

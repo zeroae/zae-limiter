@@ -785,7 +785,7 @@ def _window_applied(info: LimitRefillInfo, rf_ms: int) -> int:
 
     The aggregator's statement of :attr:`BucketState.window_rolled`: a window
     is unapplied when ``ws`` is newer than this. The limit's own ``wa`` marker
-    when the item carries one, else the item's ``rf`` — the ADR-139 rule an
+    when the item carries one, else the item's ``rf`` — the ADR-140 rule an
     item written before the marker was written under. The marker exists
     because a writer predating ADR-139 stamps ``rf`` from its own clock, and
     ``rf`` then says nothing about which window a balance belongs to.
@@ -898,8 +898,8 @@ def try_refill_bucket(
         if (window := _window_in_force(name, info)) is not None
     }
 
-    # A window this shard has not applied (`ws > wa`, #640) that has also already
-    # ended at `now` (ADR-139). The aggregator must not apply it: the balance
+    # A window this shard has not applied (`ws > wa`, ADR-140) that has also
+    # already ended at `now`. The aggregator must not apply it: the balance
     # it would restore belongs to a window that is over, and the client's next
     # pass opens a *new* window (`_open_window_if_elapsed`) and resets
     # unconditionally. Anything spent from a late-restored dead window in the
@@ -976,7 +976,7 @@ def try_refill_bucket(
             reset_sched = info.reset_sched
 
         # A duration window rolled since this item was last refilled sets the
-        # balance to the effective capacity (ADR-139), which as an `ADD` is
+        # balance to the effective capacity (ADR-140), which as an `ADD` is
         # `eff_cp - tk_observed` — the identical delta shape the reset branch
         # below and the unconditional clamp use, and safe for the identical
         # commutativity reason. It is the same `ws > wa` comparison (`ws > rf`
@@ -1114,8 +1114,8 @@ def try_refill_bucket(
     # ADD is commutative with concurrent speculative writes (Issue #317)
     #
     # `rf` is stamped exactly as the client stamps it (`lease._monotonic_rf`,
-    # ADR-139): `max(now, stored rf, every window start in force on the item)`.
-    # On an item without the #640 marker a window rolls when `ws > rf`, so
+    # ADR-140): `max(now, stored rf, every window start in force on the item)`.
+    # On an item without the `wa` marker a window rolls when `ws > rf`, so
     # there `rf` is the only record that a shard has applied its window. An
     # aggregator clock behind the one that stamped the item would otherwise
     # move `rf` backward past `ws`, and the next pass would reset the balance

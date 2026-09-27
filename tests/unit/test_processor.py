@@ -3471,7 +3471,7 @@ class TestQuotaShardCloneIsATransfer:
 
 
 # ---------------------------------------------------------------------------
-# Duration windows (ADR-139, #627) — the aggregator applies a window a client
+# Duration windows (ADR-140, #627) — the aggregator applies a window a client
 # anchored and fanned out, reads it off the stream image, and never anchors or
 # fans out one of its own.
 # ---------------------------------------------------------------------------

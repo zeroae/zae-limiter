@@ -12,9 +12,9 @@ from dataclasses import dataclass
 # 0.10.0: Local Secondary Indexes (ADR-123) - 5 LSI slots, odd=ALL / even=KEYS_ONLY
 CURRENT_SCHEMA_VERSION = "0.10.0"
 
-# The first release whose readers understand a `reset_after` limit (ADR-139).
-# A client predating it cannot enforce one: since #640 the config is stored
-# under `w_`, which it does not scan, so it enforces the level's other limits
+# The first release whose readers understand a `reset_after` limit (ADR-141).
+# A client predating it cannot enforce one: the config is stored under `w_`
+# (ADR-142), which it does not scan, so it enforces the level's other limits
 # and ignores the session limit. The aggregator predating it over-admits (its
 # shard clone mints a fresh share per new shard). Writers refuse
 # to store one until the stack's `lambda_version` reaches it, and raise the

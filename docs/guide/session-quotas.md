@@ -341,6 +341,9 @@ It round-trips through the `Custom::ZaeLimiterLimits` CloudFormation resource as
 ## See also
 
 - [Scheduled (Cron) Limits](scheduled-limits.md) — calendar quotas and time-of-day windows
-- [ADR-139](../adr/139-duration-reset-windows.md) — the design record, including the
-  cross-shard mechanism
+- [ADR-139](../adr/139-duration-reset-windows.md) — the design record for the window itself
+- [ADR-140](../adr/140-duration-window-shard-coherence.md) — how an entity's shards share one
+  window
+- [ADR-141](../adr/141-reset-after-version-gate.md) — why storing a `reset_after` limit is gated
+  on the stack's Lambda versions
 - [Basic Usage](basic-usage.md) — `acquire()`, leases, and handling `RateLimitExceeded`

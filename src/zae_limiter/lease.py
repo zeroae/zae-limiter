@@ -86,7 +86,7 @@ class LeaseEntry:
     # seen, and `rf` is stamped at the *later* reading.
     _reset_edge_ms: int | None = None
     # The duration window this pass opened, epoch ms, or None when it opened
-    # none (ADR-139) — i.e. an anchor `_commit_initial` must fan out to the
+    # none (ADR-140) — i.e. an anchor `_commit_initial` must fan out to the
     # item's siblings. Set by `_open_window_if_elapsed` on an existing bucket,
     # and on a create only for a shard N>0 whose sibling window had ended or
     # was absent (a shard joining a live window has nothing to propagate).
@@ -429,7 +429,7 @@ class Lease:
         # Build transaction items
         items: list[dict[str, Any]] = []
         # Rollovers this commit persists, per bucket item, for the fan-out
-        # after the write (ADR-139). Keyed with the item's shard count so a
+        # after the write (ADR-140). Keyed with the item's shard count so a
         # cascade's child and parent each fan out over their own.
         window_fanouts: dict[tuple[str, str, int, int], dict[str, tuple[int, int]]] = {}
         for (entity_id, resource, shard_id), group_entries in groups.items():
@@ -839,7 +839,7 @@ class Lease:
     async def _fan_out_windows(
         self, window_fanouts: dict[tuple[str, str, int, int], dict[str, tuple[int, int]]]
     ) -> None:
-        """Propagate each rollover this commit persisted to the item's siblings (ADR-139).
+        """Propagate each rollover this commit persisted to the item's siblings (ADR-140).
 
         After the commit, never inside it. The transaction is what makes the
         roll durable on this shard; the fan-out is what stops the entity's
@@ -1065,7 +1065,7 @@ def _applied_windows(group: list[LeaseEntry]) -> dict[str, int]:
 
 
 def _monotonic_rf(now_ms: int, stored_rf: int | None, group: list[LeaseEntry]) -> int:
-    """The ``rf`` a materialising write stamps: never backward, never below a window (ADR-139).
+    """The ``rf`` a materialising write stamps: never backward, never below a window (ADR-140).
 
     ``max(now, stored rf, every applied window start on the item)``. On an item
     without the #640 ``wa`` marker a duration window rolls when ``ws > rf``

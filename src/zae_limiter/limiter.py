@@ -1543,7 +1543,7 @@ class RateLimiter:
     def _apply_window_roll(
         limit: Limit, state: BucketState, now_ms: int, *, opened: bool = False
     ) -> bool:
-        """Restore the balance if a duration window has been rolled (ADR-139).
+        """Restore the balance if a duration window has been rolled (ADR-140).
 
         :meth:`_apply_reset_edge` with the backwards cron scan replaced by an
         attribute read (:attr:`BucketState.window_rolled`, ``ws > wa`` since
@@ -1571,7 +1571,7 @@ class RateLimiter:
         mutates the same ``state``; the caller passes ``opened=True`` when it
         did, and the reset is then **unconditional**. ``ws > wa`` is the rule
         for a shard that *sees* a window another writer opened; the opener
-        applies its own reset under its own ``rf`` lock (ADR-139). Gating the
+        applies its own reset under its own ``rf`` lock (ADR-140). Gating the
         opener on it too would fail on an unmarked item whenever another
         writer's clock
         stamped ``rf`` after this client's ``now``: the window would be anchored
@@ -2129,7 +2129,7 @@ class RateLimiter:
                     # per-shard, schedule-effective starting share, exactly as
                     # a create would start it — a quota by transfer where a
                     # sibling already holds more than its share (#587), a
-                    # session quota joining shard 0's live window (ADR-139).
+                    # session quota joining shard 0's live window (ADR-140).
                     # The same rules `from_limit` and the create path apply
                     # below, taken at the item's shard count.
                     inherited_ws = seed_ws.get(limit.name)
@@ -2202,7 +2202,7 @@ class RateLimiter:
                     # entity-wide spendable total exactly.
                     #
                     # A shard created mid-window joins the window in progress
-                    # rather than opening its own (ADR-139): `from_limit`
+                    # rather than opening its own (ADR-140): `from_limit`
                     # stamps `ws = now_ms`, right for the FIRST shard and
                     # wrong for every later one, since an entity whose shards
                     # each opened their own window has no single
@@ -2487,7 +2487,7 @@ class RateLimiter:
         shard_id: int,
         any_existing: bool,
     ) -> dict[str, int]:
-        """The duration windows a shard about to be created would join (ADR-139).
+        """The duration windows a shard about to be created would join (ADR-140).
 
         Reads shard 0's ``ws`` for every limit carrying a ``reset_after``, via
         :meth:`Repository.get_shard_window_starts`. Whether each window is still
@@ -2572,7 +2572,7 @@ class RateLimiter:
         missing: list[Limit],
         shard_count: int,
     ) -> dict[str, int]:
-        """The duration windows a session quota being seeded would join (#633, ADR-139).
+        """The duration windows a session quota being seeded would join (#633, ADR-140).
 
         The seed counterpart of :meth:`_sibling_window_starts`: one strongly
         consistent read of shard 0's ``ws``, once per (bucket, new session
