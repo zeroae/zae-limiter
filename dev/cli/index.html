@@ -5565,7 +5565,9 @@ integration with CDK/Terraform, or customization.</p>
 <h4 id="zae-limiter-check">zae-limiter check<a class="headerlink" href="#zae-limiter-check" title="Permanent link">&para;</a></h4>
 <p>Check infrastructure compatibility without modifying.</p>
 <p>Verifies that the client version is compatible with the deployed
-infrastructure. Read-only operation - does not change anything.</p>
+infrastructure. Read-only operation - does not change anything: a
+Lambda behind the client is reported as an available update (apply it
+with 'upgrade'), and a missing stack is reported as NOT INITIALIZED.</p>
 <p><strong>Examples:</strong>
     <div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>zae-limiter<span class="w"> </span>check<span class="w"> </span>--name<span class="w"> </span>my-app<span class="w"> </span>--region<span class="w"> </span>us-east-1
 </span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>zae-limiter<span class="w"> </span>check<span class="w"> </span>--endpoint-url<span class="w"> </span>http://localhost:4566
@@ -9155,7 +9157,9 @@ Useful for billing, reporting, and capacity planning.</p>
 <h4 id="zae-limiter-version">zae-limiter version<a class="headerlink" href="#zae-limiter-version" title="Permanent link">&para;</a></h4>
 <p>Show infrastructure version information.</p>
 <p>Displays client version, schema version, and deployed infrastructure
-versions. Checks compatibility between client and infrastructure.</p>
+versions. Checks compatibility between client and infrastructure.
+Read-only: reads the version record and reports; never updates the
+Lambda, deploys a stack, or registers a namespace.</p>
 <p><strong>Examples:</strong>
     <div class="language-bash highlight"><pre><span></span><code><span id="__span-115-1"><a id="__codelineno-115-1" name="__codelineno-115-1" href="#__codelineno-115-1"></a>zae-limiter<span class="w"> </span>version<span class="w"> </span>--name<span class="w"> </span>my-app<span class="w"> </span>--region<span class="w"> </span>us-east-1
 </span><span id="__span-115-2"><a id="__codelineno-115-2" name="__codelineno-115-2" href="#__codelineno-115-2"></a>zae-limiter<span class="w"> </span>version<span class="w"> </span>--endpoint-url<span class="w"> </span>http://localhost:4566
