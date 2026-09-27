@@ -987,7 +987,8 @@ failed, and a shortfall is logged at debug. **Shards can be staggered by millise
 openers crossing the boundary together each open on their own shard and each fan-out no-ops on
 the other's (the floor is what stops them resetting each other — a plain `ws < :new` admitted 15
 against a quota of 10). A lost write leaves one shard staggered until the next rollover, never
-over-admitting. Do not claim every shard carries the identical `ws`.
+over-admitting. A lengthened `rsa` can likewise no-op on a sibling still inside the longer
+window; that sibling opens its own when it ends. Do not claim every shard carries the identical `ws`.
 
 **New shard N > 0** (`RateLimiter._sibling_window_starts` → `Repository.get_shard_window_starts`):
 one **strongly consistent**, projected `GetItem` of shard 0's `b_{n}_ws` (1 RCU, once per shard
