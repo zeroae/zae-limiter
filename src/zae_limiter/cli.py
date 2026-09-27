@@ -1581,7 +1581,8 @@ def upgrade(
                     aggregator_exists=aggregator_exists,
                     provisioner_exists=provisioner_exists,
                 )
-                # client_min_version is left as stored (#638 C).
+                # client_min_version is left as stored (#638 C). The stored stamp is
+                # unreachable under skip_absent (each is pushed or proven absent); a guard.
                 await repo.set_version_record(
                     schema_version=get_schema_version(),
                     lambda_version=__version__ if current else infra_version.lambda_version,

@@ -1662,6 +1662,7 @@ class Repository:
                 aggregator_exists=aggregator_exists,
                 provisioner_exists=provisioner_exists,
             )
+            # Unreachable under skip_absent (each is pushed or proven absent); kept as a guard.
             stamp = __version__ if current else self._lambda_version
 
             # client_min_version is left as stored (#638 C): a Lambda update
