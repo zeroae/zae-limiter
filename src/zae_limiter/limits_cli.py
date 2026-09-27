@@ -40,9 +40,15 @@ def limits_plan(
     namespace: str,
     file_path: str,
 ) -> None:
-    """Preview changes without applying (like terraform plan)."""
+    """Preview changes without applying (like terraform plan).
+
+    Read-only: never deploys a stack, registers a namespace, writes the
+    version record or updates a Lambda. A missing stack or namespace is an
+    error, and so is a stack whose Lambdas are behind this client — the
+    provisioner does the planning, so run 'zae-limiter upgrade' first.
+    """
     manifest_data = _load_yaml(file_path)
-    result = _invoke_provisioner(name, region, endpoint_url, "plan", manifest_data)
+    result = _invoke_provisioner(name, region, endpoint_url, "plan", manifest_data, preview="plan")
 
     changes = result.get("changes", [])
     if not changes:
@@ -124,9 +130,13 @@ def limits_diff(
     namespace: str,
     file_path: str,
 ) -> None:
-    """Show drift between YAML and live DynamoDB state."""
+    """Show drift between YAML and live DynamoDB state.
+
+    Read-only, with the same refusals as 'limits plan': a missing stack or
+    namespace, or a stack whose Lambdas are behind this client.
+    """
     manifest_data = _load_yaml(file_path)
-    result = _invoke_provisioner(name, region, endpoint_url, "plan", manifest_data)
+    result = _invoke_provisioner(name, region, endpoint_url, "plan", manifest_data, preview="diff")
 
     changes = result.get("changes", [])
     if not changes:
@@ -310,6 +320,8 @@ def _invoke_provisioner(
     endpoint_url: str | None,
     action: str,
     manifest_data: dict[str, Any],
+    *,
+    preview: str | None = None,
 ) -> dict[str, Any]:
     """Invoke the provisioner Lambda function.
 
@@ -319,6 +331,12 @@ def _invoke_provisioner(
         endpoint_url: AWS endpoint URL (for LocalStack).
         action: "plan" or "apply".
         manifest_data: Parsed YAML manifest as dict.
+        preview: The read-only command being run (``"plan"`` or ``"diff"``),
+            or None for ``apply``. A preview connects read-only (#648): it
+            never provisions, registers the namespace or updates a Lambda,
+            and refuses when the stack's Lambdas are behind this client.
+            ``apply`` keeps ``Repository.open()`` and auto-registers the
+            manifest's namespace.
 
     Returns:
         Lambda response payload.
@@ -328,8 +346,20 @@ def _invoke_provisioner(
     from .exceptions import NamespaceNotFoundError
     from .repository import Repository
 
+    ns = manifest_data.get("namespace", "default")
+
+    async def _resolve_read_only(command: str) -> str:
+        from .cli import _connect_read_only
+
+        repo = await _connect_read_only(
+            name, region, endpoint_url, ns, require_current_lambdas=command
+        )
+        try:
+            return repo.namespace_id
+        finally:
+            await repo.close()
+
     async def _resolve() -> str:
-        ns = manifest_data.get("namespace", "default")
         try:
             repo = await Repository.open(
                 ns,
@@ -357,17 +387,20 @@ def _invoke_provisioner(
 
     from .exceptions import StackOperationError, VersionError
 
-    try:
-        namespace_id = asyncio.run(_resolve())
-    except NamespaceNotFoundError:
-        namespace_id = ""
-    except (VersionError, StackOperationError) as e:
-        # A client below the stack's minimum, or a failed Lambda auto-update
-        # (#638). Carrying on would hand the manifest to a provisioner whose
-        # version nothing checked — a pre-v0.15 one stores a reset_after limit
-        # as a dripping limit, silently.
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
+    if preview is not None:
+        namespace_id = asyncio.run(_resolve_read_only(preview))
+    else:
+        try:
+            namespace_id = asyncio.run(_resolve())
+        except NamespaceNotFoundError:
+            namespace_id = ""
+        except (VersionError, StackOperationError) as e:
+            # A client below the stack's minimum, or a failed Lambda auto-update
+            # (#638). Carrying on would hand the manifest to a provisioner whose
+            # version nothing checked — a pre-v0.15 one stores a reset_after limit
+            # as a dripping limit, silently.
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(1)
 
     function_name = f"{name}-limits-provisioner"
 
