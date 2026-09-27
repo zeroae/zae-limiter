@@ -3493,6 +3493,62 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/140-duration-window-shard-coherence/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-140 Shards of one entity share one duration window
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/141-reset-after-version-gate/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-141 Storing a reset_after limit is gated on reader versions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -3967,8 +4023,11 @@ number of seconds, and <code>refill_amount</code> defaults to <code>0</code>:</p
 <h2 id="see-also">See also<a class="headerlink" href="#see-also" title="Permanent link">&para;</a></h2>
 <ul>
 <li><a href="../scheduled-limits/">Scheduled (Cron) Limits</a> — calendar quotas and time-of-day windows</li>
-<li><a href="../../adr/139-duration-reset-windows/">ADR-139</a> — the design record, including the
-  cross-shard mechanism</li>
+<li><a href="../../adr/139-duration-reset-windows/">ADR-139</a> — the design record for the window itself</li>
+<li><a href="../../adr/140-duration-window-shard-coherence/">ADR-140</a> — how an entity's shards share one
+  window</li>
+<li><a href="../../adr/141-reset-after-version-gate/">ADR-141</a> — why storing a <code>reset_after</code> limit is gated
+  on the stack's Lambda versions</li>
 <li><a href="../basic-usage/">Basic Usage</a> — <code>acquire()</code>, leases, and handling <code>RateLimitExceeded</code></li>
 </ul>
 

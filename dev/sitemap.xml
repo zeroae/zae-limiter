@@ -217,6 +217,14 @@
          <lastmod>2026-09-27</lastmod>
     </url>
     <url>
+         <loc>https://zeroae.github.io/zae-limiter/dev/adr/140-duration-window-shard-coherence/</loc>
+         <lastmod>2026-09-27</lastmod>
+    </url>
+    <url>
+         <loc>https://zeroae.github.io/zae-limiter/dev/adr/141-reset-after-version-gate/</loc>
+         <lastmod>2026-09-27</lastmod>
+    </url>
+    <url>
          <loc>https://zeroae.github.io/zae-limiter/dev/api/</loc>
          <lastmod>2026-09-27</lastmod>
     </url>

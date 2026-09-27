@@ -12,13 +12,13 @@
         <meta name="author" content="ZeroAE">
       
       
-        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/dev/adr/100-centralized-config/">
+        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/dev/adr/140-duration-window-shard-coherence/">
       
       
-        <link rel="prev" href="../013-module-documentation-parity/">
+        <link rel="prev" href="../139-duration-reset-windows/">
       
       
-        <link rel="next" href="../101-flat-schema-config/">
+        <link rel="next" href="../141-reset-after-version-gate/">
       
       
         
@@ -29,7 +29,7 @@
     
     
       
-        <title>ADR-100 Overview - zae-limiter</title>
+        <title>ADR-140 Shards of one entity share one duration window - zae-limiter</title>
       
     
     
@@ -84,7 +84,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#adr-100-centralized-configuration-access-patterns" class="md-skip">
+        <a href="#adr-140-shards-of-one-entity-share-one-duration-window" class="md-skip">
           Skip to content
         </a>
       
@@ -123,7 +123,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              ADR-100 Overview
+              ADR-140 Shards of one entity share one duration window
             
           </span>
         </div>
@@ -1984,20 +1984,18 @@
                 
   
   
-    
   
   
-  
     
     
     
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_3" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_3" >
         
           
           <label class="md-nav__link" for="__nav_6_3" id="__nav_6_3_label" tabindex="0">
@@ -2018,7 +2016,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_3_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_3_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_6_3">
             <span class="md-nav__icon md-icon"></span>
             
@@ -2033,37 +2031,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    ADR-100 Overview
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../100-centralized-config/" class="md-nav__link">
         
   
   
@@ -2079,120 +2050,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#context" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Context
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#decision" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Decision
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#consequences" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Consequences
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#access-patterns-added" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Access Patterns Added
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#alternatives-considered" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Alternatives Considered
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Alternatives Considered">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#explicit-limits-on-every-acquire-call" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Explicit limits on every acquire() call
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#one-adr-covering-the-whole-centralized-config-design" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        One ADR covering the whole centralized-config design
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#implementation" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Implementation
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -3184,18 +3041,20 @@
                 
   
   
+    
   
   
+  
     
     
     
     
     
-    <li class="md-nav__item md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_10" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_10" checked>
         
           
           <label class="md-nav__link" for="__nav_6_10" id="__nav_6_10_label" tabindex="0">
@@ -3216,7 +3075,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_10_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_10_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_6_10">
             <span class="md-nav__icon md-icon"></span>
             
@@ -3483,10 +3342,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../140-duration-window-shard-coherence/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-140 Shards of one entity share one duration window
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -3502,6 +3388,142 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#context" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Context
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#decision" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Decision
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#consequences" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Consequences
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#alternatives-considered" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Alternatives Considered
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Alternatives Considered">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#each-shard-keeps-its-own-window-with-no-propagation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Each shard keeps its own window, with no propagation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#propagate-the-token-balance-with-the-window-start" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Propagate the token balance with the window start
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#move-a-sibling-whenever-the-new-start-is-later-than-its-own" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Move a sibling whenever the new start is later than its own
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#stamp-rf-from-the-writers-own-clock" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stamp rf from the writer's own clock
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#store-the-window-end-rather-than-the-start" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Store the window end rather than the start
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#redistribute-balance-across-shards-instead-of-transferring-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Redistribute balance across shards instead of transferring it
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -3610,17 +3632,6 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#access-patterns-added" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Access Patterns Added
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#alternatives-considered" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3633,10 +3644,10 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#explicit-limits-on-every-acquire-call" class="md-nav__link">
+  <a href="#each-shard-keeps-its-own-window-with-no-propagation" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Explicit limits on every acquire() call
+        Each shard keeps its own window, with no propagation
       
     </span>
   </a>
@@ -3644,10 +3655,54 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#one-adr-covering-the-whole-centralized-config-design" class="md-nav__link">
+  <a href="#propagate-the-token-balance-with-the-window-start" class="md-nav__link">
     <span class="md-ellipsis">
       
-        One ADR covering the whole centralized-config design
+        Propagate the token balance with the window start
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#move-a-sibling-whenever-the-new-start-is-later-than-its-own" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Move a sibling whenever the new start is later than its own
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#stamp-rf-from-the-writers-own-clock" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stamp rf from the writer's own clock
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#store-the-window-end-rather-than-the-start" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Store the window end rather than the start
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#redistribute-balance-across-shards-instead-of-transferring-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Redistribute balance across shards instead of transferring it
       
     </span>
   </a>
@@ -3656,17 +3711,6 @@
         
       </ul>
     </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#implementation" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Implementation
-      
-    </span>
-  </a>
   
 </li>
       
@@ -3689,7 +3733,7 @@
 
 
   
-    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/adr/100-centralized-config.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/adr/140-duration-window-shard-coherence.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -3697,136 +3741,72 @@
   
 
 
-<h1 id="adr-100-centralized-configuration-access-patterns">ADR-100: Centralized Configuration Access Patterns<a class="headerlink" href="#adr-100-centralized-configuration-access-patterns" title="Permanent link">&para;</a></h1>
-<p><strong>Status:</strong> Accepted
-<strong>Date:</strong> 2026-01-18
-<strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/129">#129</a>
-<strong>Milestone:</strong> v0.5.0</p>
-<blockquote>
-<p><strong>Note (post-v0.5.0):</strong> This is the original index for the centralized-config design. Two sub-decisions have since been superseded — the hierarchy expanded from three to four levels (<a href="../118-four-level-config-hierarchy/">ADR-118</a> supersedes <a href="../102-config-hierarchy/">ADR-102</a>) and limit resolution/caching moved to the Repository protocol (<a href="../122-resolve-limits-on-repository/">ADR-122</a> supersedes <a href="../103-config-caching/">ADR-103</a>). The original per-limit <code>#LIMIT#</code> config keys were replaced by a single composite <code>#CONFIG</code> item per level in the v0.8.0 composite-limits migration, applying <a href="../114-composite-bucket-items/">ADR-114</a>'s composite shape to config records; no ADR of its own records that change. Config items are written full-replace, so <a href="../115-add-based-writes-lazy-refill/">ADR-115</a>'s ADD-based write paths apply to buckets only. See the updated access patterns below.</p>
-</blockquote>
+<h1 id="adr-140-shards-of-one-entity-share-one-duration-window">ADR-140: Shards of one entity share one duration window<a class="headerlink" href="#adr-140-shards-of-one-entity-share-one-duration-window" title="Permanent link">&para;</a></h1>
+<p><strong>Status:</strong> Proposed
+<strong>Date:</strong> 2026-09-27
+<strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/624">#624</a>, <a href="https://github.com/zeroae/zae-limiter/issues/625">#625</a>, <a href="https://github.com/zeroae/zae-limiter/issues/635">#635</a>
+<strong>Related:</strong> <a href="../139-duration-reset-windows/">ADR-139</a>, ADR-133, ADR-134, <a href="https://github.com/zeroae/zae-limiter/issues/597">#597</a></p>
 <h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
-<p>zae-limiter is a distributed rate limiting library where multiple clients must behave consistently. Before v0.5.0:</p>
-<ol>
-<li><strong>Limits passed explicitly</strong> - Each <code>acquire()</code> call requires limits</li>
-<li><strong>No global defaults</strong> - Cannot set system-wide or resource-level default limits</li>
-<li><strong>No caching</strong> - <code>use_stored_limits=True</code> queries DynamoDB on every call</li>
-<li><strong>Scattered config</strong> - Behavior settings are constructor-only, risking inconsistent fail-open/fail-closed behavior</li>
-</ol>
+<p>A duration window (<a href="../139-duration-reset-windows/">ADR-139</a>) is anchored to an entity, but a
+sharded entity's balance lives on up to <code>MAX_SHARD_COUNT</code> bucket items, each refilled and reset
+by whichever writer reaches it (ADR-133, ADR-134). A calendar reset gets shard coherence free,
+because every shard reads the same clock and the same cron. A window start is state, so an
+entity's shards either agree on it by propagation or each keep their own.</p>
+<p>Per-shard windows would not over-admit — staggered shards redistribute <em>when</em> the allowance
+arrives without loosening the ceiling — but they make the reset instant unanswerable: any single
+value reported to a caller either over- or under-promises, and for a session cap shown to a
+human that instant is the product. Carrying the balance across shards is not an option either:
+token deltas are always additive so they commute with speculative writes, and a fan-out knows
+no sibling's balance, so a blind set would either clobber committed consumption or double a
+share (the #587 finding).</p>
+<p>Two further hazards shape the rule. Two clients crossing a window boundary together each open a
+window on their own shard, and a naive propagation lets each reset the other inside one window.
+And a writer whose clock runs behind can move a shard's last-refill stamp <code>rf</code> backward, after
+which the shard would believe a window it already applied is new (#635). Mechanism, writer rows
+and costs are in CLAUDE.md "Session Quotas" and the DynamoDB writer table.</p>
 <h2 id="decision">Decision<a class="headerlink" href="#decision" title="Permanent link">&para;</a></h2>
-<blockquote>
-<p><strong>Maintained index — exemption from <a href="../000-adr-format-standard/">ADR-000</a>.</strong> Beyond the choice to
-centralize configuration at all, this record decides nothing itself: it indexes the sub-decisions
-below, each of which owns one architectural choice. Those records stay immutable once Accepted;
-<em>this index is maintained</em>, its rows corrected as sub-decisions are superseded or added.</p>
-</blockquote>
-<p>Implement centralized configuration with these architectural choices:</p>
-<table>
-<thead>
-<tr>
-<th>Decision</th>
-<th>ADR</th>
-<th>Summary</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Schema format</td>
-<td><a href="../101-flat-schema-config/">ADR-101</a></td>
-<td>Flat schema (no nested <code>data.M</code>) for atomic counters</td>
-</tr>
-<tr>
-<td>Config hierarchy</td>
-<td><a href="../102-config-hierarchy/">ADR-102</a> <em>(superseded by <a href="../118-four-level-config-hierarchy/">ADR-118</a>)</em></td>
-<td>Three levels: Entity &gt; Resource &gt; System — later expanded to four</td>
-</tr>
-<tr>
-<td>Caching strategy</td>
-<td><a href="../103-config-caching/">ADR-103</a> <em>(superseded by <a href="../122-resolve-limits-on-repository/">ADR-122</a>)</em></td>
-<td>60s TTL with negative caching; resolution later moved to the Repository protocol</td>
-</tr>
-<tr>
-<td>API behavior</td>
-<td><a href="../104-stored-limits-default/">ADR-104</a></td>
-<td>Stored limits as default</td>
-</tr>
-<tr>
-<td>Read consistency</td>
-<td><a href="../105-eventual-consistency/">ADR-105</a></td>
-<td>Eventually consistent reads</td>
-</tr>
-<tr>
-<td>Disable flag</td>
-<td><a href="../125-resource-disable/">ADR-125</a></td>
-<td>Tri-state <code>disabled</code> beside limits, resolved by an independent walk over the entity and resource levels</td>
-</tr>
-<tr>
-<td>Bucket TTL</td>
-<td><a href="../136-entity-config-bucket-ttl/">ADR-136</a></td>
-<td>The resolved level decides whether a bucket persists or expires</td>
-</tr>
-<tr>
-<td>Schedules on config</td>
-<td><a href="../135-scheduled-limits/">ADR-135</a></td>
-<td>Per-limit <code>sched</code>/<code>rsched</code>, with one <code>sched_tz</code> hoisted per item</td>
-</tr>
-</tbody>
-</table>
+<p>Every shard of an entity must converge on one window start: the writer that opens a window must
+propagate only the start, never tokens, and only to siblings whose own window had ended and whose
+<code>rf</code> is older than the new start; each shard must reset itself to its share when its window start
+is newer than its own <code>rf</code>, and no materialising writer may move <code>rf</code> backward. A shard created
+mid-window must join shard 0's live window, read strongly consistently, and may open and
+propagate its own only when shard 0's window has ended or it has none.</p>
 <h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>
 <p><strong>Positive:</strong>
-- Consistent behavior across distributed clients
-- Caching keeps config reads off the per-request cost path
-- Enables per-resource, per-entity, and entity-wide customization
-- Clean upgrade path to v0.6.0 full schema migration</p>
+- <code>check_availability</code> and <code>RateLimitExceeded</code> can report one honest reset instant per entity.
+- No shard's balance is ever decremented to fund another's, so the #587 over-admission cannot
+  recur through a rollover.
+- The reset is a set, not an add: idempotent, one reset however many windows an idle shard slept
+  through, and the consumption counter <code>tc</code> stays monotonic.
+- Monotonic <code>rf</code> costs nothing on items without a window, since refill treats non-positive
+  elapsed time as zero.
+- Unsharded entities pay nothing extra.</p>
 <p><strong>Negative:</strong>
-- Config resolution is stale for up to the cache TTL (60s by default; entity-level setters evict eagerly)
-- Resource- and system-level changes reach an existing bucket only when its TTL expires, not within the cache TTL (<a href="../136-entity-config-bucket-ttl/">ADR-136</a>)
-- Additional complexity in resolution logic
-- Breaking change for explicit-limits-only users</p>
-<h2 id="access-patterns-added">Access Patterns Added<a class="headerlink" href="#access-patterns-added" title="Permanent link">&para;</a></h2>
-<blockquote>
-<p>The original per-limit sort keys (<code>SK begins_with #LIMIT#</code>) were replaced by a single <code>#CONFIG</code> item per level, namespace-prefixed with <code>{ns}/</code>. The entity-level sort key carries the resource, and <code>_default_</code> is a legal value of that slot naming the entity-wide level (<a href="../118-four-level-config-hierarchy/">ADR-118</a>). Both are shown below.</p>
-</blockquote>
-<table>
-<thead>
-<tr>
-<th>Pattern</th>
-<th>Query (v0.5.0, original)</th>
-<th>Current</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Get system config</td>
-<td><code>PK=SYSTEM#, SK begins_with #LIMIT#</code></td>
-<td><code>PK={ns}/SYSTEM#, SK=#CONFIG</code></td>
-</tr>
-<tr>
-<td>Get resource config</td>
-<td><code>PK=RESOURCE#{resource}, SK begins_with #LIMIT#</code></td>
-<td><code>PK={ns}/RESOURCE#{resource}, SK=#CONFIG</code></td>
-</tr>
-<tr>
-<td>Get entity config</td>
-<td><code>PK=ENTITY#{id}, SK begins_with #LIMIT#</code></td>
-<td><code>PK={ns}/ENTITY#{id}, SK=#CONFIG#{resource}</code></td>
-</tr>
-</tbody>
-</table>
+- A rollover costs one conditional write per (sibling shard, window limit), once per window.
+- Shards can be staggered by milliseconds after concurrent openers, and a lost propagation write
+  leaves one shard offset until the next rollover. Neither over-admits, but no reader may assume
+  every shard carries an identical window start.
+- Creating a windowed shard costs a strongly consistent read, because a stale pre-roll start
+  looks ended and would mint a full share on top of the window just opened.
+- The aggregator's refill condition grows one term per rolled window start, because two
+  propagations are indistinguishable to its <code>rf</code> and <code>vu</code> pins alone.</p>
 <h2 id="alternatives-considered">Alternatives Considered<a class="headerlink" href="#alternatives-considered" title="Permanent link">&para;</a></h2>
-<h3 id="explicit-limits-on-every-acquire-call">Explicit limits on every <code>acquire()</code> call<a class="headerlink" href="#explicit-limits-on-every-acquire-call" title="Permanent link">&para;</a></h3>
-<p>Rejected because: distributed clients drift apart, with no central place to change a limit.</p>
-<h3 id="one-adr-covering-the-whole-centralized-config-design">One ADR covering the whole centralized-config design<a class="headerlink" href="#one-adr-covering-the-whole-centralized-config-design" title="Permanent link">&para;</a></h3>
-<p>Rejected because: independent decisions folded into one record cannot be superseded
-independently — which ADR-118, ADR-122 and ADR-136 have each since needed to do.</p>
-<h2 id="implementation">Implementation<a class="headerlink" href="#implementation" title="Permanent link">&para;</a></h2>
-<p>See linked issues for implementation details:</p>
-<ul>
-<li><a href="https://github.com/zeroae/zae-limiter/issues/130">#130</a> - Store system/resource config</li>
-<li><a href="https://github.com/zeroae/zae-limiter/issues/131">#131</a> - System-level default limits</li>
-<li><a href="https://github.com/zeroae/zae-limiter/issues/135">#135</a> - Client-side config cache</li>
-<li><a href="https://github.com/zeroae/zae-limiter/issues/180">#180</a> - v0.6.0 full schema flattening</li>
-</ul>
+<h3 id="each-shard-keeps-its-own-window-with-no-propagation">Each shard keeps its own window, with no propagation<a class="headerlink" href="#each-shard-keeps-its-own-window-with-no-propagation" title="Permanent link">&para;</a></h3>
+<p>Rejected because: the entity loses any single reset instant a caller can be told.</p>
+<h3 id="propagate-the-token-balance-with-the-window-start">Propagate the token balance with the window start<a class="headerlink" href="#propagate-the-token-balance-with-the-window-start" title="Permanent link">&para;</a></h3>
+<p>Rejected because: a fan-out cannot add without knowing each balance, and a blind set is unsafe
+in both write orderings.</p>
+<h3 id="move-a-sibling-whenever-the-new-start-is-later-than-its-own">Move a sibling whenever the new start is later than its own<a class="headerlink" href="#move-a-sibling-whenever-the-new-start-is-later-than-its-own" title="Permanent link">&para;</a></h3>
+<p>Rejected because: concurrent openers then reset each other's shard inside one window, which
+over-admits.</p>
+<h3 id="stamp-rf-from-the-writers-own-clock">Stamp <code>rf</code> from the writer's own clock<a class="headerlink" href="#stamp-rf-from-the-writers-own-clock" title="Permanent link">&para;</a></h3>
+<p>Rejected because: a slow clock moves <code>rf</code> backward past the window start and re-applies the reset
+on every request from that clock.</p>
+<h3 id="store-the-window-end-rather-than-the-start">Store the window end rather than the start<a class="headerlink" href="#store-the-window-end-rather-than-the-start" title="Permanent link">&para;</a></h3>
+<p>Rejected because: the start is the monotonic half, which is what makes the propagation condition
+idempotent.</p>
+<h3 id="redistribute-balance-across-shards-instead-of-transferring-it">Redistribute balance across shards instead of transferring it<a class="headerlink" href="#redistribute-balance-across-shards-instead-of-transferring-it" title="Permanent link">&para;</a></h3>
+<p>Rejected because: admission gates on per-shard balance, and a quota's debt is never repaid.</p>
 
 
 
@@ -3863,7 +3843,7 @@ independently — which ADR-118, ADR-122 and ADR-136 have each since needed to d
       <nav class="md-footer__inner md-grid" aria-label="Footer" >
         
           
-          <a href="../013-module-documentation-parity/" class="md-footer__link md-footer__link--prev" aria-label="Previous: ADR-013 Module Documentation Parity">
+          <a href="../139-duration-reset-windows/" class="md-footer__link md-footer__link--prev" aria-label="Previous: ADR-139 Duration reset windows anchored to first use">
             <div class="md-footer__button md-icon">
               
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
@@ -3873,20 +3853,20 @@ independently — which ADR-118, ADR-122 and ADR-136 have each since needed to d
                 Previous
               </span>
               <div class="md-ellipsis">
-                ADR-013 Module Documentation Parity
+                ADR-139 Duration reset windows anchored to first use
               </div>
             </div>
           </a>
         
         
           
-          <a href="../101-flat-schema-config/" class="md-footer__link md-footer__link--next" aria-label="Next: ADR-101 Flat Schema">
+          <a href="../141-reset-after-version-gate/" class="md-footer__link md-footer__link--next" aria-label="Next: ADR-141 Storing a reset_after limit is gated on reader versions">
             <div class="md-footer__title">
               <span class="md-footer__direction">
                 Next
               </span>
               <div class="md-ellipsis">
-                ADR-101 Flat Schema
+                ADR-141 Storing a reset_after limit is gated on reader versions
               </div>
             </div>
             <div class="md-footer__button md-icon">

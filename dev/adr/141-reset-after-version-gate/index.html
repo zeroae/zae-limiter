@@ -12,13 +12,11 @@
         <meta name="author" content="ZeroAE">
       
       
-        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/dev/adr/100-centralized-config/">
+        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/dev/adr/141-reset-after-version-gate/">
       
       
-        <link rel="prev" href="../013-module-documentation-parity/">
+        <link rel="prev" href="../140-duration-window-shard-coherence/">
       
-      
-        <link rel="next" href="../101-flat-schema-config/">
       
       
         
@@ -29,7 +27,7 @@
     
     
       
-        <title>ADR-100 Overview - zae-limiter</title>
+        <title>ADR-141 Storing a reset_after limit is gated on reader versions - zae-limiter</title>
       
     
     
@@ -84,7 +82,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#adr-100-centralized-configuration-access-patterns" class="md-skip">
+        <a href="#adr-141-storing-a-reset_after-limit-is-gated-on-reader-versions" class="md-skip">
           Skip to content
         </a>
       
@@ -123,7 +121,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              ADR-100 Overview
+              ADR-141 Storing a reset_after limit is gated on reader versions
             
           </span>
         </div>
@@ -1984,20 +1982,18 @@
                 
   
   
-    
   
   
-  
     
     
     
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_3" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_3" >
         
           
           <label class="md-nav__link" for="__nav_6_3" id="__nav_6_3_label" tabindex="0">
@@ -2018,7 +2014,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_3_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_3_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_6_3">
             <span class="md-nav__icon md-icon"></span>
             
@@ -2033,37 +2029,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    ADR-100 Overview
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../100-centralized-config/" class="md-nav__link">
         
   
   
@@ -2079,120 +2048,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#context" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Context
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#decision" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Decision
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#consequences" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Consequences
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#access-patterns-added" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Access Patterns Added
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#alternatives-considered" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Alternatives Considered
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Alternatives Considered">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#explicit-limits-on-every-acquire-call" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Explicit limits on every acquire() call
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#one-adr-covering-the-whole-centralized-config-design" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        One ADR covering the whole centralized-config design
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#implementation" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Implementation
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -3184,18 +3039,20 @@
                 
   
   
+    
   
   
+  
     
     
     
     
     
-    <li class="md-nav__item md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_10" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_10" checked>
         
           
           <label class="md-nav__link" for="__nav_6_10" id="__nav_6_10_label" tabindex="0">
@@ -3216,7 +3073,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_10_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_10_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_6_10">
             <span class="md-nav__icon md-icon"></span>
             
@@ -3511,10 +3368,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../141-reset-after-version-gate/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-141 Storing a reset_after limit is gated on reader versions
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -3530,6 +3414,131 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#context" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Context
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#decision" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Decision
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#consequences" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Consequences
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#alternatives-considered" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Alternatives Considered
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Alternatives Considered">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#gate-writers-on-client_min_version-alone" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Gate writers on client_min_version alone
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#bump-the-schema-major-so-old-clients-raise-incompatibleschemaerror" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bump the schema major so old clients raise IncompatibleSchemaError
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#a-stored-flag-old-clients-already-reject" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A stored flag old clients already reject
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#trust-the-stacks-enableaggregator-parameter-to-earn-the-stamp" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Trust the stack's EnableAggregator parameter to earn the stamp
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#hide-the-configuration-from-pre-v015-readers-now" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hide the configuration from pre-v0.15 readers now
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -3610,17 +3619,6 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#access-patterns-added" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Access Patterns Added
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#alternatives-considered" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3633,10 +3631,10 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#explicit-limits-on-every-acquire-call" class="md-nav__link">
+  <a href="#gate-writers-on-client_min_version-alone" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Explicit limits on every acquire() call
+        Gate writers on client_min_version alone
       
     </span>
   </a>
@@ -3644,10 +3642,43 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#one-adr-covering-the-whole-centralized-config-design" class="md-nav__link">
+  <a href="#bump-the-schema-major-so-old-clients-raise-incompatibleschemaerror" class="md-nav__link">
     <span class="md-ellipsis">
       
-        One ADR covering the whole centralized-config design
+        Bump the schema major so old clients raise IncompatibleSchemaError
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#a-stored-flag-old-clients-already-reject" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A stored flag old clients already reject
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#trust-the-stacks-enableaggregator-parameter-to-earn-the-stamp" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Trust the stack's EnableAggregator parameter to earn the stamp
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#hide-the-configuration-from-pre-v015-readers-now" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hide the configuration from pre-v0.15 readers now
       
     </span>
   </a>
@@ -3656,17 +3687,6 @@
         
       </ul>
     </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#implementation" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Implementation
-      
-    </span>
-  </a>
   
 </li>
       
@@ -3689,7 +3709,7 @@
 
 
   
-    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/adr/100-centralized-config.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/adr/141-reset-after-version-gate.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -3697,136 +3717,68 @@
   
 
 
-<h1 id="adr-100-centralized-configuration-access-patterns">ADR-100: Centralized Configuration Access Patterns<a class="headerlink" href="#adr-100-centralized-configuration-access-patterns" title="Permanent link">&para;</a></h1>
-<p><strong>Status:</strong> Accepted
-<strong>Date:</strong> 2026-01-18
-<strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/129">#129</a>
-<strong>Milestone:</strong> v0.5.0</p>
-<blockquote>
-<p><strong>Note (post-v0.5.0):</strong> This is the original index for the centralized-config design. Two sub-decisions have since been superseded — the hierarchy expanded from three to four levels (<a href="../118-four-level-config-hierarchy/">ADR-118</a> supersedes <a href="../102-config-hierarchy/">ADR-102</a>) and limit resolution/caching moved to the Repository protocol (<a href="../122-resolve-limits-on-repository/">ADR-122</a> supersedes <a href="../103-config-caching/">ADR-103</a>). The original per-limit <code>#LIMIT#</code> config keys were replaced by a single composite <code>#CONFIG</code> item per level in the v0.8.0 composite-limits migration, applying <a href="../114-composite-bucket-items/">ADR-114</a>'s composite shape to config records; no ADR of its own records that change. Config items are written full-replace, so <a href="../115-add-based-writes-lazy-refill/">ADR-115</a>'s ADD-based write paths apply to buckets only. See the updated access patterns below.</p>
-</blockquote>
+<h1 id="adr-141-storing-a-reset_after-limit-is-gated-on-reader-versions">ADR-141: Storing a reset_after limit is gated on reader versions<a class="headerlink" href="#adr-141-storing-a-reset_after-limit-is-gated-on-reader-versions" title="Permanent link">&para;</a></h1>
+<p><strong>Status:</strong> Proposed
+<strong>Date:</strong> 2026-09-27
+<strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/638">#638</a>
+<strong>Related:</strong> <a href="../139-duration-reset-windows/">ADR-139</a>, ADR-137, ADR-009, <a href="https://github.com/zeroae/zae-limiter/issues/640">#640</a>, <a href="https://github.com/zeroae/zae-limiter/issues/644">#644</a></p>
 <h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
-<p>zae-limiter is a distributed rate limiting library where multiple clients must behave consistently. Before v0.5.0:</p>
-<ol>
-<li><strong>Limits passed explicitly</strong> - Each <code>acquire()</code> call requires limits</li>
-<li><strong>No global defaults</strong> - Cannot set system-wide or resource-level default limits</li>
-<li><strong>No caching</strong> - <code>use_stored_limits=True</code> queries DynamoDB on every call</li>
-<li><strong>Scattered config</strong> - Behavior settings are constructor-only, risking inconsistent fail-open/fail-closed behavior</li>
-</ol>
+<p>A reader predating <a href="../139-duration-reset-windows/">ADR-139</a> cannot read a <code>reset_after</code> limit.
+An old client sees a zero rate with no reset, which ADR-137 rejects: under <code>on_unavailable=block</code>
+every acquire on that level fails, and under <code>allow</code> every acquire is admitted with no limiting at
+all on that level. An old aggregator reads the quota as a dripping limit, so its
+proactive-sharding clone mints a fresh share per new shard — the #587 over-admission. An old
+provisioner stores a <code>reset_after</code> manifest limit as a dripping one.</p>
+<p>The version record already carries <code>lambda_version</code> and <code>client_min_version</code>, but neither could
+be trusted. <code>lambda_version</code> was stamped by writers that had not necessarily updated both Lambdas
+(a <code>deploy</code> on an existing stack pushes code but never adds or removes a function), and
+<code>client_min_version</code> was reset to <code>0.0.0</code> by every Lambda update and ignored by clients, which
+fell through an incompatible check with no flag set. There is one aggregator per stack, so its
+version is the one reader a writer can verify; old clients cannot be made to fail closed from a
+newer build. The options, the owner's 2026-09-26 decision, and the mechanics are in #638 and
+CLAUDE.md "Version gate (#638)".</p>
 <h2 id="decision">Decision<a class="headerlink" href="#decision" title="Permanent link">&para;</a></h2>
-<blockquote>
-<p><strong>Maintained index — exemption from <a href="../000-adr-format-standard/">ADR-000</a>.</strong> Beyond the choice to
-centralize configuration at all, this record decides nothing itself: it indexes the sub-decisions
-below, each of which owns one architectural choice. Those records stay immutable once Accepted;
-<em>this index is maintained</em>, its rows corrected as sub-decisions are superseded or added.</p>
-</blockquote>
-<p>Implement centralized configuration with these architectural choices:</p>
-<table>
-<thead>
-<tr>
-<th>Decision</th>
-<th>ADR</th>
-<th>Summary</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Schema format</td>
-<td><a href="../101-flat-schema-config/">ADR-101</a></td>
-<td>Flat schema (no nested <code>data.M</code>) for atomic counters</td>
-</tr>
-<tr>
-<td>Config hierarchy</td>
-<td><a href="../102-config-hierarchy/">ADR-102</a> <em>(superseded by <a href="../118-four-level-config-hierarchy/">ADR-118</a>)</em></td>
-<td>Three levels: Entity &gt; Resource &gt; System — later expanded to four</td>
-</tr>
-<tr>
-<td>Caching strategy</td>
-<td><a href="../103-config-caching/">ADR-103</a> <em>(superseded by <a href="../122-resolve-limits-on-repository/">ADR-122</a>)</em></td>
-<td>60s TTL with negative caching; resolution later moved to the Repository protocol</td>
-</tr>
-<tr>
-<td>API behavior</td>
-<td><a href="../104-stored-limits-default/">ADR-104</a></td>
-<td>Stored limits as default</td>
-</tr>
-<tr>
-<td>Read consistency</td>
-<td><a href="../105-eventual-consistency/">ADR-105</a></td>
-<td>Eventually consistent reads</td>
-</tr>
-<tr>
-<td>Disable flag</td>
-<td><a href="../125-resource-disable/">ADR-125</a></td>
-<td>Tri-state <code>disabled</code> beside limits, resolved by an independent walk over the entity and resource levels</td>
-</tr>
-<tr>
-<td>Bucket TTL</td>
-<td><a href="../136-entity-config-bucket-ttl/">ADR-136</a></td>
-<td>The resolved level decides whether a bucket persists or expires</td>
-</tr>
-<tr>
-<td>Schedules on config</td>
-<td><a href="../135-scheduled-limits/">ADR-135</a></td>
-<td>Per-limit <code>sched</code>/<code>rsched</code>, with one <code>sched_tz</code> hoisted per item</td>
-</tr>
-</tbody>
-</table>
+<p>Every writer of a <code>reset_after</code> limit — config setters, the provisioner, and an <code>acquire()</code>
+limits override — must refuse it unless <code>lambda_version</code> is at least 0.15.0 or equals the
+writer's own build, and a config write it admits must raise <code>client_min_version</code> to 0.15.0
+(capped at a development writer's own build), which no writer may lower and below which clients
+from v0.15.0 on must refuse to run. A writer may stamp <code>lambda_version</code> with its build only when
+it created the stack in that call, or when the aggregator and the provisioner each either had
+code pushed in that run or do not exist.</p>
 <h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>
 <p><strong>Positive:</strong>
-- Consistent behavior across distributed clients
-- Caching keeps config reads off the per-request cost path
-- Enables per-resource, per-entity, and entity-wide customization
-- Clean upgrade path to v0.6.0 full schema migration</p>
+- A pre-v0.15 aggregator or provisioner can no longer be handed a limit it would misread.
+- One predicate decides the stamp for CLI <code>deploy</code>, infrastructure provisioning and <code>open()</code>, so
+  the rule cannot drift between them.
+- A missing record or unknown Lambda version fails closed and names its remedy.
+- <code>client_min_version</code> becomes a working field, so the next incompatible feature is protected by
+  the same ratchet without new machinery.
+- Writes of every other limit pay nothing.</p>
 <p><strong>Negative:</strong>
-- Config resolution is stale for up to the cache TTL (60s by default; entity-level setters evict eagerly)
-- Resource- and system-level changes reach an existing bucket only when its TTL expires, not within the cache TTL (<a href="../136-entity-config-bucket-ttl/">ADR-136</a>)
-- Additional complexity in resolution logic
-- Breaking change for explicit-limits-only users</p>
-<h2 id="access-patterns-added">Access Patterns Added<a class="headerlink" href="#access-patterns-added" title="Permanent link">&para;</a></h2>
-<blockquote>
-<p>The original per-limit sort keys (<code>SK begins_with #LIMIT#</code>) were replaced by a single <code>#CONFIG</code> item per level, namespace-prefixed with <code>{ns}/</code>. The entity-level sort key carries the resource, and <code>_default_</code> is a legal value of that slot naming the entity-wide level (<a href="../118-four-level-config-hierarchy/">ADR-118</a>). Both are shown below.</p>
-</blockquote>
-<table>
-<thead>
-<tr>
-<th>Pattern</th>
-<th>Query (v0.5.0, original)</th>
-<th>Current</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Get system config</td>
-<td><code>PK=SYSTEM#, SK begins_with #LIMIT#</code></td>
-<td><code>PK={ns}/SYSTEM#, SK=#CONFIG</code></td>
-</tr>
-<tr>
-<td>Get resource config</td>
-<td><code>PK=RESOURCE#{resource}, SK begins_with #LIMIT#</code></td>
-<td><code>PK={ns}/RESOURCE#{resource}, SK=#CONFIG</code></td>
-</tr>
-<tr>
-<td>Get entity config</td>
-<td><code>PK=ENTITY#{id}, SK begins_with #LIMIT#</code></td>
-<td><code>PK={ns}/ENTITY#{id}, SK=#CONFIG#{resource}</code></td>
-</tr>
-</tbody>
-</table>
+- Nothing makes a v0.14 client fail closed; every client must still be upgraded before a
+  <code>reset_after</code> limit is stored. Hiding the configuration from old readers is deferred to #640.
+- The gate holds only at write time: a v0.14 CLI can later put the old Lambdas back, and a v0.14
+  <code>upgrade</code> also resets the minimum. Never run a v0.14 CLI against such a stack.
+- The minimum, and the override gate's cached Lambda version, are checked when a repository
+  opens, so a long-lived process is not refused until it restarts.
+- A refused CloudFormation update whose previous properties also carried <code>reset_after</code> leaves the
+  stack in <code>UPDATE_ROLLBACK_FAILED</code>, needing a manual rollback continuation.
+- <code>deploy</code> performs no minimum check of its own; <code>--no-aggregator</code> stacks get no exemption and
+  must be redeployed by v0.15 with the provisioner enabled (#644).</p>
 <h2 id="alternatives-considered">Alternatives Considered<a class="headerlink" href="#alternatives-considered" title="Permanent link">&para;</a></h2>
-<h3 id="explicit-limits-on-every-acquire-call">Explicit limits on every <code>acquire()</code> call<a class="headerlink" href="#explicit-limits-on-every-acquire-call" title="Permanent link">&para;</a></h3>
-<p>Rejected because: distributed clients drift apart, with no central place to change a limit.</p>
-<h3 id="one-adr-covering-the-whole-centralized-config-design">One ADR covering the whole centralized-config design<a class="headerlink" href="#one-adr-covering-the-whole-centralized-config-design" title="Permanent link">&para;</a></h3>
-<p>Rejected because: independent decisions folded into one record cannot be superseded
-independently — which ADR-118, ADR-122 and ADR-136 have each since needed to do.</p>
-<h2 id="implementation">Implementation<a class="headerlink" href="#implementation" title="Permanent link">&para;</a></h2>
-<p>See linked issues for implementation details:</p>
-<ul>
-<li><a href="https://github.com/zeroae/zae-limiter/issues/130">#130</a> - Store system/resource config</li>
-<li><a href="https://github.com/zeroae/zae-limiter/issues/131">#131</a> - System-level default limits</li>
-<li><a href="https://github.com/zeroae/zae-limiter/issues/135">#135</a> - Client-side config cache</li>
-<li><a href="https://github.com/zeroae/zae-limiter/issues/180">#180</a> - v0.6.0 full schema flattening</li>
-</ul>
+<h3 id="gate-writers-on-client_min_version-alone">Gate writers on <code>client_min_version</code> alone<a class="headerlink" href="#gate-writers-on-client_min_version-alone" title="Permanent link">&para;</a></h3>
+<p>Rejected because: v0.14 ignores that field, so it stops neither v0.14 clients nor the v0.14
+aggregator.</p>
+<h3 id="bump-the-schema-major-so-old-clients-raise-incompatibleschemaerror">Bump the schema major so old clients raise <code>IncompatibleSchemaError</code><a class="headerlink" href="#bump-the-schema-major-so-old-clients-raise-incompatibleschemaerror" title="Permanent link">&para;</a></h3>
+<p>Rejected because: it breaks every v0.x client on the table and needs a migration.</p>
+<h3 id="a-stored-flag-old-clients-already-reject">A stored flag old clients already reject<a class="headerlink" href="#a-stored-flag-old-clients-already-reject" title="Permanent link">&para;</a></h3>
+<p>Rejected because: it fails exactly as today, and so still fails open under <code>allow</code>.</p>
+<h3 id="trust-the-stacks-enableaggregator-parameter-to-earn-the-stamp">Trust the stack's <code>EnableAggregator</code> parameter to earn the stamp<a class="headerlink" href="#trust-the-stacks-enableaggregator-parameter-to-earn-the-stamp" title="Permanent link">&para;</a></h3>
+<p>Rejected because: the function does the reading, and the template creates it only when a role is
+also available.</p>
+<h3 id="hide-the-configuration-from-pre-v015-readers-now">Hide the configuration from pre-v0.15 readers now<a class="headerlink" href="#hide-the-configuration-from-pre-v015-readers-now" title="Permanent link">&para;</a></h3>
+<p>Deferred to #640: it needs a per-limit applied marker first and turns an old client's outage into
+silent non-enforcement, which is a product decision.</p>
 
 
 
@@ -3863,7 +3815,7 @@ independently — which ADR-118, ADR-122 and ADR-136 have each since needed to d
       <nav class="md-footer__inner md-grid" aria-label="Footer" >
         
           
-          <a href="../013-module-documentation-parity/" class="md-footer__link md-footer__link--prev" aria-label="Previous: ADR-013 Module Documentation Parity">
+          <a href="../140-duration-window-shard-coherence/" class="md-footer__link md-footer__link--prev" aria-label="Previous: ADR-140 Shards of one entity share one duration window">
             <div class="md-footer__button md-icon">
               
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
@@ -3873,27 +3825,11 @@ independently — which ADR-118, ADR-122 and ADR-136 have each since needed to d
                 Previous
               </span>
               <div class="md-ellipsis">
-                ADR-013 Module Documentation Parity
+                ADR-140 Shards of one entity share one duration window
               </div>
             </div>
           </a>
         
-        
-          
-          <a href="../101-flat-schema-config/" class="md-footer__link md-footer__link--next" aria-label="Next: ADR-101 Flat Schema">
-            <div class="md-footer__title">
-              <span class="md-footer__direction">
-                Next
-              </span>
-              <div class="md-ellipsis">
-                ADR-101 Flat Schema
-              </div>
-            </div>
-            <div class="md-footer__button md-icon">
-              
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
-            </div>
-          </a>
         
       </nav>
     

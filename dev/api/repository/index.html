@@ -5291,6 +5291,62 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/140-duration-window-shard-coherence/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-140 Shards of one entity share one duration window
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/141-reset-after-version-gate/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-141 Storing a reset_after limit is gated on reader versions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -10431,7 +10487,7 @@ reads as "no schedule, never expires".</p>
               <div class="doc-md-description">
                 <p>The <code>rf</code> to stamp, when the caller has clamped it above
 <code>now_ms</code> so that <code>rf</code> never sits below a window start the
-item carries (ADR-139). <code>None</code> stamps <code>now_ms</code>.</p>
+item carries (ADR-140). <code>None</code> stamps <code>now_ms</code>.</p>
               </div>
             </td>
             <td>
@@ -10686,7 +10742,7 @@ nothing but a config-resolving client could compute.</p>
               <div class="doc-md-description">
                 <p>The <code>rf</code> to stamp, when the caller has clamped it so that
 it never moves backward and never sits below a window start
-the item carries (ADR-139). <code>None</code> stamps <code>now_ms</code>. The
+the item carries (ADR-140). <code>None</code> stamps <code>now_ms</code>. The
 lock still compares against <code>expected_rf</code>, the stored value.</p>
               </div>
             </td>
@@ -14245,7 +14301,7 @@ only when <code>shard_count &gt; 1</code>, on each slow pass until the seed land
 
     <div class="doc doc-contents ">
 
-        <p>Read one shard's duration-window starts, to seed a shard being created (ADR-139).</p>
+        <p>Read one shard's duration-window starts, to seed a shard being created (ADR-140).</p>
 <p>Shard 0 by default, because :meth:<code>bump_shard_count</code> already treats it
 as the source of truth for <code>shard_count</code>. A created shard inherits
 <code>ws</code> verbatim and sets <code>rf = now</code>, so <code>ws &gt; rf</code> is <strong>false</strong> on
@@ -17125,7 +17181,7 @@ image), or None to read the entity cache</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The <code>rf</code> to stamp, or None for <code>now_ms</code> (ADR-139)</p>
+                <p>The <code>rf</code> to stamp, or None for <code>now_ms</code> (ADR-140)</p>
               </div>
             </td>
             <td>
@@ -17341,7 +17397,7 @@ travel as one pair so neither is ever stamped alone.</p>
             <td>
               <div class="doc-md-description">
                 <p>The <code>rf</code> to stamp, or None for <code>now_ms</code>. The lock still
-compares against <code>expected_rf</code> (ADR-139)</p>
+compares against <code>expected_rf</code> (ADR-140)</p>
               </div>
             </td>
             <td>
@@ -18438,7 +18494,7 @@ undivided, for the missing quota limits</p>
 
     <div class="doc doc-contents ">
 
-        <p>Read one shard's duration-window starts, to seed a shard being created (ADR-139).</p>
+        <p>Read one shard's duration-window starts, to seed a shard being created (ADR-140).</p>
 <p>A shard created mid-window joins the window in progress rather than
 opening its own, so the create path reads the <code>ws</code> it would inherit
 from shard 0 — the source of truth for <code>shard_count</code> already.</p>

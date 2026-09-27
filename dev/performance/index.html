@@ -4154,6 +4154,62 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../adr/140-duration-window-shard-coherence/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-140 Shards of one entity share one duration window
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../adr/141-reset-after-version-gate/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-141 Storing a reset_after limit is gated on reader versions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -5470,7 +5526,8 @@ load balancing, you can still use manual entity sharding:</p>
 </span></code></pre></div>
 <h4 id="session-quotas">Session Quotas<a class="headerlink" href="#session-quotas" title="Permanent link">&para;</a></h4>
 <p>A <a href="../guide/session-quotas/">session quota</a> (<code>Limit.quota(..., reset_after=...)</code>,
-<a href="../adr/139-duration-reset-windows/">ADR-139</a>) keeps every shard of an entity on one window,
+<a href="../adr/139-duration-reset-windows/">ADR-139</a>) keeps every shard of an entity on one window
+(<a href="../adr/140-duration-window-shard-coherence/">ADR-140</a>),
 and that coherence is the only cost it adds. Where S is the entity's <code>shard_count</code> and L the
 number of <code>reset_after</code> limits on the bucket:</p>
 <table>
