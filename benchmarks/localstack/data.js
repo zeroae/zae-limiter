@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790445867511,
+  "lastUpdate": 1790484194323,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -27422,6 +27422,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.01601989934250998",
             "extra": "mean: 1.0687051739999958 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ee0e9f865ab0abeb40ff78c9d8e2392b232bd37b",
+          "message": "✨ feat(limiter): gate storing a reset_after limit on reader versions (#647)\n\n## Summary\n\nImplements options **A + C** of #638. Option B is deferred to #640;\noption D (docs) shipped earlier.\n\n### A — gate every writer of a `reset_after` limit on reader versions\n- Covers every writer: `Repository.set_limits` / `set_resource_defaults`\n/ `set_system_defaults`, the provisioner applier (CLI `limits apply` and\n`Custom::ZaeLimiterLimits`), and the `acquire(limits=...)` override.\n- The write is refused unless the stack's version record says\n`lambda_version` reads `reset_after` (≥ 0.15.0; PEP 440 pre-releases\nhandled).\n- Costs one strongly consistent `GetItem`, and **only when a\n`reset_after` limit is present**.\n- The override uses the version cached at open, so the pass path costs\n**0 extra reads**.\n- A refusal raises `VersionMismatchError`. `on_unavailable` never\ndowngrades it.\n- A write that passes raises `client_min_version` to at least 0.15.0.\n\n### C — v0.15 clients respect `client_min_version`\n- v0.15 clients raise when they are older than `client_min_version`.\n- Nothing resets the minimum to 0.0.0: init is a conditional `PutItem`,\nand `set_version_record` keeps the stored minimum.\n\n### `lambda_version` must be earned\n- One symmetric rule. The stamp is written only when:\n  - the stack was created in this call, or\n- both the aggregator and the provisioner code were pushed this run, or\nwere probed absent via `GetFunctionConfiguration`.\n- If the deploy can't tell, the stored stamp is kept. So the stamp never\nclaims new code that an old Lambda does not run.\n- An unknown stamp turns off Lambda auto-update until `zae-limiter\nupgrade`.\n- `check` and `version` report a too-old client instead of refusing to\nrun.\n\n### Pre-existing bugs on `main`, each in its own 🐛 commit\n- `parse_version` rejected PEP 440 pre-releases (`0.15.0rc1`).\n- `limits` CLI commands swallowed every error when opening the stack.\n\nAlso includes a ✅ commit that deflakes\n`test_two_entities_get_independent_windows` (Refs #597).\n\n### Documented holes (v0.15 cannot fix these)\n- v0.14 clients ignore `client_min_version`.\n- The minimum is checked only at open.\n- A v0.14 CLI `deploy` or `upgrade --force` can put old Lambdas back.\n- A refused CFN update can end in `UPDATE_ROLLBACK_FAILED`. The remedies\nare documented.\n\n### Follow-ups filed\n- #644: stacks without an aggregator cannot be upgraded. Pre-existing,\nand this PR does not make it worse.\n- #645: timing flakes in the session e2e tests.\n- #646: `check` can push Lambda code.\n\n### Review\nFour fix rounds, each followed by a fresh-context re-review. The final\nre-review says **Ready to merge**: all repros are fixed and\nmutation-checked.\n\n## Test plan\n- [x] Unit tests: 5670 passed\n- [x] Gevent tests: 26 passed\n- [x] Doctests: 378 passed\n- [x] LocalStack: provisioner tests + e2e session quotas\n- [x] `diff-cover` against `origin/main`: 100%\n\nCloses #638\n\nRefs #597, #640\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)",
+          "timestamp": "2026-09-27T00:38:11-04:00",
+          "tree_id": "525745165d0598abf79fbac7bcd2fe92be59290c",
+          "url": "https://github.com/zeroae/zae-limiter/commit/ee0e9f865ab0abeb40ff78c9d8e2392b232bd37b"
+        },
+        "date": 1790484192965,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 22.50487482313119,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007574511876392308",
+            "extra": "mean: 44.43481725000176 msec\nrounds: 8"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 16.197046911706064,
+            "unit": "iter/sec",
+            "range": "stddev: 0.012768096382816665",
+            "extra": "mean: 61.73964954545335 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 32.56455743864356,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006518268258178921",
+            "extra": "mean: 30.708232466667102 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 35.52456424148206,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004242058242570985",
+            "extra": "mean: 28.14953600000248 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 21.664972927969732,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0093557223571261",
+            "extra": "mean: 46.15745440000012 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 63.8090284826481,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0050366530564342465",
+            "extra": "mean: 15.671763444446343 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 23.752431513709084,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007065257866600973",
+            "extra": "mean: 42.10095288235373 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 24.26039533506345,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005071587103878502",
+            "extra": "mean: 41.219443714287046 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 27.43018385942319,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00357310969874795",
+            "extra": "mean: 36.456190199996286 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 24.754820657850058,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006785237980201447",
+            "extra": "mean: 40.39617227777765 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 24.376987290149184,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009008710634578325",
+            "extra": "mean: 41.02229648386874 msec\nrounds: 31"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 21.622232498387028,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006532125645249616",
+            "extra": "mean: 46.24869333333632 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 29.36589184796596,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005610147015746939",
+            "extra": "mean: 34.05311186110853 msec\nrounds: 36"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9380857813883818,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0014927931426491205",
+            "extra": "mean: 515.9730336000052 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9327601084597281,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0026949511862150934",
+            "extra": "mean: 517.3947846000033 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9469758813678758,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004239253195050171",
+            "extra": "mean: 1.055993103599991 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9004111915892372,
+            "unit": "iter/sec",
+            "range": "stddev: 0.03286861710233114",
+            "extra": "mean: 1.110603698999995 sec\nrounds: 5"
           }
         ]
       }
