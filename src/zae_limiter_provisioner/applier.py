@@ -81,9 +81,18 @@ def _build_limit_item(
     hoisted_tz = _hoisted_timezone(limits)
 
     for name, decl in limits.items():
-        item[limit_attr(name, "cp")] = {"N": str(decl["capacity"])}
-        item[limit_attr(name, "ra")] = {"N": str(decl["refill_amount"])}
-        item[limit_attr(name, "rp")] = {"N": str(decl["refill_period"])}
+        # #640: a limit carrying `reset_after_seconds` is stored under `w_`, the
+        # prefix a reader predating ADR-139 does not scan — mirroring
+        # `Repository._serialize_composite_limits`. Every field of the limit
+        # moves with it; `schema.config_limit_names` reads either.
+        windowed = decl.get("reset_after_seconds") is not None
+
+        def attr(field: str, name: str = name, windowed: bool = windowed) -> str:
+            return limit_attr(name, field, windowed=windowed)
+
+        item[attr("cp")] = {"N": str(decl["capacity"])}
+        item[attr("ra")] = {"N": str(decl["refill_amount"])}
+        item[attr("rp")] = {"N": str(decl["refill_period"])}
         # #222: manifests learned to express schedules in #543, and without
         # this leg the schedule reached the bucket fan-out but never the config
         # item — so it survived only until a bucket expired and was recreated
@@ -99,7 +108,7 @@ def _build_limit_item(
             ),
         ):
             if entries:
-                item[limit_attr(name, attr_field)] = {"S": encoder(entries)[0]}
+                item[attr(attr_field)] = {"S": encoder(entries)[0]}
 
         # ADR-139: a duration-window quota's window length, in seconds. Same
         # storage rule as cp/ra/rp — written only when the decl carries it,
@@ -108,7 +117,7 @@ def _build_limit_item(
         # needed.
         reset_after_seconds = decl.get("reset_after_seconds")
         if reset_after_seconds is not None:
-            item[limit_attr(name, LIMIT_FIELD_RSA)] = {"N": str(reset_after_seconds)}
+            item[attr(LIMIT_FIELD_RSA)] = {"N": str(reset_after_seconds)}
 
     if hoisted_tz is not None:
         item[CONFIG_FIELD_SCHED_TZ] = {"S": hoisted_tz}

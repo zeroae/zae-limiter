@@ -6303,7 +6303,14 @@ class Repository:
         limits: list[Limit],
         base_item: dict[str, Any],
     ) -> dict[str, Any]:
-        """Add l_* attributes to a DynamoDB item for composite limit storage.
+        """Add limit attributes to a DynamoDB item for composite limit storage.
+
+        A limit is stored as ``l_{name}_{field}``, or as ``w_{name}_{field}``
+        when it carries ``reset_after`` (#640, ADR-139): readers predating
+        ADR-139 discover limits by ``l_`` alone, so they keep enforcing the
+        level's other limits rather than failing the whole level on a quota
+        they cannot reconstruct. The prefix is a pure storage mapping, decided
+        here and undone in :meth:`_deserialize_composite_limits`.
 
         Every config level is written with a full-replace ``PutItem``, so an
         attribute this method omits (an unscheduled limit's ``l_{name}_sched``,
@@ -6316,7 +6323,7 @@ class Repository:
             base_item: Base DynamoDB item to add attributes to (mutated in place)
 
         Returns:
-            The modified base_item with l_{name}_{field} attributes added
+            The modified base_item with the limit attributes added
 
         Raises:
             ValueError: if two scheduled limits disagree on timezone; it is
@@ -6328,22 +6335,23 @@ class Repository:
 
         for limit in limits:
             name = limit.name
-            base_item[schema.limit_attr(name, schema.LIMIT_FIELD_CP)] = {"N": str(limit.capacity)}
-            base_item[schema.limit_attr(name, schema.LIMIT_FIELD_RA)] = {
-                "N": str(limit.refill_amount)
-            }
-            base_item[schema.limit_attr(name, schema.LIMIT_FIELD_RP)] = {
-                "N": str(limit.refill_period_seconds)
-            }
+            windowed = limit.reset_after_seconds is not None
+
+            def attr(field: str, name: str = name, windowed: bool = windowed) -> str:
+                return schema.limit_attr(name, field, windowed=windowed)
+
+            base_item[attr(schema.LIMIT_FIELD_CP)] = {"N": str(limit.capacity)}
+            base_item[attr(schema.LIMIT_FIELD_RA)] = {"N": str(limit.refill_amount)}
+            base_item[attr(schema.LIMIT_FIELD_RP)] = {"N": str(limit.refill_period_seconds)}
             if limit.schedule:
                 compact, _tz = schedule.encode(limit.schedule)
-                base_item[schema.limit_attr(name, schema.LIMIT_FIELD_SCHED)] = {"S": compact}
+                base_item[attr(schema.LIMIT_FIELD_SCHED)] = {"S": compact}
             # Without this leg a quota round-trips to `refill_amount=0` with no
             # reset, which `Limit.__post_init__` rejects — so the write poisons
             # the config item and every later read raises (#538).
             if limit.reset_schedule:
                 compact, _tz = schedule.encode_reset(limit.reset_schedule)
-                base_item[schema.limit_attr(name, schema.LIMIT_FIELD_RSCHED)] = {"S": compact}
+                base_item[attr(schema.LIMIT_FIELD_RSCHED)] = {"S": compact}
             # ADR-139: the alternative spelling of the reset half — a window
             # anchored to the entity's own first use rather than a calendar
             # instant. Written only when the limit has one, exactly like
@@ -6351,18 +6359,21 @@ class Repository:
             # limit re-written without a window loses the stored one with no
             # explicit REMOVE.
             if limit.reset_after_seconds is not None:
-                base_item[schema.limit_attr(name, schema.LIMIT_FIELD_RSA)] = {
-                    "N": str(limit.reset_after_seconds)
-                }
+                base_item[attr(schema.LIMIT_FIELD_RSA)] = {"N": str(limit.reset_after_seconds)}
 
         if hoisted_tz is not None:
             base_item[schema.CONFIG_FIELD_SCHED_TZ] = {"S": hoisted_tz}
         return base_item
 
     def _deserialize_composite_limits(self, item: dict[str, Any]) -> list[Limit]:
-        """Deserialize l_* attributes from a DynamoDB item to Limit objects.
+        """Deserialize limit attributes from a DynamoDB item to Limit objects.
 
-        Discovers limit names by scanning for l_{name}_cp attributes.
+        Discovers limit names by scanning for ``{prefix}{name}_cp`` under both
+        config prefixes (:func:`schema.config_limit_names`): ``l_``, and the
+        ``w_`` a ``reset_after`` limit is stored under (#640). Items written
+        under ``l_`` with an ``l_{name}_rsa`` (unreleased v0.15 builds, before
+        #640) read exactly as before; the next write of the level moves the
+        limit to ``w_``, since every level is a full-replace ``PutItem``.
 
         A stored schedule that will not decode raises ``RateLimiterUnavailable``
         (#222 §6) and takes **the whole item** with it, not just its own limit.
@@ -6388,18 +6399,19 @@ class Repository:
             RateLimiterUnavailable: A stored schedule on this item cannot be
                 decoded, or a limit carrying one — or a stored `rsa` duration
                 window (ADR-139) — cannot be reconstructed from what is
-                stored.
+                stored; or the item stores one limit under both prefixes, or
+                a ``w_`` limit with no ``rsa`` (#640).
         """
         from datetime import timedelta
 
-        # Discover limit names by scanning for l_{name}_cp attributes
-        limit_names: list[str] = []
-        suffix = f"_{schema.LIMIT_FIELD_CP}"
-        for attr_name in item:
-            if attr_name.startswith(schema.LIMIT_ATTR_PREFIX) and attr_name.endswith(suffix):
-                name = attr_name[len(schema.LIMIT_ATTR_PREFIX) : -len(suffix)]
-                if name:
-                    limit_names.append(name)
+        try:
+            limit_names = schema.config_limit_names(item)
+        except ValueError as exc:
+            raise RateLimiterUnavailable(
+                f"stored limit config is corrupt: {exc}",
+                cause=exc,
+                stack_name=self.stack_name,
+            ) from exc
 
         # One hoisted timezone for the whole item (#222 §4.1). Absent on items
         # written before schedules existed, and on items where nothing is
@@ -6408,15 +6420,15 @@ class Repository:
         sched_tz = item.get(schema.CONFIG_FIELD_SCHED_TZ, {}).get("S") or "UTC"
 
         limits: list[Limit] = []
-        for name in limit_names:
+        for name, windowed in limit_names.items():
 
             def _get(field: str) -> int:
-                attr = schema.limit_attr(name, field)
+                attr = schema.limit_attr(name, field, windowed=windowed)
                 return int(item.get(attr, {}).get("N", "0"))
 
-            sched_name = schema.limit_attr(name, schema.LIMIT_FIELD_SCHED)
-            rsched_name = schema.limit_attr(name, schema.LIMIT_FIELD_RSCHED)
-            rsa_name = schema.limit_attr(name, schema.LIMIT_FIELD_RSA)
+            sched_name = schema.limit_attr(name, schema.LIMIT_FIELD_SCHED, windowed=windowed)
+            rsched_name = schema.limit_attr(name, schema.LIMIT_FIELD_RSCHED, windowed=windowed)
+            rsa_name = schema.limit_attr(name, schema.LIMIT_FIELD_RSA, windowed=windowed)
             sched_attr = item.get(sched_name, {}).get("S")
             rsched_attr = item.get(rsched_name, {}).get("S")
             rsa_attr = item.get(rsa_name, {}).get("N")

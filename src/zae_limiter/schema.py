@@ -178,12 +178,21 @@ MAX_SHARD_COUNT = 32
 
 # Composite limit config attribute prefix and field suffixes (ADR-114 for configs)
 LIMIT_ATTR_PREFIX = "l_"
+# The prefix a limit carrying `reset_after` (ADR-139) is stored under instead
+# (#640). Readers predating ADR-139 discover config limits by `l_` alone — the
+# client by `startswith("l_") and endswith("_cp")`, the provisioner through
+# `parse_limit_attr` — so a session limit stored here is simply not seen by
+# them, and they keep enforcing the level's other limits instead of failing the
+# whole level on a quota they cannot reconstruct. It must never start with `l_`,
+# and it collides with no other top-level config attribute. Config items only:
+# bucket attributes stay `b_*`.
+WINDOW_LIMIT_ATTR_PREFIX = "w_"
 LIMIT_FIELD_CP = "cp"  # capacity (ceiling)
 LIMIT_FIELD_RA = "ra"  # refill_amount
 LIMIT_FIELD_RP = "rp"  # refill_period_seconds
 LIMIT_FIELD_SCHED = "sched"  # compact-encoded schedule (#222 §4.1)
 LIMIT_FIELD_RSCHED = "rsched"  # compact-encoded reset schedule (#222 §4.1)
-LIMIT_FIELD_RSA = "rsa"  # l_{name}_rsa — duration window length, seconds (ADR-139)
+LIMIT_FIELD_RSA = "rsa"  # w_{name}_rsa — duration window length, seconds (ADR-139, #640)
 
 # IANA timezone name for every schedule on the item, hoisted out of the
 # individual entries (#222 §4.1). One attribute per item, not per limit: it is
@@ -244,24 +253,84 @@ def parse_bucket_attr(attr_name: str) -> tuple[str, str] | None:
     return rest[:idx], rest[idx + 1 :]
 
 
-def limit_attr(limit_name: str, field: str) -> str:
-    """Build composite limit config attribute name: l_{limit_name}_{field}."""
-    return f"{LIMIT_ATTR_PREFIX}{limit_name}_{field}"
+def limit_attr(limit_name: str, field: str, *, windowed: bool = False) -> str:
+    """Build a composite limit config attribute name.
+
+    ``l_{limit_name}_{field}``, or ``w_{limit_name}_{field}`` for a limit
+    carrying ``reset_after`` (``windowed=True``, #640): the prefix a reader
+    predating ADR-139 does not scan.
+    """
+    prefix = WINDOW_LIMIT_ATTR_PREFIX if windowed else LIMIT_ATTR_PREFIX
+    return f"{prefix}{limit_name}_{field}"
 
 
 def parse_limit_attr(attr_name: str) -> tuple[str, str] | None:
     """Parse limit_name and field from a composite limit config attribute.
 
+    Accepts both config prefixes (``l_`` and the ``w_`` of a ``reset_after``
+    limit, #640); :func:`config_limit_names` says which one a name is stored
+    under, and rejects an item that stores one name under both.
+
     Returns (limit_name, field) or None if not a limit attribute.
     """
-    if not attr_name.startswith(LIMIT_ATTR_PREFIX):
+    for prefix in (LIMIT_ATTR_PREFIX, WINDOW_LIMIT_ATTR_PREFIX):
+        if attr_name.startswith(prefix):
+            rest = attr_name[len(prefix) :]
+            break
+    else:
         return None
-    rest = attr_name[len(LIMIT_ATTR_PREFIX) :]
     # Find the last underscore to split name from field
     idx = rest.rfind("_")
     if idx <= 0:
         return None
     return rest[:idx], rest[idx + 1 :]
+
+
+def config_limit_names(item: dict[str, Any]) -> dict[str, bool]:
+    """The limits a config item stores, and whether each is under ``w_`` (#640).
+
+    Discovers a limit by its ``_cp`` attribute under either prefix, in item
+    order — the one discovery rule every config reader shares (the client's
+    ``Repository._deserialize_composite_limits`` and the provisioner's
+    ``bucket_sync._decode_limits``), so the two cannot disagree about which
+    limits a level holds. Every other field of a limit is then read under the
+    prefix returned here.
+
+    Raises:
+        ValueError: The item is corrupt in one of the two ways the prefix
+            makes possible. A name stored under **both** prefixes leaves the
+            reader no way to tell which copy is current; and a ``w_`` limit
+            carrying no ``rsa`` breaks the prefix's one promise, that the limit
+            has a duration window. Either one takes the whole item with it,
+            exactly as an undecodable schedule does: dropping the one limit
+            would let the level's other limits win outright and the dropped
+            one go unenforced.
+    """
+    names: dict[str, bool] = {}
+    suffix = f"_{LIMIT_FIELD_CP}"
+    for attr_name in item:
+        if not attr_name.endswith(suffix):
+            continue
+        for prefix, windowed in ((LIMIT_ATTR_PREFIX, False), (WINDOW_LIMIT_ATTR_PREFIX, True)):
+            if not attr_name.startswith(prefix):
+                continue
+            name = attr_name[len(prefix) : -len(suffix)]
+            if not name:
+                continue
+            if name in names:
+                raise ValueError(
+                    f"limit {name!r} is stored under both {LIMIT_ATTR_PREFIX!r} and "
+                    f"{WINDOW_LIMIT_ATTR_PREFIX!r}; cannot tell which one is current"
+                )
+            names[name] = windowed
+    for name, windowed in names.items():
+        if windowed and limit_attr(name, LIMIT_FIELD_RSA, windowed=True) not in item:
+            raise ValueError(
+                f"limit {name!r} is stored under {WINDOW_LIMIT_ATTR_PREFIX!r}, which is "
+                f"reserved for a reset_after limit, but carries no "
+                f"{limit_attr(name, LIMIT_FIELD_RSA, windowed=True)!r}"
+            )
+    return names
 
 
 def pk_entity(namespace_id: str, entity_id: str) -> str:

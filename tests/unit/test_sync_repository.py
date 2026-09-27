@@ -5559,12 +5559,12 @@ class TestDurationWindowReachesConfigStorage:
 
     def test_the_window_is_stored_under_its_own_attribute(self, repo):
         """Seconds, not the `timedelta` — the field name carries no unit, so
-        storage has to spell it (`l_{name}_rsa`), and it is a sibling of
+        storage has to spell it (`w_{name}_rsa`, #640), and it is a sibling of
         `rsched`, not a tag inside it (a quota has one or the other, ADR-139)."""
         repo.set_limits("dw-2", [self.WINDOW], resource="gpt-4")
         item = self._raw_config(repo, "dw-2", "gpt-4")
-        assert item[limit_attr("session", LIMIT_FIELD_RSA)]["N"] == "18000"
-        assert limit_attr("session", LIMIT_FIELD_RSCHED) not in item
+        assert item[limit_attr("session", LIMIT_FIELD_RSA, windowed=True)]["N"] == "18000"
+        assert limit_attr("session", LIMIT_FIELD_RSCHED, windowed=True) not in item
 
     def test_rewriting_a_limit_without_a_window_drops_it(self, repo):
         """Config storage is override-not-merge (full-replace PutItem), so this
@@ -5888,7 +5888,7 @@ def _corrupt_config_sched(repo, entity_id, resource, limit_name, value, field="s
 
 
 def _corrupt_config_rsa(repo, entity_id, resource, limit_name, value):
-    """Overwrite `l_{name}_rsa` with a value `Limit.__post_init__` rejects.
+    """Overwrite `w_{name}_rsa` with a value `Limit.__post_init__` rejects.
 
     Mirrors `_corrupt_config_sched`, but `rsa` has no grammar to fail
     decoding — a plain `int()` on a DynamoDB `N` cannot realistically fail —
@@ -5905,7 +5905,7 @@ def _corrupt_config_rsa(repo, entity_id, resource, limit_name, value):
             "SK": {"S": schema.sk_config(resource)},
         },
         UpdateExpression="SET #a = :v",
-        ExpressionAttributeNames={"#a": limit_attr(limit_name, LIMIT_FIELD_RSA)},
+        ExpressionAttributeNames={"#a": limit_attr(limit_name, LIMIT_FIELD_RSA, windowed=True)},
         ExpressionAttributeValues={":v": {"N": str(value)}},
     )
 
@@ -6106,7 +6106,7 @@ class TestUnreadableStoredSchedule:
         with pytest.raises(RateLimiterUnavailable) as excinfo:
             repo.get_limits("corrupt-4g", resource="gpt-4")
         message = str(excinfo.value)
-        assert "l_session_rsa" in message
+        assert "w_session_rsa" in message
         assert "positive whole number of seconds" in message
         assert isinstance(excinfo.value.cause, ValueError)
 
@@ -6115,7 +6115,7 @@ class TestUnreadableStoredSchedule:
         self._seed(repo, "corrupt-4h", [window])
         _corrupt_config_rsa(repo, "corrupt-4h", "gpt-4", "session", -5)
         repo.invalidate_config_cache()
-        with pytest.raises(RateLimiterUnavailable, match="l_session_rsa"):
+        with pytest.raises(RateLimiterUnavailable, match="w_session_rsa"):
             repo.get_limits("corrupt-4h", resource="gpt-4")
 
     def test_a_non_integral_duration_window_raises_unavailable_too(self, repo):
@@ -6132,7 +6132,7 @@ class TestUnreadableStoredSchedule:
             repo.get_limits("corrupt-4i", resource="gpt-4")
         assert not isinstance(excinfo.value, ValueError)
         message = str(excinfo.value)
-        assert "l_session_rsa" in message
+        assert "w_session_rsa" in message
         assert "1.5" in message
         assert isinstance(excinfo.value.cause, ValueError)
 

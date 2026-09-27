@@ -472,7 +472,7 @@ class Limit:
                 f"no parameters."
             )
         # A duration has to be expressible in the storage unit, which is whole
-        # seconds (`l_{name}_rsa` / `b_{name}_rsa`). Rejecting here rather
+        # seconds (`w_{name}_rsa` / `b_{name}_rsa`). Rejecting here rather
         # than truncating is the same call #569 made for the schedule
         # absolutes: a silently-truncated window is a limit that resets at a
         # time the operator never wrote.
@@ -757,7 +757,7 @@ class Limit:
     def reset_after_seconds(self) -> int | None:
         """:attr:`reset_after` in the unit everything below the API uses.
 
-        Storage (``l_{name}_rsa``, ``b_{name}_rsa``), the manifest
+        Storage (``w_{name}_rsa``, ``b_{name}_rsa``), the manifest
         (``reset_after_seconds``) and CloudFormation (``ResetAfterSeconds``)
         all carry whole seconds, because a bare scalar cannot carry a type.
         ``__post_init__`` has already rejected anything that is not a positive
