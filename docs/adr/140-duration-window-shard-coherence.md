@@ -32,15 +32,14 @@ are in CLAUDE.md "Session Quotas" and the DynamoDB writer table.
 
 ## Decision
 
-Every shard of an entity must converge on one window start: the writer that opens a window must
-propagate only the start and a snapshot `wtc` of the sibling's consumption counter, never tokens,
-and only to siblings whose own window had ended and that either carry a window-applied marker `wa`
-or have an `rf` older than the new start. Each shard must record in `wa` the window start its
-balance reflects, and must reset itself when its window start is newer than `wa` (than `rf` where
-no `wa` exists), to its share less the consumption since `wtc`, never above its share. No
-materialising writer may move `rf` backward. A shard created mid-window must join shard 0's live
-window, read strongly consistently, and may open and propagate its own only when shard 0's
-window has ended or it has none.
+Every shard of an entity must converge on one window start: the opener must propagate only the
+start and a snapshot `wtc` of the sibling's consumption counter, never tokens, and only to
+siblings whose own window had ended and that carry a window-applied marker `wa` or an `rf` older
+than the new start; each shard must record in `wa` the start its balance reflects, must reset
+when its start is newer than `wa` (than `rf` where no `wa` exists) to its share less the
+consumption since `wtc` and never above its share, and no materialising writer may move `rf`
+backward. A shard created mid-window must join shard 0's live window, read strongly consistently,
+and may open and propagate its own only when shard 0's window has ended or it has none.
 
 ## Consequences
 
