@@ -125,6 +125,62 @@ its own read rather than reusing the child's. It costs 1 RCU (strongly consisten
 cascade shard-create path, once per parent shard, and it is what stops a busy child's window from
 silently becoming its parent's.
 
+### Mixed-fleet version gate (#638)
+
+A reader predating this record cannot read a `reset_after` limit (see Negatives), so storing one
+is gated on the readers' versions. Decided 2026-09-26: options **A**, **C** and **D** now; **B**
+deferred to #640.
+
+- **A — writer gate on the aggregator.** Every writer of a `reset_after` limit —
+  `Repository.set_limits`, `set_resource_defaults`, `set_system_defaults`, the provisioner
+  applier, and `acquire(limits=[...])`, whose override the slow path writes onto the bucket
+  item — refuses it with `VersionMismatchError` unless the version record's `lambda_version`
+  is at least `0.15.0` (`version.MIN_READER_VERSION_FOR_RESET_AFTER`, release part only, so a
+  `0.15.0rc1` counts), or is exactly the writer's own build. There is one aggregator per stack
+  and its version is `lambda_version`, so this is the one reader a writer can check. Cost: the
+  config writers issue one strongly consistent `GetItem` of `#VERSION` (1 RCU), and only when
+  a limit in the call carries `reset_after`; the `acquire()` override trusts the version the
+  repository read when opened and re-reads only on a refusal. A missing record, or an unknown
+  `lambda_version`, fails closed.
+- **The stamp must be earned.** `lambda_version` records this build only if the stack was
+  created in this call, **or** both:
+  - the aggregator is current: its code was pushed in this run, or it probes absent; **and**
+  - the provisioner is current: its code was pushed in this run, or it probes absent.
+
+  If either probe cannot tell, the stored stamp is kept (a new record is left unknown). The
+  probe is `lambda:GetFunctionConfiguration` on `{stack}-aggregator` /
+  `{stack}-limits-provisioner` — the functions themselves rather than the stack's
+  `EnableAggregator` parameter, because the function is what does the reading and the template
+  creates it only when a role is also available. The provisioner is in the rule because
+  `deploy` on an existing stack pushes code but adds and removes no functions (`create_stack`
+  never updates one): `--no-provisioner` or `--no-iam` leaves a live pre-v0.15 provisioner,
+  which stores a `reset_after` manifest limit as a dripping one. One predicate,
+  `stack_manager.stack_lambdas_current`, serves CLI `deploy`,
+  `_ensure_infrastructure_internal` and the `open()` init path. An unknown version asks for no
+  Lambda update, so `open(auto_update=True)` neither loops nor pushes code; the remedy is
+  `zae-limiter upgrade`, which treats unknown as out of date. A `--no-aggregator` stack's remedy
+  is re-running `zae-limiter deploy` from `0.15.0` with the provisioner enabled: the aggregator
+  probes absent, the provisioner's code is pushed, and the stamp is earned — where `upgrade`
+  would push code to an aggregator that does not exist.
+- **C — `client_min_version` becomes a real gate.** Clients from v0.15.0 on raise
+  `VersionMismatchError` when below it (before, `check_compatibility` returned an incompatible
+  result with no flag set and both version checks fell through). A Lambda update, `deploy` and
+  `upgrade` keep the stored minimum instead of resetting it to `0.0.0`. When A admits a write it
+  also **ratchets** the minimum to `0.15.0` with a conditional `UpdateItem`, never lowering it,
+  so the next feature is protected by the same field automatically.
+- **D — documentation** of what remains: the session-quotas guide, CLAUDE.md and the Negatives
+  below.
+- **B — hide the configuration from pre-v0.15 readers** (store the limit under attributes they
+  do not scan): deferred to #640. It needs #633 and a per-limit "window applied" marker first,
+  and it turns `on_unavailable=block` on an old client from an outage into silent
+  non-enforcement of the session limit — a product decision.
+
+Rejected: a writer gate on `client_min_version` alone (v0.14 ignores the field, so it stops
+neither v0.14 clients nor the v0.14 aggregator — kept only as C's ratchet); bumping the schema
+major so old clients raise `IncompatibleSchemaError` (breaks every v0.x client on the table and
+needs a migration); a stored flag old clients already reject (fails as today, a `ValueError`
+on read, so it still fails open under `allow`).
+
 ## Consequences
 
 **Positive:**
@@ -171,8 +227,26 @@ silently becoming its parent's.
   An aggregator predating this record reads the quota as a dripping limit, so its
   proactive-sharding clone mints `cp // new_count` per new shard — the #587 over-admission.
   The incompatibility itself is a property of ADR-137 rather than of this record — a pre-#222
-  client reading a *calendar* quota fails identically — but nothing checks versions, so the
-  whole fleet must be upgraded before a `reset_after` limit is stored.
+  client reading a *calendar* quota fails identically. The version gate above keeps the old
+  aggregator away; **nothing makes a v0.14 client fail closed**, so every client must still be
+  upgraded before a `reset_after` limit is stored.
+- The gate holds only at write time. A v0.14 CLI can undo it afterwards: `deploy` or
+  `upgrade --force` puts the v0.14 Lambdas back and stamps `lambda_version = 0.14.0`, and a
+  v0.14 `upgrade` reads the ratcheted minimum as "not up to date", downgrades the Lambdas and
+  resets the minimum to `0.0.0`. A later v0.15 `open()` re-upgrades the Lambdas, so they can
+  flip back and forth. The rule is to never run a v0.14 CLI against a stack holding a
+  `reset_after` limit.
+- `client_min_version` is checked when a repository is opened, so a long-lived process opened
+  before the minimum was raised is not refused until it restarts. For the same reason the
+  `acquire(limits=...)` override gate trusts the `lambda_version` read at open, and does not
+  see a later downgrade.
+- A refused `Custom::ZaeLimiterLimits` update whose *previous* properties also carried a
+  `reset_after` limit leaves the stack in `UPDATE_ROLLBACK_FAILED`: the rollback re-sends
+  those properties and is refused the same way. The remedy is `zae-limiter upgrade` followed by
+  `continue-update-rollback`, or `continue-update-rollback` skipping the resource — the refused
+  update wrote nothing.
+- A v0.15 `zae-limiter deploy` does no `client_min_version` check of its own; the other CLI
+  commands that open the repository do.
 
 ## Alternatives Considered
 

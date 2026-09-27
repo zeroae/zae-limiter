@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, cast
 import click
 
 from .infra.lambda_builder import get_package_info, write_lambda_package
-from .infra.stack_manager import StackManager
+from .infra.stack_manager import StackManager, stack_lambdas_current
 from .limits_cli import limits
 from .loadtest.cli import loadtest
 from .local import local
@@ -41,19 +41,36 @@ async def _connect(
     region: str | None,
     endpoint_url: str | None,
     namespace: str = "default",
+    *,
+    report_too_old: bool = False,
 ) -> Repository:
     """Open a repository with namespace resolution.
 
     Handles ValidationError and NamespaceNotFoundError with user-friendly messages.
     Always returns a valid Repository or exits with an error.
+
+    ``report_too_old``: for the reporting commands (``check``, ``version``). A
+    client below the stack's ``client_min_version`` gets a Repository that
+    skipped the version check instead of an exit, so the command can print
+    its report — with the incompatibility in it — rather than just refuse.
     """
-    from .exceptions import NamespaceNotFoundError, ValidationError
+    from .exceptions import NamespaceNotFoundError, ValidationError, VersionMismatchError
     from .repository import Repository
 
     try:
         return await Repository.open(
             namespace, stack=name, region=region, endpoint_url=endpoint_url
         )
+    except VersionMismatchError as e:
+        if report_too_old and not e.can_auto_update:
+            # Reads only: the record is what the report is about.
+            return Repository(name, region, endpoint_url, _skip_deprecation_warning=True)
+        # A client below the stack's client_min_version (#638). Caught here so
+        # every command — `upgrade` above all, which would otherwise downgrade
+        # the Lambdas the minimum protects — stops with the reason, not a
+        # traceback.
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
     except ValidationError as e:
         click.echo(f"Error: {e.reason}", err=True)
         sys.exit(1)
@@ -464,6 +481,9 @@ def deploy(
 
                 status = result.get("status", "unknown")
                 click.echo(f"✓ Stack {status.lower().replace('_', ' ')}")
+                # #638: what this deploy pushed, for the stamp in step 4.
+                aggregator_pushed = False
+                provisioner_pushed = False
 
                 if result.get("stack_id"):
                     click.echo(f"  Stack ID: {result['stack_id']}")
@@ -475,6 +495,7 @@ def deploy(
 
                     try:
                         lambda_result = await manager.deploy_lambda_code(wait=True)
+                        aggregator_pushed = True
 
                         if lambda_result.get("status") == "deployed":
                             size_kb = lambda_result.get("size_bytes", 0) / 1024
@@ -499,6 +520,7 @@ def deploy(
 
                     try:
                         provisioner_result = await manager.deploy_provisioner_code(wait=True)
+                        provisioner_pushed = True
 
                         if provisioner_result.get("status") == "deployed":
                             size_kb = provisioner_result.get("size_bytes", 0) / 1024
@@ -526,10 +548,24 @@ def deploy(
                         manager.table_name, region, endpoint_url, _skip_deprecation_warning=True
                     )
                     try:
+                        lambda_version: str | None = __version__
+                        # #638: claim this build only when no Lambda older than
+                        # it can remain (stack_lambdas_current); otherwise keep
+                        # the stored stamp.
+                        if not await stack_lambdas_current(
+                            created=result.get("created") is True,
+                            aggregator_pushed=aggregator_pushed,
+                            provisioner_pushed=provisioner_pushed,
+                            aggregator_exists=manager.aggregator_exists,
+                            provisioner_exists=manager.provisioner_exists,
+                        ):
+                            stored = await repo.get_version_record()
+                            lambda_version = (stored or {}).get("lambda_version")
+                        # client_min_version is left as stored (#638): a
+                        # redeploy must never lower a raised minimum.
                         await repo.set_version_record(
                             schema_version=get_schema_version(),
-                            lambda_version=__version__,
-                            client_min_version="0.0.0",
+                            lambda_version=lambda_version,
                             updated_by=f"cli:{__version__}",
                         )
                         click.echo(f"✓ Version record initialized (schema {get_schema_version()})")
@@ -1274,7 +1310,7 @@ def version_cmd(
     )
 
     async def _version() -> None:
-        repo = await _connect(name, region, endpoint_url)
+        repo = await _connect(name, region, endpoint_url, report_too_old=True)
         try:
             click.echo()
             click.echo("zae-limiter Infrastructure Version")
@@ -1382,6 +1418,9 @@ def upgrade(
     Updates Lambda code and version records to match the current client.
     Use --force to update even when versions already match.
 
+    The stack's minimum client version is kept, never lowered, and a client
+    below it is refused rather than allowed to downgrade the Lambdas.
+
     \f
 
     **Examples:**
@@ -1416,7 +1455,14 @@ def upgrade(
             infra_version = InfrastructureVersion.from_record(version_record)
             compat = check_compatibility(__version__, infra_version)
 
-            if not force and compat.is_compatible and not compat.requires_lambda_update:
+            # An unknown lambda_version (#638: the record was initialized by a
+            # client that deployed no Lambda code) is not "up to date".
+            if (
+                not force
+                and compat.is_compatible
+                and not compat.requires_lambda_update
+                and infra_version.lambda_version
+            ):
                 click.echo()
                 click.echo("Infrastructure is already up to date.")
                 click.echo(f"  Client:   {__version__}")
@@ -1476,10 +1522,10 @@ def upgrade(
 
                 # Step 4: Update version record
                 click.echo("[4/4] Updating version record...")
+                # client_min_version is left as stored (#638 C).
                 await repo.set_version_record(
                     schema_version=get_schema_version(),
                     lambda_version=__version__,
-                    client_min_version="0.0.0",
                     updated_by=f"cli:{__version__}",
                 )
                 click.echo("      Version record updated")
@@ -1562,7 +1608,7 @@ def check(
     )
 
     async def _check() -> None:
-        repo = await _connect(name, region, endpoint_url)
+        repo = await _connect(name, region, endpoint_url, report_too_old=True)
         try:
             click.echo()
             click.echo("Compatibility Check")

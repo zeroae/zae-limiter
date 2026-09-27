@@ -4,11 +4,15 @@ import pytest
 
 from zae_limiter.version import (
     CURRENT_SCHEMA_VERSION,
+    MIN_READER_VERSION_FOR_RESET_AFTER,
     InfrastructureVersion,
     ParsedVersion,
     check_compatibility,
     get_schema_version,
     parse_version,
+    ratcheted_client_min_version,
+    reads_reset_after,
+    reset_after_refusal,
 )
 
 
@@ -192,7 +196,14 @@ class TestCheckCompatibility:
         result = check_compatibility("1.2.0", infra)
 
         assert not result.is_compatible
+        assert result.requires_client_upgrade
         assert "upgrade" in result.message.lower()
+
+    def test_only_a_client_below_minimum_requires_a_client_upgrade(self):
+        """An unparseable client version is incompatible but not "too old" (#638)."""
+        infra = InfrastructureVersion("1.0.0", "1.0.0", None, "0.0.0")
+        assert not check_compatibility("invalid", infra).requires_client_upgrade
+        assert not check_compatibility("1.0.0", infra).requires_client_upgrade
 
     def test_invalid_client_version(self):
         """Test with invalid client version."""
@@ -227,3 +238,117 @@ class TestSchemaVersion:
         """Schema version >= 0.9.0 for bucket PK migration."""
         v = parse_version(CURRENT_SCHEMA_VERSION)
         assert v >= ParsedVersion(0, 9, 0)
+
+
+class TestReadsResetAfter:
+    """Whether a stack's Lambdas read ``reset_after`` limits (#638 A)."""
+
+    def test_the_constant_is_the_introducing_release(self):
+        assert MIN_READER_VERSION_FOR_RESET_AFTER == "0.15.0"
+
+    @pytest.mark.parametrize(
+        ("lambda_version", "expected"),
+        [
+            ("0.14.0", False),
+            ("0.14.9", False),
+            ("0.15.0", True),
+            ("0.15.0-rc1", True),  # release part only, as check_compatibility does
+            ("0.15.0rc1", True),  # the PEP 440 spelling hatch-vcs writes
+            ("0.16.3", True),
+            ("1.0.0", True),
+            ("v0.15.0", True),
+            (None, False),
+            ("garbage", False),
+        ],
+    )
+    def test_against_a_release_client(self, lambda_version, expected):
+        assert reads_reset_after(lambda_version, "0.15.0") is expected
+
+    def test_a_development_build_trusts_only_its_own_lambdas(self):
+        dev = "0.14.1.dev99+gabcdef"
+        assert reads_reset_after(dev, dev)
+        assert not reads_reset_after("0.14.1.dev98+g000000", dev)
+
+
+class TestRatchetedClientMinVersion:
+    """The minimum a ``reset_after`` write leaves behind — never lowered (#638 C)."""
+
+    @pytest.mark.parametrize("stored", [None, "0.0.0", "0.14.0", "garbage"])
+    def test_raised_to_the_introducing_release(self, stored):
+        assert ratcheted_client_min_version(stored, "0.15.2") == "0.15.0"
+
+    @pytest.mark.parametrize("stored", ["0.15.0", "0.16.0"])
+    def test_left_alone_when_already_high_enough(self, stored):
+        assert ratcheted_client_min_version(stored, "0.16.0") is None
+
+    def test_capped_at_a_development_writer(self):
+        dev = "0.14.1.dev99+gabcdef"
+        assert ratcheted_client_min_version("0.0.0", dev) == dev
+        assert ratcheted_client_min_version(dev, dev) is None
+
+    @pytest.mark.parametrize("own", ["0.0.0+unknown", "garbage"])
+    def test_an_unknown_writer_raises_nothing(self, own):
+        assert ratcheted_client_min_version("0.0.0", own) is None
+
+    def test_a_release_candidate_writer_ratchets_to_itself(self):
+        assert ratcheted_client_min_version("0.0.0", "0.15.0rc1") == "0.15.0rc1"
+
+
+class TestPep440PreReleases:
+    """hatch-vcs writes PEP 440 versions; the gate's RC claim depends on them (#638)."""
+
+    @pytest.mark.parametrize(
+        ("text", "prerelease"),
+        [
+            ("0.15.0rc1", "rc1"),
+            ("0.15.0a2", "a2"),
+            ("0.15.0b1", "b1"),
+            ("0.15.0rc1.dev3+gabcdef", "rc1-dev"),
+            ("0.15.0+d20260926", None),
+            ("0.0.0+unknown", None),
+        ],
+    )
+    def test_parsed(self, text, prerelease):
+        v = parse_version(text)
+        assert (v.major, v.minor, v.patch, v.prerelease) == (
+            0,
+            int(text.split(".")[1]),
+            0,
+            prerelease,
+        )
+
+    def test_ordered_below_the_release(self):
+        assert parse_version("0.15.0a1") < parse_version("0.15.0b1")
+        assert parse_version("0.15.0b1") < parse_version("0.15.0rc1")
+        assert parse_version("0.15.0rc1") < parse_version("0.15.0")
+
+    @pytest.mark.parametrize("text", ["0.15.0rc", "0.15.0-", "0.15"])
+    def test_malformed_is_still_rejected(self, text):
+        with pytest.raises(ValueError):
+            parse_version(text)
+
+    def test_a_release_candidate_lambda_reads_reset_after(self):
+        assert reads_reset_after("0.15.0rc1", "0.15.0")
+        assert not reads_reset_after("0.14.1rc1", "0.15.0")
+
+
+class TestResetAfterRefusal:
+    """One wording for the client and the provisioner (#638)."""
+
+    def test_missing_record(self):
+        message, auto = reset_after_refusal(False, None)
+        assert "no version record" in message
+        assert "zae-limiter deploy" in message
+        assert auto is False
+
+    def test_unknown_lambda_version(self):
+        message, auto = reset_after_refusal(True, None)
+        assert "Run 'zae-limiter upgrade' to deploy it" in message
+        assert "--no-aggregator, re-run 'zae-limiter deploy'" in message
+        assert auto is False
+
+    def test_old_lambda_version(self):
+        message, auto = reset_after_refusal(True, "0.14.0")
+        assert "zae-limiter upgrade" in message
+        assert "--no-aggregator, re-run 'zae-limiter deploy'" in message
+        assert auto is True

@@ -3,8 +3,8 @@
 Uses aws-lambda-builders to install dependencies (pyyaml,
 aws-lambda-powertools) for the Lambda target platform, then copies the
 ``zae_limiter_provisioner`` package and a minimal ``zae_limiter`` stub
-(``schema.py``, ``models.py``, ``exceptions.py``, ``schedule.py``) into the
-artifact.
+(``schema.py``, ``models.py``, ``exceptions.py``, ``schedule.py``,
+``version.py`` and a generated ``_version.py``) into the artifact.
 """
 
 import importlib.metadata
@@ -54,6 +54,8 @@ def build_provisioner_package() -> bytes:
     - ``zae_limiter/models.py`` (dataclasses used by schema)
     - ``zae_limiter/exceptions.py`` (exceptions used by models)
     - ``zae_limiter/schedule.py`` (cron evaluation for scheduled limits, #222)
+    - ``zae_limiter/version.py`` (version comparison for the #638 gate)
+    - ``zae_limiter/_version.py`` (generated: this build's version, #638)
 
     Returns:
         Zip file contents as bytes.
@@ -148,6 +150,16 @@ def build_provisioner_package() -> bytes:
         shutil.copy2(
             zae_limiter_path / "schedule.py",
             dest_zae_limiter / "schedule.py",
+        )
+
+        # version.py + a generated _version.py — the #638 reset_after gate
+        # (`applier.require_reset_after_readers`) compares the stack's
+        # lambda_version against the provisioner's own build. version.py is
+        # stdlib-only. _version.py is written, not copied: hatch-vcs generates
+        # it at build time and a source tree may not carry one.
+        shutil.copy2(zae_limiter_path / "version.py", dest_zae_limiter / "version.py")
+        (dest_zae_limiter / "_version.py").write_text(
+            f"__version__ = version = {zae_limiter.__version__!r}\n"
         )
 
         # Create zip

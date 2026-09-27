@@ -1363,3 +1363,110 @@ class TestStackOperationErrorPaths:
             manager = SyncStackManager(stack_name="test", region="us-east-1")
             with pytest.raises(StackOperationError, match="Lambda deployment failed"):
                 manager.deploy_lambda_code()
+
+
+class TestAggregatorExists:
+    """The #638 probe: does ``{stack}-aggregator`` exist? True / False / None."""
+
+    @staticmethod
+    def _session(get_function_configuration):
+        mock_lambda = MagicMock()
+        mock_lambda.get_function_configuration = get_function_configuration
+        mock_session = MagicMock()
+        mock_session.client.return_value = mock_lambda
+        return (mock_session, mock_lambda)
+
+    @pytest.mark.parametrize(
+        ("outcome", "expected"),
+        [
+            (None, True),
+            (
+                ClientError(
+                    {"Error": {"Code": "ResourceNotFoundException", "Message": "x"}},
+                    "GetFunctionConfiguration",
+                ),
+                False,
+            ),
+            (
+                ClientError(
+                    {"Error": {"Code": "AccessDeniedException", "Message": "x"}},
+                    "GetFunctionConfiguration",
+                ),
+                None,
+            ),
+            (EndpointConnectionError(endpoint_url="http://localhost:4566"), None),
+        ],
+    )
+    def test_probe(self, outcome, expected):
+        get_config = MagicMock(side_effect=outcome) if outcome else MagicMock(return_value={})
+        session, mock_lambda = self._session(get_config)
+        with patch("zae_limiter.infra.sync_stack_manager.boto3.Session", return_value=session):
+            manager = SyncStackManager(
+                stack_name="probe", region="us-east-1", endpoint_url="http://localhost:4566"
+            )
+            assert manager.aggregator_exists() is expected
+        mock_lambda.get_function_configuration.assert_called_once_with(
+            FunctionName="probe-aggregator"
+        )
+        session.client.assert_called_once_with(
+            "lambda", region_name="us-east-1", endpoint_url="http://localhost:4566"
+        )
+
+    def test_the_provisioner_probe_names_the_provisioner(self):
+        session, mock_lambda = self._session(MagicMock(return_value={}))
+        with patch("zae_limiter.infra.sync_stack_manager.boto3.Session", return_value=session):
+            manager = SyncStackManager(stack_name="probe", region="us-east-1")
+            assert manager.provisioner_exists() is True
+        mock_lambda.get_function_configuration.assert_called_once_with(
+            FunctionName="probe-limits-provisioner"
+        )
+
+    @pytest.mark.parametrize(
+        ("created", "agg_pushed", "prov_pushed", "agg", "prov", "expected", "probed"),
+        [
+            (True, False, False, True, True, True, (0, 0)),
+            (False, True, True, True, True, True, (0, 0)),
+            (False, True, False, True, True, False, (0, 1)),
+            (False, True, False, True, False, True, (0, 1)),
+            (False, False, True, False, True, True, (1, 0)),
+            (False, False, True, None, True, False, (1, 0)),
+            (False, False, False, True, False, False, (1, 0)),
+            (False, False, False, False, False, True, (1, 1)),
+            (False, False, False, False, None, False, (1, 1)),
+        ],
+    )
+    def test_stack_lambdas_current(
+        self, created, agg_pushed, prov_pushed, agg, prov, expected, probed
+    ):
+        """One rule for every stamp writer (#638): created, or both current."""
+        from zae_limiter.infra.sync_stack_manager import stack_lambdas_current
+
+        agg_probe = MagicMock(return_value=agg)
+        prov_probe = MagicMock(return_value=prov)
+        assert (
+            stack_lambdas_current(
+                created=created,
+                aggregator_pushed=agg_pushed,
+                provisioner_pushed=prov_pushed,
+                aggregator_exists=agg_probe,
+                provisioner_exists=prov_probe,
+            )
+            is expected
+        )
+        assert (agg_probe.call_count, prov_probe.call_count) == probed
+
+    def test_create_stack_marks_a_stack_it_created(self):
+        """``created`` is how #638 tells a new stack from an existing one, which
+        also reports CREATE_COMPLETE."""
+        manager = SyncStackManager(stack_name="fresh", region="us-east-1")
+        client = MagicMock()
+        client.create_stack = MagicMock(return_value={"StackId": "id"})
+        waiter = MagicMock()
+        waiter.wait = MagicMock()
+        client.get_waiter.return_value = waiter
+        with (
+            patch.object(manager, "_get_client", MagicMock(return_value=client)),
+            patch.object(manager, "get_stack_status", MagicMock(return_value=None)),
+        ):
+            result = manager.create_stack(stack_options=StackOptions())
+        assert result["created"] is True

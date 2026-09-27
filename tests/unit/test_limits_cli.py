@@ -5,10 +5,16 @@ import json
 import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 import yaml
 from click.testing import CliRunner
 
 from zae_limiter.cli import cli
+from zae_limiter.exceptions import (
+    NamespaceNotFoundError,
+    StackOperationError,
+    VersionMismatchError,
+)
 
 
 class TestLimitsPlan:
@@ -438,7 +444,7 @@ class TestInvokeProvisioner:
 
             runner = CliRunner()
             with (
-                patch("asyncio.run", side_effect=Exception("no repo")),
+                patch("asyncio.run", side_effect=NamespaceNotFoundError("test-ns")),
                 patch("zae_limiter.limits_cli.boto3.client") as mock_boto3_client,
             ):
                 mock_lambda = MagicMock()
@@ -512,6 +518,34 @@ class TestInvokeProvisioner:
                 payload = json.loads(call_args[1]["Payload"])
                 assert payload["namespace_id"] == "abc123"
 
+    @pytest.mark.parametrize(
+        "error",
+        [
+            VersionMismatchError(
+                client_version="0.15.0",
+                schema_version="0.10.0",
+                lambda_version="0.16.0",
+                message="Client version 0.15.0 is below minimum required version 0.16.0.",
+            ),
+            StackOperationError(stack_name="test-app", reason="Lambda deployment failed"),
+        ],
+    )
+    def test_invoke_provisioner_stops_on_a_version_or_deploy_failure(self, error):
+        """Never hand the manifest to a provisioner nothing checked (#638)."""
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            yaml.dump({"namespace": "test-ns"}, f)
+            f.flush()
+            with (
+                patch("zae_limiter.repository.Repository.open", AsyncMock(side_effect=error)),
+                patch("zae_limiter.limits_cli.boto3.client") as mock_boto3_client,
+            ):
+                result = CliRunner().invoke(
+                    cli, ["limits", "apply", "--name", "test-app", "-f", f.name]
+                )
+        assert result.exit_code == 1
+        assert str(error) in result.output
+        mock_boto3_client.assert_not_called()
+
     def test_invoke_provisioner_auto_registers_namespace(self):
         """_invoke_provisioner auto-registers namespace on NamespaceNotFoundError."""
         from zae_limiter.exceptions import NamespaceNotFoundError
@@ -584,7 +618,7 @@ class TestInvokeProvisioner:
 
             runner = CliRunner()
             with (
-                patch("asyncio.run", side_effect=Exception("no repo")),
+                patch("asyncio.run", side_effect=NamespaceNotFoundError("test-ns")),
                 patch("zae_limiter.limits_cli.boto3.client") as mock_boto3_client,
             ):
                 mock_lambda = MagicMock()
@@ -610,7 +644,7 @@ class TestInvokeProvisioner:
 
             runner = CliRunner()
             with (
-                patch("asyncio.run", side_effect=Exception("no repo")),
+                patch("asyncio.run", side_effect=NamespaceNotFoundError("test-ns")),
                 patch("zae_limiter.limits_cli.boto3.client") as mock_boto3_client,
             ):
                 mock_lambda = MagicMock()

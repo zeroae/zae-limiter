@@ -12,6 +12,13 @@ from dataclasses import dataclass
 # 0.10.0: Local Secondary Indexes (ADR-123) - 5 LSI slots, odd=ALL / even=KEYS_ONLY
 CURRENT_SCHEMA_VERSION = "0.10.0"
 
+# The first release whose readers understand a `reset_after` limit (ADR-139).
+# A reader predating it ignores `l_{name}_rsa`, reads a quota with no reset, and
+# fails (clients) or over-admits (the aggregator's shard clone). Writers refuse
+# to store one until the stack's `lambda_version` reaches it, and raise the
+# record's `client_min_version` to it when they do (#638).
+MIN_READER_VERSION_FOR_RESET_AFTER = "0.15.0"
+
 
 @dataclass(frozen=True, order=False)
 class ParsedVersion:
@@ -59,6 +66,10 @@ def parse_version(version_str: str) -> ParsedVersion:
     - "1.2.3-dev"
     - "1.2.3.dev123+gabcdef"
     - "0.1.0"
+    - PEP 440 pre-releases, as hatch-vcs writes them: "0.15.0rc1", "0.15.0a2",
+      "0.15.0b1", "0.15.0rc1.dev3+gabcdef" (#638) — the prerelease is "rc1",
+      "a2", "b1", "rc1-dev"
+    - a PEP 440 local label on a release: "0.15.0+d20260926" (dropped)
 
     Args:
         version_str: Version string to parse
@@ -73,9 +84,15 @@ def parse_version(version_str: str) -> ParsedVersion:
     if version_str.startswith("v"):
         version_str = version_str[1:]
 
+    # PEP 440 local label ("+gabcdef", "+unknown"): build metadata, not ordering.
+    version_str = version_str.split("+", 1)[0]
+
     # Handle PEP 440 dev versions (e.g., "0.1.0.dev123+gabcdef")
     # Convert to semver-like format
-    version_str = re.sub(r"\.dev\d+.*$", "-dev", version_str)
+    version_str = re.sub(r"\.dev\d+$", "-dev", version_str)
+
+    # PEP 440 pre-release segment ("0.15.0rc1", "0.15.0rc1-dev") -> semver prerelease
+    version_str = re.sub(r"^(\d+\.\d+\.\d+)(a|b|rc)(\d+)", r"\1-\2\3", version_str)
 
     # Match standard semver with optional prerelease
     match = re.match(r"^(\d+)\.(\d+)\.(\d+)(?:-(.+))?$", version_str)
@@ -118,6 +135,7 @@ class CompatibilityResult:
     requires_schema_migration: bool = False
     requires_lambda_update: bool = False
     requires_template_update: bool = False
+    requires_client_upgrade: bool = False
     message: str = ""
 
 
@@ -166,6 +184,7 @@ def check_compatibility(
     if client < min_version:
         return CompatibilityResult(
             is_compatible=False,
+            requires_client_upgrade=True,
             message=(
                 f"Client version {client_version} is below minimum required "
                 f"version {infra_version.client_min_version}. Please upgrade."
@@ -211,6 +230,108 @@ def check_compatibility(
         is_compatible=True,
         message="Client and infrastructure versions are compatible.",
     )
+
+
+def _release(version: ParsedVersion) -> ParsedVersion:
+    """The version with its prerelease tag dropped (``0.15.0-rc1`` -> ``0.15.0``)."""
+    return ParsedVersion(version.major, version.minor, version.patch)
+
+
+def reads_reset_after(lambda_version: str | None, own_version: str) -> bool:
+    """Whether a stack stamped ``lambda_version`` reads ``reset_after`` limits (#638).
+
+    True when the deployed Lambdas are at least
+    :data:`MIN_READER_VERSION_FOR_RESET_AFTER`, compared on the release part
+    only (a ``0.15.0`` release candidate counts, as it does for
+    ``check_compatibility``'s Lambda comparison). Also true when the Lambdas
+    are **exactly** the calling build: a build running this function
+    understands ``reset_after`` by construction, and that is the only way a
+    development build (``0.14.1.dev99+g…``, numbered below the release that
+    introduces the feature) can prove it.
+
+    A missing or unparseable ``lambda_version`` proves nothing, so it is False.
+    """
+    if lambda_version is None:
+        return False
+    if lambda_version == own_version:
+        return True
+    try:
+        deployed = parse_version(lambda_version)
+    except ValueError:
+        return False
+    return _release(deployed) >= parse_version(MIN_READER_VERSION_FOR_RESET_AFTER)
+
+
+def reset_after_refusal(record_found: bool, lambda_version: str | None) -> tuple[str, bool]:
+    """The message and ``can_auto_update`` for a refused ``reset_after`` write (#638).
+
+    One wording for the client and the provisioner. The version record cannot
+    say whether the stack has an aggregator, so each message names both
+    remedies: ``zae-limiter upgrade`` deploys new Lambda code, and a stack
+    deployed with ``--no-aggregator`` is fixed by re-running ``zae-limiter
+    deploy`` from a new enough release instead (``upgrade`` fails there, it
+    pushes code to an aggregator that does not exist).
+
+    ``can_auto_update`` is True only for a known, old ``lambda_version``: that
+    is the one case ``Repository.open(auto_update=True)`` repairs by itself.
+    """
+    minimum = MIN_READER_VERSION_FOR_RESET_AFTER
+    no_aggregator = (
+        f"On a stack deployed with --no-aggregator, re-run 'zae-limiter deploy' "
+        f"from {minimum} or later instead, with the flags the stack was deployed "
+        "with: an existing provisioner must stay enabled so it gets new code "
+        "(deploy never removes one), and a stack deployed without one keeps "
+        "--no-provisioner / --no-iam."
+    )
+    if not record_found:
+        return (
+            "Refusing to store a reset_after limit: the stack has no version record, "
+            f"so nothing proves its aggregator reads reset_after (added in {minimum}). "
+            f"Re-run 'zae-limiter deploy' from {minimum} or later, which writes it.",
+            False,
+        )
+    if lambda_version is None:
+        return (
+            "Refusing to store a reset_after limit: the version record does not say "
+            "which Lambda code is deployed (it was initialized by a client that "
+            "deployed none), so nothing proves the aggregator reads reset_after "
+            f"(added in {minimum}). Run 'zae-limiter upgrade' to deploy it. " + no_aggregator,
+            False,
+        )
+    return (
+        "Refusing to store a reset_after limit: the deployed Lambdas predate "
+        f"{minimum} and would misread it (the aggregator over-admits it). Run "
+        "'zae-limiter upgrade' first, or open the stack with Repository.open() "
+        "and auto_update=True. " + no_aggregator,
+        True,
+    )
+
+
+def ratcheted_client_min_version(stored: str | None, own_version: str) -> str | None:
+    """The ``client_min_version`` a ``reset_after`` write must leave behind (#638 C).
+
+    Returns the new value to store, or None when the stored minimum is already
+    high enough. **Never lowers it**: a stored minimum above the target is kept.
+
+    The target is :data:`MIN_READER_VERSION_FOR_RESET_AFTER`, capped at the
+    writer's own version. The cap matters only for a development build numbered
+    below the release (``0.14.1.dev99``): raising the minimum above the writer
+    would make the writer's own next ``open()`` refuse to start. An unparseable
+    own version is not a floor anyone can compare against, so nothing is raised.
+    """
+    try:
+        own = parse_version(own_version)
+    except ValueError:
+        return None
+    minimum = parse_version(MIN_READER_VERSION_FOR_RESET_AFTER)
+    target = MIN_READER_VERSION_FOR_RESET_AFTER if own >= minimum else own_version
+    try:
+        current = parse_version(stored or "0.0.0")
+    except ValueError:
+        current = ParsedVersion(0, 0, 0)
+    if parse_version(target) <= current:
+        return None
+    return target
 
 
 def get_schema_version() -> str:

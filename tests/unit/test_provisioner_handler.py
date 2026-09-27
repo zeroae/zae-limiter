@@ -3,10 +3,13 @@
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from tests.fixtures.cfn_payloads import (
     RECORDED_CFN_RESOURCE_PROPERTIES,
     RECORDED_CFN_RESOURCE_PROPERTIES_VALID,
 )
+from zae_limiter.exceptions import VersionMismatchError
 from zae_limiter.schema import (
     DEFAULT_RESOURCE,
     pk_entity,
@@ -1857,3 +1860,107 @@ class TestPostCommitFanoutFailure:
         assert result["status"] == "applied"
         assert any("gpt-4" in e and "ProvisionedThroughputExceeded" in e for e in result["errors"])
         assert len(_provisioner_writes(mock_client)) == 1
+
+
+class TestResetAfterVersionGateThroughTheHandler:
+    """The #638 gate runs before anything is written, on both entry points.
+
+    Moto-backed end to end: a refusal must leave the table untouched, and
+    CloudFormation must hear FAILED with a message it can show.
+    """
+
+    TABLE = "prov-gate-handler"
+
+    @pytest.fixture
+    def client(self, mock_dynamodb):
+        import boto3
+
+        from zae_limiter.sync_repository import SyncRepository
+
+        setup = SyncRepository(name=self.TABLE, region="us-east-1", _skip_deprecation_warning=True)
+        setup.create_table()
+        setup.close()
+        return boto3.client("dynamodb", region_name="us-east-1")
+
+    def _stamp(self, client, lambda_version):
+        client.put_item(
+            TableName=self.TABLE,
+            Item={
+                "PK": {"S": "_/SYSTEM#"},
+                "SK": {"S": "#VERSION"},
+                "schema_version": {"S": "0.10.0"},
+                "lambda_version": {"S": lambda_version},
+                "client_min_version": {"S": "0.0.0"},
+            },
+        )
+
+    def _keys(self, client):
+        return sorted(
+            (i["PK"]["S"], i["SK"]["S"]) for i in client.scan(TableName=self.TABLE)["Items"]
+        )
+
+    def _cli_event(self):
+        return {
+            "action": "apply",
+            "table_name": self.TABLE,
+            "namespace_id": "ns123",
+            "manifest": {
+                "namespace": "test-ns",
+                "resources": {
+                    "gpt-4": {
+                        "limits": {"session": {"capacity": 10, "reset_after_seconds": 18_000}}
+                    }
+                },
+            },
+        }
+
+    @patch("zae_limiter_provisioner.handler.urllib.request.urlopen")
+    def test_cfn_hears_failed_and_nothing_is_written(self, mock_urlopen, client):
+        self._stamp(client, "0.14.0")
+        before = self._keys(client)
+        event = {
+            "RequestType": "Create",
+            "ResourceProperties": {
+                "ServiceToken": "arn:aws:lambda:us-east-1:123:function:test",
+                "TableName": self.TABLE,
+                "Namespace": "test-ns",
+                "NamespaceId": "ns123",
+                "Resources": {
+                    "gpt-4": {
+                        "Limits": {"session": {"Capacity": "10", "ResetAfterSeconds": "18000"}}
+                    }
+                },
+            },
+            "ResponseURL": "https://cfn-response.example.com",
+            "StackId": "arn:aws:cloudformation:us-east-1:123:stack/test/guid",
+            "RequestId": "test-request-id",
+            "LogicalResourceId": "TenantLimits",
+        }
+        with patch("zae_limiter_provisioner.applier.__version__", "0.15.0"):
+            with pytest.raises(VersionMismatchError):
+                on_event(event, MagicMock())
+
+        body = json.loads(mock_urlopen.call_args.args[0].data)
+        assert body["Status"] == "FAILED"
+        assert "zae-limiter upgrade" in body["Reason"]
+        assert self._keys(client) == before
+
+    def test_cli_apply_raises_and_nothing_is_written(self, client):
+        self._stamp(client, "0.14.0")
+        before = self._keys(client)
+        with patch("zae_limiter_provisioner.applier.__version__", "0.15.0"):
+            with pytest.raises(VersionMismatchError, match="zae-limiter upgrade"):
+                on_event(self._cli_event(), MagicMock())
+        assert self._keys(client) == before
+
+    def test_cli_apply_succeeds_once_the_lambdas_read_it(self, client):
+        self._stamp(client, "0.15.0")
+        with patch("zae_limiter_provisioner.applier.__version__", "0.15.0"):
+            result = on_event(self._cli_event(), MagicMock())
+        assert result["status"] == "applied"
+        assert result["errors"] == []
+        config = client.get_item(
+            TableName=self.TABLE,
+            Key={"PK": {"S": "ns123/RESOURCE#gpt-4"}, "SK": {"S": "#CONFIG"}},
+        )["Item"]
+        assert config["l_session_rsa"]["N"] == "18000"

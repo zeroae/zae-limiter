@@ -27,7 +27,13 @@ from .bucket import (
     window_end_in_force,
     would_refill_satisfy,
 )
-from .exceptions import RateLimiterUnavailable, RateLimitExceeded, ResourceDisabled, ValidationError
+from .exceptions import (
+    RateLimiterUnavailable,
+    RateLimitExceeded,
+    ResourceDisabled,
+    ValidationError,
+    VersionMismatchError,
+)
 from .models import (
     AuditEvent,
     Availability,
@@ -608,6 +614,9 @@ class SyncRateLimiter:
             RateLimitExceeded: If any limit would be exceeded
             RateLimiterUnavailable: If DynamoDB unavailable and BLOCK
             ValidationError: If no limits configured at any level
+            VersionMismatchError: If ``limits`` carries a ``reset_after`` limit
+                and the stack's Lambdas predate it (#638). Never subject to
+                ``on_unavailable``.
         """
         self._ensure_initialized()
         if use_stored_limits:
@@ -618,6 +627,10 @@ class SyncRateLimiter:
             )
         mode = self._resolve_on_unavailable(on_unavailable)
         try:
+            if limits is not None and any(
+                getattr(limit, "reset_after", None) is not None for limit in limits
+            ):
+                self._repository.require_reset_after_readers(limits)
             lease: SyncLease | None = None
             slow_path_shard: int | None = None
             slow_path_shard_count: int | None = None
@@ -639,7 +652,13 @@ class SyncRateLimiter:
                     parent_shard_id=slow_path_parent_shard,
                 )
             lease._commit_initial()
-        except (RateLimitExceeded, ValidationError, ResourceDisabled, Warning):
+        except (
+            RateLimitExceeded,
+            ValidationError,
+            ResourceDisabled,
+            VersionMismatchError,
+            Warning,
+        ):
             raise
         except Exception as e:
             if mode == OnUnavailable.ALLOW:

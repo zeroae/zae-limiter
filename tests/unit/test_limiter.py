@@ -25,6 +25,7 @@ from zae_limiter.exceptions import (
     InvalidIdentifierError,
     InvalidNameError,
     LeaseExpiredError,
+    VersionMismatchError,
 )
 from zae_limiter.infra.discovery import InfrastructureDiscovery
 from zae_limiter.models import BucketState
@@ -12220,3 +12221,151 @@ class TestPersistSeed:
         with patch.object(client, "update_item", AsyncMock(side_effect=boom)):
             with pytest.raises(ClientError):
                 await repo.persist_seed("ps-error", "gpt-4", 0, seed)
+
+
+class TestResetAfterOverrideGate:
+    """``acquire(limits=[...])`` with a ``reset_after`` override is gated (#638).
+
+    The override is never stored as config, but the slow path writes it onto
+    the bucket item, where a pre-v0.15 aggregator's shard clone over-admits it.
+    Passing costs nothing: the ``lambda_version`` the repository already read
+    is trusted, and only a refusal re-reads.
+    """
+
+    SESSION = Limit.quota("session", 10, reset_after=timedelta(hours=5))
+
+    @pytest.fixture
+    async def repo(self, mock_dynamodb):
+        from zae_limiter.repository import Repository
+
+        repo = Repository(name="override-gate", region="us-east-1", _skip_deprecation_warning=True)
+        await repo.create_table()
+        await repo._register_namespace("default")
+        yield repo
+        await repo.close()
+
+    @staticmethod
+    async def _stamp(repo, lambda_version):
+        from zae_limiter.version import get_schema_version
+
+        await repo.set_version_record(
+            schema_version=get_schema_version(), lambda_version=lambda_version
+        )
+
+    @staticmethod
+    async def _buckets(repo):
+        client = await repo._get_client()
+        items = (await client.scan(TableName=repo.table_name))["Items"]
+        return [i for i in items if "BUCKET#" in i["PK"]["S"]]
+
+    @staticmethod
+    def _count_version_reads(repo, client):
+        original = client.get_item
+        reads: list[dict] = []
+
+        async def counting(*args, **kwargs):
+            if kwargs["Key"]["SK"]["S"] == "#VERSION":
+                reads.append(kwargs)
+            return await original(*args, **kwargs)
+
+        client.get_item = counting
+        return reads, original
+
+    async def _acquire(self, limiter, on_unavailable=None):
+        async with limiter.acquire(
+            "user-1", "gpt-4", {"session": 1}, limits=[self.SESSION], on_unavailable=on_unavailable
+        ):
+            pass
+
+    @pytest.mark.parametrize("on_unavailable", [None, OnUnavailable.ALLOW])
+    async def test_refused_on_an_old_stamp_and_nothing_is_written(self, repo, on_unavailable):
+        await self._stamp(repo, "0.14.0")
+        limiter = RateLimiter(repository=repo)
+        with patch("zae_limiter.__version__", "0.15.0"):
+            with pytest.raises(VersionMismatchError, match="zae-limiter upgrade"):
+                await self._acquire(limiter, on_unavailable)
+        assert await self._buckets(repo) == []
+
+    async def test_admitted_on_a_new_stamp_with_one_read_for_the_repository(self, repo):
+        await self._stamp(repo, "0.15.0")
+        limiter = RateLimiter(repository=repo)
+        client = await repo._get_client()
+        reads, original = self._count_version_reads(repo, client)
+        try:
+            with patch("zae_limiter.__version__", "0.15.0"):
+                await self._acquire(limiter)
+                await self._acquire(limiter)
+        finally:
+            client.get_item = original
+        # The deprecated constructor never read the record: one read, then cached.
+        assert len(reads) == 1
+        assert reads[0]["ConsistentRead"] is True
+        assert any("b_session_rsa" in b for b in await self._buckets(repo))
+
+    async def test_a_known_good_cache_costs_no_read(self, repo):
+        await self._stamp(repo, "0.15.0")
+        repo._remember_lambda_version("0.15.0")  # as open()/connect() leave it
+        limiter = RateLimiter(repository=repo)
+        client = await repo._get_client()
+        reads, original = self._count_version_reads(repo, client)
+        try:
+            with patch("zae_limiter.__version__", "0.15.0"):
+                await self._acquire(limiter)
+        finally:
+            client.get_item = original
+        assert reads == []
+
+    async def test_a_stale_refusal_re_reads_and_admits_an_upgraded_stack(self, repo):
+        await self._stamp(repo, "0.15.0")
+        repo._remember_lambda_version("0.14.0")  # opened before the upgrade
+        limiter = RateLimiter(repository=repo)
+        with patch("zae_limiter.__version__", "0.15.0"):
+            await self._acquire(limiter)
+        assert repo._lambda_version == "0.15.0"
+
+    async def test_the_backend_is_asked_only_for_a_reset_after_override(self, repo):
+        """RepositoryProtocol is public: a backend without the method still
+        serves every override that carries no reset_after."""
+        limiter = RateLimiter(repository=repo)
+        with patch.object(repo, "require_reset_after_readers", AsyncMock()) as asked:
+            async with limiter.acquire(
+                "user-1", "gpt-4", {"rpm": 1}, limits=[Limit.per_minute("rpm", 10)]
+            ):
+                pass
+        asked.assert_not_called()
+
+    @pytest.mark.parametrize("on_unavailable", [OnUnavailable.ALLOW, OnUnavailable.BLOCK])
+    async def test_a_failed_version_read_is_a_backend_error(self, repo, on_unavailable):
+        """Routed like any other backend failure, never a raw ClientError."""
+        await self._stamp(repo, "0.15.0")
+        limiter = RateLimiter(repository=repo)
+        outage = ClientError(
+            {"Error": {"Code": "InternalServerError", "Message": "down"}}, "GetItem"
+        )
+        with patch.object(repo, "require_reset_after_readers", AsyncMock(side_effect=outage)):
+            if on_unavailable is OnUnavailable.ALLOW:
+                async with limiter.acquire(
+                    "user-1",
+                    "gpt-4",
+                    {"session": 1},
+                    limits=[self.SESSION],
+                    on_unavailable=on_unavailable,
+                ) as lease:
+                    assert lease.degraded
+                assert await self._buckets(repo) == []
+            else:
+                with pytest.raises(RateLimiterUnavailable):
+                    await self._acquire(limiter, on_unavailable)
+
+    async def test_an_override_without_reset_after_reads_nothing(self, repo):
+        limiter = RateLimiter(repository=repo)
+        client = await repo._get_client()
+        reads, original = self._count_version_reads(repo, client)
+        try:
+            async with limiter.acquire(
+                "user-1", "gpt-4", {"rpm": 1}, limits=[Limit.per_minute("rpm", 10)]
+            ):
+                pass
+        finally:
+            client.get_item = original
+        assert reads == []

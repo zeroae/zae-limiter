@@ -146,23 +146,37 @@ class TestSessionQuotaWithoutTheAggregator:
         """The feature in one test. A calendar quota would reset both entities
         at one instant; a session quota resets each on its own first use.
 
-        A three-second window, so the second entity's window is still live
-        when the first one's has ended whatever LocalStack's latency adds to
-        the one-second gap between the two first uses.
+        Each first use is bracketed by the local clock rather than bounded
+        from above: LocalStack latency can stretch the gap between the two
+        uses arbitrarily, so only its lower bound is a property of the code.
+        A five-second window keeps the second entity's window live when the
+        first one's has ended, whatever that latency adds to the 1.5 s gap.
         """
         limiter = localstack_limiter
         repo = limiter._repository
+        window = timedelta(seconds=5)
+        window_ms = 5_000
         for entity_id in ("early", "late"):
-            await _configure(limiter, entity_id, 1, window=timedelta(seconds=3))
+            await _configure(limiter, entity_id, 1, window=window)
+
+        t0 = _now_ms()
         await _spend(limiter, "early")
-        await asyncio.sleep(1.0)
+        t1 = _now_ms()
+        await asyncio.sleep(1.5)
+        t2 = _now_ms()
         await _spend(limiter, "late")
+        t3 = _now_ms()
+
+        early_ws = await _ws(repo, "early")
+        late_ws = await _ws(repo, "late")
+        assert t0 <= early_ws <= t1
+        assert t2 <= late_ws <= t3
 
         early_end = (await limiter.check_availability("early", RESOURCE)).status("session")
         late_end = (await limiter.check_availability("late", RESOURCE)).status("session")
-        assert early_end.resets_at_ms == await _ws(repo, "early") + 3_000
-        assert late_end.resets_at_ms == await _ws(repo, "late") + 3_000
-        assert 1_000 <= late_end.resets_at_ms - early_end.resets_at_ms < 2_000
+        assert early_end.resets_at_ms == early_ws + window_ms
+        assert late_end.resets_at_ms == late_ws + window_ms
+        assert late_end.resets_at_ms - early_end.resets_at_ms >= 1_000
 
         await _sleep_until(early_end.resets_at_ms)
         await _spend(limiter, "early")  # its window is over

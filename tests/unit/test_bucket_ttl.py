@@ -344,6 +344,13 @@ async def ttl_repo(mock_dynamodb):
     repo = Repository(name="test-bucket-ttl", region="us-east-1", _skip_deprecation_warning=True)
     await repo.create_table()
     await repo._register_namespace("default")
+    # A deployed stack's record: without it a reset_after write is refused (#638).
+    import zae_limiter
+    from zae_limiter.version import get_schema_version
+
+    await repo.set_version_record(
+        schema_version=get_schema_version(), lambda_version=zae_limiter.__version__
+    )
     yield repo
     await repo.close()
 

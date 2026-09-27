@@ -57,6 +57,41 @@ class TestProvisionerBuilder:
             assert "zae_limiter/models.py" in names
             assert "zae_limiter/exceptions.py" in names
 
+    def test_package_vendors_the_version_gate(self, tmp_path):
+        """The #638 gate needs ``version.py`` and this build's version.
+
+        Imported from the extracted zip ahead of the installed package, so an
+        unvendored module is the ``ImportError`` a cold start would hit.
+        """
+        import subprocess
+        import sys
+
+        import zae_limiter
+        from zae_limiter.infra.provisioner_builder import build_provisioner_package
+
+        with patch("aws_lambda_builders.builder.LambdaBuilder") as mock_builder_cls:
+            mock_builder_cls.return_value.build.side_effect = _mock_builder_build
+            zip_bytes = build_provisioner_package()
+
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            assert "zae_limiter/version.py" in zf.namelist()
+            zf.extractall(tmp_path)
+
+        probe = (
+            "import sys; sys.path.insert(0, sys.argv[1]);"
+            "import zae_limiter, zae_limiter_provisioner.handler as h;"
+            "from zae_limiter_provisioner import applier;"
+            "assert zae_limiter.__file__.startswith(sys.argv[1]), zae_limiter.__file__;"
+            "print(applier.__version__)"
+        )
+        out = subprocess.run(
+            [sys.executable, "-c", probe, str(tmp_path)],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert out.stdout.strip() == zae_limiter.__version__
+
     def test_zae_limiter_init_is_empty_stub(self):
         """zae_limiter/__init__.py is an empty stub, not the full package."""
         from zae_limiter.infra.provisioner_builder import build_provisioner_package

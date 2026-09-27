@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from importlib.resources import files
 from typing import Any, cast
 
@@ -28,6 +29,77 @@ MANAGED_BY_TAG_KEY = "ManagedBy"
 MANAGED_BY_TAG_VALUE = "zae-limiter"
 NAME_TAG_KEY = f"{VERSION_TAG_PREFIX}name"
 TYPE_TAG_KEY = f"{VERSION_TAG_PREFIX}type"
+
+
+async def lambda_function_exists(
+    session: AioSession,
+    function_name: str,
+    region: str | None,
+    endpoint_url: str | None,
+) -> bool | None:
+    """Whether a Lambda function exists, without a StackManager (#638).
+
+    Backs ``StackManager.aggregator_exists`` / ``provisioner_exists``;
+    ``Repository._initialize_version_record`` probes with it directly, so
+    opening a stack never constructs the infrastructure manager.
+
+    Returns:
+        True if the function exists, False if Lambda says it does not, None
+        if the probe could not tell.
+    """
+    kwargs: dict[str, Any] = {}
+    if region:
+        kwargs["region_name"] = region
+    if endpoint_url:
+        kwargs["endpoint_url"] = endpoint_url
+    try:
+        async with session.create_client("lambda", **kwargs) as lambda_client:
+            await lambda_client.get_function_configuration(FunctionName=function_name)
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ResourceNotFoundException":
+            return False
+        logger.debug("Lambda existence probe failed for %s", function_name, exc_info=True)
+        return None
+    except BotoCoreError:
+        logger.debug("Lambda existence probe failed for %s", function_name, exc_info=True)
+        return None
+    return True
+
+
+async def stack_lambdas_current(
+    *,
+    created: bool,
+    aggregator_pushed: bool,
+    provisioner_pushed: bool,
+    aggregator_exists: Callable[[], Awaitable[bool | None]],
+    provisioner_exists: Callable[[], Awaitable[bool | None]],
+) -> bool:
+    """Whether a write may stamp ``lambda_version`` with this build (#638).
+
+    The ``reset_after`` gate trusts that stamp, so every writer of it — CLI
+    ``deploy``, ``Repository._ensure_infrastructure_internal`` and the
+    ``open()`` init path — asks this one question. The stamp is this build's
+    only if the stack was created in this call, **or** both:
+
+    - the aggregator is current: its code was pushed in this run, or it
+      probes absent; **and**
+    - the provisioner is current: its code was pushed in this run, or it
+      probes absent.
+
+    ``create_stack`` never updates an existing stack, so a flag such as
+    ``--no-provisioner`` or ``--no-iam`` leaves an existing function — and
+    its old code — in place. A probe that cannot tell (None) counts as "not
+    current". Probes run only for functions whose code was not pushed.
+    """
+    if created:
+        return True
+    for pushed, exists in (
+        (aggregator_pushed, aggregator_exists),
+        (provisioner_pushed, provisioner_exists),
+    ):
+        if not pushed and await exists() is not False:
+            return False
+    return True
 
 
 class StackManager:
@@ -425,6 +497,9 @@ class StackManager:
                 "stack_id": stack_id,
                 "stack_name": stack_name,
                 "status": "CREATE_COMPLETE" if wait else "CREATE_IN_PROGRESS",
+                # This call created the stack (#638). An existing stack also
+                # reports CREATE_COMPLETE, so the status cannot say so.
+                "created": True,
             }
 
         except ClientError as e:
@@ -715,6 +790,63 @@ class StackManager:
                     stack_name=self.stack_name,
                     reason=(f"Provisioner deployment failed ({error_code}): {error_msg}"),
                 ) from e
+
+    async def aggregator_exists(self, function_name: str | None = None) -> bool | None:
+        """Whether the stack's aggregator Lambda function exists (#638).
+
+        The ``reset_after`` gate trusts the version record's ``lambda_version``,
+        so a deploy that pushes no aggregator code may stamp it only when there
+        is no aggregator to be old. This asks Lambda directly
+        (``GetFunctionConfiguration``, the call ``deploy_lambda_code``'s and
+        ``deploy_provisioner_code``'s ``function_updated`` waiters already make,
+        so a deployer holds the permission) rather than reading the stack's
+        ``EnableAggregator`` parameter: the function is created only when the
+        template's ``DeployAggregatorLambda`` condition also has a role, and
+        what the gate cares about is whether something reads the stream, not
+        what the template intended.
+
+        Args:
+            function_name: Lambda function name (default: {table_name}-aggregator)
+
+        Returns:
+            True if it exists, False if Lambda says it does not, None if the
+            probe could not tell (no permission, no Lambda endpoint, ...) — a
+            caller must then treat the aggregator as possibly present.
+        """
+        if self._session is None:
+            self._session = get_session()
+        return await lambda_function_exists(
+            self._session,
+            function_name or f"{self.table_name}-aggregator",
+            self.region,
+            self.endpoint_url,
+        )
+
+    async def provisioner_exists(self, function_name: str | None = None) -> bool | None:
+        """Whether the stack's limits provisioner Lambda function exists (#638).
+
+        The same probe as :meth:`aggregator_exists`. A stamp claimed because
+        the aggregator is absent must also rule out an old provisioner:
+        ``create_stack`` never updates an existing stack, so a redeploy with
+        ``--no-provisioner`` (or ``--no-iam``) leaves a live one untouched, and
+        a pre-v0.15 provisioner stores a ``reset_after`` manifest limit as a
+        dripping one.
+
+        Args:
+            function_name: Lambda function name
+                (default: {table_name}-limits-provisioner)
+
+        Returns:
+            True / False / None (cannot tell), as for :meth:`aggregator_exists`.
+        """
+        if self._session is None:
+            self._session = get_session()
+        return await lambda_function_exists(
+            self._session,
+            function_name or f"{self.table_name}-limits-provisioner",
+            self.region,
+            self.endpoint_url,
+        )
 
     async def wait_for_esm_ready(
         self,

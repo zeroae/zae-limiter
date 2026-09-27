@@ -14,13 +14,52 @@ session = Limit.quota("session", 10_000, reset_after=timedelta(hours=5))
 
 Two callers that first use it at 09:00 and 14:30 get windows ending at 14:00 and 19:30.
 
-!!! warning "Upgrade every client and the aggregator before storing one"
-    `reset_after` is new in v0.15.0, and nothing checks versions for you. A client older than
-    v0.15.0 cannot read a level that stores a `reset_after` limit: with
-    `on_unavailable="block"` every `acquire()` against that level raises
-    `RateLimiterUnavailable`, and with `on_unavailable="allow"` it is admitted **with no
-    limiting at all**, including the other limits on that level. An older aggregator Lambda
-    treats the quota as a dripping limit and grants each shard it pre-creates a fresh share.
+!!! warning "Upgrade every client before storing one; the Lambdas are checked for you"
+    `reset_after` is new in v0.15.0.
+
+    **The aggregator is enforced.** `set_limits()`, `set_resource_defaults()`,
+    `set_system_defaults()`, `zae-limiter limits apply` and an `acquire(limits=[...])`
+    override refuse a `reset_after` limit with `VersionMismatchError` until the stack's version
+    record says its Lambdas are v0.15.0 or newer (a 0.15.0 release candidate counts). An older
+    aggregator would treat the quota as a dripping limit and grant each shard it pre-creates a
+    fresh share. `Repository.open()` updates old Lambdas for you; after `Repository.connect()`
+    or `auto_update=False`, run `zae-limiter upgrade` first. A stack deployed with
+    `--no-aggregator` is fixed by re-running `zae-limiter deploy` from v0.15.0 instead, with
+    the provisioner enabled. `deploy` records the new version only if the stack is new, or both
+    the aggregator and the provisioner are current (code pushed in that run, or absent) — it
+    pushes code to an existing stack's functions but never adds or removes one, so an old
+    function left in place keeps the stack refused. The
+    config writers pay one strongly consistent read per write that carries `reset_after`; the
+    `acquire()` override pays nothing, trusting the version read when the repository was opened.
+
+    **A stack whose Lambda version is unknown is refused too.** When `Repository.open()` finds
+    a table with no version record — say, one built from an older `cfn-template` — it writes
+    one without claiming an aggregator it did not deploy (it claims its own version only when it
+    finds no aggregator at all). Run `zae-limiter upgrade` to deploy the Lambdas and stamp the
+    version.
+
+    **Clients older than v0.15.0 are not enforced.** A successful write raises the stack's
+    `client_min_version` to 0.15.0, and every client from v0.15.0 on refuses to start below it
+    — but v0.14 ignores that field. A v0.14 client cannot read a level that stores a
+    `reset_after` limit: with `on_unavailable="block"` every `acquire()` against that level
+    raises `RateLimiterUnavailable`, and with `on_unavailable="allow"` it **fails open** — each
+    acquire is admitted with no limiting at all, including the other limits on that level.
+
+    **Never run a v0.14 CLI against a stack that holds one.** The check runs only at write
+    time, and v0.14 can undo it afterwards:
+
+    - `zae-limiter deploy` or `upgrade --force` from v0.14 puts the v0.14 Lambdas back and
+      stamps `lambda_version = 0.14.0`.
+    - A v0.14 `upgrade` treats the raised minimum as "not up to date", so it too downgrades the
+      Lambdas — and resets `client_min_version` to `0.0.0`.
+
+    The next v0.15 `Repository.open()` re-upgrades the Lambdas; the minimum comes back only
+    with the next `reset_after` write. A long-lived process that opened its repository before
+    a downgrade keeps trusting the version it read for `acquire(limits=...)` overrides.
+
+    **A refused CloudFormation update can leave the stack in `UPDATE_ROLLBACK_FAILED`** when
+    the previous properties also carried a `reset_after` limit — the rollback is refused the
+    same way. See [Version Management](../operations/version.md#refused-reset_after-write).
 
 ## Which one do I want?
 

@@ -7,8 +7,9 @@ from unittest.mock import patch
 import pytest
 from moto import mock_aws
 
-from zae_limiter import SyncRateLimiter
+from zae_limiter import SyncRateLimiter, __version__
 from zae_limiter.sync_repository import SyncRepository
+from zae_limiter.version import get_schema_version
 
 
 @pytest.fixture
@@ -66,6 +67,8 @@ def sync_limiter(mock_dynamodb):
     )
     setup.create_table()
     setup._register_namespace("default")
+    # A deployed stack's record, as `zae-limiter deploy` leaves it (#638).
+    setup.set_version_record(schema_version=get_schema_version(), lambda_version=__version__)
     setup.close()
 
     repo = SyncRepository.open(stack="test-rate-limits")

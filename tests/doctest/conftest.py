@@ -5,6 +5,7 @@ import asyncio
 import pytest
 from moto import mock_aws
 
+import zae_limiter
 from tests.fixtures.doctest_helpers import (
     COMMON_ENTITIES,
     HTTPError,
@@ -70,6 +71,11 @@ def doctest_env(moto_env, monkeypatch):
         table_key = (self.table_name, self.region)
         if table_key not in _created_tables:
             await self.create_table()
+            # What `zae-limiter deploy` writes; the version checks are no-ops
+            # here, and without a record a reset_after write is refused (#638).
+            # This stands in for the deploy, so it may stamp this build.
+            self._deployed_lambda_version = zae_limiter.__version__
+            await self._initialize_version_record()
             _created_tables.add(table_key)
             # Register namespaces and set defaults for each
             saved_ns_id = self._namespace_id
@@ -124,6 +130,8 @@ def doctest_env(moto_env, monkeypatch):
         table_key = (self.table_name, self.region)
         if table_key not in _created_tables:
             self.create_table()
+            self._deployed_lambda_version = zae_limiter.__version__  # see the async twin
+            self._initialize_version_record()
             _created_tables.add(table_key)
             saved_ns_id = self._namespace_id
             for ns_name in [
