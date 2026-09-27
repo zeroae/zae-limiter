@@ -1546,7 +1546,8 @@ class RateLimiter:
         """Restore the balance if a duration window has been rolled (ADR-139).
 
         :meth:`_apply_reset_edge` with the backwards cron scan replaced by an
-        attribute read (:attr:`BucketState.window_rolled`, ``ws > rf``), and
+        attribute read (:attr:`BucketState.window_rolled`, ``ws > wa`` since
+        #640, ``ws > rf`` on an item without the marker), and
         every property that one was designed for carries over verbatim:
 
         - **Idempotent.** It is a set, not an add, so two shards applying the
@@ -1568,10 +1569,11 @@ class RateLimiter:
         another writer (or an earlier pass) already opened. Opening one is
         :meth:`_open_window_if_elapsed`, which runs immediately before this and
         mutates the same ``state``; the caller passes ``opened=True`` when it
-        did, and the reset is then **unconditional**. ``ws > rf`` is the rule
+        did, and the reset is then **unconditional**. ``ws > wa`` is the rule
         for a shard that *sees* a window another writer opened; the opener
         applies its own reset under its own ``rf`` lock (ADR-139). Gating the
-        opener on ``ws > rf`` too would fail whenever another writer's clock
+        opener on it too would fail on an unmarked item whenever another
+        writer's clock
         stamped ``rf`` after this client's ``now``: the window would be anchored
         over the dead window's leftovers, and because ``rf >= ws`` after the
         commit, ``ws > rf`` would never hold again — the entity held to those
@@ -1589,6 +1591,9 @@ class RateLimiter:
         if limit.reset_after is None or not (opened or state.window_rolled):
             return False
         state.tokens_milli = state.effective_capacity_milli(now_ms)
+        # The balance now reflects this window; the commit stamps the same
+        # value as `b_{name}_wa` (#640, `lease._applied_windows`).
+        state.window_applied_ms = state.window_start_ms
         return True
 
     @staticmethod

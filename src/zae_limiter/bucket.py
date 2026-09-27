@@ -218,9 +218,20 @@ def _restored_if_window_ended(state: BucketState, now_ms: int) -> BucketState:
     between the two ends. Reading it as restored sends the request to the
     slow path, which resolves the config and either admits or rejects against
     the correct end.
+
+    A **live** window the shard has not applied yet (``ws > wa``,
+    :attr:`BucketState.window_rolled`) is restored on the next pass too, and
+    is read the same way (#640). A rollover fan-out stamps ``vu = 0`` beside
+    the new ``ws``, so a v0.15 fleet never shows the fast path such an image;
+    a client predating ADR-139 re-stamps or REMOVEs ``vu`` from its own
+    limits on its next write to that shard, and the fast path then sees the
+    new window beside the old window's burnt balance. Judged as it stands,
+    every request drawn to that shard would be fast-rejected until the window
+    *ended* — the skipped roll the marker exists to prevent. Read as
+    restored, the request goes to the slow path, which rolls it.
     """
     end = _duration_window_end(state)
-    if end is None or now_ms < end:
+    if end is None or (now_ms < end and not state.window_rolled):
         return state
     return replace(state, tokens_milli=state.effective_capacity_milli(now_ms))
 

@@ -542,6 +542,7 @@ class SyncRepositoryProtocol(Protocol):
         window_lengths: dict[str, int] | None = None,
         seeds: "dict[str, BucketState] | None" = None,
         seed_shard_count: int | None = None,
+        applied_windows: dict[str, int] | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -573,6 +574,10 @@ class SyncRepositoryProtocol(Protocol):
                 pins ``attribute_not_exists(shard_count) OR shard_count <=
                 :sized`` so a racing doubling cannot leave an oversized quota
                 share for the fast path to spend (#633).
+            applied_windows: Limit name -> the window start the write leaves
+                that limit's balance reflecting, stamped as ``b_{name}_wa``
+                (#640) for every window limit on the write. The value read or
+                opened, never a copy of the ``ws`` path.
         """
         ...
 

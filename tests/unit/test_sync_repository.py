@@ -33,6 +33,7 @@ from zae_limiter.schema import (
     BUCKET_FIELD_SCHED_TZ,
     BUCKET_FIELD_TK,
     BUCKET_FIELD_VU,
+    BUCKET_FIELD_WA,
     BUCKET_FIELD_WS,
     BUCKET_SCHED_NONE,
     CONFIG_FIELD_SCHED_TZ,
@@ -996,19 +997,54 @@ class TestPropagateWindowStart:
             ExpressionAttributeValues={":rf": {"N": str(rf)}},
         )
 
+    def _unmark(self, repo, entity_id, shard, limit_name="session"):
+        """Strip the #640 window-applied marker: an item written before it."""
+        client = repo._get_client()
+        client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "gpt-4", shard)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="REMOVE #wa",
+            ExpressionAttributeNames={"#wa": bucket_attr(limit_name, BUCKET_FIELD_WA)},
+        )
+
     @pytest.mark.parametrize("rf_offset", [0, 10])
-    def test_a_sibling_already_past_the_new_start_is_left_alone(self, repo, rf_offset):
+    def test_an_unmarked_sibling_already_past_the_new_start_is_left_alone(self, repo, rf_offset):
         """An aggregator refill after the old window ended (or a writer with a
-        clock ahead) left the sibling's `rf` at or past the new `ws`. Moved,
-        it would read `ws > rf` as false, treat the window as applied and keep
-        its burnt balance for all of it. Left alone, it opens its own."""
+        clock ahead) left the sibling's `rf` at or past the new `ws`. A
+        sibling without the #640 marker applies a window by reading `ws > rf`:
+        moved, it would read that as false, treat the window as applied and
+        keep its burnt balance for all of it. Left alone, it opens its own."""
         self._create_shards(repo, "e1", count=2, ws=self.OLD)
+        self._unmark(repo, "e1", 1)
         self._set_rf(repo, "e1", 1, self.NEW + rf_offset)
         written = repo._propagate_window_start(
             "e1", "gpt-4", shard_id=0, shard_count=2, windows=self._windows(self.NEW)
         )
         assert written == 0
         assert self._stored_ws(repo, "e1", "session", 1) == self.OLD
+
+    @pytest.mark.parametrize("rf_offset", [0, 10])
+    def test_a_marked_sibling_already_past_the_new_start_still_moves(self, repo, rf_offset):
+        """#640: a marked sibling applies the window by reading `ws > wa`,
+        which no `rf` can mask — including an `rf` a pre-ADR-139 writer
+        stamped forward from its own clock. It moves, and rolls on its next
+        pass; the floor still guarantees its own window had ended."""
+        self._create_shards(repo, "e1", count=2, ws=self.OLD)
+        self._set_rf(repo, "e1", 1, self.NEW + rf_offset)
+        written = repo._propagate_window_start(
+            "e1", "gpt-4", shard_id=0, shard_count=2, windows=self._windows(self.NEW)
+        )
+        assert written == 1
+        assert self._stored_ws(repo, "e1", "session", 1) == self.NEW
+        item = self._raw(repo, "e1", 1)
+        (state,) = [
+            b for b in repo._deserialize_composite_bucket(item) if b.limit_name == "session"
+        ]
+        assert state.window_applied_ms == self.OLD
+        assert state.window_rolled
 
     def test_a_sibling_behind_the_new_start_still_moves(self, repo):
         self._create_shards(repo, "e1", count=2, ws=self.OLD)

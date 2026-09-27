@@ -633,6 +633,7 @@ class Lease:
                         vu=vu,
                         windows={**seed_windows, **windows},
                         window_lengths=window_lengths,
+                        applied_windows=_applied_windows(group_entries),
                         seeds=seeds,
                         # A quota seed's share is only safe at the count it
                         # was sized for (#633): pin it against a racing
@@ -1036,14 +1037,43 @@ def _is_transaction_conflict(exc: Exception) -> bool:
     return False
 
 
+def _applied_windows(group: list[LeaseEntry]) -> dict[str, int]:
+    """The window each window limit's balance reflects after this write (#640).
+
+    Stamped as ``b_{name}_wa`` for **every** limit on the item whose duration
+    window is in force, not only the ones this pass opened or rolled: the
+    acquire path has already applied any window the shard had not
+    (``RateLimiter._apply_window_roll``), a seed starts in the window it
+    joined or opened, and a window that elapsed between the two clock readings
+    was re-anchored above — so after this write every such balance reflects
+    ``state.window_start_ms``. Stamping the ones that did not move is what
+    marks an item written before the marker, so it stops depending on ``rf``.
+
+    The value is the ``ws`` this pass read or opened. A rollover fan-out that
+    lands on the item between the read and this write moves ``ws`` without
+    touching ``rf``, so the ``rf`` lock passes; the stale value stamped here
+    leaves that newer window unapplied (``ws > wa``) and the next pass rolls
+    it, which is the point of stamping a value rather than copying the path.
+    """
+    return {
+        e.limit.name: e.state.window_start_ms
+        for e in group
+        if e.limit.reset_after is not None
+        and e.state.reset_after_seconds is not None
+        and e.state.window_start_ms is not None
+    }
+
+
 def _monotonic_rf(now_ms: int, stored_rf: int | None, group: list[LeaseEntry]) -> int:
     """The ``rf`` a materialising write stamps: never backward, never below a window (ADR-139).
 
-    ``max(now, stored rf, every applied window start on the item)``. A duration
-    window rolls when ``ws > rf`` (``BucketState.window_rolled``), so ``rf`` is
-    the only record that a shard has applied its window, and a writer whose
-    clock runs **behind** the one that stamped the item would otherwise erase
-    that record:
+    ``max(now, stored rf, every applied window start on the item)``. On an item
+    without the #640 ``wa`` marker a duration window rolls when ``ws > rf``
+    (``BucketState.window_rolled``'s fallback), so there ``rf`` is the only
+    record that a shard has applied its window, and a writer whose clock runs
+    **behind** the one that stamped the item would otherwise erase that
+    record (the marker is what protects an item against a writer that does
+    not follow this rule — one predating ADR-139):
 
     * on an existing item, ``rf = now`` moves ``rf`` backward past ``ws``, the
       next pass reads ``ws > rf`` and resets the balance again, and every

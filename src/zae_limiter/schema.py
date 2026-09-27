@@ -109,14 +109,31 @@ BUCKET_FIELD_VU = "vu"  # valid-until, epoch ms — schedule materialisation sta
 # (`Repository._propagate_window_start()`) does NOT use a plain `ws < :new`:
 # it moves a sibling only if that sibling's own window had ENDED by the new
 # start (`ws <= :new - rsa * 1000`, the half-open rule the opener applied to
-# itself) and only if the sibling's `rf < :new`, since a sibling applies the
-# window by reading `ws > rf` and one already past the new start would
-# otherwise keep its burnt balance for the whole window.
+# itself). A sibling without the `wa` marker below must also have `rf < :new`,
+# since it applies the window by reading `ws > rf` and one already past the new
+# start would otherwise keep its burnt balance for the whole window; a marked
+# sibling reads `ws > wa`, which no `rf` masks.
 #
 # The window END is derived (`ws + rsa * 1000`) and never stored, so the pair
 # cannot disagree after a partial write.
 BUCKET_FIELD_WS = "ws"  # b_{name}_ws — window start, epoch ms
 BUCKET_FIELD_RSA = "rsa"  # b_{name}_rsa — window length, seconds
+
+# `wa` is the window-APPLIED marker (#640), per limit, per shard, epoch ms: the
+# `ws` whose allowance this shard's balance reflects, so `wa <= ws` always. A
+# shard has an unapplied window when `ws > wa` (`BucketState.window_rolled`).
+# It replaces the shared `ws > rf` comparison because a writer predating
+# ADR-139 stamps `rf` from its own clock and knows nothing of `ws`: a backward
+# stamp would roll a window twice, a forward one would skip it. Old writers
+# never touch `wa`. Absent on an item written before #640, where the rule
+# falls back to `ws > rf` until the first v0.15 write marks it.
+#
+# Stamped only by writers already serialised with the balance it describes —
+# under the `rf` lock, at item creation, or by the seed persist under
+# `attribute_not_exists(tk)` — and always as the `ws` VALUE the writer read or
+# opened, never as a copy of the `ws` path: a rollover fan-out moves `ws`
+# without touching `rf`, and must stay unapplied until a pass rolls it.
+BUCKET_FIELD_WA = "wa"  # b_{name}_wa — window applied, epoch ms
 
 # The explicit spelling of "this limit has no schedule of its own" (#541).
 #
