@@ -2,8 +2,8 @@
 
 **Status:** Proposed
 **Date:** 2026-09-27
-**Issue:** [#624](https://github.com/zeroae/zae-limiter/issues/624), [#625](https://github.com/zeroae/zae-limiter/issues/625), [#635](https://github.com/zeroae/zae-limiter/issues/635)
-**Related:** [ADR-139](139-duration-reset-windows.md), ADR-133, ADR-134, [#597](https://github.com/zeroae/zae-limiter/issues/597)
+**Issue:** [#624](https://github.com/zeroae/zae-limiter/issues/624), [#625](https://github.com/zeroae/zae-limiter/issues/625), [#635](https://github.com/zeroae/zae-limiter/issues/635), [#640](https://github.com/zeroae/zae-limiter/issues/640)
+**Related:** [ADR-139](139-duration-reset-windows.md), [ADR-142](142-hide-reset-after-config.md), ADR-133, ADR-134, [#597](https://github.com/zeroae/zae-limiter/issues/597)
 
 ## Context
 
@@ -24,17 +24,23 @@ share (the #587 finding).
 Two further hazards shape the rule. Two clients crossing a window boundary together each open a
 window on their own shard, and a naive propagation lets each reset the other inside one window.
 And a writer whose clock runs behind can move a shard's last-refill stamp `rf` backward, after
-which the shard would believe a window it already applied is new (#635). Mechanism, writer rows
-and costs are in CLAUDE.md "Session Quotas" and the DynamoDB writer table.
+which the shard would believe a window it already applied is new (#635). Pre-v0.15 clients
+writing windowed buckets ([ADR-142](142-hide-reset-after-config.md)) stamp `rf` from their own
+clock and drop the fast path's `vu` gate, so `rf` cannot record a reset, and a shard can spend an
+ended window's leftover inside the next one before its reset. Mechanism, writer rows and costs
+are in CLAUDE.md "Session Quotas" and the DynamoDB writer table.
 
 ## Decision
 
 Every shard of an entity must converge on one window start: the writer that opens a window must
-propagate only the start, never tokens, and only to siblings whose own window had ended and whose
-`rf` is older than the new start; each shard must reset itself to its share when its window start
-is newer than its own `rf`, and no materialising writer may move `rf` backward. A shard created
-mid-window must join shard 0's live window, read strongly consistently, and may open and
-propagate its own only when shard 0's window has ended or it has none.
+propagate only the start and a snapshot `wtc` of the sibling's consumption counter, never tokens,
+and only to siblings whose own window had ended and that either carry a window-applied marker `wa`
+or have an `rf` older than the new start. Each shard must record in `wa` the window start its
+balance reflects, and must reset itself when its window start is newer than `wa` (than `rf` where
+no `wa` exists), to its share less the consumption since `wtc`, never above its share. No
+materialising writer may move `rf` backward. A shard created mid-window must join shard 0's live
+window, read strongly consistently, and may open and propagate its own only when shard 0's
+window has ended or it has none.
 
 ## Consequences
 
@@ -47,6 +53,8 @@ propagate its own only when shard 0's window has ended or it has none.
 - Monotonic `rf` costs nothing on items without a window, since refill treats non-positive
   elapsed time as zero.
 - Unsharded entities pay nothing extra.
+- A shard resets exactly once per window whatever an old writer does to `rf`, and a late reset
+  charges everything spent while it was pending, so a mixed fleet cannot over-admit through it.
 
 **Negative:**
 - A rollover costs one conditional write per (sibling shard, window limit), once per window.
@@ -57,6 +65,7 @@ propagate its own only when shard 0's window has ended or it has none.
   looks ended and would mint a full share on top of the window just opened.
 - The aggregator's refill condition grows one term per rolled window start, because two
   propagations are indistinguishable to its `rf` and `vu` pins alone.
+- Two more small attributes per window limit per shard; an item without `wa` relies on `rf`.
 
 ## Alternatives Considered
 
@@ -70,6 +79,13 @@ in both write orderings.
 ### Move a sibling whenever the new start is later than its own
 Rejected because: concurrent openers then reset each other's shard inside one window, which
 over-admits.
+
+### Keep `rf` as the only record that a window was applied
+Rejected because: a pre-v0.15 writer's clock then rolls a window twice or never.
+
+### Zero the ended window's leftover when propagating the start
+Rejected because: debt from `adjust()` after a zero-estimate lease is still forgiven by the
+reset, and a clone of a shard with a pending reset is never propagated to.
 
 ### Stamp `rf` from the writer's own clock
 Rejected because: a slow clock moves `rf` backward past the window start and re-applies the reset

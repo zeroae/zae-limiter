@@ -346,4 +346,6 @@ It round-trips through the `Custom::ZaeLimiterLimits` CloudFormation resource as
   window
 - [ADR-141](../adr/141-reset-after-version-gate.md) — why storing a `reset_after` limit is gated
   on the stack's Lambda versions
+- [ADR-142](../adr/142-hide-reset-after-config.md) — why a session limit's configuration is
+  hidden from clients older than v0.15.0
 - [Basic Usage](basic-usage.md) — `acquire()`, leases, and handling `RateLimitExceeded`
