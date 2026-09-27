@@ -41,18 +41,15 @@ async def _connect(
     region: str | None,
     endpoint_url: str | None,
     namespace: str = "default",
-    *,
-    report_too_old: bool = False,
 ) -> Repository:
     """Open a repository with namespace resolution.
 
     Handles ValidationError and NamespaceNotFoundError with user-friendly messages.
     Always returns a valid Repository or exits with an error.
 
-    ``report_too_old``: for the reporting commands (``check``, ``version``). A
-    client below the stack's ``client_min_version`` gets a Repository that
-    skipped the version check instead of an exit, so the command can print
-    its report — with the incompatibility in it — rather than just refuse.
+    This goes through ``Repository.open()``, which provisions a missing stack,
+    registers a missing namespace and pushes Lambda code when the deployed
+    version is behind. Reporting commands must use :func:`_open_read_only`.
     """
     from .exceptions import NamespaceNotFoundError, ValidationError, VersionMismatchError
     from .repository import Repository
@@ -62,9 +59,6 @@ async def _connect(
             namespace, stack=name, region=region, endpoint_url=endpoint_url
         )
     except VersionMismatchError as e:
-        if report_too_old and not e.can_auto_update:
-            # Reads only: the record is what the report is about.
-            return Repository(name, region, endpoint_url, _skip_deprecation_warning=True)
         # A client below the stack's client_min_version (#638). Caught here so
         # every command — `upgrade` above all, which would otherwise downgrade
         # the Lambdas the minimum protects — stops with the reason, not a
@@ -77,6 +71,39 @@ async def _connect(
     except NamespaceNotFoundError:
         click.echo(f"Error: Namespace '{namespace}' not found.", err=True)
         sys.exit(1)
+
+
+def _open_read_only(name: str, region: str | None, endpoint_url: str | None) -> Repository:
+    """A Repository for the reporting commands (``check``, ``version``) (#646).
+
+    Constructed directly rather than through ``open()``: nothing here resolves
+    or registers a namespace, provisions a stack, writes the version record or
+    updates a Lambda. With ``stack_options`` left unset, provisioning is
+    structurally impossible, and the commands' only I/O is
+    :func:`_read_version_record`. Compatibility — including a client below
+    ``client_min_version`` (#638) — is judged from that record by the command
+    itself, so it is reported rather than acted on.
+    """
+    from .exceptions import ValidationError
+    from .repository import Repository
+
+    try:
+        return Repository(name, region, endpoint_url, _skip_deprecation_warning=True)
+    except ValidationError as e:
+        click.echo(f"Error: {e.reason}", err=True)
+        sys.exit(1)
+
+
+async def _read_version_record(repo: Repository) -> dict[str, Any] | None:
+    """The version record, or None when the table (or the record) is missing."""
+    from botocore.exceptions import ClientError
+
+    try:
+        return await repo.get_version_record()
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ResourceNotFoundException":
+            return None
+        raise
 
 
 @click.group()
@@ -1278,6 +1305,8 @@ def version_cmd(
 
     Displays client version, schema version, and deployed infrastructure
     versions. Checks compatibility between client and infrastructure.
+    Read-only: reads the version record and reports; never updates the
+    Lambda, deploys a stack, or registers a namespace.
 
     \f
 
@@ -1310,7 +1339,7 @@ def version_cmd(
     )
 
     async def _version() -> None:
-        repo = await _connect(name, region, endpoint_url, report_too_old=True)
+        repo = _open_read_only(name, region, endpoint_url)
         try:
             click.echo()
             click.echo("zae-limiter Infrastructure Version")
@@ -1321,7 +1350,7 @@ def version_cmd(
             click.echo()
 
             # Get version from DynamoDB
-            version_record = await repo.get_version_record()
+            version_record = await _read_version_record(repo)
 
             if version_record is None:
                 click.echo("Infrastructure:     Not initialized")
@@ -1577,7 +1606,9 @@ def check(
     """Check infrastructure compatibility without modifying.
 
     Verifies that the client version is compatible with the deployed
-    infrastructure. Read-only operation - does not change anything.
+    infrastructure. Read-only operation - does not change anything: a
+    Lambda behind the client is reported as an available update (apply it
+    with 'upgrade'), and a missing stack is reported as NOT INITIALIZED.
 
     \f
 
@@ -1608,14 +1639,14 @@ def check(
     )
 
     async def _check() -> None:
-        repo = await _connect(name, region, endpoint_url, report_too_old=True)
+        repo = _open_read_only(name, region, endpoint_url)
         try:
             click.echo()
             click.echo("Compatibility Check")
             click.echo("=" * 20)
             click.echo()
 
-            version_record = await repo.get_version_record()
+            version_record = await _read_version_record(repo)
 
             if version_record is None:
                 click.echo("Result: NOT INITIALIZED")

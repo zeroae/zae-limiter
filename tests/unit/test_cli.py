@@ -1711,13 +1711,11 @@ class TestCLI:
         )
 
         assert result.exit_code == 0
-        # Verify Repository.open was called with endpoint_url
-        mock_repo_class.open.assert_called_once_with(
-            "default",
-            stack="test-table",
-            region="us-east-1",
-            endpoint_url="http://localhost:4566",
+        # Read-only (#646): constructed directly, never through open()
+        mock_repo_class.assert_called_once_with(
+            "test-table", "us-east-1", "http://localhost:4566", _skip_deprecation_warning=True
         )
+        mock_repo_class.open.assert_not_called()
 
     @patch("zae_limiter.repository.Repository")
     def test_check_not_initialized(self, mock_repo_class: Mock, runner: CliRunner) -> None:
@@ -1777,13 +1775,11 @@ class TestCLI:
         )
 
         assert result.exit_code == 1  # Not initialized
-        # Verify Repository.open was called with endpoint_url
-        mock_repo_class.open.assert_called_once_with(
-            "default",
-            stack="test-table",
-            region="us-east-1",
-            endpoint_url="http://localhost:4566",
+        # Read-only (#646): constructed directly, never through open()
+        mock_repo_class.assert_called_once_with(
+            "test-table", "us-east-1", "http://localhost:4566", _skip_deprecation_warning=True
         )
+        mock_repo_class.open.assert_not_called()
 
     @patch("zae_limiter.repository.Repository")
     def test_upgrade_not_initialized(self, mock_repo_class: Mock, runner: CliRunner) -> None:
@@ -7536,3 +7532,155 @@ class TestClientMinVersionSurvivesTheCli:
         assert "below minimum required version 0.16.0" in result.output
         manager.deploy_lambda_code.assert_not_called()
         assert asyncio.run(self._record())["lambda_version"] == "0.16.0"
+
+
+class TestReportingCommandsAreReadOnly:
+    """``check`` and ``version`` report; they never write (#646).
+
+    Both used to go through ``Repository.open()``, which pushes Lambda code
+    when the deployed version is behind, deploys a missing stack and registers
+    a missing namespace — all before the report is printed. Moto-backed, with
+    every ``StackManager`` mocked, so a write shows up as either a call on the
+    manager or a changed table.
+    """
+
+    TABLE = "rate-limits"
+
+    async def _table(self, *, namespace: bool, record: dict[str, str] | None) -> None:
+        from zae_limiter.repository import Repository
+
+        repo = Repository(self.TABLE, "us-east-1", None, _skip_deprecation_warning=True)
+        try:
+            await repo.create_table()
+            if namespace:
+                await repo._register_namespace("default")
+            if record is not None:
+                await repo.set_version_record(**record)
+        finally:
+            await repo.close()
+
+    async def _items(self) -> list[dict]:
+        from zae_limiter.repository import Repository
+
+        repo = Repository(self.TABLE, "us-east-1", None, _skip_deprecation_warning=True)
+        try:
+            client = await repo._get_client()
+            return (await client.scan(TableName=self.TABLE))["Items"]
+        finally:
+            await repo.close()
+
+    async def _tables(self) -> list[str]:
+        from zae_limiter.repository import Repository
+
+        repo = Repository(self.TABLE, "us-east-1", None, _skip_deprecation_warning=True)
+        try:
+            client = await repo._get_client()
+            return (await client.list_tables())["TableNames"]
+        finally:
+            await repo.close()
+
+    def _invoke(self, runner: CliRunner, command: str) -> tuple[object, Mock]:
+        manager = TestCLI._deploy_stack_manager_mock()
+        stack_manager = Mock(return_value=manager)
+        with (
+            patch("zae_limiter.__version__", "0.15.1"),
+            patch("zae_limiter.infra.stack_manager.StackManager", stack_manager),
+            patch("zae_limiter.cli.StackManager", stack_manager),
+        ):
+            result = runner.invoke(cli, [command, "--name", self.TABLE, "--region", "us-east-1"])
+        return result, stack_manager
+
+    @pytest.mark.parametrize(
+        ("command", "reported"),
+        [
+            ("check", "Result: COMPATIBLE (update available)"),
+            ("version", "Status: COMPATIBLE (Lambda update available)"),
+        ],
+    )
+    def test_a_lambda_behind_the_client_is_reported_not_updated(
+        self, mock_dynamodb, runner: CliRunner, command: str, reported: str
+    ) -> None:
+        import asyncio
+
+        from zae_limiter.version import get_schema_version
+
+        record = {
+            "schema_version": get_schema_version(),
+            "lambda_version": "0.15.0",
+            "client_min_version": "0.0.0",
+        }
+        asyncio.run(self._table(namespace=True, record=record))
+        before = asyncio.run(self._items())
+
+        result, stack_manager = self._invoke(runner, command)
+
+        assert result.exit_code == 0, result.output
+        assert reported in result.output
+        assert "Lambda update available: 0.15.0 -> 0.15.1" in result.output
+        assert "zae-limiter upgrade" in result.output
+        stack_manager.assert_not_called()
+        stack_manager.return_value.deploy_lambda_code.assert_not_called()
+        assert asyncio.run(self._items()) == before
+
+    @pytest.mark.parametrize(
+        ("command", "exit_code", "reported"),
+        [("check", 1, "Result: NOT INITIALIZED"), ("version", 0, "Not initialized")],
+    )
+    def test_a_missing_stack_is_reported_not_deployed(
+        self, mock_dynamodb, runner: CliRunner, command: str, exit_code: int, reported: str
+    ) -> None:
+        import asyncio
+
+        result, stack_manager = self._invoke(runner, command)
+
+        assert result.exit_code == exit_code, result.output
+        assert reported in result.output
+        assert "zae-limiter deploy" in result.output
+        stack_manager.assert_not_called()
+        assert asyncio.run(self._tables()) == []
+
+    @pytest.mark.parametrize("command", ["check", "version"])
+    def test_a_missing_namespace_is_not_registered(
+        self, mock_dynamodb, runner: CliRunner, command: str
+    ) -> None:
+        import asyncio
+
+        from zae_limiter.version import get_schema_version
+
+        record = {
+            "schema_version": get_schema_version(),
+            "lambda_version": "0.15.1",
+            "client_min_version": "0.0.0",
+        }
+        asyncio.run(self._table(namespace=False, record=record))
+        before = asyncio.run(self._items())
+
+        result, stack_manager = self._invoke(runner, command)
+
+        assert result.exit_code == 0, result.output
+        assert "COMPATIBLE" in result.output
+        stack_manager.assert_not_called()
+        assert asyncio.run(self._items()) == before
+
+    @patch("zae_limiter.repository.Repository")
+    def test_only_a_missing_table_reads_as_not_initialized(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        """Any other read failure is a failed check, never NOT INITIALIZED."""
+        from botocore.exceptions import ClientError
+
+        mock_repo = Mock()
+        mock_repo.get_version_record = AsyncMock(
+            side_effect=ClientError(
+                {"Error": {"Code": "AccessDeniedException", "Message": "denied"}}, "GetItem"
+            )
+        )
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.return_value = mock_repo
+
+        result = runner.invoke(cli, ["check", "--name", self.TABLE])
+
+        assert result.exit_code == 1
+        assert "Check failed" in result.output
+        assert "AccessDeniedException" in result.output
+        assert "NOT INITIALIZED" not in result.output
