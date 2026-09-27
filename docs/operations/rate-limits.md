@@ -299,7 +299,8 @@ use the `b_{limit_name}_{field}` naming convention:
 | Reset schedule | `rsched` | Item-level reset schedule, compact encoding | `1m0h0` |
 | Timezone | `sched_tz` | IANA zone shared by every schedule on this item | `America/New_York` |
 | Per-limit overrides | `b_rpm_sched`, `b_rpm_rsched` | That limit's own schedule, when it differs from the item default. A literal `-` means that limit has **no** schedule; a missing attribute means it inherits the item default | `1h0-6c2000` or `-` |
-| Session window start | `b_session_ws` | A [session quota's](../guide/session-quotas.md) current window start (epoch ms). The window ends at `ws + rsa × 1000`; a start later than `rf` means a new window has been opened and this shard has not yet restored its balance | `1705312800000` |
+| Session window start | `b_session_ws` | A [session quota's](../guide/session-quotas.md) current window start (epoch ms). The window ends at `ws + rsa × 1000` | `1705312800000` |
+| Session window applied | `b_session_wa` | The window start this shard's balance reflects. A `ws` later than `wa` means a new window has been opened and this shard has not yet restored its balance; an item written before the marker existed carries none, and `rf` is compared instead | `1705312800000` |
 | Session window length | `b_session_rsa` | The session window's length in seconds, copied from config so readers need no config lookup | `18000` |
 
 The ceiling actually enforced is **not** `b_rpm_cp`. The schedule in force at the current

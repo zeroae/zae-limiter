@@ -322,6 +322,13 @@ So each window limit carries its own marker, which no old writer touches.
   window had ended by the new start, so it is owed exactly one fresh share.
 - **The opener** still resets unconditionally under its own `rf` lock, and stamps
   `ws = wa = now`.
+- **The fast path's rejection check reads the same predicate.** A fan-out stamps `vu = 0` beside
+  the new `ws`, so a v0.15 fleet never shows the speculative path an unapplied window. An old
+  writer re-stamps or REMOVEs `vu` from its own limits, and the fast path can then see the new
+  `ws` beside the old window's burnt balance; judged as it stands, every request drawn to that
+  shard would be fast-rejected until the window *ended*. A live window with `ws > wa` is
+  therefore read as restored, exactly like an ended one, and the request goes to the slow path,
+  which rolls it.
 - **Monotonic `rf` stays** (#635). It is what makes the fallback correct on an unmarked item and
   keeps refill timing honest; on a marked item it is no longer what decides the roll.
 - **Cost.** One number attribute per window limit per shard (under 20 bytes), written only inside
