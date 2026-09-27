@@ -258,9 +258,14 @@ accepted and documented:
   stale-name diff cannot see it. Without B the same old admin fails instead. Admin tooling must be
   upgraded first.
 - **`vu`.** An old client re-stamps or REMOVEs `vu` from its own limits, so the fast path is no
-  longer gated at a window's end: an ended window stretches until its leftover balance runs out,
-  and then the slow path opens the next. No over-admission per window; `resets_at_ms` and
-  `retry_after_seconds` drift until a v0.15 slow pass re-stamps `vu`.
+  longer gated at a window's end: an ended window's leftover can be spent after the end, until
+  it runs out or a slow pass opens the next window. On a shard whose own window has ended and
+  that no fan-out has reached, that is the ended window's own allowance, spent late; the next
+  window is opened at the next slow pass and starts full. On a shard a fan-out has already moved
+  onto the next window (`ws > wa`), the spending falls inside that window, and the pending roll
+  charges it against the window's share through the `wtc` snapshot (below). Either way no shard
+  grants more than one allowance per window. `resets_at_ms` and `retry_after_seconds` drift
+  until a v0.15 slow pass re-stamps `vu`.
 - **Item-level schedule defaults.** An old param sync SETs or REMOVEs the item-level `sched` /
   `rsched` / `sched_tz` from its own limits only. A session limit with no per-limit override on
   that item then inherits the new default; an inherited `rsched` makes the aggregator treat it as

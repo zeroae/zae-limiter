@@ -984,6 +984,21 @@ persist's `attribute_not_exists(tk)`. The fast path reads a live but unapplied w
 restored (`bucket._restored_if_window_ended`): an old writer REMOVEs `vu`, and judging that
 image as it stood fast-rejected the shard for the whole window.
 
+**A pending roll charges what was spent meanwhile (`b_{name}_wtc`, #640 review).** With `vu`
+REMOVEd by an old writer, a fanned-out shard (`ws > wa`) spends the ended window's leftover
+inside the new window — on the fast path, or in a consumption-only retry whose `rf` lock an old
+write took — and a roll that SETs the share forgave all of it (13 admitted against 10). The
+fan-out now also SETs `b_{n}_wtc = if_not_exists(b_{n}_tc, 0)`, a path copy of the consumption
+counter, and a pending roll targets **`eff_cp − max(0, tc − wtc)`**
+(`BucketState.window_roll_target_milli`; the aggregator's roll likewise). Exact because every
+debit path ADDs `tc` (fast, normal, retry, adjust, rollback — on v0.14 too), so it is an
+immediate roll at the snapshot instant; independent of `tk`, so adjust debt after a
+zero-estimate lease is charged too (why zeroing the leftover in the fan-out was rejected);
+`max(0, …)` keeps a net credit from lifting it above the share. The opener and every create or
+seed apply their window in the same write and restore the full share. The Path 2 clone resets
+`wtc = 0` beside `tc = 0`. The fast-path rejection check and `check_availability` report the
+same target for a pending roll. No `wtc` on the item → the share, as before.
+
 **`rf` is monotonic on every item, windowed or not.** Still load-bearing for an item without the
 `wa` marker, and for refill timing. Every materialising write — client create
 and normal path (`lease._monotonic_rf`), aggregator refill — stamps `rf = max(now, stored rf,
@@ -1413,7 +1428,7 @@ All PK and GSI PK values are prefixed with `{ns}/` where `{ns}` is the opaque na
 | Client shard create (ADR-133) | `Put` full item, `tk = effective cp // shard_count` (a quota: what the reclaim below took, #587), `wcu` undivided, `sched`/`rsched`/`sched_tz`/`vu` when scheduled, `b_{n}_ws`/`b_{n}_rsa`/`b_{n}_wa = ws` for a session quota — shard N>0 first reads shard 0's `ws` (strongly consistent `GetItem`, 1 RCU) and joins a live window or opens its own (ADR-139) | `attribute_not_exists(PK)` | Sets `rf = max(now, ws)` |
 | Quota surplus reclaim, per existing shard (#587) | `SET tk = :share`, `ReturnValues=UPDATED_OLD` | `tk > :share` (client) / `attribute_exists(PK) AND tk > :share` (aggregator) | No |
 | Adjustment / rollback | `ADD tk +/-delta` | (unconditional) | No |
-| Window rollover fan-out, per (sibling shard, window limit) (ADR-139) | `SET b_{n}_ws = :new, b_{n}_rsa = :rsa, vu = :zero` (never `wa`) | `attribute_exists(PK) AND (attribute_exists(b_{n}_wa) OR rf < :new) AND (attribute_not_exists(b_{n}_ws) OR b_{n}_ws <= :open_floor)`, `:open_floor = :new − rsa × 1000` (#640) | No |
+| Window rollover fan-out, per (sibling shard, window limit) (ADR-139) | `SET b_{n}_ws = :new, b_{n}_rsa = :rsa, vu = :zero, b_{n}_wtc = if_not_exists(b_{n}_tc, :zero)` (never `wa`, never `tk`) | `attribute_exists(PK) AND (attribute_exists(b_{n}_wa) OR rf < :new) AND (attribute_not_exists(b_{n}_ws) OR b_{n}_ws <= :open_floor)`, `:open_floor = :new − rsa × 1000` (#640) | No |
 | Aggregator refill | `ADD tk +refill SET rf = :new_rf`, `:new_rf = max(now, stored rf, ws in force)` (ADR-139), `+ b_{n}_wa = :ws` per window in force (#640) | `rf = :expected_rf AND vu = :expected_vu` (#508) `AND b_{n}_ws = :expected_ws` per rolled window (ADR-139) | Yes (optimistic lock) |
 | Aggregator proactive shard | `SET shard_count = :new` | `shard_count = :old` | No |
 | Aggregator shard propagation | `SET shard_count = :new` | `attribute_not_exists(shard_count) OR shard_count < :new` | No |

@@ -301,6 +301,7 @@ use the `b_{limit_name}_{field}` naming convention:
 | Per-limit overrides | `b_rpm_sched`, `b_rpm_rsched` | That limit's own schedule, when it differs from the item default. A literal `-` means that limit has **no** schedule; a missing attribute means it inherits the item default | `1h0-6c2000` or `-` |
 | Session window start | `b_session_ws` | A [session quota's](../guide/session-quotas.md) current window start (epoch ms). The window ends at `ws + rsa × 1000` | `1705312800000` |
 | Session window applied | `b_session_wa` | The window start this shard's balance reflects. A `ws` later than `wa` means a new window has been opened and this shard has not yet restored its balance; an item written before the marker existed carries none, and `rf` is compared instead | `1705312800000` |
+| Session window snapshot | `b_session_wtc` | The consumption counter as it stood when another shard's new window reached this one. While the window is pending (`ws` later than `wa`), the shard restores its share less whatever it consumed since, so nothing spent in between is forgiven | `4000` |
 | Session window length | `b_session_rsa` | The session window's length in seconds, copied from config so readers need no config lookup | `18000` |
 
 The ceiling actually enforced is **not** `b_rpm_cp`. The schedule in force at the current

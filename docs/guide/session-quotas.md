@@ -317,14 +317,21 @@ It round-trips through the `Custom::ZaeLimiterLimits` CloudFormation resource as
 - **The CLI's `-l` flag cannot set one** (above).
 - **While v0.14 clients are still running** (they ignore the session limit; see the warning at
   the top):
-    - A v0.14 client stamps a bucket's expiry from its **own** limits, which can be shorter than
-      `reset_after × 7`. If a resource- or system-level bucket then expires in the middle of a
-      window, the next request starts a fresh one at the full allowance: the window restarts
-      part-way, admitting **at most one extra allowance**.
-    - A v0.14 client clears the marker that makes an ended window take the slow path, so an
-      entity can keep spending an ended window's leftover balance before the next window opens,
-      and `resets_at_ms` / `retry_after_seconds` can be stale until a v0.15 request re-stamps
-      it. No window admits more than its allowance.
+    - A v0.14 client stamps a bucket's expiry from the limits **it** resolves, which can be
+      shorter than `reset_after × 7`. That covers resource- and system-level buckets, and also
+      an entity-level bucket whose entity level holds *only* the session limit: v0.14 sees that
+      level as empty, falls through to the resource or system defaults, and gives the bucket
+      their expiry — again after every idle gap that follows one of its writes, although v0.15
+      removes it on its own next write. If the bucket then expires in the middle of a window,
+      the next request starts a fresh one at the full allowance: the window restarts part-way,
+      admitting **at most one extra allowance**.
+    - A v0.14 client clears the marker that makes an ended window take the slow path, so a
+      shard can keep spending an ended window's leftover balance after the window's end, and
+      `resets_at_ms` / `retry_after_seconds` can be stale until a v0.15 request re-stamps it.
+      That spending never adds to a window's allowance on that shard: before the next window
+      reaches the shard it is the ended window's own leftover, and once another shard has
+      opened the next window there, it is charged against that window's share when the shard
+      applies it.
     - A shard that a v0.14 client creates does not carry the session limit. The next v0.15
       request on it adds the limit by moving surplus from the other shards, not by creating a
       new share. The one exception is a shard whose siblings were given a larger share earlier
