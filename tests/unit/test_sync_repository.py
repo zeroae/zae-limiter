@@ -6792,3 +6792,127 @@ class TestVersionRecordInitialization:
             assert repo._deployed_lambda_version == expected
         finally:
             repo.close()
+
+
+class TestAutoUpdateSkipsFunctionsTheStackDoesNotDeploy:
+    """``open(auto_update=True)`` on a stack without an aggregator or without a
+    provisioner (#644).
+
+    ``--no-aggregator``, ``--no-provisioner`` and ``--no-iam`` stacks have no
+    function to push code to. Moto-backed with a real ``SyncStackManager``, so the
+    push against a missing function meets Lambda's own
+    ``ResourceNotFoundException``; only the package builds and the ESM wait
+    are stubbed.
+    """
+
+    STACK = "partial-stack"
+
+    def _seed(self, lambda_version: str) -> None:
+        from zae_limiter.version import get_schema_version
+
+        setup = SyncRepository(name=self.STACK, region="us-east-1", _skip_deprecation_warning=True)
+        try:
+            setup.create_table()
+            setup._register_namespace("default")
+            setup.set_version_record(
+                schema_version=get_schema_version(), lambda_version=lambda_version
+            )
+        finally:
+            setup.close()
+
+    def _stamp(self) -> str | None:
+        repo = SyncRepository(name=self.STACK, region="us-east-1", _skip_deprecation_warning=True)
+        try:
+            record = repo.get_version_record()
+        finally:
+            repo.close()
+        assert record is not None
+        return record.get("lambda_version")
+
+    def _open(self) -> SyncRepository:
+        from tests.fixtures.moto import lambda_zip
+
+        with (
+            patch("zae_limiter.__version__", "0.15.0"),
+            patch(
+                "zae_limiter.infra.sync_stack_manager.build_lambda_package",
+                return_value=lambda_zip(),
+            ),
+            patch(
+                "zae_limiter.infra.sync_stack_manager.build_provisioner_package",
+                return_value=lambda_zip(),
+            ),
+            patch(
+                "zae_limiter.infra.sync_stack_manager.SyncStackManager.wait_for_esm_ready",
+                new_callable=MagicMock,
+                return_value=True,
+            ),
+        ):
+            return SyncRepository.open("default", stack=self.STACK, region="us-east-1")
+
+    @pytest.mark.parametrize(
+        "present",
+        [
+            pytest.param(("limits-provisioner",), id="no-aggregator"),
+            pytest.param(("aggregator",), id="no-provisioner"),
+            pytest.param((), id="neither"),
+            pytest.param(("aggregator", "limits-provisioner"), id="both"),
+        ],
+    )
+    def test_pushes_what_exists_skips_the_rest_and_stamps(self, mock_dynamodb, present):
+        from tests.fixtures.moto import create_stack_lambdas, stack_lambda_versions
+
+        self._seed("0.14.0")
+        create_stack_lambdas(self.STACK, *present)
+        repo = self._open()
+        try:
+            assert repo._lambda_version == "0.15.0"
+        finally:
+            repo.close()
+        assert self._stamp() == "0.15.0"
+        assert stack_lambda_versions(self.STACK) == dict.fromkeys(present, "0.15.0")
+
+    def test_a_probe_that_cannot_tell_still_pushes(self, mock_dynamodb):
+        """A probe that cannot tell (no permission, throttled) proves nothing
+        about absence, so the push is attempted: the aggregator's push meets a
+        real ResourceNotFoundException, which is proof, and the stamp holds."""
+        from tests.fixtures.moto import create_stack_lambdas, stack_lambda_versions
+
+        self._seed("0.14.0")
+        create_stack_lambdas(self.STACK, "limits-provisioner")
+        with patch(
+            "zae_limiter.infra.sync_stack_manager.lambda_function_exists",
+            new_callable=MagicMock,
+            return_value=None,
+        ):
+            repo = self._open()
+        repo.close()
+        assert self._stamp() == "0.15.0"
+        assert stack_lambda_versions(self.STACK) == {"limits-provisioner": "0.15.0"}
+
+    def test_a_failed_push_stamps_nothing(self, mock_dynamodb):
+        """The stamp never claims code that is not running: when the
+        provisioner push fails for any reason other than absence, the
+        aggregator already carries the new code but the record keeps the old
+        version, and the next open() tries again."""
+        from tests.fixtures.moto import create_stack_lambdas, stack_lambda_versions
+        from zae_limiter.exceptions import StackOperationError
+
+        self._seed("0.14.0")
+        create_stack_lambdas(self.STACK, "aggregator", "limits-provisioner")
+        with (
+            patch(
+                "zae_limiter.infra.sync_stack_manager.SyncStackManager.deploy_provisioner_code",
+                new_callable=MagicMock,
+                side_effect=StackOperationError(
+                    stack_name=self.STACK, reason="Provisioner deployment failed (AccessDenied)"
+                ),
+            ),
+            pytest.raises(StackOperationError),
+        ):
+            self._open()
+        assert self._stamp() == "0.14.0"
+        assert stack_lambda_versions(self.STACK) == {
+            "aggregator": "0.15.0",
+            "limits-provisioner": None,
+        }

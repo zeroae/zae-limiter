@@ -75,3 +75,62 @@ def sync_limiter(mock_dynamodb):
     limiter = SyncRateLimiter(repository=repo)
     with limiter:
         yield limiter
+
+
+def lambda_zip() -> bytes:
+    """A minimal Lambda deployment package, standing in for the real builds.
+
+    ``build_lambda_package`` / ``build_provisioner_package`` pip-install into
+    a temporary directory; a code push under moto needs only a valid zip.
+    """
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as archive:
+        archive.writestr("handler.py", "def handler(event, context):\n    return None\n")
+    return buf.getvalue()
+
+
+def create_stack_lambdas(stack: str, *suffixes: str) -> None:
+    """Create moto Lambda functions ``{stack}-{suffix}`` (#644).
+
+    Stands in for the functions a stack's template deployed, so a code push
+    against a function the stack does *not* deploy meets the real
+    ``ResourceNotFoundException`` rather than a mock of it. Call inside
+    ``mock_dynamodb`` (which is ``mock_aws``).
+    """
+    import boto3
+
+    iam = boto3.client("iam", region_name="us-east-1")
+    role = iam.create_role(RoleName=f"{stack}-lambda-role", AssumeRolePolicyDocument="{}")["Role"][
+        "Arn"
+    ]
+    client = boto3.client("lambda", region_name="us-east-1")
+    for suffix in suffixes:
+        client.create_function(
+            FunctionName=f"{stack}-{suffix}",
+            Runtime="python3.12",
+            Role=role,
+            Handler="handler.handler",
+            Code={"ZipFile": lambda_zip()},
+        )
+
+
+def stack_lambda_versions(stack: str) -> dict[str, str | None]:
+    """The ``zae-limiter:lambda-version`` tag of each of ``stack``'s functions.
+
+    ``deploy_lambda_code`` / ``deploy_provisioner_code`` tag a function with
+    the client version after pushing to it, so the tag is the evidence that
+    code was pushed. Absent functions are not listed.
+    """
+    import boto3
+
+    client = boto3.client("lambda", region_name="us-east-1")
+    versions: dict[str, str | None] = {}
+    for function in client.list_functions()["Functions"]:
+        name = function["FunctionName"]
+        if name.startswith(f"{stack}-"):
+            tags = client.list_tags(Resource=function["FunctionArn"])["Tags"]
+            versions[name.removeprefix(f"{stack}-")] = tags.get("zae-limiter:lambda-version")
+    return versions
