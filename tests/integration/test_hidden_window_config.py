@@ -161,3 +161,55 @@ class TestOldWriterSequenceOnLocalStack:
         shard1 = await _bucket(repo, entity_id, resource, 1)
         assert _n(shard1, tk) == 2_000
         assert _n(shard1, bucket_attr("session", BUCKET_FIELD_WA)) == T1
+
+    async def test_a_pending_roll_charges_the_leftover_spent_meanwhile(
+        self, localstack_limiter, unique_name
+    ):
+        """#640 review: shard 1 keeps 3 of window T0, receives window T1 from
+        the fan-out (which snapshots `tc` as `wtc`), and an old write REMOVEs
+        its `vu`. The fast path spends the leftover inside T1; the roll then
+        charges it, so shard 1 admits its share of 5 in T1 and no more."""
+        import random
+
+        repo = localstack_limiter._repository
+        entity_id, resource = f"wtc-{unique_name}", f"res-{unique_name}"
+        tk = bucket_attr("session", BUCKET_FIELD_TK)
+        await repo.set_limits(entity_id, [SESSION], resource=resource)
+        assert await _slow(repo, entity_id, resource, 0, T0, amount=0) == 1
+        assert await repo.bump_shard_count(entity_id, resource, 1) == 2
+        assert await _slow(repo, entity_id, resource, 1, T0 + 1_000, amount=2) == 1
+
+        assert await _slow(repo, entity_id, resource, 0, T1) == 1  # opens T1, fans out
+        shard1 = await _bucket(repo, entity_id, resource, 1)
+        assert _n(shard1, tk) == 3_000
+        assert _n(shard1, bucket_attr("session", "wtc")) == 2_000
+        await _old_writer(repo, entity_id, resource, 1, rf=T1 + 10_000)
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, resource, 0)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="SET #tk = :zero",
+            ExpressionAttributeNames={"#tk": tk},
+            ExpressionAttributeValues={":zero": {"N": "0"}},
+        )
+
+        admitted = 0
+        real = random.randrange, random.choice
+        random.randrange = lambda a, b=None: 1 if b is None else real[0](a, b)
+        random.choice = lambda seq: 1 if 1 in seq else real[1](seq)
+        try:
+            for i in range(10):
+                repo._now_ms = lambda i=i: T1 + 20_000 + i * 1_000
+                try:
+                    async with localstack_limiter.acquire(
+                        entity_id, resource, consume={"session": 1}
+                    ):
+                        admitted += 1
+                except RateLimitExceeded:
+                    break
+        finally:
+            random.randrange, random.choice = real
+        assert admitted == 5
