@@ -1241,7 +1241,11 @@ class SyncRateLimiter:
         """
         if limit.reset_after is None or not (opened or state.window_rolled):
             return False
-        state.tokens_milli = state.effective_capacity_milli(now_ms)
+        state.tokens_milli = (
+            state.effective_capacity_milli(now_ms)
+            if opened
+            else state.window_roll_target_milli(now_ms)
+        )
         state.window_applied_ms = state.window_start_ms
         return True
 
@@ -2065,8 +2069,10 @@ class SyncRateLimiter:
                 return bucket.effective_capacity_milli(now_ms) // 1000
         if limit is not None and limit.reset_after is not None:
             end = _reader_window_end(limit, bucket)
-            if end is None or now_ms >= end or bucket.window_rolled:
+            if end is None or now_ms >= end:
                 return bucket.effective_capacity_milli(now_ms) // 1000
+            if bucket.window_rolled:
+                return bucket.window_roll_target_milli(now_ms) // 1000
         return calculate_available(bucket, now_ms)
 
     def check_availability(

@@ -135,6 +135,16 @@ BUCKET_FIELD_RSA = "rsa"  # b_{name}_rsa — window length, seconds
 # without touching `rf`, and must stay unapplied until a pass rolls it.
 BUCKET_FIELD_WA = "wa"  # b_{name}_wa — window applied, epoch ms
 
+# `wtc` is the consumption SNAPSHOT a rollover fan-out takes as it leaves a
+# shard unapplied (#640): a path copy of `b_{name}_tc` at the instant the new
+# `ws` lands. The deferred roll targets `eff_cp - max(0, tc - wtc)` rather than
+# `eff_cp`, so whatever the shard spent while the roll was pending — from the
+# old window's leftover, once a writer predating ADR-139 removed `vu` — is
+# charged to the new window instead of being forgiven by the roll's SET. Every
+# debit path ADDs `tc`, so the result is exactly an immediate roll at the
+# snapshot instant. Only consulted while `ws > wa`.
+BUCKET_FIELD_WTC = "wtc"  # b_{name}_wtc — tc at the fan-out, millitokens
+
 # The explicit spelling of "this limit has no schedule of its own" (#541).
 #
 # Absence of a `b_{name}_sched` still means "inherit the item default" — that is

@@ -3946,7 +3946,12 @@ class Repository:
                         },
                         "SK": {"S": schema.sk_state()},
                     },
-                    UpdateExpression="SET #ws = :new, #rsa = :rsa, #vu = :zero",
+                    # `wtc` is a path copy of the consumption counter as the
+                    # window lands (#640): the sibling's deferred roll charges
+                    # everything spent after this instant to the new window.
+                    UpdateExpression=(
+                        "SET #ws = :new, #rsa = :rsa, #vu = :zero, #wtc = if_not_exists(#tc, :zero)"
+                    ),
                     ConditionExpression=(
                         "attribute_exists(PK) AND (attribute_exists(#wa) OR #rf < :new)"
                         " AND (attribute_not_exists(#ws) OR #ws <= :open_floor)"
@@ -3958,6 +3963,8 @@ class Repository:
                         "#ws": schema.bucket_attr(name, schema.BUCKET_FIELD_WS),
                         "#rsa": schema.bucket_attr(name, schema.BUCKET_FIELD_RSA),
                         "#wa": schema.bucket_attr(name, schema.BUCKET_FIELD_WA),
+                        "#wtc": schema.bucket_attr(name, schema.BUCKET_FIELD_WTC),
+                        "#tc": schema.bucket_attr(name, schema.BUCKET_FIELD_TC),
                         "#vu": schema.BUCKET_FIELD_VU,
                         "#rf": schema.BUCKET_FIELD_RF,
                     },
@@ -6254,6 +6261,10 @@ class Repository:
             window_applied_ms = self._decode_stored_window_int(
                 wa_name, item.get(wa_name, {}).get("N")
             )
+            wtc_name = schema.bucket_attr(name, schema.BUCKET_FIELD_WTC)
+            window_consumed_mark = self._decode_stored_window_int(
+                wtc_name, item.get(wtc_name, {}).get("N")
+            )
 
             # `wcu` is never scheduled — it tracks partition write pressure,
             # not a user limit, and is the one limit `effective_params` must
@@ -6289,6 +6300,7 @@ class Repository:
                     window_start_ms=window_start_ms,
                     reset_after_seconds=reset_after_seconds,
                     window_applied_ms=window_applied_ms,
+                    window_consumed_mark_milli=window_consumed_mark,
                 )
             )
 

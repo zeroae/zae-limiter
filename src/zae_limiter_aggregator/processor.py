@@ -35,6 +35,7 @@ from zae_limiter.schema import (
     BUCKET_FIELD_VU,
     BUCKET_FIELD_WA,
     BUCKET_FIELD_WS,
+    BUCKET_FIELD_WTC,
     BUCKET_PREFIX,
     BUCKET_SCHED_NONE,
     SK_BUCKET,
@@ -138,6 +139,11 @@ class LimitRefillInfo:
     # None on an item written before the marker, where `_window_applied`
     # falls back to the item's `rf`.
     window_applied_ms: int | None = None
+    # `b_{name}_tc` as of the last NewImage (absolute, not the delta above) and
+    # `b_{name}_wtc`, the fan-out's snapshot of it (#640). Together they give a
+    # pending roll's target, `eff_cp - max(0, tc - wtc)`.
+    tc_milli: int | None = None
+    window_consumed_mark_milli: int | None = None
 
 
 @dataclass
@@ -346,6 +352,8 @@ class ParsedBucketLimit:
     window_start_ms: int | None = None  # b_{name}_ws, epoch ms (ADR-139)
     reset_after_seconds: int | None = None  # b_{name}_rsa, seconds (ADR-139)
     window_applied_ms: int | None = None  # b_{name}_wa, epoch ms (#640)
+    tc_milli: int | None = None  # b_{name}_tc from NewImage, absolute (#640)
+    window_consumed_mark_milli: int | None = None  # b_{name}_wtc (#640)
 
 
 @dataclass
@@ -557,6 +565,7 @@ def _parse_bucket_record(record: dict[str, Any]) -> ParsedBucketRecord | None:
         ws_raw = new_image.get(bucket_attr(limit_name, BUCKET_FIELD_WS), {}).get("N")
         rsa_raw = new_image.get(bucket_attr(limit_name, BUCKET_FIELD_RSA), {}).get("N")
         wa_raw = new_image.get(bucket_attr(limit_name, BUCKET_FIELD_WA), {}).get("N")
+        wtc_raw = new_image.get(bucket_attr(limit_name, BUCKET_FIELD_WTC), {}).get("N")
 
         limits[limit_name] = ParsedBucketLimit(
             tc_delta=tc_delta,
@@ -569,6 +578,8 @@ def _parse_bucket_record(record: dict[str, Any]) -> ParsedBucketRecord | None:
             window_start_ms=int(ws_raw) if ws_raw is not None else None,
             reset_after_seconds=int(rsa_raw) if rsa_raw is not None else None,
             window_applied_ms=int(wa_raw) if wa_raw is not None else None,
+            tc_milli=int(new_tc_raw),
+            window_consumed_mark_milli=int(wtc_raw) if wtc_raw is not None else None,
         )
 
     if not limits:
@@ -722,6 +733,8 @@ def aggregate_bucket_states(
                 existing.window_start_ms = parsed_limit.window_start_ms
                 existing.reset_after_seconds = parsed_limit.reset_after_seconds
                 existing.window_applied_ms = parsed_limit.window_applied_ms
+                existing.tc_milli = parsed_limit.tc_milli
+                existing.window_consumed_mark_milli = parsed_limit.window_consumed_mark_milli
             else:
                 state.limits[limit_name] = LimitRefillInfo(
                     tc_delta=parsed_limit.tc_delta,
@@ -734,6 +747,8 @@ def aggregate_bucket_states(
                     window_start_ms=parsed_limit.window_start_ms,
                     reset_after_seconds=parsed_limit.reset_after_seconds,
                     window_applied_ms=parsed_limit.window_applied_ms,
+                    tc_milli=parsed_limit.tc_milli,
+                    window_consumed_mark_milli=parsed_limit.window_consumed_mark_milli,
                 )
 
     return bucket_states
@@ -991,7 +1006,14 @@ def try_refill_bucket(
             and window[0] is not None
             and window[0] > _window_applied(info, state.rf_ms)
         ):
-            roll_delta = effective_cp - info.tk_milli
+            # The share less what the shard spent since the fan-out's snapshot
+            # (#640) — the client's `BucketState.window_roll_target_milli` —
+            # so debits made while the roll was pending, and already in this
+            # image, are charged rather than forgiven by the SET.
+            target = effective_cp
+            if info.window_consumed_mark_milli is not None and info.tc_milli is not None:
+                target -= max(0, info.tc_milli - info.window_consumed_mark_milli)
+            roll_delta = target - info.tk_milli
             if roll_delta != 0:
                 any_needs_refill = True
                 idx = len(rolled)
@@ -1598,6 +1620,13 @@ def propagate_shard_count(
             for limit_name, effective_cp in starting_tokens.items():
                 item[bucket_attr(limit_name, BUCKET_FIELD_TK)] = effective_cp
                 item[bucket_attr(limit_name, BUCKET_FIELD_TC)] = 0
+                # A clone of a shard with a pending roll inherits that roll
+                # (`ws`/`wa` are copied verbatim). Its consumption counter
+                # restarts at 0, so its snapshot does too (#640): everything
+                # the clone spends before the roll is charged to that window.
+                wtc_attr = bucket_attr(limit_name, BUCKET_FIELD_WTC)
+                if wtc_attr in item:
+                    item[wtc_attr] = 0
             table.put_item(
                 Item=item,
                 ConditionExpression="attribute_not_exists(PK)",

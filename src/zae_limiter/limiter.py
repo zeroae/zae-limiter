@@ -1590,7 +1590,14 @@ class RateLimiter:
         """
         if limit.reset_after is None or not (opened or state.window_rolled):
             return False
-        state.tokens_milli = state.effective_capacity_milli(now_ms)
+        # An opener restores the full share. A pending roll restores the share
+        # less what was spent since the fan-out's snapshot (#640), so debits
+        # made while it was pending are charged, not forgiven.
+        state.tokens_milli = (
+            state.effective_capacity_milli(now_ms)
+            if opened
+            else state.window_roll_target_milli(now_ms)
+        )
         # The balance now reflects this window; the commit stamps the same
         # value as `b_{name}_wa` (#640, `lease._applied_windows`).
         state.window_applied_ms = state.window_start_ms
@@ -2746,8 +2753,12 @@ class RateLimiter:
         # would still reject on it.
         if limit is not None and limit.reset_after is not None:
             end = _reader_window_end(limit, bucket)
-            if end is None or now_ms >= end or bucket.window_rolled:
+            if end is None or now_ms >= end:
                 return bucket.effective_capacity_milli(now_ms) // 1000
+            if bucket.window_rolled:
+                # A pending roll restores the share less what the shard spent
+                # since the fan-out landed (#640), never more.
+                return bucket.window_roll_target_milli(now_ms) // 1000
         return calculate_available(bucket, now_ms)
 
     async def check_availability(

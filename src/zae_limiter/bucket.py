@@ -233,6 +233,10 @@ def _restored_if_window_ended(state: BucketState, now_ms: int) -> BucketState:
     end = _duration_window_end(state)
     if end is None or (now_ms < end and not state.window_rolled):
         return state
+    if now_ms < end:
+        # A live, pending roll: the share less what the shard spent since the
+        # fan-out's snapshot (#640) — the balance the slow path will restore.
+        return replace(state, tokens_milli=state.window_roll_target_milli(now_ms))
     return replace(state, tokens_milli=state.effective_capacity_milli(now_ms))
 
 

@@ -1260,6 +1260,9 @@ class BucketState:
     # `None` on an item written before the marker existed, where
     # `window_rolled` falls back to comparing against `rf`.
     window_applied_ms: int | None = None
+    # `b_{name}_wtc` (#640): `tc` as it stood when a fan-out left this shard
+    # with an unapplied window. `None` when the item carries none.
+    window_consumed_mark_milli: int | None = None
 
     @property
     def tokens(self) -> int:
@@ -1355,6 +1358,30 @@ class BucketState:
             self.window_applied_ms if self.window_applied_ms is not None else self.last_refill_ms
         )
         return self.window_start_ms > applied
+
+    def window_roll_target_milli(self, now_ms: int) -> int:
+        """The balance a pending window roll restores this shard to (#640).
+
+        ``eff_cp - max(0, tc - wtc)``: the shard's effective share, less every
+        net debit since the fan-out snapshot. That is exactly the balance an
+        immediate roll at the snapshot instant would have left — every debit
+        path ADDs ``tc`` (the fast path, the normal path, the retry, adjust and
+        rollback, on this release and on v0.14), so nothing spent while the
+        roll was pending is forgiven by it, including spending from the ended
+        window's leftover after a writer predating ADR-139 removed ``vu``.
+        The target does not read ``tk`` at all, so it does not matter what the
+        shard spent from. ``max(0, ...)`` keeps net credits since the snapshot
+        (an old-window lease rolling back) from lifting the roll above the
+        share. With no snapshot on the item it is the share, as before.
+
+        Only meaningful for a roll that is *pending* (:attr:`window_rolled`);
+        an opener or a newly created shard applies its window in the same
+        write and restores the full share.
+        """
+        share = self.effective_capacity_milli(now_ms)
+        if self.window_consumed_mark_milli is None or self.total_consumed_milli is None:
+            return share
+        return share - max(0, self.total_consumed_milli - self.window_consumed_mark_milli)
 
     def accrues(self, now_ms: int) -> bool:
         """Is this shard gaining tokens at ``now_ms``?

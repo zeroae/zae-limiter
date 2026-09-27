@@ -21,6 +21,8 @@ sync twin of every path exercised here is generated from the same modules.
 
 from dataclasses import replace
 
+import pytest
+
 from tests.fixtures.sharding import materialise, pinned_shard
 from tests.fixtures.windows import FIVE_HOURS_MS, SESSION_10, T0
 from zae_limiter import Limit, RateLimiter, RateLimitExceeded
@@ -32,6 +34,7 @@ from zae_limiter.schema import (
     BUCKET_FIELD_VU,
     BUCKET_FIELD_WA,
     BUCKET_FIELD_WS,
+    BUCKET_FIELD_WTC,
     bucket_attr,
     pk_bucket,
     sk_state,
@@ -41,6 +44,7 @@ RESOURCE = "gpt-4"
 WA = bucket_attr("session", BUCKET_FIELD_WA)
 WS = bucket_attr("session", BUCKET_FIELD_WS)
 TK = bucket_attr("session", BUCKET_FIELD_TK)
+WTC = bucket_attr("session", BUCKET_FIELD_WTC)
 T1 = T0 + FIVE_HOURS_MS + 1_000  # the next window's start, after T0's has ended
 
 
@@ -122,24 +126,46 @@ async def _first_use(limiter, entity_id, now_ms, consume=1):
         pass
 
 
-async def _two_shards_then_rollover(limiter, entity_id):
-    """Two shards on window T0; shard 1 spent out; shard 0 opens T1 and fans out.
+async def _two_shards_then_rollover(limiter, entity_id, leftover=0):
+    """Two shards on window T0; shard 1 down to ``leftover``; shard 0 opens T1 and fans out.
 
-    Returns with shard 1 carrying ``ws = T1`` beside its burnt balance of 0,
-    unapplied — exactly the state a forward ``rf`` stamp would hide.
+    Returns with shard 1 carrying ``ws = T1`` beside the old window's balance
+    (burnt at 0 by default), unapplied — exactly the state a forward ``rf``
+    stamp would hide, and a ``vu`` REMOVE would expose to the fast path.
     """
     repo = limiter._repository
     await _first_use(limiter, entity_id, T0, consume=0)
     assert await repo.bump_shard_count(entity_id, RESOURCE, 1) == 2
     repo._now_ms = lambda: T0 + 1_000
     assert await materialise(limiter, entity_id, "session", 1, resource=RESOURCE) == 1
-    await _set_tk(repo, entity_id, 1, 0)
+    await _set_tk(repo, entity_id, 1, leftover * 1_000)
 
     assert await _slow_acquire(limiter, entity_id, 0, T1) == 1  # opens T1, fans out
     assert await _num(repo, entity_id, 0, WS) == T1
     assert await _num(repo, entity_id, 1, WS) == T1
     assert await _num(repo, entity_id, 1, WA) == T0, "the fan-out never marks a window applied"
-    assert await _num(repo, entity_id, 1, TK) == 0
+    assert await _num(repo, entity_id, 1, TK) == leftover * 1_000
+
+
+async def _drain_shard_1(limiter, entity_id, start_ms, fast=True, limit=20):
+    """Acquire 1 on shard 1 until rejected. Returns how many were admitted.
+
+    Shard 0 is emptied first: an exhausted shard's fast-path retry probes the
+    others, and what shard 0 admits is not what is being counted.
+    """
+    repo = limiter._repository
+    await _set_tk(repo, entity_id, 0, 0)
+    lim = limiter if fast else RateLimiter(repository=repo, speculative_writes=False)
+    admitted = 0
+    for i in range(limit):
+        repo._now_ms = lambda i=i: start_ms + i * 1_000
+        with pinned_shard(1):
+            try:
+                async with lim.acquire(entity_id, RESOURCE, consume={"session": 1}):
+                    admitted += 1
+            except RateLimitExceeded:
+                return admitted
+    return admitted
 
 
 def _image_record(item):
@@ -355,13 +381,121 @@ class TestFastPathReadsAPendingRollAsRestored:
         would_help, _ = would_refill_satisfy([self._image(wa=T1)], {"session": 1}, T1 + 1)
         assert not would_help
 
-    async def test_end_to_end_the_request_is_admitted_on_that_shard(self, limiter):
+    @pytest.mark.parametrize("leftover", [0, 3])
+    async def test_end_to_end_the_shard_admits_one_share_in_the_window(self, limiter, leftover):
+        """Burnt (0): the first request is admitted by the roll rather than
+        fast-rejected. Leftover (3): the fast path spends the old window's
+        leftover first, and the roll charges those debits (#640 review: it
+        used to SET the full share on top — 8 admitted against a share of 5)."""
         repo = limiter._repository
-        await _two_shards_then_rollover(limiter, "u")
+        await _two_shards_then_rollover(limiter, "u", leftover=leftover)
         await _set_tk(repo, "u", 0, 0)  # no other shard can absorb the request
         await _old_writer(repo, "u", 1, rf=T1 + 60_000)
-        repo._now_ms = lambda: T1 + 120_000
+        assert await _drain_shard_1(limiter, "u", T1 + 120_000) == 5
+        assert await _num(repo, "u", 1, WA) == T1
+
+
+class TestAPendingRollChargesWhatWasSpentMeanwhile:
+    """#640 review: a roll that SETs the share forgave every debit made while it
+    was pending. The fan-out snapshots ``tc`` as ``wtc``; the roll targets
+    ``eff_cp - max(0, tc - wtc)`` on the client and in the aggregator."""
+
+    async def test_the_reviewers_repro(self, limiter):
+        """Leftover 3 on shard 1, then a v0.14-style ``REMOVE vu``: shard 1 used
+        to admit 3 from the leftover and then a fresh 5 (13 against 10 across
+        the entity). It now admits its share of 5 in window T1, no more."""
+        repo = limiter._repository
+        await _two_shards_then_rollover(limiter, "u", leftover=3)
+        assert await _num(repo, "u", 1, WTC) == 1_000, "tc snapshot at the fan-out"
+        await _old_writer(repo, "u", 1, rf=T1 + 10_000)
+        assert await _drain_shard_1(limiter, "u", T1 + 20_000) == 5
+
+    async def test_the_aggregator_roll_charges_debits_in_its_image(self, limiter):
+        from zae_limiter_aggregator.processor import aggregate_bucket_states, try_refill_bucket
+
+        repo = limiter._repository
+        await _two_shards_then_rollover(limiter, "u", leftover=3)
+        await _old_writer(repo, "u", 1, rf=T1 + 10_000)
+        # The fast path spends 2 of the leftover inside window T1, roll pending.
+        repo._now_ms = lambda: T1 + 20_000
+        for _ in range(2):
+            with pinned_shard(1):
+                async with limiter.acquire("u", RESOURCE, consume={"session": 1}):
+                    pass
+        assert await _num(repo, "u", 1, WA) == T0, "still pending"
+        item = await _raw(repo, "u", 1)
+        (state,) = aggregate_bucket_states([_image_record(item)]).values()
+        assert try_refill_bucket(_table(repo), state, T1 + 30_000) is True
+        assert await _num(repo, "u", 1, TK) == 3_000  # 5 less the 2 spent
+        assert await _num(repo, "u", 1, WA) == T1
+        assert await _drain_shard_1(limiter, "u", T1 + 40_000) == 3
+
+    async def test_a_retry_that_lost_the_lock_to_an_old_write_is_charged(self, limiter):
+        """The slow pass computes the roll, a v0.14 write takes its ``rf`` lock,
+        and the consumption-only retry (which applies no roll) debits the
+        leftover. The next pass rolls to the share less that debit."""
+        repo = limiter._repository
+        await _two_shards_then_rollover(limiter, "u", leftover=3)
+        real = repo.transact_write
+        calls = []
+
+        async def lose_the_first_lock(items):
+            if not calls:
+                calls.append(1)
+                await _old_writer(repo, "u", 1, rf=T1 + 15_000)
+            return await real(items)
+
+        repo.transact_write = lose_the_first_lock
+        try:
+            assert await _slow_acquire(limiter, "u", 1, T1 + 20_000) == 1
+        finally:
+            repo.transact_write = real
+        assert await _num(repo, "u", 1, WA) == T0, "the retry applies no roll"
+        assert await _num(repo, "u", 1, TK) == 2_000
+        assert 1 + await _drain_shard_1(limiter, "u", T1 + 30_000, fast=False) == 5
+
+    async def test_adjust_debt_on_a_pending_shard_is_charged(self, limiter):
+        """Why zeroing the leftover in the fan-out would not do: a zero-estimate
+        lease passes ``tk >= 0`` on an empty shard and ``adjust()`` puts it in
+        debt, which a SET-to-share roll forgives. The snapshot charges it."""
+        repo = limiter._repository
+        await _two_shards_then_rollover(limiter, "u", leftover=0)
+        await _old_writer(repo, "u", 1, rf=T1 + 10_000)
+        # Shard 1 would otherwise be fast-rejected at 0 and rolled; a zero
+        # estimate is admitted by the fast path on the empty balance.
+        await _set_tk(repo, "u", 1, 0)
+        repo._now_ms = lambda: T1 + 20_000
         with pinned_shard(1):
-            async with limiter.acquire("u", RESOURCE, consume={"session": 1}):
-                pass
-        assert await _num(repo, "u", 1, TK) == 4_000
+            async with limiter.acquire("u", RESOURCE, consume={"session": 0}) as lease:
+                await lease.adjust(session=4)
+        assert await _num(repo, "u", 1, WA) == T0, "the zero-estimate took the fast path"
+        assert await _drain_shard_1(limiter, "u", T1 + 30_000) == 1  # 5 - 4
+
+    async def test_a_net_credit_never_lifts_the_roll_above_the_share(self):
+        state = BucketState.from_limit("e", RESOURCE, SESSION_10, T1, shard_count=2)
+        state = replace(
+            state,
+            window_start_ms=T1,
+            window_applied_ms=T0,
+            total_consumed_milli=1_000,
+            window_consumed_mark_milli=4_000,  # an old-window lease rolled back 3
+        )
+        assert state.window_roll_target_milli(T1 + 1) == 5_000
+
+    async def test_a_clone_of_a_pending_shard_restarts_its_snapshot(self, limiter):
+        from zae_limiter_aggregator.processor import propagate_shard_count
+
+        repo = limiter._repository
+        await _two_shards_then_rollover(limiter, "u", leftover=3)
+        old_image = await _raw(repo, "u", 1)
+        assert await repo.bump_shard_count("u", RESOURCE, 2) == 4
+        new_image = await _raw(repo, "u", 0)
+        record = {"eventName": "MODIFY", "dynamodb": {"NewImage": new_image, "OldImage": old_image}}
+        # Shard 0 is the source of truth for Path 2; fake its image as pending.
+        for image in (record["dynamodb"]["NewImage"], record["dynamodb"]["OldImage"]):
+            image[WA] = {"N": str(T0)}
+            image[WTC] = {"N": "7000"}
+        assert propagate_shard_count(_table(repo), record, T1 + 60_000) >= 1
+        clone = await _raw(repo, "u", 2)
+        assert clone[WTC] == {"N": "0"}
+        assert clone[bucket_attr("session", "tc")] == {"N": "0"}
