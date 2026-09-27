@@ -1,4 +1,4 @@
-"""Helpers that drive a bucket through ``wcu``-driven shard doublings (#587, ADR-139).
+"""Helpers that drive a bucket through ``wcu``-driven shard doublings (#587, ADR-140).
 
 Shared by the quota shard-creation tests and the duration-window shard-creation
 tests, which both need to force a real doubling and measure what a created

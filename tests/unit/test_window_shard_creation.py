@@ -1,4 +1,4 @@
-"""A shard created mid-window joins the window in progress (ADR-139, #625).
+"""A shard created mid-window joins the window in progress (ADR-140, #625).
 
 ``BucketState.from_limit`` stamps ``ws = now``, which is right for an entity's
 first shard and wrong for every later one: shards that each opened their own
@@ -245,7 +245,7 @@ class TestNewShardJoinsTheWindow:
 
 
 class TestSiblingReadIsConsistent:
-    """The sibling ``ws`` read is strongly consistent (ADR-139).
+    """The sibling ``ws`` read is strongly consistent (ADR-140).
 
     A shard is usually created just after shard 0 was written — often by the
     very acquire that rolled shard 0's window. An eventually consistent read can

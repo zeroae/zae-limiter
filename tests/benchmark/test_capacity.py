@@ -786,8 +786,8 @@ class TestScheduledFastPathCapacity:
 
 
 class TestDurationWindowCapacity:
-    """The claim ADR-139 rests on: ``reset_after`` is a per-rollover cost, never
-    a per-acquire one.
+    """The claim session quotas rest on (ADR-139, ADR-140): ``reset_after`` is a
+    per-rollover cost, never a per-acquire one.
 
     Inside a live window the fast path is byte-identical to any other bucket's
     — 0 RCU + 1 WCU, no config read, no bucket read. A rollover costs exactly
@@ -995,7 +995,7 @@ class TestLimitAddedToExistingBucketCapacity:
     have written anyway, now carrying the missing limit's attributes. After it
     the fast path is back to 0 RCU + 1 WCU. A quota added to a *sharded* entity
     additionally reads its siblings once (#587: a seed must never mint), and a
-    session quota reads shard 0's window once (ADR-139).
+    session quota reads shard 0's window once (ADR-140).
     """
 
     T0 = 1_757_000_000_000
