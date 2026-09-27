@@ -246,12 +246,22 @@ zae-limiter check --name <name> --region <region>
 zae-limiter upgrade --name <name> --region <region> --lambda-only
 ```
 
+**Force upgrade (skip compatibility check):**
+
+!!! warning "Use with caution"
+    Only use `--force` when you understand the implications.
+
+```bash
+zae-limiter upgrade --name <name> --region <region> --force
+```
+
 ### Stacks without every Lambda
 
-A stack deployed with `--no-aggregator` has no aggregator function, one deployed with
-`--no-provisioner` has no provisioner, and `--no-iam` has neither (both need a role). Both
-`zae-limiter upgrade` and `Repository.open()`'s automatic Lambda update push new code only to the
-functions that exist, skip the rest, and then record the new Lambda version:
+A stack deployed with `--no-aggregator` has no aggregator function, and one deployed with
+`--no-provisioner` has no provisioner. `--no-iam` has no provisioner, and no aggregator unless
+`--aggregator-role-arn` is given. Both `zae-limiter upgrade` and `Repository.open()`'s automatic
+Lambda update push new code only to the functions that exist, skip the rest, and then record the
+new Lambda version:
 
 ```
 [1/4] Deploying Lambda code...
@@ -269,15 +279,6 @@ is not running; the next `upgrade` or `open()` tries again.
 
 Before v0.15.0 the update pushed to both functions unconditionally, so these stacks could not be
 upgraded at all (#644).
-
-**Force upgrade (skip compatibility check):**
-
-!!! warning "Use with caution"
-    Only use `--force` when you understand the implications.
-
-```bash
-zae-limiter upgrade --name <name> --region <region> --force
-```
 
 ### Post-upgrade Verification
 

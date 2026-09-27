@@ -1033,8 +1033,8 @@ mints `cp // new_count` per new shard (#587 again).
   release) can prove it. Cost: nothing unless a limit carries `reset_after`, then one **strongly
   consistent** `GetItem` (1 RCU). Message and `can_auto_update` come from
   `version.reset_after_refusal()` (shared with the provisioner): True only for a known, old
-  version; the message names `zae-limiter upgrade` **and** `deploy` for `--no-aggregator`
-  stacks, since the record cannot say which it is. `VersionMismatchError` is a `VersionError`,
+  version; the message names `zae-limiter upgrade`, which works on every stack shape since #644
+  (it skips a Lambda the stack lacks). `VersionMismatchError` is a `VersionError`,
   not `RateLimiterUnavailable`, and admin paths do not consult `on_unavailable`, so it is never
   swallowed; out of the provisioner it is a CloudFormation FAILED or a `limits apply` error.
 - **`acquire(limits=[...])` override (A).** The slow path writes an override onto the bucket
@@ -1061,18 +1061,18 @@ mints `cp // new_count` per new shard (#587 again).
   module-level `lambda_function_exists`, a `GetFunctionConfiguration` call: True / False /
   None = cannot tell) run only for a function whose code was not pushed. Writers: CLI `deploy`
   (keeps the stored value otherwise), `_ensure_infrastructure_internal` (sets
-  `_deployed_lambda_version`), and `_initialize_version_record`, which probes without
-  constructing a `StackManager`, so an application role without Lambda permissions gets None.
-  `create_stack` returns `created: True` only when it created the stack (an existing stack also
-  reports `CREATE_COMPLETE`) and never updates an existing one: `--no-provisioner` / `--no-iam`
-  leave a live pre-v0.15 provisioner, which would store a `reset_after` manifest limit as a
-  dripping one. An
-  unknown stamp asks for no Lambda update, so `open(auto_update=True)` neither loops nor pushes
-  code; CLI `upgrade` treats unknown as out of date (no `--force` needed); the gate refuses it
-  naming `upgrade`. The init write is a conditional `PutItem` (`attribute_not_exists(PK)`): it
-  follows an eventually consistent miss, and a stale miss must not clobber a record or its
-  ratcheted minimum; on losing it reads the winner back. Test fixtures that need a writable
-  stack stamp `lambda_version=__version__` explicitly.
+  `_deployed_lambda_version`), `_initialize_version_record`, which probes without constructing a
+  `StackManager`, so an application role without Lambda permissions gets None, and
+  `_perform_lambda_update` / CLI `upgrade`, which feed it what their `skip_absent` pushes proved
+  (below). `create_stack` returns `created: True` only when it created the stack (an existing
+  stack also reports `CREATE_COMPLETE`) and never updates an existing one: `--no-provisioner` /
+  `--no-iam` leave a live pre-v0.15 provisioner, which would store a `reset_after` manifest limit
+  as a dripping one. An unknown stamp asks for no Lambda update, so `open(auto_update=True)`
+  neither loops nor pushes code; CLI `upgrade` treats unknown as out of date (no `--force`
+  needed); the gate refuses it naming `upgrade`. The init write is a conditional `PutItem`
+  (`attribute_not_exists(PK)`): it follows an eventually consistent miss, and a stale miss must
+  not clobber a record or its ratcheted minimum; on losing it reads the winner back. Test
+  fixtures that need a writable stack stamp `lambda_version=__version__` explicitly.
 - **The Lambda update skips functions the stack lacks (#644).** `_perform_lambda_update`
   (`open(auto_update=True)`) and CLI `upgrade` call `deploy_lambda_code` /
   `deploy_provisioner_code` with `skip_absent=True`: the function is probed first
@@ -1083,11 +1083,11 @@ mints `cp // new_count` per new shard (#587 again).
   `pushed_or_absent(result)`, which answers the existence probe with the push's own proof rather
   than asking Lambda again (a throttled re-probe would turn a proven absence into "cannot
   tell"). The stack's `EnableAggregator` / `EnableProvisioner` parameters are not consulted:
-  the template also gates each function on a role (`--no-iam` without `--aggregator-role-arn`
-  creates neither), and a stack from an older `cfn-template` may carry different parameters —
-  what matters is whether the function exists. `deploy` is unchanged: it pushes only what its
-  flags enable and stamps by the rule above. `_connect` turns a failed auto-update's
-  `StackOperationError` into an exit-1 message.
+  the template also gates each function on a role (`--no-iam` creates no provisioner, and no
+  aggregator unless `--aggregator-role-arn` is given), and a stack from an older `cfn-template`
+  may carry different parameters — what matters is whether the function exists. `deploy` is
+  unchanged: it pushes only what its flags enable and stamps by the rule above. `_connect` turns
+  a failed auto-update's `StackOperationError` into an exit-1 message.
 - **Missing version record fails closed** — nothing proves the readers (`can_auto_update=False`,
   remedy `zae-limiter deploy`).
 - **`--no-aggregator` gets no exemption in the gate** — the record cannot say the aggregator
