@@ -550,6 +550,17 @@ limiter = RateLimiter(repository=repo)
 
 `SyncRepository.connect()` is generated from the async source with the same signature.
 
+**The CLI splits the same way (#648).** Every command that only reads connects through
+`cli._connect_read_only()` — `connect()` semantics built on `_open_read_only()` (#646), with
+one difference: a Lambda behind the client is **not** an error for a plain read (`entity
+get-limits`, `audit list`, `namespace list`, …), which does not use the Lambdas and leaves them
+alone. `limits plan` / `limits diff` pass `require_current_lambdas=` and refuse it (also an
+unknown `lambda_version`), because the provisioner does the planning. A missing stack or
+namespace exits 1 naming `deploy` / `namespace register`; a client below `client_min_version`
+is refused as everywhere else. Only commands that intend to write keep `cli._connect()` →
+`open()`, so `rg "Repository.open\(" src/zae_limiter/cli.py src/zae_limiter/limits_cli.py`
+matches write paths only — keep it that way when adding a command.
+
 #### RepositoryBuilder (Infrastructure Provisioning)
 
 Use `Repository.builder()` for enterprise infrastructure provisioning (like `terraform deploy`):
