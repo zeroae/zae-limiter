@@ -339,6 +339,45 @@ Under an old writer, then: a backward `rf` on a marked item leaves `ws <= wa`, s
 again; a forward `rf` leaves `ws > wa`, so the window rolls once and `wa` catches up. Either way a
 shard rolls exactly once per window.
 
+**A late roll must not forgive what was spent while it was pending.** Between a fan-out landing
+(`ws > wa`) and the pass that applies it, the shard still holds the ended window's leftover. A
+v0.15 fleet never spends it — the fan-out stamps `vu = 0` — but an old writer re-stamps or REMOVEs
+`vu`, and then the fast path (and a consumption-only retry whose `rf` lock an old write took)
+spends the leftover inside the new window. A roll that *sets* the balance to the share
+(`ADD eff_cp − tk_obs`) then forgives every one of those debits: reproduced at 13 admitted
+against a quota of 10 on one window. Two fixes were weighed:
+
+| Option | What it does | Verdict |
+|---|---|---|
+| **(c) Zero the leftover** in the fan-out (`SET b_{n}_tk = 0`) | Nothing left to spend before the roll | **Rejected.** A zero-estimate lease (`consume={"session": 0}` passes `tk >= 0` at `tk = 0`) followed by `adjust()` puts the shard in debt, and the roll's SET forgives it — unbounded by the share. It also misses the unapplied shard no fan-out ever reaches: an aggregator Path 2 clone of an unapplied shard 0 is created holding a transferred leftover. Racing the sibling's own rf-locked open only under-grants, so that half was sound |
+| **(a) Consumption snapshot** | The fan-out also SETs `b_{n}_wtc = if_not_exists(b_{n}_tc, 0)` — a path copy of the consumption counter at the instant the window lands. The roll targets `eff_cp − max(0, tc_obs − wtc)` instead of `eff_cp` | **Chosen** |
+
+Why (a) is exact: the target is independent of `tk`, so it does not matter what the pending shard
+spent from. Every debit on every path ADDs `tc` — the speculative write, the normal path, the
+consumption-only retry, `adjust` and rollback (a credit ADDs a negative `tc`), on v0.15 and on
+v0.14 alike (verified in v0.14.0's `speculative_consume` and `build_composite_adjust`); the #587
+reclaim clamp SETs `tk` alone and is a transfer, not a debit, so it rightly does not count. The
+rolled balance is therefore exactly what the shard would hold had it rolled at the instant the
+fan-out landed, then absorbed the same debits and credits. An ADD from a concurrent debit between
+the roll's read and its write commutes as it always has. The `max(0, …)` clamp means net credits
+since the snapshot (a lease from the old window rolling back) never lift the roll above
+`eff_cp`; a credit landing after the roll behaves as it does on any quota reset. Debits made
+after the snapshot from the old leftover are charged to the new window, which only under-admits.
+
+Writers of `wtc`: the fan-out (the only writer that leaves a shard unapplied on purpose) and the
+aggregator Path 2 clone, which resets `wtc = 0` beside `tc = 0` so a clone of an unapplied shard
+0 charges its own debits against the window it inherited. The opener, a create, a seed and the
+between-readings re-anchor all apply the window in the same write, so none needs one. Readers
+of it: the client roll (`BucketState.window_roll_target_milli`), the aggregator roll, and the two
+read-only views of a pending roll — the fast path's rejection check and `check_availability` —
+so none of them promises the share while it is partly spent. An unapplied shard with no `wtc` (an
+item written before this) rolls to `eff_cp`, as before. The one remaining unapplied state with
+no snapshot is an item without the `wa` marker whose `rf` an old writer stamped backward — only
+unreleased v0.15 builds wrote such items, and the first v0.15 write marks them.
+
+Cost: one number attribute per window limit per shard, written by the fan-out that already
+writes; no extra request anywhere.
+
 ## Consequences
 
 **Positive:**
