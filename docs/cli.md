@@ -37,8 +37,8 @@ The CLI respects standard AWS environment variables:
 
 Most data-access commands accept `--namespace` / `-N` to scope operations to a specific namespace. When omitted, operations default to the `"default"` namespace.
 
-!!! note "Namespace auto-registration"
-    Data-access commands internally use `Repository.open()`, which auto-registers the namespace if it doesn't exist yet. The `"default"` namespace is always registered automatically.
+!!! note "Namespace registration"
+    Commands that **write** (`set-*`, `delete-*`, `entity create`, `disable` / `enable` / `clear-disabled`, `limits apply`) register the namespace if it does not exist yet. Commands that only **read** never do: they exit 1 and name the register command (see [Read-Only Commands](#read-only-commands)).
 
 ```bash
 # Entity operations in a specific namespace
@@ -51,6 +51,44 @@ zae-limiter system set-defaults --namespace tenant-alpha -l rpm:5000
 zae-limiter usage list --namespace tenant-alpha
 zae-limiter audit list --namespace tenant-alpha
 ```
+
+## Read-Only Commands
+
+Commands that only read never change anything: they never deploy a stack, register a
+namespace, write the version record, or push Lambda code. When something they need is missing,
+they stop instead of creating it.
+
+| Command | Reads |
+|---------|-------|
+| `status`, `check`, `version`, `list` | Stack, table and version record |
+| `entity show`, `entity get-limits`, `entity list`, `entity list-resources` | One namespace |
+| `resource get-defaults`, `resource list`, `system get-defaults` | One namespace |
+| `audit list`, `usage list`, `usage summary` | One namespace |
+| `namespace list`, `namespace show`, `namespace orphans` | The namespace registry |
+| `limits plan`, `limits diff` | One namespace, through the provisioner Lambda |
+
+`status`, `check` and `version` report a missing stack or an out-of-date Lambda as part of their
+output. Every other read-only command stops with exit code 1:
+
+| Situation | Message |
+|-----------|---------|
+| Stack missing | `Error: Stack '<name>' not found in <region>. Deploy it with 'zae-limiter deploy -n <name>'.` |
+| Namespace missing | `Error: Namespace '<ns>' not found. Register it with 'zae-limiter namespace register <ns>'.` |
+| Client below the stack's minimum version | `Error: Version mismatch: ... Please upgrade.` |
+
+**Lambdas behind the client.** A plain read does not use the Lambdas, so it runs normally and
+leaves them alone. `limits plan` and `limits diff` hand the manifest to the provisioner Lambda,
+so they **require an up-to-date stack** and refuse otherwise, before invoking it:
+
+```
+Error: the stack's Lambdas run 0.14.0; this client is 0.15.0. Run 'zae-limiter upgrade -n my-app' first, then re-run the plan.
+```
+
+A stack whose Lambda version is unknown (no version record, or one written by a client that
+deployed no Lambda code) is refused the same way, as `run unknown`.
+
+Every other command intends to write and keeps its behaviour: `deploy` and `upgrade` provision
+and update, and the data commands that write register a missing namespace.
 
 ## Declarative Limits
 
@@ -148,6 +186,12 @@ limits:
 zae-limiter limits plan -n my-app -f limits.yaml
 ```
 
+`plan` is read-only: it never deploys the stack, registers the manifest's namespace, or updates
+the Lambdas. It needs a deployed stack, a registered namespace and **up-to-date Lambdas**; if
+the Lambdas are behind this client, run `zae-limiter upgrade -n my-app` first (see
+[Read-Only Commands](#read-only-commands)). A manifest for a new namespace can be applied
+directly — `limits apply` registers it.
+
 Output:
 ```
 Plan: 4 change(s)
@@ -183,6 +227,8 @@ Subsequent applies with a modified YAML file will show `~` for updates and `-` f
 # Show drift between YAML and live DynamoDB state
 zae-limiter limits diff -n my-app -f limits.yaml
 ```
+
+`diff` is read-only with the same requirements as `plan`.
 
 Output (when live state differs from YAML):
 ```

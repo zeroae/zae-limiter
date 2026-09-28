@@ -6,7 +6,7 @@ import asyncio
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 import click
 
@@ -47,9 +47,11 @@ async def _connect(
     Handles ValidationError and NamespaceNotFoundError with user-friendly messages.
     Always returns a valid Repository or exits with an error.
 
-    This goes through ``Repository.open()``, which provisions a missing stack,
-    registers a missing namespace and pushes Lambda code when the deployed
-    version is behind. Reporting commands must use :func:`_open_read_only`.
+    For commands that intend to write only. This goes through
+    ``Repository.open()``, which provisions a missing stack, registers a
+    missing namespace and pushes Lambda code when the deployed version is
+    behind. Every command that only reads uses :func:`_connect_read_only`
+    (or, for ``check``/``version``/``status``, :func:`_open_read_only`) (#648).
     """
     from .exceptions import (
         NamespaceNotFoundError,
@@ -85,12 +87,15 @@ async def _connect(
 
 
 def _open_read_only(name: str, region: str | None, endpoint_url: str | None) -> Repository:
-    """A Repository for the reporting commands (``check``, ``version``, ``status``) (#646).
+    """A Repository that cannot provision, for every read-only command (#646, #648).
+
+    ``check``, ``version`` and ``status`` use it directly; every other
+    read-only command goes through :func:`_connect_read_only`, which builds on it.
 
     Constructed directly rather than through ``open()``: nothing here resolves
     or registers a namespace, provisions a stack, writes the version record or
     updates a Lambda. With ``stack_options`` left unset, provisioning is
-    structurally impossible, and the commands' only I/O is
+    structurally impossible, and the reporting commands' only I/O is
     :func:`_read_version_record`. Compatibility — including a client below
     ``client_min_version`` (#638) — is judged from that record by the command
     itself, so it is reported rather than acted on.
@@ -115,6 +120,132 @@ async def _read_version_record(repo: Repository) -> dict[str, Any] | None:
         if e.response["Error"]["Code"] == "ResourceNotFoundException":
             return None
         raise
+
+
+async def _connect_read_only(
+    name: str,
+    region: str | None,
+    endpoint_url: str | None,
+    namespace: str | None = "default",
+    *,
+    require_current_lambdas: str | None = None,
+) -> Repository:
+    """A Repository for every command that does not intend to write (#648).
+
+    ``Repository.connect()`` semantics — never provisions, registers, writes
+    the version record or pushes Lambda code — with one difference: a Lambda
+    behind the client is not an error for a command that only reads the
+    table. ``connect()`` raises on it because an application may need the
+    newer Lambda; ``entity get-limits`` does not. Built on
+    :func:`_open_read_only`, the mechanism ``check``/``version``/``status``
+    use (#646), so there is one read-only path, not two.
+
+    Every refusal prints ``Error: ...`` and exits 1 before anything is read
+    from the namespace:
+
+    - **Stack missing** (the table does not exist): names the deploy command.
+    - **Client below the stack's ``client_min_version``** (#638), or a
+      schema that needs migration: refused, as ``connect()`` does. Nothing
+      else about the versions is refused — an unparseable client or schema
+      version (a checkout without tags builds ``0.1.devN+g…``) passes, as it
+      does through ``connect()``.
+    - **Lambdas behind the client**, only when ``require_current_lambdas``
+      names the command (``"plan"``/``"diff"``): those hand the manifest to
+      the provisioner, and only a current one applies the reader-version
+      gate (#638). An unknown ``lambda_version`` — no version record, or a
+      record stamped by a client that deployed no Lambda code — is not
+      current either. Plain reads proceed and change nothing.
+    - **Namespace missing** (``namespace`` given and not registered): names
+      the register command. ``namespace=None`` is for commands that read the
+      namespace registry itself and need no namespace.
+
+    Args:
+        name: Stack name.
+        region: AWS region, or None for the boto3 default.
+        endpoint_url: Custom endpoint (e.g. LocalStack).
+        namespace: Namespace to resolve, or None to stay at stack level.
+        require_current_lambdas: The command to name in the "re-run the ..."
+            advice when the stack's Lambdas must be current; None for plain
+            reads.
+    """
+    from botocore.exceptions import ClientError
+
+    from . import __version__
+    from .exceptions import VersionMismatchError
+    from .version import InfrastructureVersion, check_compatibility
+
+    repo = _open_read_only(name, region, endpoint_url)
+
+    def _refuse(message: str) -> NoReturn:
+        click.echo(f"Error: {message}", err=True)
+        sys.exit(1)
+
+    try:
+        try:
+            record = await repo.get_version_record()
+        except ClientError as e:
+            if e.response["Error"]["Code"] != "ResourceNotFoundException":
+                raise
+            client = await repo._get_client()
+            where = region or client.meta.region_name or "the default region"
+            _refuse(
+                f"Stack '{name}' not found in {where}. "
+                f"Deploy it with 'zae-limiter deploy -n {name}'."
+            )
+
+        lambda_version = record.get("lambda_version") if record else None
+        lambdas_current = False
+        if record is not None:
+            repo._remember_lambda_version(lambda_version)
+            infra_version = InfrastructureVersion.from_record(record)
+            compat = check_compatibility(__version__, infra_version)
+            if compat.requires_client_upgrade:
+                _refuse(
+                    str(
+                        VersionMismatchError(
+                            client_version=__version__,
+                            schema_version=infra_version.schema_version,
+                            lambda_version=infra_version.lambda_version,
+                            message=compat.message,
+                            can_auto_update=False,
+                        )
+                    )
+                )
+            if compat.requires_schema_migration:
+                _refuse(compat.message)
+            # Any other incompatibility is an unparseable client or schema
+            # version (a build from a checkout without tags is
+            # ``0.1.devN+g…``). ``connect()`` accepts those, and so does a
+            # read: nothing here writes, so there is nothing to protect.
+            # An unparseable client version stops check_compatibility before
+            # it compares the Lambda, so a stamped Lambda reads as current:
+            # plan/diff refuse only a Lambda known to be behind, or unknown.
+            lambdas_current = lambda_version is not None and not compat.requires_lambda_update
+
+        if require_current_lambdas is not None and not lambdas_current:
+            _refuse(
+                f"the stack's Lambdas run {lambda_version or 'unknown'}; "
+                f"this client is {__version__}. Run 'zae-limiter upgrade -n {name}' first, "
+                f"then re-run the {require_current_lambdas}."
+            )
+
+        if namespace is not None:
+            namespace_id = await repo._resolve_namespace(namespace)
+            if namespace_id is None:
+                _refuse(
+                    f"Namespace '{namespace}' not found. "
+                    f"Register it with 'zae-limiter namespace register {namespace}'."
+                )
+            repo._namespace_id = namespace_id
+            repo._namespace_name = namespace
+            repo._reinitialize_config_cache(namespace_id)
+    except BaseException:
+        await repo.close()
+        raise
+
+    repo._auto_update = False
+    repo._builder_initialized = True
+    return repo
 
 
 @click.group()
@@ -1821,7 +1952,7 @@ def audit_list(
     """
 
     async def _list() -> None:
-        repo = await _connect(name, region, endpoint_url, namespace)
+        repo = await _connect_read_only(name, region, endpoint_url, namespace)
         try:
             events = await repo.get_audit_events(
                 entity_id=entity_id,
@@ -2004,7 +2135,7 @@ def usage_list(
         sys.exit(1)
 
     async def _list() -> None:
-        repo = await _connect(name, region, endpoint_url, namespace)
+        repo = await _connect_read_only(name, region, endpoint_url, namespace)
         try:
             snapshots, next_key = await repo.get_usage_snapshots(
                 entity_id=entity_id,
@@ -2178,7 +2309,7 @@ def usage_summary(
         sys.exit(1)
 
     async def _summary() -> None:
-        repo = await _connect(name, region, endpoint_url, namespace)
+        repo = await _connect_read_only(name, region, endpoint_url, namespace)
         try:
             summary = await repo.get_usage_summary(
                 entity_id=entity_id,
@@ -2614,7 +2745,7 @@ def resource_get_defaults(
     from .exceptions import ValidationError
 
     async def _get() -> None:
-        repo = await _connect(name, region, endpoint_url, namespace)
+        repo = await _connect_read_only(name, region, endpoint_url, namespace)
         try:
             limits = await repo.get_resource_defaults(resource_name)
             if not limits:
@@ -2956,7 +3087,7 @@ def resource_list(
     """
 
     async def _list() -> None:
-        repo = await _connect(name, region, endpoint_url, namespace)
+        repo = await _connect_read_only(name, region, endpoint_url, namespace)
         try:
             resources = await repo.list_resources_with_defaults()
             if not resources:
@@ -3151,7 +3282,7 @@ def system_get_defaults(
     from .exceptions import ValidationError
 
     async def _get() -> None:
-        repo = await _connect(name, region, endpoint_url, namespace)
+        repo = await _connect_read_only(name, region, endpoint_url, namespace)
         try:
             limits, on_unavailable = await repo.get_system_defaults()
             if not limits and not on_unavailable:
@@ -3428,7 +3559,7 @@ def entity_show(
     """
 
     async def _show() -> None:
-        repo = await _connect(name, region, endpoint_url, namespace)
+        repo = await _connect_read_only(name, region, endpoint_url, namespace)
         try:
             entity = await repo.get_entity(entity_id)
             if entity is None:
@@ -3621,7 +3752,7 @@ def entity_get_limits(
     from .exceptions import ValidationError
 
     async def _get() -> None:
-        repo = await _connect(name, region, endpoint_url, namespace)
+        repo = await _connect_read_only(name, region, endpoint_url, namespace)
         try:
             limits = await repo.get_limits(entity_id, resource=resource_name)
             if not limits:
@@ -4014,7 +4145,7 @@ def entity_list(
     from .exceptions import ValidationError
 
     async def _list() -> None:
-        repo = await _connect(name, region, endpoint_url, namespace)
+        repo = await _connect_read_only(name, region, endpoint_url, namespace)
         try:
             cursor: str | None = None
             total_count = 0
@@ -4099,7 +4230,7 @@ def entity_list_resources(
     """
 
     async def _list() -> None:
-        repo = await _connect(name, region, endpoint_url, namespace)
+        repo = await _connect_read_only(name, region, endpoint_url, namespace)
         try:
             resources = await repo.list_resources_with_entity_configs()
             if not resources:
@@ -4245,7 +4376,7 @@ def namespace_list(
     """
 
     async def _list() -> None:
-        repo = await _connect(name, region, endpoint_url)
+        repo = await _connect_read_only(name, region, endpoint_url, namespace=None)
         try:
             namespaces = await repo.list_namespaces()
             if not namespaces:
@@ -4311,11 +4442,15 @@ def namespace_show(
     """
 
     async def _show() -> None:
-        repo = await _connect(name, region, endpoint_url)
+        repo = await _connect_read_only(name, region, endpoint_url, namespace=None)
         try:
             ns = await repo.get_namespace(namespace_name)
             if not ns:
-                click.echo(f"Namespace '{namespace_name}' not found.", err=True)
+                click.echo(
+                    f"Error: Namespace '{namespace_name}' not found. Register it with "
+                    f"'zae-limiter namespace register {namespace_name}'.",
+                    err=True,
+                )
                 sys.exit(1)
 
             click.echo(f"Namespace:    {ns['name']}")
@@ -4510,7 +4645,7 @@ def namespace_orphans(
     """
 
     async def _orphans() -> None:
-        repo = await _connect(name, region, endpoint_url)
+        repo = await _connect_read_only(name, region, endpoint_url, namespace=None)
         try:
             orphans = await repo.list_orphan_namespaces()
             if not orphans:

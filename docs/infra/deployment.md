@@ -626,6 +626,11 @@ zae-limiter limits apply -n my-app -f limits.yaml
 zae-limiter limits diff -n my-app -f limits.yaml
 ```
 
+`plan` and `diff` are read-only: they never deploy the stack, register the manifest's
+namespace, or update the Lambdas. They exit 1 when the stack or namespace is missing, or when
+the stack's Lambdas are behind the client — run `zae-limiter upgrade -n my-app` first. `apply`
+registers a new namespace itself (see [Read-Only Commands](../cli.md#read-only-commands)).
+
 The provisioner tracks which items it manages in a `#PROVISIONER` state record. When you remove an item from the manifest and re-apply, the provisioner deletes it from DynamoDB. Items created outside the manifest (via `set-defaults` or `set-limits` CLI commands) are not affected.
 
 ### Multi-Namespace
