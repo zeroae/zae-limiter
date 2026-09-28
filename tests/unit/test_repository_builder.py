@@ -934,6 +934,54 @@ class TestOpen:
                 await Repository.open(stack="test-open-access-denied")
 
     @pytest.mark.asyncio
+    async def test_open_refuses_a_tagless_client_below_the_ratcheted_minimum(self, mock_dynamodb):
+        """A tagless CI build's ``0.1.devN+g<sha>`` (#655) parses as the real
+        version ``0.1.0-dev``, so a stack whose ``client_min_version`` was
+        raised (the ``reset_after`` ratchet, #638) refuses ``open()`` exactly
+        as it refuses an old tagged client — option A, fail closed."""
+        from zae_limiter.exceptions import VersionMismatchError
+        from zae_limiter.version import get_schema_version
+
+        setup = await _create_deployed_table("test-open-tagless", version_record=False)
+        await setup.set_version_record(
+            schema_version=get_schema_version(),
+            lambda_version="0.15.0",
+            client_min_version="0.15.0",
+            updated_by="test",
+        )
+        await setup.close()
+
+        with patch.object(zae_limiter, "__version__", "0.1.dev1+g55b199090"):
+            with pytest.raises(VersionMismatchError) as exc_info:
+                await Repository.open(stack="test-open-tagless")
+        assert "below minimum required version 0.15.0" in str(exc_info.value)
+        assert exc_info.value.can_auto_update is False
+
+    @pytest.mark.asyncio
+    async def test_open_allows_a_tagless_client_on_a_default_stack(self, mock_dynamodb):
+        """A stack whose minimum was never raised (the default ``0.0.0``)
+        does not refuse a tagless client — its very low read of
+        ``__version__`` never looks newer than the deployed Lambda, so
+        ``open()`` neither refuses nor pushes any Lambda code."""
+        from zae_limiter.version import get_schema_version
+
+        setup = await _create_deployed_table("test-open-tagless-default", version_record=False)
+        await setup.set_version_record(
+            schema_version=get_schema_version(),
+            lambda_version="0.15.0",
+            client_min_version="0.0.0",
+            updated_by="test",
+        )
+        await setup.close()
+
+        with patch.object(zae_limiter, "__version__", "0.1.dev1+g55b199090"):
+            repo = await Repository.open(stack="test-open-tagless-default")
+            try:
+                assert repo.namespace_name == "default"
+            finally:
+                await repo.close()
+
+    @pytest.mark.asyncio
     async def test_open_resolves_stack_from_env(self, mock_dynamodb):
         """open() resolves stack name from ZAEL_STACK env var."""
         await _create_table("test-env-stack")
@@ -1274,8 +1322,9 @@ class TestConnect:
         This used to be the tagless-checkout form ``0.1.devN+g<sha>``, which
         ``parse_version()`` rejected outright (#655). It parses now (as
         ``0.1.0-dev``), so this test uses a string that is genuinely
-        unparseable instead; the tagless-checkout case is covered by
-        ``test_connect_detects_real_mismatch_for_tagless_ci_client`` below.
+        unparseable instead; the tagless-checkout case is covered below by
+        ``test_connect_refuses_a_tagless_client_below_the_ratcheted_minimum``
+        and ``test_connect_allows_a_tagless_client_on_a_default_stack``.
         """
         setup = await _create_deployed_table("test-conn-devver", version_record=False)
         await setup.set_version_record(
@@ -1294,26 +1343,53 @@ class TestConnect:
                 await repo.close()
 
     @pytest.mark.asyncio
-    async def test_connect_detects_real_mismatch_for_tagless_ci_client(self, mock_dynamodb):
-        """A tagless CI build's ``0.1.devN+g<sha>`` (#655) now parses as a real
-        version (``0.1.0-dev``) rather than being silently waved through as
-        "invalid", so connect() reports an actual, actionable mismatch when
-        the deployed Lambda is older than what that client reads as.
+    async def test_connect_refuses_a_tagless_client_below_the_ratcheted_minimum(
+        self, mock_dynamodb
+    ):
+        """A tagless CI build's ``0.1.devN+g<sha>`` (#655) parses as the real
+        version ``0.1.0-dev`` rather than being silently waved through as
+        "invalid" — option A, fail closed. A stack whose ``client_min_version``
+        was raised (the ``reset_after`` ratchet, #638) refuses it exactly as it
+        refuses an old tagged client: ``git fetch --tags`` or a tagged build
+        is the fix, not a code change.
         """
         from zae_limiter.exceptions import VersionMismatchError
 
         setup = await _create_deployed_table("test-conn-tagless", version_record=False)
         await setup.set_version_record(
             schema_version=get_schema_version(),
-            lambda_version="0.0.1",
+            lambda_version="0.15.0",
+            client_min_version="0.15.0",
+            updated_by="test",
+        )
+        await setup.close()
+
+        with patch.object(zae_limiter, "__version__", "0.1.dev1+g55b199090"):
+            with pytest.raises(VersionMismatchError) as exc_info:
+                await Repository.connect(stack="test-conn-tagless")
+        assert "below minimum required version 0.15.0" in str(exc_info.value)
+        assert exc_info.value.can_auto_update is False
+
+    @pytest.mark.asyncio
+    async def test_connect_allows_a_tagless_client_on_a_default_stack(self, mock_dynamodb):
+        """A stack whose minimum was never raised (the default ``0.0.0``)
+        does not refuse a tagless client — its very low read is unaffected
+        by the ``reset_after`` ratchet, so connect() proceeds normally."""
+        setup = await _create_deployed_table("test-conn-tagless-default", version_record=False)
+        await setup.set_version_record(
+            schema_version=get_schema_version(),
+            lambda_version="0.15.0",
             client_min_version="0.0.0",
             updated_by="test",
         )
         await setup.close()
 
         with patch.object(zae_limiter, "__version__", "0.1.dev1+g55b199090"):
-            with pytest.raises(VersionMismatchError):
-                await Repository.connect(stack="test-conn-tagless")
+            repo = await Repository.connect(stack="test-conn-tagless-default")
+            try:
+                assert repo.namespace_name == "default"
+            finally:
+                await repo.close()
 
     @pytest.mark.asyncio
     async def test_connect_reraises_non_resource_not_found_errors(self, mock_dynamodb):

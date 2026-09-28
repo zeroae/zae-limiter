@@ -37,6 +37,8 @@ BEHIND = "0.15.0"
 # tests below still exercise the "cannot tell" paths through this client
 # rather than any actual parse failure.
 UNTAGGED = "0.1.dev1+gabc"
+# Genuinely unparseable — no digits at all — unlike UNTAGGED above (#655).
+GARBAGE = "not-a-version"
 
 # Commands that read one namespace. Each takes -N; the entity/resource
 # arguments name things the populated table carries (or reports as absent
@@ -220,6 +222,19 @@ class TestPlainReadsNeverProvision:
         assert "below minimum required version 0.16.0" in result.output
         _assert_nothing_written(stack_manager, before)
 
+    def test_a_tagless_client_below_the_minimum_is_still_refused(self, mock_dynamodb) -> None:
+        """#655: a tagless checkout's client reads as ``0.1.0-dev`` — a real,
+        comparable version, not "unparseable" — so #638's refusal applies to
+        it exactly as it does to a real old client above."""
+        asyncio.run(_setup(namespace=True, record=_record(CLIENT, client_min_version="0.16.0")))
+        before = asyncio.run(_scan())
+
+        result, stack_manager = _invoke(["resource", "list"], client=UNTAGGED)
+
+        assert result.exit_code == 1, result.output
+        assert "below minimum required version 0.16.0" in result.output
+        _assert_nothing_written(stack_manager, before)
+
     def test_an_incompatible_schema_is_refused(self, mock_dynamodb) -> None:
         asyncio.run(_setup(namespace=True, record=_record(CLIENT, schema_version="9.0.0")))
         before = asyncio.run(_scan())
@@ -231,16 +246,36 @@ class TestPlainReadsNeverProvision:
         _assert_nothing_written(stack_manager, before)
 
 
-class TestUnparseableVersionsDoNotRefuse:
-    """Only the refusals the issue names refuse; a version nobody can parse is
-    not one of them, exactly as it is not for ``Repository.connect()``."""
+class TestTaglessAndUnparseableVersionsDoNotRefuseReads:
+    """Only the refusals the issue names refuse. A tagless client reads as a
+    real, low version since #655 (option A: it *is* subject to the
+    ``client_min_version`` refusal above, on a stack whose minimum was
+    raised — it is never "unparseable"). A version nobody can parse at all
+    is a separate, narrower case, and is not refused either, exactly as it
+    is not for ``Repository.connect()``."""
 
     @pytest.mark.parametrize("args", PLAIN_READS, ids=_ids(PLAIN_READS))
-    def test_an_untagged_client_reads_normally(self, mock_dynamodb, args) -> None:
+    def test_a_tagless_client_reads_normally(self, mock_dynamodb, args) -> None:
+        """On a stack whose minimum was never raised, a tagless client's low
+        read of itself is not below anything, so a plain read is unaffected."""
         asyncio.run(_setup(namespace=True, record=_record(BEHIND)))
         before = asyncio.run(_scan())
 
         result, stack_manager = _invoke(args, client=UNTAGGED)
+
+        assert result.exit_code == 0, result.output
+        assert "Error" not in result.output
+        _assert_nothing_written(stack_manager, before)
+
+    @pytest.mark.parametrize("args", PLAIN_READS, ids=_ids(PLAIN_READS))
+    def test_a_genuinely_unparseable_client_reads_normally(self, mock_dynamodb, args) -> None:
+        """A version that is not the tagless form and cannot be parsed at
+        all (#655) still passes through unrefused, exactly as it did before
+        the tagless form became parseable."""
+        asyncio.run(_setup(namespace=True, record=_record(BEHIND)))
+        before = asyncio.run(_scan())
+
+        result, stack_manager = _invoke(args, client=GARBAGE)
 
         assert result.exit_code == 0, result.output
         assert "Invalid client version" not in result.output
@@ -255,7 +290,7 @@ class TestUnparseableVersionsDoNotRefuse:
         assert result.exit_code == 0, result.output
         _assert_nothing_written(stack_manager, before)
 
-    def test_an_untagged_client_still_gets_the_missing_stack_message(self, mock_dynamodb) -> None:
+    def test_a_tagless_client_still_gets_the_missing_stack_message(self, mock_dynamodb) -> None:
         result, stack_manager = _invoke(["resource", "list"], client=UNTAGGED)
 
         assert result.exit_code == 1, result.output
