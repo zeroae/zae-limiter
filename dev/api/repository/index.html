@@ -5347,6 +5347,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/142-hide-reset-after-config/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-142 A reset_after limit's config is hidden from pre-v0.15 readers
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -10510,7 +10538,7 @@ item carries (ADR-140). <code>None</code> stamps <code>now_ms</code>.</p>
 
 
 <a href="#zae_limiter.repository.Repository.build_composite_normal" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_normal</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consumed</span><span class="p">,</span> <span class="n">refill_amounts</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="n">expected_rf</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">vu</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">clear_vu</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">windows</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">rf_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">window_lengths</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">seeds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">seed_shard_count</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_normal</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consumed</span><span class="p">,</span> <span class="n">refill_amounts</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="n">expected_rf</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">vu</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">clear_vu</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">windows</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">rf_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">window_lengths</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">seeds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">seed_shard_count</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">applied_windows</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -10836,6 +10864,32 @@ quota, and the next pass reads the new count. <code>&lt;=</code> rather
 than <code>=</code>: a share sized for a <em>higher</em> count (read off a
 sibling the item has not caught up with) is the smaller one,
 so only growth past it is unsafe.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>applied_windows</code>
+            </td>
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="int">int</span>] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Limit name -&gt; the window start this write leaves
+the limit's balance reflecting, stamped as <code>b_{name}_wa</code>
+(#640). Every window limit on the write appears, whether this
+pass opened, rolled, seeded or merely carried its window — the
+last is what marks an item written before the marker. Always
+the <code>ws</code> <em>value</em> the pass read or opened, never a copy of
+the <code>ws</code> path: a rollover fan-out can move <code>ws</code> between
+this pass's read and its write without touching <code>rf</code>, and
+that window has to stay unapplied until a pass rolls it. No
+condition term is needed: the <code>rf</code> lock already serialises
+every other writer of the marker.</p>
               </div>
             </td>
             <td>
@@ -14304,8 +14358,9 @@ only when <code>shard_count &gt; 1</code>, on each slow pass until the seed land
         <p>Read one shard's duration-window starts, to seed a shard being created (ADR-140).</p>
 <p>Shard 0 by default, because :meth:<code>bump_shard_count</code> already treats it
 as the source of truth for <code>shard_count</code>. A created shard inherits
-<code>ws</code> verbatim and sets <code>rf = now</code>, so <code>ws &gt; rf</code> is <strong>false</strong> on
-the new item and it does not immediately re-roll itself: it joins the
+<code>ws</code> verbatim and stamps it as applied (<code>wa = ws</code>, #640), so
+<code>ws &gt; wa</code> is <strong>false</strong> on the new item and it does not immediately
+re-roll itself: it joins the
 window in progress rather than opening one. Whether the window read
 here is still <em>live</em> is the caller's decision, against the <code>rsa</code> of
 the config it resolved — this returns the stored start and nothing
@@ -17204,7 +17259,7 @@ image), or None to read the entity cache</p>
 
 
 <a href="#zae_limiter.repository_protocol.RepositoryProtocol.build_composite_normal" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_normal</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consumed</span><span class="p">,</span> <span class="n">refill_amounts</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="n">expected_rf</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">vu</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">clear_vu</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">windows</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">rf_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">window_lengths</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">seeds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">seed_shard_count</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_composite_normal</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consumed</span><span class="p">,</span> <span class="n">refill_amounts</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="n">expected_rf</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">vu</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">clear_vu</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">windows</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">rf_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">window_lengths</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">seeds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">seed_shard_count</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">applied_windows</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -17459,6 +17514,25 @@ rather than <code>ADD</code>ed. Must not also appear in <code>consumed</code>.</
 pins <code>attribute_not_exists(shard_count) OR shard_count &lt;=
 :sized</code> so a racing doubling cannot leave an oversized quota
 share for the fast path to spend (#633).</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>applied_windows</code>
+            </td>
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="int">int</span>] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Limit name -&gt; the window start the write leaves
+that limit's balance reflecting, stamped as <code>b_{name}_wa</code>
+(#640) for every window limit on the write. The value read or
+opened, never a copy of the <code>ws</code> path.</p>
               </div>
             </td>
             <td>

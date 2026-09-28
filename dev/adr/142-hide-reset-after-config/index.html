@@ -12,13 +12,11 @@
         <meta name="author" content="ZeroAE">
       
       
-        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/dev/adr/115-add-based-writes-lazy-refill/">
+        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/dev/adr/142-hide-reset-after-config/">
       
       
-        <link rel="prev" href="../114-composite-bucket-items/">
+        <link rel="prev" href="../141-reset-after-version-gate/">
       
-      
-        <link rel="next" href="../116-iam-role-naming/">
       
       
         
@@ -29,7 +27,7 @@
     
     
       
-        <title>ADR-115 ADD-Based Writes - zae-limiter</title>
+        <title>ADR-142 A reset_after limit's config is hidden from pre-v0.15 readers - zae-limiter</title>
       
     
     
@@ -84,7 +82,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#adr-115-add-based-writes-with-lazy-refill" class="md-skip">
+        <a href="#adr-142-a-reset_after-limits-config-is-hidden-from-pre-v015-readers" class="md-skip">
           Skip to content
         </a>
       
@@ -123,7 +121,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              ADR-115 ADD-Based Writes
+              ADR-142 A reset_after limit's config is hidden from pre-v0.15 readers
             
           </span>
         </div>
@@ -2541,20 +2539,18 @@
                 
   
   
-    
   
   
-  
     
     
     
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_6" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_6" >
         
           
           <label class="md-nav__link" for="__nav_6_6" id="__nav_6_6_label" tabindex="0">
@@ -2575,7 +2571,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_6_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_6_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_6_6">
             <span class="md-nav__icon md-icon"></span>
             
@@ -2618,37 +2614,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    ADR-115 ADD-Based Writes
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../115-add-based-writes-lazy-refill/" class="md-nav__link">
         
   
   
@@ -2664,109 +2633,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#context" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Context
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#decision" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Decision
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#consequences" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Consequences
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#alternatives-considered" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Alternatives Considered
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Alternatives Considered">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#putitem-with-optimistic-locking-version-counter" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        PutItem with optimistic locking (version counter)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#per-limit-refill-timestamps" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Per-limit refill timestamps
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#add-for-consumption-no-optimistic-lock" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        ADD for consumption, no optimistic lock
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -3173,18 +3039,20 @@
                 
   
   
+    
   
   
+  
     
     
     
     
     
-    <li class="md-nav__item md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_10" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_10" checked>
         
           
           <label class="md-nav__link" for="__nav_6_10" id="__nav_6_10_label" tabindex="0">
@@ -3205,7 +3073,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_10_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_10_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_6_10">
             <span class="md-nav__icon md-icon"></span>
             
@@ -3528,10 +3396,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../142-hide-reset-after-config/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-142 A reset_after limit's config is hidden from pre-v0.15 readers
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -3547,6 +3442,131 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#context" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Context
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#decision" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Decision
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#consequences" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Consequences
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#alternatives-considered" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Alternatives Considered
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Alternatives Considered">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#hide-the-bucket-attributes-as-well" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hide the bucket attributes as well
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#a-hidden-field-suffix-under-the-l_-prefix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A hidden field suffix under the l_ prefix
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#a-separate-config-item-per-level-for-session-limits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A separate config item per level for session limits
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#one-opaque-map-attribute-per-session-limit" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        One opaque map attribute per session limit
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#leave-the-configuration-visible-and-upgrade-every-client-first" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Leave the configuration visible and upgrade every client first
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -3639,10 +3659,10 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#putitem-with-optimistic-locking-version-counter" class="md-nav__link">
+  <a href="#hide-the-bucket-attributes-as-well" class="md-nav__link">
     <span class="md-ellipsis">
       
-        PutItem with optimistic locking (version counter)
+        Hide the bucket attributes as well
       
     </span>
   </a>
@@ -3650,10 +3670,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#per-limit-refill-timestamps" class="md-nav__link">
+  <a href="#a-hidden-field-suffix-under-the-l_-prefix" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Per-limit refill timestamps
+        A hidden field suffix under the l_ prefix
       
     </span>
   </a>
@@ -3661,10 +3681,32 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#add-for-consumption-no-optimistic-lock" class="md-nav__link">
+  <a href="#a-separate-config-item-per-level-for-session-limits" class="md-nav__link">
     <span class="md-ellipsis">
       
-        ADD for consumption, no optimistic lock
+        A separate config item per level for session limits
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#one-opaque-map-attribute-per-session-limit" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        One opaque map attribute per session limit
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#leave-the-configuration-visible-and-upgrade-every-client-first" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Leave the configuration visible and upgrade every client first
       
     </span>
   </a>
@@ -3695,7 +3737,7 @@
 
 
   
-    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/adr/115-add-based-writes-lazy-refill.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/adr/142-hide-reset-after-config.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -3703,58 +3745,66 @@
   
 
 
-<h1 id="adr-115-add-based-writes-with-lazy-refill">ADR-115: ADD-Based Writes with Lazy Refill<a class="headerlink" href="#adr-115-add-based-writes-with-lazy-refill" title="Permanent link">&para;</a></h1>
-<p><strong>Status:</strong> Accepted
-<strong>Date:</strong> 2026-01-28
-<strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/248">#248</a>
-<strong>Depends on:</strong> <a href="../114-composite-bucket-items/">ADR-114</a></p>
+<h1 id="adr-142-a-reset_after-limits-config-is-hidden-from-pre-v015-readers">ADR-142: A reset_after limit's config is hidden from pre-v0.15 readers<a class="headerlink" href="#adr-142-a-reset_after-limits-config-is-hidden-from-pre-v015-readers" title="Permanent link">&para;</a></h1>
+<p><strong>Status:</strong> Proposed
+<strong>Date:</strong> 2026-09-27
+<strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/640">#640</a>
+<strong>Related:</strong> <a href="../139-duration-reset-windows/">ADR-139</a>, <a href="../140-duration-window-shard-coherence/">ADR-140</a>, <a href="../141-reset-after-version-gate/">ADR-141</a>, ADR-137, ADR-114, <a href="https://github.com/zeroae/zae-limiter/issues/638">#638</a></p>
 <h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
-<p>The current write pattern uses PutItem (full item replacement) inside
-TransactWriteItems. Under concurrent writes, the last writer overwrites previous
-writers' consumption and the <code>total_consumed_milli</code> counter — a lost update bug.
-Token balance and aggregator accuracy both degrade under contention.</p>
-<p>Refill is currently computed and stored in the token balance on each write. When
-two writers read the same state and both apply refill, the winning PutItem
-correctly reflects one refill window, but the losing writer's consumption is lost
-entirely. Separating refill from consumption in the write path would allow atomic
-consumption tracking independent of refill timing.</p>
-<p>The composite bucket item (ADR-114) provides a single item per entity+resource,
-enabling a shared refill timestamp that doubles as an optimistic lock for all
-limits simultaneously.</p>
+<p>A client predating <a href="../139-duration-reset-windows/">ADR-139</a> cannot reconstruct a <code>reset_after</code>
+limit: it reads a zero rate with no reset, which ADR-137 rejects, and loses the whole config
+level with it. Under <code>on_unavailable=block</code> every acquire on that level fails; under <code>allow</code> every
+acquire is admitted with no limiting at all, including the level's other limits.
+<a href="../141-reset-after-version-gate/">ADR-141</a> keeps the old aggregator and provisioner away, but
+nothing a newer build does can make an old client fail closed.</p>
+<p>Every pre-v0.15 config reader discovers limits by the <code>l_</code> attribute prefix alone, and none of
+them rejects an attribute it does not recognise. A limit stored under another prefix is therefore
+invisible to them, and they go on enforcing the rest of the level. Bucket attributes need no such
+treatment: old clients already read and rewrite a bucket carrying the session limit's attributes
+without error, and only the old aggregator mishandles them, which ADR-141 prevents.</p>
+<p>Hiding the limit lets old clients write buckets that carry a window, whose shared <code>rf</code> and <code>vu</code>
+they stamp from their own limits and clock. <a href="../140-duration-window-shard-coherence/">ADR-140</a>
+makes the window mechanism independent of both, and the #633 seed fills a shard an old client
+creates by transfer from its siblings. The storage mapping, readers and verification against
+v0.14.0 are in #640 and CLAUDE.md "Hidden config (#640)".</p>
 <h2 id="decision">Decision<a class="headerlink" href="#decision" title="Permanent link">&para;</a></h2>
-<p>Writers must use DynamoDB ADD to atomically decrement token balances and increment
-consumption counters. Stored <code>tk</code> must not be kept continuously refilled; every reader
-must compute effective tokens at read time as <code>min(stored_tk + elapsed * rate, capacity)</code>,
-and only a writer holding the <code>rf</code> lock may materialize that refill into <code>tk</code>. A single
-shared <code>rf</code> attribute must serve as both the refill baseline and the optimistic
-lock. The repository must implement four write paths: Create (PutItem with
-<code>attribute_not_exists</code>), Normal (ADD with refill+consumption, condition <code>rf =
-:expected</code>), Retry (ADD consumption only, condition <code>tk &gt;= :consumed</code> per limit),
-and Adjust (unconditional ADD, may go negative).</p>
+<p>A <code>reset_after</code> limit's config attributes must be stored under the <code>w_</code> prefix (<code>w_{name}_*</code>),
+which pre-v0.15 readers do not read, and every v0.15 config reader must read both prefixes and
+must treat a name stored under both, or a <code>w_</code> limit without its window length, as a corrupt item.</p>
+<p><strong>Owner decision (2026-09-27):</strong> accepted that under <code>on_unavailable="block"</code> a pre-v0.15 client
+enforces every other limit and skips only the session limit, rather than refusing the level.</p>
 <h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>
 <p><strong>Positive:</strong>
-- No lost updates: concurrent consumptions are correctly counted via atomic ADD
-- No double refill: single <code>rf</code> lock ensures only one writer claims each refill window
-- Retry requires no re-read (1 WCU, consumption-only ADD)
-- Negative tokens prevented on acquire (condition <code>tk &gt;= :consumed</code>); allowed on adjust by design
-- Aggregator sees correct consumption counters regardless of contention
-- Lock condition is always <code>rf = :expected</code> regardless of limit count</p>
+- A pre-v0.15 client keeps enforcing every other limit on a level that holds a session limit,
+  under either <code>on_unavailable</code> mode, instead of failing the level or admitting it unlimited.
+- A level holding only the session limit reads as empty to it, so it falls through to the next
+  level's limits rather than to none.
+- The prefix is a storage mapping only: nothing above the serialiser sees it, and a level written
+  under <code>l_</code> by an unreleased build is read as before and moves to <code>w_</code> on its next write.</p>
 <p><strong>Negative:</strong>
-- Four write paths increase repository complexity
-- Retry path may reject requests that were initially approved on stale data
-- Under high contention (~500ms window), refill is slightly under-counted (limiter becomes more restrictive, not less)
-- Lease adjust becomes the only path that can push tokens negative, changing the current invariant</p>
+- Old clients do not enforce the session limit for the requests they serve; under <code>block</code> that
+  replaces an outage with silent non-enforcement, bounded by their share of traffic.
+- An old client stamps a bucket's TTL from the limits it resolves, which can be shorter than the
+  window's recovery horizon; a bucket swept mid-window restarts its window part-way, admitting at
+  most one extra allowance.
+- An old admin tool rewrites a whole level from the limits it can see, so it silently drops the
+  hidden limit from config and leaves its balance on the buckets. Admin tooling must be upgraded
+  first.
+- An old param sync can change the item-level schedule a session limit without its own override
+  inherits, and an old client's shard creation remains exposed to the #642 residual.</p>
 <h2 id="alternatives-considered">Alternatives Considered<a class="headerlink" href="#alternatives-considered" title="Permanent link">&para;</a></h2>
-<h3 id="putitem-with-optimistic-locking-version-counter">PutItem with optimistic locking (version counter)<a class="headerlink" href="#putitem-with-optimistic-locking-version-counter" title="Permanent link">&para;</a></h3>
-<p>Rejected because: full item replacement still loses concurrent writers'
-consumption — ADD is required for correct concurrent accounting.</p>
-<h3 id="per-limit-refill-timestamps">Per-limit refill timestamps<a class="headerlink" href="#per-limit-refill-timestamps" title="Permanent link">&para;</a></h3>
-<p>Rejected because: grows condition expression with limit count, risks partial
-refill window claims, and adds an attribute per limit. Single <code>rf</code> is simpler
-and free since all limits are updated on every acquire.</p>
-<h3 id="add-for-consumption-no-optimistic-lock">ADD for consumption, no optimistic lock<a class="headerlink" href="#add-for-consumption-no-optimistic-lock" title="Permanent link">&para;</a></h3>
-<p>Rejected because: without the <code>rf</code> lock, concurrent writers each compute and ADD
-refill independently, causing double-refill proportional to contention.</p>
+<h3 id="hide-the-bucket-attributes-as-well">Hide the bucket attributes as well<a class="headerlink" href="#hide-the-bucket-attributes-as-well" title="Permanent link">&para;</a></h3>
+<p>Rejected because: old clients already handle them, and only the old aggregator misreads them,
+which ADR-141 already keeps away.</p>
+<h3 id="a-hidden-field-suffix-under-the-l_-prefix">A hidden field suffix under the <code>l_</code> prefix<a class="headerlink" href="#a-hidden-field-suffix-under-the-l_-prefix" title="Permanent link">&para;</a></h3>
+<p>Rejected because: any suffix ending in the capacity field stays visible to the old discovery rule.</p>
+<h3 id="a-separate-config-item-per-level-for-session-limits">A separate config item per level for session limits<a class="headerlink" href="#a-separate-config-item-per-level-for-session-limits" title="Permanent link">&para;</a></h3>
+<p>Rejected because: it breaks the atomic full replace of a level and adds a read to every cache
+miss.</p>
+<h3 id="one-opaque-map-attribute-per-session-limit">One opaque map attribute per session limit<a class="headerlink" href="#one-opaque-map-attribute-per-session-limit" title="Permanent link">&para;</a></h3>
+<p>Rejected because: it violates the flat-schema rule of ADR-111.</p>
+<h3 id="leave-the-configuration-visible-and-upgrade-every-client-first">Leave the configuration visible and upgrade every client first<a class="headerlink" href="#leave-the-configuration-visible-and-upgrade-every-client-first" title="Permanent link">&para;</a></h3>
+<p>Rejected because: an old client under <code>allow</code> then admits a whole level with no limiting at all.</p>
 
 
 
@@ -3791,7 +3841,7 @@ refill independently, causing double-refill proportional to contention.</p>
       <nav class="md-footer__inner md-grid" aria-label="Footer" >
         
           
-          <a href="../114-composite-bucket-items/" class="md-footer__link md-footer__link--prev" aria-label="Previous: ADR-114 Composite Bucket Items">
+          <a href="../141-reset-after-version-gate/" class="md-footer__link md-footer__link--prev" aria-label="Previous: ADR-141 Storing a reset_after limit is gated on reader versions">
             <div class="md-footer__button md-icon">
               
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
@@ -3801,27 +3851,11 @@ refill independently, causing double-refill proportional to contention.</p>
                 Previous
               </span>
               <div class="md-ellipsis">
-                ADR-114 Composite Bucket Items
+                ADR-141 Storing a reset_after limit is gated on reader versions
               </div>
             </div>
           </a>
         
-        
-          
-          <a href="../116-iam-role-naming/" class="md-footer__link md-footer__link--next" aria-label="Next: ADR-116 IAM Role Naming">
-            <div class="md-footer__title">
-              <span class="md-footer__direction">
-                Next
-              </span>
-              <div class="md-ellipsis">
-                ADR-116 IAM Role Naming
-              </div>
-            </div>
-            <div class="md-footer__button md-icon">
-              
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
-            </div>
-          </a>
         
       </nav>
     

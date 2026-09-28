@@ -3386,6 +3386,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/142-hide-reset-after-config/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-142 A reset_after limit's config is hidden from pre-v0.15 readers
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -4011,8 +4039,20 @@ use the <code>b_{limit_name}_{field}</code> naming convention:</p>
 <tr>
 <td>Session window start</td>
 <td><code>b_session_ws</code></td>
-<td>A <a href="../../guide/session-quotas/">session quota's</a> current window start (epoch ms). The window ends at <code>ws + rsa × 1000</code>; a start later than <code>rf</code> means a new window has been opened and this shard has not yet restored its balance</td>
+<td>A <a href="../../guide/session-quotas/">session quota's</a> current window start (epoch ms). The window ends at <code>ws + rsa × 1000</code></td>
 <td><code>1705312800000</code></td>
+</tr>
+<tr>
+<td>Session window applied</td>
+<td><code>b_session_wa</code></td>
+<td>The window start this shard's balance reflects. A <code>ws</code> later than <code>wa</code> means a new window has been opened and this shard has not yet restored its balance; an item written before the marker existed carries none, and <code>rf</code> is compared instead</td>
+<td><code>1705312800000</code></td>
+</tr>
+<tr>
+<td>Session window snapshot</td>
+<td><code>b_session_wtc</code></td>
+<td>The consumption counter as it stood when another shard's new window reached this one. While the window is pending (<code>ws</code> later than <code>wa</code>), the shard restores its share less whatever it consumed since, so nothing spent in between is forgiven</td>
+<td><code>4000</code></td>
 </tr>
 <tr>
 <td>Session window length</td>

@@ -18,6 +18,8 @@
         <link rel="prev" href="../140-duration-window-shard-coherence/">
       
       
+        <link rel="next" href="../142-hide-reset-after-config/">
+      
       
         
       
@@ -3520,10 +3522,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#hide-the-configuration-from-pre-v015-readers-now" class="md-nav__link">
+  <a href="#hide-the-configuration-from-pre-v015-readers" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Hide the configuration from pre-v0.15 readers now
+        Hide the configuration from pre-v0.15 readers
       
     </span>
   </a>
@@ -3539,6 +3541,34 @@
   
 </nav>
       
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../142-hide-reset-after-config/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-142 A reset_after limit's config is hidden from pre-v0.15 readers
+  
+
+    
+  </span>
+  
+  
+
+      </a>
     </li>
   
 
@@ -3675,10 +3705,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#hide-the-configuration-from-pre-v015-readers-now" class="md-nav__link">
+  <a href="#hide-the-configuration-from-pre-v015-readers" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Hide the configuration from pre-v0.15 readers now
+        Hide the configuration from pre-v0.15 readers
       
     </span>
   </a>
@@ -3755,8 +3785,8 @@ code pushed in that run or do not exist.</p>
   the same ratchet without new machinery.
 - Writes of every other limit pay nothing.</p>
 <p><strong>Negative:</strong>
-- Nothing makes a v0.14 client fail closed; every client must still be upgraded before a
-  <code>reset_after</code> limit is stored. Hiding the configuration from old readers is deferred to #640.
+- Nothing makes a v0.14 client fail closed; it does not enforce the session limit, and every
+  client must still be upgraded before one is relied on (see <a href="../142-hide-reset-after-config/">ADR-142</a>).
 - The gate holds only at write time: a v0.14 CLI can later put the old Lambdas back, and a v0.14
   <code>upgrade</code> also resets the minimum. Never run a v0.14 CLI against such a stack.
 - The minimum, and the override gate's cached Lambda version, are checked when a repository
@@ -3776,9 +3806,8 @@ aggregator.</p>
 <h3 id="trust-the-stacks-enableaggregator-parameter-to-earn-the-stamp">Trust the stack's <code>EnableAggregator</code> parameter to earn the stamp<a class="headerlink" href="#trust-the-stacks-enableaggregator-parameter-to-earn-the-stamp" title="Permanent link">&para;</a></h3>
 <p>Rejected because: the function does the reading, and the template creates it only when a role is
 also available.</p>
-<h3 id="hide-the-configuration-from-pre-v015-readers-now">Hide the configuration from pre-v0.15 readers now<a class="headerlink" href="#hide-the-configuration-from-pre-v015-readers-now" title="Permanent link">&para;</a></h3>
-<p>Deferred to #640: it needs a per-limit applied marker first and turns an old client's outage into
-silent non-enforcement, which is a product decision.</p>
+<h3 id="hide-the-configuration-from-pre-v015-readers">Hide the configuration from pre-v0.15 readers<a class="headerlink" href="#hide-the-configuration-from-pre-v015-readers" title="Permanent link">&para;</a></h3>
+<p>Decided separately in <a href="../142-hide-reset-after-config/">ADR-142</a>.</p>
 
 
 
@@ -3830,6 +3859,22 @@ silent non-enforcement, which is a product decision.</p>
             </div>
           </a>
         
+        
+          
+          <a href="../142-hide-reset-after-config/" class="md-footer__link md-footer__link--next" aria-label="Next: ADR-142 A reset_after limit&#39;s config is hidden from pre-v0.15 readers">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                ADR-142 A reset_after limit's config is hidden from pre-v0.15 readers
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
         
       </nav>
     

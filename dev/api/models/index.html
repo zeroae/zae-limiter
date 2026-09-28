@@ -1940,6 +1940,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.models.BucketState.window_roll_target_milli" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;window_roll_target_milli
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.models.BucketState.accrues" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -4726,6 +4737,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/142-hide-reset-after-config/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-142 A reset_after limit's config is hidden from pre-v0.15 readers
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -5439,6 +5478,17 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;effective_refill_period_ms
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.BucketState.window_roll_target_milli" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;window_roll_target_milli
       
     </span>
   </a>
@@ -6320,7 +6370,7 @@ carries no <code>reset_schedule</code> to be found by.</p>
     <div class="doc doc-contents ">
 
         <p>:attr:<code>reset_after</code> in the unit everything below the API uses.</p>
-<p>Storage (<code>l_{name}_rsa</code>, <code>b_{name}_rsa</code>), the manifest
+<p>Storage (<code>w_{name}_rsa</code>, <code>b_{name}_rsa</code>), the manifest
 (<code>reset_after_seconds</code>) and CloudFormation (<code>ResetAfterSeconds</code>)
 all carry whole seconds, because a bare scalar cannot carry a type.
 <code>__post_init__</code> has already rejected anything that is not a positive
@@ -7937,7 +7987,7 @@ echoed back, since nothing was evaluated for them.</p>
   </span>
 
 <a href="#zae_limiter.models.BucketState" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">BucketState</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">limit_name</span><span class="p">,</span> <span class="n">tokens_milli</span><span class="p">,</span> <span class="n">last_refill_ms</span><span class="p">,</span> <span class="n">capacity_milli</span><span class="p">,</span> <span class="n">refill_amount_milli</span><span class="p">,</span> <span class="n">refill_period_ms</span><span class="p">,</span> <span class="n">total_consumed_milli</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_count</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">sched</span><span class="o">=</span><span class="p">(),</span> <span class="n">reset_sched</span><span class="o">=</span><span class="p">(),</span> <span class="n">window_start_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">reset_after_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">BucketState</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">limit_name</span><span class="p">,</span> <span class="n">tokens_milli</span><span class="p">,</span> <span class="n">last_refill_ms</span><span class="p">,</span> <span class="n">capacity_milli</span><span class="p">,</span> <span class="n">refill_amount_milli</span><span class="p">,</span> <span class="n">refill_period_ms</span><span class="p">,</span> <span class="n">total_consumed_milli</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_count</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">sched</span><span class="o">=</span><span class="p">(),</span> <span class="n">reset_sched</span><span class="o">=</span><span class="p">(),</span> <span class="n">window_start_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">reset_after_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">window_applied_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">window_consumed_mark_milli</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
@@ -8062,15 +8112,21 @@ the item anyway for the next window's length.</p>
     <div class="doc doc-contents ">
 
         <p>Has a window opened that this shard's balance does not reflect yet?</p>
-<p><code>ws &gt; rf</code> (ADR-140): a shard whose window start is newer than its own
-last materialisation has not applied that window. This is the single
-statement of the rule — the slow-path roll
+<p><code>ws &gt; wa</code> (ADR-140, #640): a shard whose window start is newer than
+the window its balance was last materialised for has not applied that
+window. This is the single statement of the rule — the slow-path roll
 (<code>RateLimiter._apply_window_roll</code>) and every read-only view of the
 balance ask it here rather than restating the comparison, so the two
-cannot drift (the #489 lesson).</p>
-<p>Strictly <code>&gt;</code>: the pass that applies a roll stamps <code>rf</code> at or after
-<code>ws</code>, so <code>&gt;=</code> would re-fire on every later request and refund
-everything spent since. <code>False</code> for a bucket with no window.</p>
+cannot drift (the #489 lesson). The aggregator mirrors it in
+<code>processor._window_applied</code>.</p>
+<p>An item written before the marker existed carries no <code>wa</code>, and falls
+back to the ADR-140 rule it was written under, <code>ws &gt; rf</code>. The marker
+exists because <code>rf</code> is shared: a writer predating ADR-139 stamps it
+from its own clock, backward (the next pass would roll again) or
+forward past a fanned-out <code>ws</code> (the shard would never roll it).</p>
+<p>Strictly <code>&gt;</code>: the pass that applies a roll records <code>wa = ws</code>, so
+<code>&gt;=</code> would re-fire on every later request and refund everything
+spent since. <code>False</code> for a bucket with no window.</p>
 
     </div>
 
@@ -8142,6 +8198,40 @@ against a smaller numerator and drifts below the intended share.</p>
 the capacity and the refill amount are. Unlike those two it is <strong>not</strong>
 divided by <code>shard_count</code>: every shard refills on the same clock and
 only the numerator is split.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="zae_limiter.models.BucketState.window_roll_target_milli" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">window_roll_target_milli</span>
+
+
+<a href="#zae_limiter.models.BucketState.window_roll_target_milli" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">window_roll_target_milli</span><span class="p">(</span><span class="n">now_ms</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>The balance a pending window roll restores this shard to (#640).</p>
+<p><code>eff_cp - max(0, tc - wtc)</code>: the shard's effective share, less every
+net debit since the fan-out snapshot. That is exactly the balance an
+immediate roll at the snapshot instant would have left — every debit
+path ADDs <code>tc</code> (the fast path, the normal path, the retry, adjust and
+rollback, on this release and on v0.14), so nothing spent while the
+roll was pending is forgiven by it, including spending from the ended
+window's leftover after a writer predating ADR-139 removed <code>vu</code>.
+The target does not read <code>tk</code> at all, so it does not matter what the
+shard spent from. <code>max(0, ...)</code> keeps net credits since the snapshot
+(an old-window lease rolling back) from lifting the roll above the
+share. With no snapshot on the item it is the share, as before.</p>
+<p>Only meaningful for a roll that is <em>pending</em> (:attr:<code>window_rolled</code>);
+an opener or a newly created shard applies its window in the same
+write and restores the full share.</p>
 
 
     </div>

@@ -3549,6 +3549,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/142-hide-reset-after-config/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-142 A reset_after limit's config is hidden from pre-v0.15 readers
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -3739,7 +3767,7 @@ the same wall-clock instant for everyone.</p>
 </span></code></pre></div>
 <p>Two callers that first use it at 09:00 and 14:30 get windows ending at 14:00 and 19:30.</p>
 <div class="admonition warning">
-<p class="admonition-title">Upgrade every client before storing one; the Lambdas are checked for you</p>
+<p class="admonition-title">Upgrade every client and admin tool before relying on one; the Lambdas are checked for you</p>
 <p><code>reset_after</code> is new in v0.15.0.</p>
 <p><strong>The aggregator is enforced.</strong> <code>set_limits()</code>, <code>set_resource_defaults()</code>,
 <code>set_system_defaults()</code>, <code>zae-limiter limits apply</code> and an <code>acquire(limits=[...])</code>
@@ -3762,10 +3790,19 @@ finds no aggregator at all). Run <code>zae-limiter upgrade</code> to deploy the 
 version.</p>
 <p><strong>Clients older than v0.15.0 are not enforced.</strong> A successful write raises the stack's
 <code>client_min_version</code> to 0.15.0, and every client from v0.15.0 on refuses to start below it
-— but v0.14 ignores that field. A v0.14 client cannot read a level that stores a
-<code>reset_after</code> limit: with <code>on_unavailable="block"</code> every <code>acquire()</code> against that level
-raises <code>RateLimiterUnavailable</code>, and with <code>on_unavailable="allow"</code> it <strong>fails open</strong> — each
-acquire is admitted with no limiting at all, including the other limits on that level.</p>
+— but v0.14 ignores that field. A <code>reset_after</code> limit is stored where a v0.14 client does
+not look, so a v0.14 client <strong>does not see the session limit at all</strong>: it keeps enforcing
+every other limit on that level, under either <code>on_unavailable</code> setting, and simply does not
+enforce the session limit for the requests it serves. If the level holds nothing but the
+session limit, a v0.14 client falls through to the next level (resource, then system
+defaults) and enforces that instead. With <code>on_unavailable="block"</code> that is a deliberate
+trade: without it the same client would fail every <code>acquire()</code> on the level — an outage —
+and with <code>"allow"</code> it would admit them with no limiting at all.</p>
+<p><strong>Never run a v0.14 admin tool against a level that holds one.</strong> A v0.14 <code>set_limits()</code>,
+<code>delete_limits()</code>, <code>set_resource_defaults()</code> or CLI <code>set-*</code> command rewrites
+the whole level from the limits <em>it</em> can see, so it <strong>silently drops the session limit</strong>
+from config, and leaves the session balance behind on the buckets. Upgrade admin tooling
+first.</p>
 <p><strong>Never run a v0.14 CLI against a stack that holds one.</strong> The check runs only at write
 time, and v0.14 can undo it afterwards:</p>
 <ul>
@@ -4019,6 +4056,30 @@ number of seconds, and <code>refill_amount</code> defaults to <code>0</code>:</p
   The next request then opens a fresh window, which is exactly what idle-restarting specifies.
   Entity-level limits never expire.</li>
 <li><strong>The CLI's <code>-l</code> flag cannot set one</strong> (above).</li>
+<li><strong>While v0.14 clients are still running</strong> (they ignore the session limit; see the warning at
+  the top):<ul>
+<li>A v0.14 client stamps a bucket's expiry from the limits <strong>it</strong> resolves, which can be
+  shorter than <code>reset_after × 7</code>. That covers resource- and system-level buckets, and also
+  an entity-level bucket whose entity level holds <em>only</em> the session limit: v0.14 sees that
+  level as empty, falls through to the resource or system defaults, and gives the bucket
+  their expiry — again after every idle gap that follows one of its writes, although v0.15
+  removes it on its own next write. If the bucket then expires in the middle of a window,
+  the next request starts a fresh one at the full allowance: the window restarts part-way,
+  admitting <strong>at most one extra allowance</strong>.</li>
+<li>A v0.14 client clears the marker that makes an ended window take the slow path, so a
+  shard can keep spending an ended window's leftover balance after the window's end, and
+  <code>resets_at_ms</code> / <code>retry_after_seconds</code> can be stale until a v0.15 request re-stamps it.
+  That spending never adds to a window's allowance on that shard: before the next window
+  reaches the shard it is the ended window's own leftover, and once another shard has
+  opened the next window there, it is charged against that window's share when the shard
+  applies it.</li>
+<li>A shard that a v0.14 client creates does not carry the session limit. The next v0.15
+  request on it adds the limit by moving surplus from the other shards, not by creating a
+  new share. The one exception is a shard whose siblings were given a larger share earlier
+  in the same window and have already spent part of it
+  (<a href="https://github.com/zeroae/zae-limiter/issues/642">#642</a>).</li>
+</ul>
+</li>
 </ul>
 <h2 id="see-also">See also<a class="headerlink" href="#see-also" title="Permanent link">&para;</a></h2>
 <ul>
@@ -4028,6 +4089,8 @@ number of seconds, and <code>refill_amount</code> defaults to <code>0</code>:</p
   window</li>
 <li><a href="../../adr/141-reset-after-version-gate/">ADR-141</a> — why storing a <code>reset_after</code> limit is gated
   on the stack's Lambda versions</li>
+<li><a href="../../adr/142-hide-reset-after-config/">ADR-142</a> — why a session limit's configuration is
+  hidden from clients older than v0.15.0</li>
 <li><a href="../basic-usage/">Basic Usage</a> — <code>acquire()</code>, leases, and handling <code>RateLimitExceeded</code></li>
 </ul>
 

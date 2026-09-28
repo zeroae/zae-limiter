@@ -3483,6 +3483,28 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#keep-rf-as-the-only-record-that-a-window-was-applied" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Keep rf as the only record that a window was applied
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zero-the-ended-windows-leftover-when-propagating-the-start" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Zero the ended window's leftover when propagating the start
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#stamp-rf-from-the-writers-own-clock" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3544,6 +3566,34 @@
     
   
     ADR-141 Storing a reset_after limit is gated on reader versions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../142-hide-reset-after-config/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-142 A reset_after limit's config is hidden from pre-v0.15 readers
   
 
     
@@ -3677,6 +3727,28 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#keep-rf-as-the-only-record-that-a-window-was-applied" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Keep rf as the only record that a window was applied
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zero-the-ended-windows-leftover-when-propagating-the-start" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Zero the ended window's leftover when propagating the start
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#stamp-rf-from-the-writers-own-clock" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3744,8 +3816,8 @@
 <h1 id="adr-140-shards-of-one-entity-share-one-duration-window">ADR-140: Shards of one entity share one duration window<a class="headerlink" href="#adr-140-shards-of-one-entity-share-one-duration-window" title="Permanent link">&para;</a></h1>
 <p><strong>Status:</strong> Proposed
 <strong>Date:</strong> 2026-09-27
-<strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/624">#624</a>, <a href="https://github.com/zeroae/zae-limiter/issues/625">#625</a>, <a href="https://github.com/zeroae/zae-limiter/issues/635">#635</a>
-<strong>Related:</strong> <a href="../139-duration-reset-windows/">ADR-139</a>, ADR-133, ADR-134, <a href="https://github.com/zeroae/zae-limiter/issues/597">#597</a></p>
+<strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/624">#624</a>, <a href="https://github.com/zeroae/zae-limiter/issues/625">#625</a>, <a href="https://github.com/zeroae/zae-limiter/issues/635">#635</a>, <a href="https://github.com/zeroae/zae-limiter/issues/640">#640</a>
+<strong>Related:</strong> <a href="../139-duration-reset-windows/">ADR-139</a>, <a href="../142-hide-reset-after-config/">ADR-142</a>, ADR-133, ADR-134, <a href="https://github.com/zeroae/zae-limiter/issues/597">#597</a></p>
 <h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
 <p>A duration window (<a href="../139-duration-reset-windows/">ADR-139</a>) is anchored to an entity, but a
 sharded entity's balance lives on up to <code>MAX_SHARD_COUNT</code> bucket items, each refilled and reset
@@ -3762,15 +3834,20 @@ share (the #587 finding).</p>
 <p>Two further hazards shape the rule. Two clients crossing a window boundary together each open a
 window on their own shard, and a naive propagation lets each reset the other inside one window.
 And a writer whose clock runs behind can move a shard's last-refill stamp <code>rf</code> backward, after
-which the shard would believe a window it already applied is new (#635). Mechanism, writer rows
-and costs are in CLAUDE.md "Session Quotas" and the DynamoDB writer table.</p>
+which the shard would believe a window it already applied is new (#635). Pre-v0.15 clients
+writing windowed buckets (<a href="../142-hide-reset-after-config/">ADR-142</a>) stamp <code>rf</code> from their own
+clock and drop the fast path's <code>vu</code> gate, so <code>rf</code> cannot record a reset, and a shard can spend an
+ended window's leftover inside the next one before its reset. Mechanism, writer rows and costs
+are in CLAUDE.md "Session Quotas" and the DynamoDB writer table.</p>
 <h2 id="decision">Decision<a class="headerlink" href="#decision" title="Permanent link">&para;</a></h2>
-<p>Every shard of an entity must converge on one window start: the writer that opens a window must
-propagate only the start, never tokens, and only to siblings whose own window had ended and whose
-<code>rf</code> is older than the new start; each shard must reset itself to its share when its window start
-is newer than its own <code>rf</code>, and no materialising writer may move <code>rf</code> backward. A shard created
-mid-window must join shard 0's live window, read strongly consistently, and may open and
-propagate its own only when shard 0's window has ended or it has none.</p>
+<p>Every shard of an entity must converge on one window start: the opener must propagate only the
+start and a snapshot <code>wtc</code> of the sibling's consumption counter, never tokens, and only to
+siblings whose own window had ended and that carry a window-applied marker <code>wa</code> or an <code>rf</code> older
+than the new start; each shard must record in <code>wa</code> the start its balance reflects, must reset
+when its start is newer than <code>wa</code> (than <code>rf</code> where no <code>wa</code> exists) to its share less the
+consumption since <code>wtc</code> and never above its share, and no materialising writer may move <code>rf</code>
+backward. A shard created mid-window must join shard 0's live window, read strongly consistently,
+and may open and propagate its own only when shard 0's window has ended or it has none.</p>
 <h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>
 <p><strong>Positive:</strong>
 - <code>check_availability</code> and <code>RateLimitExceeded</code> can report one honest reset instant per entity.
@@ -3780,7 +3857,9 @@ propagate its own only when shard 0's window has ended or it has none.</p>
   through, and the consumption counter <code>tc</code> stays monotonic.
 - Monotonic <code>rf</code> costs nothing on items without a window, since refill treats non-positive
   elapsed time as zero.
-- Unsharded entities pay nothing extra.</p>
+- Unsharded entities pay nothing extra.
+- A shard resets exactly once per window whatever an old writer does to <code>rf</code>, and a late reset
+  charges everything spent while it was pending, so a mixed fleet cannot over-admit through it.</p>
 <p><strong>Negative:</strong>
 - A rollover costs one conditional write per (sibling shard, window limit), once per window.
 - Shards can be staggered by milliseconds after concurrent openers, and a lost propagation write
@@ -3789,7 +3868,8 @@ propagate its own only when shard 0's window has ended or it has none.</p>
 - Creating a windowed shard costs a strongly consistent read, because a stale pre-roll start
   looks ended and would mint a full share on top of the window just opened.
 - The aggregator's refill condition grows one term per rolled window start, because two
-  propagations are indistinguishable to its <code>rf</code> and <code>vu</code> pins alone.</p>
+  propagations are indistinguishable to its <code>rf</code> and <code>vu</code> pins alone.
+- Two more small attributes per window limit per shard; an item without <code>wa</code> relies on <code>rf</code>.</p>
 <h2 id="alternatives-considered">Alternatives Considered<a class="headerlink" href="#alternatives-considered" title="Permanent link">&para;</a></h2>
 <h3 id="each-shard-keeps-its-own-window-with-no-propagation">Each shard keeps its own window, with no propagation<a class="headerlink" href="#each-shard-keeps-its-own-window-with-no-propagation" title="Permanent link">&para;</a></h3>
 <p>Rejected because: the entity loses any single reset instant a caller can be told.</p>
@@ -3799,6 +3879,11 @@ in both write orderings.</p>
 <h3 id="move-a-sibling-whenever-the-new-start-is-later-than-its-own">Move a sibling whenever the new start is later than its own<a class="headerlink" href="#move-a-sibling-whenever-the-new-start-is-later-than-its-own" title="Permanent link">&para;</a></h3>
 <p>Rejected because: concurrent openers then reset each other's shard inside one window, which
 over-admits.</p>
+<h3 id="keep-rf-as-the-only-record-that-a-window-was-applied">Keep <code>rf</code> as the only record that a window was applied<a class="headerlink" href="#keep-rf-as-the-only-record-that-a-window-was-applied" title="Permanent link">&para;</a></h3>
+<p>Rejected because: a pre-v0.15 writer's clock then rolls a window twice or never.</p>
+<h3 id="zero-the-ended-windows-leftover-when-propagating-the-start">Zero the ended window's leftover when propagating the start<a class="headerlink" href="#zero-the-ended-windows-leftover-when-propagating-the-start" title="Permanent link">&para;</a></h3>
+<p>Rejected because: debt from <code>adjust()</code> after a zero-estimate lease is still forgiven by the
+reset, and a clone of a shard with a pending reset is never propagated to.</p>
 <h3 id="stamp-rf-from-the-writers-own-clock">Stamp <code>rf</code> from the writer's own clock<a class="headerlink" href="#stamp-rf-from-the-writers-own-clock" title="Permanent link">&para;</a></h3>
 <p>Rejected because: a slow clock moves <code>rf</code> backward past the window start and re-applies the reset
 on every request from that clock.</p>
