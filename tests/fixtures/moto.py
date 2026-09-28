@@ -71,7 +71,11 @@ def sync_limiter(mock_dynamodb):
     setup.set_version_record(schema_version=get_schema_version(), lambda_version=__version__)
     setup.close()
 
-    repo = SyncRepository.open(stack="test-rate-limits")
+    # moto's in-process backend is not thread-safe (#656): a concurrent
+    # UpdateItem that adds attributes can raise "dictionary changed size
+    # during iteration" inside moto's copy.deepcopy. Real DynamoDB has no
+    # such race, so this is a test-fixture concern only.
+    repo = SyncRepository.open(stack="test-rate-limits", parallel_mode="serial")
     limiter = SyncRateLimiter(repository=repo)
     with limiter:
         yield limiter
