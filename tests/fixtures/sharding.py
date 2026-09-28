@@ -125,14 +125,16 @@ async def drain_shard(repo, entity_id, limit_name, shard_id, floor=2, resource=R
     return (current - floor * 1000) // 1000
 
 
-async def materialise(limiter, entity_id, limit_name, shard, resource=RESOURCE):
+async def materialise(limiter, entity_id, limit_name, shard, resource=RESOURCE, amount=1):
     """Force ``shard`` into existence the way a random draw eventually would.
 
     Returns 1 if the acquire that created it was admitted, 0 if it was rejected.
+    ``amount=0`` declares the limit with a zero consumption: it spends nothing,
+    so only a bucket in debt rejects it.
     """
     with pinned_shard(shard):
         try:
-            async with limiter.acquire(entity_id, resource, {limit_name: 1}):
+            async with limiter.acquire(entity_id, resource, {limit_name: amount}):
                 return 1
         except RateLimitExceeded:
             return 0
@@ -142,7 +144,14 @@ async def walk_doublings(limiter, entity_id, limit_name, generations=5, resource
     """The issue's probe: drain every shard, trip ``wcu``, let the count double.
 
     Returns ``(admitted, shard_count, spends)`` where ``spends`` is the list of
-    ``(spendable_before, spendable_after)`` pairs bracketing each doubling.
+    ``(spendable_before, spendable_after, admitted_in_generation)`` triples
+    bracketing each doubling; a conserving creation rule keeps
+    ``after + admitted_in_generation == before``.
+
+    The doubling attempt itself declares the quota at zero (ADR-145): a shard
+    drained to its last tokens hands them to the shard split off it, and an
+    attempt that asked for a token would then be ``BOTH_EXHAUSTED``, which
+    never doubles (#480) — the walk would stall on a correctly spent entity.
     """
     repo = limiter._repository
     admitted = 0
@@ -160,16 +169,43 @@ async def walk_doublings(limiter, entity_id, limit_name, generations=5, resource
         # The wcu-exhausted acquire doubles shard_count and falls to the slow
         # path, which creates a shard drawn from the newly added range. Draw
         # shard 0 for the attempt itself: it exists and its wcu is spent.
-        admitted += await materialise(limiter, entity_id, limit_name, 0, resource)
+        await materialise(limiter, entity_id, limit_name, 0, resource, amount=0)
         shard_count = repo._entity_cache[(repo._namespace_id, entity_id)][2][resource]
 
         # Force the rest of the new range into existence too.
+        generation = 0
         balances = await shard_balances(repo, entity_id, limit_name, shard_count, resource)
         for shard, balance in enumerate(balances):
             if balance is None:
-                admitted += await materialise(limiter, entity_id, limit_name, shard, resource)
+                generation += await materialise(limiter, entity_id, limit_name, shard, resource)
+        admitted += generation
 
         after = await spendable(repo, entity_id, limit_name, shard_count, resource)
-        spends.append((before, after))
+        spends.append((before, after, generation))
 
     return admitted, shard_count, spends
+
+
+async def walk_doublings_no_spend(limiter, entity_id, limit_name, generations=5, resource=RESOURCE):
+    """Drive `wcu` doublings 1 -> 2**generations without spending the quota (#637).
+
+    Each generation drains `wcu` on every shard and makes a zero-cost acquire
+    of the quota on shard 0 (a declared zero consumption, so only `wcu` trips),
+    then materialises every shard of the new range the same way, so each
+    exists. Shard 0 is created first when the entity has none yet. Returns the
+    final shard count.
+    """
+    repo = limiter._repository
+    if (await shard_balances(repo, entity_id, limit_name, 1, resource))[0] is None:
+        await materialise(limiter, entity_id, limit_name, 0, resource, amount=0)
+    shard_count = 1
+    for _ in range(generations):
+        for shard in range(shard_count):
+            await drain_wcu(repo, entity_id, shard, resource=resource)
+        await materialise(limiter, entity_id, limit_name, 0, resource, amount=0)
+        shard_count = repo._entity_cache[(repo._namespace_id, entity_id)][2][resource]
+        balances = await shard_balances(repo, entity_id, limit_name, shard_count, resource)
+        for shard, balance in enumerate(balances):
+            if balance is None:
+                await materialise(limiter, entity_id, limit_name, shard, resource, amount=0)
+    return shard_count

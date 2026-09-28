@@ -248,16 +248,21 @@ class TestEveryWriterMarks:
         assert await _slow_acquire(limiter, "u", 1, T1 + 2_000) == 1
         assert await _num(repo, "u", 1, TK) == 3_000
 
-    async def test_the_seed_persist_marks_the_window_it_joins(self, limiter):
+    async def test_a_seed_joining_a_live_window_marks_it(self, limiter):
+        """A shard that exists without the session quota seeds it by joining
+        shard 0's live window (and a move off shard 0, ADR-145), and marks it."""
         repo = limiter._repository
+        await _first_use(limiter, "u", T0)
+        assert await repo.bump_shard_count("u", RESOURCE, 1) == 2
         rpm = Limit.per_minute("rpm", 100)
-        states = [BucketState.from_limit("u", RESOURCE, rpm, T0)]
-        await repo.transact_write([repo.build_composite_create("u", RESOURCE, states, T0)])
-        seed = BucketState.from_limit("u", RESOURCE, SESSION_10, T0 + 5)
-        seed.window_start_ms = T0
-        assert await repo.persist_seed("u", RESOURCE, 0, seed)
-        assert await _num(repo, "u", 0, WS) == T0
-        assert await _num(repo, "u", 0, WA) == T0
+        states = [BucketState.from_limit("u", RESOURCE, rpm, T0, shard_count=2)]
+        await repo.transact_write(
+            [repo.build_composite_create("u", RESOURCE, states, T0, shard_id=1, shard_count=2)]
+        )
+        assert await _slow_acquire(limiter, "u", 1, T0 + 60_000) == 1
+        assert await _num(repo, "u", 1, WS) == T0
+        assert await _num(repo, "u", 1, WA) == T0
+        assert await _num(repo, "u", 1, TK) == 4_000
 
 
 class TestOldWriterClockSkew:

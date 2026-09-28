@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import random
 import warnings
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
@@ -14,12 +15,14 @@ from .bucket import (
     window_end_in_force,
 )
 from .exceptions import LeaseExpiredError, RateLimitExceeded
-from .models import BucketState, Limit, LimitStatus
+from .models import BucketState, Limit, LimitStatus, QuotaDonorDebit
 from .schema import BUCKET_FIELD_RF, BUCKET_FIELD_TK, bucket_attr, calculate_bucket_ttl_seconds
 
 # TransactionConflict retry constants (Issue #332)
 _CONFLICT_MAX_RETRIES = 3
-_CONFLICT_BASE_DELAY_S = 0.025  # 25ms, doubles each retry: 25ms, 50ms, 100ms
+# Full jitter (ADR-145): a move's donor is usually the entity's busiest shard,
+# so concurrent creators conflicting on it must not retry in lockstep.
+_CONFLICT_BASE_DELAY_S = 0.025  # 25ms cap, doubling each retry: 25ms, 50ms, 100ms
 # Floor for an exceeded retry-path status's wait (#633). At a high rate the
 # real wait rounds to 0.0, and a 429 saying "retry after 0" is read as "retry
 # now" — a hot loop driven by the rejection itself.
@@ -116,16 +119,24 @@ class LeaseEntry:
     # while a seeded limit rides the normal `UpdateItem` and is SET in full
     # there instead of `ADD`ed to, since there is nothing to add to.
     _seed: bool = False
-    # For a seed that took a **transfer** (#587): its state before admission,
-    # i.e. what the clamp took with nothing consumed. The clamp has already
-    # written; if this pass then writes no seed (a rejection, or a lost lock
-    # that falls to the retry), `persist_transfer_seeds` writes this instead,
-    # so the next pass does not seed a full share on top of the spent surplus
-    # (#633). None for every other entry.
-    _seed_initial: BucketState | None = None
     # ADR-145: this pass set the entry's quota grant (a reset or roll), so
     # the rf-locked write must stamp `gc` and pin `shard_count` (I3, I4).
     _granted: bool = False
+    # ADR-145: the donor side of the move that funds this created or seeded
+    # quota shard, or None (a fresh grant, a dripping limit, an existing
+    # limit). `_commit_initial` appends it to the same transaction, after
+    # every bucket item, so the move is atomic (I5).
+    _donor_debit: QuotaDonorDebit | None = None
+
+
+class QuotaMoveLostError(Exception):
+    """A commit carrying an ADR-145 quota move did not land (internal).
+
+    The transaction failed a condition — the donor spent, reset or regranted
+    since it was read, or the recipient raced — or kept conflicting past its
+    retries. It rolled back whole, donor untouched, so the plan is stale and
+    the acquire re-plans from a fresh read (design §6 step 6). Not exported.
+    """
 
 
 def _mark_granted(entry: LeaseEntry) -> None:
@@ -138,28 +149,6 @@ def _mark_granted(entry: LeaseEntry) -> None:
     if entry.limit.is_quota:
         entry.state.grant_count = entry.state.shard_count
         entry._granted = True
-
-
-async def persist_transfer_seeds(repo: "RepositoryProtocol", entries: list[LeaseEntry]) -> None:
-    """Persist every transfer seed among ``entries`` that this pass will not write (#633).
-
-    Called on the two paths where a quota's transfer was taken but its seed is
-    not written by the pass itself: a slow-path rejection, and a lost `rf` lock
-    (before the consumption-only retry, which can then debit the persisted
-    seed). See :meth:`Repository.persist_seed` for why this does not weaken
-    write-on-enter beyond the clamp that already ran.
-    """
-    for entry in entries:
-        if entry._seed_initial is None:
-            continue
-        await repo.persist_seed(
-            entry.entity_id,
-            entry.resource,
-            entry._shard_id,
-            entry._seed_initial,
-            vu=entry._boundary_ms,
-            seed_shard_count=entry._seed_initial.shard_count,
-        )
 
 
 @dataclass
@@ -693,6 +682,22 @@ class Lease:
             self._initial_committed = True
             return
 
+        # ADR-145 moves: each donor debit rides in this same transaction (I5),
+        # appended after every bucket item so the per-index cancellation
+        # reasons below still line up with `groups`. A donor is a sibling
+        # shard of the same entity and resource, never the item this commit
+        # writes, so no item is touched twice.
+        by_bucket: dict[tuple[str, str], list[QuotaDonorDebit]] = {}
+        for entry in self.entries:
+            if entry._donor_debit is not None:
+                by_bucket.setdefault((entry.entity_id, entry.resource), []).append(
+                    entry._donor_debit
+                )
+        donor_items: list[dict[str, Any]] = []
+        for (entity_id, resource), debits in by_bucket.items():
+            donor_items += repo.build_quota_donor_debits(entity_id, resource, debits)
+        items += donor_items
+
         # Retry loop for TransactionConflict (Issue #332)
         condition_failed = False
         condition_exc: Exception | None = None
@@ -710,7 +715,7 @@ class Lease:
                     break
                 if _is_transaction_conflict(exc):
                     if attempt < _CONFLICT_MAX_RETRIES:
-                        delay = _CONFLICT_BASE_DELAY_S * (2**attempt)
+                        delay = random.uniform(0, _CONFLICT_BASE_DELAY_S * (2**attempt))
                         logger.debug(
                             "TransactionConflict (attempt %d/%d), retrying in %.3fs",
                             attempt + 1,
@@ -719,14 +724,20 @@ class Lease:
                         )
                         await asyncio.sleep(delay)
                         continue
+                    if donor_items:
+                        # A move that kept conflicting wrote nothing; the
+                        # caller re-plans it rather than seeing a raw error.
+                        raise QuotaMoveLostError from exc
                     raise  # exhausted retries, propagate
                 raise  # other errors propagate unchanged
 
+        if condition_failed and donor_items:
+            # The whole transaction rolled back — donor untouched — and the
+            # plan it carried may be stale: no consumption-only retry, which
+            # could not carry the move. The acquire re-plans (design §6 step 6).
+            raise QuotaMoveLostError from condition_exc
+
         if condition_failed:
-            # A transfer seed the lost write carried is persisted first, so
-            # the surplus its clamp took is not destroyed — and the retry can
-            # then debit it (#633).
-            await persist_transfer_seeds(repo, self.entries)
             # Retry path: ADD consumption only, CONDITION tk>=consumed per limit
             logger.debug("Normal write failed (optimistic lock), retrying consumption-only")
             # A cancelled transaction rolls back every item, including a

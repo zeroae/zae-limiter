@@ -919,6 +919,7 @@ class TestGrantCountStorage:
         )
         from zae_limiter import schema
 
+        state.grant_count = None
         assert schema.BUCKET_FIELD_GC not in repo._limit_item_attrs(state)
         state.grant_count = 4
         assert repo._limit_item_attrs(state)[schema.BUCKET_FIELD_GC] == {"N": "4"}

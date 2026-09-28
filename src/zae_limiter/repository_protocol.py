@@ -691,26 +691,6 @@ class RepositoryProtocol(Protocol):
         """
         ...
 
-    async def persist_seed(
-        self,
-        entity_id: str,
-        resource: str,
-        shard_id: int,
-        state: "BucketState",
-        vu: int | None = None,
-        seed_shard_count: int | None = None,
-    ) -> bool:
-        """Write a transfer seed on a pass that will not write it itself (#633).
-
-        ``SET`` the limit's attributes at ``state.tokens_milli`` with nothing
-        consumed, under ``attribute_exists(PK) AND attribute_not_exists(tk)``
-        and the shard-count pin; ``vu`` lowered when absent or later.
-
-        Returns:
-            Whether the seed was written.
-        """
-        ...
-
     async def transact_write(self, items: list[dict[str, Any]]) -> None:
         """
         Execute a write of one or more items.
@@ -829,36 +809,6 @@ class RepositoryProtocol(Protocol):
         """
         ...
 
-    async def reclaim_quota_surplus(
-        self,
-        entity_id: str,
-        resource: str,
-        shares_milli: dict[str, int],
-    ) -> tuple[int, dict[str, int]]:
-        """Clamp a quota's existing shards to their new share, and report the take (#587).
-
-        A quota does not drip (ADR-137), so a shard created mid-period at a
-        fresh ``capacity // shard_count`` is allowance nothing reclaims before
-        the next reset edge. The new shard is filled by transfer instead: this
-        applies the ceiling the doubling shrank the existing shards to — the
-        same clamp ``refill_bucket`` would apply on their next pass — and what
-        it takes is what the new shard is created with.
-
-        Must be called with quota limits only; a dripping limit's new shard
-        rightly starts full.
-
-        Args:
-            entity_id: Entity owning the shards
-            resource: Resource the shards belong to
-            shares_milli: ``{limit_name: capacity_milli // shard_count}``
-
-        Returns:
-            ``(shards_found, {limit_name: reclaimed_milli})``. ``shards_found``
-            is 0 when nothing is materialised for this (entity, resource),
-            which is not the same as reclaiming nothing.
-        """
-        ...
-
     async def plan_quota_shard(
         self,
         entity_id: str,
@@ -900,33 +850,6 @@ class RepositoryProtocol(Protocol):
         count read (or carrying none and at that shard count), and its grant
         still in the current period. Several quotas moving off one donor
         share one ``Update``.
-        """
-        ...
-
-    async def reclaim_quota_seed(
-        self,
-        entity_id: str,
-        resource: str,
-        capacities_milli: dict[str, int],
-        shard_count: int,
-    ) -> tuple[int, dict[str, int]]:
-        """How quotas missing from an existing shard may be seeded (#633, #587).
-
-        Full share ``capacity // count`` unless some sibling holds more than
-        that share; then every sibling above it is clamped and the seed is
-        what the clamp took. ``count`` is the largest of ``shard_count`` and
-        every sibling's stored count.
-
-        Args:
-            entity_id: Entity owning the shards
-            resource: Resource the shards belong to
-            capacities_milli: ``{limit_name: capacity_milli}`` in force now,
-                undivided, for the missing quota limits
-            shard_count: The shard count the caller would seed at
-
-        Returns:
-            ``(count, {limit_name: reclaimed_milli})`` for the limits that
-            must take a transfer; a name absent gets its full share.
         """
         ...
 

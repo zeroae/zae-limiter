@@ -19,13 +19,15 @@ from tests.fixtures.sharding import (
     shard_balances,
     spendable,
     walk_doublings,
+    walk_doublings_no_spend,
 )
-from zae_limiter import Limit, RateLimiter, schema
+from tests.fixtures.windows import T0
+from zae_limiter import Limit, OnUnavailable, RateLimiter, RateLimiterUnavailable, schema
+from zae_limiter.exceptions import RateLimitExceeded
 from zae_limiter.models import (
     BucketState,
     QuotaDonorDebit,
     QuotaGrant,
-    new_shard_starting_tokens_milli,
 )
 
 QUOTA_CRON = "0 0 * * *"
@@ -129,75 +131,40 @@ class TestQuotaShardCreation:
         )
 
     async def test_doubling_conserves_the_entity_wide_quota(self, limiter):
-        """The invariant: spendable tokens are equal either side of a doubling."""
+        """The invariant: a doubling changes what is spendable only by what it admitted."""
         repo = limiter._repository
         freeze(repo)
         limit = Limit.quota("rpd", 1000, cron=QUOTA_CRON)
         await seed_shard0(limiter, "quota-conserve", limit, repo._now_ms())
 
         _admitted, _count, spends = await walk_doublings(limiter, "quota-conserve", "rpd")
-        for index, (before, after) in enumerate(spends):
-            assert after == before, f"doubling {index}: {before} -> {after}"
-
-
-class TestNewShardStartingTokens:
-    """The rule itself, with no DynamoDB in the way."""
-
-    SHARE = 500_000
-
-    def test_a_dripping_limit_always_gets_the_full_share(self):
-        """The regression pin. ``ra`` is stored undivided, so the shards'
-        ceilings still sum to the configured capacity and a new one starting
-        full is a burst token-bucket semantics already permit."""
-        for taken in (None, 0, 1, self.SHARE, self.SHARE * 4):
-            got = new_shard_starting_tokens_milli(self.SHARE, taken, is_quota=False)
-            assert got == self.SHARE
-
-    def test_a_quota_with_nothing_to_reclaim_from_gets_the_full_share(self):
-        """``None`` means no shard exists at all, so nothing has been spent."""
-        assert new_shard_starting_tokens_milli(self.SHARE, None, is_quota=True) == self.SHARE
-
-    def test_a_spent_quota_gets_nothing(self):
-        """#587: the siblings held no surplus, so there is nothing to transfer."""
-        assert new_shard_starting_tokens_milli(self.SHARE, 0, is_quota=True) == 0
-
-    def test_a_full_quota_gets_a_full_share(self):
-        """Unchanged from before #587 — the case the bug hid behind."""
-        assert new_shard_starting_tokens_milli(self.SHARE, self.SHARE, is_quota=True) == self.SHARE
-
-    def test_a_partly_spent_quota_gets_exactly_what_was_reclaimed(self):
-        assert new_shard_starting_tokens_milli(self.SHARE, 120_000, is_quota=True) == 120_000
-
-    def test_the_grant_is_capped_at_one_share(self):
-        """Several siblings can between them yield more than one shard's worth;
-        the rest stays with whoever is created next."""
-        got = new_shard_starting_tokens_milli(self.SHARE, self.SHARE * 3, is_quota=True)
-        assert got == self.SHARE
-
-    def test_a_negative_reclaim_cannot_produce_a_negative_balance(self):
-        assert new_shard_starting_tokens_milli(self.SHARE, -1, is_quota=True) == 0
+        for index, (before, after, generation) in enumerate(spends):
+            assert after + generation == before, f"doubling {index}: {spends}"
 
 
 class TestFromLimitStartingBalance:
-    """``BucketState.from_limit`` routes the rule, and nothing else changed."""
+    """``BucketState.from_limit`` takes a move's amount, and nothing else changed."""
 
-    def test_quota_shard_created_from_a_transfer(self):
+    def test_quota_shard_created_from_a_move(self):
         limit = Limit.quota("rpd", 1000, cron=QUOTA_CRON)
-        state = BucketState.from_limit("e1", "gpt-4", limit, 0, 4, reclaimed_milli=0)
-        assert state.tokens_milli == 0
+        state = BucketState.from_limit("e1", "gpt-4", limit, 0, 4, starting_tokens_milli=120_000)
+        assert state.tokens_milli == 120_000
         assert state.capacity_milli == 1_000_000  # stored base stays undivided
         assert state.reset_target_milli(0) == 250_000
+        assert state.grant_count == 4, "a created quota records the count it was sized at"
 
-    def test_quota_shard_with_no_siblings_starts_full(self):
+    def test_quota_shard_with_no_grant_starts_full(self):
         limit = Limit.quota("rpd", 1000, cron=QUOTA_CRON)
         state = BucketState.from_limit("e1", "gpt-4", limit, 0, 4)
         assert state.tokens_milli == 250_000
+        assert state.grant_count == 4
 
-    def test_dripping_shard_ignores_the_transfer_entirely(self):
-        """Pins that the dripping path is untouched by #587."""
+    def test_a_dripping_limit_records_no_grant(self):
+        """Pins that the dripping path is untouched: no ``gc``, full share."""
         limit = Limit.per_minute("rpm", 1000)
-        state = BucketState.from_limit("e1", "gpt-4", limit, 0, 4, reclaimed_milli=0)
+        state = BucketState.from_limit("e1", "gpt-4", limit, 0, 4)
         assert state.tokens_milli == 250_000
+        assert state.grant_count is None
 
 
 class TestSlowPathShardCreation:
@@ -215,9 +182,10 @@ class TestSlowPathShardCreation:
         assert await repo.bump_shard_count(entity_id, RESOURCE, 1) == 2
         return repo
 
-    async def test_a_full_quota_transfers_half_and_conserves(self, limiter):
-        """The case #587 hid behind: the grant is paid for by the clamp, so the
-        entity-wide spendable total is the same either side of the doubling."""
+    async def test_a_full_quota_moves_half_and_conserves(self, limiter):
+        """The case #587 hid behind: the new share is moved off shard 0, whose
+        grant covers slot 1, so the entity-wide spendable total is the same
+        either side of the doubling (ADR-145)."""
         limit = Limit.quota("rpd", 1000, cron=QUOTA_CRON)
         repo = await self._seed(limiter, "q-full", limit)
 
@@ -227,26 +195,28 @@ class TestSlowPathShardCreation:
         assert await spendable(repo, "q-full", "rpd", 2) == 999
         assert await shard_balances(repo, "q-full", "rpd", 2) == [500_000, 499_000]
 
-    async def test_a_spent_quota_transfers_nothing(self, limiter):
+    async def test_a_spent_quota_moves_only_what_is_left(self, limiter):
         """#587 itself: 998 of 1000 already spent, and the doubling must not
-        hand back 499 of them."""
+        hand back 499 of them. The 2 left move to the new shard, which admits
+        one of them."""
         limit = Limit.quota("rpd", 1000, cron=QUOTA_CRON)
         repo = await self._seed(limiter, "q-spent", limit)
         await drain_shard(repo, "q-spent", "rpd", 0)
 
         assert await spendable(repo, "q-spent", "rpd", 2) == 2
-        assert await materialise(limiter, "q-spent", "rpd", 1) == 0  # rejected
-        assert await spendable(repo, "q-spent", "rpd", 2) == 2
+        assert await materialise(limiter, "q-spent", "rpd", 1) == 1
+        assert await shard_balances(repo, "q-spent", "rpd", 2) == [0, 1_000]
+        assert await spendable(repo, "q-spent", "rpd", 2) == 1
 
-    async def test_a_partly_spent_quota_transfers_only_the_surplus(self, limiter):
-        """Shard 0 holds 700 against a new ceiling of 500: 200 moves, 500 stays."""
+    async def test_a_partly_spent_quota_moves_one_share(self, limiter):
+        """Shard 0 holds 700: one new share of 500 moves, 200 stays."""
         limit = Limit.quota("rpd", 1000, cron=QUOTA_CRON)
         repo = await self._seed(limiter, "q-part", limit)
         await drain_shard(repo, "q-part", "rpd", 0, floor=700)
 
         assert await spendable(repo, "q-part", "rpd", 2) == 700
         assert await materialise(limiter, "q-part", "rpd", 1) == 1
-        assert await shard_balances(repo, "q-part", "rpd", 2) == [500_000, 199_000]
+        assert await shard_balances(repo, "q-part", "rpd", 2) == [200_000, 499_000]
         assert await spendable(repo, "q-part", "rpd", 2) == 699
 
     async def test_a_dripping_limit_is_untouched(self, limiter):
@@ -275,95 +245,6 @@ class TestSlowPathShardCreation:
         assert await materialise(limiter, "q-reset", "rpd", 1) == 1
         # Both shards back to their 500 share, less the two tokens just spent.
         assert await spendable(repo, "q-reset", "rpd", 2) == 998
-
-
-class TestReclaimQuotaSurplus:
-    """``Repository.reclaim_quota_surplus`` — the eager half of the transfer."""
-
-    LIMIT = Limit.quota("rpd", 1000, cron=QUOTA_CRON)
-
-    async def test_no_limits_reads_nothing(self, limiter):
-        repo = limiter._repository
-        with patch.object(repo, "_discover_entity_bucket_pks") as discover:
-            assert await repo.reclaim_quota_surplus("nobody", RESOURCE, {}) == (0, {})
-        discover.assert_not_called()
-
-    async def test_no_shards_is_distinguishable_from_no_surplus(self, limiter):
-        """Zero shards means nothing was ever spent, so the caller grants a full
-        share; zero *reclaimed* from shards that do exist means the opposite."""
-        repo = limiter._repository
-        assert await repo.reclaim_quota_surplus("nobody", RESOURCE, {"rpd": 500_000}) == (
-            0,
-            {"rpd": 0},
-        )
-
-    async def test_clamps_every_shard_and_sums_what_it_took(self, limiter):
-        repo = limiter._repository
-        freeze(repo)
-        await seed_shard0(limiter, "rq-multi", self.LIMIT, repo._now_ms())
-        await _write_shard(repo, "rq-multi", self.LIMIT, shard_id=1, tokens_milli=700_000)
-
-        shares = {"rpd": 250_000}
-        found, reclaimed = await repo.reclaim_quota_surplus("rq-multi", RESOURCE, shares)
-        assert found == 2
-        # shard 0 held 1_000_000 and shard 1 held 700_000 against a 250_000 share.
-        assert reclaimed == {"rpd": 750_000 + 450_000}
-        assert await shard_balances(repo, "rq-multi", "rpd", 2) == [250_000, 250_000]
-
-    async def test_a_shard_already_at_its_share_is_not_written(self, limiter):
-        repo = limiter._repository
-        freeze(repo)
-        await seed_shard0(limiter, "rq-flat", self.LIMIT, repo._now_ms())
-        await repo.reclaim_quota_surplus("rq-flat", RESOURCE, {"rpd": 500_000})
-
-        client = await repo._get_client()
-        with patch.object(client, "update_item", side_effect=AssertionError("wrote")) as write:
-            assert await repo.reclaim_quota_surplus("rq-flat", RESOURCE, {"rpd": 500_000}) == (
-                1,
-                {"rpd": 0},
-            )
-        write.assert_not_called()
-
-    async def test_a_shard_without_that_limit_contributes_nothing(self, limiter):
-        """A bucket written before the quota was added to the config carries no
-        ``b_rpd_tk`` at all."""
-        repo = limiter._repository
-        freeze(repo)
-        await seed_shard0(limiter, "rq-other", Limit.per_minute("rpm", 1000), repo._now_ms())
-        assert await repo.reclaim_quota_surplus("rq-other", RESOURCE, {"rpd": 500_000}) == (
-            1,
-            {"rpd": 0},
-        )
-
-    async def test_a_shard_spent_below_the_share_since_the_read_is_skipped(self, limiter):
-        """The conditional write is what makes the reclaim safe against a
-        concurrent speculative spend: there is no surplus left to move."""
-        repo = limiter._repository
-        freeze(repo)
-        await seed_shard0(limiter, "rq-race", self.LIMIT, repo._now_ms())
-        client = await repo._get_client()
-        error = ClientError(
-            {"Error": {"Code": "ConditionalCheckFailedException", "Message": "raced"}},
-            "UpdateItem",
-        )
-        with patch.object(client, "update_item", side_effect=error):
-            assert await repo.reclaim_quota_surplus("rq-race", RESOURCE, {"rpd": 500_000}) == (
-                1,
-                {"rpd": 0},
-            )
-
-    async def test_any_other_client_error_propagates(self, limiter):
-        repo = limiter._repository
-        freeze(repo)
-        await seed_shard0(limiter, "rq-boom", self.LIMIT, repo._now_ms())
-        client = await repo._get_client()
-        error = ClientError(
-            {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": "no"}},
-            "UpdateItem",
-        )
-        with patch.object(client, "update_item", side_effect=error):
-            with pytest.raises(ClientError):
-                await repo.reclaim_quota_surplus("rq-boom", RESOURCE, {"rpd": 500_000})
 
 
 class TestPlanQuotaShard:
@@ -650,3 +531,357 @@ class TestPlanQuotaShard:
         assert [item["Update"]["Key"]["PK"]["S"] for item in items] == [
             schema.pk_bucket(repo._namespace_id, "e1", RESOURCE, shard) for shard in (0, 2)
         ]
+
+
+def _conflict() -> ClientError:
+    """A transaction cancelled by a concurrent write to one of its items."""
+    error = ClientError(
+        {
+            "Error": {"Code": "TransactionCanceledException", "Message": "conflict"},
+            "CancellationReasons": [{"Code": "None"}, {"Code": "TransactionConflict"}],
+        },
+        "TransactWriteItems",
+    )
+    return error
+
+
+async def _set_attr(repo, entity_id, shard_id, attr, value, resource=RESOURCE):
+    """Overwrite one numeric attribute on a shard item, as a concurrent writer would."""
+    client = await repo._get_client()
+    await client.update_item(
+        TableName=repo.table_name,
+        Key={
+            "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, resource, shard_id)},
+            "SK": {"S": schema.sk_state()},
+        },
+        UpdateExpression="SET #a = :v",
+        ExpressionAttributeNames={"#a": attr},
+        ExpressionAttributeValues={":v": {"N": str(value)}},
+    )
+
+
+class TestAcceptance:
+    """Design §10 (ADR-145). C = 1000, clock frozen in one period."""
+
+    QUOTA = Limit.quota("rpd", 1000, cron=QUOTA_CRON)
+
+    async def _full_shard0_at_two(self, limiter, entity_id):
+        """Shard 0 granted the whole quota at count 1, then a doubling to 2."""
+        repo = limiter._repository
+        freeze(repo)
+        await seed_shard0(limiter, entity_id, self.QUOTA, repo._now_ms())
+        assert await repo.bump_shard_count(entity_id, RESOURCE, 1) == 2
+        return repo
+
+    async def test_1_nobody_spends_walk_keeps_the_whole_quota(self, limiter):
+        """#637: a full, unspent quota walked 1 -> 32 kept 187 spendable."""
+        freeze(limiter._repository)
+        await limiter.set_limits("e1", [self.QUOTA], resource=RESOURCE)
+        count = await walk_doublings_no_spend(limiter, "e1", "rpd")
+        assert count == 32
+        assert await spendable(limiter._repository, "e1", "rpd", count, RESOURCE) == 1000
+
+    async def test_4_587_walk_with_spending_never_exceeds(self, limiter):
+        freeze(limiter._repository)
+        await limiter.set_limits("e1", [self.QUOTA], resource=RESOURCE)
+        assert await materialise(limiter, "e1", "rpd", 0, amount=0) == 1
+        admitted, count, spends = await walk_doublings(limiter, "e1", "rpd")
+        left = await spendable(limiter._repository, "e1", "rpd", count, RESOURCE)
+        assert count == 32
+        assert admitted + left <= 1000, (admitted, left, spends)
+
+    async def test_7_a_split_conserves_the_total(self, limiter):
+        repo = await self._full_shard0_at_two(limiter, "split")
+        with patch("zae_limiter.repository.random.randrange", return_value=1):
+            async with RateLimiter(repository=repo, speculative_writes=False).acquire(
+                "split", RESOURCE, {"rpd": 10}
+            ):
+                pass
+        balances = await shard_balances(repo, "split", "rpd", 2)
+        assert balances == [500_000, 490_000]
+        assert sum(b for b in balances if b is not None) == 1_000_000 - 10_000
+
+    @pytest.mark.parametrize("shard1_rf_after_midnight", [False, True])
+    async def test_3_idle_across_the_reset_then_seed(self, limiter, shard1_rf_after_midnight):
+        """#642, the 1300 repro (rv633d): shard 0 was granted the whole quota
+        at count 1 today and has spent 300; shard 1 lacks the quota and may
+        have last materialised before midnight. Its seed is rejected (asks for
+        600 against a move of 500), then everything is drained through both
+        the fast and the slow path. Before: 1300 admitted in one period."""
+        rpm = Limit.per_minute("rpm", 100_000)
+        repo = limiter._repository
+        ns = repo._namespace_id
+        eid = "pr"
+        day = 86_400_000
+        midnight = (T0 // day + 1) * day
+        repo._now_ms = lambda: T0
+        await repo.set_resource_defaults(RESOURCE, [rpm])
+        for shard in (0, 1):
+            states = [BucketState.from_limit(eid, RESOURCE, rpm, T0, shard_count=2)]
+            if shard == 0:
+                rpd = BucketState.from_limit(eid, RESOURCE, self.QUOTA, T0, shard_count=2)
+                rpd.tokens_milli, rpd.total_consumed_milli = 700_000, 300_000
+                rpd.grant_count = 1
+                states.append(rpd)
+            await repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        eid, RESOURCE, states, T0, shard_id=shard, shard_count=2
+                    )
+                ]
+            )
+        for shard in (0, 1) if shard1_rf_after_midnight else (0,):
+            await _set_attr(repo, eid, shard, "rf", midnight + 1_000)
+        repo._entity_cache[(ns, eid)] = (False, None, {RESOURCE: 2})
+        await repo.set_resource_defaults(RESOURCE, [rpm, self.QUOTA])
+        await repo.invalidate_config_cache()
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        fast = RateLimiter(repository=repo)
+
+        admitted = 300  # shard 0's spend today
+        repo._now_ms = lambda: midnight + 2_000
+        with patch("zae_limiter.repository.random.randrange", return_value=1):
+            with pytest.raises(RateLimitExceeded):
+                async with slow.acquire(eid, RESOURCE, consume={"rpd": 600}):
+                    pass
+            try:
+                async with fast.acquire(eid, RESOURCE, consume={"rpd": 200}):
+                    admitted += 200
+            except RateLimitExceeded:
+                pass
+
+        repo._now_ms = lambda: midnight + 3_000
+        for shard in (1, 0, 1, 0):
+            for lim in (fast, slow):
+                while True:
+                    try:
+                        with patch("zae_limiter.repository.random.randrange", return_value=shard):
+                            async with lim.acquire(eid, RESOURCE, consume={"rpd": 1}):
+                                admitted += 1
+                    except RateLimitExceeded:
+                        break
+        assert admitted == 1000
+
+    async def test_5_seed_racing_a_doubling_never_exceeds(self, limiter):
+        """R3 of #633 (rv633c/test_race.py): an unsharded seed of the quota on
+        shard 0 reads count 1; an aggregator doubling lands between its read
+        and its write, and Path 2 clones the pre-seed image as shard 1. The
+        seed's pin fails and it grants nothing; every later pass seeds at the
+        doubled count. Before the pin: 1500 against 1000."""
+        rpm = Limit.per_minute("rpm", 100_000)
+        repo = limiter._repository
+        ns = repo._namespace_id
+        eid = "race"
+        repo._now_ms = lambda: T0
+        await repo.set_resource_defaults(RESOURCE, [rpm])
+        state = BucketState.from_limit(eid, RESOURCE, rpm, T0, shard_count=1)
+        await repo.transact_write(
+            [repo.build_composite_create(eid, RESOURCE, [state], T0, shard_id=0, shard_count=1)]
+        )
+        await repo.set_resource_defaults(RESOURCE, [rpm, self.QUOTA])
+        await repo.invalidate_config_cache()
+        repo._entity_cache[(ns, eid)] = (False, None, {RESOURCE: 1})
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        repo._now_ms = lambda: T0 + 1_000
+        real = repo.transact_write
+        raced: list[int] = []
+
+        async def doubling_lands_first(items):
+            if not raced:
+                raced.append(1)
+                await _set_attr(repo, eid, 0, "shard_count", 2)
+                clone = BucketState.from_limit(eid, RESOURCE, rpm, T0, shard_count=2)
+                await real(
+                    [
+                        repo.build_composite_create(
+                            eid, RESOURCE, [clone], T0, shard_id=1, shard_count=2
+                        )
+                    ]
+                )
+            return await real(items)
+
+        admitted = 0
+        with patch.object(repo, "transact_write", doubling_lands_first):
+            with pytest.raises(RateLimitExceeded):
+                async with slow.acquire(eid, RESOURCE, consume={"rpd": 1}):
+                    admitted += 1
+        assert "b_rpd_tk" not in await _item(repo, eid, 0), "the pinned seed lost"
+
+        repo._entity_cache[(ns, eid)] = (False, None, {RESOURCE: 2})
+        repo._now_ms = lambda: T0 + 2_000
+        fast = RateLimiter(repository=repo)
+        with patch("zae_limiter.repository.random.randrange", return_value=0):
+            try:
+                async with fast.acquire(eid, RESOURCE, consume={"rpd": 700}):
+                    admitted += 700
+            except RateLimitExceeded:
+                pass
+        repo._now_ms = lambda: T0 + 3_000
+        for shard in (1, 0, 1, 0):
+            while True:
+                try:
+                    with patch("zae_limiter.repository.random.randrange", return_value=shard):
+                        async with slow.acquire(eid, RESOURCE, consume={"rpd": 1}):
+                            admitted += 1
+                except RateLimitExceeded:
+                    break
+        assert admitted <= 1000
+        assert admitted == 1000, "nothing lost either"
+
+    async def test_rejected_acquire_keeps_the_move(self, limiter):
+        """ADR-145 I5: a move is never lost. The create is committed with
+        nothing consumed and the acquire is then rejected."""
+        repo = await self._full_shard0_at_two(limiter, "keep")
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        with patch("zae_limiter.repository.random.randrange", return_value=1):
+            with pytest.raises(RateLimitExceeded):
+                async with slow.acquire("keep", RESOURCE, {"rpd": 600}):
+                    pass
+        assert await shard_balances(repo, "keep", "rpd", 2) == [500_000, 500_000]
+        shard1 = await _item(repo, "keep", 1)
+        assert shard1["b_rpd_tc"]["N"] == "0"
+        assert shard1["b_rpd_gc"]["N"] == "2"
+
+    async def test_conflicted_move_retries_then_succeeds(self, limiter):
+        """Review focus 1: the donor is the busiest shard, so a move's
+        transaction can be cancelled by a concurrent write to it. It retries
+        with jitter and lands."""
+        repo = await self._full_shard0_at_two(limiter, "conflict")
+        real = repo.transact_write
+        calls: list[int] = []
+
+        async def conflict_once(items):
+            calls.append(len(items))
+            if len(calls) == 1:
+                raise _conflict()
+            return await real(items)
+
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        with patch.object(repo, "transact_write", conflict_once):
+            with patch("zae_limiter.repository.random.randrange", return_value=1):
+                async with slow.acquire("conflict", RESOURCE, {"rpd": 1}):
+                    pass
+        assert calls == [2, 2], "the same move retried as-is"
+        assert await shard_balances(repo, "conflict", "rpd", 2) == [500_000, 499_000]
+
+    async def test_a_move_that_keeps_conflicting_is_unavailable_not_a_raw_error(self, limiter):
+        """Exhausted conflict retries on a move re-plan once, then surface as
+        `RateLimiterUnavailable` (so `on_unavailable` applies) — never a raw
+        `ClientError`. Nothing is written."""
+        repo = await self._full_shard0_at_two(limiter, "conflict-all")
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+
+        async def always_conflict(items):
+            raise _conflict()
+
+        with patch.object(repo, "transact_write", always_conflict):
+            with patch("zae_limiter.lease.asyncio.sleep") as sleep:
+                with patch("zae_limiter.repository.random.randrange", return_value=1):
+                    with pytest.raises(RateLimiterUnavailable, match="lost twice"):
+                        async with slow.acquire("conflict-all", RESOURCE, {"rpd": 1}):
+                            pass
+                    async with slow.acquire(
+                        "conflict-all", RESOURCE, {"rpd": 1}, on_unavailable=OnUnavailable.ALLOW
+                    ) as lease:
+                        assert lease.degraded
+        # Full jitter: every delay is drawn in [0, base * 2**attempt].
+        delays = [call.args[0] for call in sleep.call_args_list]
+        assert delays and all(0 <= d <= 0.025 * 4 for d in delays)
+        assert await shard_balances(repo, "conflict-all", "rpd", 2) == [1_000_000, None]
+
+    async def test_lost_move_is_replanned_once(self, limiter):
+        """Design §6 step 6: the donor is spent between the plan and the commit,
+        the move's condition fails, the transaction rolls back whole, and the
+        acquire re-plans from a fresh read and is admitted from what is left."""
+        repo = await self._full_shard0_at_two(limiter, "lost")
+        real = repo.transact_write
+        calls: list[int] = []
+
+        async def donor_spent_first(items):
+            calls.append(len(items))
+            if len(calls) == 1:
+                await _set_attr(repo, "lost", 0, "b_rpd_tk", 300_000)
+            return await real(items)
+
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        with patch.object(repo, "transact_write", donor_spent_first):
+            with patch("zae_limiter.repository.random.randrange", return_value=1):
+                async with slow.acquire("lost", RESOURCE, {"rpd": 100}):
+                    pass
+        assert calls == [2, 2]
+        # The re-plan moved what shard 0 still held (300 < one share of 500).
+        assert await shard_balances(repo, "lost", "rpd", 2) == [0, 200_000]
+
+    async def test_cascade_child_and_parent_moves_share_one_transaction(self, limiter):
+        """Review focus 2: a cascade creating a quota shard for both the child
+        and the parent carries both moves in the acquire's one transaction —
+        the two creates first, then both donor debits."""
+        repo = limiter._repository
+        freeze(repo)
+        now = repo._now_ms()
+        await limiter.create_entity("parent")
+        await limiter.create_entity("child", parent_id="parent", cascade=True)
+        await limiter.set_system_defaults([self.QUOTA])
+        for eid in ("child", "parent"):
+            state = BucketState.from_limit(eid, RESOURCE, self.QUOTA, now)
+            vu, _reset = RateLimiter._materialisation_stamps(self.QUOTA, state, now)
+            await repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        eid, RESOURCE, [state], now, shard_id=0, shard_count=1, vu=vu
+                    )
+                ]
+            )
+            assert await repo.bump_shard_count(eid, RESOURCE, 1) == 2
+        real = repo.transact_write
+        sent: list[list[str]] = []
+
+        async def record(items):
+            sent.append([next(iter(item)) for item in items])
+            return await real(items)
+
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        with patch.object(repo, "transact_write", record):
+            with patch("zae_limiter.repository.random.randrange", return_value=1):
+                async with slow.acquire("child", RESOURCE, {"rpd": 1}):
+                    pass
+        assert sent == [["Put", "Put", "Update", "Update"]]
+        for eid in ("child", "parent"):
+            assert await shard_balances(repo, eid, "rpd", 2) == [500_000, 499_000]
+
+    async def test_a_reset_pass_losing_its_pin_grants_nothing(self, limiter):
+        """R5, carried from Task 5: a reset pass sized at count 1 loses its
+        `shard_count <= 1` pin to a doubling that lands between its read and
+        its write. It falls to the consumption-only retry, which grants
+        nothing; the next pass resets at the doubled count."""
+        repo = limiter._repository
+        day = 86_400_000
+        midnight = (T0 // day + 1) * day
+        repo._now_ms = lambda: T0
+        await seed_shard0(limiter, "r5", self.QUOTA, T0)
+        await drain_shard(repo, "r5", "rpd", 0, floor=100)
+        repo._now_ms = lambda: midnight + 1_000
+        real = repo.transact_write
+        raced: list[int] = []
+
+        async def doubling_lands_first(items):
+            if not raced:
+                raced.append(1)
+                await _set_attr(repo, "r5", 0, "shard_count", 2)
+            return await real(items)
+
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        with patch.object(repo, "transact_write", doubling_lands_first):
+            async with slow.acquire("r5", RESOURCE, {"rpd": 1}):
+                pass
+        item = await _item(repo, "r5", 0)
+        assert item["b_rpd_tk"]["N"] == "99000", "the stale reset was not written"
+        assert int(item["rf"]["N"]) < midnight, "nor was its rf"
+
+        repo._entity_cache[(repo._namespace_id, "r5")] = (False, None, {RESOURCE: 2})
+        with patch("zae_limiter.repository.random.randrange", return_value=0):
+            async with slow.acquire("r5", RESOURCE, {"rpd": 1}):
+                pass
+        item = await _item(repo, "r5", 0)
+        assert item["b_rpd_tk"]["N"] == "499000"
+        assert item["b_rpd_gc"]["N"] == "2"

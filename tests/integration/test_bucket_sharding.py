@@ -1009,9 +1009,10 @@ class TestCascadeParentSharding:
 class TestQuotaShardCreationIsATransfer:
     """A quota's new shard is filled from its siblings, never minted (#587).
 
-    Exercises the round trip the moto unit tests stub out: the GSI3 KEYS_ONLY
-    discovery, the ``BatchGetItem``, and the conditional ``SET tk = :share``
-    with ``ReturnValues=UPDATED_OLD`` that reports what the clamp took.
+    Exercises the round trip moto only approximates: the GSI3 KEYS_ONLY
+    discovery, the ``BatchGetItem``, and the ADR-145 move — the new shard's
+    ``Put`` and the donor's conditional ``ADD tk -x`` in one
+    ``TransactWriteItems``.
     """
 
     CAPACITY = 1_000
@@ -1053,35 +1054,34 @@ class TestQuotaShardCreationIsATransfer:
         assert await repo.bump_shard_count(entity_id, "gpt-4", 1) == 2
         return repo
 
-    async def test_reclaim_clamps_shard_zero_and_reports_the_take(
-        self, localstack_limiter, unique_name
+    async def test_a_full_quota_moves_one_share_in_one_transaction(
+        self, localstack_limiter, monkeypatch, unique_name
     ):
+        """Shard 0's grant (count 1) covers shard 1's slot: one share moves."""
+        import random as _random
+
         from zae_limiter.models import Limit
 
         limiter = localstack_limiter
-        entity_id = f"quota-reclaim-{unique_name}"
+        entity_id = f"quota-move-{unique_name}"
         limit = Limit.quota("rpd", self.CAPACITY, cron=self.CRON)
         repo = await self._seed(limiter, entity_id, limit)
 
-        shares = {"rpd": 500_000}
-        found, reclaimed = await repo.reclaim_quota_surplus(entity_id, "gpt-4", shares)
-        assert found == 1
-        assert reclaimed == {"rpd": 500_000}
+        monkeypatch.setattr(_random, "randrange", lambda *a: 1)
+        monkeypatch.setattr(_random, "choice", lambda seq: 1 if 1 in seq else seq[0])
+        async with limiter.acquire(entity_id, "gpt-4", {"rpd": 1}):
+            pass
+
         assert await self._tokens(repo, entity_id, 0, "rpd") == 500_000
+        assert await self._tokens(repo, entity_id, 1, "rpd") == 499_000
 
-        # Idempotent: nothing left above the share, so nothing more is taken.
-        assert await repo.reclaim_quota_surplus(entity_id, "gpt-4", {"rpd": 500_000}) == (
-            1,
-            {"rpd": 0},
-        )
-
-    async def test_a_spent_quota_creates_its_new_shard_empty(
+    async def test_a_spent_quota_moves_only_what_is_left(
         self, localstack_limiter, monkeypatch, unique_name
     ):
-        """#587: 998 of 1000 spent, and the doubling must not hand back 499."""
+        """#587: 998 of 1000 spent, and the doubling must not hand back 499.
+        The 2 left move to shard 1, which admits one of them."""
         import random as _random
 
-        from zae_limiter import RateLimitExceeded
         from zae_limiter.models import Limit
 
         limiter = localstack_limiter
@@ -1097,13 +1097,12 @@ class TestQuotaShardCreationIsATransfer:
 
         monkeypatch.setattr(_random, "randrange", lambda *a: 1)
         monkeypatch.setattr(_random, "choice", lambda seq: 1 if 1 in seq else seq[0])
-        with pytest.raises(RateLimitExceeded):
-            async with limiter.acquire(entity_id, "gpt-4", {"rpd": 1}):
-                pass
+        async with limiter.acquire(entity_id, "gpt-4", {"rpd": 1}):
+            pass
 
-        # Shard 0 keeps its 2; nothing was minted onto shard 1.
-        assert await self._tokens(repo, entity_id, 0, "rpd") == 2_000
-        assert (await self._tokens(repo, entity_id, 1, "rpd") or 0) == 0
+        # Nothing was minted: shard 0's 2 moved, and one was spent.
+        assert await self._tokens(repo, entity_id, 0, "rpd") == 0
+        assert await self._tokens(repo, entity_id, 1, "rpd") == 1_000
 
     async def test_a_dripping_limit_still_mints_a_full_share(
         self, localstack_limiter, monkeypatch, unique_name
@@ -1308,8 +1307,8 @@ class TestNewShardJoinsTheWindow:
         assert int(item[bucket_attr(self.LIMIT_NAME, "ws")]["N"]) == t0
         assert int(item["rf"]["N"]) == t0 + 60_000
         assert int(item["vu"]["N"]) == t0 + 5 * 3_600_000
-        # Shard 0 held 999 against a new share of 500: 499 transferred, 1 spent.
-        assert int(item[bucket_attr(self.LIMIT_NAME, BUCKET_FIELD_TK)]["N"]) == 498_000
+        # Shard 0 held 999 and covers slot 1: a share of 500 moved (ADR-145), 1 spent.
+        assert int(item[bucket_attr(self.LIMIT_NAME, BUCKET_FIELD_TK)]["N"]) == 499_000
 
     async def test_the_projection_aliases_a_dotted_limit_name(
         self, localstack_limiter, unique_name

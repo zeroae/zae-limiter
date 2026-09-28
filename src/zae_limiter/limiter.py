@@ -6,7 +6,6 @@ import random
 import warnings
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import replace
 from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal
@@ -30,7 +29,7 @@ from .exceptions import (
     ValidationError,
     VersionMismatchError,
 )
-from .lease import Lease, LeaseEntry, persist_transfer_seeds
+from .lease import Lease, LeaseEntry, QuotaMoveLostError
 from .models import (
     AuditEvent,
     Availability,
@@ -41,6 +40,8 @@ from .models import (
     LimiterInfo,
     LimitStatus,
     OnUnavailableAction,
+    QuotaDonorDebit,
+    QuotaGrant,
     ResourceCapacity,
     StackOptions,
     UsageSnapshot,
@@ -757,7 +758,7 @@ class RateLimiter:
 
             # Fall back to slow path if speculative didn't succeed
             if lease is None:
-                lease = await self._do_acquire(
+                lease = await self._slow_acquire(
                     entity_id=entity_id,
                     resource=resource,
                     limits_override=limits,
@@ -777,6 +778,8 @@ class RateLimiter:
             # a failure here has written nothing a degraded lease would need
             # to roll back. Its consumption-only retry still raises
             # `RateLimitExceeded`, which the clause below passes through.
+            # A slow-path lease arrives committed already (`_slow_acquire`);
+            # this is then a no-op.
             await lease._commit_initial()
         except (
             RateLimitExceeded,
@@ -1948,6 +1951,50 @@ class RateLimiter:
             entry._initial_consumed = entry.consumed
         return lease
 
+    async def _slow_acquire(
+        self,
+        entity_id: str,
+        resource: str,
+        limits_override: list[Limit] | None,
+        consume: dict[str, int],
+        shard_id: int | None = None,
+        shard_count: int | None = None,
+        parent_shard_id: int | None = None,
+    ) -> Lease:
+        """The slow path and its initial commit, re-planned once on a lost move.
+
+        A commit carrying an ADR-145 quota move whose conditions fail — the
+        donor spent, reset or regranted since the read, or a conflict that
+        outlasted its retries — rolls back whole, donor untouched, and raises
+        `QuotaMoveLostError`. The plan is then stale, so the whole pass is re-read
+        and re-planned once (design §6 step 6). A second loss is re-raised, and
+        `acquire` surfaces it as `RateLimiterUnavailable` — or a degraded lease
+        under ALLOW — like any backend error: nothing was written either time.
+        """
+
+        async def plan_and_commit() -> Lease:
+            lease = await self._do_acquire(
+                entity_id=entity_id,
+                resource=resource,
+                limits_override=limits_override,
+                consume=consume,
+                shard_id=shard_id,
+                shard_count=shard_count,
+                parent_shard_id=parent_shard_id,
+            )
+            await lease._commit_initial()
+            return lease
+
+        try:
+            return await plan_and_commit()
+        except QuotaMoveLostError:
+            pass  # stale plan: re-read and re-plan once
+        try:
+            return await plan_and_commit()
+        except QuotaMoveLostError as exc:
+            # `acquire` turns this into `RateLimiterUnavailable`.
+            raise QuotaMoveLostError("quota shard grant lost twice to concurrent writers") from exc
+
     async def _do_acquire(
         self,
         entity_id: str,
@@ -2057,13 +2104,14 @@ class RateLimiter:
         # parent on [rpm, tpm] still has tpm gated and consumed on the parent
         # — a key known to either side of the cascade is not unknown.
         known_limits = [limit for eid in entity_ids for limit in entity_limits[eid]]
-        # helper -> here -> acquire -> __aenter__ -> caller
+        # helper -> here -> plan_and_commit -> _slow_acquire -> acquire ->
+        # __aenter__ -> caller
         unknown_keys = self._warn_unknown_limits(
             consume,
             known_limits,
             resource,
             config_source=child_config_source,
-            stacklevel=5,
+            stacklevel=7,
         )
 
         # Process buckets and build lease entries
@@ -2103,20 +2151,38 @@ class RateLimiter:
                 if any_existing
                 else []
             )
-            seed_shard_count, seed_transfer = await self._quota_seed_transfer(
-                eid, resource, missing, seed_shard_count, now_ms
+            # ADR-145: a quota being created or seeded on a sharded entity
+            # takes its share by a **move** off the current-period sibling
+            # covering its slot, or a fresh grant when none covers it. The
+            # donor debit rides in this acquire's own transaction (I5). Costs
+            # 1 GSI3 KEYS_ONLY query + 1 BatchGetItem, paid only here — once
+            # per shard creation or seed, for a resource that actually
+            # carries a quota, and never on the speculative fast path. The
+            # count is the largest of the cached one and the item's own
+            # (`seed_shard_count` already folds in the item's); the planner
+            # raises it further to any sibling's.
+            quota_needing = (
+                [limit for limit in missing if limit.is_quota]
+                if any_existing
+                else [limit for limit in entity_limits[eid] if limit.is_quota]
             )
+            plan_count = seed_shard_count if any_existing else eid_shard_count
+            grant_count, grants, donor_debits = (
+                await self._repository.plan_quota_shard(
+                    eid, resource, quota_needing, eid_shard, plan_count, now_ms
+                )
+                if quota_needing and plan_count > 1
+                else (plan_count, {}, [])
+            )
+            debit_for = {debit.limit_name: debit for debit in donor_debits}
+            if any_existing:
+                seed_shard_count = grant_count
+            else:
+                # The created item is stamped at the count its grants were
+                # sized at, so its reset target and its `gc` agree.
+                eid_shard_count = grant_count
             seed_ws = await self._seed_window_starts(eid, resource, missing, seed_shard_count)
 
-            # A quota has no rate for a freshly minted share to amortise
-            # against (ADR-137), so a shard added to a set that already exists
-            # is filled by transfer from its siblings rather than by a mint
-            # (#587). Costs 1 GSI3 KEYS_ONLY query + 1 BatchGetItem, paid only
-            # here — once per shard creation, for a resource that actually
-            # carries a quota, and never on the speculative fast path.
-            quota_transfer = await self._quota_transfer(
-                eid, resource, entity_limits[eid], eid_shard_count, any_existing, now_ms
-            )
             # The window a shard being created joins, read off shard 0 with
             # `eid`'s own read — on a cascade that is the parent's, never the
             # child's (ADR-139). Empty unless a shard N>0 is being created.
@@ -2131,16 +2197,17 @@ class RateLimiter:
                 created_anchor: int | None = None
                 stored_rsa: int | None = None
                 seed = existing is None and any_existing
-                seed_initial: BucketState | None = None
+                donor: QuotaDonorDebit | None = None
                 if seed:
                     is_new = True
                     # Missing from an item that exists (#633): seeded at its
                     # per-shard, schedule-effective starting share, exactly as
-                    # a create would start it — a quota by transfer where a
-                    # sibling already holds more than its share (#587), a
-                    # session quota joining shard 0's live window (ADR-140).
-                    # The same rules `from_limit` and the create path apply
-                    # below, taken at the item's shard count.
+                    # a create would start it — a quota by an ADR-145 move off
+                    # the sibling covering its slot, a session quota joining
+                    # shard 0's live window (ADR-140). The same rules
+                    # `from_limit` and the create path apply below, taken at
+                    # the item's shard count. A joined window that has ended
+                    # owes a fresh allowance: no move rides (design §5).
                     inherited_ws = seed_ws.get(limit.name)
                     window_live: bool | None = None
                     if inherited_ws is not None and limit.reset_after_seconds is not None:
@@ -2151,38 +2218,12 @@ class RateLimiter:
                         limit,
                         now_ms,
                         shard_count=seed_shard_count,
-                        reclaimed_milli=(
-                            None if window_live is False else seed_transfer.get(limit.name)
-                        ),
+                        starting_tokens_milli=self._granted_tokens(limit, grants, window_live),
                     )
+                    if window_live is not False:
+                        donor = debit_for.get(limit.name)
                     if window_live:
                         state.window_start_ms = inherited_ws
-                    # A transfer's clamp has already written; keep the seed
-                    # as it stands before admission so it can be persisted if
-                    # this pass ends up writing no seed (#633). The persist
-                    # leaves `rf` where it is, so it is skipped whenever `rf`
-                    # sits behind the limit's current period: the next slow
-                    # pass would then apply the reset it thinks it missed and
-                    # hand the shard a full share on top of the persisted
-                    # transfer the fast path had already spent (measured 1200
-                    # against 1000). For a session quota that is a joined
-                    # window starting after `rf` (`ws > rf` rolls it); for a
-                    # calendar quota, a reset edge after `rf`. Skipping falls
-                    # back to the unpersisted transfer, whose over-grant is
-                    # inside the residual tracked separately.
-                    period_start = (
-                        state.window_start_ms
-                        if limit.reset_after is not None
-                        else prev_reset_edge(limit.reset_schedule, now_ms)
-                        if limit.reset_schedule
-                        else None
-                    )
-                    if (
-                        limit.name in seed_transfer
-                        and window_live is not False
-                        and (period_start is None or period_start <= item_rf)
-                    ):
-                        seed_initial = replace(state)
                     # A seed that opens its own window on a sharded entity
                     # anchors the entity's next one, so it fans out like a
                     # rollover — the rule a created shard N>0 follows.
@@ -2206,9 +2247,10 @@ class RateLimiter:
                     #
                     # A quota is the exception: it never drips, so a fresh
                     # share would be net-new allowance nothing reclaims before
-                    # the next reset edge (#587). It is handed the surplus just
-                    # clamped off its siblings instead, which conserves the
-                    # entity-wide spendable total exactly.
+                    # the next reset edge (#587). It takes its share by an
+                    # ADR-145 move off the sibling covering its slot, which
+                    # conserves the entity-wide spendable total exactly, or a
+                    # fresh grant when no current-period sibling covers it.
                     #
                     # A shard created mid-window joins the window in progress
                     # rather than opening its own (ADR-140): `from_limit`
@@ -2223,9 +2265,9 @@ class RateLimiter:
                     #
                     # An ended window means the entity is owed a fresh
                     # allowance, so the shard opens its own at full share
-                    # instead of taking the transfer: its siblings' balances
+                    # instead of taking a move: its siblings' balances
                     # belong to the window that ended, and each restores its
-                    # own share when it next rolls. Taking the transfer there
+                    # own share when it next rolls. Taking a move there
                     # would leave this shard holding the dead window's
                     # leftovers for the whole of the new one.
                     inherited_ws = sibling_ws.get(limit.name)
@@ -2238,10 +2280,10 @@ class RateLimiter:
                         limit,
                         now_ms,
                         shard_count=eid_shard_count,
-                        reclaimed_milli=(
-                            None if window_live is False else quota_transfer.get(limit.name)
-                        ),
+                        starting_tokens_milli=self._granted_tokens(limit, grants, window_live),
                     )
+                    if window_live is not False:
+                        donor = debit_for.get(limit.name)
                     if window_live:
                         state.window_start_ms = inherited_ws
                     # A shard N>0 that opens its own window (shard 0's has
@@ -2357,7 +2399,6 @@ class RateLimiter:
                         _original_rf_ms=original_rf,
                         _is_new=is_new and not any_existing,
                         _seed=seed,
-                        _seed_initial=seed_initial,
                         _has_custom_config=has_custom_config,
                         _shard_id=eid_shard,
                         _shard_count=eid_shard_count,
@@ -2369,7 +2410,10 @@ class RateLimiter:
                         _window_start_ms=new_ws,
                         _window_end_ms=window_end_in_force(limit, state, now_ms),
                         _stored_reset_after_seconds=stored_rsa,
-                        _granted=granted,
+                        # A create or seed of a quota is a grant (ADR-145 I3):
+                        # it carries `gc` at the count it was sized at.
+                        _granted=granted or (is_new and limit.is_quota),
+                        _donor_debit=donor,
                     )
                 )
 
@@ -2388,9 +2432,8 @@ class RateLimiter:
         # Check for any violations
         violations = [s for s in statuses if s.exceeded]
         if violations:
-            # A quota seed's transfer already clamped its siblings; persist
-            # the seed so a rejection does not destroy what it took (#633).
-            await persist_transfer_seeds(self._repository, entries)
+            if any(entry._donor_debit is not None for entry in entries):
+                await self._commit_rejected_moves(entries, carriers)
             raise RateLimitExceeded(statuses)
 
         return Lease(
@@ -2430,71 +2473,56 @@ class RateLimiter:
         }
         return entity, bucket_dict
 
-    async def _quota_transfer(
-        self,
-        entity_id: str,
-        resource: str,
-        limits: list[Limit],
-        shard_count: int,
-        any_existing: bool,
-        now_ms: int,
-    ) -> dict[str, int]:
-        """Reclaim the surplus a new quota shard is to be created from (#587).
+    async def _commit_rejected_moves(
+        self, entries: list[LeaseEntry], carriers: list[LeaseEntry]
+    ) -> None:
+        """Commit a rejected pass's quota moves with nothing consumed (ADR-145 I5).
 
-        A quota has no drip for a freshly minted ``capacity // shard_count`` to
-        amortise against (ADR-137), so a shard added mid-period must be filled
-        by **transfer**: ``Repository.reclaim_quota_surplus`` clamps the shards
-        that already exist to the ceiling the doubling just shrank them to, and
-        what it takes is what this shard is created with. See
-        :func:`~zae_limiter.models.new_shard_starting_tokens_milli` for why that
-        conserves and why zero-filling and blind redistribution do not.
+        A pass that planned a move is rejected on some limit: the move is
+        still written, in the same transaction as the created or seeded shard
+        it funds, so the recipient keeps what was moved to it. Every limit
+        admitted in memory has its debit undone first — nothing a rejected
+        request asked for is ever debited (write-on-enter invariant 1). The
+        rf-locked write also applies any reset the pass saw pending and
+        advances `rf`, which is what the #633 standalone persist could not do
+        (the 1300 case).
 
-        Returns ``{}`` — costing nothing, and leaving every limit on the full
-        share — in each case that cannot need it:
-
-        * the entity already has a bucket item on the shard being acquired, so
-          nothing is being created;
-        * ``shard_count`` is 1, so there is no sibling to transfer from and the
-          only shard rightly starts full;
-        * no resolved limit is a quota, which is the whole dripping path; or
-        * no shard exists for this (entity, resource) at all, so nothing has
-          been spent and each shard is entitled to its full share.
-
-        Args:
-            entity_id: Entity whose shard is about to be created.
-            resource: Resource the acquire is for.
-            limits: Limits resolved for this entity and resource.
-            shard_count: Shards this bucket is split across.
-            any_existing: Whether a bucket item already exists on the shard
-                being acquired.
-            now_ms: The acquire's single clock reading (#430), so the ceiling
-                clamped to is the one in force at the same instant the new
-                shard's own share is computed from.
-
-        Returns:
-            ``{limit_name: reclaimed_milli}`` for the quota limits only. A name
-            absent from the mapping keeps the full share.
+        Best effort, and never a reason to fail differently: the move is one
+        atomic transaction, so if it does not land — a lost condition, a
+        conflict, a backend error — nothing was written, no token is lost,
+        and the next pass re-plans it. The caller raises `RateLimitExceeded`
+        regardless; surfacing a backend error here instead would let
+        `on_unavailable=ALLOW` admit a request that was rejected.
         """
-        if any_existing or shard_count <= 1:
-            return {}
-        shares_milli = {
-            limit.name: effective_params(
-                limit.capacity * 1000,
-                limit.refill_amount * 1000,
-                limit.refill_period_seconds * 1000,
-                limit.schedule,
-                now_ms,
-            )[0]
-            // shard_count
-            for limit in limits
-            if limit.is_quota
-        }
-        if not shares_milli:
-            return {}
-        shards_found, reclaimed = await self._repository.reclaim_quota_surplus(
-            entity_id, resource, shares_milli
-        )
-        return reclaimed if shards_found else {}
+        for entry in entries:
+            if entry.consumed:
+                entry.state.tokens_milli += entry.consumed * 1000
+                if entry.state.total_consumed_milli is not None:
+                    entry.state.total_consumed_milli -= entry.consumed * 1000
+                entry.consumed = 0
+        try:
+            await Lease(
+                repository=self._repository, entries=entries, _carriers=carriers
+            )._commit_initial()
+        except Exception:
+            logger.debug("A rejected pass's quota move was not written", exc_info=True)
+
+    @staticmethod
+    def _granted_tokens(
+        limit: Limit, grants: dict[str, QuotaGrant], window_live: bool | None
+    ) -> int | None:
+        """What a quota being created or seeded starts with (ADR-145).
+
+        ``None`` — the full share — for a dripping limit, for a quota the
+        planner returned no grant for (it read no siblings: nothing to cover
+        the slot), and for a session quota whose joined window has ended (a
+        fresh allowance, design §5). Otherwise the planned grant: a move's
+        amount, or a fresh share.
+        """
+        if window_live is False:
+            return None
+        grant = grants.get(limit.name)
+        return None if grant is None else grant.tokens_milli
 
     async def _sibling_window_starts(
         self,
@@ -2538,49 +2566,6 @@ class RateLimiter:
         if not window_limits:
             return {}
         return await self._repository.get_shard_window_starts(entity_id, resource, window_limits)
-
-    async def _quota_seed_transfer(
-        self,
-        entity_id: str,
-        resource: str,
-        missing: list[Limit],
-        shard_count: int,
-        now_ms: int,
-    ) -> tuple[int, dict[str, int]]:
-        """The shard count and transfers quotas missing from an existing shard are seeded with.
-
-        The seed counterpart of :meth:`_quota_transfer` (#633). Returns
-        ``(shard_count, {})`` — costing nothing, and leaving every missing
-        limit on its full share — unless the entity is sharded and one of the
-        missing limits is a quota: an unsharded item is the only shard, and a
-        dripping limit's seed amortises against its drip exactly as a new
-        shard's does. Otherwise defers to
-        :meth:`Repository.reclaim_quota_seed`, which may also raise the shard
-        count to one a sibling already carries.
-
-        Returns:
-            ``(shard_count, {limit_name: reclaimed_milli})``: the count every
-            seed on this item is taken at, and the quotas that must take a
-            transfer; a name absent from the mapping keeps the full share.
-        """
-        if shard_count <= 1:
-            return shard_count, {}
-        capacities_milli = {
-            limit.name: effective_params(
-                limit.capacity * 1000,
-                limit.refill_amount * 1000,
-                limit.refill_period_seconds * 1000,
-                limit.schedule,
-                now_ms,
-            )[0]
-            for limit in missing
-            if limit.is_quota
-        }
-        if not capacities_milli:
-            return shard_count, {}
-        return await self._repository.reclaim_quota_seed(
-            entity_id, resource, capacities_milli, shard_count
-        )
 
     async def _seed_window_starts(
         self,

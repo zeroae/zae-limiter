@@ -252,23 +252,6 @@ class TestCompositeBuilders:
         assert_expression_safe(update)
         assert "#pinsc <= :pinsc" in update["ConditionExpression"]
 
-    async def test_persist_seed(self) -> None:
-        """Both attempts of the transfer-seed persist (#633), captured."""
-        from unittest.mock import AsyncMock
-
-        from botocore.exceptions import ClientError
-
-        repo = _repo()
-        client = MagicMock()
-        lost = ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")
-        client.update_item = AsyncMock(side_effect=[lost, {}])
-        with patch.object(repo, "_get_client", AsyncMock(return_value=client)):
-            assert await repo.persist_seed(
-                "user-1", "api", 0, self._seed_states()["sess.v1"], vu=9, seed_shard_count=2
-            )
-        for call in client.update_item.call_args_list:
-            assert_expression_safe(call.kwargs)
-
     def test_retry_with_seeds(self) -> None:
         seeds = self._seed_states()
         update = _repo().build_composite_retry(
@@ -491,7 +474,10 @@ class TestClientWritesThroughMoto:
             )
         assert_expression_safe(spy.call_args.kwargs)
 
-    async def test_reclaim(self, limiter: RateLimiter) -> None:
+    async def test_quota_move_transaction(self, limiter: RateLimiter) -> None:
+        """An ADR-145 move — the seed's rf-locked write plus the donor debit —
+        reaches moto as one transaction whose every item is token-safe, and
+        lands: dotted and hyphenated quota names both moved."""
         repo = limiter._repository
         await repo.set_limits(
             "user-1",
@@ -503,13 +489,22 @@ class TestClientWritesThroughMoto:
         )
         async with limiter.acquire("user-1", "api", consume={DOTTED: 1}):
             pass
+        assert await repo.bump_shard_count("user-1", "api", 1) == 2
         client = await repo._get_client()
-        spy = await self._spy(repo)
-        with patch.object(client, "update_item", spy.forward):
-            await repo.reclaim_quota_surplus("user-1", "api", {DOTTED: 1_000, HYPHENATED: 1_000})
-        assert spy.call_count == 2
-        for call in spy.call_args_list:
-            assert_expression_safe(call.kwargs)
+        original = client.transact_write_items
+        sent: list[dict[str, Any]] = []
+
+        async def forward(**kwargs: Any) -> Any:
+            sent.extend(kwargs["TransactItems"])
+            return await original(**kwargs)
+
+        with patch.object(client, "transact_write_items", forward):
+            with patch("zae_limiter.repository.random.randrange", return_value=1):
+                async with limiter.acquire("user-1", "api", consume={DOTTED: 1}):
+                    pass
+        assert [next(iter(item)) for item in sent] == ["Put", "Update"]
+        for item in sent:
+            assert_expression_safe(next(iter(item.values())))
 
     async def test_disable_fan_out(self, limiter: RateLimiter) -> None:
         repo = limiter._repository

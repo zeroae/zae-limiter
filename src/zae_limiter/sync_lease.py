@@ -7,6 +7,7 @@ Changes should be made to the source file, then regenerated.
 """
 
 import logging
+import random
 import time
 import warnings
 from dataclasses import dataclass, field, replace
@@ -20,7 +21,7 @@ from .bucket import (
     window_end_in_force,
 )
 from .exceptions import LeaseExpiredError, RateLimitExceeded
-from .models import BucketState, Limit, LimitStatus
+from .models import BucketState, Limit, LimitStatus, QuotaDonorDebit
 from .schema import BUCKET_FIELD_RF, BUCKET_FIELD_TK, bucket_attr, calculate_bucket_ttl_seconds
 
 _CONFLICT_MAX_RETRIES = 3
@@ -56,8 +57,18 @@ class LeaseEntry:
     _window_end_ms: int | None = None
     _stored_reset_after_seconds: int | None = None
     _seed: bool = False
-    _seed_initial: BucketState | None = None
     _granted: bool = False
+    _donor_debit: QuotaDonorDebit | None = None
+
+
+class QuotaMoveLostError(Exception):
+    """A commit carrying an ADR-145 quota move did not land (internal).
+
+    The transaction failed a condition — the donor spent, reset or regranted
+    since it was read, or the recipient raced — or kept conflicting past its
+    retries. It rolled back whole, donor untouched, so the plan is stale and
+    the acquire re-plans from a fresh read (design §6 step 6). Not exported.
+    """
 
 
 def _mark_granted(entry: LeaseEntry) -> None:
@@ -70,28 +81,6 @@ def _mark_granted(entry: LeaseEntry) -> None:
     if entry.limit.is_quota:
         entry.state.grant_count = entry.state.shard_count
         entry._granted = True
-
-
-def persist_transfer_seeds(repo: "SyncRepositoryProtocol", entries: list[LeaseEntry]) -> None:
-    """Persist every transfer seed among ``entries`` that this pass will not write (#633).
-
-    Called on the two paths where a quota's transfer was taken but its seed is
-    not written by the pass itself: a slow-path rejection, and a lost `rf` lock
-    (before the consumption-only retry, which can then debit the persisted
-    seed). See :meth:`SyncRepository.persist_seed` for why this does not weaken
-    write-on-enter beyond the clamp that already ran.
-    """
-    for entry in entries:
-        if entry._seed_initial is None:
-            continue
-        repo.persist_seed(
-            entry.entity_id,
-            entry.resource,
-            entry._shard_id,
-            entry._seed_initial,
-            vu=entry._boundary_ms,
-            seed_shard_count=entry._seed_initial.shard_count,
-        )
 
 
 @dataclass
@@ -458,6 +447,16 @@ class SyncLease:
         if not items:
             self._initial_committed = True
             return
+        by_bucket: dict[tuple[str, str], list[QuotaDonorDebit]] = {}
+        for entry in self.entries:
+            if entry._donor_debit is not None:
+                by_bucket.setdefault((entry.entity_id, entry.resource), []).append(
+                    entry._donor_debit
+                )
+        donor_items: list[dict[str, Any]] = []
+        for (entity_id, resource), debits in by_bucket.items():
+            donor_items += repo.build_quota_donor_debits(entity_id, resource, debits)
+        items += donor_items
         condition_failed = False
         condition_exc: Exception | None = None
         for attempt in range(_CONFLICT_MAX_RETRIES + 1):
@@ -471,7 +470,7 @@ class SyncLease:
                     break
                 if _is_transaction_conflict(exc):
                     if attempt < _CONFLICT_MAX_RETRIES:
-                        delay = _CONFLICT_BASE_DELAY_S * 2**attempt
+                        delay = random.uniform(0, _CONFLICT_BASE_DELAY_S * 2**attempt)
                         logger.debug(
                             "TransactionConflict (attempt %d/%d), retrying in %.3fs",
                             attempt + 1,
@@ -480,10 +479,13 @@ class SyncLease:
                         )
                         time.sleep(delay)
                         continue
+                    if donor_items:
+                        raise QuotaMoveLostError from exc
                     raise
                 raise
+        if condition_failed and donor_items:
+            raise QuotaMoveLostError from condition_exc
         if condition_failed:
-            persist_transfer_seeds(repo, self.entries)
             logger.debug("Normal write failed (optimistic lock), retrying consumption-only")
             reason_codes = (
                 _get_cancellation_reason_codes(condition_exc) if condition_exc is not None else None
