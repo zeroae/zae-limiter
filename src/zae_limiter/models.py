@@ -2,6 +2,7 @@
 
 import re
 import warnings
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from typing import Any, Literal
@@ -12,6 +13,7 @@ from .schedule import (
     MAX_TOKENS,
     ScheduleEntry,
     effective_params,
+    prev_reset_edge,
 )
 
 # ---------------------------------------------------------------------------
@@ -2197,3 +2199,81 @@ class AuditEvent:
             resource=data.get("resource"),
             details=data.get("details", {}),
         )
+
+
+# --- ADR-145: the quota grant decision ---------------------------------------
+
+
+@dataclass(frozen=True)
+class QuotaSibling:
+    """One existing shard of a quota, as the grant decision sees it (ADR-145)."""
+
+    shard_id: int
+    tokens_milli: int
+    grant_count: int
+    current: bool
+
+
+@dataclass(frozen=True)
+class QuotaGrant:
+    """What a new or seeded quota shard starts with, and where it comes from."""
+
+    donor_shard: int | None
+    tokens_milli: int
+    donor_grant_count: int | None = None
+
+
+def plan_quota_grant(
+    siblings: Sequence[QuotaSibling],
+    shard_id: int,
+    shard_count: int,
+    share_milli: int,
+) -> QuotaGrant:
+    """Decide how shard ``shard_id`` at count ``shard_count`` is funded (ADR-145).
+
+    A current-period sibling ``i`` whose grant was sized at count ``g`` covers
+    every slot ``j`` with ``j % g == i % g``. If one covers ``shard_id``, the
+    closest (largest ``g``, then lowest id) donates ``min(share, its tokens)``
+    — a move, never a mint. If none does, nobody has been granted this slot's
+    share this period, and it is granted fresh. Shared by the client and the
+    aggregator's Path 2 clone; imports nothing outside the vendored stub.
+    """
+    covering = [
+        s
+        for s in siblings
+        if s.current
+        and s.shard_id != shard_id
+        and shard_id % s.grant_count == s.shard_id % s.grant_count
+    ]
+    if not covering:
+        return QuotaGrant(donor_shard=None, tokens_milli=share_milli)
+    donor = min(covering, key=lambda s: (-s.grant_count, s.shard_id))
+    return QuotaGrant(
+        donor_shard=donor.shard_id,
+        tokens_milli=max(0, min(share_milli, donor.tokens_milli)),
+        donor_grant_count=donor.grant_count,
+    )
+
+
+def quota_grant_is_current(
+    limit: "Limit",
+    rf_ms: int,
+    window_start_ms: int | None,
+    window_applied_ms: int | None,
+    now_ms: int,
+) -> bool:
+    """Whether a sibling's quota grant belongs to the current period (design §5).
+
+    The exact negation of "a reset is pending": for a calendar quota, no reset
+    edge after ``rf`` (`RateLimiter._apply_reset_edge`); for a session quota, a
+    live window already applied (``BucketState.window_rolled``).
+    """
+    if limit.reset_after_seconds is not None:
+        if window_start_ms is None:
+            return False
+        if window_start_ms + limit.reset_after_seconds * 1000 <= now_ms:
+            return False
+        applied = window_applied_ms if window_applied_ms is not None else rf_ms
+        return window_start_ms <= applied
+    edge = prev_reset_edge(limit.reset_schedule, now_ms)
+    return edge is None or edge <= rf_ms
