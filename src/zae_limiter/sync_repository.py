@@ -1412,6 +1412,10 @@ class SyncRepository:
                 provisioner_exists=provisioner_exists,
             )
             stamp = __version__ if current else self._lambda_version
+            try:
+                manager.ensure_tags(lambda_version=__version__ if current else None)
+            except Exception:
+                logger.warning("Could not refresh stack version tags", exc_info=True)
             self.set_version_record(
                 schema_version=get_schema_version(),
                 lambda_version=stamp,

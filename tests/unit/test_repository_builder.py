@@ -657,6 +657,31 @@ class TestVersionManagementCodePaths:
             await repo.close()
 
     @pytest.mark.asyncio
+    async def test_perform_lambda_update_refreshes_stack_tags(self, mock_dynamodb):
+        """The stack's version tags follow the pushed code, and a tag failure is non-fatal."""
+        from zae_limiter import __version__
+
+        repo = await _create_table("test-lambda-update-tags")
+        try:
+            mock_manager = AsyncMock()
+            mock_manager.__aenter__ = AsyncMock(return_value=mock_manager)
+            mock_manager.__aexit__ = AsyncMock(return_value=False)
+            mock_manager.deploy_lambda_code.return_value = {"status": "deployed"}
+            mock_manager.deploy_provisioner_code.return_value = {"status": "deployed"}
+
+            with patch(
+                "zae_limiter.infra.stack_manager.StackManager",
+                return_value=mock_manager,
+            ):
+                await repo._perform_lambda_update()
+                mock_manager.ensure_tags.assert_awaited_once_with(lambda_version=__version__)
+
+                mock_manager.ensure_tags.side_effect = RuntimeError("AccessDenied")
+                await repo._perform_lambda_update()  # must not raise
+        finally:
+            await repo.close()
+
+    @pytest.mark.asyncio
     async def test_ensure_infrastructure_internal_deploys_provisioner_code(self, mock_dynamodb):
         """_ensure_infrastructure_internal always deploys provisioner Lambda code,
         even when the aggregator is disabled (issue #433)."""

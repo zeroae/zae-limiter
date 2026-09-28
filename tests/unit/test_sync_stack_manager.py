@@ -820,6 +820,18 @@ class TestGetAllTags:
         assert tag_dict["zae-limiter:name"] == "my-app"
 
 
+def _current_version_tags(lambda_version: str | None = None) -> list[dict[str, str]]:
+    """Version tags as a freshly created stack would carry them."""
+    from zae_limiter import __version__
+    from zae_limiter.version import get_schema_version
+
+    return [
+        {"Key": "zae-limiter:version", "Value": __version__},
+        {"Key": "zae-limiter:schema-version", "Value": get_schema_version()},
+        {"Key": "zae-limiter:lambda-version", "Value": lambda_version or __version__},
+    ]
+
+
 class TestEnsureTags:
     """Test ensure_tags method for auto-tagging existing stacks."""
 
@@ -836,6 +848,8 @@ class TestEnsureTags:
                             "Tags": [
                                 {"Key": "ManagedBy", "Value": "zae-limiter"},
                                 {"Key": "zae-limiter:name", "Value": "my-app"},
+                                {"Key": "zae-limiter:type", "Value": "limiter"},
+                                *_current_version_tags(),
                             ]
                         }
                     ]
@@ -868,6 +882,93 @@ class TestEnsureTags:
             assert call_kwargs["UsePreviousTemplate"] is True
             tag_dict = {t["Key"]: t["Value"] for t in call_kwargs["Tags"]}
             assert tag_dict["ManagedBy"] == "zae-limiter"
+
+    @staticmethod
+    def _stack_with(tags: list[dict[str, str]]) -> MagicMock:
+        client = MagicMock()
+        client.describe_stacks = MagicMock(return_value={"Stacks": [{"Tags": tags}]})
+        client.update_stack = MagicMock()
+        return client
+
+    def test_refreshes_stale_version_tags(self) -> None:
+        """A stack tagged by an older release is re-tagged with this build's versions."""
+        from zae_limiter import __version__
+
+        stale = [
+            {"Key": "ManagedBy", "Value": "zae-limiter"},
+            {"Key": "zae-limiter:name", "Value": "my-app"},
+            {"Key": "zae-limiter:type", "Value": "limiter"},
+            {"Key": "zae-limiter:version", "Value": "0.13.0"},
+            {"Key": "zae-limiter:schema-version", "Value": "0.0.1"},
+            {"Key": "zae-limiter:lambda-version", "Value": "0.13.0"},
+        ]
+        with patch.object(
+            SyncStackManager, "_get_client", new_callable=MagicMock
+        ) as mock_get_client:
+            client = self._stack_with(stale)
+            mock_get_client.return_value = client
+            manager = SyncStackManager(stack_name="my-app", region="us-east-1")
+            result = manager.ensure_tags(lambda_version=__version__)
+        assert result is True
+        tags = {t["Key"]: t["Value"] for t in client.update_stack.call_args[1]["Tags"]}
+        assert tags["zae-limiter:version"] == __version__
+        assert tags["zae-limiter:lambda-version"] == __version__
+        assert tags["zae-limiter:schema-version"] != "0.0.1"
+
+    def test_keeps_lambda_version_unless_told(self) -> None:
+        """Without lambda_version the stack's claim about its functions is not moved."""
+        tags_in = [
+            {"Key": "ManagedBy", "Value": "zae-limiter"},
+            {"Key": "zae-limiter:name", "Value": "my-app"},
+            {"Key": "zae-limiter:type", "Value": "limiter"},
+            {"Key": "zae-limiter:version", "Value": "0.13.0"},
+            {"Key": "zae-limiter:lambda-version", "Value": "0.13.0"},
+        ]
+        with patch.object(
+            SyncStackManager, "_get_client", new_callable=MagicMock
+        ) as mock_get_client:
+            client = self._stack_with(tags_in)
+            mock_get_client.return_value = client
+            manager = SyncStackManager(stack_name="my-app", region="us-east-1")
+            assert manager.ensure_tags() is True
+        tags = {t["Key"]: t["Value"] for t in client.update_stack.call_args[1]["Tags"]}
+        assert tags["zae-limiter:lambda-version"] == "0.13.0"
+
+    def test_does_not_invent_lambda_version(self) -> None:
+        """A stack with no lambda-version tag does not gain one unless the caller supplies it."""
+        tags_in = [
+            {"Key": "ManagedBy", "Value": "zae-limiter"},
+            {"Key": "zae-limiter:name", "Value": "my-app"},
+        ]
+        with patch.object(
+            SyncStackManager, "_get_client", new_callable=MagicMock
+        ) as mock_get_client:
+            client = self._stack_with(tags_in)
+            mock_get_client.return_value = client
+            manager = SyncStackManager(stack_name="my-app", region="us-east-1")
+            manager.ensure_tags()
+        tags = {t["Key"]: t["Value"] for t in client.update_stack.call_args[1]["Tags"]}
+        assert "zae-limiter:lambda-version" not in tags
+
+    def test_preserves_existing_user_tags(self) -> None:
+        """update_stack replaces the tag set, so tags already on the stack are carried over."""
+        tags_in = [
+            {"Key": "ManagedBy", "Value": "zae-limiter"},
+            {"Key": "zae-limiter:name", "Value": "my-app"},
+            {"Key": "zae-limiter:version", "Value": "0.13.0"},
+            {"Key": "team", "Value": "platform"},
+            {"Key": "aws:cloudformation:stack-name", "Value": "my-app"},
+        ]
+        with patch.object(
+            SyncStackManager, "_get_client", new_callable=MagicMock
+        ) as mock_get_client:
+            client = self._stack_with(tags_in)
+            mock_get_client.return_value = client
+            manager = SyncStackManager(stack_name="my-app", region="us-east-1")
+            manager.ensure_tags()
+        tags = {t["Key"]: t["Value"] for t in client.update_stack.call_args[1]["Tags"]}
+        assert tags["team"] == "platform"
+        assert not any(k.startswith("aws:") for k in tags)
 
     def test_returns_false_on_describe_error(self) -> None:
         """ensure_tags returns False if describe_stacks fails."""
@@ -910,6 +1011,8 @@ class TestEnsureTags:
                             "Tags": [
                                 {"Key": "ManagedBy", "Value": "zae-limiter"},
                                 {"Key": "zae-limiter:name", "Value": "my-app"},
+                                {"Key": "zae-limiter:type", "Value": "limiter"},
+                                *_current_version_tags(),
                             ]
                         }
                     ]

@@ -283,18 +283,33 @@ class SyncStackManager:
             tag_dict[tag["Key"]] = tag["Value"]
         return [{"Key": k, "Value": v} for k, v in tag_dict.items()]
 
-    def ensure_tags(self, user_tags: dict[str, str] | None = None) -> bool:
+    def ensure_tags(
+        self, user_tags: dict[str, str] | None = None, *, lambda_version: str | None = None
+    ) -> bool:
         """
-        Ensure stack has discovery tags. Auto-tags existing stacks.
+        Ensure stack has current discovery and version tags.
 
-        Checks if the stack has the ``ManagedBy`` and ``zae-limiter:name``
-        tags. If missing, updates the stack tags via CloudFormation.
+        Checks the ``ManagedBy``, ``zae-limiter:name``, ``zae-limiter:version``
+        and ``zae-limiter:schema-version`` tags and updates the stack tags via
+        CloudFormation when any is missing or stale. CloudFormation propagates
+        stack tags to the table and Lambda functions, so this is what keeps
+        their ``zae-limiter:version`` tags current after an upgrade.
+
+        ``update_stack`` replaces the whole tag set, so tags already on the
+        stack (user-defined ones included) are carried over.
+
+        ``zae-limiter:lambda-version`` claims what the functions run, so it is
+        only moved when the caller has pushed (or proven absent) every
+        function: pass ``lambda_version`` then. Otherwise the stack's current
+        value is kept.
 
         Args:
             user_tags: Optional user-defined tags to include
+            lambda_version: Value for the ``zae-limiter:lambda-version`` tag;
+                None keeps the stack's current value
 
         Returns:
-            True if tags were added/updated, False if already present
+            True if tags were added/updated, False if already current
         """
         client = self._get_client()
         try:
@@ -305,16 +320,19 @@ class SyncStackManager:
             current_tags = {tag["Key"]: tag["Value"] for tag in stacks[0].get("Tags", [])}
         except ClientError:
             return False
-        from ..naming import PREFIX
-
-        user_name = self.stack_name
-        if user_name.startswith(PREFIX):
-            user_name = user_name[len(PREFIX) :]
-        has_managed_by = current_tags.get(MANAGED_BY_TAG_KEY) == MANAGED_BY_TAG_VALUE
-        has_name_tag = current_tags.get(NAME_TAG_KEY) == user_name
-        if has_managed_by and has_name_tag:
+        settable = {k: v for k, v in current_tags.items() if not k.startswith("aws:")}
+        desired = dict(settable)
+        managed = {t["Key"]: t["Value"] for t in self._get_all_tags(user_tags)}
+        if lambda_version is not None:
+            managed[LAMBDA_VERSION_TAG_KEY] = lambda_version
+        elif LAMBDA_VERSION_TAG_KEY in current_tags:
+            managed[LAMBDA_VERSION_TAG_KEY] = current_tags[LAMBDA_VERSION_TAG_KEY]
+        else:
+            managed.pop(LAMBDA_VERSION_TAG_KEY, None)
+        desired.update(managed)
+        if desired == settable:
             return False
-        new_tags = self._get_all_tags(user_tags)
+        new_tags = [{"Key": k, "Value": v} for k, v in desired.items()]
         try:
             client.update_stack(
                 StackName=self.stack_name,
