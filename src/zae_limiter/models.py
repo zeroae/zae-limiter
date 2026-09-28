@@ -2223,6 +2223,25 @@ class QuotaGrant:
     donor_grant_count: int | None = None
 
 
+@dataclass(frozen=True)
+class QuotaDonorDebit:
+    """The donor side of one ADR-145 move: ``tokens_milli`` off ``shard_id``.
+
+    Conditioned, when written, on the donor still holding the tokens, still
+    carrying the grant count read (``grant_count``), and its grant still
+    belonging to the current period: a calendar quota's ``rf`` at or past
+    ``guard_rf_ms`` (the reset edge in force), a session quota's ``wa`` still
+    ``guard_wa_ms``. ``None`` means that guard does not apply.
+    """
+
+    shard_id: int
+    limit_name: str
+    tokens_milli: int
+    grant_count: int
+    guard_rf_ms: int | None
+    guard_wa_ms: int | None
+
+
 def plan_quota_grant(
     siblings: Sequence[QuotaSibling],
     shard_id: int,

@@ -6,6 +6,7 @@ This module provides synchronous versions of the async classes.
 Changes should be made to the source file, then regenerated.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -21,6 +22,8 @@ if TYPE_CHECKING:
         Entity,
         Limit,
         OnUnavailableAction,
+        QuotaDonorDebit,
+        QuotaGrant,
         UsageSnapshot,
         UsageSummary,
     )
@@ -782,6 +785,50 @@ class SyncRepositoryProtocol(Protocol):
             ``(shards_found, {limit_name: reclaimed_milli})``. ``shards_found``
             is 0 when nothing is materialised for this (entity, resource),
             which is not the same as reclaiming nothing.
+        """
+        ...
+
+    def plan_quota_shard(
+        self,
+        entity_id: str,
+        resource: str,
+        limits: Sequence["Limit"],
+        shard_id: int,
+        shard_count: int,
+        now_ms: int,
+    ) -> tuple[int, dict[str, "QuotaGrant"], list["QuotaDonorDebit"]]:
+        """Plan the grant of every quota in ``limits`` for shard ``shard_id`` (ADR-145).
+
+        Reads the siblings once and decides per quota a move off the
+        current-period sibling covering this slot, or a fresh grant when none
+        does (``models.plan_quota_grant``). The count is the largest of
+        ``shard_count`` and every sibling's stored count; a lagging sibling
+        has it raised before a fresh grant (design §8 R5). Writes nothing
+        else: the debits ride in the acquire's own transaction.
+
+        Args:
+            entity_id: Entity owning the shards
+            resource: Resource the shards belong to
+            limits: The limits being created or seeded; non-quotas are ignored
+            shard_id: The shard being created or seeded
+            shard_count: The caller's shard count
+            now_ms: The pass's clock reading
+
+        Returns:
+            ``(count, {quota_name: QuotaGrant}, debits)``; a quota absent from
+            the grants takes its full share.
+        """
+        ...
+
+    def build_quota_donor_debits(
+        self, entity_id: str, resource: str, debits: Sequence["QuotaDonorDebit"]
+    ) -> list[dict[str, Any]]:
+        """The donor side of each ADR-145 move, one ``Update`` per donor shard.
+
+        Conditioned on the donor still holding the tokens, still at the grant
+        count read (or carrying none and at that shard count), and its grant
+        still in the current period. Several quotas moving off one donor
+        share one ``Update``.
         """
         ...
 

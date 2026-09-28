@@ -6,7 +6,8 @@ before the next reset edge. These tests pin the conserving rule that replaces
 it, and — just as importantly — pin that the **dripping** path is untouched.
 """
 
-from unittest.mock import patch
+from datetime import timedelta
+from unittest.mock import ANY, patch
 
 import pytest
 from botocore.exceptions import ClientError
@@ -20,7 +21,12 @@ from tests.fixtures.sharding import (
     walk_doublings,
 )
 from zae_limiter import Limit, RateLimiter, schema
-from zae_limiter.models import BucketState, new_shard_starting_tokens_milli
+from zae_limiter.models import (
+    BucketState,
+    QuotaDonorDebit,
+    QuotaGrant,
+    new_shard_starting_tokens_milli,
+)
 
 QUOTA_CRON = "0 0 * * *"
 
@@ -51,19 +57,56 @@ async def seed_shard0(limiter, entity_id, limit, now_ms, resource=RESOURCE):
     repo._entity_cache[(repo._namespace_id, entity_id)] = (False, None, {resource: 1})
 
 
-async def _write_shard(repo, entity_id, limit, shard_id, tokens_milli, resource=RESOURCE):
-    """Put a sibling shard item directly, holding a chosen balance."""
+async def _write_shard(
+    repo,
+    entity_id,
+    limit,
+    shard_id,
+    tokens_milli,
+    resource=RESOURCE,
+    *,
+    grant_count: int | None = None,
+    shard_count: int = 2,
+    window_start_ms: int | None = None,
+):
+    """Put a sibling shard item directly, holding a chosen balance.
+
+    ``grant_count`` writes ``b_{name}_gc`` (ADR-145); ``None`` leaves it off,
+    the shape of a v0.14 item. ``window_start_ms`` opens a session window.
+    """
     now_ms = repo._now_ms()
     state = BucketState.from_limit(entity_id, resource, limit, now_ms)
     state.tokens_milli = tokens_milli
+    state.grant_count = grant_count
+    if window_start_ms is not None:
+        state.window_start_ms = window_start_ms
     vu, _reset = RateLimiter._materialisation_stamps(limit, state, now_ms)
     await repo.transact_write(
         [
             repo.build_composite_create(
-                entity_id, resource, [state], now_ms, shard_id=shard_id, shard_count=2, vu=vu
+                entity_id,
+                resource,
+                [state],
+                now_ms,
+                shard_id=shard_id,
+                shard_count=shard_count,
+                vu=vu,
             )
         ]
     )
+
+
+async def _item(repo, entity_id, shard_id, resource=RESOURCE):
+    """One shard's raw item, or ``{}`` if it does not exist."""
+    client = await repo._get_client()
+    response = await client.get_item(
+        TableName=repo.table_name,
+        Key={
+            "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, resource, shard_id)},
+            "SK": {"S": schema.sk_state()},
+        },
+    )
+    return response.get("Item") or {}
 
 
 class TestQuotaShardCreation:
@@ -321,3 +364,213 @@ class TestReclaimQuotaSurplus:
         with patch.object(client, "update_item", side_effect=error):
             with pytest.raises(ClientError):
                 await repo.reclaim_quota_surplus("rq-boom", RESOURCE, {"rpd": 500_000})
+
+
+class TestPlanQuotaShard:
+    """``Repository.plan_quota_shard`` and ``build_quota_donor_debits`` (ADR-145)."""
+
+    QUOTA = Limit.quota("rpd", 1000, cron=QUOTA_CRON)
+    GC = schema.bucket_attr("rpd", schema.BUCKET_FIELD_GC)
+
+    async def test_no_shards_is_a_fresh_grant(self, limiter):
+        count, grants, debits = await limiter._repository.plan_quota_shard(
+            "e1",
+            RESOURCE,
+            [self.QUOTA],
+            shard_id=1,
+            shard_count=2,
+            now_ms=freeze(limiter._repository),
+        )
+        assert count == 2
+        assert grants == {"rpd": QuotaGrant(donor_shard=None, tokens_milli=500_000)}
+        assert debits == []
+
+    async def test_no_quota_or_one_shard_reads_nothing(self, limiter):
+        repo = limiter._repository
+        now = freeze(repo)
+        with patch.object(repo, "_discover_entity_bucket_pks") as discover:
+            assert await repo.plan_quota_shard(
+                "e1", RESOURCE, [Limit.per_minute("rpm", 10)], 1, 2, now
+            ) == (2, {}, [])
+            assert await repo.plan_quota_shard("e1", RESOURCE, [self.QUOTA], 0, 1, now) == (
+                1,
+                {},
+                [],
+            )
+        discover.assert_not_called()
+
+    async def test_split_plans_a_move_from_the_parent(self, limiter):
+        now = freeze(limiter._repository)
+        await seed_shard0(limiter, "e1", self.QUOTA, now, RESOURCE)  # 1000 held, count 1
+        count, grants, debits = await limiter._repository.plan_quota_shard(
+            "e1", RESOURCE, [self.QUOTA], shard_id=1, shard_count=2, now_ms=now
+        )
+        assert count == 2
+        assert grants["rpd"] == QuotaGrant(donor_shard=0, tokens_milli=500_000, donor_grant_count=1)
+        assert debits == [QuotaDonorDebit(0, "rpd", 500_000, 1, guard_rf_ms=ANY, guard_wa_ms=None)]
+        assert debits[0].guard_rf_ms is not None and debits[0].guard_rf_ms <= now
+
+    async def test_the_count_is_the_largest_stored(self, limiter):
+        """A stale caller at 2 plans at the siblings' 4: slot 1's share is 250."""
+        repo = limiter._repository
+        freeze(repo)
+        await _write_shard(repo, "e1", self.QUOTA, 0, 1_000_000, grant_count=1, shard_count=4)
+        count, grants, _debits = await repo.plan_quota_shard(
+            "e1", RESOURCE, [self.QUOTA], 1, 2, repo._now_ms()
+        )
+        assert count == 4
+        assert grants["rpd"] == QuotaGrant(donor_shard=0, tokens_milli=250_000, donor_grant_count=1)
+
+    async def test_a_spent_donor_plans_no_debit(self, limiter):
+        repo = limiter._repository
+        freeze(repo)
+        await _write_shard(repo, "e1", self.QUOTA, 0, 0, grant_count=1, shard_count=2)
+        _count, grants, debits = await repo.plan_quota_shard(
+            "e1", RESOURCE, [self.QUOTA], 1, 2, repo._now_ms()
+        )
+        assert grants["rpd"] == QuotaGrant(donor_shard=0, tokens_milli=0, donor_grant_count=1)
+        assert debits == []
+
+    async def test_a_sibling_without_the_quota_is_not_a_donor(self, limiter):
+        repo = limiter._repository
+        freeze(repo)
+        await _write_shard(repo, "e1", Limit.per_minute("rpm", 10), 0, 10_000, shard_count=2)
+        _count, grants, debits = await repo.plan_quota_shard(
+            "e1", RESOURCE, [self.QUOTA], 1, 2, repo._now_ms()
+        )
+        assert grants["rpd"].donor_shard is None and debits == []
+
+    async def test_lagging_sibling_count_is_propagated_before_a_fresh_grant(self, limiter):
+        """R5: shard 1 still says count 2 while the caller is at 4."""
+        repo = limiter._repository
+        freeze(repo)
+        await _write_shard(repo, "e1", self.QUOTA, 0, 250_000, grant_count=4, shard_count=4)
+        await _write_shard(repo, "e1", self.QUOTA, 1, 500_000, grant_count=2, shard_count=2)
+
+        count, grants, debits = await repo.plan_quota_shard(
+            "e1", RESOURCE, [self.QUOTA], 2, 4, repo._now_ms()
+        )
+        # Slot 2: shard 0 at gc 4 covers {0}; shard 1 at gc 2 covers {1, 3}.
+        assert count == 4
+        assert grants["rpd"] == QuotaGrant(donor_shard=None, tokens_milli=250_000)
+        assert debits == []
+        assert (await _item(repo, "e1", 1))["shard_count"] == {"N": "4"}
+        assert (await _item(repo, "e1", 0))["shard_count"] == {"N": "4"}
+
+    async def test_a_lagging_shard_zero_is_propagated_too(self, limiter):
+        """``_propagate_shard_count`` alone starts at shard 1; the planner names 0."""
+        repo = limiter._repository
+        freeze(repo)
+        await _write_shard(repo, "e1", self.QUOTA, 0, 500_000, grant_count=2, shard_count=2)
+        await _write_shard(repo, "e1", self.QUOTA, 1, 250_000, grant_count=4, shard_count=4)
+
+        _count, grants, _debits = await repo.plan_quota_shard(
+            "e1", RESOURCE, [self.QUOTA], 3, 4, repo._now_ms()
+        )
+        # Slot 3: shard 0 at gc 2 covers {0, 2}; shard 1 at gc 4 covers {1}.
+        assert grants["rpd"].donor_shard is None
+        assert (await _item(repo, "e1", 0))["shard_count"] == {"N": "4"}
+
+    async def test_a_move_does_not_propagate(self, limiter):
+        repo = limiter._repository
+        freeze(repo)
+        await _write_shard(repo, "e1", self.QUOTA, 0, 1_000_000, grant_count=1, shard_count=1)
+        with patch.object(repo, "_propagate_shard_count") as propagate:
+            await repo.plan_quota_shard("e1", RESOURCE, [self.QUOTA], 1, 2, repo._now_ms())
+        propagate.assert_not_called()
+
+    async def test_a_corrupt_grant_count_reads_as_the_shard_count(self, limiter):
+        """A stored ``gc < 1`` must not become a modulus of zero."""
+        repo = limiter._repository
+        freeze(repo)
+        await _write_shard(repo, "e1", self.QUOTA, 0, 1_000_000, grant_count=0, shard_count=1)
+        _count, grants, debits = await repo.plan_quota_shard(
+            "e1", RESOURCE, [self.QUOTA], 1, 2, repo._now_ms()
+        )
+        assert grants["rpd"] == QuotaGrant(donor_shard=0, tokens_milli=500_000, donor_grant_count=1)
+        assert [d.grant_count for d in debits] == [1]
+
+    async def test_a_session_donor_is_guarded_on_its_window_marker(self, limiter):
+        repo = limiter._repository
+        now = freeze(repo)
+        session = Limit.quota("session", 1000, reset_after=timedelta(hours=5))
+        await _write_shard(
+            repo, "e1", session, 0, 1_000_000, shard_count=1, window_start_ms=now - 1000
+        )
+        _count, grants, debits = await repo.plan_quota_shard("e1", RESOURCE, [session], 1, 2, now)
+        assert grants["session"].donor_shard == 0
+        assert debits == [QuotaDonorDebit(0, "session", 500_000, 1, None, now - 1000)]
+
+    async def test_legacy_donor_without_gc_can_donate(self, limiter):
+        """Review focus 4: a v0.14 item (no gc) reads as gc = shard_count."""
+        repo = limiter._repository
+        freeze(repo)
+        await _write_shard(repo, "e1", self.QUOTA, 0, 1_000_000, shard_count=1)
+        assert self.GC not in await _item(repo, "e1", 0)
+
+        _count, _grants, debits = await repo.plan_quota_shard(
+            "e1", RESOURCE, [self.QUOTA], 1, 2, repo._now_ms()
+        )
+        await repo.transact_write(repo.build_quota_donor_debits("e1", RESOURCE, debits))
+        assert await shard_balances(repo, "e1", "rpd", 1) == [500_000]
+
+    async def test_a_donor_regranted_since_the_read_is_not_debited(self, limiter):
+        """R3: the donor's grant count moved, so the planned debit must fail."""
+        repo = limiter._repository
+        freeze(repo)
+        await _write_shard(repo, "e1", self.QUOTA, 0, 1_000_000, grant_count=1, shard_count=1)
+        _count, _grants, debits = await repo.plan_quota_shard(
+            "e1", RESOURCE, [self.QUOTA], 1, 2, repo._now_ms()
+        )
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, "e1", RESOURCE, 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="SET #gc = :two",
+            ExpressionAttributeNames={"#gc": self.GC},
+            ExpressionAttributeValues={":two": {"N": "2"}},
+        )
+        with pytest.raises(ClientError) as raised:
+            await repo.transact_write(repo.build_quota_donor_debits("e1", RESOURCE, debits))
+        assert raised.value.response["Error"]["Code"] == "ConditionalCheckFailedException"
+        assert await shard_balances(repo, "e1", "rpd", 1) == [1_000_000]
+
+    async def test_a_debit_larger_than_the_balance_is_refused(self, limiter):
+        repo = limiter._repository
+        freeze(repo)
+        await _write_shard(repo, "e1", self.QUOTA, 0, 100_000, grant_count=1, shard_count=1)
+        debit = QuotaDonorDebit(0, "rpd", 200_000, 1, None, None)
+        with pytest.raises(ClientError):
+            await repo.transact_write(repo.build_quota_donor_debits("e1", RESOURCE, [debit]))
+        assert await shard_balances(repo, "e1", "rpd", 1) == [100_000]
+
+    async def test_two_quotas_same_donor_merge_into_one_update(self, limiter):
+        """Review focus 3: a transaction may touch an item once."""
+        items = limiter._repository.build_quota_donor_debits(
+            "e1",
+            RESOURCE,
+            [
+                QuotaDonorDebit(0, "rpd", 500_000, 1, None, None),
+                QuotaDonorDebit(0, "rpm2", 50_000, 1, None, None),
+            ],
+        )
+        assert len(items) == 1
+        expr = items[0]["Update"]["UpdateExpression"]
+        assert expr.count("#qt") == 2
+
+    async def test_debits_on_two_donors_are_two_updates_in_shard_order(self, limiter):
+        repo = limiter._repository
+        items = repo.build_quota_donor_debits(
+            "e1",
+            RESOURCE,
+            [
+                QuotaDonorDebit(2, "rpd", 1, 4, None, None),
+                QuotaDonorDebit(0, "rpd", 1, 4, None, None),
+            ],
+        )
+        assert [item["Update"]["Key"]["PK"]["S"] for item in items] == [
+            schema.pk_bucket(repo._namespace_id, "e1", RESOURCE, shard) for shard in (0, 2)
+        ]

@@ -20,6 +20,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from zae_limiter import Limit, RateLimiter, Repository
+from zae_limiter.models import QuotaDonorDebit
 from zae_limiter.schedule import ScheduleEntry
 from zae_limiter.schema import BUCKET_FIELD_TK, BUCKET_FIELD_WA, bucket_attr, pk_bucket
 from zae_limiter_aggregator.processor import (
@@ -292,6 +293,23 @@ class TestCompositeBuilders:
             "user-1", "api", deltas={DOTTED: 1000, "rpm": 0, HYPHENATED: -2000}
         )["Update"]
         assert_expression_safe(update)
+
+    def test_quota_donor_debits(self) -> None:
+        for item in _repo().build_quota_donor_debits(
+            "e",
+            "r",
+            [
+                QuotaDonorDebit(0, DOTTED, 1, 1, 5, None),
+                QuotaDonorDebit(0, HYPHENATED, 1, 2, None, 7),
+            ],
+        ):
+            assert_expression_safe(item["Update"])
+
+    def test_quota_donor_debit_without_a_period_guard(self) -> None:
+        for item in _repo().build_quota_donor_debits(
+            "e", "r", [QuotaDonorDebit(1, DOTTED, 1, 2, None, None)]
+        ):
+            assert_expression_safe(item["Update"])
 
 
 class TestParamSyncBuilders:

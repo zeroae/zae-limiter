@@ -11,7 +11,7 @@ import logging
 import random
 import time
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
 import boto3
@@ -36,10 +36,15 @@ from .models import (
     Entity,
     Limit,
     OnUnavailableAction,
+    QuotaDonorDebit,
+    QuotaGrant,
+    QuotaSibling,
     StackOptions,
     UsageSnapshot,
     UsageSummary,
     hoisted_schedule_timezone,
+    plan_quota_grant,
+    quota_grant_is_current,
     validate_identifier,
     validate_resource,
 )
@@ -3177,7 +3182,12 @@ class SyncRepository:
         return self._learn_shard_count(entity_id, resource, effective_count, meta=meta)
 
     def _propagate_shard_count(
-        self, entity_id: str, resource: str, old_count: int, new_count: int
+        self,
+        entity_id: str,
+        resource: str,
+        old_count: int,
+        new_count: int,
+        shards: Sequence[int] | None = None,
     ) -> int:
         """Stamp ``new_count`` on the shards that already exist.
 
@@ -3193,10 +3203,15 @@ class SyncRepository:
         monotonic, so racing with the aggregator or another client is a no-op
         rather than a conflict.
 
+        ``shards`` names the targets explicitly instead of ``1..old_count-1``;
+        the ADR-145 planner passes the siblings it saw lagging, which can
+        include shard 0.
+
         Returns:
             The number of shards actually updated.
         """
-        if old_count <= 1:
+        targets = list(range(1, old_count)) if shards is None else list(shards)
+        if not targets:
             return 0
         client = self._get_client()
 
@@ -3223,7 +3238,7 @@ class SyncRepository:
                     return 0
                 raise
 
-        results = self._run_in_executor(*[lambda n=n: stamp(n) for n in range(1, old_count)])
+        results = self._run_in_executor(*[lambda n=n: stamp(n) for n in targets])
         return sum(results)
 
     def _propagate_window_start(
@@ -5704,6 +5719,207 @@ class SyncRepository:
                     context=f"quota shards for entity {entity_id!r}",
                     entity_id=entity_id,
                 )
+            )
+        return items
+
+    def plan_quota_shard(
+        self,
+        entity_id: str,
+        resource: str,
+        limits: Sequence[Limit],
+        shard_id: int,
+        shard_count: int,
+        now_ms: int,
+    ) -> tuple[int, dict[str, QuotaGrant], list[QuotaDonorDebit]]:
+        """Plan the grant of every quota in ``limits`` for shard ``shard_id`` (ADR-145).
+
+        Reads the siblings once — one GSI3 KEYS_ONLY query + one
+        ``BatchGetItem``, the #587 reclaim's cost — and decides per quota, with
+        the pure ``models.plan_quota_grant``: a **move** off the current-period
+        sibling covering this slot, or a fresh grant when none covers it.
+
+        The count is the largest of ``shard_count`` and every sibling's stored
+        count, and each quota's share is its schedule-effective capacity at
+        ``now_ms`` over that count. Before a fresh grant, a sibling still below
+        that count has it raised (design §8 R5) — a write only when a lag is
+        seen. Writes nothing else: the returned debits ride in the acquire's
+        own transaction (I5), built by :meth:`build_quota_donor_debits`.
+
+        Returns:
+            ``(count, {quota_name: QuotaGrant}, debits)``. Grants and debits
+            are empty when ``limits`` holds no quota or ``shard_count <= 1``
+            (no sibling to read); a quota absent from the grants takes its full
+            share.
+        """
+        quotas = [limit for limit in limits if limit.is_quota]
+        if not quotas or shard_count <= 1:
+            return (shard_count, {}, [])
+        stored: dict[int, dict[str, Any]] = {}
+        for item in self._entity_bucket_items(entity_id, resource):
+            sibling_id = schema.parse_bucket_pk(item["PK"]["S"])[3]
+            if sibling_id != shard_id:
+                stored[sibling_id] = item
+        counts = {sid: self._stored_shard_count(item) for sid, item in stored.items()}
+        count = max([shard_count, *counts.values()])
+        grants: dict[str, QuotaGrant] = {}
+        debits: list[QuotaDonorDebit] = []
+        for limit in quotas:
+            capacity_milli = schedule.effective_params(
+                limit.capacity * 1000, 0, limit.refill_period_seconds * 1000, limit.schedule, now_ms
+            )[0]
+            siblings = [
+                sibling
+                for sibling in (
+                    self._quota_sibling(sid, item, limit, now_ms) for sid, item in stored.items()
+                )
+                if sibling is not None
+            ]
+            grant = plan_quota_grant(siblings, shard_id, count, capacity_milli // count)
+            grants[limit.name] = grant
+            if (
+                grant.donor_shard is not None
+                and grant.donor_grant_count is not None
+                and (grant.tokens_milli > 0)
+            ):
+                debits.append(
+                    self._donor_debit(
+                        grant.donor_shard,
+                        grant.donor_grant_count,
+                        grant.tokens_milli,
+                        limit,
+                        stored[grant.donor_shard],
+                        now_ms,
+                    )
+                )
+        if any(grant.donor_shard is None for grant in grants.values()):
+            lagging = sorted((sid for sid, stored_count in counts.items() if stored_count < count))
+            if lagging:
+                self._propagate_shard_count(entity_id, resource, count, count, lagging)
+        return (count, grants, debits)
+
+    @staticmethod
+    def _stored_shard_count(item: dict[str, Any]) -> int:
+        """An item's stored ``shard_count``; absent or corrupt (< 1) reads as 1."""
+        return max(1, int(item.get("shard_count", {}).get("N", "1")))
+
+    @classmethod
+    def _quota_sibling(
+        cls, shard_id: int, item: dict[str, Any], limit: Limit, now_ms: int
+    ) -> QuotaSibling | None:
+        """One sibling as the ADR-145 planner sees it; ``None`` if it lacks the quota.
+
+        A sibling with no ``gc`` (a v0.14 item, or one written before the
+        quota's first reset under ADR-145) reads as ``gc = its shard_count``
+        (design §9). So does a corrupt ``gc < 1``, which would otherwise be a
+        modulus of zero in the coverage test.
+        """
+        tk = item.get(schema.bucket_attr(limit.name, schema.BUCKET_FIELD_TK), {}).get("N")
+        if tk is None:
+            return None
+        gc = item.get(schema.bucket_attr(limit.name, schema.BUCKET_FIELD_GC), {}).get("N")
+        grant_count = int(gc) if gc is not None else 0
+        if grant_count < 1:
+            grant_count = cls._stored_shard_count(item)
+        ws = item.get(schema.bucket_attr(limit.name, schema.BUCKET_FIELD_WS), {}).get("N")
+        wa = item.get(schema.bucket_attr(limit.name, schema.BUCKET_FIELD_WA), {}).get("N")
+        rf = int(item.get("rf", {}).get("N", "0"))
+        return QuotaSibling(
+            shard_id=shard_id,
+            tokens_milli=int(tk),
+            grant_count=grant_count,
+            current=quota_grant_is_current(
+                limit,
+                rf,
+                int(ws) if ws is not None else None,
+                int(wa) if wa is not None else None,
+                now_ms,
+            ),
+        )
+
+    @staticmethod
+    def _donor_debit(
+        donor_shard: int,
+        donor_grant_count: int,
+        tokens_milli: int,
+        limit: Limit,
+        donor: dict[str, Any],
+        now_ms: int,
+    ) -> QuotaDonorDebit:
+        """The debit for a planned move, with the donor's current-period guard."""
+        if limit.reset_after is not None:
+            wa = donor.get(schema.bucket_attr(limit.name, schema.BUCKET_FIELD_WA), {}).get("N")
+            guard_rf_ms = None
+            guard_wa_ms = int(wa) if wa is not None else None
+        else:
+            guard_rf_ms = schedule.prev_reset_edge(limit.reset_schedule, now_ms)
+            guard_wa_ms = None
+        return QuotaDonorDebit(
+            shard_id=donor_shard,
+            limit_name=limit.name,
+            tokens_milli=tokens_milli,
+            grant_count=donor_grant_count,
+            guard_rf_ms=guard_rf_ms,
+            guard_wa_ms=guard_wa_ms,
+        )
+
+    def build_quota_donor_debits(
+        self, entity_id: str, resource: str, debits: Sequence[QuotaDonorDebit]
+    ) -> list[dict[str, Any]]:
+        """The donor side of each ADR-145 move, one ``Update`` per donor shard.
+
+        ``ADD tk -x`` under: the donor still exists; still holds ``x``; its
+        grant count is the one read (or absent and equal to its shard count —
+        a v0.14 item, design §9); and its grant is still the current period
+        (calendar ``rf >= edge``; session ``wa`` unchanged). Several quotas
+        moving off one donor share one ``Update``: a transaction may touch an
+        item once. Tokens are positional (#634).
+        """
+        by_shard: dict[int, list[QuotaDonorDebit]] = {}
+        for debit in debits:
+            by_shard.setdefault(debit.shard_id, []).append(debit)
+        items: list[dict[str, Any]] = []
+        for shard, group in sorted(by_shard.items()):
+            names: dict[str, str] = {"#qsc": "shard_count"}
+            values: dict[str, dict[str, str]] = {}
+            adds: list[str] = []
+            conds: list[str] = ["attribute_exists(PK)"]
+            for i, debit in enumerate(group):
+                names[f"#qt{i}"] = schema.bucket_attr(debit.limit_name, schema.BUCKET_FIELD_TK)
+                names[f"#qg{i}"] = schema.bucket_attr(debit.limit_name, schema.BUCKET_FIELD_GC)
+                values[f":qx{i}"] = {"N": str(debit.tokens_milli)}
+                values[f":qn{i}"] = {"N": str(-debit.tokens_milli)}
+                values[f":qg{i}"] = {"N": str(debit.grant_count)}
+                adds.append(f"#qt{i} :qn{i}")
+                conds.append(f"#qt{i} >= :qx{i}")
+                conds.append(
+                    f"(#qg{i} = :qg{i} OR (attribute_not_exists(#qg{i}) AND #qsc = :qg{i}))"
+                )
+                if debit.guard_rf_ms is not None:
+                    names["#qrf"] = "rf"
+                    values[f":qe{i}"] = {"N": str(debit.guard_rf_ms)}
+                    conds.append(f"#qrf >= :qe{i}")
+                if debit.guard_wa_ms is not None:
+                    names[f"#qw{i}"] = schema.bucket_attr(debit.limit_name, schema.BUCKET_FIELD_WA)
+                    values[f":qw{i}"] = {"N": str(debit.guard_wa_ms)}
+                    conds.append(f"#qw{i} = :qw{i}")
+            items.append(
+                {
+                    "Update": {
+                        "TableName": self.table_name,
+                        "Key": {
+                            "PK": {
+                                "S": schema.pk_bucket(
+                                    self._namespace_id, entity_id, resource, shard
+                                )
+                            },
+                            "SK": {"S": schema.sk_state()},
+                        },
+                        "UpdateExpression": "ADD " + ", ".join(adds),
+                        "ConditionExpression": " AND ".join(conds),
+                        "ExpressionAttributeNames": names,
+                        "ExpressionAttributeValues": values,
+                    }
+                }
             )
         return items
 
