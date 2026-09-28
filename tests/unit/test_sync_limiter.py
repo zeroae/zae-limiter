@@ -7363,9 +7363,9 @@ class TestScheduleBoundaryRouting:
 
     def test_expired_vu_reaches_the_slow_path(self, sync_limiter):
         repo = sync_limiter._repository
+        now_ms = freeze_clock(repo)
         with sync_limiter.acquire("vu-route", "gpt-4", limits=self.LIMITS, consume={"rpm": 1}):
             pass
-        now_ms = freeze_clock(repo)
         self._drain(repo, "vu-route", "gpt-4")
         self._expire_vu(repo, "vu-route", "gpt-4", now_ms)
         calls = self._spy_slow_path(sync_limiter)
@@ -7381,9 +7381,9 @@ class TestScheduleBoundaryRouting:
         treated a missing attribute as ``vu = 0`` — would look correct.
         """
         repo = sync_limiter._repository
+        freeze_clock(repo)
         with sync_limiter.acquire("vu-noroute", "gpt-4", limits=self.LIMITS, consume={"rpm": 1}):
             pass
-        freeze_clock(repo)
         self._drain(repo, "vu-noroute", "gpt-4")
         calls = self._spy_slow_path(sync_limiter)
         with pytest.raises(RateLimitExceeded):
@@ -7402,12 +7402,12 @@ class TestScheduleBoundaryRouting:
         is re-run through the slow path, or the entity pays twice.
         """
         repo = sync_limiter._repository
+        now_ms = freeze_clock(repo)
         sync_limiter.create_entity("vu-parent")
         sync_limiter.create_entity("vu-child", parent_id="vu-parent", cascade=True)
         for _ in range(2):
             with sync_limiter.acquire("vu-child", "gpt-4", limits=self.LIMITS, consume={"rpm": 1}):
                 pass
-        now_ms = freeze_clock(repo)
         self._drain(repo, "vu-parent", "gpt-4")
         self._expire_vu(repo, "vu-parent", "gpt-4", now_ms)
         before = repo.get_buckets("vu-child", resource="gpt-4")
@@ -7434,9 +7434,9 @@ class TestScheduleBoundaryRouting:
         the outcome, not the route.
         """
         repo = sync_limiter._repository
+        now_ms = freeze_clock(repo)
         with sync_limiter.acquire("vu-shard", "gpt-4", limits=self.LIMITS, consume={"rpm": 1}):
             pass
-        now_ms = freeze_clock(repo)
         states = [BucketState.from_limit("vu-shard", "gpt-4", self.LIMITS[0], now_ms)]
         repo.transact_write(
             [
