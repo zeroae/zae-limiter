@@ -34,10 +34,12 @@ limit name with what that level resolves to:
 - The winning level supplies the **whole `Limit`**: numbers, `schedule`, `reset_schedule` and
   `reset_after` together. Fields are never mixed across levels, because mixing them would build a
   limit no operator wrote. (A `scale` schedule from system applied to an entity's capacity, for
-  example.)
+  example.) The one deliberate exception is a **limit patch** (D8): a merging level can replace
+  only the `schedule` of an inherited limit and keep its numbers.
 - A merging level can remove an inherited limit explicitly.
 
-Out of scope: merging individual fields within one limit, and changing the default. Override stays
+Out of scope: merging arbitrary fields within one limit (D8 permits `schedule` only), and
+changing the default. Override stays
 the default. Changing it would be a silent behaviour change for every deployed manifest, and
 `__init__.__all__` is the frozen v1.0 contract.
 
@@ -214,6 +216,96 @@ accepted, but it is still a silent divergence between clients sharing a bucket.
 recommended because it costs one conditional `UpdateItem` per admin write and turns silent
 under-enforcement into a loud refusal for every client from the introducing release on.
 
+### D8. Limit patches: inherit the numbers, replace only the schedule
+
+**Use case.** An entity should get `tpm` from the resource or system, so a later change to the
+number still reaches it, but with its own time-of-day schedule. Under D1 alone, the entity has to
+restate `capacity` beside the schedule. That pins the number at the entity level and cuts this
+limit off from inheritance, which is what the feature exists to prevent.
+
+```yaml
+entities:
+  user-premium:
+    resources:
+      gpt-4:
+        inherit_limits: true
+        patch_limits:
+          tpm:                         # numbers come from below; only the schedule is this level's
+            schedule:
+              - { cron: "* 9-17 * * 1-5", tz: America/New_York, scale: 0.5 }
+```
+
+**Why this is consistent with "whole `Limit`".** Whole-limit granularity exists to stop the
+resolver from assembling a limit **nobody wrote**. A patch is not assembled by the resolver. The
+operator wrote "take whatever numbers come from below and apply this schedule", and that is the
+limit they get. What stays forbidden is *implicit* field mixing: a level that declares `tpm` in
+`limits` still replaces the inherited `tpm` whole.
+
+**Rules.**
+
+1. **Only `schedule` is patchable.** `reset_schedule` and `reset_after` change how the limit
+   *recovers*. A quota has `refill_amount = 0` (ADR-137), so patching a reset onto an inherited
+   dripping limit builds a limit that cannot be constructed, and a later change below could flip
+   it between valid and invalid. The numeric fields are not patchable either: a level that wants
+   its own capacity declares the limit in `limits`. Any other key under a patch is rejected by
+   the manifest parser and by the API.
+2. **A patch replaces; it does not append.** The patched schedule replaces any `schedule` the
+   inherited limit carries, matching override-not-merge for schedules (#222). `schedule: []` is
+   a legal patch meaning "inherit the numbers, drop the inherited schedule".
+3. **Patches stack by precedence.** Resolution first finds the limit under D1 (the highest level
+   that *declares* it), then applies the highest-precedence patch **above** that level, if any. A
+   patch below the declaring level is shadowed, since the declaring level replaced the limit
+   whole. At most one patch applies, so the result never depends on the order patches compose in.
+4. **Requires `inherit_limits: true`.** A patch on a non-merging level has nothing to inherit and
+   is rejected. The same name may not appear in more than one of `limits`, `patch_limits` and
+   `exclude_limits` on a level.
+5. **A patch whose limit disappears is inert.** If the level below stops providing `tpm` (removed
+   or excluded), the patch applies to nothing and `tpm` is not enforced, which is what the
+   removal asked for. It is not an error, since the patch writer cannot stop a system-level
+   write. `limits plan` / `diff` and `get-limits --effective` report it as an orphaned patch.
+6. **The combination is validated both ways, as with D5.** A patch is a valid `ScheduleEntry` on
+   its own, but the patched `Limit` is only checkable against the inherited numbers: an absolute
+   entry is subject to `Limit.__post_init__`'s interplay checks and the #570 magnitude bounds, and
+   the zone joins the D5 timezone rule. So a patch write validates against the current chain, and
+   a resource or system write validates the patches of the merging dependents it will fan out
+   to. A combination that is still invalid at resolution is corrupt config:
+   `RateLimiterUnavailable`, subject to `on_unavailable`. The resolver never silently drops the
+   patch, because that would enforce a schedule the operator removed.
+
+**Storage.** A new prefix, `p_{name}_sched`, holds the compact encoding (`schedule.encode()`,
+versioned per #515) on the config item. The `sched_tz` hoisting rule covers patches as it covers
+limits. Every current reader discovers a limit by its `_cp` attribute
+(`schema.config_limit_names`), so a patch is **invisible to them, not corrupt**:
+
+- A pre-feature client sees the level without the patch and enforces the inherited limit
+  unscheduled. It under-enforces or over-enforces by exactly the schedule's effect (a `scale:
+  0.5` window is not halved). This is covered by the D7 gate and ratchet.
+- A config item holding *only* flags and patches has no limits of its own. Today's resolver reads
+  that as an empty level and falls through, which for this item happens to be right. The new
+  resolver must treat a level carrying `inherit_limits` as **present** even with an empty
+  `limits`, and must not negative-cache it as `_NO_CONFIG`.
+- `p_` is chosen over reusing `l_{name}_sched` without a `cp` so that no future reader can mistake
+  a patch for a half-written limit. `bucket_sync._decode_limits` already has to refuse exactly
+  that shape (#633).
+
+**Bucket items: nothing new.** The resolved, patched `Limit` is an ordinary scheduled limit.
+`_sync_bucket_params` and the slow path already stamp `b_{name}_sched` / `sched_tz` / `vu` from
+the resolved limit, and the aggregator reads only the item. So a patch changes no bucket write
+shape and no aggregator code.
+
+**Propagation.** A patch write is a write at its own level, so an entity-level patch fans out like
+any `set_limits()` today (#468, #487). A change to the inherited numbers below it reaches the
+patched bucket through D4, since a patch implies `inherit_limits: true`.
+
+**Considered: general field-level patches (`capacity` too).** Rejected. A patched `capacity` is
+just an entity-level limit spelled differently, but one whose `refill_amount` still inherits. That
+recreates the "limit nobody wrote" problem one field at a time. It can be revisited if a concrete
+use case appears.
+
+**Open question Q3:** should patches be allowed at the resource level (patching a system limit)
+as well as at entity levels? Recommendation: yes. The rules above have no level-specific part,
+and restricting it would be an asymmetry to explain rather than a safety property.
+
 ## Implementation phases
 
 Each phase is its own PR with its own tests. Pre-existing bugs found along the way get their own
@@ -221,10 +313,12 @@ Each phase is its own PR with its own tests. Pre-existing bugs found along the w
 
 ### Phase 0: Design record
 
-- [ ] Write **ADR-143** (Proposed): merge-by-name, opt-in per level, whole-`Limit` granularity,
-      targeted fan-out narrowing ADR-136, timezone rule, version gate. Cite ADR-118 and ADR-136.
-- [ ] Open a tracking issue with `/issue create`, and pick its milestone by description.
-- [ ] Settle Q1 and Q2 with the owner.
+- [ ] Write **ADR-143** (Proposed): merge-by-name, opt-in per level, whole-`Limit` granularity
+      with the schedule-only patch exception (D8), targeted fan-out narrowing ADR-136, timezone
+      rule, version gate. Cite ADR-118 and ADR-136.
+- [ ] Open a tracking issue with `/issue create`, and pick its milestone by description. Patches
+      get their own sub-issue, since Phase 6 can ship after the rest.
+- [ ] Settle Q1, Q2 and Q3 with the owner.
 
 ### Phase 1: Storage and resolution (core)
 
@@ -308,11 +402,47 @@ Each phase is its own PR with its own tests. Pre-existing bugs found along the w
       `tpm` at 10,000, then raise the system `tpm` and observe it on the merged entity's bucket
       without waiting for TTL.
 
-### Phase 6: Documentation
+### Phase 6: Limit patches (D8)
+
+This phase depends on Phases 1–5. It is separable: merge without patches is useful on its own, so
+this phase can ship in a later release without reworking anything before it.
+
+- [ ] `schema.py`: `p_{name}_sched` attribute builder. Add a test that
+      `config_limit_names` does not discover it.
+- [ ] `repository.py`: serialize and deserialize patches into `ConfigLevel.patches:
+      dict[name, tuple[ScheduleEntry, ...]]`. An undecodable patch takes the whole item, as an
+      undecodable `sched` does today (`RateLimiterUnavailable`). Decide how a level with flags
+      but no limits is cached (present, not `_NO_CONFIG`).
+- [ ] `models.merge_limit_levels`: apply rule 3 (highest patch above the declaring level) and
+      rule 5 (orphans), and return the patch's level in the source map, for example
+      `tpm: (system, schedule from entity)`.
+- [ ] Validation (rule 6): patch writes check the current chain. Resource and system writes check
+      the dependent patches found by the Phase 3 discovery. Both reuse `Limit.__post_init__`
+      rather than restating its checks.
+- [ ] API: `patch_limits=` keyword on `set_resource_defaults()` / `set_limits()`, with the
+      preserve-stored sentinel. Manifest: `patch_limits` on `resources.<name>` and
+      `entities.<id>.resources.<name>`, schedule key only (rule 1).
+      CloudFormation: a `PatchLimits` property, with the round-trip test extended.
+- [ ] CLI: `-l` cannot express a schedule (#222 §1.5), so there is no setter flag, and
+      `limits apply` is the CLI path, as for schedules today. Readers: `--effective` and
+      `limits plan` / `diff` show the patch and any orphaned patch.
+- [ ] Provisioner mirror in `bucket_sync.resolve_bucket_limits`, pinned to the client merge by the
+      Phase 3 parity test.
+- [ ] Tests:
+  - an entity patch over a system `tpm` resolves with system numbers and the entity schedule;
+  - a system `tpm` change reaches the patched bucket and keeps the schedule;
+  - `schedule: []` drops an inherited schedule;
+  - a patch below the declaring level is shadowed; the highest of two patches wins;
+  - an orphaned patch enforces nothing and is reported;
+  - reset fields in a patch are rejected;
+  - a system write that would make a dependent patch invalid is refused before writing;
+  - a pre-feature reader (fixture with a `p_` attribute) resolves as if the patch were absent.
+
+### Phase 7: Documentation
 
 - [ ] New user guide page `docs/guide/limit-inheritance.md`: override vs merge, the walk, the
-      "whole limit" rule and why, `exclude_limits`, the timezone rule, and the mixed-version
-      caveat.
+      "whole limit" rule and why, `exclude_limits`, schedule patches and their orphan rule, the
+      timezone rule, and the mixed-version caveat.
 - [ ] Update CLAUDE.md (Centralized Configuration, config attribute table, writer table if the
       fan-out gains a row, pricing note for the fan-out), `docs/cli.md`, the manifest reference,
       and `docs/infra/cloudformation.md`. Run the `docs-updater` agent.
@@ -338,3 +468,10 @@ Each phase is its own PR with its own tests. Pre-existing bugs found along the w
   becomes the mirror image of today's silent drop.
 - **The ADR-141 holes are inherited** by D7's client ratchet (checked only on open, and v0.14
   ignores it).
+- **Patches make validity depend on other levels.** A system-level write can now be refused
+  because of an entity's patch (D8 rule 6). That is the correct outcome, but it is new: the
+  refusal must name the entity and the patch, or the operator will not know why a system write
+  failed.
+- **Patches spread one limit across two levels.** An operator reading only the entity config sees
+  a schedule with no numbers. The `--effective` view and `limits plan` are the mitigation, and
+  the guide should lead with them.
