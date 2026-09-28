@@ -9356,10 +9356,10 @@ class TestScheduleBoundaryRouting:
 
     async def test_expired_vu_reaches_the_slow_path(self, limiter):
         repo = limiter._repository
+        now_ms = freeze_clock(repo)
         async with limiter.acquire("vu-route", "gpt-4", limits=self.LIMITS, consume={"rpm": 1}):
             pass
 
-        now_ms = freeze_clock(repo)
         await self._drain(repo, "vu-route", "gpt-4")
         await self._expire_vu(repo, "vu-route", "gpt-4", now_ms)
 
@@ -9377,10 +9377,10 @@ class TestScheduleBoundaryRouting:
         treated a missing attribute as ``vu = 0`` — would look correct.
         """
         repo = limiter._repository
+        freeze_clock(repo)
         async with limiter.acquire("vu-noroute", "gpt-4", limits=self.LIMITS, consume={"rpm": 1}):
             pass
 
-        freeze_clock(repo)
         await self._drain(repo, "vu-noroute", "gpt-4")
 
         calls = self._spy_slow_path(limiter)
@@ -9401,6 +9401,7 @@ class TestScheduleBoundaryRouting:
         is re-run through the slow path, or the entity pays twice.
         """
         repo = limiter._repository
+        now_ms = freeze_clock(repo)
         await limiter.create_entity("vu-parent")
         await limiter.create_entity("vu-child", parent_id="vu-parent", cascade=True)
 
@@ -9410,7 +9411,6 @@ class TestScheduleBoundaryRouting:
             async with limiter.acquire("vu-child", "gpt-4", limits=self.LIMITS, consume={"rpm": 1}):
                 pass
 
-        now_ms = freeze_clock(repo)
         await self._drain(repo, "vu-parent", "gpt-4")
         await self._expire_vu(repo, "vu-parent", "gpt-4", now_ms)
         before = await repo.get_buckets("vu-child", resource="gpt-4")
@@ -9439,10 +9439,10 @@ class TestScheduleBoundaryRouting:
         the outcome, not the route.
         """
         repo = limiter._repository
+        now_ms = freeze_clock(repo)
         async with limiter.acquire("vu-shard", "gpt-4", limits=self.LIMITS, consume={"rpm": 1}):
             pass
 
-        now_ms = freeze_clock(repo)
         # Shard 1: a full clone whose window has closed. Shard 0: drained.
         states = [BucketState.from_limit("vu-shard", "gpt-4", self.LIMITS[0], now_ms)]
         await repo.transact_write(
