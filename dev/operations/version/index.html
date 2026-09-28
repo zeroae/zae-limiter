@@ -3775,6 +3775,20 @@ back (for example after removing every <code>reset_after</code> limit), set it b
 </span></code></pre></div>
 <p>Only do this when no stored limit needs the newer readers: the minimum is what keeps older
 v0.15+ clients from misreading them.</p>
+<div class="admonition note">
+<p class="admonition-title">Developer/CI checkouts without git tags read as a real, low version (#655)</p>
+<p>A local clone made with <code>git clone --no-tags</code> (or a CI checkout that doesn't fetch tags)
+has no tags for hatch-vcs to build from, so it falls back to <code>0.1.devN+g&lt;sha&gt;</code>.
+<code>parse_version</code> reads that as a real version, <code>0.1.0-dev</code> — not as something it cannot
+parse — so it is compared against <code>client_min_version</code> like any other client.</p>
+<p>If a stack's minimum was ever raised above <code>0.1.0</code> (the <code>reset_after</code> ratchet, #638), a
+tagless build reads as below it and is refused with <code>can_auto_update=False</code>, exactly as an
+old tagged client would be. The fix is <code>git fetch --tags</code> or a tagged install, not a code
+change. A stack whose minimum was never raised (the default <code>0.0.0</code>) is unaffected.</p>
+<p><code>zae-limiter upgrade</code> from a tagless checkout reports "Infrastructure is already up to
+date" and pushes nothing unless <code>--force</code> is given — its very low read of the client's own
+version never looks newer than the deployed Lambda, so nothing appears to need upgrading.</p>
+</div>
 <h3 id="refused-reset_after-write">Refused <code>reset_after</code> write<a class="headerlink" href="#refused-reset_after-write" title="Permanent link">&para;</a></h3>
 <p><strong>Cause:</strong> <code>set_limits()</code>, <code>set_resource_defaults()</code>, <code>set_system_defaults()</code>,
 <code>zae-limiter limits apply</code> or <code>acquire(limits=[...])</code> was given a <code>reset_after</code> limit while the
