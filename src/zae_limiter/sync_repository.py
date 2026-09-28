@@ -5848,10 +5848,7 @@ class SyncRepository:
                 raise
 
         results = self._run_in_executor(
-            *[
-                lambda fn=fn: fn()
-                for fn in [raise_one(sid, old, names) for sid, old, names in lagging]
-            ]
+            *[lambda entry=entry: raise_one(*entry) for entry in lagging]
         )
         return sum(results)
 

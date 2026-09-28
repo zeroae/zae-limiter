@@ -961,6 +961,40 @@ class TestGrantCountStorage:
         assert state.grant_count is None
 
 
+class TestPlanQuotaShardRaise:
+    """ADR-145 R5 raise through ``plan_quota_shard`` — generated into the sync twin."""
+
+    def test_a_lagging_legacy_sibling_is_raised_and_its_grant_frozen(self, repo):
+        from zae_limiter import schema
+
+        quota = Limit.quota("rpd", 1000, cron="0 0 * * *")
+        now = repo._now_ms()
+        for shard_id, tokens, grant_count, shard_count in ((0, 500000, None, 2), (1, 0, 4, 4)):
+            state = BucketState.from_limit("e1", "gpt-4", quota, now)
+            state.tokens_milli = tokens
+            state.grant_count = grant_count
+            repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        "e1", "gpt-4", [state], now, shard_id=shard_id, shard_count=shard_count
+                    )
+                ]
+            )
+        count, grants, debits = repo.plan_quota_shard("e1", "gpt-4", [quota], 3, 4, now)
+        assert count == 4
+        assert grants["rpd"].donor_shard is None and debits == []
+        client = repo._get_client()
+        response = client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, "e1", "gpt-4", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+        )
+        assert response["Item"]["shard_count"] == {"N": "4"}
+        assert response["Item"][bucket_attr("rpd", schema.BUCKET_FIELD_GC)] == {"N": "2"}
+
+
 class TestPropagateWindowStart:
     """The rollover fan-out (ADR-140, #624).
 

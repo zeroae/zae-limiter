@@ -7120,8 +7120,10 @@ class Repository:
                     return 0  # Already at or above the new count
                 raise
 
-        # List comprehension, not a generator: see _propagate_shard_count.
-        results = await asyncio.gather(*[raise_one(sid, old, names) for sid, old, names in lagging])
+        # List comprehension over a single-name target, not a generator and not
+        # a tuple target: the sync transformer only defers the call into a
+        # lambda for `[expr for x in it]` (see _propagate_shard_count).
+        results = await asyncio.gather(*[raise_one(*entry) for entry in lagging])
         return sum(results)
 
     def _build_quota_count_freeze(
