@@ -1160,7 +1160,8 @@ creation is seeded by #633's transfer, with #642's residual.
   aggregator unless `--aggregator-role-arn` is given), and a stack from an older `cfn-template`
   may carry different parameters — what matters is whether the function exists. `deploy` is
   unchanged: it pushes only what its flags enable and stamps by the rule above. `_connect` turns
-  a failed auto-update's `StackOperationError` into an exit-1 message.
+  a failed auto-update's `StackOperationError` into an exit-1 message; only write commands
+  reach it, since read-only commands never auto-update (#648).
 - **Missing version record fails closed** — nothing proves the readers (`can_auto_update=False`,
   remedy `zae-limiter deploy`).
 - **`--no-aggregator` gets no exemption in the gate** — the record cannot say the aggregator
@@ -1176,9 +1177,9 @@ creation is seeded by #633's transfer, with #642's residual.
   `_check_version_strict` raise `VersionMismatchError(can_auto_update=False)` on it (they fell
   off the end before). The CLI's `_connect` turns it into an exit-1 message, so a too-old v0.15
   `upgrade` cannot downgrade the Lambdas (`check` and `version` pass `report_too_old=True` and
-  print their report with the incompatibility instead; `check` still exits 1); `limits_cli._invoke_provisioner` exits 1 on it (and
-  on a failed auto-update's `StackOperationError`) instead of invoking an unchecked
-  provisioner. `deploy` does no minimum check. `set_version_record(client_min_version=None)` — the
+  print their report with the incompatibility instead; `check` still exits 1); `limits_cli._invoke_provisioner` exits 1 on it (and,
+  for `apply`, on a failed auto-update's `StackOperationError`; `plan`/`diff` never
+  auto-update, #648) instead of invoking an unchecked provisioner. `deploy` does no minimum check. `set_version_record(client_min_version=None)` — the
   new default, used by `_perform_lambda_update` and CLI `deploy` / `upgrade` — keeps the stored
   minimum via `if_not_exists`; only `_initialize_version_record` writes `"0.0.0"`.
 - **Holes (documented, not fixable from v0.15):** the gate runs at write time only, so a v0.14
