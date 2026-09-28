@@ -303,11 +303,12 @@ use the `b_{limit_name}_{field}` naming convention:
 | Session window applied | `b_session_wa` | The window start this shard's balance reflects. A `ws` later than `wa` means a new window has been opened and this shard has not yet restored its balance; an item written before the marker existed carries none, and `rf` is compared instead | `1705312800000` |
 | Session window snapshot | `b_session_wtc` | The consumption counter as it stood when another shard's new window reached this one. While the window is pending (`ws` later than `wa`), the shard restores its share less whatever it consumed since, so nothing spent in between is forgiven | `4000` |
 | Session window length | `b_session_rsa` | The session window's length in seconds, copied from config so readers need no config lookup | `18000` |
+| Quota grant count | `b_rpd_gc` | Quotas only (calendar and session): the shard count this shard's current-period share was sized at ([ADR-145](../adr/145-sharded-quota-conserves-allowance.md)). The shard's ceiling is `cp // gc`, and its grant covers every shard `j` with `j % gc == this shard % gc`. An item written before the attribute existed carries none and reads as `gc = shard_count` | `2` |
 
 The ceiling actually enforced is **not** `b_rpm_cp`. The schedule in force at the current
-instant is applied to the base first, and the result is then divided by `shard_count`. An
-entity on a `scale: 0.5` window across 2 shards admits `cp × 0.5 / 2` per shard. Compare
-observed rejections against that, not against the stored number.
+instant is applied to the base first, and the result is then divided by `shard_count` — or, for a
+quota, by `b_{name}_gc`. An entity on a `scale: 0.5` window across 2 shards admits `cp × 0.5 / 2`
+per shard. Compare observed rejections against that, not against the stored number.
 
 ### Bucket Expiry
 

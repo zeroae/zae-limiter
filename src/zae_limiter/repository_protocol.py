@@ -868,7 +868,7 @@ class RepositoryProtocol(Protocol):
 
         The read must be **strongly consistent**: a stale pre-roll ``ws`` looks
         ended, and the caller would then grant the new shard a fresh full share
-        instead of the #587 transfer from the window shard 0 just opened.
+        instead of the ADR-145 move from the window shard 0 just opened.
 
         Args:
             entity_id: Entity whose shard is being created. On a cascade create

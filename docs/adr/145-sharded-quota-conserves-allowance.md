@@ -44,8 +44,18 @@ when no such sibling exists.
   entity holds tokens elsewhere, until the next reset.
 - A shard creation that moves tokens is a transaction, and can conflict with writes
   on a busy donor.
-- A shard written before the record exists is read as granted at its stored count, so
-  #642's residual survives at most one period after upgrade.
+- A shard written before the record exists is read as granted at its stored count (or a lower
+  one its balance implies), so #642's residual survives at most one period after upgrade. Within
+  that period a count raise that does not also record the old grant size — the client's plain
+  doubling propagation, the aggregator's when it cannot read the siblings, or any older writer —
+  can make such a shard read as covering fewer slots than it was granted for, and a later shard
+  can then be granted a slot it still holds tokens for: up to one old share, once, until its next
+  reset records the grant.
+- A rejected request that moves tokens onto a shard it creates or seeds commits the move with
+  nothing consumed, so the tokens are never lost; if it also opened a session window
+  ([ADR-139](139-duration-reset-windows.md)), that window is anchored by a rejected request.
+- The aggregator does not pre-create a quota shard whose funding it cannot size safely from the
+  record it holds; the client creates that shard on first use.
 - The rule applies to the `divided` sharding regime; the choice of regime is #477.
 
 ## Alternatives Considered

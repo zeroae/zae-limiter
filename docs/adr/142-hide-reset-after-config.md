@@ -22,8 +22,9 @@ without error, and only the old aggregator mishandles them, which ADR-141 preven
 
 Hiding the limit lets old clients write buckets that carry a window, whose shared `rf` and `vu`
 they stamp from their own limits and clock. [ADR-140](140-duration-window-shard-coherence.md)
-makes the window mechanism independent of both, and the #633 seed fills a shard an old client
-creates by transfer from its siblings. The storage mapping, readers and verification against
+makes the window mechanism independent of both, and the seed funds a shard an old client creates
+by [ADR-145](145-sharded-quota-conserves-allowance.md)'s move off the sibling whose grant covers
+it. The storage mapping, readers and verification against
 v0.14.0 are in #640 and CLAUDE.md "Hidden config (#640)".
 
 ## Decision
@@ -55,7 +56,8 @@ enforces every other limit and skips only the session limit, rather than refusin
   hidden limit from config and leaves its balance on the buckets. Admin tooling must be upgraded
   first.
 - An old param sync can change the item-level schedule a session limit without its own override
-  inherits, and an old client's shard creation remains exposed to the #642 residual.
+  inherits. An old client's shard creation, funded on the next v0.15 pass by ADR-145's move, can
+  only under-admit.
 
 ## Alternatives Considered
 

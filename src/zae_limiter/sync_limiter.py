@@ -1268,9 +1268,15 @@ class SyncRateLimiter:
         alone — which is how "exhaustion inside the current window does not
         move the anchor" is enforced: an exhausted quota is still inside its
         window, so nothing here fires and :meth:`_admit_limit` rejects against
-        the balance on disk. And a pass that *does* open a window but is then
+        the balance on disk. A pass that *does* open a window but is then
         rejected writes nothing (write-on-enter invariant 1), so the anchor
-        moves only when a request is admitted and committed.
+        moves only when a request is admitted and committed — with one
+        accepted exception: a rejected pass that carries an ADR-145 move is
+        committed with nothing consumed (:meth:`_commit_rejected_moves`), so
+        the move is never lost, and a window it opened is anchored with it.
+        That needs a shard being created or seeded with a quota whose donor
+        is another shard, so it happens at most once per such shard and never
+        on a hammered, exhausted one.
 
         A bucket carrying ``rsa`` but **no** ``ws`` (a shard stamped before its
         limit gained a window, e.g. by the param sync) opens its first window

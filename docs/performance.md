@@ -268,6 +268,13 @@ add no tokens — so shard 0 is trimmed to its new share by the next refiller to
 (the client slow path, or the aggregator, which writes the trim as a negative delta).
 There is no transient above the configured capacity.
 
+A **quota** (`Limit.quota()`) never refills, so it is handled differently: a new shard is funded
+by an atomic move off the shard whose grant covers it — or, when no shard covers it, by a fresh
+share — and each shard's ceiling is the share it was granted, not the current share. A doubling
+therefore neither creates nor destroys quota allowance
+([ADR-145](adr/145-sharded-quota-conserves-allowance.md)). A shard creation that moves tokens
+reads the entity's other shards once and writes a two-item transaction (4 WCU), once per shard.
+
 **Works without the aggregator:** Deployments using `--no-aggregator` get the same
 write-sharding behaviour; the only difference is that each new shard costs one slow-path
 acquire (about 2.5 RCU + 2 WCU) to create, once, instead of being pre-created from the

@@ -5876,7 +5876,7 @@ class SyncRepository:
         was written — including the write that rolled its window. An eventually
         consistent read can return the *pre-roll* ``ws``, which looks ended, so
         the caller opens a fresh window at full share instead of taking the
-        #587 transfer from the window shard 0 just opened: measured at 15
+        ADR-145 move from the window shard 0 just opened: measured at 15
         admitted against a quota of 10. The extra 0.5 RCU per shard creation
         is the whole price of closing that.
 

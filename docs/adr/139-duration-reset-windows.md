@@ -41,7 +41,10 @@ its child, and its start must be stored per limit on the bucket item, never deri
 - Evaluation is cheaper than the calendar form: no cron parse, no timezone database, no
   daylight-saving handling and no boundary scan. The reset instant is read off the item.
 - The TTL recovery horizon is the window length exactly, with no rounding and no clock.
-- A rejected request writes nothing, so hammering an exhausted quota never moves its anchor.
+- A rejected request writes nothing, so hammering an exhausted quota never moves its anchor. The
+  one exception is [ADR-145](145-sharded-quota-conserves-allowance.md)'s: a rejected request that
+  also moves quota tokens onto a shard it creates or seeds commits that move with nothing consumed,
+  and a window it opened is anchored with it — at most once per such shard.
 - The per-acquire cost is unchanged; the speculative fast path reads no config.
 
 **Negative:**
