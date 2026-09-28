@@ -31,8 +31,11 @@ REGION = "us-east-1"
 NAMESPACE = "tenant-a"
 CLIENT = "0.15.1"
 BEHIND = "0.15.0"
-# What hatch-vcs builds from a checkout without tags, as CI's is: not a version
-# `version.parse_version` can read (#655).
+# What hatch-vcs builds from a checkout without tags, as CI's is. Parses fine
+# since #655 (as the two-part release "0.1.0-dev"), but its release number
+# tells nothing about how the deployed Lambda compares to a real tag, so the
+# tests below still exercise the "cannot tell" paths through this client
+# rather than any actual parse failure.
 UNTAGGED = "0.1.dev1+gabc"
 
 # Commands that read one namespace. Each takes -N; the entity/resource
@@ -410,8 +413,9 @@ class TestPreviewsNeverProvision:
     def test_an_untagged_client_previews_against_a_stamped_lambda(
         self, mock_dynamodb, manifest, command
     ) -> None:
-        """Nothing can say the stamped Lambda is behind an unparseable client,
-        so the preview runs, as ``upgrade`` would."""
+        """A tagless client's release reads as ``0.1.0`` (#655), below every
+        real tag including the stamped Lambda's, so nothing says the Lambda
+        is behind it and the preview runs, as ``upgrade`` would."""
         asyncio.run(_setup(namespace=True, record=_record(BEHIND)))
         before = asyncio.run(_scan())
 

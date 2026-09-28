@@ -1265,12 +1265,17 @@ class TestConnect:
     async def test_connect_tolerates_unparseable_client_version(self, mock_dynamodb):
         """connect() does not raise when the client version cannot be parsed.
 
-        Source checkouts without git tags build as ``0.1.devN+g<sha>``, which
-        ``parse_version()`` rejects. ``check_compatibility()`` then reports
-        ``is_compatible=False`` with no specific flag set, and the version
+        ``check_compatibility()`` reports ``is_compatible=False`` with no
+        specific flag set for a genuinely malformed version, and the version
         check has nothing actionable to raise on. Tests that assert a version
         raise must therefore patch ``check_compatibility`` rather than rely on
         the ambient ``__version__``.
+
+        This used to be the tagless-checkout form ``0.1.devN+g<sha>``, which
+        ``parse_version()`` rejected outright (#655). It parses now (as
+        ``0.1.0-dev``), so this test uses a string that is genuinely
+        unparseable instead; the tagless-checkout case is covered by
+        ``test_connect_detects_real_mismatch_for_tagless_ci_client`` below.
         """
         setup = await _create_deployed_table("test-conn-devver", version_record=False)
         await setup.set_version_record(
@@ -1281,12 +1286,34 @@ class TestConnect:
         )
         await setup.close()
 
-        with patch.object(zae_limiter, "__version__", "0.1.dev1+g55b199090"):
+        with patch.object(zae_limiter, "__version__", "not-a-version-at-all"):
             repo = await Repository.connect(stack="test-conn-devver")
             try:
                 assert repo.namespace_name == "default"
             finally:
                 await repo.close()
+
+    @pytest.mark.asyncio
+    async def test_connect_detects_real_mismatch_for_tagless_ci_client(self, mock_dynamodb):
+        """A tagless CI build's ``0.1.devN+g<sha>`` (#655) now parses as a real
+        version (``0.1.0-dev``) rather than being silently waved through as
+        "invalid", so connect() reports an actual, actionable mismatch when
+        the deployed Lambda is older than what that client reads as.
+        """
+        from zae_limiter.exceptions import VersionMismatchError
+
+        setup = await _create_deployed_table("test-conn-tagless", version_record=False)
+        await setup.set_version_record(
+            schema_version=get_schema_version(),
+            lambda_version="0.0.1",
+            client_min_version="0.0.0",
+            updated_by="test",
+        )
+        await setup.close()
+
+        with patch.object(zae_limiter, "__version__", "0.1.dev1+g55b199090"):
+            with pytest.raises(VersionMismatchError):
+                await Repository.connect(stack="test-conn-tagless")
 
     @pytest.mark.asyncio
     async def test_connect_reraises_non_resource_not_found_errors(self, mock_dynamodb):
