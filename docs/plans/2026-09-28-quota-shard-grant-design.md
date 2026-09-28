@@ -2,7 +2,7 @@
 
 **Issues:** Refs #637, Refs #642 (v0.15.0). Related: #587, #633, #475, #477.
 **Status:** design approved in conversation on 2026-09-28; this document records it.
-**ADR:** ADR-143 (to be written as the first plan task).
+**ADR:** ADR-145 (to be written as the first plan task).
 
 ## 1. Problem
 
@@ -152,18 +152,24 @@ One repository method replaces `reclaim_quota_surplus`, `reclaim_quota_seed` and
 3. **Propagate** — before minting, raise `shard_count` on any sibling still below
    `S` (the existing `_propagate_shard_count`; a write only when a lag is seen).
    See R5.
-4. **Write atomically** — one `TransactWriteItems`:
+4. **Write atomically** — the donor debit rides in the acquire's own
+   `_commit_initial` transaction, appended after the bucket items:
    - donor: `ADD tk −x` under `tk >= :x AND gc = :gc` and its period still current
      (calendar `rf >= :edge`; session `wa = :wa`);
    - the new shard `Put` under `attribute_not_exists(PK)`, or the seed's rf-locked
      `UpdateItem`, with `tk = x − consumed` and `gc = S`. A seed (an existing
      item) also carries the count pin
      `attribute_not_exists(shard_count) OR shard_count <= :gc`.
-5. **Rejected acquire** — the same transaction runs with nothing consumed, so a
-   move is never lost (replaces `persist_seed`; the documented pre-rejection
-   write of `write-on-enter.md`).
-6. **Condition failure** — re-read and retry once; if it fails again the shard
-   gets 0 this time (under-admission, never over).
+5. **Rejected acquire** — when the pass holds a move, the lease is committed
+   with **nothing consumed** (the same transaction, every `consumed = 0`) and
+   then `RateLimitExceeded` is raised, so a move is never lost. The rf-locked
+   write also applies any pending reset and advances `rf`, which is what the
+   old standalone `persist_seed` could not do (the 1300 case). Replaces
+   `persist_seed`; the documented pre-rejection write of `write-on-enter.md`.
+6. **Condition failure** — a transaction carrying a move that fails its
+   conditions is rolled back whole (donor untouched), and the acquire is
+   **re-planned once** from a fresh read; if it fails again the shard gets 0
+   this time (under-admission, never over).
 
 **Conflicted moves.** A transaction is cancelled with `TransactionConflict` when
 another write to the donor is in flight, and the donor is usually the busiest
@@ -174,14 +180,17 @@ shard. A conflicted move retries with short jittered backoff (bounded; then step
 parent `j mod old_count`, one transaction per clone. The greedy distribution of
 `processor._reclaim_quota_surplus` is removed.
 
-**Aggregator IAM.** The aggregator role (`cfn_template.yaml`, `AggregatorRole`)
-grants `GetItem`, `PutItem`, `UpdateItem` and `Query` only. It gains
-`dynamodb:TransactWriteItems` on the table (owner decision, option a). A stack
-using `--aggregator-role-arn` must add the permission to its own role; the
-aggregator detects `AccessDeniedException` on the move, logs an error naming the
-missing action, and skips that clone (the client creates the shard lazily, as it
-does with `--no-aggregator`). Documented in the operator guide and the upgrade
-notes.
+**Aggregator IAM — no change needed (verified 2026-09-28).** AWS authorises
+the `Put`, `Update` and `Delete` actions inside a `TransactWriteItems` call by
+the underlying `PutItem`, `UpdateItem` and `DeleteItem` permissions
+([Using IAM with DynamoDB transactions](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/transaction-apis-iam.html));
+only a `ConditionCheck` action needs its own `dynamodb:ConditionCheckItem`, and
+this design uses none. The aggregator role already grants `PutItem` and
+`UpdateItem`, and so must any external `--aggregator-role-arn` role today. The
+earlier "add `TransactWriteItems`" decision was based on a wrong reading and
+is withdrawn. The aggregator writes through the boto3 `Table` resource, which
+has no transaction call; it uses `table.meta.client.transact_write_items` with
+low-level typed values.
 
 ### 6.1 Cost (quotas only)
 
@@ -199,7 +208,6 @@ Costs this design adds that did not exist before:
 
 | Cost | Size | Mitigation |
 |---|---|---|
-| Aggregator role needs `TransactWriteItems` | template change; external roles must add it | clear error, skip the clone (§6) |
 | Transaction conflicts on a busy donor | a move can be cancelled and retried; a final failure grants 0 (under) | jittered retry; test it |
 | **Uneven shards** | a donor holding several slots' tokens while a late shard gets 0; a draw on an empty shard rejects while the entity holds tokens elsewhere. Today's clamp evens shards at the price of discarding tokens | accepted; bounded to one period; measure in the fuzz test |
 | Item size +~15 B per quota per shard | an item crossing 1 KB doubles the **fast-path** WCU on every acquire; the worst scheduled case has 178 B headroom | extend `TestSizeBudget` to include `gc` |
@@ -242,10 +250,6 @@ decision, option 1). Exactly today's meaning; the #642 residual survives at most
 one period after upgrade, on a quota sharded and spent across a doubling, and the
 next reset writes `gc`.
 
-**IAM on upgrade.** A CloudFormation update adds `TransactWriteItems` to the
-aggregator role in the same stack update that ships the new code. An external
-aggregator role that lacks it is handled as in §6 (logged, clone skipped).
-
 **v0.14 writers** (calendar quotas shipped in v0.14; session quotas are hidden
 from v0.14 by ADR-142) can only under-admit:
 
@@ -282,7 +286,7 @@ Homes: `tests/unit/test_quota_shard_creation.py`,
 
 ## 11. Documentation
 
-ADR-143 ("A sharded quota conserves its allowance", Proposed, accepted at the
+ADR-145 ("A sharded quota conserves its allowance", Proposed, accepted at the
 v0.15.0 release); CLAUDE.md (Pre-Shard Buckets #587 paragraph, #633 seed
 paragraph, writer table, pricing); the sharding notes in
 `docs/guide/session-quotas.md` and `docs/guide/scheduled-limits.md`; the docstrings of the replaced repository methods.
@@ -301,6 +305,6 @@ How future changes are kept from breaking I1–I8:
 | **Capacity-count tests** on the fast path (0 RCU / 1 WCU) and on shard creation | cost creep |
 | **`TestSizeBudget` extended** to include `gc` | the fast-path WCU doubling |
 | **Stepped race tests** R1–R6, plus a transaction-conflict test | concurrency regressions |
-| **ADR-143** states I1–I8; accepted at the v0.15.0 release, then enforced by `/adr audit` | design drift |
+| **ADR-145** states I1–I8; accepted at the v0.15.0 release, then enforced by `/adr audit` | design drift |
 | **CLAUDE.md invariants section and a `code-review.md` rule**: a change touching a quota's `tk` or `gc` must pass the conservation suite | reviewers missing it |
 | **`design-validator` agent** for any future change to quota grant logic | derivation mistakes of the #179 kind |
