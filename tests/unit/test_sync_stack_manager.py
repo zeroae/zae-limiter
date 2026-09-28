@@ -1470,3 +1470,96 @@ class TestAggregatorExists:
         ):
             result = manager.create_stack(stack_options=StackOptions())
         assert result["created"] is True
+
+
+class TestSkipAbsent:
+    """``skip_absent`` on the code pushes, for upgrading a stack that does
+    not deploy a function (#644): ``--no-aggregator``, ``--no-provisioner``,
+    ``--no-iam``. Only Lambda's own ResourceNotFoundException is absence."""
+
+    DEPLOYS = [
+        pytest.param("deploy_lambda_code", "build_lambda_package", "s-aggregator", id="aggregator"),
+        pytest.param(
+            "deploy_provisioner_code",
+            "build_provisioner_package",
+            "s-limits-provisioner",
+            id="provisioner",
+        ),
+    ]
+
+    @staticmethod
+    def _error(code: str, operation: str) -> ClientError:
+        return ClientError({"Error": {"Code": code, "Message": "x"}}, operation)
+
+    @staticmethod
+    def _session(probe, update):
+        mock_lambda = MagicMock()
+        mock_lambda.get_function_configuration = probe
+        mock_lambda.update_function_code = update
+        mock_session = MagicMock()
+        mock_session.client.return_value = mock_lambda
+        return (mock_session, mock_lambda)
+
+    @pytest.mark.parametrize(("method", "builder", "function"), DEPLOYS)
+    def test_a_function_that_probes_absent_is_skipped_unbuilt(self, method, builder, function):
+        session, mock_lambda = self._session(
+            MagicMock(side_effect=self._error("ResourceNotFoundException", "GetFunction")),
+            MagicMock(),
+        )
+        with (
+            patch("zae_limiter.infra.sync_stack_manager.boto3.Session", return_value=session),
+            patch(f"zae_limiter.infra.sync_stack_manager.{builder}") as build,
+        ):
+            manager = SyncStackManager(stack_name="s", region="us-east-1")
+            result = getattr(manager, method)(skip_absent=True)
+        assert result == {"status": "absent", "function_name": function}
+        build.assert_not_called()
+        mock_lambda.update_function_code.assert_not_called()
+
+    @pytest.mark.parametrize("probe", [None, True], ids=["cannot-tell", "raced-away"])
+    @pytest.mark.parametrize(("method", "builder", "function"), DEPLOYS)
+    def test_a_push_that_finds_no_function_is_absent(self, method, builder, function, probe):
+        """A probe that cannot tell does not skip; the push is attempted, and
+        its ResourceNotFoundException is the proof of absence."""
+        probe_mock = (
+            MagicMock(return_value={})
+            if probe
+            else MagicMock(side_effect=self._error("AccessDeniedException", "GetFunction"))
+        )
+        session, mock_lambda = self._session(
+            probe_mock,
+            MagicMock(side_effect=self._error("ResourceNotFoundException", "UpdateFunctionCode")),
+        )
+        with (
+            patch("zae_limiter.infra.sync_stack_manager.boto3.Session", return_value=session),
+            patch(f"zae_limiter.infra.sync_stack_manager.{builder}", return_value=b"zip"),
+        ):
+            manager = SyncStackManager(stack_name="s", region="us-east-1")
+            result = getattr(manager, method)(skip_absent=True)
+        assert result == {"status": "absent", "function_name": function}
+        mock_lambda.update_function_code.assert_called_once()
+
+    @pytest.mark.parametrize(("method", "builder", "function"), DEPLOYS)
+    def test_any_other_push_failure_raises(self, method, builder, function):
+        session, _ = self._session(
+            MagicMock(side_effect=self._error("AccessDeniedException", "GetFunction")),
+            MagicMock(side_effect=self._error("AccessDeniedException", "UpdateFunctionCode")),
+        )
+        with (
+            patch("zae_limiter.infra.sync_stack_manager.boto3.Session", return_value=session),
+            patch(f"zae_limiter.infra.sync_stack_manager.{builder}", return_value=b"zip"),
+        ):
+            manager = SyncStackManager(stack_name="s", region="us-east-1")
+            with pytest.raises(StackOperationError, match="AccessDeniedException"):
+                getattr(manager, method)(skip_absent=True)
+
+    @pytest.mark.parametrize(
+        ("result", "pushed", "exists"),
+        [({"status": "deployed"}, True, None), ({"status": "absent"}, False, False)],
+    )
+    def test_pushed_or_absent(self, result, pushed, exists):
+        from zae_limiter.infra.sync_stack_manager import pushed_or_absent
+
+        was_pushed, probe = pushed_or_absent(result)
+        assert was_pushed is pushed
+        assert probe() is exists

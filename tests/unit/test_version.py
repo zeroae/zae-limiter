@@ -344,11 +344,12 @@ class TestResetAfterRefusal:
     def test_unknown_lambda_version(self):
         message, auto = reset_after_refusal(True, None)
         assert "Run 'zae-limiter upgrade' to deploy it" in message
-        assert "--no-aggregator, re-run 'zae-limiter deploy'" in message
+        # upgrade skips a Lambda the stack lacks (#644): no deploy detour
+        assert "zae-limiter deploy" not in message
         assert auto is False
 
     def test_old_lambda_version(self):
         message, auto = reset_after_refusal(True, "0.14.0")
         assert "zae-limiter upgrade" in message
-        assert "--no-aggregator, re-run 'zae-limiter deploy'" in message
+        assert "zae-limiter deploy" not in message
         assert auto is True

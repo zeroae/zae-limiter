@@ -39,15 +39,18 @@ from zae_limiter.schema import (
     CONFIG_FIELD_SCHED_TZ,
     DEFAULT_RESOURCE,
     GSI3_NAME,
+    LIMIT_ATTR_PREFIX,
     LIMIT_FIELD_CP,
     LIMIT_FIELD_RA,
     LIMIT_FIELD_RP,
     LIMIT_FIELD_RSA,
     LIMIT_FIELD_RSCHED,
     LIMIT_FIELD_SCHED,
+    WINDOW_LIMIT_ATTR_PREFIX,
     bucket_attr,
     calculate_bucket_ttl_seconds,
     calculate_ttl,
+    config_limit_names,
     gsi3_pk_entity,
     parse_bucket_pk,
     parse_limit_attr,
@@ -527,7 +530,14 @@ def sync_bucket_params(
 
 
 def _decode_limits(item: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """Decode composite ``l_{name}_{field}`` attributes into manifest shape.
+    """Decode composite ``l_``/``w_{name}_{field}`` attributes into manifest shape.
+
+    Both config prefixes are read (#640): a limit carrying
+    ``reset_after_seconds`` is stored under ``w_``, which a reader predating
+    ADR-139 does not scan. ``schema.config_limit_names`` — shared with the
+    client — says which prefix each limit is under, and raises for an item
+    that stores one name under both or a ``w_`` limit with no ``rsa``; that
+    ``ValueError`` escapes out of the whole item, like a corrupt schedule.
 
     A limit missing any of cp/ra/rp is malformed and is skipped rather than
     given a synthesised default, which would silently invent a limit. A limit
@@ -543,12 +553,20 @@ def _decode_limits(item: dict[str, Any]) -> dict[str, dict[str, Any]]:
     silence here removes a limit.
     """
     sched_tz = item.get(CONFIG_FIELD_SCHED_TZ, {}).get("S") or "UTC"
+    stored = config_limit_names(item)
     partial: dict[str, dict[str, Any]] = {}
     for attr, value in item.items():
         parsed = parse_limit_attr(attr)
         if parsed is None:
             continue
         name, field = parsed
+        # A field under the prefix its limit is not stored under is a stray
+        # (a half-written limit with no `cp` of its own); it must not merge
+        # into the limit discovered under the other prefix.
+        if name in stored and not attr.startswith(
+            WINDOW_LIMIT_ATTR_PREFIX if stored[name] else LIMIT_ATTR_PREFIX
+        ):
+            continue
         if field in _MANIFEST_NUMERIC_KEY:
             partial.setdefault(name, {})[_MANIFEST_NUMERIC_KEY[field]] = int(value["N"])
         elif field in _MANIFEST_OPTIONAL_NUMERIC_KEY:

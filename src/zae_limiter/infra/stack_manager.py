@@ -102,6 +102,27 @@ async def stack_lambdas_current(
     return True
 
 
+def pushed_or_absent(
+    result: dict[str, Any],
+) -> tuple[bool, Callable[[], Awaitable[bool | None]]]:
+    """What a ``skip_absent`` code push established, for
+    :func:`stack_lambdas_current` (#644).
+
+    ``deploy_lambda_code`` / ``deploy_provisioner_code`` called with
+    ``skip_absent=True`` either push (any status but ``"absent"``), report
+    ``"absent"`` — which only Lambda's own ``ResourceNotFoundException`` can
+    establish — or raise. Returns ``(pushed, exists)``: the probe answers with
+    that proof instead of asking Lambda again, where a throttled second probe
+    could turn a proven absence back into "cannot tell".
+    """
+    absent = result.get("status") == "absent"
+
+    async def exists() -> bool | None:
+        return False if absent else None
+
+    return not absent, exists
+
+
 class StackManager:
     """
     Manages CloudFormation stack lifecycle for rate limiter infrastructure.
@@ -589,6 +610,7 @@ class StackManager:
         self,
         function_name: str | None = None,
         wait: bool = True,
+        skip_absent: bool = False,
     ) -> dict[str, Any]:
         """
         Deploy Lambda function code after stack creation.
@@ -602,14 +624,24 @@ class StackManager:
         Args:
             function_name: Lambda function name (default: {table_name}-aggregator)
             wait: Wait for function update to complete
+            skip_absent: For an update of an existing stack (#644): a stack
+                deployed with ``--no-aggregator`` has no function to push to.
+                The function is probed first (:meth:`aggregator_exists`), and
+                one that probes absent — or that the push itself finds missing
+                — returns ``{"status": "absent"}`` instead of raising. A probe
+                that cannot tell does not skip: the push is attempted, so only
+                Lambda's ``ResourceNotFoundException`` ever counts as absence.
 
         Returns:
-            Dict with function_arn, code_sha256, and status
+            Dict with function_arn, code_sha256, and status (``"deployed"``, or
+            ``"absent"`` with ``skip_absent``)
 
         Raises:
             StackOperationError: If Lambda deployment fails
         """
         function_name = function_name or f"{self.table_name}-aggregator"
+        if skip_absent and await self.aggregator_exists(function_name) is False:
+            return {"status": "absent", "function_name": function_name}
 
         # Build Lambda package
         try:
@@ -683,6 +715,8 @@ class StackManager:
             except ClientError as e:
                 error_code = e.response["Error"]["Code"]
                 error_msg = e.response["Error"]["Message"]
+                if skip_absent and error_code == "ResourceNotFoundException":
+                    return {"status": "absent", "function_name": function_name}
 
                 raise StackOperationError(
                     stack_name=self.stack_name,
@@ -701,6 +735,7 @@ class StackManager:
         self,
         function_name: str | None = None,
         wait: bool = True,
+        skip_absent: bool = False,
     ) -> dict[str, Any]:
         """Deploy provisioner Lambda function code after stack creation.
 
@@ -711,14 +746,20 @@ class StackManager:
             function_name: Lambda function name
                 (default: {table_name}-limits-provisioner)
             wait: Wait for function update to complete
+            skip_absent: As for :meth:`deploy_lambda_code`, for a stack
+                deployed with ``--no-provisioner`` or ``--no-iam`` (#644),
+                probing with :meth:`provisioner_exists`.
 
         Returns:
-            Dict with function_arn, code_sha256, and status
+            Dict with function_arn, code_sha256, and status (``"deployed"``, or
+            ``"absent"`` with ``skip_absent``)
 
         Raises:
             StackOperationError: If Lambda deployment fails
         """
         function_name = function_name or f"{self.table_name}-limits-provisioner"
+        if skip_absent and await self.provisioner_exists(function_name) is False:
+            return {"status": "absent", "function_name": function_name}
 
         try:
             zip_bytes = build_provisioner_package()
@@ -785,6 +826,8 @@ class StackManager:
             except ClientError as e:
                 error_code = e.response["Error"]["Code"]
                 error_msg = e.response["Error"]["Message"]
+                if skip_absent and error_code == "ResourceNotFoundException":
+                    return {"status": "absent", "function_name": function_name}
 
                 raise StackOperationError(
                     stack_name=self.stack_name,

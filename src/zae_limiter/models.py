@@ -472,7 +472,7 @@ class Limit:
                 f"no parameters."
             )
         # A duration has to be expressible in the storage unit, which is whole
-        # seconds (`l_{name}_rsa` / `b_{name}_rsa`). Rejecting here rather
+        # seconds (`w_{name}_rsa` / `b_{name}_rsa`). Rejecting here rather
         # than truncating is the same call #569 made for the schedule
         # absolutes: a silently-truncated window is a limit that resets at a
         # time the operator never wrote.
@@ -757,7 +757,7 @@ class Limit:
     def reset_after_seconds(self) -> int | None:
         """:attr:`reset_after` in the unit everything below the API uses.
 
-        Storage (``l_{name}_rsa``, ``b_{name}_rsa``), the manifest
+        Storage (``w_{name}_rsa``, ``b_{name}_rsa``), the manifest
         (``reset_after_seconds``) and CloudFormation (``ResetAfterSeconds``)
         all carry whole seconds, because a bare scalar cannot carry a type.
         ``__post_init__`` has already rejected anything that is not a positive
@@ -1248,7 +1248,7 @@ class BucketState:
     # before the limit gained its window can carry until the next fan-out.
     #
     # Entity-wide, replicated verbatim to every shard: only the balance is
-    # divided. Each shard resets itself when it observes `ws > rf`, the same
+    # divided. Each shard resets itself when it observes `ws > wa` (#640), the same
     # rule `RateLimiter._apply_reset_edge` uses for a cron, so the rollover
     # fan-out moves this scalar and never `tk`.
     window_start_ms: int | None = None
@@ -1256,6 +1256,13 @@ class BucketState:
     # materialiser needs no config read — the aggregator reads the item and
     # nothing else. Never divided by `shard_count`.
     reset_after_seconds: int | None = None
+    # The `ws` this shard's balance reflects, epoch ms (#640): `b_{name}_wa`.
+    # `None` on an item written before the marker existed, where
+    # `window_rolled` falls back to comparing against `rf`.
+    window_applied_ms: int | None = None
+    # `b_{name}_wtc` (#640): `tc` as it stood when a fan-out left this shard
+    # with an unapplied window. `None` when the item carries none.
+    window_consumed_mark_milli: int | None = None
 
     @property
     def tokens(self) -> int:
@@ -1327,18 +1334,54 @@ class BucketState:
     def window_rolled(self) -> bool:
         """Has a window opened that this shard's balance does not reflect yet?
 
-        ``ws > rf`` (ADR-140): a shard whose window start is newer than its own
-        last materialisation has not applied that window. This is the single
-        statement of the rule — the slow-path roll
+        ``ws > wa`` (ADR-140, #640): a shard whose window start is newer than
+        the window its balance was last materialised for has not applied that
+        window. This is the single statement of the rule — the slow-path roll
         (``RateLimiter._apply_window_roll``) and every read-only view of the
         balance ask it here rather than restating the comparison, so the two
-        cannot drift (the #489 lesson).
+        cannot drift (the #489 lesson). The aggregator mirrors it in
+        ``processor._window_applied``.
 
-        Strictly ``>``: the pass that applies a roll stamps ``rf`` at or after
-        ``ws``, so ``>=`` would re-fire on every later request and refund
-        everything spent since. ``False`` for a bucket with no window.
+        An item written before the marker existed carries no ``wa``, and falls
+        back to the ADR-140 rule it was written under, ``ws > rf``. The marker
+        exists because ``rf`` is shared: a writer predating ADR-139 stamps it
+        from its own clock, backward (the next pass would roll again) or
+        forward past a fanned-out ``ws`` (the shard would never roll it).
+
+        Strictly ``>``: the pass that applies a roll records ``wa = ws``, so
+        ``>=`` would re-fire on every later request and refund everything
+        spent since. ``False`` for a bucket with no window.
         """
-        return self.window_start_ms is not None and self.window_start_ms > self.last_refill_ms
+        if self.window_start_ms is None:
+            return False
+        applied = (
+            self.window_applied_ms if self.window_applied_ms is not None else self.last_refill_ms
+        )
+        return self.window_start_ms > applied
+
+    def window_roll_target_milli(self, now_ms: int) -> int:
+        """The balance a pending window roll restores this shard to (#640).
+
+        ``eff_cp - max(0, tc - wtc)``: the shard's effective share, less every
+        net debit since the fan-out snapshot. That is exactly the balance an
+        immediate roll at the snapshot instant would have left — every debit
+        path ADDs ``tc`` (the fast path, the normal path, the retry, adjust and
+        rollback, on this release and on v0.14), so nothing spent while the
+        roll was pending is forgiven by it, including spending from the ended
+        window's leftover after a writer predating ADR-139 removed ``vu``.
+        The target does not read ``tk`` at all, so it does not matter what the
+        shard spent from. ``max(0, ...)`` keeps net credits since the snapshot
+        (an old-window lease rolling back) from lifting the roll above the
+        share. With no snapshot on the item it is the share, as before.
+
+        Only meaningful for a roll that is *pending* (:attr:`window_rolled`);
+        an opener or a newly created shard applies its window in the same
+        write and restores the full share.
+        """
+        share = self.effective_capacity_milli(now_ms)
+        if self.window_consumed_mark_milli is None or self.total_consumed_milli is None:
+            return share
+        return share - max(0, self.total_consumed_milli - self.window_consumed_mark_milli)
 
     def accrues(self, now_ms: int) -> bool:
         """Is this shard gaining tokens at ``now_ms``?

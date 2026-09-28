@@ -37,24 +37,26 @@ code pushed in that run or do not exist.
 
 **Positive:**
 - A pre-v0.15 aggregator or provisioner can no longer be handed a limit it would misread.
-- One predicate decides the stamp for CLI `deploy`, infrastructure provisioning and `open()`, so
-  the rule cannot drift between them.
+- One predicate decides the stamp for CLI `deploy`, CLI `upgrade`, infrastructure provisioning,
+  `open()`'s record initialization and its Lambda auto-update, so the rule cannot drift between
+  them.
 - A missing record or unknown Lambda version fails closed and names its remedy.
 - `client_min_version` becomes a working field, so the next incompatible feature is protected by
   the same ratchet without new machinery.
 - Writes of every other limit pay nothing.
 
 **Negative:**
-- Nothing makes a v0.14 client fail closed; every client must still be upgraded before a
-  `reset_after` limit is stored. Hiding the configuration from old readers is deferred to #640.
+- Nothing makes a v0.14 client fail closed; it does not enforce the session limit, and every
+  client must still be upgraded before one is relied on (see [ADR-142](142-hide-reset-after-config.md)).
 - The gate holds only at write time: a v0.14 CLI can later put the old Lambdas back, and a v0.14
   `upgrade` also resets the minimum. Never run a v0.14 CLI against such a stack.
 - The minimum, and the override gate's cached Lambda version, are checked when a repository
   opens, so a long-lived process is not refused until it restarts.
 - A refused CloudFormation update whose previous properties also carried `reset_after` leaves the
   stack in `UPDATE_ROLLBACK_FAILED`, needing a manual rollback continuation.
-- `deploy` performs no minimum check of its own; `--no-aggregator` stacks get no exemption and
-  must be redeployed by v0.15 with the provisioner enabled (#644).
+- `deploy` performs no minimum check of its own, and `--no-aggregator` stacks get no exemption
+  in the gate; `zae-limiter upgrade` and `open(auto_update=True)` push only to the Lambdas a
+  stack has, so they are the remedy on every stack shape (#644).
 
 ## Alternatives Considered
 
@@ -72,6 +74,5 @@ Rejected because: it fails exactly as today, and so still fails open under `allo
 Rejected because: the function does the reading, and the template creates it only when a role is
 also available.
 
-### Hide the configuration from pre-v0.15 readers now
-Deferred to #640: it needs a per-limit applied marker first and turns an old client's outage into
-silent non-enforcement, which is a product decision.
+### Hide the configuration from pre-v0.15 readers
+Decided separately in [ADR-142](142-hide-reset-after-config.md).

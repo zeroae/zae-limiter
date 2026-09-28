@@ -29,6 +29,7 @@ from zae_limiter.schema import (
     BUCKET_FIELD_SCHED_TZ,
     BUCKET_FIELD_TK,
     BUCKET_FIELD_VU,
+    BUCKET_FIELD_WA,
     BUCKET_FIELD_WS,
     BUCKET_SCHED_NONE,
     CONFIG_FIELD_SCHED_TZ,
@@ -1245,20 +1246,58 @@ class TestPropagateWindowStart:
             ExpressionAttributeValues={":rf": {"N": str(rf)}},
         )
 
+    async def _unmark(self, repo, entity_id, shard, limit_name="session"):
+        """Strip the #640 window-applied marker: an item written before it."""
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "gpt-4", shard)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="REMOVE #wa",
+            ExpressionAttributeNames={"#wa": bucket_attr(limit_name, BUCKET_FIELD_WA)},
+        )
+
     @pytest.mark.asyncio
     @pytest.mark.parametrize("rf_offset", [0, 10])
-    async def test_a_sibling_already_past_the_new_start_is_left_alone(self, repo, rf_offset):
+    async def test_an_unmarked_sibling_already_past_the_new_start_is_left_alone(
+        self, repo, rf_offset
+    ):
         """An aggregator refill after the old window ended (or a writer with a
-        clock ahead) left the sibling's `rf` at or past the new `ws`. Moved,
-        it would read `ws > rf` as false, treat the window as applied and keep
-        its burnt balance for all of it. Left alone, it opens its own."""
+        clock ahead) left the sibling's `rf` at or past the new `ws`. A
+        sibling without the #640 marker applies a window by reading `ws > rf`:
+        moved, it would read that as false, treat the window as applied and
+        keep its burnt balance for all of it. Left alone, it opens its own."""
         await self._create_shards(repo, "e1", count=2, ws=self.OLD)
+        await self._unmark(repo, "e1", 1)
         await self._set_rf(repo, "e1", 1, self.NEW + rf_offset)
         written = await repo._propagate_window_start(
             "e1", "gpt-4", shard_id=0, shard_count=2, windows=self._windows(self.NEW)
         )
         assert written == 0
         assert await self._stored_ws(repo, "e1", "session", 1) == self.OLD
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("rf_offset", [0, 10])
+    async def test_a_marked_sibling_already_past_the_new_start_still_moves(self, repo, rf_offset):
+        """#640: a marked sibling applies the window by reading `ws > wa`,
+        which no `rf` can mask — including an `rf` a pre-ADR-139 writer
+        stamped forward from its own clock. It moves, and rolls on its next
+        pass; the floor still guarantees its own window had ended."""
+        await self._create_shards(repo, "e1", count=2, ws=self.OLD)
+        await self._set_rf(repo, "e1", 1, self.NEW + rf_offset)
+        written = await repo._propagate_window_start(
+            "e1", "gpt-4", shard_id=0, shard_count=2, windows=self._windows(self.NEW)
+        )
+        assert written == 1
+        assert await self._stored_ws(repo, "e1", "session", 1) == self.NEW
+        item = await self._raw(repo, "e1", 1)
+        (state,) = [
+            b for b in repo._deserialize_composite_bucket(item) if b.limit_name == "session"
+        ]
+        assert state.window_applied_ms == self.OLD
+        assert state.window_rolled
 
     @pytest.mark.asyncio
     async def test_a_sibling_behind_the_new_start_still_moves(self, repo):
@@ -6788,7 +6827,8 @@ class TestResetScheduleReachesStorage:
 
 
 class TestDurationWindowReachesConfigStorage:
-    """`l_{name}_rsa` — a duration quota's window length (ADR-139, plan Task 4).
+    """`w_{name}_rsa` (legacy `l_{name}_rsa`) — a duration quota's window length
+    (ADR-139, plan Task 4).
 
     The alternative spelling of the reset half: a window anchored to the
     entity's own first use rather than a calendar instant. Mirrors
@@ -6832,13 +6872,13 @@ class TestDurationWindowReachesConfigStorage:
 
     async def test_the_window_is_stored_under_its_own_attribute(self, repo):
         """Seconds, not the `timedelta` — the field name carries no unit, so
-        storage has to spell it (`l_{name}_rsa`), and it is a sibling of
+        storage has to spell it (`w_{name}_rsa`, #640), and it is a sibling of
         `rsched`, not a tag inside it (a quota has one or the other, ADR-139)."""
         await repo.set_limits("dw-2", [self.WINDOW], resource="gpt-4")
         item = await self._raw_config(repo, "dw-2", "gpt-4")
 
-        assert item[limit_attr("session", LIMIT_FIELD_RSA)]["N"] == "18000"
-        assert limit_attr("session", LIMIT_FIELD_RSCHED) not in item
+        assert item[limit_attr("session", LIMIT_FIELD_RSA, windowed=True)]["N"] == "18000"
+        assert limit_attr("session", LIMIT_FIELD_RSCHED, windowed=True) not in item
 
     async def test_rewriting_a_limit_without_a_window_drops_it(self, repo):
         """Config storage is override-not-merge (full-replace PutItem), so this
@@ -7197,7 +7237,7 @@ async def _corrupt_config_sched(repo, entity_id, resource, limit_name, value, fi
 
 
 async def _corrupt_config_rsa(repo, entity_id, resource, limit_name, value):
-    """Overwrite `l_{name}_rsa` with a value `Limit.__post_init__` rejects.
+    """Overwrite `w_{name}_rsa` with a value `Limit.__post_init__` rejects.
 
     Mirrors `_corrupt_config_sched`, but `rsa` has no grammar to fail
     decoding — a plain `int()` on a DynamoDB `N` cannot realistically fail —
@@ -7214,7 +7254,7 @@ async def _corrupt_config_rsa(repo, entity_id, resource, limit_name, value):
             "SK": {"S": schema.sk_config(resource)},
         },
         UpdateExpression="SET #a = :v",
-        ExpressionAttributeNames={"#a": limit_attr(limit_name, LIMIT_FIELD_RSA)},
+        ExpressionAttributeNames={"#a": limit_attr(limit_name, LIMIT_FIELD_RSA, windowed=True)},
         ExpressionAttributeValues={":v": {"N": str(value)}},
     )
 
@@ -7432,7 +7472,7 @@ class TestUnreadableStoredSchedule:
         with pytest.raises(RateLimiterUnavailable) as excinfo:
             await repo.get_limits("corrupt-4g", resource="gpt-4")
         message = str(excinfo.value)
-        assert "l_session_rsa" in message
+        assert "w_session_rsa" in message
         assert "positive whole number of seconds" in message
         assert isinstance(excinfo.value.cause, ValueError)
 
@@ -7442,7 +7482,7 @@ class TestUnreadableStoredSchedule:
         await _corrupt_config_rsa(repo, "corrupt-4h", "gpt-4", "session", -5)
         await repo.invalidate_config_cache()
 
-        with pytest.raises(RateLimiterUnavailable, match="l_session_rsa"):
+        with pytest.raises(RateLimiterUnavailable, match="w_session_rsa"):
             await repo.get_limits("corrupt-4h", resource="gpt-4")
 
     async def test_a_non_integral_duration_window_raises_unavailable_too(self, repo):
@@ -7460,7 +7500,7 @@ class TestUnreadableStoredSchedule:
             await repo.get_limits("corrupt-4i", resource="gpt-4")
         assert not isinstance(excinfo.value, ValueError)
         message = str(excinfo.value)
-        assert "l_session_rsa" in message
+        assert "w_session_rsa" in message
         assert "1.5" in message
         assert isinstance(excinfo.value.cause, ValueError)
 
@@ -7733,8 +7773,8 @@ class TestResetAfterVersionGate:
             with pytest.raises(VersionMismatchError) as exc_info:
                 await self._write(repo, level, [self.RPM, self.SESSION])
         assert "zae-limiter upgrade" in str(exc_info.value)
-        # The record cannot say whether an aggregator exists: both remedies.
-        assert "--no-aggregator, re-run 'zae-limiter deploy'" in str(exc_info.value)
+        # upgrade works whether or not the stack has an aggregator (#644).
+        assert "zae-limiter deploy" not in str(exc_info.value)
         assert exc_info.value.lambda_version == "0.14.0"
         assert exc_info.value.can_auto_update is True
         # Refused before anything is written.
@@ -7767,7 +7807,7 @@ class TestResetAfterVersionGate:
             with pytest.raises(VersionMismatchError) as exc_info:
                 await self._write(repo, "entity", [self.SESSION])
         assert "Run 'zae-limiter upgrade' to deploy it" in str(exc_info.value)
-        assert "re-run 'zae-limiter deploy'" in str(exc_info.value)
+        assert "zae-limiter deploy" not in str(exc_info.value)
         assert exc_info.value.can_auto_update is False
 
     async def _counting_get_item(self, repo, write):
@@ -8195,3 +8235,132 @@ class TestVersionRecordInitialization:
             assert repo._deployed_lambda_version == expected
         finally:
             await repo.close()
+
+
+class TestAutoUpdateSkipsFunctionsTheStackDoesNotDeploy:
+    """``open(auto_update=True)`` on a stack without an aggregator or without a
+    provisioner (#644).
+
+    ``--no-aggregator``, ``--no-provisioner`` and ``--no-iam`` stacks have no
+    function to push code to. Moto-backed with a real ``StackManager``, so the
+    push against a missing function meets Lambda's own
+    ``ResourceNotFoundException``; only the package builds and the ESM wait
+    are stubbed.
+    """
+
+    STACK = "partial-stack"
+
+    async def _seed(self, lambda_version: str) -> None:
+        from zae_limiter.version import get_schema_version
+
+        setup = Repository(name=self.STACK, region="us-east-1", _skip_deprecation_warning=True)
+        try:
+            await setup.create_table()
+            await setup._register_namespace("default")
+            await setup.set_version_record(
+                schema_version=get_schema_version(), lambda_version=lambda_version
+            )
+        finally:
+            await setup.close()
+
+    async def _stamp(self) -> str | None:
+        repo = Repository(name=self.STACK, region="us-east-1", _skip_deprecation_warning=True)
+        try:
+            record = await repo.get_version_record()
+        finally:
+            await repo.close()
+        assert record is not None
+        return record.get("lambda_version")
+
+    async def _open(self) -> Repository:
+        from tests.fixtures.moto import lambda_zip
+
+        with (
+            patch("zae_limiter.__version__", "0.15.0"),
+            patch(
+                "zae_limiter.infra.stack_manager.build_lambda_package", return_value=lambda_zip()
+            ),
+            patch(
+                "zae_limiter.infra.stack_manager.build_provisioner_package",
+                return_value=lambda_zip(),
+            ),
+            patch(
+                "zae_limiter.infra.stack_manager.StackManager.wait_for_esm_ready",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+        ):
+            return await Repository.open("default", stack=self.STACK, region="us-east-1")
+
+    @pytest.mark.parametrize(
+        "present",
+        [
+            pytest.param(("limits-provisioner",), id="no-aggregator"),
+            pytest.param(("aggregator",), id="no-provisioner"),
+            pytest.param((), id="neither"),
+            pytest.param(("aggregator", "limits-provisioner"), id="both"),
+        ],
+    )
+    async def test_pushes_what_exists_skips_the_rest_and_stamps(self, mock_dynamodb, present):
+        from tests.fixtures.moto import create_stack_lambdas, stack_lambda_versions
+
+        await self._seed("0.14.0")
+        create_stack_lambdas(self.STACK, *present)
+
+        repo = await self._open()
+        try:
+            assert repo._lambda_version == "0.15.0"
+        finally:
+            await repo.close()
+
+        assert await self._stamp() == "0.15.0"
+        assert stack_lambda_versions(self.STACK) == dict.fromkeys(present, "0.15.0")
+
+    async def test_a_probe_that_cannot_tell_still_pushes(self, mock_dynamodb):
+        """A probe that cannot tell (no permission, throttled) proves nothing
+        about absence, so the push is attempted: the aggregator's push meets a
+        real ResourceNotFoundException, which is proof, and the stamp holds."""
+        from tests.fixtures.moto import create_stack_lambdas, stack_lambda_versions
+
+        await self._seed("0.14.0")
+        create_stack_lambdas(self.STACK, "limits-provisioner")
+
+        with patch(
+            "zae_limiter.infra.stack_manager.lambda_function_exists",
+            new_callable=AsyncMock,
+            return_value=None,
+        ):
+            repo = await self._open()
+        await repo.close()
+
+        assert await self._stamp() == "0.15.0"
+        assert stack_lambda_versions(self.STACK) == {"limits-provisioner": "0.15.0"}
+
+    async def test_a_failed_push_stamps_nothing(self, mock_dynamodb):
+        """The stamp never claims code that is not running: when the
+        provisioner push fails for any reason other than absence, the
+        aggregator already carries the new code but the record keeps the old
+        version, and the next open() tries again."""
+        from tests.fixtures.moto import create_stack_lambdas, stack_lambda_versions
+        from zae_limiter.exceptions import StackOperationError
+
+        await self._seed("0.14.0")
+        create_stack_lambdas(self.STACK, "aggregator", "limits-provisioner")
+
+        with (
+            patch(
+                "zae_limiter.infra.stack_manager.StackManager.deploy_provisioner_code",
+                new_callable=AsyncMock,
+                side_effect=StackOperationError(
+                    stack_name=self.STACK, reason="Provisioner deployment failed (AccessDenied)"
+                ),
+            ),
+            pytest.raises(StackOperationError),
+        ):
+            await self._open()
+
+        assert await self._stamp() == "0.14.0"
+        assert stack_lambda_versions(self.STACK) == {
+            "aggregator": "0.15.0",
+            "limits-provisioner": None,
+        }
