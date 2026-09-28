@@ -134,7 +134,10 @@ async def _connect_read_only(
 
     - **Stack missing** (the table does not exist): names the deploy command.
     - **Client below the stack's ``client_min_version``** (#638), or a
-      schema that needs migration: refused, as ``connect()`` does.
+      schema that needs migration: refused, as ``connect()`` does. Nothing
+      else about the versions is refused — an unparseable client or schema
+      version (a checkout without tags builds ``0.1.devN+g…``) passes, as it
+      does through ``connect()``.
     - **Lambdas behind the client**, only when ``require_current_lambdas``
       names the command (``"plan"``/``"diff"``): those hand the manifest to
       the provisioner, and only a current one applies the reader-version
@@ -197,8 +200,15 @@ async def _connect_read_only(
                         )
                     )
                 )
-            if not compat.is_compatible:
+            if compat.requires_schema_migration:
                 _refuse(compat.message)
+            # Any other incompatibility is an unparseable client or schema
+            # version (a build from a checkout without tags is
+            # ``0.1.devN+g…``). ``connect()`` accepts those, and so does a
+            # read: nothing here writes, so there is nothing to protect.
+            # An unparseable client version stops check_compatibility before
+            # it compares the Lambda, so a stamped Lambda reads as current:
+            # plan/diff refuse only a Lambda known to be behind, or unknown.
             lambdas_current = lambda_version is not None and not compat.requires_lambda_update
 
         if require_current_lambdas is not None and not lambdas_current:

@@ -31,6 +31,9 @@ REGION = "us-east-1"
 NAMESPACE = "tenant-a"
 CLIENT = "0.15.1"
 BEHIND = "0.15.0"
+# What hatch-vcs builds from a checkout without tags, as CI's is: not a version
+# `version.parse_version` can read (#655).
+UNTAGGED = "0.1.dev1+gabc"
 
 # Commands that read one namespace. Each takes -N; the entity/resource
 # arguments name things the populated table carries (or reports as absent
@@ -105,14 +108,14 @@ def _manager() -> Mock:
     return manager
 
 
-def _invoke(args: list[str], *, region: bool = True) -> tuple[Any, Mock]:
+def _invoke(args: list[str], *, region: bool = True, client: str = CLIENT) -> tuple[Any, Mock]:
     """Run one command with every provisioning route mocked out."""
     stack_manager = Mock(return_value=_manager())
     options = ["--name", TABLE] + (["--region", REGION] if region else [])
     if args[0] not in ("namespace",) and args[:2] not in (["limits", "plan"], ["limits", "diff"]):
         options += ["-N", NAMESPACE]
     with (
-        patch("zae_limiter.__version__", CLIENT),
+        patch("zae_limiter.__version__", client),
         patch("zae_limiter.infra.stack_manager.StackManager", stack_manager),
         patch("zae_limiter.cli.StackManager", stack_manager),
     ):
@@ -225,6 +228,38 @@ class TestPlainReadsNeverProvision:
         _assert_nothing_written(stack_manager, before)
 
 
+class TestUnparseableVersionsDoNotRefuse:
+    """Only the refusals the issue names refuse; a version nobody can parse is
+    not one of them, exactly as it is not for ``Repository.connect()``."""
+
+    @pytest.mark.parametrize("args", PLAIN_READS, ids=_ids(PLAIN_READS))
+    def test_an_untagged_client_reads_normally(self, mock_dynamodb, args) -> None:
+        asyncio.run(_setup(namespace=True, record=_record(BEHIND)))
+        before = asyncio.run(_scan())
+
+        result, stack_manager = _invoke(args, client=UNTAGGED)
+
+        assert result.exit_code == 0, result.output
+        assert "Invalid client version" not in result.output
+        _assert_nothing_written(stack_manager, before)
+
+    def test_an_unparseable_schema_version_reads_normally(self, mock_dynamodb) -> None:
+        asyncio.run(_setup(namespace=True, record=_record(CLIENT, schema_version="garbage")))
+        before = asyncio.run(_scan())
+
+        result, stack_manager = _invoke(["resource", "list"])
+
+        assert result.exit_code == 0, result.output
+        _assert_nothing_written(stack_manager, before)
+
+    def test_an_untagged_client_still_gets_the_missing_stack_message(self, mock_dynamodb) -> None:
+        result, stack_manager = _invoke(["resource", "list"], client=UNTAGGED)
+
+        assert result.exit_code == 1, result.output
+        assert STACK_MISSING in result.output
+        _assert_nothing_written(stack_manager, ([], []))
+
+
 class TestConnectReadOnly:
     """The helper itself, for the paths the commands cannot reach."""
 
@@ -273,11 +308,13 @@ class TestPreviewsNeverProvision:
         )
         return str(path)
 
-    def _preview(self, command: str, manifest: str) -> tuple[Any, Mock, MagicMock]:
+    def _preview(
+        self, command: str, manifest: str, client: str = CLIENT
+    ) -> tuple[Any, Mock, MagicMock]:
         lambda_client = MagicMock()
         lambda_client.invoke.return_value = {"Payload": MagicMock(read=lambda: b'{"changes": []}')}
         with patch("zae_limiter.limits_cli.boto3.client", return_value=lambda_client) as boto:
-            result, stack_manager = _invoke(["limits", command, "-f", manifest])
+            result, stack_manager = _invoke(["limits", command, "-f", manifest], client=client)
         return result, stack_manager, boto
 
     @pytest.mark.parametrize("command", ["plan", "diff"])
@@ -367,4 +404,36 @@ class TestPreviewsNeverProvision:
         payload = json.loads(boto.return_value.invoke.call_args.kwargs["Payload"])
         assert payload["action"] == "plan"
         assert payload["namespace_id"] == asyncio.run(_namespace_id())
+        _assert_nothing_written(stack_manager, before)
+
+    @pytest.mark.parametrize("command", ["plan", "diff"])
+    def test_an_untagged_client_previews_against_a_stamped_lambda(
+        self, mock_dynamodb, manifest, command
+    ) -> None:
+        """Nothing can say the stamped Lambda is behind an unparseable client,
+        so the preview runs, as ``upgrade`` would."""
+        asyncio.run(_setup(namespace=True, record=_record(BEHIND)))
+        before = asyncio.run(_scan())
+
+        result, stack_manager, boto = self._preview(command, manifest, client=UNTAGGED)
+
+        assert result.exit_code == 0, result.output
+        boto.return_value.invoke.assert_called_once()
+        _assert_nothing_written(stack_manager, before)
+
+    @pytest.mark.parametrize("command", ["plan", "diff"])
+    def test_an_untagged_client_still_refuses_an_unknown_lambda(
+        self, mock_dynamodb, manifest, command
+    ) -> None:
+        asyncio.run(_setup(namespace=True, record=_record(None)))
+        before = asyncio.run(_scan())
+
+        result, stack_manager, boto = self._preview(command, manifest, client=UNTAGGED)
+
+        assert result.exit_code == 1, result.output
+        assert (
+            f"Error: the stack's Lambdas run unknown; this client is {UNTAGGED}. "
+            f"Run 'zae-limiter upgrade -n {TABLE}' first, then re-run the {command}."
+        ) in result.output
+        boto.assert_not_called()
         _assert_nothing_written(stack_manager, before)

@@ -557,7 +557,10 @@ get-limits`, `audit list`, `namespace list`, …), which does not use the Lambda
 alone. `limits plan` / `limits diff` pass `require_current_lambdas=` and refuse it (also an
 unknown `lambda_version`), because the provisioner does the planning. A missing stack or
 namespace exits 1 naming `deploy` / `namespace register`; a client below `client_min_version`
-is refused as everywhere else. Only commands that intend to write keep `cli._connect()` →
+or a schema needing migration is refused as everywhere else — and **nothing else about the
+versions is**. An unparseable client or schema version (CI checks out without tags, so its
+build is `0.1.devN+g…`, #655) passes, exactly as it does through `connect()`; refusing it failed
+every read command in CI. Only commands that intend to write keep `cli._connect()` →
 `open()`, so `rg "Repository.open\(" src/zae_limiter/cli.py src/zae_limiter/limits_cli.py`
 matches write paths only — keep it that way when adding a command.
 
