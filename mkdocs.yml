@@ -207,3 +207,5 @@ nav:
           - ADR-140 Shards of one entity share one duration window: adr/140-duration-window-shard-coherence.md
           - ADR-141 Storing a reset_after limit is gated on reader versions: adr/141-reset-after-version-gate.md
           - ADR-142 A reset_after limit's config is hidden from pre-v0.15 readers: adr/142-hide-reset-after-config.md
+          - ADR-143 A config level may merge its limits over the level below: adr/143-merge-limits-through-hierarchy.md
+          - ADR-144 Resource and system changes fan out to merged entity buckets: adr/144-fan-out-to-merged-entity-buckets.md

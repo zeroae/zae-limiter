@@ -2,6 +2,7 @@
 
 **Status:** Draft plan — open questions resolved, awaiting approval
 **Date:** 2026-09-28
+**ADRs:** ADR-143, ADR-144 (Proposed)
 **Related:** ADR-118 (four-level hierarchy), ADR-136 (entity config ⇒ no bucket TTL), ADR-141 (version gate), ADR-142 (hidden config), #468 / #487 (limit-change fan-out), #633 (per-limit seeding)
 
 ## Problem
@@ -133,9 +134,10 @@ gaps in `tc` for usage snapshots.
 **Considered: a per-limit config version checked on the fast path.** The fast path reads no config
 by design (#315), so this would give up the 0 RCU path for every acquire.
 
-**Needs a new ADR** (next number: **ADR-143**). It narrows ADR-136's "resource and system do not
-fan out" to "do not fan out **except** to merged entity buckets". ADR-136 is Accepted, so
-ADR-143 records the narrowing and cites ADR-136, rather than editing it (`adr-rules.md`).
+Recorded as **ADR-144** (`docs/adr/144-fan-out-to-merged-entity-buckets.md`). It adds a fan-out
+for merged entity buckets beside ADR-136 and cites it. It does not supersede ADR-136: ADR-136's
+decision (which buckets carry a TTL) is unchanged, and it is Accepted, so it is not edited
+(`adr-rules.md`).
 
 ### D5. The schedule timezone must agree across the merged set
 
@@ -317,9 +319,12 @@ Each phase is its own PR with its own tests. Pre-existing bugs found along the w
 
 ### Phase 0: Design record
 
-- [ ] Write **ADR-143** (Proposed): merge-by-name, opt-in per level, whole-`Limit` granularity
-      with the schedule-only patch exception (D8), targeted fan-out narrowing ADR-136, timezone
-      rule, version gate. Cite ADR-118 and ADR-136.
+- [x] Write the ADRs (Proposed). ADR-000 allows one decision per ADR, so this is two:
+      **ADR-143** (`docs/adr/143-merge-limits-through-hierarchy.md`) covers merge-by-name, opt-in
+      per level, whole-`Limit` granularity, `exclude_limits`, schedule-only patches (D8), the
+      fail-closed timezone rule and the client-version ratchet. **ADR-144**
+      (`docs/adr/144-fan-out-to-merged-entity-buckets.md`) covers the targeted fan-out (D4)
+      beside ADR-136.
 - [ ] Open a tracking issue with `/issue create`, and pick its milestone by description. Patches
       get their own sub-issue, since Phase 6 can ship after the rest.
 - [x] Open questions settled by the owner on 2026-09-28: Q1 fail closed, Q2 raise the minimum
