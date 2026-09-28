@@ -1967,12 +1967,15 @@ class RateLimiter:
         donor spent, reset or regranted since the read, or a conflict that
         outlasted its retries — rolls back whole, donor untouched, and raises
         `QuotaMoveLostError`. The plan is then stale, so the whole pass is re-read
-        and re-planned once (design §6 step 6). A second loss is re-raised, and
-        `acquire` surfaces it as `RateLimiterUnavailable` — or a degraded lease
-        under ALLOW — like any backend error: nothing was written either time.
+        and re-planned once (design §6 step 6). After a second loss the shard
+        gets 0 this time: the pass is planned once more with moves disabled,
+        so no donor debit rides and the commit is an ordinary one — admitted
+        against a zero balance, or `RateLimitExceeded`. Never
+        `RateLimiterUnavailable`, which under ALLOW would admit without limit.
+        Nothing was written by either lost attempt.
         """
 
-        async def plan_and_commit() -> Lease:
+        async def plan_and_commit(disable_moves: bool) -> Lease:
             lease = await self._do_acquire(
                 entity_id=entity_id,
                 resource=resource,
@@ -1981,19 +1984,23 @@ class RateLimiter:
                 shard_id=shard_id,
                 shard_count=shard_count,
                 parent_shard_id=parent_shard_id,
+                disable_moves=disable_moves,
             )
             await lease._commit_initial()
             return lease
 
         try:
-            return await plan_and_commit()
+            return await plan_and_commit(False)
         except QuotaMoveLostError:
             pass  # stale plan: re-read and re-plan once
         try:
-            return await plan_and_commit()
-        except QuotaMoveLostError as exc:
-            # `acquire` turns this into `RateLimiterUnavailable`.
-            raise QuotaMoveLostError("quota shard grant lost twice to concurrent writers") from exc
+            return await plan_and_commit(False)
+        except QuotaMoveLostError:
+            pass
+        # Lost twice: this pass grants the covered slot nothing and carries no
+        # move (design §6 step 6), so the commit cannot lose one again — it
+        # admits against a zero balance or is rejected, never unavailable.
+        return await plan_and_commit(True)
 
     async def _do_acquire(
         self,
@@ -2004,10 +2011,15 @@ class RateLimiter:
         shard_id: int | None = None,
         shard_count: int | None = None,
         parent_shard_id: int | None = None,
+        disable_moves: bool = False,
     ) -> Lease:
         """Internal acquire implementation (the slow path).
 
         Args:
+            disable_moves: The third attempt after two lost ADR-145 moves
+                (design §6 step 6): a quota whose slot a sibling covers gets 0
+                this time instead of a move, and no donor debit rides. Only
+                under-admits, for the rest of the period at most.
             shard_id: Child shard the speculative fast path selected, so this
                 path reads and — if missing — creates that same shard
                 (issue #439). None draws one from the cached shard_count.
@@ -2174,6 +2186,16 @@ class RateLimiter:
                 if quota_needing and plan_count > 1
                 else (plan_count, {}, [])
             )
+            if disable_moves:
+                grants = {
+                    name: (
+                        grant
+                        if grant.donor_shard is None
+                        else QuotaGrant(donor_shard=None, tokens_milli=0)
+                    )
+                    for name, grant in grants.items()
+                }
+                donor_debits = []
             debit_for = {debit.limit_name: debit for debit in donor_debits}
             if any_existing:
                 seed_shard_count = grant_count
@@ -2504,8 +2526,14 @@ class RateLimiter:
             await Lease(
                 repository=self._repository, entries=entries, _carriers=carriers
             )._commit_initial()
-        except Exception:
-            logger.debug("A rejected pass's quota move was not written", exc_info=True)
+        except Exception as exc:
+            # Never the entity id: it is routinely an API key
+            # (py/clear-text-logging-sensitive-data).
+            logger.warning(
+                "A rejected pass's quota move on resource %r was not written: %r",
+                entries[0].resource,
+                exc,
+            )
 
     @staticmethod
     def _granted_tokens(

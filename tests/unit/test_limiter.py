@@ -12189,10 +12189,11 @@ class TestLimitAddedToExistingShards:
         await self._acquire_on(limiter, "r2-reject", 1, {"rpd": 1})
         assert await _stored_tk(repo, "r2-reject", "gpt-4", "rpd", shard=1) == 499_000
 
-    async def test_a_rejected_seed_whose_move_is_lost_writes_nothing(self, limiter):
+    async def test_a_rejected_seed_whose_move_is_lost_writes_nothing(self, limiter, caplog):
         """The rejected pass's move is best effort: when its transaction fails
         (the donor spent meanwhile) nothing was written and the rejection
-        stands, never an `on_unavailable` outcome."""
+        stands, never an `on_unavailable` outcome. The loss is logged at
+        WARNING (R9), naming the resource but never the entity id."""
         repo = await self._two_shards(limiter, "r2-lost", extra_on_shard0=(700_000, 300_000))
         real = repo.transact_write
 
@@ -12206,6 +12207,11 @@ class TestLimitAddedToExistingShards:
         assert await _stored_tk(repo, "r2-lost", "gpt-4", "rpd", shard=0) == 100_000
         shard1 = await _raw_bucket(repo, "r2-lost", shard=1)
         assert bucket_attr("rpd", BUCKET_FIELD_TK) not in shard1
+        warned = [
+            r for r in caplog.records if r.levelname == "WARNING" and "quota move" in r.message
+        ]
+        assert len(warned) == 1 and "gpt-4" in warned[0].message
+        assert "r2-lost" not in warned[0].message
 
     async def test_a_seed_that_loses_its_lock_is_replanned_and_admitted(self, limiter):
         """Design §6 step 6: the rf-locked write carrying the move loses its
@@ -12231,19 +12237,28 @@ class TestLimitAddedToExistingShards:
         assert await _stored_tk(repo, "r2-lock", "gpt-4", "rpd", shard=1) == 499_000
         assert await _stored_tk(repo, "r2-lock", "gpt-4", "rpd", shard=0) == 200_000
 
-    async def test_a_move_lost_twice_is_unavailable_and_writes_nothing(self, limiter):
-        """A second loss surfaces as `RateLimiterUnavailable`, so
-        `on_unavailable` decides; neither attempt wrote anything."""
+    async def test_a_move_lost_twice_grants_zero_and_never_is_unavailable(self, limiter):
+        """R8, design §6 step 6: a second loss is not `RateLimiterUnavailable`
+        (under ALLOW that admits without limit). The third pass seeds the
+        covered slot with nothing and no move: a request against it is
+        rejected, and neither lost attempt wrote anything."""
         repo = await self._two_shards(limiter, "r2-twice", extra_on_shard0=(700_000, 300_000))
         slow = RateLimiter(repository=repo, speculative_writes=False)
         stale = await slow._fetch_entity_and_buckets("r2-twice", "gpt-4", 1)
         await _set_rf(repo, "r2-twice", 1, T0 + 1)
         repo._now_ms = lambda: T0 + 1
-        with patch.object(slow, "_fetch_entity_and_buckets", AsyncMock(return_value=stale)):
+        fetch = AsyncMock(return_value=stale)
+        with patch.object(slow, "_fetch_entity_and_buckets", fetch):
             with patch("zae_limiter.repository.random.randrange", return_value=1):
-                with pytest.raises(RateLimiterUnavailable, match="lost twice"):
-                    async with slow.acquire("r2-twice", "gpt-4", consume={"rpd": 1}):
+                with pytest.raises(RateLimitExceeded):
+                    async with slow.acquire(
+                        "r2-twice",
+                        "gpt-4",
+                        consume={"rpd": 1},
+                        on_unavailable=OnUnavailable.ALLOW,
+                    ):
                         pass
+        assert fetch.call_count == 3, "planned, re-planned, then planned without moves"
         assert await _stored_tk(repo, "r2-twice", "gpt-4", "rpd", shard=0) == 700_000
         shard1 = await _raw_bucket(repo, "r2-twice", shard=1)
         assert bucket_attr("rpd", BUCKET_FIELD_TK) not in shard1

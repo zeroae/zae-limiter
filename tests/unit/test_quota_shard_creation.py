@@ -22,7 +22,7 @@ from tests.fixtures.sharding import (
     walk_doublings_no_spend,
 )
 from tests.fixtures.windows import T0
-from zae_limiter import Limit, OnUnavailable, RateLimiter, RateLimiterUnavailable, schema
+from zae_limiter import Limit, OnUnavailable, RateLimiter, schema
 from zae_limiter.exceptions import RateLimitExceeded
 from zae_limiter.models import (
     BucketState,
@@ -421,9 +421,10 @@ class TestPlanQuotaShard:
             "UpdateItem",
         )
         with patch.object(client, "update_item", side_effect=error):
-            assert (
-                await repo._freeze_and_raise_shard_counts("e1", RESOURCE, [(0, 2, ["rpd"])], 4) == 0
+            raised = await repo._freeze_and_raise_shard_counts(
+                "e1", RESOURCE, [(0, [("rpd", 2)])], 4
             )
+            assert raised == 0
 
     async def test_any_other_error_raising_a_sibling_propagates(self, limiter):
         repo = limiter._repository
@@ -434,7 +435,7 @@ class TestPlanQuotaShard:
         )
         with patch.object(client, "update_item", side_effect=error):
             with pytest.raises(ClientError):
-                await repo._freeze_and_raise_shard_counts("e1", RESOURCE, [(0, 2, ["rpd"])], 4)
+                await repo._freeze_and_raise_shard_counts("e1", RESOURCE, [(0, [("rpd", 2)])], 4)
 
     async def test_a_corrupt_grant_count_reads_as_the_shard_count(self, limiter):
         """A stored ``gc < 1`` must not become a modulus of zero."""
@@ -456,7 +457,56 @@ class TestPlanQuotaShard:
         )
         _count, grants, debits = await repo.plan_quota_shard("e1", RESOURCE, [session], 1, 2, now)
         assert grants["session"].donor_shard == 0
-        assert debits == [QuotaDonorDebit(0, "session", 500_000, 1, None, now - 1000)]
+        # Written without `gc` (legacy shape), so the debit matches its stored count.
+        assert debits == [
+            QuotaDonorDebit(0, "session", 500_000, 1, None, now - 1000, legacy_shard_count=1)
+        ]
+
+    async def test_a_legacy_sibling_holding_more_than_a_share_covers_by_its_balance(self, limiter):
+        """R7: a v0.14 item (no gc) at count 2 holding 700 was granted at count
+        1 — no share at count 2 is that large — so it covers slot 1 and funds
+        it by a move. Read at its stored count it would cover only slot 0 and
+        the seed would mint a fresh 500 beside its 700 (1500 measured)."""
+        repo = limiter._repository
+        freeze(repo)
+        await _write_shard(repo, "e1", self.QUOTA, 0, 700_000, shard_count=2)
+        _count, grants, debits = await repo.plan_quota_shard(
+            "e1", RESOURCE, [self.QUOTA], 1, 2, repo._now_ms()
+        )
+        assert grants["rpd"] == QuotaGrant(donor_shard=0, tokens_milli=500_000, donor_grant_count=1)
+        assert debits == [QuotaDonorDebit(0, "rpd", 500_000, 1, ANY, None, legacy_shard_count=2)]
+        await repo.transact_write(repo.build_quota_donor_debits("e1", RESOURCE, debits))
+        assert await shard_balances(repo, "e1", "rpd", 1) == [200_000]
+
+    async def test_a_legacy_sibling_within_its_share_keeps_its_stored_count(self, limiter):
+        """R7 only broadens: 400 fits a share at count 2, so shard 0 covers slot
+        0 only and slot 1 is granted fresh, as design §9 reads it."""
+        repo = limiter._repository
+        freeze(repo)
+        await _write_shard(repo, "e1", self.QUOTA, 0, 400_000, shard_count=2)
+        _count, grants, debits = await repo.plan_quota_shard(
+            "e1", RESOURCE, [self.QUOTA], 1, 2, repo._now_ms()
+        )
+        assert grants["rpd"] == QuotaGrant(donor_shard=None, tokens_milli=500_000)
+        assert debits == []
+
+    async def test_raising_a_legacy_sibling_freezes_its_inferred_grant_size(self, limiter):
+        """R7 + R6: a fresh grant for another quota raises the lagging legacy
+        shard 0 to count 4; the raise stamps the grant size the planner
+        inferred (1), not the stored count (2), and the move planned off it in
+        the same pass still lands on the `gc = :gc` branch."""
+        repo = limiter._repository
+        freeze(repo)
+        weekly = Limit.quota("rpw", 1000, cron="0 0 * * 1")
+        await _write_shard(repo, "e1", self.QUOTA, 0, 700_000, shard_count=2)
+        _count, grants, debits = await repo.plan_quota_shard(
+            "e1", RESOURCE, [self.QUOTA, weekly], 3, 4, repo._now_ms()
+        )
+        assert grants["rpd"].donor_shard == 0 and grants["rpw"].donor_shard is None
+        item = await _item(repo, "e1", 0)
+        assert (item["shard_count"]["N"], item[self.GC]["N"]) == ("4", "1")
+        await repo.transact_write(repo.build_quota_donor_debits("e1", RESOURCE, debits))
+        assert await shard_balances(repo, "e1", "rpd", 1) == [450_000]
 
     async def test_legacy_donor_without_gc_can_donate(self, limiter):
         """Review focus 4: a v0.14 item (no gc) reads as gc = shard_count."""
@@ -601,13 +651,20 @@ class TestAcceptance:
         assert balances == [500_000, 490_000]
         assert sum(b for b in balances if b is not None) == 1_000_000 - 10_000
 
+    @pytest.mark.parametrize("legacy", [False, True], ids=["gc", "no-gc"])
     @pytest.mark.parametrize("shard1_rf_after_midnight", [False, True])
-    async def test_3_idle_across_the_reset_then_seed(self, limiter, shard1_rf_after_midnight):
+    async def test_3_idle_across_the_reset_then_seed(
+        self, limiter, shard1_rf_after_midnight, legacy
+    ):
         """#642, the 1300 repro (rv633d): shard 0 was granted the whole quota
         at count 1 today and has spent 300; shard 1 lacks the quota and may
         have last materialised before midnight. Its seed is rejected (asks for
         600 against a move of 500), then everything is drained through both
-        the fast and the slow path. Before: 1300 admitted in one period."""
+        the fast and the slow path. Before: 1300 admitted in one period.
+
+        ``no-gc`` writes shard 0 the way v0.14 left it (no grant count): R7
+        infers the count-1 grant from its 700 held, rather than reading it as
+        covering only its own slot (1500 measured before R7)."""
         rpm = Limit.per_minute("rpm", 100_000)
         repo = limiter._repository
         ns = repo._namespace_id
@@ -621,7 +678,7 @@ class TestAcceptance:
             if shard == 0:
                 rpd = BucketState.from_limit(eid, RESOURCE, self.QUOTA, T0, shard_count=2)
                 rpd.tokens_milli, rpd.total_consumed_milli = 700_000, 300_000
-                rpd.grant_count = 1
+                rpd.grant_count = None if legacy else 1
                 states.append(rpd)
             await repo.transact_write(
                 [
@@ -764,30 +821,47 @@ class TestAcceptance:
         assert calls == [2, 2], "the same move retried as-is"
         assert await shard_balances(repo, "conflict", "rpd", 2) == [500_000, 499_000]
 
-    async def test_a_move_that_keeps_conflicting_is_unavailable_not_a_raw_error(self, limiter):
-        """Exhausted conflict retries on a move re-plan once, then surface as
-        `RateLimiterUnavailable` (so `on_unavailable` applies) — never a raw
-        `ClientError`. Nothing is written."""
+    @pytest.mark.parametrize("mode", [OnUnavailable.BLOCK, OnUnavailable.ALLOW])
+    async def test_a_move_that_keeps_conflicting_gets_zero_not_unavailable(self, limiter, mode):
+        """R8, design §6 step 6: exhausted conflict retries lose the move, the
+        re-plan loses it again, and the third pass grants the covered slot 0
+        with no move. Never a raw `ClientError`, and never
+        `RateLimiterUnavailable` — under ALLOW that would admit without limit:
+        a request against the zero balance is rejected, a zero-cost one is
+        admitted and creates the empty shard. The total never grows."""
         repo = await self._full_shard0_at_two(limiter, "conflict-all")
         slow = RateLimiter(repository=repo, speculative_writes=False)
+        real = repo.transact_write
+        moves: list[int] = []
 
-        async def always_conflict(items):
-            raise _conflict()
+        async def moves_conflict(items):
+            if len(items) > 1:  # only a transaction carrying a donor debit
+                moves.append(1)
+                raise _conflict()
+            return await real(items)
 
-        with patch.object(repo, "transact_write", always_conflict):
+        with patch.object(repo, "transact_write", moves_conflict):
             with patch("zae_limiter.lease.asyncio.sleep") as sleep:
                 with patch("zae_limiter.repository.random.randrange", return_value=1):
-                    with pytest.raises(RateLimiterUnavailable, match="lost twice"):
-                        async with slow.acquire("conflict-all", RESOURCE, {"rpd": 1}):
+                    with pytest.raises(RateLimitExceeded):
+                        async with slow.acquire(
+                            "conflict-all", RESOURCE, {"rpd": 1}, on_unavailable=mode
+                        ):
                             pass
+                    assert len(moves) == 2 * 4, "two attempts, each with 3 retries"
+                    assert await shard_balances(repo, "conflict-all", "rpd", 2) == [
+                        1_000_000,
+                        None,
+                    ]
                     async with slow.acquire(
-                        "conflict-all", RESOURCE, {"rpd": 1}, on_unavailable=OnUnavailable.ALLOW
+                        "conflict-all", RESOURCE, {"rpd": 0}, on_unavailable=mode
                     ) as lease:
-                        assert lease.degraded
+                        assert not lease.degraded
         # Full jitter: every delay is drawn in [0, base * 2**attempt].
         delays = [call.args[0] for call in sleep.call_args_list]
         assert delays and all(0 <= d <= 0.025 * 4 for d in delays)
-        assert await shard_balances(repo, "conflict-all", "rpd", 2) == [1_000_000, None]
+        assert await shard_balances(repo, "conflict-all", "rpd", 2) == [1_000_000, 0]
+        assert (await _item(repo, "conflict-all", 1))["b_rpd_gc"]["N"] == "2"
 
     async def test_lost_move_is_replanned_once(self, limiter):
         """Design §6 step 6: the donor is spent between the plan and the commit,

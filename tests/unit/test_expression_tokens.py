@@ -288,13 +288,22 @@ class TestCompositeBuilders:
         ):
             assert_expression_safe(item["Update"])
 
+    def test_quota_donor_debit_off_a_legacy_donor(self) -> None:
+        """R7: an inferred grant count and the stored count are two tokens."""
+        (item,) = _repo().build_quota_donor_debits(
+            "e", "r", [QuotaDonorDebit(0, DOTTED, 1, 1, 5, None, legacy_shard_count=2)]
+        )
+        assert_expression_safe(item["Update"])
+        values = item["Update"]["ExpressionAttributeValues"]
+        assert (values[":qg0"], values[":ql0"]) == ({"N": "1"}, {"N": "2"})
+
     def test_quota_count_freeze(self) -> None:
         assert_expression_safe(
-            _repo()._build_quota_count_freeze("e", "r", 0, 2, 4, [DOTTED, HYPHENATED])
+            _repo()._build_quota_count_freeze("e", "r", 0, 4, [(DOTTED, 2), (HYPHENATED, 1)])
         )
 
     def test_quota_count_freeze_without_quotas(self) -> None:
-        assert_expression_safe(_repo()._build_quota_count_freeze("e", "r", 1, 2, 4, []))
+        assert_expression_safe(_repo()._build_quota_count_freeze("e", "r", 1, 4, []))
 
     def test_quota_donor_debit_without_a_period_guard(self) -> None:
         for item in _repo().build_quota_donor_debits(

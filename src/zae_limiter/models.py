@@ -2153,7 +2153,8 @@ class QuotaDonorDebit:
     carrying the grant count read (``grant_count``), and its grant still
     belonging to the current period: a calendar quota's ``rf`` at or past
     ``guard_rf_ms`` (the reset edge in force), a session quota's ``wa`` still
-    ``guard_wa_ms``. ``None`` means that guard does not apply.
+    ``guard_wa_ms``. ``None`` means that guard does not apply. A legacy donor
+    (no ``gc``) matches ``legacy_shard_count`` against its stored count.
     """
 
     shard_id: int
@@ -2162,6 +2163,10 @@ class QuotaDonorDebit:
     grant_count: int
     guard_rf_ms: int | None
     guard_wa_ms: int | None
+    # A donor with no stored `gc` (v0.14-shaped, design §9) is matched on the
+    # `shard_count` it stores, which differs from `grant_count` when the
+    # planner inferred a smaller grant count from its balance (R7).
+    legacy_shard_count: int | None = None
 
 
 def plan_quota_grant(

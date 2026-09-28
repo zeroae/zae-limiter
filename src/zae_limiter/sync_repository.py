@@ -5588,6 +5588,7 @@ class SyncRepository:
         count = max([shard_count, *counts.values()])
         grants: dict[str, QuotaGrant] = {}
         debits: list[QuotaDonorDebit] = []
+        sizes: dict[int, list[tuple[str, int]]] = {}
         for limit in quotas:
             capacity_milli = schedule.effective_params(
                 limit.capacity * 1000, 0, limit.refill_period_seconds * 1000, limit.schedule, now_ms
@@ -5595,10 +5596,13 @@ class SyncRepository:
             siblings = [
                 sibling
                 for sibling in (
-                    self._quota_sibling(sid, item, limit, now_ms) for sid, item in stored.items()
+                    self._quota_sibling(sid, item, limit, now_ms, capacity_milli)
+                    for sid, item in stored.items()
                 )
                 if sibling is not None
             ]
+            for sibling in siblings:
+                sizes.setdefault(sibling.shard_id, []).append((limit.name, sibling.grant_count))
             grant = plan_quota_grant(siblings, shard_id, count, capacity_milli // count)
             grants[limit.name] = grant
             if (
@@ -5620,22 +5624,7 @@ class SyncRepository:
             lagging = sorted((sid for sid, stored_count in counts.items() if stored_count < count))
             if lagging:
                 self._freeze_and_raise_shard_counts(
-                    entity_id,
-                    resource,
-                    [
-                        (
-                            sid,
-                            counts[sid],
-                            [
-                                limit.name
-                                for limit in quotas
-                                if schema.bucket_attr(limit.name, schema.BUCKET_FIELD_TK)
-                                in stored[sid]
-                            ],
-                        )
-                        for sid in lagging
-                    ],
-                    count,
+                    entity_id, resource, [(sid, sizes.get(sid, [])) for sid in lagging], count
                 )
         return (count, grants, debits)
 
@@ -5643,7 +5632,7 @@ class SyncRepository:
         self,
         entity_id: str,
         resource: str,
-        lagging: Sequence[tuple[int, int, Sequence[str]]],
+        lagging: Sequence[tuple[int, Sequence[tuple[str, int]]]],
         new_count: int,
     ) -> int:
         """Raise lagging siblings to ``new_count``, freezing their legacy grant size (R5).
@@ -5653,12 +5642,14 @@ class SyncRepository:
         legacy grant's coverage to the new count, and a later plan would mint a
         slot the sibling still holds tokens for; it would also fail a planned
         donor debit's ``attribute_not_exists(gc) AND shard_count = :gc``
-        branch. So the same write stamps ``gc = if_not_exists(gc, :old)`` for
-        every planned quota the sibling carries, ``:old`` being the count read.
-        The generic :meth:`_propagate_shard_count` is left alone.
+        branch. So the same write stamps ``gc = if_not_exists(gc, :g)`` for
+        every planned quota the sibling carries, ``:g`` being the grant size
+        the planner read it at — the count read, or smaller where a legacy
+        balance showed a grant sized at a lower count (R7). The generic
+        :meth:`_propagate_shard_count` is left alone.
 
         Args:
-            lagging: ``(shard_id, stored_count, quota_names_it_carries)`` each.
+            lagging: ``(shard_id, [(quota_name, grant_count), ...])`` each.
             new_count: The count to raise them to.
 
         Returns:
@@ -5666,11 +5657,11 @@ class SyncRepository:
         """
         client = self._get_client()
 
-        def raise_one(shard_id: int, old_count: int, quota_names: Sequence[str]) -> int:
+        def raise_one(shard_id: int, quota_grants: Sequence[tuple[str, int]]) -> int:
             try:
                 client.update_item(
                     **self._build_quota_count_freeze(
-                        entity_id, resource, shard_id, old_count, new_count, quota_names
+                        entity_id, resource, shard_id, new_count, quota_grants
                     )
                 )
                 return 1
@@ -5689,19 +5680,17 @@ class SyncRepository:
         entity_id: str,
         resource: str,
         shard_id: int,
-        old_count: int,
         new_count: int,
-        quota_names: Sequence[str],
+        quota_grants: Sequence[tuple[str, int]],
     ) -> dict[str, Any]:
-        """``SET shard_count = :new, gc = if_not_exists(gc, :old)`` per quota (#634 tokens)."""
+        """``SET shard_count = :new, gc = if_not_exists(gc, :g)`` per quota (#634 tokens)."""
         names: dict[str, str] = {"#qsc": "shard_count"}
         sets = ["#qsc = :qnew"]
-        for i, name in enumerate(quota_names):
-            names[f"#qf{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_GC)
-            sets.append(f"#qf{i} = if_not_exists(#qf{i}, :qold)")
         values = {":qnew": {"N": str(new_count)}}
-        if quota_names:
-            values[":qold"] = {"N": str(old_count)}
+        for i, (name, grant_count) in enumerate(quota_grants):
+            names[f"#qf{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_GC)
+            values[f":qo{i}"] = {"N": str(grant_count)}
+            sets.append(f"#qf{i} = if_not_exists(#qf{i}, :qo{i})")
         return {
             "TableName": self.table_name,
             "Key": {
@@ -5721,22 +5710,31 @@ class SyncRepository:
 
     @classmethod
     def _quota_sibling(
-        cls, shard_id: int, item: dict[str, Any], limit: Limit, now_ms: int
+        cls, shard_id: int, item: dict[str, Any], limit: Limit, now_ms: int, capacity_milli: int
     ) -> QuotaSibling | None:
         """One sibling as the ADR-145 planner sees it; ``None`` if it lacks the quota.
 
         A sibling with no ``gc`` (a v0.14 item, or one written before the
         quota's first reset under ADR-145) reads as ``gc = its shard_count``
-        (design §9). So does a corrupt ``gc < 1``, which would otherwise be a
-        modulus of zero in the coverage test.
+        (design §9) — unless its balance says otherwise (R7): a legacy item
+        holding more than one share at that count was granted at a lower one,
+        so its count is halved until the share covers what it holds. Broader
+        coverage only ever turns a mint into a move, never the reverse. A
+        corrupt ``gc < 1``, which would otherwise be a modulus of zero in the
+        coverage test, reads as the stored count.
         """
         tk = item.get(schema.bucket_attr(limit.name, schema.BUCKET_FIELD_TK), {}).get("N")
         if tk is None:
             return None
         gc = item.get(schema.bucket_attr(limit.name, schema.BUCKET_FIELD_GC), {}).get("N")
-        grant_count = int(gc) if gc is not None else 0
-        if grant_count < 1:
+        if gc is None:
             grant_count = cls._stored_shard_count(item)
+            while grant_count > 1 and int(tk) > capacity_milli // grant_count:
+                grant_count //= 2
+        else:
+            grant_count = int(gc)
+            if grant_count < 1:
+                grant_count = cls._stored_shard_count(item)
         ws = item.get(schema.bucket_attr(limit.name, schema.BUCKET_FIELD_WS), {}).get("N")
         wa = item.get(schema.bucket_attr(limit.name, schema.BUCKET_FIELD_WA), {}).get("N")
         rf = int(item.get("rf", {}).get("N", "0"))
@@ -5753,8 +5751,9 @@ class SyncRepository:
             ),
         )
 
-    @staticmethod
+    @classmethod
     def _donor_debit(
+        cls,
         donor_shard: int,
         donor_grant_count: int,
         tokens_milli: int,
@@ -5770,6 +5769,7 @@ class SyncRepository:
         else:
             guard_rf_ms = schedule.prev_reset_edge(limit.reset_schedule, now_ms)
             guard_wa_ms = None
+        stored_gc = donor.get(schema.bucket_attr(limit.name, schema.BUCKET_FIELD_GC))
         return QuotaDonorDebit(
             shard_id=donor_shard,
             limit_name=limit.name,
@@ -5777,6 +5777,7 @@ class SyncRepository:
             grant_count=donor_grant_count,
             guard_rf_ms=guard_rf_ms,
             guard_wa_ms=guard_wa_ms,
+            legacy_shard_count=cls._stored_shard_count(donor) if stored_gc is None else None,
         )
 
     def build_quota_donor_debits(
@@ -5808,8 +5809,12 @@ class SyncRepository:
                 values[f":qg{i}"] = {"N": str(debit.grant_count)}
                 adds.append(f"#qt{i} :qn{i}")
                 conds.append(f"#qt{i} >= :qx{i}")
+                legacy = f":qg{i}"
+                if debit.legacy_shard_count is not None:
+                    legacy = f":ql{i}"
+                    values[legacy] = {"N": str(debit.legacy_shard_count)}
                 conds.append(
-                    f"(#qg{i} = :qg{i} OR (attribute_not_exists(#qg{i}) AND #qsc = :qg{i}))"
+                    f"(#qg{i} = :qg{i} OR (attribute_not_exists(#qg{i}) AND #qsc = {legacy}))"
                 )
                 if debit.guard_rf_ms is not None:
                     names["#qrf"] = "rf"
