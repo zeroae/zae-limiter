@@ -443,7 +443,7 @@ class TestScheduleReachesTheConfigItem:
 
 
 class TestDurationWindowReachesTheConfigItem:
-    """`reset_after_seconds` (ADR-139) must reach `l_{name}_rsa`, mirroring
+    """`reset_after_seconds` (ADR-139) must reach `w_{name}_rsa` (ADR-142), mirroring
     `TestScheduleReachesTheConfigItem` for the third recovery spelling."""
 
     @staticmethod
@@ -469,10 +469,10 @@ class TestDurationWindowReachesTheConfigItem:
                 }
             }
         )
-        assert item["l_session_rsa"] == {"N": "18000"}
-        # cp/ra/rp stay the base params.
-        assert item["l_session_cp"] == {"N": "10000"}
-        assert item["l_session_ra"] == {"N": "0"}
+        assert item["w_session_rsa"] == {"N": "18000"}
+        # cp/ra/rp stay the base params, under the same `w_` prefix (#640).
+        assert item["w_session_cp"] == {"N": "10000"}
+        assert item["w_session_ra"] == {"N": "0"}
 
     def test_a_limit_without_a_window_writes_no_rsa_attribute(self):
         item = self._item({"rpm": {"capacity": 1000, "refill_amount": 1000, "refill_period": 60}})
@@ -490,8 +490,10 @@ class TestDurationWindowReachesTheConfigItem:
                 "rpm": {"capacity": 1000, "refill_amount": 1000, "refill_period": 60},
             }
         )
-        assert item["l_session_rsa"] == {"N": "18000"}
+        assert item["w_session_rsa"] == {"N": "18000"}
         assert "l_rpm_rsa" not in item
+        assert "w_rpm_cp" not in item, "only the windowed limit moves to w_"
+        assert item["l_rpm_cp"] == {"N": "1000"}
 
     def test_the_resource_level_carries_a_duration_window_too(self):
         item = self._item(
@@ -506,7 +508,7 @@ class TestDurationWindowReachesTheConfigItem:
             level="resource",
             target="claude-sonnet",
         )
-        assert item["l_session_rsa"] == {"N": "18000"}
+        assert item["w_session_rsa"] == {"N": "18000"}
 
 
 class TestResetAfterVersionGate:

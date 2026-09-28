@@ -940,7 +940,8 @@ structural predicate. `reset_after` is a `timedelta` (positive, whole seconds, a
 `BucketState`, and CFN's `ResetAfterSeconds`. **The unit lives in the name wherever the type
 cannot carry it**; a new serialization boundary that takes a bare `reset_after` int is wrong by
 the unit it forgot. User guide: `docs/guide/session-quotas.md`. Design records: ADR-139 (the
-window itself), ADR-140 (how an entity's shards share one window), ADR-141 (the version gate).
+window itself), ADR-140 (how an entity's shards share one window, including the `wa` marker
+and the `wtc` snapshot), ADR-141 (the version gate), ADR-142 (the hidden `w_` config prefix).
 
 **Idle-restarting, not tiling.** A window that ends while the entity is quiet is over; the next
 admitted request opens a fresh one at its own `now` (`RateLimiter._open_window_if_elapsed`,
@@ -948,7 +949,9 @@ half-open `[ws, ws + rsa)`). Only an admitted, committed pass anchors — an exh
 rejection writes nothing (fast rejection, or `RateLimitExceeded` before any write), so hammering
 does not restart the clock.
 
-**Storage.** Config carries `l_{name}_rsa` (seconds). The bucket item carries **`b_{name}_ws`**
+**Storage.** Config carries `rsa` (seconds) beside the limit's other fields, all under the
+**`w_` prefix** (`w_{name}_cp/ra/rp/rsa[/sched]`, #640; see [Hidden config](#hidden-config-640)
+below). The bucket item carries **`b_{name}_ws`**
 (window start, epoch ms, per limit, per shard) and **`b_{name}_rsa`** (seconds, denormalised from
 config so the aggregator and the shard-create read need no config). The window **end** is
 derived (`BucketState.window_end_ms = ws + rsa × 1000`) and never stored, so the pair cannot
@@ -959,13 +962,47 @@ sync's marker and the aggregator's #508 pin, so reading a window end off it woul
 `set_limits()` into an elapsed window. `vu` gains `ws + rsa` as a third voting member of its
 minimum (`_materialisation_stamps`, aggregator `_item_next_boundary`), which is all it needs.
 
-**The roll rule is `ws > rf`** (ADR-140; `BucketState.window_rolled`, `RateLimiter._apply_window_roll`):
-`_apply_reset_edge` with the backwards cron scan replaced by an attribute read — a set to the
-shard's effective share, idempotent, one reset however many windows an idle shard slept through,
-`tc` untouched. The **opener** resets unconditionally (`opened=True`) under its own `rf` lock;
-`ws > rf` is the rule for a shard that *sees* a window someone else opened.
+**The roll rule is `ws > wa`** (ADR-140; `BucketState.window_rolled`, `RateLimiter._apply_window_roll`,
+aggregator `processor._window_applied`): `_apply_reset_edge` with the backwards cron scan
+replaced by an attribute read — a set to the shard's effective share, idempotent, one reset
+however many windows an idle shard slept through, `tc` untouched. The **opener** resets
+unconditionally (`opened=True`) under its own `rf` lock and stamps `ws = wa = now`; `ws > wa` is
+the rule for a shard that *sees* a window someone else opened.
 
-**`rf` is monotonic on every item, windowed or not (ADR-140).** Every materialising write — client create
+**`b_{name}_wa`, the window-applied marker (ADR-140, #640)** — the `ws` this shard's balance reflects,
+per limit, per shard, `wa <= ws`. It replaces the shared `ws > rf` comparison because a client
+predating ADR-139 can now write a bucket carrying a window (hidden config, ADR-142, below) and stamps
+`rf` from its own clock: backward rolled a window twice (one share over-admitted), forward past
+a fanned-out `ws` hid it (a burnt shard for the whole window). An item with no `wa` falls back to
+`ws > rf` — the whole migration; the next v0.15 write marks it. Stamped, always as the `ws`
+**value** read or opened (never `SET wa = ws` as a path — a fan-out moves `ws` without `rf`,
+and that window must stay unapplied), by every writer that brings a window's balance into being:
+create and join (`_limit_item_attrs`), the rf-locked normal path for **every** window limit on
+the write (`lease._applied_windows`, `build_composite_normal(applied_windows=...)`), the seed
+persist, and the aggregator refill for every window in force; the Path 2 clone copies it
+verbatim. Never by the fast path, the retry, adjust/rollback, the fan-out or the param sync. No
+new condition term anywhere: `wa` only moves under the `rf` lock, at creation, or under the seed
+persist's `attribute_not_exists(tk)`. The fast path reads a live but unapplied window as
+restored (`bucket._restored_if_window_ended`): an old writer REMOVEs `vu`, and judging that
+image as it stood fast-rejected the shard for the whole window.
+
+**A pending roll charges what was spent meanwhile (`b_{name}_wtc`, ADR-140, #640 review).** With `vu`
+REMOVEd by an old writer, a fanned-out shard (`ws > wa`) spends the ended window's leftover
+inside the new window — on the fast path, or in a consumption-only retry whose `rf` lock an old
+write took — and a roll that SETs the share forgave all of it (13 admitted against 10). The
+fan-out now also SETs `b_{n}_wtc = if_not_exists(b_{n}_tc, 0)`, a path copy of the consumption
+counter, and a pending roll targets **`eff_cp − max(0, tc − wtc)`**
+(`BucketState.window_roll_target_milli`; the aggregator's roll likewise). Exact because every
+debit path ADDs `tc` (fast, normal, retry, adjust, rollback — on v0.14 too), so it is an
+immediate roll at the snapshot instant; independent of `tk`, so adjust debt after a
+zero-estimate lease is charged too (why zeroing the leftover in the fan-out was rejected);
+`max(0, …)` keeps a net credit from lifting it above the share. The opener and every create or
+seed apply their window in the same write and restore the full share. The Path 2 clone resets
+`wtc = 0` beside `tc = 0`. The fast-path rejection check and `check_availability` report the
+same target for a pending roll. No `wtc` on the item → the share, as before.
+
+**`rf` is monotonic on every item, windowed or not (ADR-140).** Still load-bearing for an item without the
+`wa` marker, and for refill timing. Every materialising write — client create
 and normal path (`lease._monotonic_rf`), aggregator refill — stamps `rf = max(now, stored rf,
 every applied ws on the item)`, never `rf = now`. A slow-clock writer moving `rf` back past `ws`
 would make the next pass read `ws > rf` and reset again, refunding the window's spend on every
@@ -976,13 +1013,14 @@ free because `refill_bucket` treats non-positive elapsed time as zero.
 `Lease._fan_out_windows` after the rf-locked write landed — never after the consumption-only
 retry, which stamps no `ws`). **One `UpdateItem` per (sibling shard, window limit)**:
 `SET b_{n}_ws = :new, b_{n}_rsa = :rsa, vu = :zero` under
-`attribute_exists(PK) AND rf < :new AND (attribute_not_exists(b_{n}_ws) OR b_{n}_ws <= :open_floor)`,
+`attribute_exists(PK) AND (attribute_exists(b_{n}_wa) OR rf < :new) AND (attribute_not_exists(b_{n}_ws) OR b_{n}_ws <= :open_floor)`,
 `:open_floor = new_ws − rsa × 1000` — a sibling moves only if its own window had already ended by
-`new_ws`, the opener's own half-open rule. It moves `ws` and **never `tk`**: a fan-out cannot
-`ADD` (it does not know the sibling's balance) and a blind `SET` races the sibling's own slow
-path in both orderings; each sibling resets itself on its next pass by reading `ws > rf`. The
-`rf < :new` term keeps a sibling already materialised at or past `new_ws` from taking the new
-`ws` as already applied. Cost **(S − 1) × L** WCU per rollover (L = window limits on the item),
+`new_ws`, the opener's own half-open rule. It moves `ws` and **never `tk`** (and never `wa`): a
+fan-out cannot `ADD` (it does not know the sibling's balance) and a blind `SET` races the
+sibling's own slow path in both orderings; each sibling resets itself on its next pass by
+reading `ws > wa`. The `rf < :new` term applies only to an **unmarked** sibling, which reads
+`ws > rf` and would take a new `ws` below its `rf` as already applied; a marked one moves
+whatever its `rf` (#640). Cost **(S − 1) × L** WCU per rollover (L = window limits on the item),
 **zero requests at S = 1**; non-condition failures are logged and counted, the caller is never
 failed, and a shortfall is logged at debug. **Shards can be staggered by milliseconds**: two
 openers crossing the boundary together each open on their own shard and each fan-out no-ops on
@@ -994,14 +1032,16 @@ window; that sibling opens its own when it ends. Do not claim every shard carrie
 **New shard N > 0** (ADR-140; `RateLimiter._sibling_window_starts` → `Repository.get_shard_window_starts`):
 one **strongly consistent**, projected `GetItem` of shard 0's `b_{n}_ws` (1 RCU, once per shard
 creation; separate from the create path's `BatchGetItem`, whose keys carry no shard). Live window
-⇒ the new shard joins it (inherits `ws`, `rf = now`, so `ws > rf` is false) and takes tokens by
+⇒ the new shard joins it (inherits `ws` and stamps `wa = ws`, so it is not rolled) and takes tokens by
 the #587 transfer. Ended or absent ⇒ it opens its own window at a full share and fans that out
 like any rollover. Consistency is load-bearing: a stale pre-roll `ws` looks ended and the new
 shard would mint a full share on top of the window shard 0 just opened (measured 15 vs 10). A
 cascade creating a **parent** shard reads the parent's own window — parent and child anchor
 independently.
 
-**Aggregator** (`processor._window_in_force`): applies client-anchored rolls (`ws > rf`) and
+**Aggregator** (`processor._window_in_force`): applies client-anchored rolls (`ws > wa`,
+`processor._window_applied`, falling back to `rf`), stamps `wa` for every window in force it
+writes, and
 never anchors or fans out; `rsa` present is what says a window is in force. Its refill
 stamps `rf` by the same `max(...)` rule and pins each rolled limit's `ws` in the condition
 (`#wws{i} = :ews{i}`) beside the `rf` and `vu` pins, because two fan-outs are indistinguishable
@@ -1016,11 +1056,30 @@ live window end across shards (`None` if none). The TTL horizon is `reset_after`
 use)` (`cli._format_duration`); `-l` cannot express it.
 
 **Known limitations:** #475 (a single request above `capacity // shard_count` is unadmittable
-on every shard); millisecond stagger across shards (above); a client predating ADR-139 cannot
-reconstruct a `reset_after` limit and raises, or under `on_unavailable=allow` **fails open for
-the whole level** (a degraded no-op lease, so the level's other limits go unenforced too); an
-aggregator predating it treats the quota as a dripping limit and its proactive-sharding clone
-mints `cp // new_count` per new shard (#587 again).
+on every shard); millisecond stagger across shards (above); a client predating ADR-139 does not
+see a `reset_after` limit at all (hidden config, below) — it enforces the level's other limits and
+not the session limit; an aggregator predating it treats the quota as a dripping limit and its
+proactive-sharding clone mints `cp // new_count` per new shard (#587 again), which the version
+gate keeps away.
+
+<a id="hidden-config-640"></a>**Hidden config (ADR-142, #640, option B of #638).** A limit carrying
+`reset_after` stores its **config** as `w_{name}_{field}` instead of `l_{name}_{field}`
+(`schema.limit_attr(..., windowed=True)`, chosen by `limit.reset_after is not None` in
+`Repository._serialize_composite_limits` and the provisioner's `applier._build_limit_item`). Both
+v0.14 discovery rules key on `l_` — the client's `startswith("l_") and endswith("_cp")` and the
+provisioner's `parse_limit_attr` — so a v0.14 client keeps enforcing every other limit on the
+level instead of failing it (block: outage; allow: no limiting). Verified against v0.14.0 from
+PyPI. Every v0.15 reader goes through **`schema.config_limit_names(item)`** (name → windowed),
+shared by `Repository._deserialize_composite_limits` and `bucket_sync._decode_limits`; a name
+under both prefixes, or a `w_` limit with no `rsa`, is corrupt and takes the whole item
+(`RateLimiterUnavailable` / `ValueError`). `l_{name}_rsa` items from unreleased v0.15 builds are
+read forever and move to `w_` on the level's next (full-replace) write. **Bucket attributes stay
+`b_*`**: v0.14 already reads and rewrites them without error. Accepted risks (ADR-142,
+session-quotas guide): an old client's shorter `ttl` can sweep an item mid-window (≤ one extra
+allowance); an old admin's full-replace write silently drops the hidden limit; an old client's
+`vu` re-stamp/REMOVE stretches an ended window; an old param sync can change the item-level
+`sched`/`rsched` a session limit without its own override inherits; and an old client's shard
+creation is seeded by #633's transfer, with #642's residual.
 
 **Version gate (#638, ADR-141).** The aggregator half is enforced; the client half is not.
 - **Writer gate (A).** `Repository.set_limits` / `set_resource_defaults` /
@@ -1114,7 +1173,7 @@ mints `cp // new_count` per new shard (#587 again).
   minimum to `0.0.0`; v0.14 clients ignore the minimum; the minimum (and the override gate's
   cached version) is checked only when a repository is opened; a refused CloudFormation update
   whose previous properties also carried `reset_after` ends in `UPDATE_ROLLBACK_FAILED`
-  (`upgrade`, then `continue-update-rollback`, or skip the resource). Option B (hide the config from v0.14 readers) is #640.
+  (`upgrade`, then `continue-update-rollback`, or skip the resource). Option B (hide the config from v0.14 readers) shipped in #640 — see Hidden config above.
 
 ### Combined Capacity Check (Issue #472)
 
@@ -1379,15 +1438,15 @@ All PK and GSI PK values are prefixed with `{ns}/` where `{ns}` is the opaque na
 | Writer | UpdateExpression | Condition | Touches `rf`? |
 |--------|-----------------|-----------|---------------|
 | Speculative consume | `ADD tk -consumed` | `attribute_exists(PK) AND tk >= consumed AND (attribute_not_exists(vu) OR vu > :now)` | No |
-| Normal path (initial) | `SET rf = :new_rf (+ vu) ADD tk -consumed` (`REMOVE vu` when nothing on the item is scheduled); `:new_rf = max(now, stored rf, applied ws)` (ADR-140, #635); `+ b_{n}_ws, b_{n}_rsa` when this pass opened a window, `+ b_{n}_rsa` when the config length changed | `rf = :expected_rf` | Yes (optimistic lock) |
+| Normal path (initial) | `SET rf = :new_rf (+ vu) ADD tk -consumed` (`REMOVE vu` when nothing on the item is scheduled); `:new_rf = max(now, stored rf, applied ws)` (ADR-140, #635); `+ b_{n}_ws, b_{n}_rsa` when this pass opened a window, `+ b_{n}_rsa` when the config length changed; `+ b_{n}_wa = :ws` for every window limit on the write (#640) | `rf = :expected_rf` | Yes (optimistic lock) |
 | Normal path, seeding a limit missing from the item (#633) | `SET b_{n}_tk = :share − consumed, b_{n}_tc, cp/ra/rp, b_{n}_sched/rsched` (explicit, or `"-"`) `(+ sched_tz)` in the same write as the row above; `ws`/`rsa` ride its window argument | `+ (attribute_not_exists(b_{n}_cp) OR attribute_not_exists(b_{n}_tk))` per seed; a quota seed also `+ (attribute_not_exists(shard_count) OR shard_count <= :sized)` | Same write |
-| Transfer-seed persist (#633), on a rejection or a lost lock | `SET b_{n}_tk = :taken, b_{n}_tc = 0, cp/ra/rp, b_{n}_sched/rsched (+ sched_tz, joined ws/rsa) (+ vu = :vu)` | `attribute_exists(PK) AND attribute_not_exists(b_{n}_tk)` + the shard-count pin; `vu` set only when absent or later (a second, `vu`-free attempt otherwise) | No |
+| Transfer-seed persist (#633), on a rejection or a lost lock | `SET b_{n}_tk = :taken, b_{n}_tc = 0, cp/ra/rp, b_{n}_sched/rsched (+ sched_tz, joined ws/rsa/wa) (+ vu = :vu)` | `attribute_exists(PK) AND attribute_not_exists(b_{n}_tk)` + the shard-count pin; `vu` set only when absent or later (a second, `vu`-free attempt otherwise) | No |
 | Normal path (retry) | `ADD tk -consumed`; a still-missing limit it debits and that carries no schedule or window: `SET tk = if_not_exists(tk, :share) − :c`, params `if_not_exists` (#633). `ReturnValuesOnConditionCheckFailure=ALL_OLD` | `tk >= consumed` (a seed: `attribute_not_exists(tk) OR tk >= :c`) | No (skips refill) |
-| Client shard create (ADR-133) | `Put` full item, `tk = effective cp // shard_count` (a quota: what the reclaim below took, #587), `wcu` undivided, `sched`/`rsched`/`sched_tz`/`vu` when scheduled, `b_{n}_ws`/`b_{n}_rsa` for a session quota — shard N>0 first reads shard 0's `ws` (strongly consistent `GetItem`, 1 RCU) and joins a live window or opens its own (ADR-140) | `attribute_not_exists(PK)` | Sets `rf = max(now, ws)` |
+| Client shard create (ADR-133) | `Put` full item, `tk = effective cp // shard_count` (a quota: what the reclaim below took, #587), `wcu` undivided, `sched`/`rsched`/`sched_tz`/`vu` when scheduled, `b_{n}_ws`/`b_{n}_rsa`/`b_{n}_wa = ws` for a session quota — shard N>0 first reads shard 0's `ws` (strongly consistent `GetItem`, 1 RCU) and joins a live window or opens its own (ADR-140) | `attribute_not_exists(PK)` | Sets `rf = max(now, ws)` |
 | Quota surplus reclaim, per existing shard (#587) | `SET tk = :share`, `ReturnValues=UPDATED_OLD` | `tk > :share` (client) / `attribute_exists(PK) AND tk > :share` (aggregator) | No |
 | Adjustment / rollback | `ADD tk +/-delta` | (unconditional) | No |
-| Window rollover fan-out, per (sibling shard, window limit) (ADR-140) | `SET b_{n}_ws = :new, b_{n}_rsa = :rsa, vu = :zero` | `attribute_exists(PK) AND rf < :new AND (attribute_not_exists(b_{n}_ws) OR b_{n}_ws <= :open_floor)`, `:open_floor = :new − rsa × 1000` | No |
-| Aggregator refill | `ADD tk +refill SET rf = :new_rf`, `:new_rf = max(now, stored rf, ws in force)` (ADR-140) | `rf = :expected_rf AND vu = :expected_vu` (#508) `AND b_{n}_ws = :expected_ws` per rolled window (ADR-140) | Yes (optimistic lock) |
+| Window rollover fan-out, per (sibling shard, window limit) (ADR-140) | `SET b_{n}_ws = :new, b_{n}_rsa = :rsa, vu = :zero, b_{n}_wtc = if_not_exists(b_{n}_tc, :zero)` (never `wa`, never `tk`) | `attribute_exists(PK) AND (attribute_exists(b_{n}_wa) OR rf < :new) AND (attribute_not_exists(b_{n}_ws) OR b_{n}_ws <= :open_floor)`, `:open_floor = :new − rsa × 1000` (ADR-140, #640) | No |
+| Aggregator refill | `ADD tk +refill SET rf = :new_rf`, `:new_rf = max(now, stored rf, ws in force)` (ADR-140), `+ b_{n}_wa = :ws` per window in force (#640) | `rf = :expected_rf AND vu = :expected_vu` (#508) `AND b_{n}_ws = :expected_ws` per rolled window (ADR-140) | Yes (optimistic lock) |
 | Aggregator proactive shard | `SET shard_count = :new` | `shard_count = :old` | No |
 | Aggregator shard propagation | `SET shard_count = :new` | `attribute_not_exists(shard_count) OR shard_count < :new` | No |
 | Client shard propagation (#439) | `SET shard_count = :new` | `shard_count < :new` | No |
@@ -1402,7 +1461,8 @@ attribute name. `NAME_PATTERN` accepts `.` and `-`; a token may hold only letter
 the name made `rpm.v2` / `req-min` fail every write but the create `Put`, on DynamoDB, LocalStack
 **and moto** alike. The schemes: `#t{i}`/`#c{i}`/`:n{i}`/`:p{i}`/`:h{i}` (fast path),
 `#bt{i}`/`#bc{i}`/`:bd{i}`/`:bcd{i}`/`:bf{i}` (`build_composite_normal` / `_retry` / `_adjust`),
-`#rt{i}`/`:rd{i}` (aggregator refill and reset), `#s{code}{j}`/`:s{code}{j}` (the #633 seed
+`#rt{i}`/`:rd{i}` (aggregator refill and reset), `#wa{i}`/`:wa{i}` (the #640 window-applied
+marker, normal path and aggregator refill), `#s{code}{j}`/`:s{code}{j}` (the #633 seed
 of a limit missing from the item, `code` per field from `repository._SEED_TOKEN`, plus `#stz` and
 `:sq{j}`), plus the pre-existing `#cp{i}`…`#stale{i}_{j}`
 (param sync), `#ws{i}`/`#rsa{i}`/`#wl{i}`, `#wtk{i}`/`:wd{i}`. The #634 schemes carry no `_`, so
@@ -1534,11 +1594,13 @@ Limit configs use composite items (v0.8.0+, ADR-114 for configs). All limits for
 | Resource | `{ns}/RESOURCE#{res}` | `#CONFIG` | `resource`, `l_rpm_cp`, ... |
 | Entity | `{ns}/ENTITY#{id}` | `#CONFIG#{resource}` | `entity_id`, `resource`, `l_rpm_cp`, ... |
 
-**Limit attribute format:** `l_{limit_name}_{field}` where field is one of:
+**Limit attribute format:** `l_{limit_name}_{field}` — or `w_{limit_name}_{field}` for a limit
+carrying `reset_after`, every field of it (ADR-142, #640: the prefix pre-v0.15 readers do not scan; read
+through `schema.config_limit_names`) — where field is one of:
 - `cp` (capacity), `ra` (refill_amount), `rp` (refill_period_seconds)
 - `sched` (string, #222): the limit's schedule in the compact storage encoding (`schedule.encode()`), written only when that limit has one. `cp`/`ra`/`rp` stay the **base** parameters; the schedule is applied on top of them at read time, never materialised onto the item.
 - `rsched` (string, #222 §3.6): the limit's **reset** schedule in the compact storage encoding (`schedule.encode_reset()`), written only when that limit has one. Same grammar as `sched` minus the modifier tokens, because a reset overrides no parameters — `0 0 * * *` is `m0h0`, four bytes. A separate attribute rather than a tag inside `sched`, mirroring the separate tuple on `Limit` and keeping the decoder from partitioning one list into two meanings (§4.1). `decode_reset` **rejects** a modifier token found here rather than ignoring it: it means corruption, or a parameter schedule stored under the wrong key, and an entry that silently reset a balance on a schedule meant only to scale it is the worst available reading. Without this attribute a quota (`refill_amount = 0`, ADR-137) does not merely lose its reset — it fails to reconstruct at all, and the read raises (#538).
-- `rsa` (number, ADR-139): a session quota's `reset_after` window length in **seconds**, written only when that limit has one. The alternative to `rsched`, never beside it. Decoded as an integer; a non-integral value is corruption and becomes `RateLimiterUnavailable`. Bucket items carry the per-shard pair `b_{name}_ws` (window start, epoch ms) and `b_{name}_rsa` (copied from here) — see [Session Quotas](#session-quotas-597-adr-139).
+- `rsa` (number, ADR-139): a session quota's `reset_after` window length in **seconds**, written only when that limit has one, always as `w_{name}_rsa` (ADR-142). The alternative to `rsched`, never beside it. Decoded as an integer; a non-integral value is corruption and becomes `RateLimiterUnavailable`. Bucket items carry the per-shard pair `b_{name}_ws` (window start, epoch ms) and `b_{name}_rsa` (copied from here) — see [Session Quotas](#session-quotas-597-adr-139).
 
 **Config fields:**
 - `config_version` (int): Atomic counter for cache invalidation

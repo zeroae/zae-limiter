@@ -206,3 +206,4 @@ nav:
           - ADR-139 Duration reset windows anchored to first use: adr/139-duration-reset-windows.md
           - ADR-140 Shards of one entity share one duration window: adr/140-duration-window-shard-coherence.md
           - ADR-141 Storing a reset_after limit is gated on reader versions: adr/141-reset-after-version-gate.md
+          - ADR-142 A reset_after limit's config is hidden from pre-v0.15 readers: adr/142-hide-reset-after-config.md

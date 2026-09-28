@@ -1963,4 +1963,4 @@ class TestResetAfterVersionGateThroughTheHandler:
             TableName=self.TABLE,
             Key={"PK": {"S": "ns123/RESOURCE#gpt-4"}, "SK": {"S": "#CONFIG"}},
         )["Item"]
-        assert config["l_session_rsa"]["N"] == "18000"
+        assert config["w_session_rsa"]["N"] == "18000"

@@ -140,9 +140,9 @@ class TestBuildBucketParamUpdate:
 
 
 class TestDurationWindowParamSync:
-    """`l_{name}_rsa` / `b_{name}_rsa` — the provisioner mirror (ADR-139, plan
-    Task 9). Mirrors `TestBuildBucketParamUpdate`'s scheduling tests, scoped to
-    the duration-window field.
+    """`w_{name}_rsa` (legacy `l_{name}_rsa`) / `b_{name}_rsa` — the provisioner
+    mirror (ADR-139, plan Task 9). Mirrors `TestBuildBucketParamUpdate`'s
+    scheduling tests, scoped to the duration-window field.
     """
 
     WINDOW = {
@@ -199,8 +199,8 @@ class TestDurationWindowParamSync:
         assert not (set_aliases & remove_aliases)
 
     def test_the_decoded_window_reaches_the_update(self):
-        """`_decode_limits` must read `l_{name}_rsa` off a raw config item, or
-        an entity-wide fan-out re-resolving a session quota silently drops its
+        """`_decode_limits` must read `w_{name}_rsa` (or legacy `l_{name}_rsa`) off
+        a raw config item, or an entity-wide fan-out re-resolving a session quota silently drops its
         window (the #487 class of bug, for this field)."""
         client = _make_client()
         item = _limits_item(session=(10_000, 0, 1))
