@@ -3182,12 +3182,7 @@ class SyncRepository:
         return self._learn_shard_count(entity_id, resource, effective_count, meta=meta)
 
     def _propagate_shard_count(
-        self,
-        entity_id: str,
-        resource: str,
-        old_count: int,
-        new_count: int,
-        shards: Sequence[int] | None = None,
+        self, entity_id: str, resource: str, old_count: int, new_count: int
     ) -> int:
         """Stamp ``new_count`` on the shards that already exist.
 
@@ -3203,15 +3198,10 @@ class SyncRepository:
         monotonic, so racing with the aggregator or another client is a no-op
         rather than a conflict.
 
-        ``shards`` names the targets explicitly instead of ``1..old_count-1``;
-        the ADR-145 planner passes the siblings it saw lagging, which can
-        include shard 0.
-
         Returns:
             The number of shards actually updated.
         """
-        targets = list(range(1, old_count)) if shards is None else list(shards)
-        if not targets:
+        if old_count <= 1:
             return 0
         client = self._get_client()
 
@@ -3238,7 +3228,7 @@ class SyncRepository:
                     return 0
                 raise
 
-        results = self._run_in_executor(*[lambda n=n: stamp(n) for n in targets])
+        results = self._run_in_executor(*[lambda n=n: stamp(n) for n in range(1, old_count)])
         return sum(results)
 
     def _propagate_window_start(
@@ -5742,8 +5732,11 @@ class SyncRepository:
         count, and each quota's share is its schedule-effective capacity at
         ``now_ms`` over that count. Before a fresh grant, a sibling still below
         that count has it raised (design §8 R5) — a write only when a lag is
-        seen. Writes nothing else: the returned debits ride in the acquire's
-        own transaction (I5), built by :meth:`build_quota_donor_debits`.
+        seen — and a legacy (no ``gc``) quota on it has its grant size frozen
+        at the count read, which is also the ``grant_count`` every planned
+        debit expects, so the move and the freeze agree. Writes nothing else:
+        the returned debits ride in the acquire's own transaction (I5), built
+        by :meth:`build_quota_donor_debits`.
 
         Returns:
             ``(count, {quota_name: QuotaGrant}, debits)``. Grants and debits
@@ -5794,8 +5787,103 @@ class SyncRepository:
         if any(grant.donor_shard is None for grant in grants.values()):
             lagging = sorted((sid for sid, stored_count in counts.items() if stored_count < count))
             if lagging:
-                self._propagate_shard_count(entity_id, resource, count, count, lagging)
+                self._freeze_and_raise_shard_counts(
+                    entity_id,
+                    resource,
+                    [
+                        (
+                            sid,
+                            counts[sid],
+                            [
+                                limit.name
+                                for limit in quotas
+                                if schema.bucket_attr(limit.name, schema.BUCKET_FIELD_TK)
+                                in stored[sid]
+                            ],
+                        )
+                        for sid in lagging
+                    ],
+                    count,
+                )
         return (count, grants, debits)
+
+    def _freeze_and_raise_shard_counts(
+        self,
+        entity_id: str,
+        resource: str,
+        lagging: Sequence[tuple[int, int, Sequence[str]]],
+        new_count: int,
+    ) -> int:
+        """Raise lagging siblings to ``new_count``, freezing their legacy grant size (R5).
+
+        A quota on an item with no ``gc`` reads as granted at the item's
+        ``shard_count`` (design §9). Raising that count alone would shrink the
+        legacy grant's coverage to the new count, and a later plan would mint a
+        slot the sibling still holds tokens for; it would also fail a planned
+        donor debit's ``attribute_not_exists(gc) AND shard_count = :gc``
+        branch. So the same write stamps ``gc = if_not_exists(gc, :old)`` for
+        every planned quota the sibling carries, ``:old`` being the count read.
+        The generic :meth:`_propagate_shard_count` is left alone.
+
+        Args:
+            lagging: ``(shard_id, stored_count, quota_names_it_carries)`` each.
+            new_count: The count to raise them to.
+
+        Returns:
+            The number of siblings actually updated.
+        """
+        client = self._get_client()
+
+        def raise_one(shard_id: int, old_count: int, quota_names: Sequence[str]) -> int:
+            try:
+                client.update_item(
+                    **self._build_quota_count_freeze(
+                        entity_id, resource, shard_id, old_count, new_count, quota_names
+                    )
+                )
+                return 1
+            except ClientError as e:
+                if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+                    return 0
+                raise
+
+        results = self._run_in_executor(
+            *[
+                lambda fn=fn: fn()
+                for fn in [raise_one(sid, old, names) for sid, old, names in lagging]
+            ]
+        )
+        return sum(results)
+
+    def _build_quota_count_freeze(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int,
+        old_count: int,
+        new_count: int,
+        quota_names: Sequence[str],
+    ) -> dict[str, Any]:
+        """``SET shard_count = :new, gc = if_not_exists(gc, :old)`` per quota (#634 tokens)."""
+        names: dict[str, str] = {"#qsc": "shard_count"}
+        sets = ["#qsc = :qnew"]
+        for i, name in enumerate(quota_names):
+            names[f"#qf{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_GC)
+            sets.append(f"#qf{i} = if_not_exists(#qf{i}, :qold)")
+        values = {":qnew": {"N": str(new_count)}}
+        if quota_names:
+            values[":qold"] = {"N": str(old_count)}
+        return {
+            "TableName": self.table_name,
+            "Key": {
+                "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)},
+                "SK": {"S": schema.sk_state()},
+            },
+            "UpdateExpression": "SET " + ", ".join(sets),
+            "ConditionExpression": "#qsc < :qnew",
+            "ExpressionAttributeNames": names,
+            "ExpressionAttributeValues": values,
+        }
 
     @staticmethod
     def _stored_shard_count(item: dict[str, Any]) -> int:

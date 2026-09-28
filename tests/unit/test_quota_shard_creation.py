@@ -475,9 +475,85 @@ class TestPlanQuotaShard:
         repo = limiter._repository
         freeze(repo)
         await _write_shard(repo, "e1", self.QUOTA, 0, 1_000_000, grant_count=1, shard_count=1)
-        with patch.object(repo, "_propagate_shard_count") as propagate:
+        with patch.object(repo, "_freeze_and_raise_shard_counts") as propagate:
             await repo.plan_quota_shard("e1", RESOURCE, [self.QUOTA], 1, 2, repo._now_ms())
         propagate.assert_not_called()
+
+    async def test_raising_a_legacy_sibling_freezes_its_grant_size(self, limiter):
+        """Review fix: raising a no-gc sibling's count must not shrink its coverage.
+
+        Legacy shard 0 at count 2 holding 500 covers {0, 2}. Planning shard 3
+        raises it to 4; it must keep covering slot 2, so shard 2 is a move off
+        it rather than a second 250 minted beside the 500 it still holds.
+        """
+        repo = limiter._repository
+        freeze(repo)
+        await _write_shard(repo, "e1", self.QUOTA, 0, 500_000, shard_count=2)
+        await _write_shard(repo, "e1", self.QUOTA, 1, 250_000, grant_count=4, shard_count=4)
+
+        _count, grants, _debits = await repo.plan_quota_shard(
+            "e1", RESOURCE, [self.QUOTA], 3, 4, repo._now_ms()
+        )
+        assert grants["rpd"].donor_shard is None
+        shard0 = await _item(repo, "e1", 0)
+        assert shard0["shard_count"] == {"N": "4"}
+        assert shard0[self.GC] == {"N": "2"}
+
+        _count, grants, debits = await repo.plan_quota_shard(
+            "e1", RESOURCE, [self.QUOTA], 2, 4, repo._now_ms()
+        )
+        assert grants["rpd"] == QuotaGrant(donor_shard=0, tokens_milli=250_000, donor_grant_count=2)
+        await repo.transact_write(repo.build_quota_donor_debits("e1", RESOURCE, debits))
+        assert await shard_balances(repo, "e1", "rpd", 1) == [250_000]
+
+    async def test_a_move_off_a_legacy_donor_survives_a_fresh_grant_beside_it(self, limiter):
+        """Review fix: quota A moves off legacy shard 0 while quota B is fresh.
+
+        B's fresh grant raises shard 0's count before the debit is written; the
+        debit must still pass, because the freeze stamps A's gc at the count
+        the debit expects.
+        """
+        repo = limiter._repository
+        freeze(repo)
+        quota_b = Limit.quota("rpw", 700, cron="0 0 * * 1")
+        await _write_shard(repo, "e1", self.QUOTA, 0, 1_000_000, shard_count=1)
+
+        count, grants, debits = await repo.plan_quota_shard(
+            "e1", RESOURCE, [self.QUOTA, quota_b], 1, 2, repo._now_ms()
+        )
+        assert count == 2
+        assert grants["rpd"].donor_shard == 0
+        assert grants["rpw"] == QuotaGrant(donor_shard=None, tokens_milli=350_000)
+        shard0 = await _item(repo, "e1", 0)
+        assert shard0["shard_count"] == {"N": "2"}
+        assert shard0[self.GC] == {"N": "1"}
+        assert schema.bucket_attr("rpw", schema.BUCKET_FIELD_GC) not in shard0
+
+        await repo.transact_write(repo.build_quota_donor_debits("e1", RESOURCE, debits))
+        assert await shard_balances(repo, "e1", "rpd", 1) == [500_000]
+
+    async def test_a_sibling_already_raised_is_left_alone(self, limiter):
+        repo = limiter._repository
+        client = await repo._get_client()
+        error = ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException", "Message": "raced"}},
+            "UpdateItem",
+        )
+        with patch.object(client, "update_item", side_effect=error):
+            assert (
+                await repo._freeze_and_raise_shard_counts("e1", RESOURCE, [(0, 2, ["rpd"])], 4) == 0
+            )
+
+    async def test_any_other_error_raising_a_sibling_propagates(self, limiter):
+        repo = limiter._repository
+        client = await repo._get_client()
+        error = ClientError(
+            {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": "no"}},
+            "UpdateItem",
+        )
+        with patch.object(client, "update_item", side_effect=error):
+            with pytest.raises(ClientError):
+                await repo._freeze_and_raise_shard_counts("e1", RESOURCE, [(0, 2, ["rpd"])], 4)
 
     async def test_a_corrupt_grant_count_reads_as_the_shard_count(self, limiter):
         """A stored ``gc < 1`` must not become a modulus of zero."""

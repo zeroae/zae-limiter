@@ -305,6 +305,14 @@ class TestCompositeBuilders:
         ):
             assert_expression_safe(item["Update"])
 
+    def test_quota_count_freeze(self) -> None:
+        assert_expression_safe(
+            _repo()._build_quota_count_freeze("e", "r", 0, 2, 4, [DOTTED, HYPHENATED])
+        )
+
+    def test_quota_count_freeze_without_quotas(self) -> None:
+        assert_expression_safe(_repo()._build_quota_count_freeze("e", "r", 1, 2, 4, []))
+
     def test_quota_donor_debit_without_a_period_guard(self) -> None:
         for item in _repo().build_quota_donor_debits(
             "e", "r", [QuotaDonorDebit(1, DOTTED, 1, 2, None, None)]
