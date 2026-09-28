@@ -173,9 +173,9 @@ so nothing is written. Three cases:
 | `lambda_version` unknown (`null`) | The record was initialized by a client that deployed no Lambda code while an aggregator or provisioner exists (or it could not tell) — e.g. `open()` of a stack built from an older `cfn-template` / `lambda-export` | `zae-limiter upgrade` |
 | Missing | Never initialized | `zae-limiter deploy` from v0.15.0 or later |
 
-On a stack deployed with `--no-aggregator`, `upgrade` cannot help (it pushes code to an
-aggregator that does not exist): re-run `zae-limiter deploy` from v0.15.0 or later instead,
-**with the provisioner enabled** (no `--no-provisioner`, no `--no-iam`).
+`upgrade` works on every stack shape, including one deployed with `--no-aggregator`,
+`--no-provisioner` or `--no-iam`: it pushes code only to the Lambdas the stack has (see
+[Stacks without every Lambda](#stacks-without-every-lambda)).
 
 `deploy` on an existing stack pushes code but adds and removes no functions, so it stamps its
 own version only if the stack was created in this call, **or** both:
@@ -254,6 +254,31 @@ zae-limiter upgrade --name <name> --region <region> --lambda-only
 ```bash
 zae-limiter upgrade --name <name> --region <region> --force
 ```
+
+### Stacks without every Lambda
+
+A stack deployed with `--no-aggregator` has no aggregator function, and one deployed with
+`--no-provisioner` has no provisioner. `--no-iam` has no provisioner, and no aggregator unless
+`--aggregator-role-arn` is given. Both `zae-limiter upgrade` and `Repository.open()`'s automatic
+Lambda update push new code only to the functions that exist, skip the rest, and then record the
+new Lambda version:
+
+```
+[1/4] Deploying Lambda code...
+      No aggregator Lambda on this stack, skipped
+[2/4] Deploying provisioner code...
+      Provisioner code deployed (1234.5 KB)
+```
+
+Each function is first checked with `lambda:GetFunctionConfiguration`, which a deployer already
+holds (the update waits on the same call). A function Lambda reports missing is skipped. When
+the check cannot tell — access denied, throttled — the push is attempted anyway, and only the
+push's own `ResourceNotFoundException` counts as missing. Any other failure stops the upgrade
+with exit code 1 and leaves the recorded version unchanged, so the record never claims code that
+is not running; the next `upgrade` or `open()` tries again.
+
+Before v0.15.0 the update pushed to both functions unconditionally, so these stacks could not be
+upgraded at all (#644).
 
 ### Post-upgrade Verification
 

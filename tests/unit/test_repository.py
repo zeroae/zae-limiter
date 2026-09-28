@@ -7773,8 +7773,8 @@ class TestResetAfterVersionGate:
             with pytest.raises(VersionMismatchError) as exc_info:
                 await self._write(repo, level, [self.RPM, self.SESSION])
         assert "zae-limiter upgrade" in str(exc_info.value)
-        # The record cannot say whether an aggregator exists: both remedies.
-        assert "--no-aggregator, re-run 'zae-limiter deploy'" in str(exc_info.value)
+        # upgrade works whether or not the stack has an aggregator (#644).
+        assert "zae-limiter deploy" not in str(exc_info.value)
         assert exc_info.value.lambda_version == "0.14.0"
         assert exc_info.value.can_auto_update is True
         # Refused before anything is written.
@@ -7807,7 +7807,7 @@ class TestResetAfterVersionGate:
             with pytest.raises(VersionMismatchError) as exc_info:
                 await self._write(repo, "entity", [self.SESSION])
         assert "Run 'zae-limiter upgrade' to deploy it" in str(exc_info.value)
-        assert "re-run 'zae-limiter deploy'" in str(exc_info.value)
+        assert "zae-limiter deploy" not in str(exc_info.value)
         assert exc_info.value.can_auto_update is False
 
     async def _counting_get_item(self, repo, write):
@@ -8235,3 +8235,132 @@ class TestVersionRecordInitialization:
             assert repo._deployed_lambda_version == expected
         finally:
             await repo.close()
+
+
+class TestAutoUpdateSkipsFunctionsTheStackDoesNotDeploy:
+    """``open(auto_update=True)`` on a stack without an aggregator or without a
+    provisioner (#644).
+
+    ``--no-aggregator``, ``--no-provisioner`` and ``--no-iam`` stacks have no
+    function to push code to. Moto-backed with a real ``StackManager``, so the
+    push against a missing function meets Lambda's own
+    ``ResourceNotFoundException``; only the package builds and the ESM wait
+    are stubbed.
+    """
+
+    STACK = "partial-stack"
+
+    async def _seed(self, lambda_version: str) -> None:
+        from zae_limiter.version import get_schema_version
+
+        setup = Repository(name=self.STACK, region="us-east-1", _skip_deprecation_warning=True)
+        try:
+            await setup.create_table()
+            await setup._register_namespace("default")
+            await setup.set_version_record(
+                schema_version=get_schema_version(), lambda_version=lambda_version
+            )
+        finally:
+            await setup.close()
+
+    async def _stamp(self) -> str | None:
+        repo = Repository(name=self.STACK, region="us-east-1", _skip_deprecation_warning=True)
+        try:
+            record = await repo.get_version_record()
+        finally:
+            await repo.close()
+        assert record is not None
+        return record.get("lambda_version")
+
+    async def _open(self) -> Repository:
+        from tests.fixtures.moto import lambda_zip
+
+        with (
+            patch("zae_limiter.__version__", "0.15.0"),
+            patch(
+                "zae_limiter.infra.stack_manager.build_lambda_package", return_value=lambda_zip()
+            ),
+            patch(
+                "zae_limiter.infra.stack_manager.build_provisioner_package",
+                return_value=lambda_zip(),
+            ),
+            patch(
+                "zae_limiter.infra.stack_manager.StackManager.wait_for_esm_ready",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+        ):
+            return await Repository.open("default", stack=self.STACK, region="us-east-1")
+
+    @pytest.mark.parametrize(
+        "present",
+        [
+            pytest.param(("limits-provisioner",), id="no-aggregator"),
+            pytest.param(("aggregator",), id="no-provisioner"),
+            pytest.param((), id="neither"),
+            pytest.param(("aggregator", "limits-provisioner"), id="both"),
+        ],
+    )
+    async def test_pushes_what_exists_skips_the_rest_and_stamps(self, mock_dynamodb, present):
+        from tests.fixtures.moto import create_stack_lambdas, stack_lambda_versions
+
+        await self._seed("0.14.0")
+        create_stack_lambdas(self.STACK, *present)
+
+        repo = await self._open()
+        try:
+            assert repo._lambda_version == "0.15.0"
+        finally:
+            await repo.close()
+
+        assert await self._stamp() == "0.15.0"
+        assert stack_lambda_versions(self.STACK) == dict.fromkeys(present, "0.15.0")
+
+    async def test_a_probe_that_cannot_tell_still_pushes(self, mock_dynamodb):
+        """A probe that cannot tell (no permission, throttled) proves nothing
+        about absence, so the push is attempted: the aggregator's push meets a
+        real ResourceNotFoundException, which is proof, and the stamp holds."""
+        from tests.fixtures.moto import create_stack_lambdas, stack_lambda_versions
+
+        await self._seed("0.14.0")
+        create_stack_lambdas(self.STACK, "limits-provisioner")
+
+        with patch(
+            "zae_limiter.infra.stack_manager.lambda_function_exists",
+            new_callable=AsyncMock,
+            return_value=None,
+        ):
+            repo = await self._open()
+        await repo.close()
+
+        assert await self._stamp() == "0.15.0"
+        assert stack_lambda_versions(self.STACK) == {"limits-provisioner": "0.15.0"}
+
+    async def test_a_failed_push_stamps_nothing(self, mock_dynamodb):
+        """The stamp never claims code that is not running: when the
+        provisioner push fails for any reason other than absence, the
+        aggregator already carries the new code but the record keeps the old
+        version, and the next open() tries again."""
+        from tests.fixtures.moto import create_stack_lambdas, stack_lambda_versions
+        from zae_limiter.exceptions import StackOperationError
+
+        await self._seed("0.14.0")
+        create_stack_lambdas(self.STACK, "aggregator", "limits-provisioner")
+
+        with (
+            patch(
+                "zae_limiter.infra.stack_manager.StackManager.deploy_provisioner_code",
+                new_callable=AsyncMock,
+                side_effect=StackOperationError(
+                    stack_name=self.STACK, reason="Provisioner deployment failed (AccessDenied)"
+                ),
+            ),
+            pytest.raises(StackOperationError),
+        ):
+            await self._open()
+
+        assert await self._stamp() == "0.14.0"
+        assert stack_lambda_versions(self.STACK) == {
+            "aggregator": "0.15.0",
+            "limits-provisioner": None,
+        }

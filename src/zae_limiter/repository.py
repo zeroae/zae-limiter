@@ -1632,9 +1632,17 @@ class Repository:
         self._remember_lambda_version(stamp)
 
     async def _perform_lambda_update(self) -> None:
-        """Update Lambda code to match client version."""
+        """Update Lambda code to match client version.
+
+        Pushes to each function the stack has and skips one it does not
+        (#644): ``--no-aggregator`` deploys no aggregator, ``--no-provisioner``
+        and ``--no-iam`` no provisioner. Only Lambda's own "not found" counts
+        as absent (``skip_absent``), and the stamp is decided by the same rule
+        as every other writer of it, ``stack_lambdas_current`` (#638). A push
+        that fails raises before anything is stamped.
+        """
         from . import __version__
-        from .infra.stack_manager import StackManager
+        from .infra.stack_manager import StackManager, pushed_or_absent, stack_lambdas_current
         from .version import get_schema_version
 
         async with StackManager(
@@ -1642,17 +1650,30 @@ class Repository:
             self.region,
             self.endpoint_url,
         ) as manager:
-            await manager.deploy_lambda_code()
-            await manager.deploy_provisioner_code()
+            aggregator_pushed, aggregator_exists = pushed_or_absent(
+                await manager.deploy_lambda_code(skip_absent=True)
+            )
+            provisioner_pushed, provisioner_exists = pushed_or_absent(
+                await manager.deploy_provisioner_code(skip_absent=True)
+            )
+            current = await stack_lambdas_current(
+                created=False,
+                aggregator_pushed=aggregator_pushed,
+                provisioner_pushed=provisioner_pushed,
+                aggregator_exists=aggregator_exists,
+                provisioner_exists=provisioner_exists,
+            )
+            # Unreachable under skip_absent (each is pushed or proven absent); kept as a guard.
+            stamp = __version__ if current else self._lambda_version
 
             # client_min_version is left as stored (#638 C): a Lambda update
             # must never lower a minimum a reset_after write ratcheted up.
             await self.set_version_record(
                 schema_version=get_schema_version(),
-                lambda_version=__version__,
+                lambda_version=stamp,
                 updated_by=f"client:{__version__}",
             )
-        self._remember_lambda_version(__version__)
+        self._remember_lambda_version(stamp)
 
     # -------------------------------------------------------------------------
     # Entity operations

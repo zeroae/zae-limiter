@@ -37,8 +37,9 @@ code pushed in that run or do not exist.
 
 **Positive:**
 - A pre-v0.15 aggregator or provisioner can no longer be handed a limit it would misread.
-- One predicate decides the stamp for CLI `deploy`, infrastructure provisioning and `open()`, so
-  the rule cannot drift between them.
+- One predicate decides the stamp for CLI `deploy`, CLI `upgrade`, infrastructure provisioning,
+  `open()`'s record initialization and its Lambda auto-update, so the rule cannot drift between
+  them.
 - A missing record or unknown Lambda version fails closed and names its remedy.
 - `client_min_version` becomes a working field, so the next incompatible feature is protected by
   the same ratchet without new machinery.
@@ -53,8 +54,9 @@ code pushed in that run or do not exist.
   opens, so a long-lived process is not refused until it restarts.
 - A refused CloudFormation update whose previous properties also carried `reset_after` leaves the
   stack in `UPDATE_ROLLBACK_FAILED`, needing a manual rollback continuation.
-- `deploy` performs no minimum check of its own; `--no-aggregator` stacks get no exemption and
-  must be redeployed by v0.15 with the provisioner enabled (#644).
+- `deploy` performs no minimum check of its own, and `--no-aggregator` stacks get no exemption
+  in the gate; `zae-limiter upgrade` and `open(auto_update=True)` push only to the Lambdas a
+  stack has, so they are the remedy on every stack shape (#644).
 
 ## Alternatives Considered
 

@@ -7,7 +7,7 @@ import pytest
 from click.testing import CliRunner
 
 from zae_limiter.cli import cli
-from zae_limiter.exceptions import NamespaceStateError, ValidationError
+from zae_limiter.exceptions import NamespaceStateError, StackOperationError, ValidationError
 
 
 @pytest.fixture
@@ -7263,6 +7263,166 @@ class TestScheduleDisplay:
         ) in result.output
 
 
+class TestUpgradeSkipsFunctionsTheStackDoesNotDeploy:
+    """``zae-limiter upgrade`` on a stack without an aggregator or without a
+    provisioner (#644).
+
+    Moto-backed with a real ``StackManager`` on both the CLI's steps and the
+    ``open()`` it connects through (which auto-updates first), so a push to a
+    missing function meets Lambda's own ``ResourceNotFoundException``. Only
+    the package builds and the ESM wait are stubbed.
+    """
+
+    STACK = "partial-cli"
+
+    async def _seed(self, lambda_version: str) -> None:
+        from zae_limiter.repository import Repository
+        from zae_limiter.version import get_schema_version
+
+        repo = Repository(self.STACK, "us-east-1", None, _skip_deprecation_warning=True)
+        try:
+            await repo.create_table()
+            await repo._register_namespace("default")
+            await repo.set_version_record(
+                schema_version=get_schema_version(), lambda_version=lambda_version
+            )
+        finally:
+            await repo.close()
+
+    async def _stamp(self) -> str | None:
+        from zae_limiter.repository import Repository
+
+        repo = Repository(self.STACK, "us-east-1", None, _skip_deprecation_warning=True)
+        try:
+            record = await repo.get_version_record()
+        finally:
+            await repo.close()
+        assert record is not None
+        return record.get("lambda_version")
+
+    def _upgrade(self, runner: CliRunner, *flags: str):
+        from tests.fixtures.moto import lambda_zip
+
+        with (
+            patch("zae_limiter.__version__", "0.15.0"),
+            patch(
+                "zae_limiter.infra.stack_manager.build_lambda_package", return_value=lambda_zip()
+            ),
+            patch(
+                "zae_limiter.infra.stack_manager.build_provisioner_package",
+                return_value=lambda_zip(),
+            ),
+            patch(
+                "zae_limiter.infra.stack_manager.StackManager.wait_for_esm_ready",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+        ):
+            return runner.invoke(
+                cli, ["upgrade", "--name", self.STACK, "--region", "us-east-1", *flags]
+            )
+
+    PRESENT = [
+        pytest.param(("limits-provisioner",), id="no-aggregator"),
+        pytest.param(("aggregator",), id="no-provisioner"),
+        pytest.param((), id="neither"),
+        pytest.param(("aggregator", "limits-provisioner"), id="both"),
+    ]
+
+    @pytest.mark.parametrize("present", PRESENT)
+    def test_upgrade_after_a_version_bump(self, mock_dynamodb, runner: CliRunner, present):
+        import asyncio
+
+        from tests.fixtures.moto import create_stack_lambdas, stack_lambda_versions
+
+        asyncio.run(self._seed("0.14.0"))
+        create_stack_lambdas(self.STACK, *present)
+
+        result = self._upgrade(runner)
+
+        assert result.exit_code == 0, result.output
+        assert asyncio.run(self._stamp()) == "0.15.0"
+        assert stack_lambda_versions(self.STACK) == dict.fromkeys(present, "0.15.0")
+
+    @pytest.mark.parametrize("present", PRESENT)
+    def test_forced_upgrade_reports_each_skip(self, mock_dynamodb, runner: CliRunner, present):
+        """With --force the CLI's own steps run too, and say what they skipped."""
+        import asyncio
+
+        from tests.fixtures.moto import create_stack_lambdas, stack_lambda_versions
+
+        asyncio.run(self._seed("0.15.0"))
+        create_stack_lambdas(self.STACK, *present)
+
+        result = self._upgrade(runner, "--force")
+
+        assert result.exit_code == 0, result.output
+        assert "Upgrade complete" in result.output
+        assert asyncio.run(self._stamp()) == "0.15.0"
+        assert stack_lambda_versions(self.STACK) == dict.fromkeys(present, "0.15.0")
+        assert ("Lambda code deployed" in result.output) is ("aggregator" in present)
+        assert ("No aggregator Lambda on this stack, skipped" in result.output) is (
+            "aggregator" not in present
+        )
+        assert ("Provisioner code deployed" in result.output) is ("limits-provisioner" in present)
+        assert ("No provisioner Lambda on this stack, skipped" in result.output) is (
+            "limits-provisioner" not in present
+        )
+
+    def test_a_probe_that_cannot_tell_still_pushes(self, mock_dynamodb, runner: CliRunner):
+        """A probe that cannot tell skips nothing: the aggregator push is
+        attempted and only its ResourceNotFoundException proves absence."""
+        import asyncio
+
+        from tests.fixtures.moto import create_stack_lambdas, stack_lambda_versions
+
+        asyncio.run(self._seed("0.15.0"))
+        create_stack_lambdas(self.STACK, "limits-provisioner")
+
+        with patch(
+            "zae_limiter.infra.stack_manager.lambda_function_exists",
+            new_callable=AsyncMock,
+            return_value=None,
+        ):
+            result = self._upgrade(runner, "--force")
+
+        assert result.exit_code == 0, result.output
+        assert "No aggregator Lambda on this stack, skipped" in result.output
+        assert stack_lambda_versions(self.STACK) == {"limits-provisioner": "0.15.0"}
+
+    def test_a_failed_push_exits_1_and_stamps_nothing(self, mock_dynamodb, runner: CliRunner):
+        """Any failure other than absence (here AccessDenied on the push, behind
+        a probe that could not tell) is a failure: exit 1 with the reason, and
+        the record keeps the version it had."""
+        import asyncio
+
+        from tests.fixtures.moto import create_stack_lambdas
+
+        asyncio.run(self._seed("0.14.0"))
+        create_stack_lambdas(self.STACK, "aggregator", "limits-provisioner")
+
+        with (
+            patch(
+                "zae_limiter.infra.stack_manager.lambda_function_exists",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "zae_limiter.infra.stack_manager.StackManager.deploy_lambda_code",
+                new_callable=AsyncMock,
+                side_effect=StackOperationError(
+                    stack_name=self.STACK,
+                    reason="Lambda deployment failed (AccessDeniedException): denied",
+                ),
+            ),
+        ):
+            result = self._upgrade(runner)
+
+        assert result.exit_code == 1
+        assert "Lambda deployment failed (AccessDeniedException)" in result.output
+        assert asyncio.run(self._stamp()) == "0.14.0"
+
+
 class TestClientMinVersionSurvivesTheCli:
     """``deploy`` and ``upgrade`` keep a raised ``client_min_version`` (#638 C).
 
@@ -7416,8 +7576,8 @@ class TestClientMinVersionSurvivesTheCli:
     ) -> None:
         """The #638 fix-round-2 repro, end to end: a v0.14-stamped stack with
         no aggregator is redeployed by v0.15, then opens with auto_update and
-        stores a reset_after limit — without ever pushing aggregator code,
-        which fails on such a stack (#644)."""
+        stores a reset_after limit — without ever pushing aggregator code, for
+        there is none to push to."""
         import asyncio
         from datetime import timedelta
 

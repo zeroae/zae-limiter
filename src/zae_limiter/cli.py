@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, cast
 import click
 
 from .infra.lambda_builder import get_package_info, write_lambda_package
-from .infra.stack_manager import StackManager, stack_lambdas_current
+from .infra.stack_manager import StackManager, pushed_or_absent, stack_lambdas_current
 from .limits_cli import limits
 from .loadtest.cli import loadtest
 from .local import local
@@ -51,13 +51,24 @@ async def _connect(
     registers a missing namespace and pushes Lambda code when the deployed
     version is behind. Reporting commands must use :func:`_open_read_only`.
     """
-    from .exceptions import NamespaceNotFoundError, ValidationError, VersionMismatchError
+    from .exceptions import (
+        NamespaceNotFoundError,
+        StackOperationError,
+        ValidationError,
+        VersionMismatchError,
+    )
     from .repository import Repository
 
     try:
         return await Repository.open(
             namespace, stack=name, region=region, endpoint_url=endpoint_url
         )
+    except StackOperationError as e:
+        # open() pushes Lambda code when the stack is behind; a push that
+        # fails (e.g. AccessDenied) is reported with its reason, not as a
+        # traceback (#644).
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
     except VersionMismatchError as e:
         # A client below the stack's client_min_version (#638). Caught here so
         # every command — `upgrade` above all, which would otherwise downgrade
@@ -1512,14 +1523,18 @@ def upgrade(
             click.echo()
 
             async with StackManager(name, region, endpoint_url) as manager:
-                # Step 1: Update Lambda code
+                # Step 1: Update Lambda code. A stack without an aggregator
+                # (--no-aggregator) or without a provisioner (--no-provisioner,
+                # --no-iam) has nothing to push to, and that is skipped (#644).
                 click.echo("[1/4] Deploying Lambda code...")
                 try:
-                    result = await manager.deploy_lambda_code(wait=True)
+                    result = await manager.deploy_lambda_code(wait=True, skip_absent=True)
 
                     if result.get("status") == "deployed":
                         size_kb = result.get("size_bytes", 0) / 1024
                         click.echo(f"      Lambda code deployed ({size_kb:.1f} KB)")
+                    elif result.get("status") == "absent":
+                        click.echo("      No aggregator Lambda on this stack, skipped")
 
                 except Exception as e:
                     click.echo(f"✗ Lambda deployment failed: {e}", err=True)
@@ -1528,11 +1543,15 @@ def upgrade(
                 # Step 2: Update provisioner Lambda code
                 click.echo("[2/4] Deploying provisioner code...")
                 try:
-                    provisioner_result = await manager.deploy_provisioner_code(wait=True)
+                    provisioner_result = await manager.deploy_provisioner_code(
+                        wait=True, skip_absent=True
+                    )
 
                     if provisioner_result.get("status") == "deployed":
                         size_kb = provisioner_result.get("size_bytes", 0) / 1024
                         click.echo(f"      Provisioner code deployed ({size_kb:.1f} KB)")
+                    elif provisioner_result.get("status") == "absent":
+                        click.echo("      No provisioner Lambda on this stack, skipped")
 
                 except Exception as e:
                     click.echo(f"✗ Provisioner deployment failed: {e}", err=True)
@@ -1550,12 +1569,23 @@ def upgrade(
                     click.echo(f"⚠️  Tag update failed: {e}", err=True)
                     # Non-fatal — continue with upgrade
 
-                # Step 4: Update version record
+                # Step 4: Update version record, by the rule every writer of
+                # the stamp shares (#638): each function pushed or absent.
                 click.echo("[4/4] Updating version record...")
-                # client_min_version is left as stored (#638 C).
+                aggregator_pushed, aggregator_exists = pushed_or_absent(result)
+                provisioner_pushed, provisioner_exists = pushed_or_absent(provisioner_result)
+                current = await stack_lambdas_current(
+                    created=False,
+                    aggregator_pushed=aggregator_pushed,
+                    provisioner_pushed=provisioner_pushed,
+                    aggregator_exists=aggregator_exists,
+                    provisioner_exists=provisioner_exists,
+                )
+                # client_min_version is left as stored (#638 C). The stored stamp is
+                # unreachable under skip_absent (each is pushed or proven absent); a guard.
                 await repo.set_version_record(
                     schema_version=get_schema_version(),
-                    lambda_version=__version__,
+                    lambda_version=__version__ if current else infra_version.lambda_version,
                     updated_by=f"cli:{__version__}",
                 )
                 click.echo("      Version record updated")
