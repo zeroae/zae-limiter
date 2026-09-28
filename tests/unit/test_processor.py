@@ -3156,7 +3156,13 @@ class TestAggregatorStampsTheGrantCount:
     def test_quota_clamp_uses_the_grant_count(self) -> None:
         """A quota shard at count 4 holding 500 (of 1000) with ``gc = 2`` holds
         exactly the grant it was given for two slots. No negative delta is
-        written: its ceiling is ``C // gc``, never ``C // shard_count`` (#637)."""
+        written: its ceiling is ``C // gc``, never ``C // shard_count`` (#637).
+
+        A defensive guard: a quota's stored rate is 0 (ADR-137), so the
+        accrual guard skips the drip/clamp branch before the ceiling is used
+        and this passes with either divisor today. It pins the ceiling the
+        client uses (``BucketState.ceiling_milli``) should that branch ever
+        reach a quota."""
         table = MagicMock()
         state = _quota_state(reset_sched=DAILY_RESET, shard_count=4, rf_ms=WED_0030 - 60_000)
         state.limits["rpd"].cp_milli = 1_000_000
@@ -3591,11 +3597,14 @@ class TestQuotaShardCloneIsAMove:
     """
 
     async def test_2_clone_of_an_unseeded_shard_zero_never_exceeds(self, limiter) -> None:
-        """Design §10 test 2, the 1250 repro of #642: shard 1 is seeded with
-        the quota at count 2 (a 500 grant covering slots 1 and 3) and spends
-        it; shard 0 never saw the quota; the aggregator doubles shard 0 to 4.
-        Nothing may pay slot 3 again: over the whole period, at most the
-        configured 1000 is admitted (was 1250)."""
+        """Design §10 test 2, a regression guard for the #642 1250 repro: shard
+        1 is seeded with the quota at count 2 (a 500 grant covering slots 1
+        and 3) and spends it; shard 0 never saw the quota; the aggregator
+        doubles shard 0 to 4. Nothing may pay slot 3 again: over the whole
+        period exactly the configured 1000 is admitted. The repro was closed
+        by the client's seed rule (Task 7) — shard 0's image carries no quota,
+        so Path 2 clones none — and this pins that the new Path 2 keeps it
+        closed end to end."""
         import copy
 
         import boto3
@@ -3683,7 +3692,7 @@ class TestQuotaShardCloneIsAMove:
         assert parent["b_rpd_tk"] == 500_000
         assert parent["b_rpd_gc"] == 1, "the donor keeps its grant record"
 
-    def test_clone_move_that_fails_its_condition_is_skipped(self, mock_dynamodb) -> None:
+    def test_clone_move_that_fails_its_condition_is_skipped(self, mock_dynamodb, capsys) -> None:
         """The parent is spent between the read and the write: the donor's
         ``tk >= x`` fails, the whole transaction is cancelled (the donor
         untouched, no clone), and no exception escapes — the client creates
@@ -3709,6 +3718,54 @@ class TestQuotaShardCloneIsAMove:
         parent = _stored(table, 0)
         assert parent is not None
         assert parent["b_rpd_tk"] == 100_000, "the cancelled debit left the donor alone"
+        logged = [
+            json.loads(line)
+            for line in capsys.readouterr().out.splitlines()
+            if line.startswith("{")
+        ]
+        (cancelled,) = [e for e in logged if e["message"].startswith("Clone transaction cancelled")]
+        assert cancelled["resource"] == MOVE_RESOURCE
+        assert cancelled["shard_id"] == 1
+        assert cancelled["reasons"] == ["None", "ConditionalCheckFailed"]
+        assert "entity_id" not in cancelled
+
+    def test_a_record_overtaken_by_a_later_doubling_clones_no_quota(
+        self, mock_dynamodb, capsys
+    ) -> None:
+        """Stream lag across two doublings: shard 0 already stores count 4
+        while the 1 -> 2 record is processed. A clone sized at 2 would cover
+        slots a client may already have granted at 4, so no quota clone is
+        pre-created and no donor is debited."""
+        table = _moto_table()
+        _put_quota_shard(table, 0, tk=1_000_000, shard_count=4, b_rpd_gc=1)
+        record = _doubling_record(table, 1)
+        record["dynamodb"]["NewImage"]["shard_count"] = {"N": "2"}
+        with patch.object(table.meta.client, "transact_write_items") as transact:
+            assert propagate_shard_count(table, record, TUE_1400) == 0
+        transact.assert_not_called()
+        assert _stored(table, 1) is None
+        assert _must(table, 0)["b_rpd_tk"] == 1_000_000
+        logged = [
+            json.loads(line)
+            for line in capsys.readouterr().out.splitlines()
+            if line.startswith("{")
+        ]
+        (skip,) = [e for e in logged if e["message"].startswith("Quota clones skipped")]
+        assert (skip["record_count"], skip["stored_count"]) == (2, 4)
+        assert "entity_id" not in skip
+
+    def test_an_overtaken_record_still_clones_a_dripping_only_item(self) -> None:
+        """The guard is for quotas only: an item carrying no quota reads no
+        sibling at all, so a dripping limit's clone is sized at the record's
+        count exactly as before."""
+        table = MagicMock()
+        record = _sched_record(
+            limits={"rpm": {"tk": 0, "cp": 1_000_000, "ra": 1_000_000, "rp": 60_000, "tc": 0}},
+            shard_count=2,
+        )
+        record["dynamodb"]["OldImage"]["shard_count"] = {"N": "1"}
+        assert propagate_shard_count(table, record, TUE_1400) == 1
+        table.get_item.assert_not_called()
 
     def test_a_spent_parent_funds_nothing(self, mock_dynamodb) -> None:
         """#587 itself, under ADR-145: the parent's grant covers the clone's

@@ -1471,7 +1471,9 @@ def _quota_reset_rule(
     blocking the item-level ``rsched``, and otherwise that default. A duration
     window's ``b_{name}_rsa`` makes it a session quota — unless a reset
     schedule rides beside it, the corrupt shape the calendar branch keeps
-    (:func:`_window_in_force`).
+    (:func:`_window_in_force`). It resolves the rule from shard 0's image and
+    applies it to every sibling, which is sound because the #468 fan-out
+    keeps a limit's reset rule uniform across an entity's shards.
     """
     tz = image.get(BUCKET_FIELD_SCHED_TZ, {}).get("S", "UTC")
     own = image.get(bucket_attr(limit_name, BUCKET_FIELD_RSCHED), {}).get("S")
@@ -1866,6 +1868,21 @@ def propagate_shard_count(
         return updated
 
     # Path 2: Pre-create new shards (full item cloned from shard 0)
+    # A quota clone is planned at this record's `new_count`, which the client
+    # would not do: it plans at the largest count any sibling stores. With the
+    # stream lagging across two doublings, a clone sized at the older count
+    # covers slots a client may already have granted at the newer one — paid
+    # twice. So a record overtaken by a later doubling pre-creates no quota
+    # clone; a later record, or the client, creates them at the right count.
+    stored_counts = [_stored_count(item) for item in old_items.values()]
+    if quota_shares and any(count > new_count for count in stored_counts):
+        logger.debug(
+            "Quota clones skipped - the record is overtaken by a later doubling",
+            resource=resource,
+            record_count=new_count,
+            stored_count=max(stored_counts),
+        )
+        return updated
     client = table.meta.client
     # The quotas whose grant on shard 0's image is not current — a reset or
     # roll pending there, which every clone of that image inherits (R13).
@@ -1972,13 +1989,21 @@ def propagate_shard_count(
                 )
             updated += 1
         except ClientError as e:
-            if e.response["Error"]["Code"] in (
-                "ConditionalCheckFailedException",
-                "TransactionCanceledException",
-            ):
+            code = e.response["Error"]["Code"]
+            if code in ("ConditionalCheckFailedException", "TransactionCanceledException"):
                 # The client already created this shard, or a donor moved
                 # since the read. Either way the whole write is undone (the
                 # donor untouched) and the client creates the shard lazily.
+                if code == "TransactionCanceledException":
+                    logger.debug(
+                        "Clone transaction cancelled - left to the client",
+                        resource=resource,
+                        shard_id=target_shard,
+                        reasons=[
+                            reason.get("Code", "None")
+                            for reason in e.response.get("CancellationReasons", [])
+                        ],
+                    )
                 continue
             raise
         # A later clone planning off the same donor sees what it has left.
