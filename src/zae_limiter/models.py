@@ -289,7 +289,7 @@ def new_shard_starting_tokens_milli(
 
     Args:
         share_milli: This shard's ceiling — the capacity in force now,
-            divided by ``shard_count`` (``BucketState.effective_capacity_milli``).
+            divided by ``shard_count`` (``BucketState.reset_target_milli``).
         reclaimed_milli: Millitokens taken off the existing shards of this
             (entity, resource, limit) by the eager clamp. ``None`` means no
             shard exists to reclaim from — nothing has been materialised for
@@ -934,7 +934,7 @@ class Limit:
         shard_count``, ``refill_amount // shard_count`` (GHSA-76rv). Dividing
         first and scaling second is a different integer, and it is the wrong
         one: the bucket itself refills against
-        ``BucketState.effective_capacity_milli``, which scales first.
+        ``BucketState.ceiling_milli``, which scales first.
 
         Both narrowings belong together because both feed ``LimitStatus`` and
         neither may be applied twice. A status reported from one shard has to
@@ -1292,8 +1292,31 @@ class BucketState:
             now_ms,
         )
 
-    def effective_capacity_milli(self, now_ms: int) -> int:
-        """This shard's share of the capacity in force at ``now_ms``.
+    @property
+    def is_quota_state(self) -> bool:
+        """Whether this state is a quota (ADR-137): a reset schedule or a duration window."""
+        return bool(self.reset_sched) or self.reset_after_seconds is not None
+
+    @property
+    def grant_shard_count(self) -> int:
+        """The count this shard's quota grant was sized at (ADR-145).
+
+        An item written before the grant record reads as its stored count
+        (design §9, owner decision option 1).
+        """
+        return self.grant_count if self.grant_count is not None else self.shard_count
+
+    @property
+    def report_shard_count(self) -> int:
+        """The divisor a reported per-shard limit uses (`Limit.per_shard`).
+
+        A quota shard reports what it was granted (`C // gc`), so a 429 never
+        shows more available than capacity. Everything else reports the share.
+        """
+        return self.grant_shard_count if self.is_quota_state else self.shard_count
+
+    def reset_target_milli(self, now_ms: int) -> int:
+        """The balance a reset or window roll sets: this shard's share at ``now_ms``.
 
         Scale first, divide second (#222 §2.1): the schedule applies to the
         whole limit and the shards split the result. Dividing first floors
@@ -1302,10 +1325,22 @@ class BucketState:
         cp, _ra, _rp = self._scheduled_params(now_ms)
         return cp // self.shard_count
 
+    def ceiling_milli(self, now_ms: int) -> int:
+        """The most this shard may hold at ``now_ms`` — the refill clamp (ADR-145).
+
+        A quota shard holds the unspent allowance of every slot its grant
+        covers, so its ceiling is ``C // gc``; trimming it to ``C // S`` would
+        discard allowance no other shard holds (#637). A dripping limit keeps
+        ``C // S``: its shards' ceilings must sum to the capacity.
+        """
+        cp, _ra, _rp = self._scheduled_params(now_ms)
+        divisor = self.grant_shard_count if self.is_quota_state else self.shard_count
+        return cp // divisor
+
     def effective_refill_amount_milli(self, now_ms: int) -> int:
         """This shard's share of the refill in force at ``now_ms``.
 
-        Scale first, divide second, exactly as ``effective_capacity_milli``.
+        Scale first, divide second, exactly as ``reset_target_milli``.
         """
         _cp, ra, _rp = self._scheduled_params(now_ms)
         return ra // self.shard_count
@@ -1382,7 +1417,7 @@ class BucketState:
         an opener or a newly created shard applies its window in the same
         write and restores the full share.
         """
-        share = self.effective_capacity_milli(now_ms)
+        share = self.reset_target_milli(now_ms)
         if self.window_consumed_mark_milli is None or self.total_consumed_milli is None:
             return share
         return share - max(0, self.total_consumed_milli - self.window_consumed_mark_milli)
@@ -1524,7 +1559,7 @@ class BucketState:
         # its siblings' surplus instead of a fresh share, because it has no
         # rate for a mint to amortise against (#587).
         state.tokens_milli = new_shard_starting_tokens_milli(
-            state.effective_capacity_milli(now_ms),
+            state.reset_target_milli(now_ms),
             reclaimed_milli,
             is_quota=limit.is_quota,
         )

@@ -1518,7 +1518,7 @@ class RateLimiter:
         request and refund everything spent since — an unbounded quota.
 
         The target is the **shard's share** of the capacity *in force at*
-        ``now_ms``: ``effective_capacity_milli`` applies the parameter schedule
+        ``now_ms``: ``reset_target_milli`` applies the parameter schedule
         and then divides by ``shard_count``. Resetting every shard to the
         undivided capacity would multiply the entity's quota by ``shard_count``.
 
@@ -1536,7 +1536,7 @@ class RateLimiter:
         edge = prev_reset_edge(limit.reset_schedule, now_ms)
         if edge is None or edge <= state.last_refill_ms:
             return False
-        state.tokens_milli = state.effective_capacity_milli(now_ms)
+        state.tokens_milli = state.reset_target_milli(now_ms)
         return True
 
     @staticmethod
@@ -1559,7 +1559,7 @@ class RateLimiter:
         - **Strictly ``>``.** The pass that applies the roll stamps ``rf`` at or
           after ``ws``, so ``>=`` would re-fire on every later request and
           refund everything spent since — an unbounded quota.
-        - **Per shard, to the shard's share.** ``effective_capacity_milli``
+        - **Per shard, to the shard's share.** ``reset_target_milli``
           applies the parameter schedule and then divides by ``shard_count``.
           Resetting every shard to the undivided capacity would multiply the
           entity's quota by ``shard_count``.
@@ -1594,9 +1594,7 @@ class RateLimiter:
         # less what was spent since the fan-out's snapshot (#640), so debits
         # made while it was pending are charged, not forgiven.
         state.tokens_milli = (
-            state.effective_capacity_milli(now_ms)
-            if opened
-            else state.window_roll_target_milli(now_ms)
+            state.reset_target_milli(now_ms) if opened else state.window_roll_target_milli(now_ms)
         )
         # The balance now reflects this window; the commit stamps the same
         # value as `b_{name}_wa` (#640, `lease._applied_windows`).
@@ -1726,7 +1724,7 @@ class RateLimiter:
             # The shard holds only its share, and only the window in force
             # scales it, so that is what is reported (#475, #222 §3.5);
             # identity only when the bucket is unsharded and unscheduled.
-            limit=limit.per_shard(state.shard_count, now_ms),
+            limit=limit.per_shard(state.report_shard_count, now_ms),
             available=result.available,
             requested=amount,
             exceeded=not result.success,
@@ -2732,7 +2730,7 @@ class RateLimiter:
         if limit is not None and limit.reset_schedule:
             edge = prev_reset_edge(limit.reset_schedule, now_ms)
             if edge is not None and edge > bucket.last_refill_ms:
-                return bucket.effective_capacity_milli(now_ms) // 1000
+                return bucket.reset_target_milli(now_ms) // 1000
         # A duration window is the same seam (ADR-139), at the same per-shard
         # granularity, and it has two ways to be stale on disk:
         #
@@ -2754,7 +2752,7 @@ class RateLimiter:
         if limit is not None and limit.reset_after is not None:
             end = _reader_window_end(limit, bucket)
             if end is None or now_ms >= end:
-                return bucket.effective_capacity_milli(now_ms) // 1000
+                return bucket.reset_target_milli(now_ms) // 1000
             if bucket.window_rolled:
                 # A pending roll restores the share less what the shard spent
                 # since the fan-out landed (#640), never more.

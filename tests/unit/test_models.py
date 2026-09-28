@@ -19,6 +19,7 @@ from zae_limiter import (
     ValidationError,
     models,
 )
+from zae_limiter.bucket import refill_bucket
 from zae_limiter.models import BucketState, LimitStatus
 from zae_limiter.schedule import MAX_PERIOD_SECONDS, MAX_TOKENS, ScheduleEntry
 
@@ -841,7 +842,7 @@ class TestScheduledStatusCapacity:
           ``int(34_343 * .99) = 33_999``; ``// 1000 = 33``
 
         The bucket itself refills against
-        ``BucketState.effective_capacity_milli``, which scales first, so 33
+        ``BucketState.ceiling_milli``, which scales first, so 33
         would be a status that disagrees with the gate that produced it.
         """
         limit = Limit.per_minute("rpm", 1099).with_schedule(
@@ -853,7 +854,7 @@ class TestScheduledStatusCapacity:
 
     def test_matches_what_the_bucket_enforces(self):
         """The status and the gate must agree to the token: ``try_consume``
-        admits against ``effective_capacity_milli``, which floors in
+        admits against ``ceiling_milli``, which floors in
         milli-units, so ``per_shard`` has to floor there too."""
         limit = Limit.per_minute("rpm", 1099).with_schedule(
             (ScheduleEntry(cron="* * * * *", tz="UTC", scale=0.99),)
@@ -864,9 +865,7 @@ class TestScheduledStatusCapacity:
             shard_count=32,
             sched=limit.schedule,
         )
-        assert limit.per_shard(32, TUE_1400).capacity == (
-            state.effective_capacity_milli(TUE_1400) // 1000
-        )
+        assert limit.per_shard(32, TUE_1400).capacity == (state.ceiling_milli(TUE_1400) // 1000)
         assert limit.per_shard(32, TUE_1400).refill_amount == (
             state.effective_refill_amount_milli(TUE_1400) // 1000
         )
@@ -2720,3 +2719,41 @@ class TestBucketStateWindowFields:
         assert limit.reset_after is None
         assert limit.refill_amount == 1000  # the stored rate, floored — not the quota shape
         assert not limit.is_quota
+
+
+class TestCapacityRoles:
+    """ADR-145: a quota's ceiling is its grant, not the current share."""
+
+    def _quota_state(self, shard_count: int, grant_count: int | None, tokens: int) -> BucketState:
+        limit = Limit.quota("rpd", 1000, cron="0 0 * * *")
+        state = BucketState.from_limit("e", "r", limit, 0, shard_count=shard_count)
+        state.grant_count = grant_count
+        state.tokens_milli = tokens
+        return state
+
+    def test_quota_ceiling_is_capacity_over_grant_count(self):
+        state = self._quota_state(shard_count=4, grant_count=2, tokens=500_000)
+        assert state.ceiling_milli(0) == 500_000
+        assert state.reset_target_milli(0) == 250_000
+
+    def test_missing_grant_count_reads_as_shard_count(self):
+        state = self._quota_state(shard_count=4, grant_count=None, tokens=250_000)
+        assert state.grant_shard_count == 4
+        assert state.ceiling_milli(0) == 250_000
+
+    def test_rate_limit_ceiling_unchanged(self):
+        state = BucketState.from_limit("e", "r", Limit.per_minute("rpm", 100), 0, shard_count=4)
+        state.grant_count = 1  # ignored for a rate limit
+        assert state.ceiling_milli(0) == 25_000
+        assert state.report_shard_count == 4
+
+    def test_report_shard_count_follows_grant_for_a_quota(self):
+        state = self._quota_state(shard_count=4, grant_count=2, tokens=0)
+        assert state.report_shard_count == 2
+
+    def test_capacity_decrease_trims_to_new_grant_share(self):
+        # Review focus 5: C 1000 -> 600 mid-period, shard granted at count 2.
+        state = self._quota_state(shard_count=4, grant_count=2, tokens=500_000)
+        state.capacity_milli = 600_000
+        refill = refill_bucket(state.tokens_milli, 0, 1, state.ceiling_milli(1), 0, 1_000)
+        assert refill.new_tokens_milli == 300_000

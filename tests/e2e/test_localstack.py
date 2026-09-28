@@ -1677,7 +1677,7 @@ class TestE2EScheduleBoundaries:
         assert len(buckets) == 2
         for b in buckets:
             assert b.shard_count == 2
-            assert b.effective_capacity_milli(INSIDE) == 250_000  # (1_000_000 * 0.5) // 2
+            assert b.ceiling_milli(INSIDE) == 250_000  # (1_000_000 * 0.5) // 2
             assert b.tokens_milli <= 250_000
         assert sum(b.tokens_milli for b in buckets) <= 500_000
 
@@ -1995,7 +1995,7 @@ class TestE2EScheduleWithTheAggregator:
 
         bucket = _rpm(await aggr_repo.get_buckets("aggr-sched", resource="gpt-4"))
         now_ms = aggr_repo._now_ms()
-        assert bucket.tokens_milli <= bucket.effective_capacity_milli(now_ms)
+        assert bucket.tokens_milli <= bucket.ceiling_milli(now_ms)
 
     @pytest.mark.asyncio(loop_scope="class")
     async def test_the_aggregator_restamps_an_expired_vu(self, aggr_repo):
@@ -2071,6 +2071,6 @@ class TestE2EScheduleWithTheAggregator:
                     pass
 
             bucket = _rpm(await scoped.get_buckets("noaggr-sched", resource="gpt-4"))
-            assert bucket.tokens_milli <= bucket.effective_capacity_milli(scoped._now_ms())
+            assert bucket.tokens_milli <= bucket.ceiling_milli(scoped._now_ms())
         finally:
             await repo.close()

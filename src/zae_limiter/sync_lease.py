@@ -184,7 +184,7 @@ class SyncLease:
                 entity_id=entry.entity_id,
                 resource=entry.resource,
                 limit_name=entry.limit.name,
-                limit=entry.limit.per_shard(entry.state.shard_count, now_ms),
+                limit=entry.limit.per_shard(entry.state.report_shard_count, now_ms),
                 available=result.available,
                 requested=amount,
                 exceeded=not result.success,
@@ -202,7 +202,7 @@ class SyncLease:
                         entity_id=entry.entity_id,
                         resource=entry.resource,
                         limit_name=entry.limit.name,
-                        limit=entry.limit.per_shard(entry.state.shard_count, now_ms),
+                        limit=entry.limit.per_shard(entry.state.report_shard_count, now_ms),
                         available=available,
                         requested=0,
                         exceeded=False,
@@ -367,7 +367,7 @@ class SyncLease:
                         )
                         if restarted:
                             entry.state.tokens_milli = (
-                                entry.state.effective_capacity_milli(now_ms) - consumed_milli
+                                entry.state.reset_target_milli(now_ms) - consumed_milli
                             )
                             if entry._window_end_ms is not None and entry._window_end_ms <= now_ms:
                                 entry._window_start_ms = now_ms
@@ -390,15 +390,13 @@ class SyncLease:
                     )
                     if entry._reset_edge_ms is not None and entry._reset_edge_ms <= now_ms:
                         refill_amounts[name] = (
-                            entry.state.effective_capacity_milli(now_ms)
-                            - entry._original_tokens_milli
+                            entry.state.reset_target_milli(now_ms) - entry._original_tokens_milli
                         )
                     if entry._window_end_ms is not None and entry._window_end_ms <= now_ms:
                         entry._window_start_ms = now_ms
                         entry.state.window_start_ms = now_ms
                         refill_amounts[name] = (
-                            entry.state.effective_capacity_milli(now_ms)
-                            - entry._original_tokens_milli
+                            entry.state.reset_target_milli(now_ms) - entry._original_tokens_milli
                         )
                     rsa = entry.state.reset_after_seconds
                     if entry._window_start_ms is not None and rsa is not None:
@@ -882,7 +880,7 @@ def _retry_statuses(
                     entity_id=entry.entity_id,
                     resource=entry.resource,
                     limit_name=entry.limit.name,
-                    limit=entry.limit.per_shard(real.shard_count, now_ms),
+                    limit=entry.limit.per_shard(real.report_shard_count, now_ms),
                     available=result.available,
                     requested=entry.consumed,
                     exceeded=exceeded,
@@ -902,7 +900,7 @@ def _retry_statuses(
                 entity_id=entry.entity_id,
                 resource=entry.resource,
                 limit_name=entry.limit.name,
-                limit=entry.limit.per_shard(entry.state.shard_count, now_ms),
+                limit=entry.limit.per_shard(entry.state.report_shard_count, now_ms),
                 available=entry.state.tokens_milli // 1000,
                 requested=entry.consumed,
                 exceeded=entry.consumed > 0,

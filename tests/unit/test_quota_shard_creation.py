@@ -143,7 +143,7 @@ class TestFromLimitStartingBalance:
         state = BucketState.from_limit("e1", "gpt-4", limit, 0, 4, reclaimed_milli=0)
         assert state.tokens_milli == 0
         assert state.capacity_milli == 1_000_000  # stored base stays undivided
-        assert state.effective_capacity_milli(0) == 250_000
+        assert state.reset_target_milli(0) == 250_000
 
     def test_quota_shard_with_no_siblings_starts_full(self):
         limit = Limit.quota("rpd", 1000, cron=QUOTA_CRON)
