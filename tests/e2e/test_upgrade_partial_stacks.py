@@ -25,6 +25,8 @@ To run locally::
     uv run pytest tests/e2e/test_upgrade_partial_stacks.py -v
 """
 
+from unittest.mock import patch
+
 import boto3
 import pytest
 from click.testing import CliRunner
@@ -36,8 +38,17 @@ from zae_limiter.version import get_schema_version
 
 pytestmark = [pytest.mark.integration, pytest.mark.e2e]
 
+CLIENT = "0.99.0"
+"""The client version the ``open()`` leg runs as.
+
+Pinned rather than read from ``__version__``: CI checks out without tags, so
+hatch-vcs falls back to ``0.1.dev1+g...``, which ``version.parse_version``
+rejects. ``check_compatibility`` then reports the client invalid, no Lambda
+update is ever requested, and ``open()`` pushes nothing whatever the stamp.
+Its major must match the schema's."""
+
 OLD = "0.1.0"
-"""A stamp below every client this test runs with: a faked version bump."""
+"""A stamp below ``CLIENT``: a faked version bump."""
 
 
 def _functions(stack: str, endpoint: str) -> set[str]:
@@ -96,9 +107,10 @@ def _upgrade_both_ways(endpoint: str, stack: str, flags: list[str], present: set
 
         # Repository.open(auto_update=True) after a faked version bump
         _set_stamp(stack, endpoint, OLD)
-        repo = SyncRepository.open(stack=stack, region="us-east-1", endpoint_url=endpoint)
-        repo.close()
-        assert _stamp(stack, endpoint) == __version__
+        with patch("zae_limiter.__version__", CLIENT):
+            repo = SyncRepository.open(stack=stack, region="us-east-1", endpoint_url=endpoint)
+            repo.close()
+        assert _stamp(stack, endpoint) == CLIENT
     finally:
         runner.invoke(cli, ["delete", *where, "--yes", "--wait"])
 
