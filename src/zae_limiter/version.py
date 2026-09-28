@@ -72,6 +72,23 @@ def parse_version(version_str: str) -> ParsedVersion:
       "0.15.0b1", "0.15.0rc1.dev3+gabcdef" (#638) — the prerelease is "rc1",
       "a2", "b1", "rc1-dev"
     - a PEP 440 local label on a release: "0.15.0+d20260926" (dropped)
+    - a **two-part** release, as hatch-vcs writes it when the checkout carries
+      no tags at all (#655): "0.1.dev1+ge76be3284". hatch-vcs's fallback
+      version is the bare ``fallback_version`` (``"0.1"`` for this project),
+      so the release part here has only two components where every tagged
+      build has three. Treated as ``X.Y.0`` — the missing component is filled
+      with ``0``, the same reading PEP 440 itself gives an elided release
+      segment. This also accepts a bare two-part release with no dev/pre
+      suffix ("0.1"), which falls out of the same relaxed grammar rather than
+      needing a special case, and is never worse than rejecting it outright.
+      A two-part release combined with a PEP 440 pre-release tag directly
+      ("0.15rc1", no third component) is **not** covered by this relaxation
+      and still raises — the pre-release rewrite above only fires on a
+      three-part release, and hatch-vcs's tagless fallback never carries one
+      of these anyway. The distance number in a ``.devN`` suffix is not part
+      of the result: every dev build of the same release compares equal
+      regardless of ``N`` (``0.1.dev1+g...`` == ``0.1.dev999+g...``), since
+      only the "dev" tag itself becomes the prerelease field.
 
     Args:
         version_str: Version string to parse
@@ -96,15 +113,18 @@ def parse_version(version_str: str) -> ParsedVersion:
     # PEP 440 pre-release segment ("0.15.0rc1", "0.15.0rc1-dev") -> semver prerelease
     version_str = re.sub(r"^(\d+\.\d+\.\d+)(a|b|rc)(\d+)", r"\1-\2\3", version_str)
 
-    # Match standard semver with optional prerelease
-    match = re.match(r"^(\d+)\.(\d+)\.(\d+)(?:-(.+))?$", version_str)
+    # Match standard semver with optional prerelease. The patch component is
+    # optional (#655): a tagless hatch-vcs build's release part has only two
+    # numbers ("0.1-dev" after the .dev rewrite above), and a missing patch
+    # is read as 0.
+    match = re.match(r"^(\d+)\.(\d+)(?:\.(\d+))?(?:-(.+))?$", version_str)
     if not match:
         raise ValueError(f"Invalid version string: {version_str}")
 
     return ParsedVersion(
         major=int(match.group(1)),
         minor=int(match.group(2)),
-        patch=int(match.group(3)),
+        patch=int(match.group(3)) if match.group(3) is not None else 0,
         prerelease=match.group(4),
     )
 

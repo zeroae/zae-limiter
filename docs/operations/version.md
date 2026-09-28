@@ -160,6 +160,21 @@ aws dynamodb update-item --table-name <name> \
 Only do this when no stored limit needs the newer readers: the minimum is what keeps older
 v0.15+ clients from misreading them.
 
+!!! note "Developer/CI checkouts without git tags read as a real, low version (#655)"
+    A local clone made with `git clone --no-tags` (or a CI checkout that doesn't fetch tags)
+    has no tags for hatch-vcs to build from, so it falls back to `0.1.devN+g<sha>`.
+    `parse_version` reads that as a real version, `0.1.0-dev` — not as something it cannot
+    parse — so it is compared against `client_min_version` like any other client.
+
+    If a stack's minimum was ever raised above `0.1.0` (the `reset_after` ratchet, #638), a
+    tagless build reads as below it and is refused with `can_auto_update=False`, exactly as an
+    old tagged client would be. The fix is `git fetch --tags` or a tagged install, not a code
+    change. A stack whose minimum was never raised (the default `0.0.0`) is unaffected.
+
+    `zae-limiter upgrade` from a tagless checkout reports "Infrastructure is already up to
+    date" and pushes nothing unless `--force` is given — its very low read of the client's own
+    version never looks newer than the deployed Lambda, so nothing appears to need upgrading.
+
 ### Refused `reset_after` write
 
 **Cause:** `set_limits()`, `set_resource_defaults()`, `set_system_defaults()`,

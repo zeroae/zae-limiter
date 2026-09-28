@@ -558,9 +558,14 @@ alone. `limits plan` / `limits diff` pass `require_current_lambdas=` and refuse 
 unknown `lambda_version`), because the provisioner does the planning. A missing stack or
 namespace exits 1 naming `deploy` / `namespace register`; a client below `client_min_version`
 or a schema needing migration is refused as everywhere else — and **nothing else about the
-versions is**. An unparseable client or schema version (CI checks out without tags, so its
-build is `0.1.devN+g…`, #655) passes, exactly as it does through `connect()`; refusing it failed
-every read command in CI. Only commands that intend to write keep `cli._connect()` →
+versions is**. This now includes a tagless checkout (`git clone --no-tags`, or CI without
+`fetch-depth: 0`, #655): its build reads as `0.1.devN+g…`, which `parse_version` parses as the
+real version `0.1.0-dev` — not "unparseable" — so a stack whose `client_min_version` was
+ratcheted (the `reset_after` gate, #638) refuses it exactly as it refuses an old tagged client.
+The fix is `git fetch --tags` or a tagged build, not a code change; a default stack
+(`client_min_version="0.0.0"`) is unaffected. Only a client or schema version that genuinely
+cannot be parsed (garbage, not the tagless form) passes unconditionally, exactly as it does
+through `connect()`. Only commands that intend to write keep `cli._connect()` →
 `open()`, so `rg "Repository.open\(" src/zae_limiter/cli.py src/zae_limiter/limits_cli.py`
 matches write paths only — keep it that way when adding a command.
 

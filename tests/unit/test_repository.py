@@ -8026,6 +8026,31 @@ class TestClientMinVersionIsEnforced:
         assert exc_info.value.can_auto_update is False
 
     @pytest.mark.parametrize("check", ["_check_version_strict", "_check_and_update_version_auto"])
+    async def test_a_tagless_client_below_the_minimum_raises(self, repo, check):
+        """A checkout with no git tags builds as ``0.1.devN+g<sha>`` (#655),
+        which ``parse_version`` reads as the real version ``0.1.0-dev`` — not
+        as unparseable — so a ratcheted minimum refuses it exactly as it
+        refuses an old tagged client. The fix is fetching tags or installing
+        a tagged build, not a code change, on both the auto-update path
+        (``open()``) and the strict path (``connect()``)."""
+        await self._stamp(repo, "0.15.0", "0.15.0")
+        with patch("zae_limiter.__version__", "0.1.dev1+ge76be3284"):
+            with pytest.raises(VersionMismatchError) as exc_info:
+                await getattr(repo, check)()
+        assert "below minimum required version 0.15.0" in str(exc_info.value)
+        assert exc_info.value.can_auto_update is False
+
+    @pytest.mark.parametrize("check", ["_check_version_strict", "_check_and_update_version_auto"])
+    async def test_a_tagless_client_on_a_default_stack_is_allowed(self, repo, check):
+        """A stack whose minimum was never raised (the default ``0.0.0``)
+        does not refuse a tagless client: it just reads as a very old
+        version, well below the deployed Lambda, so nothing here suggests
+        an update either."""
+        await self._stamp(repo, "0.15.0", "0.0.0")
+        with patch("zae_limiter.__version__", "0.1.dev1+ge76be3284"):
+            await getattr(repo, check)()  # does not raise
+
+    @pytest.mark.parametrize("check", ["_check_version_strict", "_check_and_update_version_auto"])
     async def test_a_client_at_the_minimum_starts(self, repo, check):
         await self._stamp(repo, "0.15.0", "0.15.0")
         with patch("zae_limiter.__version__", "0.15.0"):

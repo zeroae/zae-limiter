@@ -7700,6 +7700,54 @@ class TestClientMinVersionSurvivesTheCli:
         manager.deploy_lambda_code.assert_not_called()
         assert asyncio.run(self._record())["lambda_version"] == "0.16.0"
 
+    def test_upgrade_from_a_tagless_checkout_is_a_noop_without_force(
+        self, mock_dynamodb, runner: CliRunner
+    ) -> None:
+        """A checkout with no git tags builds as ``0.1.devN+g<sha>`` (#655),
+        which reads as the real version ``0.1.0-dev`` — well below the
+        deployed Lambda's real tag — so ``upgrade`` sees nothing newer to
+        push and reports "already up to date", exactly as
+        ``test_upgrade_leaves_a_known_current_stack_alone`` does for a real
+        client. This is on the default, unratcheted minimum (``0.0.0``);
+        see the refusal test below for a ratcheted one."""
+        import asyncio
+
+        asyncio.run(self._seed("0.15.0", "0.0.0"))
+        manager = self._manager()
+        with (
+            patch("zae_limiter.__version__", "0.1.dev1+ge76be3284"),
+            patch("zae_limiter.cli.StackManager", return_value=manager),
+        ):
+            result = runner.invoke(cli, ["upgrade", "--name", self.TABLE, "--region", "us-east-1"])
+        assert result.exit_code == 0, result.output
+        assert "already up to date" in result.output
+        manager.deploy_lambda_code.assert_not_called()
+        assert asyncio.run(self._record())["lambda_version"] == "0.15.0"
+
+    def test_upgrade_from_a_tagless_checkout_is_refused_by_a_ratcheted_minimum(
+        self, mock_dynamodb, runner: CliRunner
+    ) -> None:
+        """Option A, fail closed: unlike the no-op above, a stack whose
+        minimum was raised (the ``reset_after`` ratchet, #638) refuses a
+        tagless client's ``0.1.0-dev`` read exactly as it refuses a real
+        old client — before ``upgrade``'s own "already up to date" check
+        even runs, since ``_connect()``/``open()`` raises first."""
+        import asyncio
+
+        asyncio.run(self._seed("0.15.0", "0.15.0"))
+        manager = self._manager()
+        with (
+            patch("zae_limiter.__version__", "0.1.dev1+ge76be3284"),
+            patch("zae_limiter.cli.StackManager", return_value=manager),
+        ):
+            result = runner.invoke(
+                cli, ["upgrade", "--name", self.TABLE, "--region", "us-east-1", "--force"]
+            )
+        assert result.exit_code == 1
+        assert "below minimum required version 0.15.0" in result.output
+        manager.deploy_lambda_code.assert_not_called()
+        assert asyncio.run(self._record())["lambda_version"] == "0.15.0"
+
 
 class TestReportingCommandsAreReadOnly:
     """``check`` and ``version`` report; they never write (#646).
