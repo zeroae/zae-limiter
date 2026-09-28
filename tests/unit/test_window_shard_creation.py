@@ -529,9 +529,11 @@ class TestAggregatorCloneOfAnUnappliedShardZero:
     Shard 0 received a fan-out (``ws > rf``, ``vu = 0``) and the aggregator's
     proactive sharding doubles it before any client draws it. The clone copies
     ``ws``/``rsa``/``rf``/``vu`` verbatim, so it is unapplied too, and whatever
-    the #587 transfer granted it is overwritten when it rolls — a SET to the
-    share, never an ADD. After both shards roll the entity holds exactly one
-    allowance, whichever writer applies the roll.
+    it was granted is overwritten when it rolls — a SET to the share, never an
+    ADD. Shard 0's grant belongs to the window it has not applied, so it is no
+    donor (ADR-145, design §5): the clone's slot is granted fresh. After both
+    shards roll the entity holds exactly one allowance, whichever writer
+    applies the roll.
     """
 
     WINDOW_S = FIVE_HOURS_MS // 1000
@@ -596,10 +598,15 @@ class TestAggregatorCloneOfAnUnappliedShardZero:
                 image = await _raw(repo, "user-1", shard)
                 (state,) = aggregate_bucket_states([self._record(image, image)]).values()
                 rolled.append(try_refill_bucket(table, state, now))
-            # Spent: shard 0 holds 2 and the clone was granted nothing, so both
-            # are below their share of 5 and both roll. Unspent: the transfer
-            # left both at exactly 5, so neither has anything to restore.
-            assert rolled == [bool(spent), bool(spent)]
+            # Shard 0 always rolls: it holds 10 (unspent) or 2 (spent), never
+            # its share of 5, so the roll is a real write in both directions.
+            # The clone was granted a fresh share (ADR-145): its parent's
+            # grant belongs to the window it has not applied, so it neither
+            # donates nor covers (design §5). The clone therefore holds exactly
+            # its share and has nothing to restore; the client applies its
+            # roll below, as a SET.
+            assert rolled == [True, False]
+            assert await _stored_tk_on(repo, "user-1", "session", 1) == 5_000
             assert await spendable(repo, "user-1", "session", 2, resource=RESOURCE) == 10
 
         repo._now_ms = lambda: now

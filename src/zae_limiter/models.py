@@ -2214,12 +2214,37 @@ def quota_grant_is_current(
     edge after ``rf`` (`RateLimiter._apply_reset_edge`); for a session quota, a
     live window already applied (``BucketState.window_rolled``).
     """
-    if limit.reset_after_seconds is not None:
+    return quota_period_is_current(
+        limit.reset_schedule,
+        limit.reset_after_seconds,
+        rf_ms,
+        window_start_ms,
+        window_applied_ms,
+        now_ms,
+    )
+
+
+def quota_period_is_current(
+    reset_sched: tuple[ScheduleEntry, ...],
+    reset_after_seconds: int | None,
+    rf_ms: int,
+    window_start_ms: int | None,
+    window_applied_ms: int | None,
+    now_ms: int,
+) -> bool:
+    """:func:`quota_grant_is_current` on the raw pieces, with no ``Limit``.
+
+    The single statement of the rule (design §5), so the aggregator — which
+    holds stored attributes, not a ``Limit`` — asks the identical question.
+    ``reset_after_seconds`` present means a session quota and ``reset_sched``
+    is then ignored; otherwise it is a calendar quota.
+    """
+    if reset_after_seconds is not None:
         if window_start_ms is None:
             return False
-        if window_start_ms + limit.reset_after_seconds * 1000 <= now_ms:
+        if window_start_ms + reset_after_seconds * 1000 <= now_ms:
             return False
         applied = window_applied_ms if window_applied_ms is not None else rf_ms
         return window_start_ms <= applied
-    edge = prev_reset_edge(limit.reset_schedule, now_ms)
+    edge = prev_reset_edge(reset_sched, now_ms)
     return edge is None or edge <= rf_ms

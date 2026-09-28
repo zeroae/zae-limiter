@@ -19,6 +19,7 @@ from zae_limiter_aggregator.processor import (
     StructuredLogger,
     _is_quota_limit,
     _parse_bucket_record,
+    _quota_sibling_from_image,
     aggregate_bucket_states,
     calculate_snapshot_ttl,
     extract_deltas,
@@ -3054,6 +3055,154 @@ class TestAggregatorAppliesResets:
         assert values[":new_vu"] == int(datetime(2026, 9, 17, 0, 0, tzinfo=NY).timestamp() * 1000)
 
 
+class TestAggregatorStampsTheGrantCount:
+    """ADR-145 I3/I4/I7 on the refill write: a reset or roll re-grants at the
+    item's count and records it; a quota is clamped at ``C // gc``."""
+
+    def test_calendar_reset_writes_gc_and_pins_the_count(self) -> None:
+        table = MagicMock()
+        state = _quota_state(reset_sched=DAILY_RESET, shard_count=4)
+        assert try_refill_bucket(table, state, now_ms=WED_0030) is True
+        kwargs = table.update_item.call_args.kwargs
+        names, values = kwargs["ExpressionAttributeNames"], kwargs["ExpressionAttributeValues"]
+        assert "#gq0 = :gq0" in kwargs["UpdateExpression"]
+        assert names["#gq0"] == "b_rpd_gc"
+        assert values[":gq0"] == 4
+        assert names["#gqsc"] == "shard_count"
+        assert values[":gqpin"] == 4
+        assert "(attribute_not_exists(#gqsc) OR #gqsc <= :gqpin)" in kwargs["ConditionExpression"]
+
+    def test_no_reset_writes_no_gc(self) -> None:
+        """A drip top-up is not a re-grant: nothing about the grant changes."""
+        table = MagicMock()
+        state = _sched_state()
+        state.limits["rpm"].tc_delta = 5_000_000  # outruns a minute's refill
+        assert try_refill_bucket(table, state, now_ms=TUE_1400) is True
+        kwargs = table.update_item.call_args.kwargs
+        assert "#gq" not in kwargs["UpdateExpression"]
+        assert "#gqsc" not in kwargs["ConditionExpression"]
+
+    def test_a_reset_already_at_its_share_still_records_the_grant(self) -> None:
+        """Another limit forces the write, which moves ``rf`` past the edge and
+        so applies the quota's reset too — at a zero delta. The grant it
+        records is still the item's count."""
+        table = MagicMock()
+        state = _quota_state(reset_sched=DAILY_RESET, shard_count=2)
+        state.limits["rpd"].tk_milli = 5_000_000  # already exactly its share
+        state.limits["rpm"] = LimitRefillInfo(
+            tc_delta=5_000_000, tk_milli=0, cp_milli=1_000_000, ra_milli=1_000_000, rp_ms=60_000
+        )
+        assert try_refill_bucket(table, state, now_ms=WED_0030) is True
+        kwargs = table.update_item.call_args.kwargs
+        assert "rpd" not in _refill_deltas(kwargs)
+        assert kwargs["ExpressionAttributeNames"]["#gq0"] == "b_rpd_gc"
+        assert kwargs["ExpressionAttributeValues"][":gq0"] == 2
+
+    def test_window_roll_writes_gc(self) -> None:
+        table = MagicMock()
+        state = BucketRefillState(
+            namespace_id="ns123",
+            entity_id="user-1",
+            resource="gpt-4",
+            rf_ms=WS - 1,
+            shard_count=2,
+            limits={
+                "session": LimitRefillInfo(
+                    tc_delta=0,
+                    tk_milli=0,
+                    cp_milli=SESSION_CP,
+                    ra_milli=0,
+                    rp_ms=1_000,
+                    window_start_ms=WS,
+                    reset_after_seconds=RSA,
+                    window_applied_ms=WS - 1,
+                )
+            },
+        )
+        assert try_refill_bucket(table, state, now_ms=WS + 1_000) is True
+        kwargs = table.update_item.call_args.kwargs
+        assert kwargs["ExpressionAttributeNames"]["#gq0"] == "b_session_gc"
+        assert kwargs["ExpressionAttributeValues"][":gq0"] == 2
+        assert kwargs["ExpressionAttributeValues"][":gqpin"] == 2
+
+    def test_a_reset_that_read_a_lagging_count_fails_its_pin(self, mock_dynamodb) -> None:
+        """Design §8 R5 end to end: the image says count 2, the item was since
+        raised to 4. The reset would re-grant at 2 — covering a slot someone
+        was just granted at 4 — so the write fails and is skipped."""
+        table = _moto_table()
+        _put_quota_shard(table, 0, tk=200_000, shard_count=4, b_rpd_gc=2, rf=TUE_2300)
+        state = _quota_state(
+            reset_sched=DAILY_RESET,
+            shard_count=2,
+            namespace_id=MOVE_NS,
+            entity_id=MOVE_ENTITY,
+            resource=MOVE_RESOURCE,
+        )
+        state.limits["rpd"].tk_milli = 200_000
+        state.limits["rpd"].cp_milli = 1_000_000
+        assert try_refill_bucket(table, state, now_ms=WED_0030) is False
+        item = _must(table, 0)
+        assert (item["b_rpd_tk"], item["b_rpd_gc"]) == (200_000, 2), "untouched"
+        # Discriminator: at the count it read, the same write lands.
+        table.update_item(
+            Key={"PK": item["PK"], "SK": "#STATE"},
+            UpdateExpression="SET shard_count = :two",
+            ExpressionAttributeValues={":two": 2},
+        )
+        assert try_refill_bucket(table, state, now_ms=WED_0030) is True
+        item = _must(table, 0)
+        assert (item["b_rpd_tk"], item["b_rpd_gc"]) == (500_000, 2)
+
+    def test_quota_clamp_uses_the_grant_count(self) -> None:
+        """A quota shard at count 4 holding 500 (of 1000) with ``gc = 2`` holds
+        exactly the grant it was given for two slots. No negative delta is
+        written: its ceiling is ``C // gc``, never ``C // shard_count`` (#637)."""
+        table = MagicMock()
+        state = _quota_state(reset_sched=DAILY_RESET, shard_count=4, rf_ms=WED_0030 - 60_000)
+        state.limits["rpd"].cp_milli = 1_000_000
+        state.limits["rpd"].tk_milli = 500_000
+        state.limits["rpd"].grant_count = 2
+        state.limits["rpm"] = LimitRefillInfo(
+            tc_delta=5_000_000, tk_milli=0, cp_milli=1_000_000, ra_milli=1_000_000, rp_ms=60_000
+        )
+        assert try_refill_bucket(table, state, now_ms=WED_0030) is True
+        deltas = _refill_deltas(table.update_item.call_args.kwargs)
+        assert "rpd" not in deltas
+        assert deltas["rpm"] > 0
+
+
+class TestQuotaSiblingFromImage:
+    """``_quota_sibling_from_image`` applies ``Repository._quota_sibling``'s rules."""
+
+    RULE = (DAILY_RESET, None)
+
+    @staticmethod
+    def _item(**attrs) -> dict:
+        return {"rf": TUE_1400 - 60_000, "shard_count": 4, **attrs}
+
+    def test_a_shard_without_the_quota_is_no_sibling(self) -> None:
+        assert (
+            _quota_sibling_from_image(1, self._item(), "rpd", self.RULE, 1_000_000, TUE_1400)
+            is None
+        )
+
+    def test_a_legacy_item_is_read_at_the_count_its_balance_implies(self) -> None:
+        """R7: stored count 4, but 600 of 1000 is more than one share at 4 or
+        at 2, so the grant was sized at 1."""
+        sibling = _quota_sibling_from_image(
+            1, self._item(b_rpd_tk=600_000), "rpd", self.RULE, 1_000_000, TUE_1400
+        )
+        assert sibling is not None
+        assert (sibling.grant_count, sibling.tokens_milli, sibling.current) == (1, 600_000, True)
+
+    def test_a_corrupt_grant_count_reads_as_the_stored_count(self) -> None:
+        sibling = _quota_sibling_from_image(
+            1, self._item(b_rpd_tk=0, b_rpd_gc=0), "rpd", self.RULE, 1_000_000, TUE_1400
+        )
+        assert sibling is not None
+        assert sibling.grant_count == 4
+
+
 class TestAggregatorNeverDoubleResetsACalendarQuota:
     """(#635) `new_rf` never moves below the stored `rf`, so a slow-clock
     refill pass cannot un-apply a calendar reset another writer already
@@ -3360,92 +3509,304 @@ class TestABatchWithNoConsumptionStillReachesTheBucket:
         assert "user-1" in call.kwargs["Key"]["PK"]
 
 
-class TestQuotaShardCloneIsATransfer:
-    """Path 2 must not mint a quota's new shards (#587).
+def _moto_table():
+    """The moto table `_setup_moto_table_sync` creates, as a boto3 `Table`."""
+    import boto3
 
-    A quota never drips (ADR-137), so a clone created at
-    ``capacity // shard_count`` is allowance nothing reclaims before the next
-    reset edge. The clones are filled by transfer instead: the shards being
-    split from are clamped to their new ceiling, and what that takes is what the
-    clones get.
+    from .conftest import _setup_moto_table_sync
+
+    _setup_moto_table_sync()
+    return boto3.resource("dynamodb", region_name="us-east-1").Table("test-rate-limits")
+
+
+MOVE_NS = "ns123"
+MOVE_ENTITY = "user-1"
+MOVE_RESOURCE = "gpt-4"
+
+
+def _put_quota_shard(table, shard: int, *, tk: int, shard_count: int, **extra) -> None:
+    """A bucket shard carrying the daily quota `rpd` (1,000/day) and `wcu`, native values."""
+    item = {
+        "PK": f"{MOVE_NS}/BUCKET#{MOVE_ENTITY}#{MOVE_RESOURCE}#{shard}",
+        "SK": "#STATE",
+        "entity_id": MOVE_ENTITY,
+        "resource": MOVE_RESOURCE,
+        "rf": TUE_1400 - 60_000,
+        "shard_count": shard_count,
+        "rsched": DAILY_RESET_COMPACT,
+        "sched_tz": "America/New_York",
+        "b_rpd_tk": tk,
+        "b_rpd_cp": 1_000_000,
+        "b_rpd_ra": 0,
+        "b_rpd_rp": 1_000,
+        "b_rpd_tc": 0,
+        "b_wcu_tk": 900_000,
+        "b_wcu_cp": 1_000_000,
+        "b_wcu_ra": 1_000_000,
+        "b_wcu_rp": 1_000,
+        "b_wcu_tc": 0,
+    }
+    item.update(extra)
+    table.put_item(Item={k: v for k, v in item.items() if v is not None})
+
+
+def _doubling_record(table, old_count: int) -> dict:
+    """Shard 0's MODIFY record for a doubling from ``old_count`` to its stored count."""
+    import boto3
+
+    # A plain client: `table.meta.client` shares the resource's serializer and
+    # would return native values, where a stream record carries typed ones.
+    raw = boto3.client("dynamodb", region_name="us-east-1").get_item(
+        TableName=table.name,
+        Key={
+            "PK": {"S": f"{MOVE_NS}/BUCKET#{MOVE_ENTITY}#{MOVE_RESOURCE}#0"},
+            "SK": {"S": "#STATE"},
+        },
+    )["Item"]
+    old = dict(raw)
+    old["shard_count"] = {"N": str(old_count)}
+    return {"eventName": "MODIFY", "dynamodb": {"NewImage": raw, "OldImage": old}}
+
+
+def _stored(table, shard: int) -> dict | None:
+    key = {"PK": f"{MOVE_NS}/BUCKET#{MOVE_ENTITY}#{MOVE_RESOURCE}#{shard}", "SK": "#STATE"}
+    return table.get_item(Key=key, ConsistentRead=True).get("Item")
+
+
+def _must(table, shard: int) -> dict:
+    item = _stored(table, shard)
+    assert item is not None, f"shard {shard} was not created"
+    return item
+
+
+class TestQuotaShardCloneIsAMove:
+    """ADR-145: Path 2 funds each clone from its parent, atomically.
+
+    A quota never drips (ADR-137), so a clone created at ``C // shard_count``
+    is allowance nothing reclaims before the next reset edge (#587). Since
+    ADR-145 the clone is funded by a **move** off the current-period sibling
+    whose grant covers its slot — its parent ``target % old_count`` — in one
+    transaction with the clone's Put, and granted fresh only when nobody's
+    grant covers the slot. No clamp, no greedy pool.
     """
 
-    CAPACITY = 10_000_000
+    async def test_2_clone_of_an_unseeded_shard_zero_never_exceeds(self, limiter) -> None:
+        """Design §10 test 2, the 1250 repro of #642: shard 1 is seeded with
+        the quota at count 2 (a 500 grant covering slots 1 and 3) and spends
+        it; shard 0 never saw the quota; the aggregator doubles shard 0 to 4.
+        Nothing may pay slot 3 again: over the whole period, at most the
+        configured 1000 is admitted (was 1250)."""
+        import copy
 
-    def _record(self, *, tk: int, old_count: int = 1, new_count: int = 2, **kwargs) -> dict:
-        record = _sched_record(
-            limits={
-                "rpd": {"tk": tk, "cp": self.CAPACITY, "ra": 0, "rp": 1_000, "tc": 0},
-                "wcu": {"tk": 900_000, "cp": 1_000_000, "ra": 1_000_000, "rp": 1_000, "tc": 0},
-            },
-            rsched=DAILY_RESET_COMPACT,
-            shard_count=new_count,
-            **kwargs,
+        import boto3
+
+        from tests.fixtures.windows import T0
+        from tests.unit.test_limiter import _raw_bucket
+        from zae_limiter import Limit, RateLimiter, RateLimitExceeded
+        from zae_limiter.models import BucketState
+
+        rpm = Limit.per_minute("rpm", 100_000)
+        rpd = Limit.quota("rpd", 1_000, cron="0 0 * * *")
+        repo = limiter._repository
+        ns = repo._namespace_id
+        eid = "clone"
+        repo._now_ms = lambda: T0
+        await repo.set_resource_defaults("gpt-4", [rpm])
+        for shard in (0, 1):
+            state = BucketState.from_limit(eid, "gpt-4", rpm, T0, shard_count=2)
+            await repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        eid, "gpt-4", [state], T0, shard_id=shard, shard_count=2
+                    )
+                ]
+            )
+        await repo.set_resource_defaults("gpt-4", [rpm, rpd])
+        await repo.invalidate_config_cache()
+        repo._entity_cache[(ns, eid)] = (False, None, {"gpt-4": 2})
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        repo._now_ms = lambda: T0 + 1_000
+        admitted = 0
+        # Shard 1 is seeded with the quota at count 2 and spends it all.
+        with patch("zae_limiter.repository.random.randrange", return_value=1):
+            async with slow.acquire(eid, "gpt-4", consume={"rpd": 500}):
+                admitted += 500
+
+        # The aggregator's proactive doubling of shard 0 (still without the
+        # quota), then its stream record reaches Path 2.
+        old = await _raw_bucket(repo, eid, "gpt-4", 0)
+        assert "b_rpd_tk" not in old, "shard 0 must be unseeded for the repro"
+        new = copy.deepcopy(old)
+        new["shard_count"] = {"N": "4"}
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={"PK": old["PK"], "SK": old["SK"]},
+            UpdateExpression="SET shard_count = :n",
+            ExpressionAttributeValues={":n": {"N": "4"}},
         )
-        record["dynamodb"]["OldImage"]["shard_count"] = {"N": str(old_count)}
-        return record
+        table = boto3.resource("dynamodb", region_name="us-east-1").Table(repo.table_name)
+        record = {"eventName": "MODIFY", "dynamodb": {"OldImage": old, "NewImage": new}}
+        assert propagate_shard_count(table, record, now_ms=T0 + 1_500) == 3
 
-    @staticmethod
-    def _table(*, reclaimed: dict[str, int] | None = None) -> MagicMock:
-        """A table whose conditional clamp reports ``reclaimed`` as the old value."""
+        repo._entity_cache[(ns, eid)] = (False, None, {"gpt-4": 4})
+        repo._now_ms = lambda: T0 + 3_000
+        for shard in (0, 1, 2, 3, 0, 1, 2, 3):
+            while True:
+                try:
+                    with patch("zae_limiter.repository.random.randrange", return_value=shard):
+                        async with slow.acquire(eid, "gpt-4", consume={"rpd": 1}):
+                            admitted += 1
+                except RateLimitExceeded:
+                    break
+        assert admitted == rpd.capacity, "the whole allowance, and not one token more"
+
+    def test_clone_takes_its_share_from_its_parent_in_one_transaction(self, mock_dynamodb) -> None:
+        """Shard 0 holds the whole 1000 at gc 1; count 1 -> 2. Shard 1 is
+        created with 500 and shard 0 is left with 500, by one
+        ``transact_write_items`` call carrying the Put and the donor Update."""
+        table = _moto_table()
+        _put_quota_shard(table, 0, tk=1_000_000, shard_count=2, b_rpd_gc=1)
+        real = table.meta.client.transact_write_items
+        with patch.object(table.meta.client, "transact_write_items", side_effect=real) as transact:
+            assert propagate_shard_count(table, _doubling_record(table, 1), TUE_1400) == 1
+        assert transact.call_count == 1
+        (items,) = [c.kwargs["TransactItems"] for c in transact.call_args_list]
+        assert [next(iter(item)) for item in items] == ["Put", "Update"]
+        clone = _stored(table, 1)
+        assert clone is not None
+        assert clone["b_rpd_tk"] == 500_000
+        assert clone["b_rpd_gc"] == 2
+        assert clone["b_wcu_tk"] == 1_000_000, "wcu is per-partition, never divided"
+        parent = _stored(table, 0)
+        assert parent is not None
+        assert parent["b_rpd_tk"] == 500_000
+        assert parent["b_rpd_gc"] == 1, "the donor keeps its grant record"
+
+    def test_clone_move_that_fails_its_condition_is_skipped(self, mock_dynamodb) -> None:
+        """The parent is spent between the read and the write: the donor's
+        ``tk >= x`` fails, the whole transaction is cancelled (the donor
+        untouched, no clone), and no exception escapes — the client creates
+        the shard lazily later."""
+        table = _moto_table()
+        _put_quota_shard(table, 0, tk=1_000_000, shard_count=2, b_rpd_gc=1)
+        real = table.meta.client.transact_write_items
+
+        def spend_then_write(**kwargs):
+            table.update_item(
+                Key={"PK": f"{MOVE_NS}/BUCKET#{MOVE_ENTITY}#{MOVE_RESOURCE}#0", "SK": "#STATE"},
+                UpdateExpression="SET b_rpd_tk = :spent",
+                ExpressionAttributeValues={":spent": 100_000},
+            )
+            return real(**kwargs)
+
+        with patch.object(
+            table.meta.client, "transact_write_items", side_effect=spend_then_write
+        ) as transact:
+            assert propagate_shard_count(table, _doubling_record(table, 1), TUE_1400) == 0
+        assert transact.call_count == 1
+        assert _stored(table, 1) is None, "no clone: the client creates it lazily"
+        parent = _stored(table, 0)
+        assert parent is not None
+        assert parent["b_rpd_tk"] == 100_000, "the cancelled debit left the donor alone"
+
+    def test_a_spent_parent_funds_nothing(self, mock_dynamodb) -> None:
+        """#587 itself, under ADR-145: the parent's grant covers the clone's
+        slot, so the clone gets what the parent holds, never a fresh share —
+        and a parent holding nothing moves nothing, so no transaction."""
+        table = _moto_table()
+        _put_quota_shard(table, 0, tk=0, shard_count=2, b_rpd_gc=1)
+        with patch.object(table.meta.client, "transact_write_items") as transact:
+            assert propagate_shard_count(table, _doubling_record(table, 1), TUE_1400) == 1
+        transact.assert_not_called()
+        clone = _stored(table, 1)
+        assert clone is not None
+        assert clone["b_rpd_tk"] == 0
+        assert clone["b_rpd_gc"] == 2
+
+    def test_a_parent_whose_grant_is_not_current_is_no_donor(self, mock_dynamodb) -> None:
+        """A parent whose reset is pending (``rf`` before the last midnight)
+        holds last period's allowance; it neither donates nor covers (design
+        §5), so the clone's slot is granted a fresh share."""
+        table = _moto_table()
+        _put_quota_shard(
+            table, 0, tk=1_000_000, shard_count=2, b_rpd_gc=1, rf=TUE_2300 - 86_400_000
+        )
+        assert propagate_shard_count(table, _doubling_record(table, 1), TUE_1400) == 1
+        clone = _stored(table, 1)
+        assert clone is not None
+        assert clone["b_rpd_tk"] == 500_000
+        parent = _stored(table, 0)
+        assert parent is not None
+        assert parent["b_rpd_tk"] == 1_000_000, "no move off a stale grant"
+
+    def test_each_clone_is_funded_from_its_own_parent(self, mock_dynamodb) -> None:
+        """Count 2 -> 4: clone 2 draws on shard 0 and clone 3 on shard 1, the
+        parent ``target % old_count``; Path 1 raises shard 1 to 4."""
+        table = _moto_table()
+        _put_quota_shard(table, 0, tk=300_000, shard_count=4, b_rpd_gc=2)
+        _put_quota_shard(table, 1, tk=400_000, shard_count=2, b_rpd_gc=2)
+        assert propagate_shard_count(table, _doubling_record(table, 2), TUE_1400) == 3
+        tokens = [_must(table, s)["b_rpd_tk"] for s in range(4)]
+        assert tokens == [50_000, 150_000, 250_000, 250_000]
+        assert sum(tokens) == 700_000, "a move conserves the balance"
+        assert _must(table, 1)["shard_count"] == 4
+
+    def test_a_legacy_parent_is_read_at_its_inferred_grant_and_frozen(self, mock_dynamodb) -> None:
+        """A parent with no ``gc`` (v0.14-shaped, design §9) holding 400 at a
+        stored count of 2 was granted at 2 (R7: 400 <= 1000 // 2), so it
+        covers slot 3 and funds it. Path 1 freezes that grant size onto it
+        (``gc = 2``) when it raises the count, and the debit's condition
+        matches the frozen ``gc``."""
+        table = _moto_table()
+        _put_quota_shard(table, 0, tk=500_000, shard_count=4, b_rpd_gc=2)
+        _put_quota_shard(table, 1, tk=400_000, shard_count=2)
+        assert propagate_shard_count(table, _doubling_record(table, 2), TUE_1400) == 3
+        shard_1 = _stored(table, 1)
+        assert shard_1 is not None
+        assert shard_1["b_rpd_gc"] == 2
+        assert shard_1["shard_count"] == 4
+        assert shard_1["b_rpd_tk"] == 150_000
+        assert _must(table, 3)["b_rpd_tk"] == 250_000
+
+    def test_a_non_conditional_transaction_failure_propagates(self, mock_dynamodb) -> None:
+        table = _moto_table()
+        _put_quota_shard(table, 0, tk=1_000_000, shard_count=2, b_rpd_gc=1)
+        error = ClientError(
+            {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": "no"}},
+            "TransactWriteItems",
+        )
+        with patch.object(table.meta.client, "transact_write_items", side_effect=error):
+            with pytest.raises(ClientError):
+                propagate_shard_count(table, _doubling_record(table, 1), TUE_1400)
+
+    def test_a_non_conditional_path_1_failure_propagates(self) -> None:
         table = MagicMock()
-        attributes = {f"b_{name}_tk": value for name, value in (reclaimed or {}).items()}
-        table.update_item.return_value = {"Attributes": attributes}
-        return table
-
-    def test_a_full_quota_clone_is_paid_for_by_the_clamp(self) -> None:
-        """Unchanged from before #587 — the case the bug hid behind."""
-        table = self._table(reclaimed={"rpd": self.CAPACITY})
-        assert propagate_shard_count(table, self._record(tk=self.CAPACITY), TUE_1400) == 1
-        assert table.put_item.call_args.kwargs["Item"]["b_rpd_tk"] == 5_000_000
-        clamp = table.update_item.call_args.kwargs
-        assert clamp["ExpressionAttributeValues"][":share"] == 5_000_000
-        assert clamp["ConditionExpression"] == "attribute_exists(PK) AND #tk > :share"
-
-    def test_a_spent_quota_clone_gets_nothing(self) -> None:
-        """#587 itself. The clamp reclaims nothing from a shard already below
-        its new ceiling, so there is nothing to hand the clone."""
-        table = self._table()
-        table.update_item.side_effect = ClientError(
-            {"Error": {"Code": "ConditionalCheckFailedException", "Message": "no surplus"}},
-            "UpdateItem",
-        )
-        assert propagate_shard_count(table, self._record(tk=2_000), TUE_1400) == 1
-        item = table.put_item.call_args.kwargs["Item"]
-        assert item["b_rpd_tk"] == 0
-        assert item["b_wcu_tk"] == 1_000_000  # per-partition, never divided
-
-    def test_the_pool_is_handed_out_greedily_across_the_new_shards(self) -> None:
-        """One doubling adds several shards; the first usable one gets the
-        transfer rather than every clone getting a slice too small to admit."""
-        table = self._table(reclaimed={"rpd": 4_000_000})
-        record = self._record(tk=4_000_000, old_count=2, new_count=4)
-        assert propagate_shard_count(table, record, TUE_1400) == 3  # 1 updated + 2 created
-        granted = [c.kwargs["Item"]["b_rpd_tk"] for c in table.put_item.call_args_list]
-        # Two shards clamped from 4_000_000 to 2_500_000 => 3_000_000 reclaimed.
-        assert granted == [2_500_000, 500_000]
-
-    def test_a_clamp_that_reports_no_attributes_contributes_nothing(self) -> None:
-        table = self._table()
-        table.update_item.return_value = {}
-        assert propagate_shard_count(table, self._record(tk=self.CAPACITY), TUE_1400) == 1
-        assert table.put_item.call_args.kwargs["Item"]["b_rpd_tk"] == 0
-
-    def test_a_non_conditional_clamp_failure_propagates(self) -> None:
-        table = self._table()
         table.update_item.side_effect = ClientError(
             {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": "no"}},
             "UpdateItem",
         )
+        record = _sched_record(
+            limits={"rpm": {"tk": 0, "cp": 1_000_000, "ra": 1_000_000, "rp": 60_000, "tc": 0}},
+            shard_count=4,
+        )
+        record["dynamodb"]["OldImage"]["shard_count"] = {"N": "2"}
         with pytest.raises(ClientError):
-            propagate_shard_count(table, self._record(tk=self.CAPACITY), TUE_1400)
+            propagate_shard_count(table, record, TUE_1400)
+
+    @staticmethod
+    def _mock_table() -> MagicMock:
+        """A table with no stored parents: every quota slot is granted fresh."""
+        table = MagicMock()
+        table.get_item.return_value = {}
+        return table
 
     def test_a_dripping_limit_on_the_same_item_still_gets_a_full_share(self) -> None:
         """The regression pin: only the quota changes shape."""
-        table = self._table(reclaimed={"rpd": self.CAPACITY})
+        table = self._mock_table()
         record = _sched_record(
             limits={
-                "rpd": {"tk": 2_000, "cp": self.CAPACITY, "ra": 0, "rp": 1_000, "tc": 0},
+                "rpd": {"tk": 2_000, "cp": 10_000_000, "ra": 0, "rp": 1_000, "tc": 0},
                 "rpm": {"tk": 0, "cp": 1_000_000, "ra": 1_000_000, "rp": 60_000, "tc": 0},
             },
             rsched=DAILY_RESET_COMPACT,
@@ -3454,41 +3815,69 @@ class TestQuotaShardCloneIsATransfer:
         )
         record["dynamodb"]["OldImage"]["shard_count"] = {"N": "1"}
         assert propagate_shard_count(table, record, TUE_1400) == 1
-        assert table.put_item.call_args.kwargs["Item"]["b_rpm_tk"] == 500_000
+        item = table.put_item.call_args.kwargs["Item"]
+        assert item["b_rpm_tk"] == 500_000
+        assert "b_rpm_gc" not in item, "a rate limit never carries a grant count"
 
     def test_a_zero_rate_without_a_reset_is_not_treated_as_a_quota(self) -> None:
         """A corrupt item (ADR-137 pairs the two), and starving it would be
         wrong for the one shape that is not a quota but reads like one."""
-        table = self._table()
+        table = self._mock_table()
         record = _sched_record(
-            limits={"rpd": {"tk": 2_000, "cp": self.CAPACITY, "ra": 0, "rp": 1_000, "tc": 0}},
+            limits={"rpd": {"tk": 2_000, "cp": 10_000_000, "ra": 0, "rp": 1_000, "tc": 0}},
             shard_count=2,
         )
         record["dynamodb"]["OldImage"]["shard_count"] = {"N": "1"}
         assert propagate_shard_count(table, record, TUE_1400) == 1
-        assert table.put_item.call_args.kwargs["Item"]["b_rpd_tk"] == 5_000_000
-        table.update_item.assert_not_called()
+        item = table.put_item.call_args.kwargs["Item"]
+        assert item["b_rpd_tk"] == 5_000_000
+        assert "b_rpd_gc" not in item
+        table.get_item.assert_not_called()
 
     def test_the_unscheduled_marker_blocks_inheriting_the_items_reset(self) -> None:
         """#541's marker means "this limit declares none", so it is not a quota
         however the item-level default reads."""
-        table = self._table()
-        record = self._record(tk=2_000, limit_rsched={"rpd": BUCKET_SCHED_NONE})
+        table = self._mock_table()
+        record = _sched_record(
+            limits={"rpd": {"tk": 2_000, "cp": 10_000_000, "ra": 0, "rp": 1_000, "tc": 0}},
+            rsched=DAILY_RESET_COMPACT,
+            limit_rsched={"rpd": BUCKET_SCHED_NONE},
+            shard_count=2,
+        )
+        record["dynamodb"]["OldImage"]["shard_count"] = {"N": "1"}
         assert propagate_shard_count(table, record, TUE_1400) == 1
-        assert table.put_item.call_args.kwargs["Item"]["b_rpd_tk"] == 5_000_000
+        item = table.put_item.call_args.kwargs["Item"]
+        assert item["b_rpd_tk"] == 5_000_000
+        assert "b_rpd_gc" not in item
 
     def test_a_per_limit_reset_makes_it_a_quota_without_an_item_default(self) -> None:
-        table = self._table(reclaimed={"rpd": self.CAPACITY})
+        """No parent stored, so the slot is granted fresh — as a quota, with
+        its grant count."""
+        table = self._mock_table()
         record = _sched_record(
-            limits={
-                "rpd": {"tk": self.CAPACITY, "cp": self.CAPACITY, "ra": 0, "rp": 1_000, "tc": 0}
-            },
+            limits={"rpd": {"tk": 10_000_000, "cp": 10_000_000, "ra": 0, "rp": 1_000, "tc": 0}},
             limit_rsched={"rpd": DAILY_RESET_COMPACT},
             shard_count=2,
         )
         record["dynamodb"]["OldImage"]["shard_count"] = {"N": "1"}
         assert propagate_shard_count(table, record, TUE_1400) == 1
-        assert table.put_item.call_args.kwargs["Item"]["b_rpd_tk"] == 5_000_000
+        item = table.put_item.call_args.kwargs["Item"]
+        assert item["b_rpd_tk"] == 5_000_000
+        assert item["b_rpd_gc"] == 2
+
+    def test_an_undecodable_reset_schedule_pre_creates_nothing(self) -> None:
+        """The period test needs the reset schedule; one that will not decode
+        leaves the shard to the client, as an undecodable parameter schedule
+        already does."""
+        table = self._mock_table()
+        record = _sched_record(
+            limits={"rpd": {"tk": 2_000, "cp": 10_000_000, "ra": 0, "rp": 1_000, "tc": 0}},
+            limit_rsched={"rpd": "9zz"},
+            shard_count=2,
+        )
+        record["dynamodb"]["OldImage"]["shard_count"] = {"N": "1"}
+        assert propagate_shard_count(table, record, TUE_1400) == 0
+        table.put_item.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -3611,34 +4000,40 @@ class TestIsQuotaLimitRecognisesADurationWindow:
         assert _is_quota_limit("session", image) is True
         assert _is_quota_limit("rpd", image) is True
 
-    def test_a_shard_clone_fills_the_duration_quota_by_transfer(self) -> None:
-        """The #587 guard end to end, on the shared item above. The existing
-        shard is spent, so the clamp reclaims nothing and the clone gets
-        nothing — not the 5_000_000 fresh share a dripping limit would get."""
-        table = MagicMock()
-        table.update_item.side_effect = ClientError(
-            {"Error": {"Code": "ConditionalCheckFailedException", "Message": "no surplus"}},
-            "UpdateItem",
-        )
-        record = _session_record(
-            rf_ms=TUE_1400,
-            limits={
-                "session": _session_limit(tk=2_000),
-                "rpd": {"tk": 2_000, "cp": SESSION_CP, "ra": 0, "rp": 1_000, "tc": 0},
-            },
-            rsched=DAILY_RESET_COMPACT,
-            limit_rsched={"session": BUCKET_SCHED_NONE},
+    def test_a_shard_clone_funds_the_duration_quota_by_a_move(self, mock_dynamodb) -> None:
+        """The #587 guard end to end, on the shared item above, under ADR-145.
+        The parent holds 2 of each quota, both grants current, so the clone
+        takes exactly those 2 off it — not the 500 fresh share a dripping
+        limit would get — and both moves ride one donor ``Update``."""
+        table = _moto_table()
+        _put_quota_shard(
+            table,
+            0,
+            tk=2_000,
             shard_count=2,
+            b_rpd_gc=1,
+            rf=WS,
+            b_session_tk=2_000,
+            b_session_cp=1_000_000,
+            b_session_ra=0,
+            b_session_rp=1_000,
+            b_session_tc=0,
+            b_session_ws=WS,
+            b_session_rsa=RSA,
+            b_session_wa=WS,
+            b_session_gc=1,
+            b_session_rsched=BUCKET_SCHED_NONE,
         )
-        record["dynamodb"]["OldImage"]["shard_count"] = {"N": "1"}
-        assert propagate_shard_count(table, record, TUE_1400) == 1
-        item = table.put_item.call_args.kwargs["Item"]
-        assert item["b_session_tk"] == 0
-        assert item["b_rpd_tk"] == 0
-        clamped = {
-            c.kwargs["ExpressionAttributeNames"]["#tk"] for c in table.update_item.call_args_list
-        }
-        assert clamped == {"b_session_tk", "b_rpd_tk"}
+        real = table.meta.client.transact_write_items
+        with patch.object(table.meta.client, "transact_write_items", side_effect=real) as transact:
+            assert propagate_shard_count(table, _doubling_record(table, 1), WS + 1_000) == 1
+        (items,) = [c.kwargs["TransactItems"] for c in transact.call_args_list]
+        assert [next(iter(item)) for item in items] == ["Put", "Update"]
+        clone = _must(table, 1)
+        assert (clone["b_session_tk"], clone["b_rpd_tk"]) == (2_000, 2_000)
+        assert (clone["b_session_gc"], clone["b_rpd_gc"]) == (2, 2)
+        parent = _must(table, 0)
+        assert (parent["b_session_tk"], parent["b_rpd_tk"]) == (0, 0)
 
 
 class TestAggregatorRollsAWindow:

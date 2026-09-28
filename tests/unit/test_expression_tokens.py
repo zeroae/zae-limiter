@@ -7,8 +7,8 @@ whose tokens are built from the name is rejected by DynamoDB (and by moto)
 with a `ValidationException`, on every path except the create `Put`.
 
 This file builds every bucket write the library issues — the fast path, the
-three composite builders, the aggregator refill, and (as regressions) the
-reclaim, param-sync and disable fan-out writes that were already positional —
+three composite builders, the aggregator refill and clone funding, and (as
+regressions) the param-sync and disable fan-out writes that were already positional —
 for limits named `rpm.v2` and `req-min`, and checks each against the token
 rules and against its own declarations.
 """
@@ -22,11 +22,18 @@ import pytest
 from zae_limiter import Limit, RateLimiter, Repository
 from zae_limiter.models import QuotaDonorDebit
 from zae_limiter.schedule import ScheduleEntry
-from zae_limiter.schema import BUCKET_FIELD_TK, BUCKET_FIELD_WA, bucket_attr, pk_bucket
+from zae_limiter.schema import (
+    BUCKET_FIELD_GC,
+    BUCKET_FIELD_TK,
+    BUCKET_FIELD_WA,
+    bucket_attr,
+    pk_bucket,
+)
 from zae_limiter_aggregator.processor import (
     BucketRefillState,
     LimitRefillInfo,
-    _reclaim_quota_surplus,
+    _donor_update_items,
+    _quota_count_freeze,
     try_refill_bucket,
 )
 from zae_limiter_provisioner.bucket_sync import build_bucket_param_update
@@ -432,13 +439,62 @@ class TestAggregatorWrites:
             bucket_attr(HYPHENATED, BUCKET_FIELD_WA): self.NOW - 120_000,
         }
 
-    def test_reclaim(self) -> None:
+    def test_reset_stamps_the_grant_count_and_pins_the_shard_count(self) -> None:
+        """ADR-145 I3/I4: the reset's `gc` SET and the `shard_count` pin ride
+        on positional `#gq*` tokens beside the `#rt*` reset delta."""
+        state = self._state()
+        state.shard_count = 4
         table = MagicMock()
-        table.update_item.return_value = {"Attributes": {}}
-        _reclaim_quota_surplus(table, "ns", "user-1", "api", 1, {DOTTED: 1, HYPHENATED: 1})
-        assert table.update_item.call_count == 2
-        for call in table.update_item.call_args_list:
-            assert_expression_safe(call.kwargs)
+        assert try_refill_bucket(table, state, self.NOW + 1) is True
+        kwargs = table.update_item.call_args.kwargs
+        assert_expression_safe(kwargs)
+        names, values = kwargs["ExpressionAttributeNames"], kwargs["ExpressionAttributeValues"]
+        assert names["#gq0"] == bucket_attr(HYPHENATED, BUCKET_FIELD_GC)
+        assert values[":gq0"] == 4
+        assert names["#gqsc"] == "shard_count"
+        assert values[":gqpin"] == 4
+
+    def test_window_roll_stamps_the_grant_count(self) -> None:
+        window = {"cp_milli": 5_000_000, "ra_milli": 0, "rp_ms": 1_000}
+        state = BucketRefillState(
+            namespace_id="ns",
+            entity_id="user-1",
+            resource="api",
+            rf_ms=self.NOW - 60_000,
+            shard_count=2,
+            limits={
+                DOTTED: LimitRefillInfo(
+                    tc_delta=0,
+                    tk_milli=0,
+                    window_start_ms=self.NOW - 1_000,
+                    window_applied_ms=self.NOW - 18_000_000,
+                    reset_after_seconds=18_000,
+                    **window,
+                ),
+            },
+        )
+        table = MagicMock()
+        assert try_refill_bucket(table, state, self.NOW) is True
+        kwargs = table.update_item.call_args.kwargs
+        assert_expression_safe(kwargs)
+        assert kwargs["ExpressionAttributeNames"]["#gq0"] == bucket_attr(DOTTED, BUCKET_FIELD_GC)
+
+    def test_clone_donor_update(self) -> None:
+        """Path 2's donor debit (ADR-145): both guards, legacy branch, two
+        quotas sharing one donor, all on positional tokens."""
+        debits = [
+            QuotaDonorDebit(1, DOTTED, 1_000, 2, 1_700_000_000_000, None),
+            QuotaDonorDebit(1, HYPHENATED, 2_000, 2, None, 1_700_000_000_000, 4),
+            QuotaDonorDebit(3, DOTTED, 500, 4, None, None),
+        ]
+        items = _donor_update_items("t", "ns", "user-1", "api", debits)
+        assert len(items) == 2, "one Update per donor shard"
+        for item in items:
+            assert_expression_safe(item["Update"])
+
+    def test_path_1_freeze(self) -> None:
+        kwargs = _quota_count_freeze({"PK": "p", "SK": "s"}, 4, [(DOTTED, 2), (HYPHENATED, 1)])
+        assert_expression_safe(kwargs)
 
 
 class TestClientWritesThroughMoto:
