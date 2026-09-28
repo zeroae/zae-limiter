@@ -1,6 +1,6 @@
 # Limit Inheritance by Merge — Implementation Plan
 
-**Status:** Draft plan, not yet approved
+**Status:** Draft plan — open questions resolved, awaiting approval
 **Date:** 2026-09-28
 **Related:** ADR-118 (four-level hierarchy), ADR-136 (entity config ⇒ no bucket TTL), ADR-141 (version gate), ADR-142 (hidden config), #468 / #487 (limit-change fan-out), #633 (per-limit seeding)
 
@@ -155,8 +155,9 @@ treated like corrupt config: `RateLimiterUnavailable`, which is subject to `on_u
 never resolved by guessing a zone, since the wrong zone moves a daily reset by hours with no error
 (the failure `sched_tz` hoisting already guards against).
 
-**Open question Q1:** fail closed as above, or drop the lower level's conflicting limit with a
-warning? Recommendation: fail closed. Write-time validation should make this unreachable.
+**Q1 (resolved 2026-09-28, owner): fail closed.** A zone conflict found at resolution is
+`RateLimiterUnavailable`. The conflicting limit is never dropped, and no zone is guessed.
+Write-time validation should make this unreachable in practice.
 
 ### D6. Manifest, CLI and CloudFormation surface
 
@@ -212,9 +213,11 @@ accepted, but it is still a silent divergence between clients sharing a bucket.
   minimum.
 - **Aggregator: unaffected.** It reads bucket items only and never resolves config.
 
-**Open question Q2:** is the client ratchet worth it given ADR-141's documented holes? It is
-recommended because it costs one conditional `UpdateItem` per admin write and turns silent
-under-enforcement into a loud refusal for every client from the introducing release on.
+**Q2 (resolved 2026-09-28, owner): raise the minimum client version.** Any admin or provisioner
+write that stores `inherit_limits: true`, `exclude_limits` or `patch_limits` (D8) ratchets
+`client_min_version` to the introducing release. It costs one conditional `UpdateItem` per such
+write and turns silent under-enforcement into a loud refusal for every client from that release
+on. ADR-141's documented holes are accepted as they are.
 
 ### D8. Limit patches: inherit the numbers, replace only the schedule
 
@@ -319,8 +322,8 @@ Each phase is its own PR with its own tests. Pre-existing bugs found along the w
       rule, version gate. Cite ADR-118 and ADR-136.
 - [ ] Open a tracking issue with `/issue create`, and pick its milestone by description. Patches
       get their own sub-issue, since Phase 6 can ship after the rest.
-- [ ] Settle Q1 and Q2 with the owner. (Q3 is resolved: patches are allowed at resource and
-      entity levels.)
+- [x] Open questions settled by the owner on 2026-09-28: Q1 fail closed, Q2 raise the minimum
+      client version, Q3 patches allowed at resource and entity levels.
 
 ### Phase 1: Storage and resolution (core)
 
