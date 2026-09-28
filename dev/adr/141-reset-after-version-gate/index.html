@@ -3778,8 +3778,9 @@ code pushed in that run or do not exist.</p>
 <h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>
 <p><strong>Positive:</strong>
 - A pre-v0.15 aggregator or provisioner can no longer be handed a limit it would misread.
-- One predicate decides the stamp for CLI <code>deploy</code>, infrastructure provisioning and <code>open()</code>, so
-  the rule cannot drift between them.
+- One predicate decides the stamp for CLI <code>deploy</code>, CLI <code>upgrade</code>, infrastructure provisioning,
+  <code>open()</code>'s record initialization and its Lambda auto-update, so the rule cannot drift between
+  them.
 - A missing record or unknown Lambda version fails closed and names its remedy.
 - <code>client_min_version</code> becomes a working field, so the next incompatible feature is protected by
   the same ratchet without new machinery.
@@ -3793,8 +3794,9 @@ code pushed in that run or do not exist.</p>
   opens, so a long-lived process is not refused until it restarts.
 - A refused CloudFormation update whose previous properties also carried <code>reset_after</code> leaves the
   stack in <code>UPDATE_ROLLBACK_FAILED</code>, needing a manual rollback continuation.
-- <code>deploy</code> performs no minimum check of its own; <code>--no-aggregator</code> stacks get no exemption and
-  must be redeployed by v0.15 with the provisioner enabled (#644).</p>
+- <code>deploy</code> performs no minimum check of its own, and <code>--no-aggregator</code> stacks get no exemption
+  in the gate; <code>zae-limiter upgrade</code> and <code>open(auto_update=True)</code> push only to the Lambdas a
+  stack has, so they are the remedy on every stack shape (#644).</p>
 <h2 id="alternatives-considered">Alternatives Considered<a class="headerlink" href="#alternatives-considered" title="Permanent link">&para;</a></h2>
 <h3 id="gate-writers-on-client_min_version-alone">Gate writers on <code>client_min_version</code> alone<a class="headerlink" href="#gate-writers-on-client_min_version-alone" title="Permanent link">&para;</a></h3>
 <p>Rejected because: v0.14 ignores that field, so it stops neither v0.14 clients nor the v0.14

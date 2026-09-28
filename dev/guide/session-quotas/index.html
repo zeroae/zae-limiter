@@ -3775,9 +3775,9 @@ override refuse a <code>reset_after</code> limit with <code>VersionMismatchError
 record says its Lambdas are v0.15.0 or newer (a 0.15.0 release candidate counts). An older
 aggregator would treat the quota as a dripping limit and grant each shard it pre-creates a
 fresh share. <code>Repository.open()</code> updates old Lambdas for you; after <code>Repository.connect()</code>
-or <code>auto_update=False</code>, run <code>zae-limiter upgrade</code> first. A stack deployed with
-<code>--no-aggregator</code> is fixed by re-running <code>zae-limiter deploy</code> from v0.15.0 instead, with
-the provisioner enabled. <code>deploy</code> records the new version only if the stack is new, or both
+or <code>auto_update=False</code>, run <code>zae-limiter upgrade</code> first — it works on a stack deployed with
+<code>--no-aggregator</code>, <code>--no-provisioner</code> or <code>--no-iam</code> too, pushing code only to the Lambdas
+the stack has. <code>deploy</code> records the new version only if the stack is new, or both
 the aggregator and the provisioner are current (code pushed in that run, or absent) — it
 pushes code to an existing stack's functions but never adds or removes one, so an old
 function left in place keeps the stack refused. The

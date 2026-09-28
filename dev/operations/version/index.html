@@ -3584,6 +3584,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#stacks-without-every-lambda" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stacks without every Lambda
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#post-upgrade-verification" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3795,9 +3806,9 @@ so nothing is written. Three cases:</p>
 </tr>
 </tbody>
 </table>
-<p>On a stack deployed with <code>--no-aggregator</code>, <code>upgrade</code> cannot help (it pushes code to an
-aggregator that does not exist): re-run <code>zae-limiter deploy</code> from v0.15.0 or later instead,
-<strong>with the provisioner enabled</strong> (no <code>--no-provisioner</code>, no <code>--no-iam</code>).</p>
+<p><code>upgrade</code> works on every stack shape, including one deployed with <code>--no-aggregator</code>,
+<code>--no-provisioner</code> or <code>--no-iam</code>: it pushes code only to the Lambdas the stack has (see
+<a href="#stacks-without-every-lambda">Stacks without every Lambda</a>).</p>
 <p><code>deploy</code> on an existing stack pushes code but adds and removes no functions, so it stamps its
 own version only if the stack was created in this call, <strong>or</strong> both:</p>
 <ul>
@@ -3859,29 +3870,48 @@ because the refused update wrote nothing.</p>
 </div>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>zae-limiter<span class="w"> </span>upgrade<span class="w"> </span>--name<span class="w"> </span>&lt;name&gt;<span class="w"> </span>--region<span class="w"> </span>&lt;region&gt;<span class="w"> </span>--force
 </span></code></pre></div>
+<h3 id="stacks-without-every-lambda">Stacks without every Lambda<a class="headerlink" href="#stacks-without-every-lambda" title="Permanent link">&para;</a></h3>
+<p>A stack deployed with <code>--no-aggregator</code> has no aggregator function, and one deployed with
+<code>--no-provisioner</code> has no provisioner. <code>--no-iam</code> has no provisioner, and no aggregator unless
+<code>--aggregator-role-arn</code> is given. Both <code>zae-limiter upgrade</code> and <code>Repository.open()</code>'s automatic
+Lambda update push new code only to the functions that exist, skip the rest, and then record the
+new Lambda version:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>[1/4] Deploying Lambda code...
+</span><span id="__span-15-2"><a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>      No aggregator Lambda on this stack, skipped
+</span><span id="__span-15-3"><a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a>[2/4] Deploying provisioner code...
+</span><span id="__span-15-4"><a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a>      Provisioner code deployed (1234.5 KB)
+</span></code></pre></div>
+<p>Each function is first checked with <code>lambda:GetFunctionConfiguration</code>, which a deployer already
+holds (the update waits on the same call). A function Lambda reports missing is skipped. When
+the check cannot tell — access denied, throttled — the push is attempted anyway, and only the
+push's own <code>ResourceNotFoundException</code> counts as missing. Any other failure stops the upgrade
+with exit code 1 and leaves the recorded version unchanged, so the record never claims code that
+is not running; the next <code>upgrade</code> or <code>open()</code> tries again.</p>
+<p>Before v0.15.0 the update pushed to both functions unconditionally, so these stacks could not be
+upgraded at all (#644).</p>
 <h3 id="post-upgrade-verification">Post-upgrade Verification<a class="headerlink" href="#post-upgrade-verification" title="Permanent link">&para;</a></h3>
 <p>After upgrading, verify the system is healthy:</p>
 <ol>
 <li>
 <p><strong>Check version alignment:</strong>
-   <div class="language-bash highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>zae-limiter<span class="w"> </span>version<span class="w"> </span>--name<span class="w"> </span>&lt;name&gt;
+   <div class="language-bash highlight"><pre><span></span><code><span id="__span-16-1"><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>zae-limiter<span class="w"> </span>version<span class="w"> </span>--name<span class="w"> </span>&lt;name&gt;
 </span></code></pre></div></p>
 </li>
 <li>
 <p><strong>Run smoke tests:</strong>
-   <div class="language-python highlight"><pre><span></span><code><span id="__span-16-1"><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">zae_limiter</span><span class="w"> </span><span class="kn">import</span> <span class="n">Repository</span><span class="p">,</span> <span class="n">RateLimiter</span><span class="p">,</span> <span class="n">Limit</span>
-</span><span id="__span-16-2"><a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>
-</span><span id="__span-16-3"><a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a><span class="n">repo</span> <span class="o">=</span> <span class="k">await</span> <span class="n">Repository</span><span class="o">.</span><span class="n">open</span><span class="p">()</span>
-</span><span id="__span-16-4"><a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span><span class="n">repository</span><span class="o">=</span><span class="n">repo</span><span class="p">)</span>
-</span><span id="__span-16-5"><a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a>
-</span><span id="__span-16-6"><a id="__codelineno-16-6" name="__codelineno-16-6" href="#__codelineno-16-6"></a><span class="c1"># Test basic operation</span>
-</span><span id="__span-16-7"><a id="__codelineno-16-7" name="__codelineno-16-7" href="#__codelineno-16-7"></a><span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span>
-</span><span id="__span-16-8"><a id="__codelineno-16-8" name="__codelineno-16-8" href="#__codelineno-16-8"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">"test-entity"</span><span class="p">,</span>
-</span><span id="__span-16-9"><a id="__codelineno-16-9" name="__codelineno-16-9" href="#__codelineno-16-9"></a>    <span class="n">resource</span><span class="o">=</span><span class="s2">"test"</span><span class="p">,</span>
-</span><span id="__span-16-10"><a id="__codelineno-16-10" name="__codelineno-16-10" href="#__codelineno-16-10"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">"rpm"</span><span class="p">,</span> <span class="mi">100</span><span class="p">)],</span>
-</span><span id="__span-16-11"><a id="__codelineno-16-11" name="__codelineno-16-11" href="#__codelineno-16-11"></a>    <span class="n">consume</span><span class="o">=</span><span class="p">{</span><span class="s2">"rpm"</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span>
-</span><span id="__span-16-12"><a id="__codelineno-16-12" name="__codelineno-16-12" href="#__codelineno-16-12"></a><span class="p">):</span>
-</span><span id="__span-16-13"><a id="__codelineno-16-13" name="__codelineno-16-13" href="#__codelineno-16-13"></a>    <span class="nb">print</span><span class="p">(</span><span class="s2">"Rate limiting working"</span><span class="p">)</span>
+   <div class="language-python highlight"><pre><span></span><code><span id="__span-17-1"><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">zae_limiter</span><span class="w"> </span><span class="kn">import</span> <span class="n">Repository</span><span class="p">,</span> <span class="n">RateLimiter</span><span class="p">,</span> <span class="n">Limit</span>
+</span><span id="__span-17-2"><a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>
+</span><span id="__span-17-3"><a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a><span class="n">repo</span> <span class="o">=</span> <span class="k">await</span> <span class="n">Repository</span><span class="o">.</span><span class="n">open</span><span class="p">()</span>
+</span><span id="__span-17-4"><a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span><span class="n">repository</span><span class="o">=</span><span class="n">repo</span><span class="p">)</span>
+</span><span id="__span-17-5"><a id="__codelineno-17-5" name="__codelineno-17-5" href="#__codelineno-17-5"></a>
+</span><span id="__span-17-6"><a id="__codelineno-17-6" name="__codelineno-17-6" href="#__codelineno-17-6"></a><span class="c1"># Test basic operation</span>
+</span><span id="__span-17-7"><a id="__codelineno-17-7" name="__codelineno-17-7" href="#__codelineno-17-7"></a><span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span>
+</span><span id="__span-17-8"><a id="__codelineno-17-8" name="__codelineno-17-8" href="#__codelineno-17-8"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">"test-entity"</span><span class="p">,</span>
+</span><span id="__span-17-9"><a id="__codelineno-17-9" name="__codelineno-17-9" href="#__codelineno-17-9"></a>    <span class="n">resource</span><span class="o">=</span><span class="s2">"test"</span><span class="p">,</span>
+</span><span id="__span-17-10"><a id="__codelineno-17-10" name="__codelineno-17-10" href="#__codelineno-17-10"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">"rpm"</span><span class="p">,</span> <span class="mi">100</span><span class="p">)],</span>
+</span><span id="__span-17-11"><a id="__codelineno-17-11" name="__codelineno-17-11" href="#__codelineno-17-11"></a>    <span class="n">consume</span><span class="o">=</span><span class="p">{</span><span class="s2">"rpm"</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span>
+</span><span id="__span-17-12"><a id="__codelineno-17-12" name="__codelineno-17-12" href="#__codelineno-17-12"></a><span class="p">):</span>
+</span><span id="__span-17-13"><a id="__codelineno-17-13" name="__codelineno-17-13" href="#__codelineno-17-13"></a>    <span class="nb">print</span><span class="p">(</span><span class="s2">"Rate limiting working"</span><span class="p">)</span>
 </span></code></pre></div></p>
 </li>
 <li>
