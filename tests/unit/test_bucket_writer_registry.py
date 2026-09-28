@@ -29,8 +29,12 @@ is not listed separately.
 
 import inspect
 import re
+from datetime import timedelta
+from typing import Any
 
-from zae_limiter.repository import Repository
+from zae_limiter import Limit, Repository
+from zae_limiter.models import BucketState, QuotaDonorDebit
+from zae_limiter.schema import BUCKET_FIELD_GC
 from zae_limiter_aggregator import processor
 
 NOT_BUCKET = None
@@ -168,3 +172,137 @@ def test_only_grant_writers_write_gc():
         "_quota_count_freeze",
         "propagate_shard_count",
     }
+
+
+# --- Behavioural: what the pure builders actually write -----------------------
+
+CAL = Limit.quota("cal", 1000, cron="0 0 * * *")
+SES = Limit.quota("ses", 10, reset_after=timedelta(hours=5))
+RPM = Limit.per_minute("rpm", 100)
+_GC_SUFFIX = f"_{BUCKET_FIELD_GC}"
+
+
+def _repo() -> Repository:
+    return Repository(name="registry", region="us-east-1", _skip_deprecation_warning=True)
+
+
+def _quota_states() -> dict[str, BucketState]:
+    return {
+        limit.name: BucketState.from_limit("e", "r", limit, 2_000, 4) for limit in (CAL, SES, RPM)
+    }
+
+
+def _written(kwargs: dict[str, Any]) -> set[str]:
+    """Attribute names the ``UpdateExpression`` writes — never the condition,
+    which may *read* ``gc`` (a donor debit is guarded on it)."""
+    names = kwargs.get("ExpressionAttributeNames", {})
+    tokens = re.findall(r"#[A-Za-z0-9_]+", kwargs.get("UpdateExpression", ""))
+    return {names[t] for t in tokens}
+
+
+def _writes_gc(kwargs: dict[str, Any]) -> bool:
+    return any(name.endswith(_GC_SUFFIX) for name in _written(kwargs))
+
+
+def _non_gc_builds() -> dict[str, list[dict[str, Any]]]:
+    """Every pure builder declared as not writing ``gc``, fed quota inputs."""
+    repo = _repo()
+    states = _quota_states()
+    expr, names, values = repo._build_bucket_param_update([CAL, SES, RPM], 7, {"old", "cal"})
+    return {
+        "build_bucket_update_item": [
+            repo.build_bucket_update_item("e", "r", "cal", 1_000, 2_000, shard_id=1)["Update"]
+        ],
+        # A quota is debited here but never seeded: the builder writes
+        # whatever seeds it is handed (a quota seed would carry `gc`), and its
+        # only caller hands it unscheduled rate limits alone — pinned by
+        # `test_the_retry_is_never_handed_a_quota_seed`.
+        "build_composite_retry": [
+            repo.build_composite_retry(
+                "e",
+                "r",
+                consumed={"cal": 1_000, "ses": 1_000, "rpm": 1_000},
+                seeds={"rpm": states["rpm"]},
+            )["Update"]
+        ],
+        "build_composite_adjust": [
+            repo.build_composite_adjust("e", "r", deltas={"cal": 1_000, "ses": -1_000})["Update"]
+        ],
+        "build_quota_donor_debits": [
+            item["Update"]
+            for item in repo.build_quota_donor_debits(
+                "e",
+                "r",
+                [
+                    QuotaDonorDebit(0, "cal", 1_000, 2, 5, None),
+                    QuotaDonorDebit(0, "ses", 1_000, 2, None, 7, legacy_shard_count=4),
+                ],
+            )
+        ],
+        "_build_bucket_param_update": [
+            {
+                "UpdateExpression": expr,
+                "ExpressionAttributeNames": names,
+                "ExpressionAttributeValues": values,
+            }
+        ],
+        "_donor_update_items": [
+            item["Update"]
+            for item in processor._donor_update_items(
+                "t", "ns", "e", "r", [QuotaDonorDebit(1, "cal", 500, 2, None, None)]
+            )
+        ],
+    }
+
+
+def test_builders_declared_without_gc_never_write_it():
+    """I3, behaviourally: fed quota states and debits, no builder declared
+    ``(_, False)`` writes an attribute ending in ``_gc``."""
+    builds = _non_gc_builds()
+    for name in builds:
+        declared = REPOSITORY.get(name, AGGREGATOR.get(name))
+        assert declared is not None and declared[1] is False, name
+    offenders = {
+        name: sorted(_written(kwargs))
+        for name, items in builds.items()
+        for kwargs in items
+        if _writes_gc(kwargs)
+    }
+    assert not offenders, f"declared not to write gc, but do: {offenders}"
+
+
+def test_the_gc_detector_sees_a_gc_write():
+    """The check above is not vacuous: builders that do write ``gc`` trip it."""
+    repo = _repo()
+    normal = repo.build_composite_normal(
+        entity_id="e",
+        resource="r",
+        consumed={"cal": 0},
+        refill_amounts={},
+        now_ms=2,
+        expected_rf=1,
+        grant_counts={"cal": 4},
+        pin_shard_count=4,
+    )["Update"]
+    freeze = repo._build_quota_count_freeze("e", "r", 1, 4, [("cal", 2)])
+    aggregator_freeze = processor._quota_count_freeze({"PK": "p", "SK": "s"}, 4, [("cal", 2)])
+    assert _writes_gc(normal) and _writes_gc(freeze) and _writes_gc(aggregator_freeze)
+
+
+def test_the_retry_is_never_handed_a_quota_seed():
+    """`build_composite_retry` is declared ``(True, False)`` on its caller's
+    contract: `Lease._commit_initial`'s consumption-only retry seeds a limit
+    only if it carries no schedule, no reset schedule and no window — which
+    every quota does (ADR-137). A quota's seed would stamp `gc` with no pin."""
+    from zae_limiter import lease
+
+    source = inspect.getsource(lease.Lease._commit_initial)
+    for guard in (
+        "not e.state.sched",
+        "not e.state.reset_sched",
+        "e.state.reset_after_seconds is None",
+    ):
+        assert guard in source, f"the retry's seed filter lost `{guard}`"
+    for quota in (CAL, SES):
+        state = BucketState.from_limit("e", "r", quota, 2_000, 4)
+        assert state.reset_sched or state.reset_after_seconds is not None

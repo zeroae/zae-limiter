@@ -30,6 +30,11 @@ tests in the processor suite), concurrent writers (stepped race tests in
 ``test_quota_shard_creation.py``; moto is not thread-safe, #656), and v0.14
 items without ``gc`` (tested directly there).
 
+Ten seeds per quota kind: breadth comes from the 300-seed pure differential
+test (``test_quota_grant_plan.TestPlannerMatchesModel``), which drives the same
+operation mix through the shipped planner and the model; this file samples it
+against the real repository.
+
 ``QuotaModel(rule="NEW")`` runs the same sequence alongside and must account
 for ``C`` too. The two need not agree shard by shard: the model applies a
 pending reset even on a rejected spend, and the real path writes nothing on a
@@ -220,7 +225,9 @@ async def run_fuzz(limiter, seed: int, kind: str) -> None:
 
 # `--dist loadscope` sends a module's plain functions to one xdist worker; a
 # class is its own scope, so the seeds are split across classes to run in
-# parallel. 20 seeds per quota kind.
+# parallel. 10 seeds per quota kind (v0.15 CI-speed ruling): breadth comes from
+# the 300-seed pure differential in test_quota_grant_plan.py; this file checks
+# that the real repository keeps I8 on a smaller sample.
 class _Fuzz:
     KIND = "calendar"
     SEEDS: range = range(0)
@@ -237,14 +244,6 @@ class TestCalendarSeeds5(_Fuzz):
     SEEDS = range(5, 10)
 
 
-class TestCalendarSeeds10(_Fuzz):
-    SEEDS = range(10, 15)
-
-
-class TestCalendarSeeds15(_Fuzz):
-    SEEDS = range(15, 20)
-
-
 class TestSessionSeeds0(_Fuzz):
     KIND = "session"
     SEEDS = range(0, 5)
@@ -253,13 +252,3 @@ class TestSessionSeeds0(_Fuzz):
 class TestSessionSeeds5(_Fuzz):
     KIND = "session"
     SEEDS = range(5, 10)
-
-
-class TestSessionSeeds10(_Fuzz):
-    KIND = "session"
-    SEEDS = range(10, 15)
-
-
-class TestSessionSeeds15(_Fuzz):
-    KIND = "session"
-    SEEDS = range(15, 20)

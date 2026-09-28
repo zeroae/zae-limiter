@@ -300,10 +300,15 @@ class TestSessionQuotaWithTheAggregator:
             for shard in range(1, 4):
                 with pinned_shard(shard):
                     await _spend(limiter, "aggr-session", 0)
+            # ADR-145: shard 0 was granted all 40 at count 1 and spent 5, and
+            # each later shard is funded by a move of one share (40 // 4 =
+            # 10) off it, so shard 3 starts full. Spend 3 there so the roll
+            # below has something to restore: 10 - 3 = 7 tokens.
+            with pinned_shard(3):
+                await _spend(limiter, "aggr-session", 3)
         finally:
             repo._now_ms = real_clock
-        # The ADR-145 move gave each later sibling one share (2), below 10.
-        assert await _tk(repo, "aggr-session", 3) < 10_000
+        assert await _tk(repo, "aggr-session", 3) == 7_000
 
         with pinned_shard(1):
             await _spend(limiter, "aggr-session")
