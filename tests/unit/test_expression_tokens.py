@@ -232,7 +232,21 @@ class TestCompositeBuilders:
             now_ms=2_000,
             expected_rf=1_000,
             seeds={HYPHENATED: self._seed_states()[HYPHENATED]},
-            seed_shard_count=2,
+            pin_shard_count=2,
+        )["Update"]
+        assert_expression_safe(update)
+        assert "#pinsc <= :pinsc" in update["ConditionExpression"]
+
+    def test_normal_with_grant_counts(self) -> None:
+        update = _repo().build_composite_normal(
+            entity_id="e",
+            resource="r",
+            consumed={DOTTED: 1000, HYPHENATED: 0},
+            refill_amounts={},
+            now_ms=2,
+            expected_rf=1,
+            grant_counts={DOTTED: 4, HYPHENATED: 4},
+            pin_shard_count=4,
         )["Update"]
         assert_expression_safe(update)
         assert "#pinsc <= :pinsc" in update["ConditionExpression"]

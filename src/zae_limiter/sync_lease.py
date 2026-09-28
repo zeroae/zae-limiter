@@ -57,6 +57,19 @@ class LeaseEntry:
     _stored_reset_after_seconds: int | None = None
     _seed: bool = False
     _seed_initial: BucketState | None = None
+    _granted: bool = False
+
+
+def _mark_granted(entry: LeaseEntry) -> None:
+    """Record a quota reset or roll applied at commit time (ADR-145 I3).
+
+    The acquire path marks the resets it saw; an edge or window end crossed
+    between its reading and the commit's is re-applied in `_commit_initial`,
+    and that is a re-grant at the item's count exactly the same.
+    """
+    if entry.limit.is_quota:
+        entry.state.grant_count = entry.state.shard_count
+        entry._granted = True
 
 
 def persist_transfer_seeds(repo: "SyncRepositoryProtocol", entries: list[LeaseEntry]) -> None:
@@ -392,12 +405,14 @@ class SyncLease:
                         refill_amounts[name] = (
                             entry.state.reset_target_milli(now_ms) - entry._original_tokens_milli
                         )
+                        _mark_granted(entry)
                     if entry._window_end_ms is not None and entry._window_end_ms <= now_ms:
                         entry._window_start_ms = now_ms
                         entry.state.window_start_ms = now_ms
                         refill_amounts[name] = (
                             entry.state.reset_target_milli(now_ms) - entry._original_tokens_milli
                         )
+                        _mark_granted(entry)
                     rsa = entry.state.reset_after_seconds
                     if entry._window_start_ms is not None and rsa is not None:
                         windows[name] = (entry._window_start_ms, rsa)
@@ -407,6 +422,13 @@ class SyncLease:
                         and (rsa != entry._stored_reset_after_seconds)
                     ):
                         window_lengths[name] = rsa
+                grant_counts = {
+                    e.limit.name: e.state.grant_count
+                    for e in group_entries
+                    if e._granted and (not e._seed) and (e.state.grant_count is not None)
+                }
+                pin = [e.state.shard_count for e in group_entries if e._seed and e.limit.is_quota]
+                pin += list(grant_counts.values())
                 items.append(
                     repo.build_composite_normal(
                         entity_id=entity_id,
@@ -422,14 +444,8 @@ class SyncLease:
                         window_lengths=window_lengths,
                         applied_windows=_applied_windows(group_entries),
                         seeds=seeds,
-                        seed_shard_count=max(
-                            (
-                                e.state.shard_count
-                                for e in group_entries
-                                if e._seed and e.limit.is_quota
-                            ),
-                            default=None,
-                        ),
+                        grant_counts=grant_counts,
+                        pin_shard_count=max(pin, default=None),
                         rf_ms=_monotonic_rf(now_ms, expected_rf, group_entries),
                         clear_vu=not boundaries,
                     )

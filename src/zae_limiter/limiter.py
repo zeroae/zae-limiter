@@ -1537,6 +1537,9 @@ class RateLimiter:
         if edge is None or edge <= state.last_refill_ms:
             return False
         state.tokens_milli = state.reset_target_milli(now_ms)
+        # ADR-145 I3: the reset re-grants this shard at the item's count; the
+        # commit stamps it as `b_{name}_gc` on the same rf-locked write.
+        state.grant_count = state.shard_count
         return True
 
     @staticmethod
@@ -1599,6 +1602,8 @@ class RateLimiter:
         # The balance now reflects this window; the commit stamps the same
         # value as `b_{name}_wa` (#640, `lease._applied_windows`).
         state.window_applied_ms = state.window_start_ms
+        # ADR-145 I3: the roll re-grants this shard at the item's count.
+        state.grant_count = state.shard_count
         return True
 
     @staticmethod
@@ -1855,8 +1860,13 @@ class RateLimiter:
             # its own window, independently of the child's: this reads the
             # parent's `ws` off the parent's item and nothing else.
             parent_new_ws = self._open_window_if_elapsed(limit, existing, now_ms)
-            self._apply_reset_edge(limit, existing, now_ms)
-            self._apply_window_roll(limit, existing, now_ms, opened=parent_new_ws is not None)
+            parent_reset = self._apply_reset_edge(limit, existing, now_ms)
+            parent_rolled = self._apply_window_roll(
+                limit, existing, now_ms, opened=parent_new_ws is not None
+            )
+            # ADR-145 I3/I4: a reset or roll re-granted this quota shard, so
+            # the commit stamps `gc` and pins `shard_count` on the same write.
+            parent_granted = limit.is_quota and (parent_reset or parent_rolled)
 
             status, consumed = self._admit_limit(
                 parent_id, resource, limit, existing, consume, now_ms
@@ -1892,6 +1902,7 @@ class RateLimiter:
                     _window_start_ms=parent_new_ws,
                     _window_end_ms=window_end_in_force(limit, existing, now_ms),
                     _stored_reset_after_seconds=stored_rsa,
+                    _granted=parent_granted,
                 )
             )
 
@@ -2300,10 +2311,17 @@ class RateLimiter:
                 # window's end — and a pass that anchors and is then rejected
                 # writes nothing at all (write-on-enter invariant 1).
                 new_ws: int | None = created_anchor
+                granted = False
                 if not is_new:
                     new_ws = self._open_window_if_elapsed(limit, state, now_ms)
-                    self._apply_reset_edge(limit, state, now_ms)
-                    self._apply_window_roll(limit, state, now_ms, opened=new_ws is not None)
+                    reset_applied = self._apply_reset_edge(limit, state, now_ms)
+                    roll_applied = self._apply_window_roll(
+                        limit, state, now_ms, opened=new_ws is not None
+                    )
+                    # ADR-145 I3/I4: a reset or roll re-granted this quota
+                    # shard at the item's count; `_commit_initial` stamps `gc`
+                    # and pins `shard_count` on the same rf-locked write.
+                    granted = limit.is_quota and (reset_applied or roll_applied)
 
                 status, consumed = self._admit_limit(eid, resource, limit, state, consume, now_ms)
                 if status is not None:
@@ -2351,6 +2369,7 @@ class RateLimiter:
                         _window_start_ms=new_ws,
                         _window_end_ms=window_end_in_force(limit, state, now_ms),
                         _stored_reset_after_seconds=stored_rsa,
+                        _granted=granted,
                     )
                 )
 

@@ -36,6 +36,7 @@ from zae_limiter.infra.sync_discovery import SyncInfrastructureDiscovery
 from zae_limiter.models import BucketState
 from zae_limiter.schedule import ScheduleEntry, retry_after_with_schedule
 from zae_limiter.schema import (
+    BUCKET_FIELD_GC,
     BUCKET_FIELD_RF,
     BUCKET_FIELD_RSA,
     BUCKET_FIELD_TK,
@@ -8214,6 +8215,80 @@ class TestResetMaterialisationThroughAcquire:
         bucket = self._bucket(repo, "reset-race")
         assert bucket.tokens_milli == 10000000, "the edge crossed mid-pass still applies"
         assert bucket.total_consumed_milli == 10000000, "and `tc` is still monotonic"
+
+
+class TestResetStampsGrantCount:
+    """ADR-145 I3/I4: a reset or roll writes gc = the item's shard count, pinned."""
+
+    _slow = staticmethod(TestResetMaterialisationThroughAcquire._slow)
+    _raw = staticmethod(TestResetMaterialisationThroughAcquire._raw)
+    _bucket = staticmethod(TestResetMaterialisationThroughAcquire._bucket)
+
+    def test_calendar_reset_writes_gc(self, sync_limiter):
+        repo = sync_limiter._repository
+        slow = self._slow(sync_limiter)
+        repo.set_limits("gc-reset", [RPD], resource="gpt-4")
+        repo._now_ms = lambda: _ny("2026-09-15 23:00")
+        with slow.acquire("gc-reset", "gpt-4", consume={"rpd": 1}):
+            pass
+        repo._now_ms = lambda: _ny("2026-09-16 00:30")
+        repo.invalidate_config_cache()
+        with slow.acquire("gc-reset", "gpt-4", consume={"rpd": 1}):
+            pass
+        raw = self._raw(repo, "gc-reset")
+        assert raw[bucket_attr("rpd", BUCKET_FIELD_GC)] == {"N": "1"}
+        assert self._bucket(repo, "gc-reset").grant_count == 1
+
+    def test_window_roll_writes_gc(self, sync_limiter):
+        session = Limit.quota("session", 1000, reset_after=timedelta(hours=5))
+        repo = sync_limiter._repository
+        slow = self._slow(sync_limiter)
+        repo.set_limits("gc-roll", [session], resource="gpt-4")
+        t0 = _ny("2026-09-15 09:00")
+        repo._now_ms = lambda: t0
+        with slow.acquire("gc-roll", "gpt-4", consume={"session": 1}):
+            pass
+        repo._now_ms = lambda: t0 + 6 * 3600000
+        repo.invalidate_config_cache()
+        with slow.acquire("gc-roll", "gpt-4", consume={"session": 1}):
+            pass
+        raw = self._raw(repo, "gc-roll")
+        assert raw[bucket_attr("session", BUCKET_FIELD_GC)] == {"N": "1"}
+
+    def test_a_pass_without_a_reset_writes_no_gc_and_no_pin(self, sync_limiter):
+        """Only a reset or roll grants; a plain slow pass leaves `gc` alone."""
+        repo = sync_limiter._repository
+        slow = self._slow(sync_limiter)
+        repo.set_limits("gc-none", [RPD], resource="gpt-4")
+        repo._now_ms = lambda: _ny("2026-09-15 23:00")
+        with slow.acquire("gc-none", "gpt-4", consume={"rpd": 1}):
+            pass
+        before = self._raw(repo, "gc-none").get(bucket_attr("rpd", BUCKET_FIELD_GC))
+        repo._now_ms = lambda: _ny("2026-09-15 23:30")
+        with patch.object(repo, "build_composite_normal", wraps=repo.build_composite_normal) as spy:
+            with slow.acquire("gc-none", "gpt-4", consume={"rpd": 1}):
+                pass
+        assert spy.call_args.kwargs["grant_counts"] == {}
+        assert spy.call_args.kwargs["pin_shard_count"] is None
+        after = self._raw(repo, "gc-none").get(bucket_attr("rpd", BUCKET_FIELD_GC))
+        assert after == before
+
+    def test_normal_write_pins_shard_count_when_granting(self, sync_limiter):
+        update = sync_limiter._repository.build_composite_normal(
+            entity_id="e1",
+            resource="gpt-4",
+            consumed={"rpd": 1000},
+            refill_amounts={"rpd": 0},
+            now_ms=10,
+            expected_rf=5,
+            grant_counts={"rpd": 4},
+            pin_shard_count=4,
+        )["Update"]
+        assert "#gc0 = :gc0" in update["UpdateExpression"]
+        assert update["ExpressionAttributeNames"]["#gc0"] == bucket_attr("rpd", BUCKET_FIELD_GC)
+        assert update["ExpressionAttributeValues"][":gc0"] == {"N": "4"}
+        assert "#pinsc <= :pinsc" in update["ConditionExpression"]
+        assert update["ExpressionAttributeValues"][":pinsc"] == {"N": "4"}
 
 
 NIGHT_HALF = (ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", scale=0.5),)

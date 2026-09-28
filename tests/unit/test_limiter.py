@@ -32,6 +32,7 @@ from zae_limiter.models import BucketState
 from zae_limiter.repository_protocol import SpeculativeResult
 from zae_limiter.schedule import ScheduleEntry, retry_after_with_schedule
 from zae_limiter.schema import (
+    BUCKET_FIELD_GC,
     BUCKET_FIELD_RF,
     BUCKET_FIELD_RSA,
     BUCKET_FIELD_TK,
@@ -10322,6 +10323,88 @@ class TestResetMaterialisationThroughAcquire:
         bucket = await self._bucket(repo, "reset-race")
         assert bucket.tokens_milli == 10_000_000, "the edge crossed mid-pass still applies"
         assert bucket.total_consumed_milli == 10_000_000, "and `tc` is still monotonic"
+
+
+class TestResetStampsGrantCount:
+    """ADR-145 I3/I4: a reset or roll writes gc = the item's shard count, pinned."""
+
+    _slow = staticmethod(TestResetMaterialisationThroughAcquire._slow)
+    _raw = staticmethod(TestResetMaterialisationThroughAcquire._raw)
+    _bucket = staticmethod(TestResetMaterialisationThroughAcquire._bucket)
+
+    async def test_calendar_reset_writes_gc(self, limiter):
+        repo = limiter._repository
+        slow = self._slow(limiter)
+        await repo.set_limits("gc-reset", [RPD], resource="gpt-4")
+
+        repo._now_ms = lambda: _ny("2026-09-15 23:00")
+        async with slow.acquire("gc-reset", "gpt-4", consume={"rpd": 1}):
+            pass
+
+        repo._now_ms = lambda: _ny("2026-09-16 00:30")
+        await repo.invalidate_config_cache()
+        async with slow.acquire("gc-reset", "gpt-4", consume={"rpd": 1}):
+            pass
+
+        raw = await self._raw(repo, "gc-reset")
+        assert raw[bucket_attr("rpd", BUCKET_FIELD_GC)] == {"N": "1"}
+        assert (await self._bucket(repo, "gc-reset")).grant_count == 1
+
+    async def test_window_roll_writes_gc(self, limiter):
+        session = Limit.quota("session", 1_000, reset_after=timedelta(hours=5))
+        repo = limiter._repository
+        slow = self._slow(limiter)
+        await repo.set_limits("gc-roll", [session], resource="gpt-4")
+
+        t0 = _ny("2026-09-15 09:00")
+        repo._now_ms = lambda: t0
+        async with slow.acquire("gc-roll", "gpt-4", consume={"session": 1}):
+            pass
+
+        repo._now_ms = lambda: t0 + 6 * 3_600_000
+        await repo.invalidate_config_cache()
+        async with slow.acquire("gc-roll", "gpt-4", consume={"session": 1}):
+            pass
+
+        raw = await self._raw(repo, "gc-roll")
+        assert raw[bucket_attr("session", BUCKET_FIELD_GC)] == {"N": "1"}
+
+    async def test_a_pass_without_a_reset_writes_no_gc_and_no_pin(self, limiter):
+        """Only a reset or roll grants; a plain slow pass leaves `gc` alone."""
+        repo = limiter._repository
+        slow = self._slow(limiter)
+        await repo.set_limits("gc-none", [RPD], resource="gpt-4")
+
+        repo._now_ms = lambda: _ny("2026-09-15 23:00")
+        async with slow.acquire("gc-none", "gpt-4", consume={"rpd": 1}):
+            pass
+        before = (await self._raw(repo, "gc-none")).get(bucket_attr("rpd", BUCKET_FIELD_GC))
+
+        repo._now_ms = lambda: _ny("2026-09-15 23:30")
+        with patch.object(repo, "build_composite_normal", wraps=repo.build_composite_normal) as spy:
+            async with slow.acquire("gc-none", "gpt-4", consume={"rpd": 1}):
+                pass
+        assert spy.call_args.kwargs["grant_counts"] == {}
+        assert spy.call_args.kwargs["pin_shard_count"] is None
+        after = (await self._raw(repo, "gc-none")).get(bucket_attr("rpd", BUCKET_FIELD_GC))
+        assert after == before
+
+    async def test_normal_write_pins_shard_count_when_granting(self, limiter):
+        update = limiter._repository.build_composite_normal(
+            entity_id="e1",
+            resource="gpt-4",
+            consumed={"rpd": 1000},
+            refill_amounts={"rpd": 0},
+            now_ms=10,
+            expected_rf=5,
+            grant_counts={"rpd": 4},
+            pin_shard_count=4,
+        )["Update"]
+        assert "#gc0 = :gc0" in update["UpdateExpression"]
+        assert update["ExpressionAttributeNames"]["#gc0"] == bucket_attr("rpd", BUCKET_FIELD_GC)
+        assert update["ExpressionAttributeValues"][":gc0"] == {"N": "4"}
+        assert "#pinsc <= :pinsc" in update["ConditionExpression"]
+        assert update["ExpressionAttributeValues"][":pinsc"] == {"N": "4"}
 
 
 # ---------------------------------------------------------------------------

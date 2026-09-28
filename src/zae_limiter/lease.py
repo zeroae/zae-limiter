@@ -123,6 +123,21 @@ class LeaseEntry:
     # so the next pass does not seed a full share on top of the spent surplus
     # (#633). None for every other entry.
     _seed_initial: BucketState | None = None
+    # ADR-145: this pass set the entry's quota grant (a reset or roll), so
+    # the rf-locked write must stamp `gc` and pin `shard_count` (I3, I4).
+    _granted: bool = False
+
+
+def _mark_granted(entry: LeaseEntry) -> None:
+    """Record a quota reset or roll applied at commit time (ADR-145 I3).
+
+    The acquire path marks the resets it saw; an edge or window end crossed
+    between its reading and the commit's is re-applied in `_commit_initial`,
+    and that is a re-grant at the item's count exactly the same.
+    """
+    if entry.limit.is_quota:
+        entry.state.grant_count = entry.state.shard_count
+        entry._granted = True
 
 
 async def persist_transfer_seeds(repo: "RepositoryProtocol", entries: list[LeaseEntry]) -> None:
@@ -579,6 +594,7 @@ class Lease:
                         refill_amounts[name] = (
                             entry.state.reset_target_milli(now_ms) - entry._original_tokens_milli
                         )
+                        _mark_granted(entry)
                     # A duration window that elapsed between the acquire
                     # path's reading and this one is the mirror of the edge
                     # case above. `_open_window_if_elapsed()` saw a live window
@@ -608,6 +624,7 @@ class Lease:
                         refill_amounts[name] = (
                             entry.state.reset_target_milli(now_ms) - entry._original_tokens_milli
                         )
+                        _mark_granted(entry)
                     rsa = entry.state.reset_after_seconds
                     if entry._window_start_ms is not None and rsa is not None:
                         windows[name] = (entry._window_start_ms, rsa)
@@ -618,6 +635,13 @@ class Lease:
                     ):
                         window_lengths[name] = rsa
 
+                grant_counts = {
+                    e.limit.name: e.state.grant_count
+                    for e in group_entries
+                    if e._granted and not e._seed and e.state.grant_count is not None
+                }
+                pin = [e.state.shard_count for e in group_entries if e._seed and e.limit.is_quota]
+                pin += list(grant_counts.values())
                 items.append(
                     repo.build_composite_normal(
                         entity_id=entity_id,
@@ -633,17 +657,13 @@ class Lease:
                         window_lengths=window_lengths,
                         applied_windows=_applied_windows(group_entries),
                         seeds=seeds,
-                        # A quota seed's share is only safe at the count it
-                        # was sized for (#633): pin it against a racing
-                        # doubling.
-                        seed_shard_count=max(
-                            (
-                                e.state.shard_count
-                                for e in group_entries
-                                if e._seed and e.limit.is_quota
-                            ),
-                            default=None,
-                        ),
+                        grant_counts=grant_counts,
+                        # A quota seed's share, and a reset or roll's grant,
+                        # are only safe at the count they were sized for
+                        # (#633, ADR-145 I4): pin them against a racing
+                        # doubling. A lost pin falls to the consumption-only
+                        # retry, which grants nothing (R5).
+                        pin_shard_count=max(pin, default=None),
                         # Computed after the loop above, which can anchor a
                         # window at this reading; the lock still compares the
                         # stored `expected_rf`.

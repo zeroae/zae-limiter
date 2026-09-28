@@ -2698,8 +2698,9 @@ class Repository:
         rf_ms: int | None = None,
         window_lengths: dict[str, int] | None = None,
         seeds: dict[str, BucketState] | None = None,
-        seed_shard_count: int | None = None,
+        pin_shard_count: int | None = None,
         applied_windows: dict[str, int] | None = None,
+        grant_counts: dict[str, int] | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -2777,8 +2778,9 @@ class Repository:
                 older client. Explicit ``SET`` rather than ``if_not_exists``:
                 the guard makes it exact, and the same attribute cannot also
                 be ``ADD``ed in one expression (#168).
-            seed_shard_count: The shard count a **quota** seed's share was
-                sized for, or ``None`` when no quota is seeded. Pins the write
+            pin_shard_count: The shard count a **quota** seed's share, or a
+                reset or roll's grant (ADR-145 I4), was sized for, or ``None``
+                when the write grants no quota. Pins the write
                 on ``attribute_not_exists(shard_count) OR shard_count <=
                 :sized``: a quota never drips, so a share sized for a count
                 a doubling has since overtaken would be spent by the fast
@@ -2929,9 +2931,15 @@ class Repository:
             condition_parts.append(
                 f"(attribute_not_exists(#sp{j}) OR attribute_not_exists(#st{j}))"
             )
-        if seed_shard_count is not None:
+        # ADR-145 I3: a reset or roll on this write re-grants its quota at the
+        # item's count. Positional tokens (`#gc{i}`), disjoint from the rest.
+        for i, (name, count) in enumerate(sorted((grant_counts or {}).items())):
+            attr_names[f"#gc{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_GC)
+            set_parts.append(f"#gc{i} = :gc{i}")
+            attr_values[f":gc{i}"] = {"N": str(count)}
+        if pin_shard_count is not None:
             attr_names["#pinsc"] = "shard_count"
-            attr_values[":pinsc"] = {"N": str(seed_shard_count)}
+            attr_values[":pinsc"] = {"N": str(pin_shard_count)}
             condition_parts.append("(attribute_not_exists(#pinsc) OR #pinsc <= :pinsc)")
         if seeded_tz is not None:
             # One zone per item (§4.1). Every limit written by this pass was

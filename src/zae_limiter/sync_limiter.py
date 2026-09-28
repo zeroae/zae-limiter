@@ -1188,6 +1188,7 @@ class SyncRateLimiter:
         if edge is None or edge <= state.last_refill_ms:
             return False
         state.tokens_milli = state.reset_target_milli(now_ms)
+        state.grant_count = state.shard_count
         return True
 
     @staticmethod
@@ -1245,6 +1246,7 @@ class SyncRateLimiter:
             state.reset_target_milli(now_ms) if opened else state.window_roll_target_milli(now_ms)
         )
         state.window_applied_ms = state.window_start_ms
+        state.grant_count = state.shard_count
         return True
 
     @staticmethod
@@ -1459,8 +1461,11 @@ class SyncRateLimiter:
             original_tk = existing.tokens_milli
             original_rf = existing.last_refill_ms
             parent_new_ws = self._open_window_if_elapsed(limit, existing, now_ms)
-            self._apply_reset_edge(limit, existing, now_ms)
-            self._apply_window_roll(limit, existing, now_ms, opened=parent_new_ws is not None)
+            parent_reset = self._apply_reset_edge(limit, existing, now_ms)
+            parent_rolled = self._apply_window_roll(
+                limit, existing, now_ms, opened=parent_new_ws is not None
+            )
+            parent_granted = limit.is_quota and (parent_reset or parent_rolled)
             status, consumed = self._admit_limit(
                 parent_id, resource, limit, existing, consume, now_ms
             )
@@ -1487,6 +1492,7 @@ class SyncRateLimiter:
                     _window_start_ms=parent_new_ws,
                     _window_end_ms=window_end_in_force(limit, existing, now_ms),
                     _stored_reset_after_seconds=stored_rsa,
+                    _granted=parent_granted,
                 )
             )
         carrier = self._wcu_carrier(
@@ -1702,10 +1708,14 @@ class SyncRateLimiter:
                 original_tk = state.tokens_milli
                 original_rf = item_rf if seed else state.last_refill_ms
                 new_ws: int | None = created_anchor
+                granted = False
                 if not is_new:
                     new_ws = self._open_window_if_elapsed(limit, state, now_ms)
-                    self._apply_reset_edge(limit, state, now_ms)
-                    self._apply_window_roll(limit, state, now_ms, opened=new_ws is not None)
+                    reset_applied = self._apply_reset_edge(limit, state, now_ms)
+                    roll_applied = self._apply_window_roll(
+                        limit, state, now_ms, opened=new_ws is not None
+                    )
+                    granted = limit.is_quota and (reset_applied or roll_applied)
                 status, consumed = self._admit_limit(eid, resource, limit, state, consume, now_ms)
                 if status is not None:
                     statuses.append(status)
@@ -1734,6 +1744,7 @@ class SyncRateLimiter:
                         _window_start_ms=new_ws,
                         _window_end_ms=window_end_in_force(limit, state, now_ms),
                         _stored_reset_after_seconds=stored_rsa,
+                        _granted=granted,
                     )
                 )
             carrier = self._wcu_carrier(
