@@ -24,6 +24,7 @@ from zae_limiter.schedule import (
 from zae_limiter.schema import (
     BUCKET_ATTR_PREFIX,
     BUCKET_FIELD_CP,
+    BUCKET_FIELD_GC,
     BUCKET_FIELD_RA,
     BUCKET_FIELD_RP,
     BUCKET_FIELD_RSA,
@@ -144,6 +145,9 @@ class LimitRefillInfo:
     # pending roll's target, `eff_cp - max(0, tc - wtc)`.
     tc_milli: int | None = None
     window_consumed_mark_milli: int | None = None
+    # `b_{name}_gc` (ADR-145): the shard count this shard's current-period
+    # quota grant was sized at. None on an item written before ADR-145.
+    grant_count: int | None = None
 
 
 @dataclass
@@ -354,6 +358,7 @@ class ParsedBucketLimit:
     window_applied_ms: int | None = None  # b_{name}_wa, epoch ms (#640)
     tc_milli: int | None = None  # b_{name}_tc from NewImage, absolute (#640)
     window_consumed_mark_milli: int | None = None  # b_{name}_wtc (#640)
+    grant_count: int | None = None  # b_{name}_gc, shard's grant sizing (ADR-145)
 
 
 @dataclass
@@ -566,6 +571,7 @@ def _parse_bucket_record(record: dict[str, Any]) -> ParsedBucketRecord | None:
         rsa_raw = new_image.get(bucket_attr(limit_name, BUCKET_FIELD_RSA), {}).get("N")
         wa_raw = new_image.get(bucket_attr(limit_name, BUCKET_FIELD_WA), {}).get("N")
         wtc_raw = new_image.get(bucket_attr(limit_name, BUCKET_FIELD_WTC), {}).get("N")
+        gc_raw = new_image.get(bucket_attr(limit_name, BUCKET_FIELD_GC), {}).get("N")
 
         limits[limit_name] = ParsedBucketLimit(
             tc_delta=tc_delta,
@@ -580,6 +586,7 @@ def _parse_bucket_record(record: dict[str, Any]) -> ParsedBucketRecord | None:
             window_applied_ms=int(wa_raw) if wa_raw is not None else None,
             tc_milli=int(new_tc_raw),
             window_consumed_mark_milli=int(wtc_raw) if wtc_raw is not None else None,
+            grant_count=int(gc_raw) if gc_raw is not None else None,
         )
 
     if not limits:
@@ -735,6 +742,7 @@ def aggregate_bucket_states(
                 existing.window_applied_ms = parsed_limit.window_applied_ms
                 existing.tc_milli = parsed_limit.tc_milli
                 existing.window_consumed_mark_milli = parsed_limit.window_consumed_mark_milli
+                existing.grant_count = parsed_limit.grant_count
             else:
                 state.limits[limit_name] = LimitRefillInfo(
                     tc_delta=parsed_limit.tc_delta,
@@ -749,6 +757,7 @@ def aggregate_bucket_states(
                     window_applied_ms=parsed_limit.window_applied_ms,
                     tc_milli=parsed_limit.tc_milli,
                     window_consumed_mark_milli=parsed_limit.window_consumed_mark_milli,
+                    grant_count=parsed_limit.grant_count,
                 )
 
     return bucket_states

@@ -1156,6 +1156,57 @@ class TestDurationWindowStamp:
             repo._deserialize_composite_bucket(item)
 
 
+class TestGrantCountStorage:
+    """`b_{q}_gc` round-trips through a bucket item (Refs #637, #642)."""
+
+    def test_limit_item_attrs_emits_gc_only_when_set(self, repo):
+        state = BucketState.from_limit(
+            "e1", "gpt-4", Limit.quota("rpd", 1000, cron="0 0 * * *"), 1_000, shard_count=4
+        )
+        from zae_limiter import schema
+
+        assert schema.BUCKET_FIELD_GC not in repo._limit_item_attrs(state)
+        state.grant_count = 4
+        assert repo._limit_item_attrs(state)[schema.BUCKET_FIELD_GC] == {"N": "4"}
+
+    def test_deserialize_reads_gc(self, repo):
+        from zae_limiter import schema
+
+        item = {
+            "PK": {"S": schema.pk_bucket(repo._namespace_id, "e1", "gpt-4", 1)},
+            "SK": {"S": schema.sk_state()},
+            "entity_id": {"S": "e1"},
+            "resource": {"S": "gpt-4"},
+            "rf": {"N": "1000"},
+            "shard_count": {"N": "4"},
+            "b_rpd_tk": {"N": "250000"},
+            "b_rpd_cp": {"N": "1000000"},
+            "b_rpd_ra": {"N": "0"},
+            "b_rpd_rp": {"N": "1000"},
+            "b_rpd_tc": {"N": "0"},
+            "b_rpd_gc": {"N": "2"},
+        }
+        (state,) = [s for s in repo._deserialize_composite_bucket(item) if s.limit_name == "rpd"]
+        assert state.grant_count == 2
+
+    def test_deserialize_missing_gc_is_none(self, repo):
+        from zae_limiter import schema
+
+        item = {
+            "PK": {"S": schema.pk_bucket(repo._namespace_id, "e1", "gpt-4", 0)},
+            "SK": {"S": schema.sk_state()},
+            "entity_id": {"S": "e1"},
+            "resource": {"S": "gpt-4"},
+            "rf": {"N": "1000"},
+            "b_rpd_tk": {"N": "1"},
+            "b_rpd_cp": {"N": "1000000"},
+            "b_rpd_ra": {"N": "0"},
+            "b_rpd_rp": {"N": "1000"},
+        }
+        (state,) = [s for s in repo._deserialize_composite_bucket(item) if s.limit_name == "rpd"]
+        assert state.grant_count is None
+
+
 class TestPropagateWindowStart:
     """The rollover fan-out (ADR-140, #624).
 

@@ -1774,6 +1774,27 @@ class TestNewBucketPKParsing:
         assert result.shard_id == 2
         assert result.shard_count == 4
 
+    def test_parse_bucket_record_reads_gc(self) -> None:
+        """`b_{name}_gc` (ADR-145) parses into `ParsedBucketLimit.grant_count`."""
+        record = self._make_new_pk_record(
+            pk="ns1/BUCKET#user-1#gpt-4#1",
+            shard_count=4,
+            limits={"rpd": (0, 1000)},
+        )
+        record["dynamodb"]["NewImage"]["b_rpd_gc"] = {"N": "2"}
+        parsed = _parse_bucket_record(record)
+
+        assert parsed is not None
+        assert parsed.limits["rpd"].grant_count == 2
+
+    def test_parse_bucket_record_missing_gc_is_none(self) -> None:
+        """No `b_{name}_gc` attribute decodes to `None` (item predates ADR-145)."""
+        record = self._make_new_pk_record(limits={"rpd": (0, 1000)})
+        parsed = _parse_bucket_record(record)
+
+        assert parsed is not None
+        assert parsed.limits["rpd"].grant_count is None
+
     def test_parse_bucket_record_old_pk_still_works(self) -> None:
         """Old ENTITY PK with #BUCKET# SK still parses (backwards compat)."""
         record = self._make_new_pk_record(

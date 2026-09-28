@@ -1263,6 +1263,10 @@ class BucketState:
     # `b_{name}_wtc` (#640): `tc` as it stood when a fan-out left this shard
     # with an unapplied window. `None` when the item carries none.
     window_consumed_mark_milli: int | None = None
+    # `b_{name}_gc` (ADR-145): the shard count this shard's current-period quota
+    # grant was sized at. `None` for a rate limit and for a quota item written
+    # before ADR-145 (read as `shard_count`, see `grant_shard_count`).
+    grant_count: int | None = None
 
     @property
     def tokens(self) -> int:

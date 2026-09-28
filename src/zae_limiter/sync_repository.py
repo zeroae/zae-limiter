@@ -65,6 +65,7 @@ _SEED_TOKEN = {
     schema.BUCKET_FIELD_RSA: "y",
     schema.BUCKET_FIELD_WS: "w",
     schema.BUCKET_FIELD_WA: "g",
+    schema.BUCKET_FIELD_GC: "k",
 }
 
 
@@ -2135,6 +2136,8 @@ class SyncRepository:
             schema.BUCKET_FIELD_RP: {"N": str(state.refill_period_ms)},
             schema.BUCKET_FIELD_TC: {"N": str(tc)},
         }
+        if state.grant_count is not None:
+            attrs[schema.BUCKET_FIELD_GC] = {"N": str(state.grant_count)}
         if include_window:
             if state.reset_after_seconds is not None:
                 attrs[schema.BUCKET_FIELD_RSA] = {"N": str(state.reset_after_seconds)}
@@ -5161,6 +5164,8 @@ class SyncRepository:
             window_consumed_mark = self._decode_stored_window_int(
                 wtc_name, item.get(wtc_name, {}).get("N")
             )
+            gc_name = schema.bucket_attr(name, schema.BUCKET_FIELD_GC)
+            grant_count = self._decode_stored_window_int(gc_name, item.get(gc_name, {}).get("N"))
             is_wcu = name == schema.WCU_LIMIT_NAME
             sched = (
                 () if is_wcu else _schedule_for(name, schema.BUCKET_FIELD_SCHED, item_sched, False)
@@ -5186,6 +5191,7 @@ class SyncRepository:
                     reset_after_seconds=reset_after_seconds,
                     window_applied_ms=window_applied_ms,
                     window_consumed_mark_milli=window_consumed_mark,
+                    grant_count=grant_count,
                 )
             )
         return buckets
