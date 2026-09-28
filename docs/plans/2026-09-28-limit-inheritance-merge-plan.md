@@ -302,9 +302,10 @@ just an entity-level limit spelled differently, but one whose `refill_amount` st
 recreates the "limit nobody wrote" problem one field at a time. It can be revisited if a concrete
 use case appears.
 
-**Open question Q3:** should patches be allowed at the resource level (patching a system limit)
-as well as at entity levels? Recommendation: yes. The rules above have no level-specific part,
-and restricting it would be an asymmetry to explain rather than a safety property.
+**Q3 (resolved 2026-09-28, owner): patches are allowed at every merging level.** A resource can
+patch a system limit, and an entity (per-resource or `_default_`) can patch whatever it inherits.
+The rules above have no level-specific part, and restricting them would be an asymmetry to explain
+rather than a safety property. `system` cannot carry a patch, since it has nothing below it.
 
 ## Implementation phases
 
@@ -318,7 +319,8 @@ Each phase is its own PR with its own tests. Pre-existing bugs found along the w
       rule, version gate. Cite ADR-118 and ADR-136.
 - [ ] Open a tracking issue with `/issue create`, and pick its milestone by description. Patches
       get their own sub-issue, since Phase 6 can ship after the rest.
-- [ ] Settle Q1, Q2 and Q3 with the owner.
+- [ ] Settle Q1 and Q2 with the owner. (Q3 is resolved: patches are allowed at resource and
+      entity levels.)
 
 ### Phase 1: Storage and resolution (core)
 
@@ -430,6 +432,9 @@ this phase can ship in a later release without reworking anything before it.
       Phase 3 parity test.
 - [ ] Tests:
   - an entity patch over a system `tpm` resolves with system numbers and the entity schedule;
+  - a resource patch over a system `tpm` applies to every merging entity of that resource, and an
+    entity patch above it wins (rule 3);
+  - `patch_limits` on `system` is rejected by the manifest and by the API;
   - a system `tpm` change reaches the patched bucket and keeps the schedule;
   - `schedule: []` drops an inherited schedule;
   - a patch below the declaring level is shadowed; the highest of two patches wins;
