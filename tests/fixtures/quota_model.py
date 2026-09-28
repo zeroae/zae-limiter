@@ -58,10 +58,15 @@ class QuotaModel:
         q.tk = min(q.tk, self.ceiling(q))
 
     def cover(self, j: int) -> int | None:
+        """The donor for slot ``j``: largest ``gc``, then lowest shard id.
+
+        The same tie-break as ``models.plan_quota_grant``, so the two can be
+        compared grant for grant (``test_quota_grant_plan.TestPlannerMatchesModel``).
+        """
         best = None
         for i, q in self.shards.items():
             if i != j and q.period == self.period and j % q.gc == i % q.gc:
-                if best is None or q.gc > self.shards[best].gc:
+                if best is None or (-q.gc, i) < (-self.shards[best].gc, best):
                     best = i
         return best
 

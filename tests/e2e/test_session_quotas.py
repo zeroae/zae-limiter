@@ -302,7 +302,7 @@ class TestSessionQuotaWithTheAggregator:
                     await _spend(limiter, "aggr-session", 0)
         finally:
             repo._now_ms = real_clock
-        # The #587 transfer left the later siblings below their share of 10.
+        # The ADR-145 move gave each later sibling one share (2), below 10.
         assert await _tk(repo, "aggr-session", 3) < 10_000
 
         with pinned_shard(1):
