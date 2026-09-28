@@ -41,11 +41,15 @@ pytestmark = [pytest.mark.integration, pytest.mark.e2e]
 CLIENT = "0.99.0"
 """The client version the ``open()`` leg runs as.
 
-Pinned rather than read from ``__version__``: CI checks out without tags, so
-hatch-vcs falls back to ``0.1.dev1+g...``, which ``version.parse_version``
-rejects. ``check_compatibility`` then reports the client invalid, no Lambda
-update is ever requested, and ``open()`` pushes nothing whatever the stamp.
-Its major must match the schema's."""
+Pinned rather than read from ``__version__`` for a version this test controls
+directly: CI now fetches tags (#655), and ``version.parse_version`` accepts
+the tagless fallback form (``0.1.dev1+g...`` reads as ``0.1.0-dev``) either
+way, so the ambient ``__version__`` is a real, comparable version regardless
+— just not one this test can predict or bump on demand. The test needs to
+push each stamp (``OLD`` below) forward by a known, controlled amount to
+exercise the update paths, which pinning ``CLIENT`` gives it independent of
+whatever tag or dev-distance the checkout happens to carry. Its major must
+match the schema's."""
 
 OLD = "0.1.0"
 """A stamp below ``CLIENT``: a faked version bump."""

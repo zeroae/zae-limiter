@@ -81,6 +81,14 @@ def parse_version(version_str: str) -> ParsedVersion:
       segment. This also accepts a bare two-part release with no dev/pre
       suffix ("0.1"), which falls out of the same relaxed grammar rather than
       needing a special case, and is never worse than rejecting it outright.
+      A two-part release combined with a PEP 440 pre-release tag directly
+      ("0.15rc1", no third component) is **not** covered by this relaxation
+      and still raises — the pre-release rewrite above only fires on a
+      three-part release, and hatch-vcs's tagless fallback never carries one
+      of these anyway. The distance number in a ``.devN`` suffix is not part
+      of the result: every dev build of the same release compares equal
+      regardless of ``N`` (``0.1.dev1+g...`` == ``0.1.dev999+g...``), since
+      only the "dev" tag itself becomes the prerelease field.
 
     Args:
         version_str: Version string to parse
