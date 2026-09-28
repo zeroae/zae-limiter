@@ -663,7 +663,7 @@ class Lease:
                         # (#633, ADR-145 I4): pin them against a racing
                         # doubling. A lost pin falls to the consumption-only
                         # retry, which grants nothing (R5).
-                        pin_shard_count=max(pin, default=None),
+                        pin_shard_count=min(pin, default=None),
                         # Computed after the loop above, which can anchor a
                         # window at this reading; the lock still compares the
                         # stored `expected_rf`.

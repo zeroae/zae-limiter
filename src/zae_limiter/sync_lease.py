@@ -445,7 +445,7 @@ class SyncLease:
                         applied_windows=_applied_windows(group_entries),
                         seeds=seeds,
                         grant_counts=grant_counts,
-                        pin_shard_count=max(pin, default=None),
+                        pin_shard_count=min(pin, default=None),
                         rf_ms=_monotonic_rf(now_ms, expected_rf, group_entries),
                         clear_vu=not boundaries,
                     )

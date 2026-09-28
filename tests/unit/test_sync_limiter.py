@@ -8149,6 +8149,7 @@ class TestResetMaterialisationThroughAcquire:
         lease = sync_limiter._try_parent_only_acquire("po-org", "gpt-4", {"rpd": 9000}, [], 0, 1)
         assert lease is not None, "the restored quota must admit the request"
         assert self._bucket(repo, "po-org").tokens_milli == 1000000
+        assert self._raw(repo, "po-org")[bucket_attr("rpd", BUCKET_FIELD_GC)] == {"N": "1"}
 
     def test_vu_is_stamped_for_a_reset_only_limit(self, sync_limiter):
         """A limit with a reset schedule and no parameter schedule still needs
@@ -8215,6 +8216,8 @@ class TestResetMaterialisationThroughAcquire:
         bucket = self._bucket(repo, "reset-race")
         assert bucket.tokens_milli == 10000000, "the edge crossed mid-pass still applies"
         assert bucket.total_consumed_milli == 10000000, "and `tc` is still monotonic"
+        raw = self._raw(repo, "reset-race")
+        assert raw[bucket_attr("rpd", BUCKET_FIELD_GC)] == {"N": "1"}
 
 
 class TestResetStampsGrantCount:
@@ -8233,8 +8236,11 @@ class TestResetStampsGrantCount:
             pass
         repo._now_ms = lambda: _ny("2026-09-16 00:30")
         repo.invalidate_config_cache()
-        with slow.acquire("gc-reset", "gpt-4", consume={"rpd": 1}):
-            pass
+        with patch.object(repo, "build_composite_normal", wraps=repo.build_composite_normal) as spy:
+            with slow.acquire("gc-reset", "gpt-4", consume={"rpd": 1}):
+                pass
+        assert spy.call_args.kwargs["grant_counts"] == {"rpd": 1}
+        assert spy.call_args.kwargs["pin_shard_count"] == 1
         raw = self._raw(repo, "gc-reset")
         assert raw[bucket_attr("rpd", BUCKET_FIELD_GC)] == {"N": "1"}
         assert self._bucket(repo, "gc-reset").grant_count == 1
@@ -8250,8 +8256,11 @@ class TestResetStampsGrantCount:
             pass
         repo._now_ms = lambda: t0 + 6 * 3600000
         repo.invalidate_config_cache()
-        with slow.acquire("gc-roll", "gpt-4", consume={"session": 1}):
-            pass
+        with patch.object(repo, "build_composite_normal", wraps=repo.build_composite_normal) as spy:
+            with slow.acquire("gc-roll", "gpt-4", consume={"session": 1}):
+                pass
+        assert spy.call_args.kwargs["grant_counts"] == {"session": 1}
+        assert spy.call_args.kwargs["pin_shard_count"] == 1
         raw = self._raw(repo, "gc-roll")
         assert raw[bucket_attr("session", BUCKET_FIELD_GC)] == {"N": "1"}
 
