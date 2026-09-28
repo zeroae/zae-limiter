@@ -1867,6 +1867,22 @@ def propagate_shard_count(
 
     # Path 2: Pre-create new shards (full item cloned from shard 0)
     client = table.meta.client
+    # The quotas whose grant on shard 0's image is not current — a reset or
+    # roll pending there, which every clone of that image inherits (R13).
+    image_rf = int(new_image.get("rf", {}).get("N", "0"))
+    stale_on_image: set[str] = set()
+    for limit_name, (reset_sched, rsa) in quota_rules.items():
+        ws_raw = new_image.get(bucket_attr(limit_name, BUCKET_FIELD_WS), {}).get("N")
+        wa_raw = new_image.get(bucket_attr(limit_name, BUCKET_FIELD_WA), {}).get("N")
+        if not quota_period_is_current(
+            reset_sched,
+            rsa,
+            image_rf,
+            int(ws_raw) if ws_raw is not None else None,
+            int(wa_raw) if wa_raw is not None else None,
+            now_ms,
+        ):
+            stale_on_image.add(limit_name)
     for target_shard in range(old_count, new_count):
         item = dict(base_item)
         item["PK"] = pk_bucket(namespace_id, entity_id, resource, target_shard)
@@ -1883,10 +1899,13 @@ def propagate_shard_count(
         # granted this slot this period, and it gets a fresh share.
         grants: dict[str, int] = dict(starting_tokens)
         debits: list[QuotaDonorDebit] = []
+        stale_move = False
         for limit_name, share in quota_shares.items():
             grant = plan_quota_grant(siblings[limit_name], target_shard, new_count, share)
             grants[limit_name] = grant.tokens_milli
             item[bucket_attr(limit_name, BUCKET_FIELD_GC)] = new_count
+            if grant.donor_shard is not None and limit_name in stale_on_image:
+                stale_move = True
             if (
                 grant.donor_shard is not None
                 and grant.donor_grant_count is not None
@@ -1903,6 +1922,19 @@ def propagate_shard_count(
                         now_ms,
                     )
                 )
+        if stale_move:
+            # R13: the clone copies shard 0's `rf`/`ws`/`wa`, so it would
+            # inherit shard 0's pending reset or roll for this quota. Its next
+            # pass would then SET a fresh share over what it was moved,
+            # while the donor's grant still covers the slot — that slot paid
+            # twice. Pre-create nothing (no Put, no debit): the client creates
+            # the shard lazily and stamps its own period.
+            logger.debug(
+                "Clone skipped - a quota move onto a pending reset or roll",
+                resource=resource,
+                shard_id=target_shard,
+            )
+            continue
         for limit_name, tokens in grants.items():
             item[bucket_attr(limit_name, BUCKET_FIELD_TK)] = tokens
             item[bucket_attr(limit_name, BUCKET_FIELD_TC)] = 0

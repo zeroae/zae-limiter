@@ -3769,6 +3769,26 @@ class TestQuotaShardCloneIsAMove:
         assert shard_1["b_rpd_tk"] == 150_000
         assert _must(table, 3)["b_rpd_tk"] == 250_000
 
+    def test_a_move_onto_a_pending_reset_is_not_pre_created(self, mock_dynamodb) -> None:
+        """R13: shard 0's reset is pending (``rf`` before last midnight) and it
+        still carries tokens; shard 1 is current with ``gc = 2``. Doubling
+        2 -> 4: clone 3 (parent 1, a move) would copy shard 0's stale ``rf``
+        and reset over the moved tokens while shard 1 still covers slot 3, so
+        it is not created and shard 1 is not debited. Clone 2 (parent 0,
+        stale, so a fresh grant) is created as before."""
+        table = _moto_table()
+        stale_rf = TUE_2300 - 86_400_000
+        _put_quota_shard(table, 0, tk=400_000, shard_count=4, b_rpd_gc=2, rf=stale_rf)
+        _put_quota_shard(table, 1, tk=500_000, shard_count=2, b_rpd_gc=2)
+        with patch.object(table.meta.client, "transact_write_items") as transact:
+            assert propagate_shard_count(table, _doubling_record(table, 2), TUE_1400) == 2
+        transact.assert_not_called()
+        assert _stored(table, 3) is None, "the client creates slot 3 lazily"
+        assert _must(table, 1)["b_rpd_tk"] == 500_000, "no debit"
+        clone = _must(table, 2)
+        assert (clone["b_rpd_tk"], clone["b_rpd_gc"]) == (250_000, 4)
+        assert _must(table, 0)["b_rpd_tk"] == 400_000
+
     def test_a_non_conditional_transaction_failure_propagates(self, mock_dynamodb) -> None:
         table = _moto_table()
         _put_quota_shard(table, 0, tk=1_000_000, shard_count=2, b_rpd_gc=1)

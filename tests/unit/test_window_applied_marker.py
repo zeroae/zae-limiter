@@ -501,6 +501,9 @@ class TestAPendingRollChargesWhatWasSpentMeanwhile:
             image[WA] = {"N": str(T0)}
             image[WTC] = {"N": "7000"}
         assert propagate_shard_count(_table(repo), record, T1 + 60_000) >= 1
-        clone = await _raw(repo, "u", 2)
+        # Slot 2 would be a move off shard 0 onto the faked pending image, so
+        # Path 2 leaves it to the client (R13). Slot 3 (parent 1, whose own
+        # roll is pending) is granted fresh and is cloned from the image.
+        clone = await _raw(repo, "u", 3)
         assert clone[WTC] == {"N": "0"}
         assert clone[bucket_attr("session", "tc")] == {"N": "0"}
