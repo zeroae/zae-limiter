@@ -4782,6 +4782,31 @@ class TestQuotaCloneOvertakenWhileCreated:
         assert clone_3["shard_count"] == 8, "one clone's failure skips only that clone"
         assert clone_3["b_rpd_gc"] == 4
 
+    def test_a_throttled_clone_write_is_logged_and_swallowed(self, mock_dynamodb, capsys) -> None:
+        table = _moto_table()
+        _put_quota_shard(table, 0, tk=1_000_000, shard_count=4, b_rpd_gc=1)
+        real_update = table.update_item
+
+        def clone_write_throttled(**kwargs):
+            if kwargs["Key"]["PK"].endswith("#2"):
+                raise ClientError(
+                    {"Error": {"Code": "ProvisionedThroughputExceededException"}},
+                    "UpdateItem",
+                )
+            return real_update(**kwargs)
+
+        with patch.object(table.meta.client, "transact_write_items", side_effect=self._race(table)):
+            with patch.object(table, "update_item", side_effect=clone_write_throttled):
+                assert propagate_shard_count(table, _doubling_record(table, 2), TUE_1400) == 2
+        (warning,) = [
+            e for e in _logged(capsys) if e["message"].startswith("Quota clone count repair")
+        ]
+        assert warning["shard"] == 2
+        assert warning["error_code"] == "ProvisionedThroughputExceededException"
+        assert "entity_id" not in warning
+        assert _must(table, 2)["shard_count"] == 4, "the failed write left the clone alone"
+        assert _must(table, 3)["shard_count"] == 8, "one clone's failure skips only that clone"
+
     def test_a_clone_already_raised_is_left_alone(self, mock_dynamodb) -> None:
         table = _moto_table()
         _put_quota_shard(table, 0, tk=1_000_000, shard_count=4, b_rpd_gc=1)
