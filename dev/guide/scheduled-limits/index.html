@@ -3610,6 +3610,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/145-sharded-quota-conserves-allowance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-145 A sharded quota conserves its allowance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -4101,6 +4129,17 @@ which has no rate to divide by, the wait is the time to the next reset edge — 
   also concentrates load at the boundary. For a window anchored to each caller's own activity,
   use a <a href="../session-quotas/">session quota</a> (<code>reset_after</code>,
   <a href="../../adr/139-duration-reset-windows/">ADR-139</a>) — a limit takes one or the other, never both.</li>
+<li><strong>A sharded quota's balance can be uneven until the next reset.</strong> When a busy entity splits
+  into more shards mid-period, a new shard is funded by moving tokens off the shard whose share
+  covers it — never by creating allowance, and never by discarding any — so the entity admits
+  its quota per period (<a href="../../adr/145-sharded-quota-conserves-allowance/">ADR-145</a>). Two narrow
+  races can let one shard's share through twice, once: a shard created just as another client
+  doubles the entity (repaired immediately, so it does not recur), and — only in the first
+  period after upgrading from v0.14 — a shard written by the older version. A
+  shard that spent its share early has nothing to pass on, so a request drawn to an empty shard
+  can be rejected while the entity still holds tokens on another, and the per-shard <code>capacity</code>
+  a <code>RateLimitExceeded</code> reports can differ between shards. Both settle at the next reset, when
+  every shard starts again at an equal share.</li>
 <li><strong>One time-varying mechanism per bucket.</strong> A bucket uses cron scheduling or another dynamic
   mechanism, not both. This keeps "why is my limit this number" answerable.</li>
 <li><strong>Extended cron syntax is not supported.</strong> <code>L</code> (last), <code>W</code> (weekday) and <code>#</code> (nth weekday) are

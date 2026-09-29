@@ -1885,6 +1885,39 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.models.BucketState.is_quota_state" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;is_quota_state
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.BucketState.grant_shard_count" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;grant_shard_count
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.BucketState.report_shard_count" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;report_shard_count
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.models.BucketState.window_end_ms" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1907,10 +1940,21 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#zae_limiter.models.BucketState.effective_capacity_milli" class="md-nav__link">
+  <a href="#zae_limiter.models.BucketState.reset_target_milli" class="md-nav__link">
     <span class="md-ellipsis">
       
-        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;effective_capacity_milli
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;reset_target_milli
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.BucketState.ceiling_milli" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;ceiling_milli
       
     </span>
   </a>
@@ -4765,6 +4809,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/145-sharded-quota-conserves-allowance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-145 A sharded quota conserves its allowance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -5430,6 +5502,39 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.models.BucketState.is_quota_state" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;is_quota_state
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.BucketState.grant_shard_count" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;grant_shard_count
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.BucketState.report_shard_count" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;report_shard_count
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.models.BucketState.window_end_ms" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -5452,10 +5557,21 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#zae_limiter.models.BucketState.effective_capacity_milli" class="md-nav__link">
+  <a href="#zae_limiter.models.BucketState.reset_target_milli" class="md-nav__link">
     <span class="md-ellipsis">
       
-        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;effective_capacity_milli
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;reset_target_milli
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.models.BucketState.ceiling_milli" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;ceiling_milli
       
     </span>
   </a>
@@ -7137,7 +7253,7 @@ and only then does the shard take its share — <code>capacity //
 shard_count</code>, <code>refill_amount // shard_count</code> (GHSA-76rv). Dividing
 first and scaling second is a different integer, and it is the wrong
 one: the bucket itself refills against
-<code>BucketState.effective_capacity_milli</code>, which scales first.</p>
+<code>BucketState.ceiling_milli</code>, which scales first.</p>
 <p>Both narrowings belong together because both feed <code>LimitStatus</code> and
 neither may be applied twice. A status reported from one shard has to
 quote the share, or it promises a capacity no shard can serve and, for
@@ -7987,7 +8103,7 @@ echoed back, since nothing was evaluated for them.</p>
   </span>
 
 <a href="#zae_limiter.models.BucketState" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">BucketState</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">limit_name</span><span class="p">,</span> <span class="n">tokens_milli</span><span class="p">,</span> <span class="n">last_refill_ms</span><span class="p">,</span> <span class="n">capacity_milli</span><span class="p">,</span> <span class="n">refill_amount_milli</span><span class="p">,</span> <span class="n">refill_period_ms</span><span class="p">,</span> <span class="n">total_consumed_milli</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_count</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">sched</span><span class="o">=</span><span class="p">(),</span> <span class="n">reset_sched</span><span class="o">=</span><span class="p">(),</span> <span class="n">window_start_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">reset_after_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">window_applied_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">window_consumed_mark_milli</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">BucketState</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">limit_name</span><span class="p">,</span> <span class="n">tokens_milli</span><span class="p">,</span> <span class="n">last_refill_ms</span><span class="p">,</span> <span class="n">capacity_milli</span><span class="p">,</span> <span class="n">refill_amount_milli</span><span class="p">,</span> <span class="n">refill_period_ms</span><span class="p">,</span> <span class="n">total_consumed_milli</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_count</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">sched</span><span class="o">=</span><span class="p">(),</span> <span class="n">reset_sched</span><span class="o">=</span><span class="p">(),</span> <span class="n">window_start_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">reset_after_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">window_applied_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">window_consumed_mark_milli</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">grant_count</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
@@ -8070,6 +8186,82 @@ deserialization and avoid performance overhead on frequent operations.</p>
 
 
 
+<h4 id="zae_limiter.models.BucketState.is_quota_state" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-attribute"></code>            <span class="doc doc-object-name doc-attribute-name">is_quota_state</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#zae_limiter.models.BucketState.is_quota_state" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">is_quota_state</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Whether this state is a quota (ADR-137): a reset schedule or a duration window.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h4 id="zae_limiter.models.BucketState.grant_shard_count" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-attribute"></code>            <span class="doc doc-object-name doc-attribute-name">grant_shard_count</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#zae_limiter.models.BucketState.grant_shard_count" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">grant_shard_count</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>The count this shard's quota grant was sized at (ADR-145).</p>
+<p>An item written before the grant record reads as its stored count
+(design §9, owner decision option 1).</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h4 id="zae_limiter.models.BucketState.report_shard_count" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-attribute"></code>            <span class="doc doc-object-name doc-attribute-name">report_shard_count</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#zae_limiter.models.BucketState.report_shard_count" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">report_shard_count</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>The divisor a reported per-shard limit uses (<code>Limit.per_shard</code>).</p>
+<p>A quota shard reports what it was granted (<code>C // gc</code>), so a 429 never
+shows more available than capacity. Everything else reports the share.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
 <h4 id="zae_limiter.models.BucketState.window_end_ms" class="doc doc-heading">
 <code class="doc-symbol doc-symbol-heading doc-symbol-attribute"></code>            <span class="doc doc-object-name doc-attribute-name">window_end_ms</span>
 
@@ -8138,20 +8330,44 @@ spent since. <code>False</code> for a bucket with no window.</p>
 <div class="doc doc-object doc-function">
 
 
-<h4 id="zae_limiter.models.BucketState.effective_capacity_milli" class="doc doc-heading">
-<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">effective_capacity_milli</span>
+<h4 id="zae_limiter.models.BucketState.reset_target_milli" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">reset_target_milli</span>
 
 
-<a href="#zae_limiter.models.BucketState.effective_capacity_milli" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">effective_capacity_milli</span><span class="p">(</span><span class="n">now_ms</span><span class="p">)</span>
+<a href="#zae_limiter.models.BucketState.reset_target_milli" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">reset_target_milli</span><span class="p">(</span><span class="n">now_ms</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
 
-        <p>This shard's share of the capacity in force at <code>now_ms</code>.</p>
+        <p>The balance a reset or window roll sets: this shard's share at <code>now_ms</code>.</p>
 <p>Scale first, divide second (#222 §2.1): the schedule applies to the
 whole limit and the shards split the result. Dividing first floors
 against a smaller numerator and drifts below the intended share.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="zae_limiter.models.BucketState.ceiling_milli" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">ceiling_milli</span>
+
+
+<a href="#zae_limiter.models.BucketState.ceiling_milli" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">ceiling_milli</span><span class="p">(</span><span class="n">now_ms</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>The most this shard may hold at <code>now_ms</code> — the refill clamp (ADR-145).</p>
+<p>A quota shard holds the unspent allowance of every slot its grant
+covers, so its ceiling is <code>C // gc</code>; trimming it to <code>C // S</code> would
+discard allowance no other shard holds (#637). A dripping limit keeps
+<code>C // S</code>: its shards' ceilings must sum to the capacity.</p>
 
 
     </div>
@@ -8172,7 +8388,7 @@ against a smaller numerator and drifts below the intended share.</p>
     <div class="doc doc-contents ">
 
         <p>This shard's share of the refill in force at <code>now_ms</code>.</p>
-<p>Scale first, divide second, exactly as <code>effective_capacity_milli</code>.</p>
+<p>Scale first, divide second, exactly as <code>reset_target_milli</code>.</p>
 
 
     </div>
@@ -8334,7 +8550,7 @@ rule, and the walk's <code>_rate</code> helper names it.</p>
   </span>
 
 <a href="#zae_limiter.models.BucketState.from_limit" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">from_limit</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">limit</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="n">shard_count</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">reclaimed_milli</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">from_limit</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">limit</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="n">shard_count</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">starting_tokens_milli</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -8444,19 +8660,20 @@ starts at its effective share, <code>capacity // shard_count</code></p>
           </tr>
           <tr class="doc-section-item">
             <td>
-                <code>reclaimed_milli</code>
+                <code>starting_tokens_milli</code>
             </td>
             <td>
                   <code><span title="int">int</span> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Millitokens the caller's eager clamp took off
-the shards that already exist for this (entity, resource,
-limit). Only a <strong>quota</strong> reads it, and only to take a transfer
-instead of a mint (#587) — see
-:func:<code>new_shard_starting_tokens_milli</code>. <code>None</code> (the default,
-and every dripping limit) keeps the full share.</p>
+                <p>The balance a quota shard is created or
+seeded with when it takes its share by an ADR-145 <strong>move</strong> off
+the sibling covering its slot (<code>QuotaGrant.tokens_milli</code>).
+<code>None</code> (the default, every dripping limit, and a quota whose
+slot no current-period sibling covers) starts at the full
+share, <code>BucketState.reset_target_milli</code>. A quota's
+<code>grant_count</code> is stamped <code>shard_count</code> either way (I3).</p>
               </div>
             </td>
             <td>

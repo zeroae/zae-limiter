@@ -3607,6 +3607,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../145-sharded-quota-conserves-allowance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-145 A sharded quota conserves its allowance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -3851,8 +3879,9 @@ and may open and propagate its own only when shard 0's window has ended or it ha
 <h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>
 <p><strong>Positive:</strong>
 - <code>check_availability</code> and <code>RateLimitExceeded</code> can report one honest reset instant per entity.
-- No shard's balance is ever decremented to fund another's, so the #587 over-admission cannot
-  recur through a rollover.
+- A rollover never decrements one shard's balance to fund another's, so the #587 over-admission
+  cannot recur through it. Funding a shard <em>created</em> mid-window is a separate, atomic move off the
+  shard whose grant covers it (<a href="../145-sharded-quota-conserves-allowance/">ADR-145</a>).
 - The reset is a set, not an add: idempotent, one reset however many windows an idle shard slept
   through, and the consumption counter <code>tc</code> stays monotonic.
 - Monotonic <code>rf</code> costs nothing on items without a window, since refill treats non-positive
@@ -3891,7 +3920,8 @@ on every request from that clock.</p>
 <p>Rejected because: the start is the monotonic half, which is what makes the propagation condition
 idempotent.</p>
 <h3 id="redistribute-balance-across-shards-instead-of-transferring-it">Redistribute balance across shards instead of transferring it<a class="headerlink" href="#redistribute-balance-across-shards-instead-of-transferring-it" title="Permanent link">&para;</a></h3>
-<p>Rejected because: admission gates on per-shard balance, and a quota's debt is never repaid.</p>
+<p>Rejected because: admission gates on per-shard balance, and a quota's debt is never repaid. The
+transfer that replaced it is ADR-145's move.</p>
 
 
 

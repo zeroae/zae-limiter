@@ -3577,6 +3577,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/145-sharded-quota-conserves-allowance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-145 A sharded quota conserves its allowance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -3902,7 +3930,10 @@ it is what "five hours from when you started" means. It is also why a swept buck
 see <a href="#limitations">Limitations</a>.</p>
 <h2 id="what-opens-a-window">What opens a window<a class="headerlink" href="#what-opens-a-window" title="Permanent link">&para;</a></h2>
 <p>Only <strong>admitted</strong> use. A window opens on the first request after the previous one ended that
-is actually admitted and written.</p>
+is actually admitted and written — with one narrow exception: a rejected request that was also
+creating a new shard (or adding the quota to one) and moving tokens onto it from another shard
+still writes that move, with nothing consumed, so the tokens are not lost; if that request had
+opened a window, the window opens with it. It can happen at most once per new shard.</p>
 <p>A caller hammering an exhausted quota does not keep restarting its own five hours. Inside a
 window, an exhausted quota's rejection writes nothing — on the fast path it is a free rejection,
 and on the slow path <code>RateLimitExceeded</code> is raised before any write — so the anchor never moves
@@ -4039,11 +4070,23 @@ number of seconds, and <code>refill_amount</code> defaults to <code>0</code>:</p
 <code>ResetAfterSeconds</code>.</p>
 <h2 id="limitations">Limitations<a class="headerlink" href="#limitations" title="Permanent link">&para;</a></h2>
 <ul>
-<li><strong>A single request larger than one shard's share is unadmittable</strong> while the entity is under
-  its configured quota. A heavily used entity is split across up to 32 shards, each holding
-  <code>capacity // shard_count</code>, and one request must fit on one shard. Inherited from the sharding
-  design (<a href="https://github.com/zeroae/zae-limiter/issues/475">#475</a>); keep single requests well
-  below <code>capacity / 32</code> for entities that may shard.</li>
+<li><strong>A single request larger than one shard's balance is unadmittable</strong> while the entity is under
+  its configured quota. A heavily used entity is split across up to 32 shards, and one request
+  must fit on one shard. A shard holds at most the share it was granted this window — usually
+  <code>capacity // shard_count</code>, more on a shard granted before a doubling that has not yet passed its
+  share on — so keep single requests well below <code>capacity / 32</code> for entities that may shard
+  (<a href="https://github.com/zeroae/zae-limiter/issues/475">#475</a>).</li>
+<li><strong>Shards can hold uneven balances until the window ends.</strong> When an entity splits into more
+  shards mid-window, a new shard is funded by moving tokens off the shard whose share covers it,
+  never by creating new allowance, and never by discarding any
+  (<a href="../../adr/145-sharded-quota-conserves-allowance/">ADR-145</a>): a doubling neither creates nor
+  destroys allowance, so the entity admits its quota per window. One narrow race can let one
+  shard's share through twice, once: a shard created just as another client doubles the entity
+  (repaired immediately, so it does not recur). The price is that
+  balances need not be even — a shard that spent its share early passes nothing on, so a request
+  drawn to an empty shard is rejected while the entity still holds tokens on another. The
+  per-shard <code>capacity</code> a <code>RateLimitExceeded</code> reports can also differ between shards (the share
+  each was granted). Both settle at the next window.</li>
 <li><strong>Shards can disagree by a few milliseconds.</strong> When two requests open a new window on two
   shards at almost the same instant, each keeps its own start until the next window. The entity
   still admits at most one allowance per window, and <code>check_availability()</code> reports the later
@@ -4074,10 +4117,10 @@ number of seconds, and <code>refill_amount</code> defaults to <code>0</code>:</p
   opened the next window there, it is charged against that window's share when the shard
   applies it.</li>
 <li>A shard that a v0.14 client creates does not carry the session limit. The next v0.15
-  request on it adds the limit by moving surplus from the other shards, not by creating a
-  new share. The one exception is a shard whose siblings were given a larger share earlier
-  in the same window and have already spent part of it
-  (<a href="https://github.com/zeroae/zae-limiter/issues/642">#642</a>).</li>
+  request on it adds the limit by moving tokens off the shard whose share covers it, or
+  grants a fresh share only when no shard does — the same rule as any new shard, so it
+  neither creates nor destroys allowance
+  (<a href="../../adr/145-sharded-quota-conserves-allowance/">ADR-145</a>).</li>
 </ul>
 </li>
 </ul>

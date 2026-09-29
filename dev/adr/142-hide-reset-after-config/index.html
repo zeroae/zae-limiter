@@ -18,6 +18,8 @@
         <link rel="prev" href="../141-reset-after-version-gate/">
       
       
+        <link rel="next" href="../145-sharded-quota-conserves-allowance/">
+      
       
         
       
@@ -3572,6 +3574,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../145-sharded-quota-conserves-allowance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-145 A sharded quota conserves its allowance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -3764,8 +3794,9 @@ treatment: old clients already read and rewrite a bucket carrying the session li
 without error, and only the old aggregator mishandles them, which ADR-141 prevents.</p>
 <p>Hiding the limit lets old clients write buckets that carry a window, whose shared <code>rf</code> and <code>vu</code>
 they stamp from their own limits and clock. <a href="../140-duration-window-shard-coherence/">ADR-140</a>
-makes the window mechanism independent of both, and the #633 seed fills a shard an old client
-creates by transfer from its siblings. The storage mapping, readers and verification against
+makes the window mechanism independent of both, and the seed funds a shard an old client creates
+by <a href="../145-sharded-quota-conserves-allowance/">ADR-145</a>'s move off the sibling whose grant covers
+it. The storage mapping, readers and verification against
 v0.14.0 are in #640 and CLAUDE.md "Hidden config (#640)".</p>
 <h2 id="decision">Decision<a class="headerlink" href="#decision" title="Permanent link">&para;</a></h2>
 <p>A <code>reset_after</code> limit's config attributes must be stored under the <code>w_</code> prefix (<code>w_{name}_*</code>),
@@ -3791,7 +3822,8 @@ enforces every other limit and skips only the session limit, rather than refusin
   hidden limit from config and leaves its balance on the buckets. Admin tooling must be upgraded
   first.
 - An old param sync can change the item-level schedule a session limit without its own override
-  inherits, and an old client's shard creation remains exposed to the #642 residual.</p>
+  inherits. An old client's shard creation, funded on the next v0.15 pass by ADR-145's move, can
+  only under-admit.</p>
 <h2 id="alternatives-considered">Alternatives Considered<a class="headerlink" href="#alternatives-considered" title="Permanent link">&para;</a></h2>
 <h3 id="hide-the-bucket-attributes-as-well">Hide the bucket attributes as well<a class="headerlink" href="#hide-the-bucket-attributes-as-well" title="Permanent link">&para;</a></h3>
 <p>Rejected because: old clients already handle them, and only the old aggregator misreads them,
@@ -3856,6 +3888,22 @@ miss.</p>
             </div>
           </a>
         
+        
+          
+          <a href="../145-sharded-quota-conserves-allowance/" class="md-footer__link md-footer__link--next" aria-label="Next: ADR-145 A sharded quota conserves its allowance">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                ADR-145 A sharded quota conserves its allowance
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
         
       </nav>
     

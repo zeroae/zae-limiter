@@ -3574,6 +3574,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../145-sharded-quota-conserves-allowance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-145 A sharded quota conserves its allowance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -3757,7 +3785,8 @@
 An old client sees a zero rate with no reset, which ADR-137 rejects: under <code>on_unavailable=block</code>
 every acquire on that level fails, and under <code>allow</code> every acquire is admitted with no limiting at
 all on that level. An old aggregator reads the quota as a dripping limit, so its
-proactive-sharding clone mints a fresh share per new shard — the #587 over-admission. An old
+proactive-sharding clone mints a fresh share per new shard — the #587 over-admission, where a
+v0.15 aggregator funds the clone by <a href="../145-sharded-quota-conserves-allowance/">ADR-145</a>'s move. An old
 provisioner stores a <code>reset_after</code> manifest limit as a dripping one.</p>
 <p>The version record already carries <code>lambda_version</code> and <code>client_min_version</code>, but neither could
 be trusted. <code>lambda_version</code> was stamped by writers that had not necessarily updated both Lambdas

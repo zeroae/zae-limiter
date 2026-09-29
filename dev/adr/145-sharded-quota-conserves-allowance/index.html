@@ -12,13 +12,11 @@
         <meta name="author" content="ZeroAE">
       
       
-        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/dev/adr/007-input-validation/">
+        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/dev/adr/145-sharded-quota-conserves-allowance/">
       
       
-        <link rel="prev" href="../006-flat-schema-snapshots/">
+        <link rel="prev" href="../142-hide-reset-after-config/">
       
-      
-        <link rel="next" href="../008-security-audit-logging/">
       
       
         
@@ -29,7 +27,7 @@
     
     
       
-        <title>ADR-007 Input Validation - zae-limiter</title>
+        <title>ADR-145 A sharded quota conserves its allowance - zae-limiter</title>
       
     
     
@@ -84,7 +82,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#adr-007-input-validation-for-injection-prevention" class="md-skip">
+        <a href="#adr-145-a-sharded-quota-conserves-its-allowance" class="md-skip">
           Skip to content
         </a>
       
@@ -123,7 +121,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              ADR-007 Input Validation
+              ADR-145 A sharded quota conserves its allowance
             
           </span>
         </div>
@@ -1565,20 +1563,18 @@
                 
   
   
-    
   
   
-  
     
     
     
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_2" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_2" >
         
           
           <label class="md-nav__link" for="__nav_6_2" id="__nav_6_2_label" tabindex="0">
@@ -1599,7 +1595,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_2_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_2_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_6_2">
             <span class="md-nav__icon md-icon"></span>
             
@@ -1782,37 +1778,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    ADR-007 Input Validation
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../007-input-validation/" class="md-nav__link">
         
   
   
@@ -1828,70 +1797,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#context" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Context
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#decision" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Decision
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#consequences" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Consequences
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#alternatives-considered" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Alternatives Considered
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -3134,18 +3039,20 @@
                 
   
   
+    
   
   
+  
     
     
     
     
     
-    <li class="md-nav__item md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_10" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_10" checked>
         
           
           <label class="md-nav__link" for="__nav_6_10" id="__nav_6_10_label" tabindex="0">
@@ -3166,7 +3073,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_10_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_10_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_6_10">
             <span class="md-nav__icon md-icon"></span>
             
@@ -3517,10 +3424,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../145-sharded-quota-conserves-allowance/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-145 A sharded quota conserves its allowance
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -3536,6 +3470,120 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#context" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Context
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#decision" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Decision
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#consequences" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Consequences
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#alternatives-considered" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Alternatives Considered
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Alternatives Considered">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#full-capacity-per-shard-refill-divided" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Full capacity per shard, refill divided
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#borrow-tokens-from-a-sibling-on-rejection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Borrow tokens from a sibling on rejection
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#a-grant-amount-with-no-holding-item" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A grant amount with no holding item
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#one-per-entity-allowance-item" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        One per-entity allowance item
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -3624,6 +3672,56 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Alternatives Considered">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#full-capacity-per-shard-refill-divided" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Full capacity per shard, refill divided
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#borrow-tokens-from-a-sibling-on-rejection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Borrow tokens from a sibling on rejection
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#a-grant-amount-with-no-holding-item" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A grant amount with no holding item
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#one-per-entity-allowance-item" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        One per-entity allowance item
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
     </ul>
@@ -3645,7 +3743,7 @@
 
 
   
-    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/adr/007-input-validation.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/adr/145-sharded-quota-conserves-allowance.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -3653,63 +3751,69 @@
   
 
 
-<h1 id="adr-007-input-validation-for-injection-prevention">ADR-007: Input Validation for Injection Prevention<a class="headerlink" href="#adr-007-input-validation-for-injection-prevention" title="Permanent link">&para;</a></h1>
-<p><strong>Status:</strong> Accepted
-<strong>Date:</strong> 2026-01-12
-<strong>PR:</strong> <a href="https://github.com/zeroae/zae-limiter/pull/75">#75</a>
-<strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/48">#48</a>
-<strong>Milestone:</strong> v0.2.0</p>
+<h1 id="adr-145-a-sharded-quota-conserves-its-allowance">ADR-145: A sharded quota conserves its allowance<a class="headerlink" href="#adr-145-a-sharded-quota-conserves-its-allowance" title="Permanent link">&para;</a></h1>
+<p><strong>Status:</strong> Proposed
+<strong>Date:</strong> 2026-09-28
+<strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/637">#637</a>, <a href="https://github.com/zeroae/zae-limiter/issues/642">#642</a>
+<strong>Related:</strong> ADR-133, ADR-134, ADR-137, <a href="../140-duration-window-shard-coherence/">ADR-140</a>, <a href="https://github.com/zeroae/zae-limiter/issues/587">#587</a>, <a href="https://github.com/zeroae/zae-limiter/issues/477">#477</a></p>
 <h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
-<p>DynamoDB keys use <code>#</code> as a delimiter (e.g., <code>ENTITY#user-1#BUCKET#gpt-4</code>). Without validation, malicious input containing <code>#</code> could:</p>
-<ul>
-<li>Traverse to different record types</li>
-<li>Access other entities' data</li>
-<li>Corrupt key structure</li>
-</ul>
-<p>This is analogous to SQL injection but for DynamoDB key-based access patterns.</p>
+<p>A quota (ADR-137) never drips, so on a sharded entity each shard holds a slice of the
+period's allowance and nothing refills it before the next reset. When a doubling adds
+shards, the allowance must be divided among them without being created or destroyed.</p>
+<p>Until now the only record of a shard's slice was its balance. The #587 reclaim clamped
+every sibling to the new share and kept one share for the new shard, discarding the
+rest (#637: a full, unspent quota of 1000 fell to 187 spendable after a 1→32 walk). A
+new or seeded shard was granted a full share unless a sibling visibly held a surplus,
+so a share already granted at a lower count and spent was granted again (#642: 1250 and
+1300 admitted against 1000). Both follow from one gap: nothing records how much of the
+period's allowance each shard was handed.</p>
+<p>Balances alone cannot close it. A shard created after a reset is owed its own share,
+while a shard split off a sibling granted at a lower count is owed only what that
+sibling still holds; the two look identical in the tokens.</p>
 <h2 id="decision">Decision<a class="headerlink" href="#decision" title="Permanent link">&para;</a></h2>
-<p>Add comprehensive input validation at model construction time, forbidding the <code>#</code> delimiter character in all user-provided identifiers.</p>
-<p><strong>Validation rules:</strong></p>
-<table>
-<thead>
-<tr>
-<th>Field</th>
-<th>Pattern</th>
-<th>Max Length</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>entity_id</code>, <code>parent_id</code></td>
-<td><code>^[a-zA-Z0-9][a-zA-Z0-9_.\-:@]*$</code></td>
-<td>256</td>
-</tr>
-<tr>
-<td><code>limit_name</code>, <code>resource</code></td>
-<td><code>^[a-zA-Z][a-zA-Z0-9_.\-]*$</code></td>
-<td>64</td>
-</tr>
-</tbody>
-</table>
-<p><strong>New exceptions:</strong>
-- <code>ValidationError</code> (base)
-- <code>InvalidIdentifierError</code> (entity_id, parent_id)
-- <code>InvalidNameError</code> (limit_name, resource)</p>
+<p>Every quota shard must record the shard count its current-period grant was sized at,
+and a new or seeded quota shard must be funded by an atomic move from the
+current-period sibling whose grant covers its slot, receiving fresh allowance only
+when no such sibling exists.</p>
 <h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>
 <p><strong>Positive:</strong>
-- Injection attacks impossible by construction
-- Early failure with clear error messages
-- Supports common ID formats: UUIDs, API keys, emails
-- Validation happens once at model creation, not on every operation</p>
+- A doubling neither creates nor destroys quota allowance: per period, admitted plus
+  held plus still-grantable equals the configured capacity, apart from the bounded
+  residuals below.
+- #637 and #642 close together, including the aggregator's proactive clone.
+- The speculative fast path is untouched.</p>
 <p><strong>Negative:</strong>
-- Some previously-valid IDs may be rejected (containing <code>#</code>)
-- Migration required for existing data with invalid characters</p>
+- A quota shard's ceiling is its grant, not <code>capacity // shard_count</code>, so balances
+  across shards can be uneven, and a draw on an empty shard can reject while the
+  entity holds tokens elsewhere, until the next reset.
+- A shard creation that moves tokens is a transaction, and can conflict with writes
+  on a busy donor.
+- A create is not pinned to the count it planned at: a doubling that lands before its write
+  cannot reach a shard that does not exist yet. The creator reads shard 0's count after the
+  write and raises the new shard (1 RCU per quota shard creation), so it never resets at the
+  stale count, but within that period one new share can be granted twice, once.
+- A shard written before the record exists is read as granted at its stored count (or a lower
+  one its balance implies), so #642's residual survives at most one period after upgrade. Within
+  that period a count raise that does not also record the old grant size — the client's plain
+  doubling propagation, the aggregator's when it cannot read the siblings, or any older writer —
+  can make such a shard read as covering fewer slots than it was granted for, and a later shard
+  can then be granted a slot it still holds tokens for: up to one old share, once, until its next
+  reset records the grant.
+- A rejected request that moves tokens onto a shard it creates or seeds commits the move with
+  nothing consumed, so the tokens are never lost; if it also opened a session window
+  (<a href="../139-duration-reset-windows/">ADR-139</a>), that window is anchored by a rejected request.
+- The aggregator does not pre-create a quota shard whose funding it cannot size safely from the
+  record it holds; the client creates that shard on first use.
+- The rule applies to the <code>divided</code> sharding regime; the choice of regime is #477.</p>
 <h2 id="alternatives-considered">Alternatives Considered<a class="headerlink" href="#alternatives-considered" title="Permanent link">&para;</a></h2>
-<ul>
-<li><strong>Escape/encode special characters</strong>: Rejected; complex, error-prone, obscures data in DynamoDB console</li>
-<li><strong>Validate only at repository layer</strong>: Rejected; too late, models could be passed around with invalid data</li>
-<li><strong>Allowlist specific formats (UUID only)</strong>: Rejected; too restrictive for diverse use cases</li>
-</ul>
+<h3 id="full-capacity-per-shard-refill-divided">Full capacity per shard, refill divided<a class="headerlink" href="#full-capacity-per-shard-refill-divided" title="Permanent link">&para;</a></h3>
+<p>Rejected: burst after idle reaches <code>shard_count × capacity</code>, and a quota would grant that per period.</p>
+<h3 id="borrow-tokens-from-a-sibling-on-rejection">Borrow tokens from a sibling on rejection<a class="headerlink" href="#borrow-tokens-from-a-sibling-on-rejection" title="Permanent link">&para;</a></h3>
+<p>Rejected: a genuinely exhausted entity would lose its free fast rejection; it belongs to #477.</p>
+<h3 id="a-grant-amount-with-no-holding-item">A grant amount with no holding item<a class="headerlink" href="#a-grant-amount-with-no-holding-item" title="Permanent link">&para;</a></h3>
+<p>Rejected: two concurrent creators both claim the same unheld remainder.</p>
+<h3 id="one-per-entity-allowance-item">One per-entity allowance item<a class="headerlink" href="#one-per-entity-allowance-item" title="Permanent link">&para;</a></h3>
+<p>Rejected: a write per shard creation on one hot item reintroduces the partition limit sharding avoids.</p>
 
 
 
@@ -3746,7 +3850,7 @@
       <nav class="md-footer__inner md-grid" aria-label="Footer" >
         
           
-          <a href="../006-flat-schema-snapshots/" class="md-footer__link md-footer__link--prev" aria-label="Previous: ADR-006 Flat Schema Snapshots">
+          <a href="../142-hide-reset-after-config/" class="md-footer__link md-footer__link--prev" aria-label="Previous: ADR-142 A reset_after limit&#39;s config is hidden from pre-v0.15 readers">
             <div class="md-footer__button md-icon">
               
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
@@ -3756,27 +3860,11 @@
                 Previous
               </span>
               <div class="md-ellipsis">
-                ADR-006 Flat Schema Snapshots
+                ADR-142 A reset_after limit's config is hidden from pre-v0.15 readers
               </div>
             </div>
           </a>
         
-        
-          
-          <a href="../008-security-audit-logging/" class="md-footer__link md-footer__link--next" aria-label="Next: ADR-008 Audit Logging">
-            <div class="md-footer__title">
-              <span class="md-footer__direction">
-                Next
-              </span>
-              <div class="md-ellipsis">
-                ADR-008 Audit Logging
-              </div>
-            </div>
-            <div class="md-footer__button md-icon">
-              
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
-            </div>
-          </a>
         
       </nav>
     

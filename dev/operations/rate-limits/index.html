@@ -3414,6 +3414,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/145-sharded-quota-conserves-allowance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-145 A sharded quota conserves its allowance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -4060,12 +4088,18 @@ use the <code>b_{limit_name}_{field}</code> naming convention:</p>
 <td>The session window's length in seconds, copied from config so readers need no config lookup</td>
 <td><code>18000</code></td>
 </tr>
+<tr>
+<td>Quota grant count</td>
+<td><code>b_rpd_gc</code></td>
+<td>Quotas only (calendar and session): the shard count this shard's current-period share was sized at (<a href="../../adr/145-sharded-quota-conserves-allowance/">ADR-145</a>). The shard's ceiling is <code>cp // gc</code>, and its grant covers every shard <code>j</code> with <code>j % gc == this shard % gc</code>. An item written before the attribute existed carries none and reads as <code>gc = shard_count</code> — unless it holds more than one share at that count, in which case it is read at the smaller count whose share covers its balance (the grant that balance implies)</td>
+<td><code>2</code></td>
+</tr>
 </tbody>
 </table>
 <p>The ceiling actually enforced is <strong>not</strong> <code>b_rpm_cp</code>. The schedule in force at the current
-instant is applied to the base first, and the result is then divided by <code>shard_count</code>. An
-entity on a <code>scale: 0.5</code> window across 2 shards admits <code>cp × 0.5 / 2</code> per shard. Compare
-observed rejections against that, not against the stored number.</p>
+instant is applied to the base first, and the result is then divided by <code>shard_count</code> — or, for a
+quota, by <code>b_{name}_gc</code>. An entity on a <code>scale: 0.5</code> window across 2 shards admits <code>cp × 0.5 / 2</code>
+per shard. Compare observed rejections against that, not against the stored number.</p>
 <h3 id="bucket-expiry">Bucket Expiry<a class="headerlink" href="#bucket-expiry" title="Permanent link">&para;</a></h3>
 <p>Bucket items carry a DynamoDB TTL, and whether they do depends on where their limits came
 from:</p>
