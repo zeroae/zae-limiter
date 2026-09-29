@@ -155,7 +155,10 @@ see [Limitations](#limitations).
 ## What opens a window
 
 Only **admitted** use. A window opens on the first request after the previous one ended that
-is actually admitted and written.
+is actually admitted and written — with one narrow exception: a rejected request that was also
+creating a new shard (or adding the quota to one) and moving tokens onto it from another shard
+still writes that move, with nothing consumed, so the tokens are not lost; if that request had
+opened a window, the window opens with it. It can happen at most once per new shard.
 
 A caller hammering an exhausted quota does not keep restarting its own five hours. Inside a
 window, an exhausted quota's rejection writes nothing — on the fast path it is a free rejection,
@@ -298,11 +301,23 @@ It round-trips through the `Custom::ZaeLimiterLimits` CloudFormation resource as
 
 ## Limitations
 
-- **A single request larger than one shard's share is unadmittable** while the entity is under
-  its configured quota. A heavily used entity is split across up to 32 shards, each holding
-  `capacity // shard_count`, and one request must fit on one shard. Inherited from the sharding
-  design ([#475](https://github.com/zeroae/zae-limiter/issues/475)); keep single requests well
-  below `capacity / 32` for entities that may shard.
+- **A single request larger than one shard's balance is unadmittable** while the entity is under
+  its configured quota. A heavily used entity is split across up to 32 shards, and one request
+  must fit on one shard. A shard holds at most the share it was granted this window — usually
+  `capacity // shard_count`, more on a shard granted before a doubling that has not yet passed its
+  share on — so keep single requests well below `capacity / 32` for entities that may shard
+  ([#475](https://github.com/zeroae/zae-limiter/issues/475)).
+- **Shards can hold uneven balances until the window ends.** When an entity splits into more
+  shards mid-window, a new shard is funded by moving tokens off the shard whose share covers it,
+  never by creating new allowance, and never by discarding any
+  ([ADR-145](../adr/145-sharded-quota-conserves-allowance.md)): a doubling neither creates nor
+  destroys allowance, so the entity admits its quota per window. One narrow race can let one
+  shard's share through twice, once: a shard created just as another client doubles the entity
+  (repaired immediately, so it does not recur). The price is that
+  balances need not be even — a shard that spent its share early passes nothing on, so a request
+  drawn to an empty shard is rejected while the entity still holds tokens on another. The
+  per-shard `capacity` a `RateLimitExceeded` reports can also differ between shards (the share
+  each was granted). Both settle at the next window.
 - **Shards can disagree by a few milliseconds.** When two requests open a new window on two
   shards at almost the same instant, each keeps its own start until the next window. The entity
   still admits at most one allowance per window, and `check_availability()` reports the later
@@ -333,10 +348,10 @@ It round-trips through the `Custom::ZaeLimiterLimits` CloudFormation resource as
       opened the next window there, it is charged against that window's share when the shard
       applies it.
     - A shard that a v0.14 client creates does not carry the session limit. The next v0.15
-      request on it adds the limit by moving surplus from the other shards, not by creating a
-      new share. The one exception is a shard whose siblings were given a larger share earlier
-      in the same window and have already spent part of it
-      ([#642](https://github.com/zeroae/zae-limiter/issues/642)).
+      request on it adds the limit by moving tokens off the shard whose share covers it, or
+      grants a fresh share only when no shard does — the same rule as any new shard, so it
+      neither creates nor destroys allowance
+      ([ADR-145](../adr/145-sharded-quota-conserves-allowance.md)).
 
 ## See also
 

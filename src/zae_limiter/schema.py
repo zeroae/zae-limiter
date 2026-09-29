@@ -145,6 +145,14 @@ BUCKET_FIELD_WA = "wa"  # b_{name}_wa — window applied, epoch ms
 # snapshot instant. Only consulted while `ws > wa`.
 BUCKET_FIELD_WTC = "wtc"  # b_{name}_wtc — tc at the fan-out, millitokens
 
+# `b_{name}_gc` (ADR-145): the shard count this shard's current-period grant of a
+# quota was sized at. A shard with grant count `g` covers every slot `j` with
+# `j mod g == its own id mod g`, and its balance is the unspent part of those
+# slots' allowance. Written only by a reset, window roll, create or seed — never
+# by the fast path. Absent on items written before ADR-145; read as the item's
+# `shard_count` (owner decision, design §9).
+BUCKET_FIELD_GC = "gc"  # b_{name}_gc — grant count, per limit, per shard
+
 # The explicit spelling of "this limit has no schedule of its own" (#541).
 #
 # Absence of a `b_{name}_sched` still means "inherit the item default" — that is

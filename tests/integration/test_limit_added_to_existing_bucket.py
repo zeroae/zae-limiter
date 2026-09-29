@@ -111,11 +111,11 @@ class TestLimitAddedToExistingBucket:
 @pytest.mark.asyncio
 class TestQuotaAddedToExistingShards:
     """The quota seed's LocalStack-evaluated conditions: the shard-count pin
-    and the transfer-seed persist (#633)."""
+    and the ADR-145 move a rejected seed still commits."""
 
     RPD = Limit.quota("rpd", 1_000, cron="0 0 * * *")
 
-    async def test_a_rejected_transfer_seed_is_persisted(self, localstack_limiter, unique_name):
+    async def test_a_rejected_seed_still_commits_its_move(self, localstack_limiter, unique_name):
         from unittest.mock import patch
 
         from zae_limiter import RateLimitExceeded
@@ -131,6 +131,7 @@ class TestQuotaAddedToExistingShards:
             if shard_id == 0:
                 rpd = BucketState.from_limit(entity_id, resource, self.RPD, T0, shard_count=2)
                 rpd.tokens_milli, rpd.total_consumed_milli = 700_000, 300_000
+                rpd.grant_count = 1  # granted before the doubling: covers shard 1
                 states.append(rpd)
             await repo.transact_write(
                 [
@@ -146,7 +147,7 @@ class TestQuotaAddedToExistingShards:
 
         with patch("zae_limiter.repository.random.randrange", return_value=1):
             with pytest.raises(RateLimitExceeded):
-                async with slow.acquire(entity_id, resource, consume={"rpd": 300}):
+                async with slow.acquire(entity_id, resource, consume={"rpd": 600}):
                     pass
             async with slow.acquire(entity_id, resource, consume={"rpd": 1}):
                 pass
@@ -162,4 +163,5 @@ class TestQuotaAddedToExistingShards:
                 ConsistentRead=True,
             )
         )["Item"]
-        assert item[bucket_attr("rpd", BUCKET_FIELD_TK)]["N"] == "199000"
+        # The rejected pass moved one share (500) onto shard 1; the next spent 1.
+        assert item[bucket_attr("rpd", BUCKET_FIELD_TK)]["N"] == "499000"

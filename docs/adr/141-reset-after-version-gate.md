@@ -11,7 +11,8 @@ A reader predating [ADR-139](139-duration-reset-windows.md) cannot read a `reset
 An old client sees a zero rate with no reset, which ADR-137 rejects: under `on_unavailable=block`
 every acquire on that level fails, and under `allow` every acquire is admitted with no limiting at
 all on that level. An old aggregator reads the quota as a dripping limit, so its
-proactive-sharding clone mints a fresh share per new shard — the #587 over-admission. An old
+proactive-sharding clone mints a fresh share per new shard — the #587 over-admission, where a
+v0.15 aggregator funds the clone by [ADR-145](145-sharded-quota-conserves-allowance.md)'s move. An old
 provisioner stores a `reset_after` manifest limit as a dripping one.
 
 The version record already carries `lambda_version` and `client_min_version`, but neither could

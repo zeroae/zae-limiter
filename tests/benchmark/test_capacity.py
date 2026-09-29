@@ -837,8 +837,8 @@ class TestDurationWindowCapacity:
         count = 1
         while count < shards:
             count = repo.bump_shard_count(entity_id, self.RESOURCE, count)
-        # A zero-token draw creates the shard without spending: the #587
-        # transfer grants at most one share per created shard, so a later shard
+        # A zero-token draw creates the shard without spending: the ADR-145
+        # move grants at most one share per created shard, so a later shard
         # can legitimately start empty and would reject a one-token draw.
         nothing = dict.fromkeys(consume, 0)
         for shard in range(1, shards):
@@ -934,7 +934,7 @@ class TestDurationWindowCapacity:
         entity_id = f"win-roll-{shards}-{window_limits}"
         consume = {f"session{i}": 1 for i in range(window_limits)}
         self._seed(sync_limiter, entity_id, shards, window_limits)
-        drawn = min(1, shards - 1)  # a sibling holding a full transferred share
+        drawn = min(1, shards - 1)  # a sibling holding a full moved share
 
         # Baseline: an identical slow pass on the same shard, window still live.
         self._force_slow_pass(sync_limiter, entity_id, drawn)
@@ -994,7 +994,8 @@ class TestLimitAddedToExistingBucketCapacity:
     routes to — the same reads, and the one rf-locked ``UpdateItem`` it would
     have written anyway, now carrying the missing limit's attributes. After it
     the fast path is back to 0 RCU + 1 WCU. A quota added to a *sharded* entity
-    additionally reads its siblings once (#587: a seed must never mint), and a
+    additionally reads its siblings once (ADR-145: a seed is funded by a move or an
+    uncovered slot's grant, never minted over a covering sibling), and a
     session quota reads shard 0's window once (ADR-140).
     """
 
@@ -1093,3 +1094,81 @@ class TestLimitAddedToExistingBucketCapacity:
         # (the missing limit reads as an exhausted one, #633 notes), the seed,
         # and the fan-out of the window it opened to shard 0.
         assert counts["update_item"] == 4
+
+
+class TestQuotaGrantCapacity:
+    """ADR-145 guards: the quota grant record costs nothing on the fast path,
+    and a shard creation funded by a move is one extra read and one 2-item
+    transaction — never a clamp per sibling (the #587 reclaim it replaced).
+    """
+
+    T0 = 1_757_000_000_000
+    QUOTA = Limit.quota("rpd", 1000, cron="0 0 * * *")
+
+    @staticmethod
+    def _counts(counter) -> dict:
+        return {
+            "get_item": counter.get_item,
+            "batch_get_item": list(counter.batch_get_item),
+            "query": counter.query,
+            "put_item": counter.put_item,
+            "update_item": counter.update_item,
+            "transact_write_items": list(counter.transact_write_items),
+        }
+
+    def test_the_fast_path_on_a_quota_is_one_write_and_no_reads(
+        self, sync_limiter, capacity_counter
+    ):
+        sync_limiter._repository._now_ms = lambda: self.T0
+        sync_limiter.set_limits("q-fast", [self.QUOTA], resource="api")
+        with sync_limiter.acquire("q-fast", "api", consume={"rpd": 1}):
+            pass
+
+        capacity_counter.reset()
+        with capacity_counter.counting():
+            with sync_limiter.acquire("q-fast", "api", consume={"rpd": 1}):
+                pass
+        assert self._counts(capacity_counter) == {
+            "get_item": 0,
+            "batch_get_item": [],
+            "query": 0,
+            "put_item": 0,
+            "update_item": 1,
+            "transact_write_items": [],
+        }
+
+    def test_a_shard_created_by_a_move_is_one_read_and_one_transaction(
+        self, sync_limiter, capacity_counter
+    ):
+        """Shard 0 holds the whole quota at count 1; after a doubling, shard 1
+        is created by moving half of it: the sibling read (1 Query + 1
+        BatchGetItem) and one transaction carrying the create and the donor
+        debit. The only UpdateItem is the fast path's failed attempt on the
+        missing shard — no clamp of any sibling. The one GetItem is the
+        stale-count repair's strongly consistent read of shard 0's
+        ``shard_count`` after the create lands (design §8 R7); it finds no
+        lag here, so it writes nothing."""
+        repo = sync_limiter._repository
+        repo._now_ms = lambda: self.T0
+        sync_limiter.set_limits("q-move", [self.QUOTA], resource="api")
+        with sync_limiter.acquire("q-move", "api", consume={"rpd": 0}):
+            pass
+        assert repo.bump_shard_count("q-move", "api", 1) == 2
+        sync_limiter._resolve_limits("q-move", "api", None)
+
+        capacity_counter.reset()
+        with capacity_counter.counting(), pinned_shard(1):
+            with sync_limiter.acquire("q-move", "api", consume={"rpd": 1}):
+                pass
+        counts = self._counts(capacity_counter)
+        assert counts == {
+            # The repair's consistent read of shard 0's count (1 RCU).
+            "get_item": 1,
+            # The disabled walk, META + bucket, and the siblings the GSI3
+            # query found (one key per existing shard: just shard 0 here).
+            "batch_get_item": [3, 2, 1],
+            "query": 1,
+            "put_item": 0,
+            "update_item": 1,
+            "transact_write_items": [2],
+        }, counts

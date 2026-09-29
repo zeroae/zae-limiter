@@ -7,6 +7,7 @@ Changes should be made to the source file, then regenerated.
 """
 
 import logging
+import random
 import time
 import warnings
 from dataclasses import dataclass, field, replace
@@ -20,7 +21,7 @@ from .bucket import (
     window_end_in_force,
 )
 from .exceptions import LeaseExpiredError, RateLimitExceeded
-from .models import BucketState, Limit, LimitStatus
+from .models import BucketState, Limit, LimitStatus, QuotaDonorDebit
 from .schema import BUCKET_FIELD_RF, BUCKET_FIELD_TK, bucket_attr, calculate_bucket_ttl_seconds
 
 _CONFLICT_MAX_RETRIES = 3
@@ -56,29 +57,30 @@ class LeaseEntry:
     _window_end_ms: int | None = None
     _stored_reset_after_seconds: int | None = None
     _seed: bool = False
-    _seed_initial: BucketState | None = None
+    _granted: bool = False
+    _donor_debit: QuotaDonorDebit | None = None
 
 
-def persist_transfer_seeds(repo: "SyncRepositoryProtocol", entries: list[LeaseEntry]) -> None:
-    """Persist every transfer seed among ``entries`` that this pass will not write (#633).
+class QuotaMoveLostError(Exception):
+    """A commit carrying an ADR-145 quota move did not land (internal).
 
-    Called on the two paths where a quota's transfer was taken but its seed is
-    not written by the pass itself: a slow-path rejection, and a lost `rf` lock
-    (before the consumption-only retry, which can then debit the persisted
-    seed). See :meth:`SyncRepository.persist_seed` for why this does not weaken
-    write-on-enter beyond the clamp that already ran.
+    The transaction failed a condition — the donor spent, reset or regranted
+    since it was read, or the recipient raced — or kept conflicting past its
+    retries. It rolled back whole, donor untouched, so the plan is stale and
+    the acquire re-plans from a fresh read (design §6 step 6). Not exported.
     """
-    for entry in entries:
-        if entry._seed_initial is None:
-            continue
-        repo.persist_seed(
-            entry.entity_id,
-            entry.resource,
-            entry._shard_id,
-            entry._seed_initial,
-            vu=entry._boundary_ms,
-            seed_shard_count=entry._seed_initial.shard_count,
-        )
+
+
+def _mark_granted(entry: LeaseEntry) -> None:
+    """Record a quota reset or roll applied at commit time (ADR-145 I3).
+
+    The acquire path marks the resets it saw; an edge or window end crossed
+    between its reading and the commit's is re-applied in `_commit_initial`,
+    and that is a re-grant at the item's count exactly the same.
+    """
+    if entry.limit.is_quota:
+        entry.state.grant_count = entry.state.shard_count
+        entry._granted = True
 
 
 @dataclass
@@ -184,7 +186,7 @@ class SyncLease:
                 entity_id=entry.entity_id,
                 resource=entry.resource,
                 limit_name=entry.limit.name,
-                limit=entry.limit.per_shard(entry.state.shard_count, now_ms),
+                limit=entry.limit.per_shard(entry.state.report_shard_count, now_ms),
                 available=result.available,
                 requested=amount,
                 exceeded=not result.success,
@@ -202,7 +204,7 @@ class SyncLease:
                         entity_id=entry.entity_id,
                         resource=entry.resource,
                         limit_name=entry.limit.name,
-                        limit=entry.limit.per_shard(entry.state.shard_count, now_ms),
+                        limit=entry.limit.per_shard(entry.state.report_shard_count, now_ms),
                         available=available,
                         requested=0,
                         exceeded=False,
@@ -305,6 +307,7 @@ class SyncLease:
             groups.setdefault(key, []).append(entry)
         items: list[dict[str, Any]] = []
         window_fanouts: dict[tuple[str, str, int, int], dict[str, tuple[int, int]]] = {}
+        quota_creates: list[tuple[str, str, int, int, list[str]]] = []
         for (entity_id, resource, shard_id), group_entries in groups.items():
             is_new = group_entries[0]._is_new
             has_custom_config = group_entries[0]._has_custom_config
@@ -344,6 +347,11 @@ class SyncLease:
                     window_fanouts[entity_id, resource, shard_id, first_entry._shard_count] = (
                         created
                     )
+                created_quotas = [e.limit.name for e in group_entries if e.limit.is_quota]
+                if shard_id != 0 and created_quotas:
+                    quota_creates.append(
+                        (entity_id, resource, shard_id, first_entry._shard_count, created_quotas)
+                    )
             else:
                 consumed: dict[str, int] = {}
                 refill_amounts: dict[str, int] = {}
@@ -367,7 +375,7 @@ class SyncLease:
                         )
                         if restarted:
                             entry.state.tokens_milli = (
-                                entry.state.effective_capacity_milli(now_ms) - consumed_milli
+                                entry.state.reset_target_milli(now_ms) - consumed_milli
                             )
                             if entry._window_end_ms is not None and entry._window_end_ms <= now_ms:
                                 entry._window_start_ms = now_ms
@@ -390,16 +398,16 @@ class SyncLease:
                     )
                     if entry._reset_edge_ms is not None and entry._reset_edge_ms <= now_ms:
                         refill_amounts[name] = (
-                            entry.state.effective_capacity_milli(now_ms)
-                            - entry._original_tokens_milli
+                            entry.state.reset_target_milli(now_ms) - entry._original_tokens_milli
                         )
+                        _mark_granted(entry)
                     if entry._window_end_ms is not None and entry._window_end_ms <= now_ms:
                         entry._window_start_ms = now_ms
                         entry.state.window_start_ms = now_ms
                         refill_amounts[name] = (
-                            entry.state.effective_capacity_milli(now_ms)
-                            - entry._original_tokens_milli
+                            entry.state.reset_target_milli(now_ms) - entry._original_tokens_milli
                         )
+                        _mark_granted(entry)
                     rsa = entry.state.reset_after_seconds
                     if entry._window_start_ms is not None and rsa is not None:
                         windows[name] = (entry._window_start_ms, rsa)
@@ -409,6 +417,13 @@ class SyncLease:
                         and (rsa != entry._stored_reset_after_seconds)
                     ):
                         window_lengths[name] = rsa
+                grant_counts = {
+                    e.limit.name: e.state.grant_count
+                    for e in group_entries
+                    if e._granted and (not e._seed) and (e.state.grant_count is not None)
+                }
+                pin = [e.state.shard_count for e in group_entries if e._seed and e.limit.is_quota]
+                pin += list(grant_counts.values())
                 items.append(
                     repo.build_composite_normal(
                         entity_id=entity_id,
@@ -424,14 +439,8 @@ class SyncLease:
                         window_lengths=window_lengths,
                         applied_windows=_applied_windows(group_entries),
                         seeds=seeds,
-                        seed_shard_count=max(
-                            (
-                                e.state.shard_count
-                                for e in group_entries
-                                if e._seed and e.limit.is_quota
-                            ),
-                            default=None,
-                        ),
+                        grant_counts=grant_counts,
+                        pin_shard_count=min(pin, default=None),
                         rf_ms=_monotonic_rf(now_ms, expected_rf, group_entries),
                         clear_vu=not boundaries,
                     )
@@ -444,6 +453,16 @@ class SyncLease:
         if not items:
             self._initial_committed = True
             return
+        by_bucket: dict[tuple[str, str], list[QuotaDonorDebit]] = {}
+        for entry in self.entries:
+            if entry._donor_debit is not None:
+                by_bucket.setdefault((entry.entity_id, entry.resource), []).append(
+                    entry._donor_debit
+                )
+        donor_items: list[dict[str, Any]] = []
+        for (entity_id, resource), debits in by_bucket.items():
+            donor_items += repo.build_quota_donor_debits(entity_id, resource, debits)
+        items += donor_items
         condition_failed = False
         condition_exc: Exception | None = None
         for attempt in range(_CONFLICT_MAX_RETRIES + 1):
@@ -457,7 +476,7 @@ class SyncLease:
                     break
                 if _is_transaction_conflict(exc):
                     if attempt < _CONFLICT_MAX_RETRIES:
-                        delay = _CONFLICT_BASE_DELAY_S * 2**attempt
+                        delay = random.uniform(0, _CONFLICT_BASE_DELAY_S * 2**attempt)
                         logger.debug(
                             "TransactionConflict (attempt %d/%d), retrying in %.3fs",
                             attempt + 1,
@@ -466,10 +485,14 @@ class SyncLease:
                         )
                         time.sleep(delay)
                         continue
+                    if donor_items:
+                        raise QuotaMoveLostError from exc
                     raise
                 raise
+        if condition_failed and donor_items:
+            raise QuotaMoveLostError from condition_exc
+        reissued_creates: set[tuple[str, str, int]] = set()
         if condition_failed:
-            persist_transfer_seeds(repo, self.entries)
             logger.debug("Normal write failed (optimistic lock), retrying consumption-only")
             reason_codes = (
                 _get_cancellation_reason_codes(condition_exc) if condition_exc is not None else None
@@ -554,11 +577,56 @@ class SyncLease:
                         raise RateLimitExceeded(statuses) from retry_exc
                     retry_items = downgraded
                     retry_groups = downgraded_groups
+            reissued_creates = {
+                key
+                for item, (key, _group) in zip(retry_items, retry_groups, strict=True)
+                if isinstance(item, dict) and "Put" in item
+            }
         self._initial_committed = True
         for entry in self.entries:
             entry._initial_consumed = entry.consumed
         if not condition_failed:
+            self._repair_created_quota_shards(quota_creates)
             self._fan_out_windows(window_fanouts)
+        elif reissued_creates:
+            self._repair_created_quota_shards(
+                [c for c in quota_creates if (c[0], c[1], c[2]) in reissued_creates]
+            )
+
+    def _repair_created_quota_shards(
+        self, quota_creates: list[tuple[str, str, int, int, list[str]]]
+    ) -> None:
+        """Raise each quota shard this commit created if a doubling overtook it (ADR-145).
+
+        A create is not pinned to the count it planned at: another client can
+        double shard 0 between this pass's plan and its ``Put``, and that
+        doubling's propagation finds nothing at this shard yet. Left alone, the
+        shard resets at the old count every period, covering slots a shard
+        created at the new count also covers. One strongly consistent read of
+        shard 0's count per created quota shard (1 RCU), and a write only when
+        it lags (:meth:`SyncRepository.repair_created_quota_shard`). The current
+        grant keeps its size, so at most one new share can overlap, once, in
+        this period (design §8).
+
+        After the commit, like the window fan-out: the caller was admitted and
+        the write landed, so a failure here is logged — without the entity id,
+        routinely an API key — and swallowed. Only for a ``Put`` that landed:
+        in the rf-locked write itself, or re-issued as-is on the
+        consumption-only retry after a sibling item failed its condition. A
+        create that lost its race is some other writer's item.
+        """
+        for entity_id, resource, shard_id, created_count, names in quota_creates:
+            try:
+                self.repository.repair_created_quota_shard(
+                    entity_id, resource, shard_id, created_count, names
+                )
+            except Exception:
+                logger.warning(
+                    "quota shard count repair failed for resource=%s shard=%d; the shard keeps its created count until a doubling reaches it",
+                    resource,
+                    shard_id,
+                    exc_info=True,
+                )
 
     def _fan_out_windows(
         self, window_fanouts: dict[tuple[str, str, int, int], dict[str, tuple[int, int]]]
@@ -882,7 +950,7 @@ def _retry_statuses(
                     entity_id=entry.entity_id,
                     resource=entry.resource,
                     limit_name=entry.limit.name,
-                    limit=entry.limit.per_shard(real.shard_count, now_ms),
+                    limit=entry.limit.per_shard(real.report_shard_count, now_ms),
                     available=result.available,
                     requested=entry.consumed,
                     exceeded=exceeded,
@@ -902,7 +970,7 @@ def _retry_statuses(
                 entity_id=entry.entity_id,
                 resource=entry.resource,
                 limit_name=entry.limit.name,
-                limit=entry.limit.per_shard(entry.state.shard_count, now_ms),
+                limit=entry.limit.per_shard(entry.state.report_shard_count, now_ms),
                 available=entry.state.tokens_milli // 1000,
                 requested=entry.consumed,
                 exceeded=entry.consumed > 0,

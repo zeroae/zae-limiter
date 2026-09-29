@@ -248,16 +248,21 @@ class TestEveryWriterMarks:
         assert await _slow_acquire(limiter, "u", 1, T1 + 2_000) == 1
         assert await _num(repo, "u", 1, TK) == 3_000
 
-    async def test_the_seed_persist_marks_the_window_it_joins(self, limiter):
+    async def test_a_seed_joining_a_live_window_marks_it(self, limiter):
+        """A shard that exists without the session quota seeds it by joining
+        shard 0's live window (and a move off shard 0, ADR-145), and marks it."""
         repo = limiter._repository
+        await _first_use(limiter, "u", T0)
+        assert await repo.bump_shard_count("u", RESOURCE, 1) == 2
         rpm = Limit.per_minute("rpm", 100)
-        states = [BucketState.from_limit("u", RESOURCE, rpm, T0)]
-        await repo.transact_write([repo.build_composite_create("u", RESOURCE, states, T0)])
-        seed = BucketState.from_limit("u", RESOURCE, SESSION_10, T0 + 5)
-        seed.window_start_ms = T0
-        assert await repo.persist_seed("u", RESOURCE, 0, seed)
-        assert await _num(repo, "u", 0, WS) == T0
-        assert await _num(repo, "u", 0, WA) == T0
+        states = [BucketState.from_limit("u", RESOURCE, rpm, T0, shard_count=2)]
+        await repo.transact_write(
+            [repo.build_composite_create("u", RESOURCE, states, T0, shard_id=1, shard_count=2)]
+        )
+        assert await _slow_acquire(limiter, "u", 1, T0 + 60_000) == 1
+        assert await _num(repo, "u", 1, WS) == T0
+        assert await _num(repo, "u", 1, WA) == T0
+        assert await _num(repo, "u", 1, TK) == 4_000
 
 
 class TestOldWriterClockSkew:
@@ -496,6 +501,9 @@ class TestAPendingRollChargesWhatWasSpentMeanwhile:
             image[WA] = {"N": str(T0)}
             image[WTC] = {"N": "7000"}
         assert propagate_shard_count(_table(repo), record, T1 + 60_000) >= 1
-        clone = await _raw(repo, "u", 2)
+        # Slot 2 would be a move off shard 0 onto the faked pending image, so
+        # Path 2 leaves it to the client (R13). Slot 3 (parent 1, whose own
+        # roll is pending) is granted fresh and is cloned from the image.
+        clone = await _raw(repo, "u", 3)
         assert clone[WTC] == {"N": "0"}
         assert clone[bucket_attr("session", "tc")] == {"N": "0"}

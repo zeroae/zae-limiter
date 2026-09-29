@@ -6,6 +6,7 @@ This module provides synchronous versions of the async classes.
 Changes should be made to the source file, then regenerated.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -21,6 +22,8 @@ if TYPE_CHECKING:
         Entity,
         Limit,
         OnUnavailableAction,
+        QuotaDonorDebit,
+        QuotaGrant,
         UsageSnapshot,
         UsageSummary,
     )
@@ -541,8 +544,9 @@ class SyncRepositoryProtocol(Protocol):
         rf_ms: int | None = None,
         window_lengths: dict[str, int] | None = None,
         seeds: "dict[str, BucketState] | None" = None,
-        seed_shard_count: int | None = None,
+        pin_shard_count: int | None = None,
         applied_windows: dict[str, int] | None = None,
+        grant_counts: dict[str, int] | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -570,14 +574,18 @@ class SyncRepositoryProtocol(Protocol):
                 item (#633), SET in full on this write under
                 ``attribute_not_exists(cp) OR attribute_not_exists(tk)``
                 rather than ``ADD``ed. Must not also appear in ``consumed``.
-            seed_shard_count: The count a quota seed's share was sized for;
-                pins ``attribute_not_exists(shard_count) OR shard_count <=
-                :sized`` so a racing doubling cannot leave an oversized quota
-                share for the fast path to spend (#633).
+            pin_shard_count: The count a quota seed's share, or a reset or
+                roll's grant, was sized for; pins
+                ``attribute_not_exists(shard_count) OR shard_count <= :sized``
+                so a racing doubling cannot leave an oversized quota share for
+                the fast path to spend (#633, ADR-145 I4).
             applied_windows: Limit name -> the window start the write leaves
                 that limit's balance reflecting, stamped as ``b_{name}_wa``
                 (#640) for every window limit on the write. The value read or
                 opened, never a copy of the ``ws`` path.
+            grant_counts: Limit name -> the shard count a quota reset or roll
+                on this write re-granted it at, stamped as ``b_{name}_gc``
+                (ADR-145 I3).
         """
         ...
 
@@ -617,26 +625,6 @@ class SyncRepositoryProtocol(Protocol):
             entity_id: Entity owning the bucket
             resource: Resource name
             deltas: Delta per limit (millitokens, positive=consume, negative=release)
-        """
-        ...
-
-    def persist_seed(
-        self,
-        entity_id: str,
-        resource: str,
-        shard_id: int,
-        state: "BucketState",
-        vu: int | None = None,
-        seed_shard_count: int | None = None,
-    ) -> bool:
-        """Write a transfer seed on a pass that will not write it itself (#633).
-
-        ``SET`` the limit's attributes at ``state.tokens_milli`` with nothing
-        consumed, under ``attribute_exists(PK) AND attribute_not_exists(tk)``
-        and the shard-count pin; ``vu`` lowered when absent or later.
-
-        Returns:
-            Whether the seed was written.
         """
         ...
 
@@ -753,53 +741,66 @@ class SyncRepositoryProtocol(Protocol):
         """
         ...
 
-    def reclaim_quota_surplus(
-        self, entity_id: str, resource: str, shares_milli: dict[str, int]
-    ) -> tuple[int, dict[str, int]]:
-        """Clamp a quota's existing shards to their new share, and report the take (#587).
+    def plan_quota_shard(
+        self,
+        entity_id: str,
+        resource: str,
+        limits: Sequence["Limit"],
+        shard_id: int,
+        shard_count: int,
+        now_ms: int,
+    ) -> tuple[int, dict[str, "QuotaGrant"], list["QuotaDonorDebit"]]:
+        """Plan the grant of every quota in ``limits`` for shard ``shard_id`` (ADR-145).
 
-        A quota does not drip (ADR-137), so a shard created mid-period at a
-        fresh ``capacity // shard_count`` is allowance nothing reclaims before
-        the next reset edge. The new shard is filled by transfer instead: this
-        applies the ceiling the doubling shrank the existing shards to — the
-        same clamp ``refill_bucket`` would apply on their next pass — and what
-        it takes is what the new shard is created with.
-
-        Must be called with quota limits only; a dripping limit's new shard
-        rightly starts full.
+        Reads the siblings once and decides per quota a move off the
+        current-period sibling covering this slot, or a fresh grant when none
+        does (``models.plan_quota_grant``). The count is the largest of
+        ``shard_count`` and every sibling's stored count; a lagging sibling
+        has it raised before a fresh grant (design §8 R5). Writes nothing
+        else: the debits ride in the acquire's own transaction.
 
         Args:
             entity_id: Entity owning the shards
             resource: Resource the shards belong to
-            shares_milli: ``{limit_name: capacity_milli // shard_count}``
+            limits: The limits being created or seeded; non-quotas are ignored
+            shard_id: The shard being created or seeded
+            shard_count: The caller's shard count
+            now_ms: The pass's clock reading
 
         Returns:
-            ``(shards_found, {limit_name: reclaimed_milli})``. ``shards_found``
-            is 0 when nothing is materialised for this (entity, resource),
-            which is not the same as reclaiming nothing.
+            ``(count, {quota_name: QuotaGrant}, debits)``; a quota absent from
+            the grants takes its full share.
         """
         ...
 
-    def reclaim_quota_seed(
-        self, entity_id: str, resource: str, capacities_milli: dict[str, int], shard_count: int
-    ) -> tuple[int, dict[str, int]]:
-        """How quotas missing from an existing shard may be seeded (#633, #587).
+    def repair_created_quota_shard(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int,
+        created_count: int,
+        quota_names: Sequence[str],
+    ) -> bool:
+        """Raise a just-created quota shard whose count a doubling overtook (ADR-145).
 
-        Full share ``capacity // count`` unless some sibling holds more than
-        that share; then every sibling above it is clamped and the seed is
-        what the clamp took. ``count`` is the largest of ``shard_count`` and
-        every sibling's stored count.
-
-        Args:
-            entity_id: Entity owning the shards
-            resource: Resource the shards belong to
-            capacities_milli: ``{limit_name: capacity_milli}`` in force now,
-                undivided, for the missing quota limits
-            shard_count: The shard count the caller would seed at
+        One strongly consistent read of shard 0's ``shard_count``; when it is
+        higher than ``created_count``, the created item's count is raised with
+        its current grant size frozen (``gc = if_not_exists(gc, :old)``).
 
         Returns:
-            ``(count, {limit_name: reclaimed_milli})`` for the limits that
-            must take a transfer; a name absent gets its full share.
+            True when the created item was raised.
+        """
+        ...
+
+    def build_quota_donor_debits(
+        self, entity_id: str, resource: str, debits: Sequence["QuotaDonorDebit"]
+    ) -> list[dict[str, Any]]:
+        """The donor side of each ADR-145 move, one ``Update`` per donor shard.
+
+        Conditioned on the donor still holding the tokens, still at the grant
+        count read (or carrying none and at that shard count), and its grant
+        still in the current period. Several quotas moving off one donor
+        share one ``Update``.
         """
         ...
 
@@ -814,7 +815,7 @@ class SyncRepositoryProtocol(Protocol):
 
         The read must be **strongly consistent**: a stale pre-roll ``ws`` looks
         ended, and the caller would then grant the new shard a fresh full share
-        instead of the #587 transfer from the window shard 0 just opened.
+        instead of the ADR-145 move from the window shard 0 just opened.
 
         Args:
             entity_id: Entity whose shard is being created. On a cascade create

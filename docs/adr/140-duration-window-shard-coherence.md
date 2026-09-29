@@ -45,8 +45,9 @@ and may open and propagate its own only when shard 0's window has ended or it ha
 
 **Positive:**
 - `check_availability` and `RateLimitExceeded` can report one honest reset instant per entity.
-- No shard's balance is ever decremented to fund another's, so the #587 over-admission cannot
-  recur through a rollover.
+- A rollover never decrements one shard's balance to fund another's, so the #587 over-admission
+  cannot recur through it. Funding a shard *created* mid-window is a separate, atomic move off the
+  shard whose grant covers it ([ADR-145](145-sharded-quota-conserves-allowance.md)).
 - The reset is a set, not an add: idempotent, one reset however many windows an idle shard slept
   through, and the consumption counter `tc` stays monotonic.
 - Monotonic `rf` costs nothing on items without a window, since refill treats non-positive
@@ -95,4 +96,5 @@ Rejected because: the start is the monotonic half, which is what makes the propa
 idempotent.
 
 ### Redistribute balance across shards instead of transferring it
-Rejected because: admission gates on per-shard balance, and a quota's debt is never repaid.
+Rejected because: admission gates on per-shard balance, and a quota's debt is never repaid. The
+transfer that replaced it is ADR-145's move.

@@ -41,3 +41,19 @@ When reviewing PRs, check the following based on files changed:
 
 ## Design Validation (new features with derived data)
 When implementing features that derive data from state changes (like consumption from token deltas), use the `design-validator` agent to validate the approach before implementation. See issue #179 for an example where the snapshot aggregator failed because `old_tokens - new_tokens` doesn't work when refill rate exceeds consumption rate.
+
+## Quota grants (changes touching a quota's `tk` or `gc`)
+A sharded quota conserves its allowance only while every writer follows ADR-145 (I1–I8, listed
+under CLAUDE.md "Important Invariants"). For any change to `models.plan_quota_grant` /
+`quota_period_is_current`, `Repository.plan_quota_shard` and its donor debits, the grant-size
+freeze, the rejected-move commit, a reset or roll, shard creation or seeding, or the aggregator's
+Path 1 / Path 2 / refill:
+- `tests/unit/test_quota_conservation_fuzz.py` (I8 against the real repository), the acceptance
+  tests in `tests/unit/test_quota_shard_creation.py` and `tests/unit/test_window_shard_creation.py`,
+  and the planner-vs-model differential in `tests/unit/test_quota_grant_plan.py` must pass
+- A new bucket write must be declared in `tests/unit/test_bucket_writer_registry.py` (does it
+  write a quota's `tk` or `gc`?) and added to `tests/unit/test_expression_tokens.py`
+- The fast path must stay 0 RCU + 1 WCU and never read or write `gc`
+  (`tests/benchmark/test_capacity.py::TestQuotaGrantCapacity`)
+- Run the `design-validator` agent on any change to grant logic: "who funds this slot, and can two
+  writers both fund it?" is a derivation question of the #179 kind
