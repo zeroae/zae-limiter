@@ -1430,3 +1430,192 @@ class TestConcurrentWindowOpeners:
                 )
         finally:
             await parent_b.close()
+
+
+def _put_native_quota_shard(table, entity_id, shard, *, tk, shard_count, gc=None):
+    """A bucket shard carrying the daily quota `rpd` (1,000/day) and `wcu`, native values."""
+    item = {
+        "PK": pk_bucket("default", entity_id, "gpt-4", shard),
+        "SK": sk_state(),
+        "entity_id": entity_id,
+        "resource": "gpt-4",
+        "rf": int(time.time() * 1000),
+        "shard_count": shard_count,
+        "cascade": False,
+        "GSI3PK": f"default/ENTITY#{entity_id}",
+        "GSI3SK": f"BUCKET#gpt-4#{shard}",
+        "rsched": "1m0h0",
+        "b_rpd_tk": tk,
+        "b_rpd_cp": 1_000_000,
+        "b_rpd_ra": 0,
+        "b_rpd_rp": 1_000,
+        "b_rpd_tc": 0,
+        "b_wcu_tk": 900_000,
+        "b_wcu_cp": 1_000_000,
+        "b_wcu_ra": 1_000_000,
+        "b_wcu_rp": 1_000,
+        "b_wcu_tc": 0,
+    }
+    if gc is not None:
+        item["b_rpd_gc"] = gc
+    table.put_item(Item=item)
+
+
+def _shard0_record(table, entity_id, old_count: int) -> dict:
+    """Shard 0's MODIFY record for a doubling from ``old_count`` to its stored count."""
+    raw = table.meta.client.get_item(
+        TableName=table.name,
+        Key={"PK": pk_bucket("default", entity_id, "gpt-4", 0), "SK": sk_state()},
+    )["Item"]
+    # `table.meta.client` shares the resource's serializer: re-type the image
+    # the way a stream record carries it.
+    from boto3.dynamodb.types import TypeSerializer
+
+    serializer = TypeSerializer()
+    new = {k: serializer.serialize(v) for k, v in raw.items()}
+    old = dict(new)
+    old["shard_count"] = {"N": str(old_count)}
+    return {"eventName": "MODIFY", "dynamodb": {"NewImage": new, "OldImage": old}}
+
+
+@pytest.mark.integration
+class TestAggregatorQuotaCloneIsATransaction:
+    """ADR-145 Path 2 against real DynamoDB: the clone's ``Put`` and the donor's
+    ``Update`` go through ``table.meta.client.transact_write_items`` with native
+    values (R12), which moto only approximates; plus the legacy donor branch
+    (``attribute_not_exists(gc) AND shard_count = :ql``) and the I1 repair."""
+
+    def test_a_clone_is_funded_by_its_parent_in_one_transaction(self, dynamodb_table) -> None:
+        eid = f"agg-move-{uuid.uuid4().hex[:8]}"
+        _put_native_quota_shard(dynamodb_table, eid, 0, tk=1_000_000, shard_count=2, gc=1)
+        assert propagate_shard_count(dynamodb_table, _shard0_record(dynamodb_table, eid, 1)) == 1
+        shard_0 = _get_sharded_bucket(dynamodb_table, eid, "gpt-4", 0)
+        shard_1 = _get_sharded_bucket(dynamodb_table, eid, "gpt-4", 1)
+        assert shard_1["b_rpd_tk"] == Decimal(500_000)
+        assert shard_1["b_rpd_gc"] == Decimal(2)
+        assert shard_0["b_rpd_tk"] == Decimal(500_000)
+        assert shard_0["b_rpd_gc"] == Decimal(1)
+
+    def test_a_legacy_parent_donates_through_the_legacy_branch(self, dynamodb_table) -> None:
+        """Shard 0 has no ``gc`` and stores count 2 while holding 1000: R7 reads
+        a count-1 grant, and the debit matches ``shard_count = 2``."""
+        eid = f"agg-legacy-{uuid.uuid4().hex[:8]}"
+        _put_native_quota_shard(dynamodb_table, eid, 0, tk=1_000_000, shard_count=2)
+        assert propagate_shard_count(dynamodb_table, _shard0_record(dynamodb_table, eid, 1)) == 1
+        shard_0 = _get_sharded_bucket(dynamodb_table, eid, "gpt-4", 0)
+        assert shard_0["b_rpd_tk"] == Decimal(500_000)
+        assert "b_rpd_gc" not in shard_0
+        assert _get_sharded_bucket(dynamodb_table, eid, "gpt-4", 1)["b_rpd_tk"] == Decimal(500_000)
+
+    def test_a_clone_a_doubling_overtook_is_raised(self, dynamodb_table) -> None:
+        """I1, aggregator side: shard 0 is doubled to 8 while the 2 -> 4
+        record's clones are being written; both clones end at count 8 with
+        their grants frozen at 4."""
+        from unittest.mock import patch
+
+        eid = f"agg-repair-{uuid.uuid4().hex[:8]}"
+        _put_native_quota_shard(dynamodb_table, eid, 0, tk=1_000_000, shard_count=4, gc=1)
+        client = dynamodb_table.meta.client
+        real = client.transact_write_items
+        doubled: list[int] = []
+
+        def doubling_lands_first(**kwargs):
+            if not doubled:
+                doubled.append(1)
+                dynamodb_table.update_item(
+                    Key={"PK": pk_bucket("default", eid, "gpt-4", 0), "SK": sk_state()},
+                    UpdateExpression="SET shard_count = :n",
+                    ExpressionAttributeValues={":n": 8},
+                )
+            return real(**kwargs)
+
+        record = _shard0_record(dynamodb_table, eid, 2)
+        with patch.object(client, "transact_write_items", side_effect=doubling_lands_first):
+            assert propagate_shard_count(dynamodb_table, record) == 2
+        for shard in (2, 3):
+            clone = _get_sharded_bucket(dynamodb_table, eid, "gpt-4", shard)
+            assert clone["shard_count"] == Decimal(8)
+            assert clone["b_rpd_gc"] == Decimal(4)
+            assert clone["b_rpd_tk"] == Decimal(250_000)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+class TestClientQuotaLegacyDonorAndRepair:
+    """The client's legacy donor debit and the I1 post-create repair, on LocalStack."""
+
+    async def test_a_legacy_donor_is_debited_through_the_legacy_branch(
+        self, localstack_limiter, monkeypatch, unique_name
+    ):
+        import random as _random
+
+        from zae_limiter.models import BucketState, Limit
+
+        limiter = localstack_limiter
+        repo = limiter._repository
+        eid = f"legacy-{unique_name}"
+        limit = Limit.quota("rpd", 1_000, cron="0 0 * * *")
+        await limiter.create_entity(eid)
+        await limiter.set_system_defaults([limit])
+        now_ms = repo._now_ms()
+        state = BucketState.from_limit(eid, "gpt-4", limit, now_ms)
+        state.grant_count = None  # v0.14-shaped: no gc
+        await repo.transact_write(
+            [repo.build_composite_create(eid, "gpt-4", [state], now_ms, shard_id=0, shard_count=1)]
+        )
+        repo._entity_cache[(repo._namespace_id, eid)] = (False, None, {"gpt-4": 1})
+        assert await repo.bump_shard_count(eid, "gpt-4", 1) == 2
+
+        monkeypatch.setattr(_random, "randrange", lambda *a: 1)
+        monkeypatch.setattr(_random, "choice", lambda seq: 1 if 1 in seq else seq[0])
+        async with limiter.acquire(eid, "gpt-4", {"rpd": 1}):
+            pass
+
+        client = await repo._get_client()
+        items = {}
+        for shard in (0, 1):
+            resp = await client.get_item(
+                TableName=repo.table_name,
+                Key={
+                    "PK": {"S": pk_bucket(repo._namespace_id, eid, "gpt-4", shard)},
+                    "SK": {"S": sk_state()},
+                },
+                ConsistentRead=True,
+            )
+            items[shard] = resp["Item"]
+        assert items[0]["b_rpd_tk"]["N"] == "500000"
+        assert "b_rpd_gc" not in items[0], "the legacy donor keeps its shape"
+        assert items[1]["b_rpd_tk"]["N"] == "499000"
+        assert items[1]["b_rpd_gc"]["N"] == "2"
+
+    async def test_repair_raises_a_created_shard_behind_shard_zero(
+        self, localstack_limiter, unique_name
+    ):
+        from zae_limiter.models import BucketState, Limit
+
+        repo = localstack_limiter._repository
+        eid = f"repair-{unique_name}"
+        limit = Limit.quota("rpd", 1_000, cron="0 0 * * *")
+        now_ms = repo._now_ms()
+        for shard, count in ((0, 8), (3, 4)):
+            state = BucketState.from_limit(eid, "gpt-4", limit, now_ms, shard_count=count)
+            await repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        eid, "gpt-4", [state], now_ms, shard_id=shard, shard_count=count
+                    )
+                ]
+            )
+        assert await repo.repair_created_quota_shard(eid, "gpt-4", 3, 4, ["rpd"]) is True
+        assert await repo.repair_created_quota_shard(eid, "gpt-4", 3, 4, ["rpd"]) is False
+        client = await repo._get_client()
+        resp = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, eid, "gpt-4", 3)},
+                "SK": {"S": sk_state()},
+            },
+            ConsistentRead=True,
+        )
+        assert resp["Item"]["shard_count"]["N"] == "8"
+        assert resp["Item"]["b_rpd_gc"]["N"] == "4"

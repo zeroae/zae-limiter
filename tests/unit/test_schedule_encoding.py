@@ -538,6 +538,24 @@ class TestSizeBudget:
             f"combined worst case is {measured} B, at or over the 1 KB WCU boundary"
         )
 
+    def test_the_worst_shared_case_with_six_quotas_each_carrying_gc_stays_under_one_kb(self):
+        """ADR-145 adds ``b_{q}_gc`` to **every** quota on the item, not one.
+
+        §4.2's worst shared schedule with all six limits made calendar quotas
+        (``ra = 0``, one item-level daily ``rsched``) and each carrying a
+        two-digit ``gc`` — the most grant records one item of this shape can
+        hold. Pinned exactly, like the base case: measured 905 B, 119 B under
+        the boundary.
+        """
+        item = _bucket_item(6, self.WORST_SHARED)
+        item["rsched"] = {"S": "1m0h0"}
+        for i in range(6):
+            item[f"b_lim{i}_ra"] = {"N": "0"}
+            item[f"b_lim{i}_gc"] = {"N": "32"}
+        measured = _ddb_item_size(item)
+        assert measured < 1024
+        assert measured == 905, "update the docstring if this moves"
+
 
 class TestResetEncoding:
     """Reset entries share the field grammar and drop the modifier tokens."""
