@@ -4538,3 +4538,94 @@ class TestRefillWithDotsAndHyphensInLimitNames:
         assert item["b_rpm.v2_tk"] == {"N": "1000000"}
         assert item["b_req-min_tk"] == {"N": "10000000"}
         assert item["rf"] == {"N": str(WED_0030)}
+
+
+def _logged(capsys) -> list[dict]:
+    return [
+        json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith("{")
+    ]
+
+
+class TestQuotaCloneOvertakenWhileCreated:
+    """I1 of the final review, aggregator side: a client doubles shard 0 after
+    Path 2 read the old shards, so the clones land at the record's count while
+    shard 0 already stores a higher one. Each created clone is raised, its
+    current grant frozen at the count it was created at."""
+
+    def _race(self, table):
+        real = table.meta.client.transact_write_items
+        doubled: list[int] = []
+
+        def client_doubles_first(**kwargs):
+            if not doubled:
+                doubled.append(1)
+                table.update_item(
+                    Key={"PK": f"{MOVE_NS}/BUCKET#{MOVE_ENTITY}#{MOVE_RESOURCE}#0", "SK": "#STATE"},
+                    UpdateExpression="SET shard_count = :n",
+                    ExpressionAttributeValues={":n": 8},
+                )
+            return real(**kwargs)
+
+        return client_doubles_first
+
+    def test_each_created_clone_is_raised_with_its_grant_frozen(self, mock_dynamodb) -> None:
+        table = _moto_table()
+        _put_quota_shard(table, 0, tk=1_000_000, shard_count=4, b_rpd_gc=1)
+        with patch.object(table.meta.client, "transact_write_items", side_effect=self._race(table)):
+            assert propagate_shard_count(table, _doubling_record(table, 2), TUE_1400) == 2
+        for shard in (2, 3):
+            clone = _must(table, shard)
+            assert clone["shard_count"] == 8
+            assert clone["b_rpd_gc"] == 4, "the current grant keeps its size"
+            assert clone["b_rpd_tk"] == 250_000
+        assert _must(table, 0)["shard_count"] == 8, "shard 0 is never written by the repair"
+
+    def test_no_lag_reads_once_and_writes_nothing(self, mock_dynamodb) -> None:
+        table = _moto_table()
+        _put_quota_shard(table, 0, tk=1_000_000, shard_count=4, b_rpd_gc=1)
+        with patch.object(table, "update_item", wraps=table.update_item) as update:
+            propagate_shard_count(table, _doubling_record(table, 2), TUE_1400)
+        # Path 1's attempt on the missing shard 1, and no repair write.
+        assert update.call_count == 1
+        assert _must(table, 2)["shard_count"] == 4
+
+    def test_a_failed_repair_is_logged_and_swallowed(self, mock_dynamodb, capsys) -> None:
+        table = _moto_table()
+        _put_quota_shard(table, 0, tk=1_000_000, shard_count=4, b_rpd_gc=1)
+        real_get = table.get_item
+
+        def repair_read_fails(**kwargs):
+            if "ProjectionExpression" in kwargs:
+                raise ClientError(
+                    {"Error": {"Code": "InternalServerError", "Message": "no"}}, "GetItem"
+                )
+            return real_get(**kwargs)
+
+        with patch.object(table, "get_item", side_effect=repair_read_fails):
+            assert propagate_shard_count(table, _doubling_record(table, 2), TUE_1400) == 2
+        (warning,) = [
+            e for e in _logged(capsys) if e["message"].startswith("Quota clone count repair")
+        ]
+        assert warning["error_code"] == "InternalServerError"
+        assert "entity_id" not in warning
+
+    def test_a_clone_already_raised_is_left_alone(self, mock_dynamodb) -> None:
+        table = _moto_table()
+        _put_quota_shard(table, 0, tk=1_000_000, shard_count=4, b_rpd_gc=1)
+        raced = self._race(table)
+
+        def raise_clone_too(**kwargs):
+            result = raced(**kwargs)
+            put = kwargs["TransactItems"][0]["Put"]["Item"]
+            table.update_item(
+                Key={"PK": put["PK"], "SK": "#STATE"},
+                UpdateExpression="SET shard_count = :n",
+                ExpressionAttributeValues={":n": 16},
+            )
+            return result
+
+        with patch.object(table.meta.client, "transact_write_items", side_effect=raise_clone_too):
+            propagate_shard_count(table, _doubling_record(table, 2), TUE_1400)
+        clone = _must(table, 2)
+        assert clone["shard_count"] == 16
+        assert clone["b_rpd_gc"] == 4

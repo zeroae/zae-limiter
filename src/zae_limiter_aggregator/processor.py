@@ -1678,6 +1678,56 @@ def _quota_count_freeze(
     }
 
 
+def _repair_quota_clones(
+    table: Any,
+    namespace_id: str,
+    entity_id: str,
+    resource: str,
+    new_count: int,
+    clones: list[int],
+    quota_names: list[str],
+    seen_count: int,
+) -> None:
+    """Raise quota clones a later doubling overtook while they were created (ADR-145).
+
+    The clone ``Put`` is guarded only by ``attribute_not_exists(PK)``, not by
+    the count it was planned at. A client can double shard 0 after the old
+    shards were read; its propagation finds no clone to raise, and the clone
+    would then reset at ``new_count`` every period beside a shard created at
+    the higher count that covers one of its slots. So, once per record that
+    created a quota clone: one strongly consistent ``GetItem`` of shard 0's
+    ``shard_count`` (1 RCU), compared with the counts the old shards already
+    read; when either is higher, each created clone is raised with its current
+    grant frozen at ``new_count`` (:func:`_quota_count_freeze`). Shard 0 is
+    never written. A failure is logged, without the entity id, and swallowed:
+    the clones exist and are funded; only the next period's grant is at stake.
+    """
+    try:
+        response = table.get_item(
+            Key={"PK": pk_bucket(namespace_id, entity_id, resource, 0), "SK": sk_state()},
+            ProjectionExpression="shard_count",
+            ConsistentRead=True,
+        )
+        current = max(seen_count, _stored_count(response.get("Item") or {}))
+        if current <= new_count:
+            return
+        for shard in clones:
+            key = {"PK": pk_bucket(namespace_id, entity_id, resource, shard), "SK": sk_state()}
+            try:
+                table.update_item(
+                    **_quota_count_freeze(key, current, [(name, new_count) for name in quota_names])
+                )
+            except ClientError as e:
+                if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                    raise
+    except ClientError as e:
+        logger.warning(
+            "Quota clone count repair failed - clones keep their created count",
+            resource=resource,
+            error_code=e.response.get("Error", {}).get("Code"),
+        )
+
+
 def propagate_shard_count(
     table: Any,
     record: dict[str, Any],
@@ -1900,6 +1950,7 @@ def propagate_shard_count(
             now_ms,
         ):
             stale_on_image.add(limit_name)
+    created_clones: list[int] = []
     for target_shard in range(old_count, new_count):
         item = dict(base_item)
         item["PK"] = pk_bucket(namespace_id, entity_id, resource, target_shard)
@@ -2006,6 +2057,8 @@ def propagate_shard_count(
                     )
                 continue
             raise
+        if quota_shares:
+            created_clones.append(target_shard)
         # A later clone planning off the same donor sees what it has left.
         for debit in debits:
             siblings[debit.limit_name] = [
@@ -2014,6 +2067,18 @@ def propagate_shard_count(
                 else s
                 for s in siblings[debit.limit_name]
             ]
+
+    if created_clones:
+        _repair_quota_clones(
+            table,
+            namespace_id,
+            entity_id,
+            resource,
+            new_count,
+            created_clones,
+            list(quota_shares),
+            max(stored_counts, default=new_count),
+        )
 
     if updated > 0:
         logger.info(

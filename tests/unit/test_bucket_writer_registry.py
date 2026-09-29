@@ -91,6 +91,7 @@ AGGREGATOR = {
     "try_refill_bucket": (True, True),  # refill ADD; a reset / roll stamps gc, pinned
     "_donor_update_items": (True, False),  # the donor side of a Path 2 move
     "_quota_count_freeze": (False, True),  # Path 1 raising a legacy item freezes gc
+    "_repair_quota_clones": (False, True),  # raise clones a doubling overtook, freeze
     "propagate_shard_count": (True, True),  # Path 1 raise + Path 2 clone put / transaction
     "try_proactive_shard": (False, False),  # shard_count on shard 0
     "update_snapshot": NOT_BUCKET,  # usage snapshot items
@@ -173,6 +174,7 @@ def test_only_grant_writers_write_gc():
         "purge_namespace",
         "try_refill_bucket",
         "_quota_count_freeze",
+        "_repair_quota_clones",
         "propagate_shard_count",
     }
 
