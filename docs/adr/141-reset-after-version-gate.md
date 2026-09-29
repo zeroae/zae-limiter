@@ -1,6 +1,6 @@
 # ADR-141: Storing a reset_after limit is gated on reader versions
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-09-27
 **Issue:** [#638](https://github.com/zeroae/zae-limiter/issues/638)
 **Related:** [ADR-139](139-duration-reset-windows.md), ADR-137, ADR-009, [#640](https://github.com/zeroae/zae-limiter/issues/640), [#644](https://github.com/zeroae/zae-limiter/issues/644)

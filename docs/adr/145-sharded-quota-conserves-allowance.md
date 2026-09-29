@@ -1,6 +1,6 @@
 # ADR-145: A sharded quota conserves its allowance
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-09-28
 **Issue:** [#637](https://github.com/zeroae/zae-limiter/issues/637), [#642](https://github.com/zeroae/zae-limiter/issues/642)
 **Related:** ADR-133, ADR-134, ADR-137, [ADR-140](140-duration-window-shard-coherence.md), [#587](https://github.com/zeroae/zae-limiter/issues/587), [#477](https://github.com/zeroae/zae-limiter/issues/477)

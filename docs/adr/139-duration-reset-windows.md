@@ -1,6 +1,6 @@
 # ADR-139: Duration reset windows anchored to first use
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-09-15
 **Issue:** [#597](https://github.com/zeroae/zae-limiter/issues/597)
 **Related:** ADR-137, ADR-138, [ADR-140](140-duration-window-shard-coherence.md), [ADR-141](141-reset-after-version-gate.md)

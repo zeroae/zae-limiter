@@ -1,6 +1,6 @@
 # ADR-140: Shards of one entity share one duration window
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-09-27
 **Issue:** [#624](https://github.com/zeroae/zae-limiter/issues/624), [#625](https://github.com/zeroae/zae-limiter/issues/625), [#635](https://github.com/zeroae/zae-limiter/issues/635), [#640](https://github.com/zeroae/zae-limiter/issues/640)
 **Related:** [ADR-139](139-duration-reset-windows.md), [ADR-142](142-hide-reset-after-config.md), ADR-133, ADR-134, [#597](https://github.com/zeroae/zae-limiter/issues/597)
