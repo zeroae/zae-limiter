@@ -1144,7 +1144,10 @@ class TestQuotaGrantCapacity:
         is created by moving half of it: the sibling read (1 Query + 1
         BatchGetItem) and one transaction carrying the create and the donor
         debit. The only UpdateItem is the fast path's failed attempt on the
-        missing shard — no clamp of any sibling."""
+        missing shard — no clamp of any sibling. The one GetItem is the
+        stale-count repair's strongly consistent read of shard 0's
+        ``shard_count`` after the create lands (design §8 R7); it finds no
+        lag here, so it writes nothing."""
         repo = sync_limiter._repository
         repo._now_ms = lambda: self.T0
         sync_limiter.set_limits("q-move", [self.QUOTA], resource="api")
@@ -1159,7 +1162,8 @@ class TestQuotaGrantCapacity:
                 pass
         counts = self._counts(capacity_counter)
         assert counts == {
-            "get_item": 0,
+            # The repair's consistent read of shard 0's count (1 RCU).
+            "get_item": 1,
             # The disabled walk, META + bucket, and the siblings the GSI3
             # query found (one key per existing shard: just shard 0 here).
             "batch_get_item": [3, 2, 1],
