@@ -387,6 +387,75 @@ class TestPlanQuotaShard:
         await repo.transact_write(repo.build_quota_donor_debits("e1", RESOURCE, debits))
         assert await shard_balances(repo, "e1", "rpd", 1) == [250_000]
 
+    async def test_raising_a_sibling_freezes_every_legacy_quota_it_carries(self, limiter):
+        """Final review minor: the freeze covers every legacy quota on the
+        sibling, not only the ones being planned. Shard 0 (count 2, no gc)
+        carries ``rpd`` (500) and ``rpw`` (600 of 700, more than one share at
+        2, so R7 reads a count-1 grant); planning ``rpd`` alone for slot 3
+        raises shard 0 to 4 and freezes both. A dripping limit beside them is
+        never frozen."""
+        repo = limiter._repository
+        now = freeze(repo)
+        rpw = Limit.quota("rpw", 700, cron="0 0 * * 1")
+        rpm = Limit.per_minute("rpm", 100)
+        states = []
+        for limit, tokens in ((self.QUOTA, 500_000), (rpw, 600_000), (rpm, 1_000)):
+            state = BucketState.from_limit("e1", RESOURCE, limit, now, shard_count=2)
+            state.tokens_milli = tokens
+            state.grant_count = None
+            states.append(state)
+        await repo.transact_write(
+            [repo.build_composite_create("e1", RESOURCE, states, now, shard_id=0, shard_count=2)]
+        )
+        await _write_shard(repo, "e1", self.QUOTA, 1, 250_000, grant_count=4, shard_count=4)
+
+        _count, grants, _debits = await repo.plan_quota_shard(
+            "e1", RESOURCE, [self.QUOTA], 3, 4, now
+        )
+        assert grants["rpd"].donor_shard is None
+        shard0 = await _item(repo, "e1", 0)
+        assert shard0["shard_count"] == {"N": "4"}
+        assert shard0[self.GC] == {"N": "2"}
+        assert shard0[schema.bucket_attr("rpw", schema.BUCKET_FIELD_GC)] == {"N": "1"}
+        assert schema.bucket_attr("rpm", schema.BUCKET_FIELD_GC) not in shard0
+
+    def test_legacy_quota_sizes_reads_the_stored_shape(self):
+        from zae_limiter.repository import Repository
+
+        item = {
+            "shard_count": {"N": "4"},
+            "rsched": {"S": "1m0h0"},
+            "b_rpd_tk": {"N": "100000"},
+            "b_rpd_cp": {"N": "1000000"},
+            "b_rpd_ra": {"N": "0"},
+            "b_rpd_gc": {"N": "4"},
+            "b_rpw_tk": {"N": "100000"},
+            "b_rpw_cp": {"N": "1000000"},
+            "b_rpw_ra": {"N": "0"},
+            "b_rpw_sched": {"S": "not-a-schedule"},
+            "b_ses_tk": {"N": "900000"},
+            "b_ses_cp": {"N": "1000000"},
+            "b_ses_ra": {"N": "0"},
+            "b_ses_rsa": {"N": "3600"},
+            "b_ses_rsched": {"S": "-"},
+            "b_rpm_tk": {"N": "1"},
+            "b_rpm_cp": {"N": "1000"},
+            "b_rpm_ra": {"N": "1000"},
+            "b_off_tk": {"N": "1"},
+            "b_off_cp": {"N": "1000"},
+            "b_off_ra": {"N": "0"},
+            "b_off_rsched": {"S": "-"},
+            "b_nocp_tk": {"N": "1"},
+            "b_nocp_ra": {"N": "0"},
+            "b_wcu_tk": {"N": "1"},
+            "b__tk": {"N": "1"},
+        }
+        sizes = Repository._legacy_quota_sizes(1, item, set(), 0)
+        # rpw: undecodable schedule, base capacity, 100 <= 250 keeps 4.
+        # ses: a session window; 900 > 250 halves to 1.
+        assert sorted(sizes) == [("rpw", 4), ("ses", 1)]
+        assert Repository._legacy_quota_sizes(1, item, {"rpw", "ses"}, 0) == []
+
     async def test_a_move_off_a_legacy_donor_survives_a_fresh_grant_beside_it(self, limiter):
         """Review fix: quota A moves off legacy shard 0 while quota B is fresh.
 

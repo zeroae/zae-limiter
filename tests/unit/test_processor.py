@@ -4572,6 +4572,75 @@ class TestPathOneWhenTheSiblingReadFails:
         assert MOVE_ENTITY not in json.dumps(warning)
 
 
+class TestPathOneFreezesEveryLegacyQuota:
+    """A lagging sibling can carry a legacy quota shard 0's image does not
+    (seeded there, not on shard 0). Raising its count without freezing that
+    quota's grant size would shrink its coverage (design §9), so Path 1
+    freezes every legacy quota the sibling carries."""
+
+    def test_a_quota_only_the_sibling_carries_is_frozen_too(self, mock_dynamodb) -> None:
+        table = _moto_table()
+        _put_quota_shard(table, 0, tk=500_000, shard_count=4, b_rpd_gc=2)
+        # `rpw` (2,000/day, same item-level reset) only on shard 1, no `gc`,
+        # holding 1,500: more than one share at count 2, so R7 infers count 1.
+        _put_quota_shard(
+            table,
+            1,
+            tk=400_000,
+            shard_count=2,
+            b_rpw_tk=1_500_000,
+            b_rpw_cp=2_000_000,
+            b_rpw_ra=0,
+            b_rpw_rp=1_000,
+            b_rpw_tc=0,
+            # A rate limit beside it is never frozen.
+            b_rpm_tk=1_000,
+            b_rpm_cp=1_000_000,
+            b_rpm_ra=1_000_000,
+            b_rpm_rp=60_000,
+            b_rpm_tc=0,
+            b_rpm_rsched="-",
+        )
+        propagate_shard_count(table, _doubling_record(table, 2), TUE_1400)
+        shard_1 = _must(table, 1)
+        assert shard_1["shard_count"] == 4
+        assert shard_1["b_rpd_gc"] == 2
+        assert shard_1["b_rpw_gc"] == 1
+        assert "b_rpm_gc" not in shard_1
+        assert "b_wcu_gc" not in shard_1
+
+    def test_legacy_quota_sizes_skips_gc_and_rate_limits(self) -> None:
+        from zae_limiter_aggregator.processor import _legacy_quota_sizes
+
+        item = {
+            "shard_count": 4,
+            "rsched": DAILY_RESET_COMPACT,
+            "sched_tz": "America/New_York",
+            "b_rpd_tk": 100_000,
+            "b_rpd_cp": 1_000_000,
+            "b_rpd_ra": 0,
+            "b_rpd_rp": 1_000,
+            "b_rpd_gc": 4,
+            "b_rpw_tk": 100_000,
+            "b_rpw_cp": 1_000_000,
+            "b_rpw_ra": 0,
+            "b_rpw_rp": 1_000,
+            "b_rpw_sched": "not-a-schedule",
+            "b_rpm_tk": 1,
+            "b_rpm_cp": 1_000,
+            "b_rpm_ra": 1_000,
+            "b_rpm_rp": 1_000,
+            "b_rpm_rsched": "-",
+            "b_wcu_tk": 1,
+            "b_wcu_cp": 1_000,
+            "b_wcu_ra": 1_000,
+            "b_wcu_rp": 1_000,
+        }
+        # rpw: undecodable schedule sizes against the base capacity; 100 <= 250.
+        assert _legacy_quota_sizes(1, item, set(), TUE_1400) == [("rpw", 4)]
+        assert _legacy_quota_sizes(1, item, {"rpw"}, TUE_1400) == []
+
+
 class TestQuotaCloneOvertakenWhileCreated:
     """I1 of the final review, aggregator side: a client doubles shard 0 after
     Path 2 read the old shards, so the clones land at the record's count while

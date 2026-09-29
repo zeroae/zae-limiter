@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import boto3
-from boto3.dynamodb.types import TypeDeserializer
+from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 from botocore.exceptions import ClientError
 
 from zae_limiter.bucket import refill_bucket
@@ -1678,6 +1678,46 @@ def _quota_count_freeze(
     }
 
 
+def _legacy_quota_sizes(
+    shard_id: int, item: dict[str, Any], skip: set[str], now_ms: int
+) -> list[tuple[str, int]]:
+    """``(name, grant_count)`` for every legacy quota a ``Table`` item carries.
+
+    The quotas shard 0's image does not carry, which Path 1 would otherwise
+    raise without freezing: each one on ``item`` with no ``gc`` (design §9),
+    sized by the same R7 rule as :func:`_quota_sibling_from_image` against
+    its own schedule-effective capacity. The shape test is
+    :func:`_is_quota_limit`, on the item re-serialized to the stream's wire
+    format. A schedule that cannot be decoded sizes against the base
+    capacity: the freeze is then the one the reader would infer without it.
+    """
+    serializer = TypeSerializer()
+    wire = {key: serializer.serialize(value) for key, value in item.items()}
+    tz = wire.get(BUCKET_FIELD_SCHED_TZ, {}).get("S", "UTC")
+    sizes: list[tuple[str, int]] = []
+    for limit_name, info in _extract_limit_attrs(wire).items():
+        if (
+            limit_name == WCU_LIMIT_NAME
+            or limit_name in skip
+            or bucket_attr(limit_name, BUCKET_FIELD_GC) in item
+            or not _is_quota_limit(limit_name, wire)
+        ):
+            continue
+        own = wire.get(bucket_attr(limit_name, BUCKET_FIELD_SCHED), {}).get("S")
+        sched: tuple[ScheduleEntry, ...] = ()
+        if own != BUCKET_SCHED_NONE:
+            sched, error = _decode_schedule(own or wire.get(BUCKET_FIELD_SCHED, {}).get("S"), tz)
+            if error is not None:
+                sched = ()
+        capacity = effective_params(info["cp_milli"], 0, info["rp_ms"], sched, now_ms)[0]
+        sibling = _quota_sibling_from_image(
+            shard_id, item, limit_name, ((), None), capacity, now_ms
+        )
+        if sibling is not None:
+            sizes.append((limit_name, sibling.grant_count))
+    return sizes
+
+
 def _repair_quota_clones(
     table: Any,
     namespace_id: str,
@@ -1860,6 +1900,7 @@ def propagate_shard_count(
     # creates them lazily.
     old_items: dict[int, dict[str, Any]] = {}
     siblings: dict[str, list[QuotaSibling]] = {}
+    extra_frozen: dict[int, list[tuple[str, int]]] = {}
     read_failed = False
     if quota_shares and clone_error is None:
         try:
@@ -1883,6 +1924,13 @@ def propagate_shard_count(
             old_items = {}
             read_failed = True
     if quota_shares and clone_error is None and not read_failed:
+        # Every quota each sibling carries is frozen when Path 1 raises it,
+        # not only the ones shard 0's image carries: a legacy quota left
+        # unfrozen would read as granted at the raised count (design §9).
+        for shard, item in old_items.items():
+            legacy = _legacy_quota_sizes(shard, item, set(quota_shares), now_ms)
+            if legacy:
+                extra_frozen[shard] = legacy
         for limit_name in quota_shares:
             siblings[limit_name] = [
                 sibling
@@ -1910,7 +1958,7 @@ def propagate_shard_count(
             for name, group in siblings.items()
             for sibling in group
             if sibling.shard_id == target_shard
-        ]
+        ] + extra_frozen.get(target_shard, [])
         try:
             if frozen:
                 table.update_item(**_quota_count_freeze(key, new_count, frozen))

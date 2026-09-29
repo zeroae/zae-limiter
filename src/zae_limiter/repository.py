@@ -6892,6 +6892,15 @@ class Repository:
 
         if any(grant.donor_shard is None for grant in grants.values()):
             lagging = sorted(sid for sid, stored_count in counts.items() if stored_count < count)
+            planned = {limit.name for limit in quotas}
+            for sid in lagging:
+                # Every legacy quota the sibling carries is frozen, not only
+                # the planned ones: an unfrozen one would read as granted at
+                # the raised count, and a later plan would mint a slot it
+                # still holds tokens for (design §9).
+                sizes.setdefault(sid, []).extend(
+                    self._legacy_quota_sizes(sid, stored[sid], planned, now_ms)
+                )
             if lagging:
                 await self._freeze_and_raise_shard_counts(
                     entity_id,
@@ -7039,6 +7048,69 @@ class Repository:
                 return False  # Already raised by another writer
             raise
         return True
+
+    @classmethod
+    def _legacy_quota_sizes(
+        cls, shard_id: int, item: dict[str, Any], skip: set[str], now_ms: int
+    ) -> list[tuple[str, int]]:
+        """``(name, grant_count)`` for every legacy quota ``item`` carries outside ``skip``.
+
+        A quota is read off the stored shape, the same key the aggregator's
+        ``_is_quota_limit`` uses: a zero refill rate beside a reset — the
+        limit's own ``b_{name}_rsa`` or ``b_{name}_rsched``, or the item-level
+        ``rsched`` unless the #541 ``BUCKET_SCHED_NONE`` marker blocks it. Only
+        one with no ``gc`` (design §9) is returned, sized by the R7 rule of
+        :meth:`_quota_sibling` against its schedule-effective capacity; an
+        undecodable schedule sizes against the base capacity.
+        """
+        tz = item.get(schema.BUCKET_FIELD_SCHED_TZ, {}).get("S", "UTC")
+        sizes: list[tuple[str, int]] = []
+        prefix, suffix = schema.BUCKET_ATTR_PREFIX, f"_{schema.BUCKET_FIELD_TK}"
+        for attr in item:
+            if not (attr.startswith(prefix) and attr.endswith(suffix)):
+                continue
+            name = attr[len(prefix) : -len(suffix)]
+            if (
+                not name
+                or name == schema.WCU_LIMIT_NAME
+                or name in skip
+                or schema.bucket_attr(name, schema.BUCKET_FIELD_GC) in item
+            ):
+                continue
+            if int(cls._limit_field(item, name, schema.BUCKET_FIELD_RA, "N") or "0") != 0:
+                continue
+            own_reset = cls._limit_field(item, name, schema.BUCKET_FIELD_RSCHED, "S")
+            is_quota = cls._limit_field(item, name, schema.BUCKET_FIELD_RSA, "N") is not None or (
+                own_reset != schema.BUCKET_SCHED_NONE
+                and bool(own_reset or item.get(schema.BUCKET_FIELD_RSCHED, {}).get("S"))
+            )
+            cp = cls._limit_field(item, name, schema.BUCKET_FIELD_CP, "N")
+            if not is_quota or cp is None:
+                continue
+            own_sched = cls._limit_field(item, name, schema.BUCKET_FIELD_SCHED, "S")
+            compact = (
+                None
+                if own_sched == schema.BUCKET_SCHED_NONE
+                else own_sched or item.get(schema.BUCKET_FIELD_SCHED, {}).get("S")
+            )
+            try:
+                sched = schedule.decode(compact, tz) if compact else ()
+            except ValueError:
+                sched = ()
+            rp = int(cls._limit_field(item, name, schema.BUCKET_FIELD_RP, "N") or "1000")
+            capacity = schedule.effective_params(int(cp), 0, rp, sched, now_ms)[0]
+            grant_count = cls._stored_shard_count(item)
+            tokens = int(item[attr]["N"])
+            while grant_count > 1 and tokens > capacity // grant_count:
+                grant_count //= 2
+            sizes.append((name, grant_count))
+        return sizes
+
+    @staticmethod
+    def _limit_field(item: dict[str, Any], name: str, key: str, kind: str) -> str | None:
+        """One per-limit bucket attribute's raw ``kind`` value, or ``None``."""
+        value = item.get(schema.bucket_attr(name, key), {}).get(kind)
+        return None if value is None else str(value)
 
     @staticmethod
     def _stored_shard_count(item: dict[str, Any]) -> int:
