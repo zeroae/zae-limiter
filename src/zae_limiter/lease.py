@@ -881,10 +881,13 @@ class Lease:
         for entry in self.entries:
             entry._initial_consumed = entry.consumed
 
-        # The lease is committed before the fan-out runs: nothing the fan-out
-        # does (it swallows its own failures) can leave it half-recorded.
-        # Only when the rf-locked write itself landed -- the retry path stamps
-        # no `ws`, so a rollover that fell back to it was never persisted.
+        # The lease is committed before the repair and the fan-out run:
+        # nothing either does (both swallow their own failures) can leave it
+        # half-recorded. The repair runs for every quota create `Put` that
+        # landed, in the rf-locked write or re-issued on the retry. The
+        # fan-out runs only when the rf-locked write itself landed -- the
+        # retry path stamps no `ws`, so a rollover that fell back to it was
+        # never persisted.
         if not condition_failed:
             await self._repair_created_quota_shards(quota_creates)
             await self._fan_out_windows(window_fanouts)

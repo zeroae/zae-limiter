@@ -1744,38 +1744,50 @@ def _repair_quota_clones(
     the clones exist and are funded; only the next period's grant is at stake,
     and failing the stream batch would re-drive writes that already landed.
     """
-    shard = 0  # the item being read or written, for the log line
     try:
         response = table.get_item(
             Key={"PK": pk_bucket(namespace_id, entity_id, resource, 0), "SK": sk_state()},
             ProjectionExpression="shard_count",
             ConsistentRead=True,
         )
-        current = max(seen_count, _stored_count(response.get("Item") or {}))
-        if current <= new_count:
-            return
-        for shard in clones:
-            key = {"PK": pk_bucket(namespace_id, entity_id, resource, shard), "SK": sk_state()}
-            try:
-                table.update_item(
-                    **_quota_count_freeze(key, current, [(name, new_count) for name in quota_names])
-                )
-            except ClientError as e:
-                if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
-                    raise
-    except ClientError as e:
+    except (ClientError, BotoCoreError) as e:
+        _log_clone_repair_failure(resource, 0, e)
+        return
+    current = max(seen_count, _stored_count(response.get("Item") or {}))
+    if current <= new_count:
+        return
+    # One clone's failure skips only that clone: each write is independent.
+    for shard in clones:
+        key = {"PK": pk_bucket(namespace_id, entity_id, resource, shard), "SK": sk_state()}
+        try:
+            table.update_item(
+                **_quota_count_freeze(key, current, [(name, new_count) for name in quota_names])
+            )
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                continue  # Already raised by another writer
+            _log_clone_repair_failure(resource, shard, e)
+        except BotoCoreError as e:
+            _log_clone_repair_failure(resource, shard, e)
+
+
+def _log_clone_repair_failure(
+    resource: str, shard: int, error: ClientError | BotoCoreError
+) -> None:
+    """Log one failed clone-repair read or write, never the entity id (an API key)."""
+    if isinstance(error, ClientError):
         logger.warning(
             "Quota clone count repair failed - clones keep their created count",
             resource=resource,
             shard=shard,
-            error_code=e.response.get("Error", {}).get("Code"),
+            error_code=error.response.get("Error", {}).get("Code"),
         )
-    except BotoCoreError as e:
+    else:
         logger.warning(
             "Quota clone count repair failed - clones keep their created count",
             resource=resource,
             shard=shard,
-            error_type=type(e).__name__,
+            error_type=type(error).__name__,
         )
 
 
@@ -1931,6 +1943,15 @@ def propagate_shard_count(
                 "Sibling read failed - propagating without the quota freeze or clones",
                 resource=resource,
                 error_code=e.response.get("Error", {}).get("Code"),
+            )
+            old_items = {}
+            read_failed = True
+        except BotoCoreError as e:
+            # A dropped connection or timeout: same handling, never the batch.
+            logger.warning(
+                "Sibling read failed - propagating without the quota freeze or clones",
+                resource=resource,
+                error_type=type(e).__name__,
             )
             old_items = {}
             read_failed = True

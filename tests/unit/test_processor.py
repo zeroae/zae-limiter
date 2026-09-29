@@ -4571,6 +4571,33 @@ class TestPathOneWhenTheSiblingReadFails:
         assert "entity_id" not in warning
         assert MOVE_ENTITY not in json.dumps(warning)
 
+    def test_a_connection_error_is_swallowed_and_path_1_still_runs(
+        self, mock_dynamodb, capsys
+    ) -> None:
+        """A ``BotoCoreError`` is not a ``ClientError``: it used to escape the
+        sibling read, skip Path 1 and fail the whole stream batch."""
+        table = _moto_table()
+        _put_quota_shard(table, 0, tk=500_000, shard_count=4, b_rpd_gc=2)
+        _put_quota_shard(table, 1, tk=400_000, shard_count=2)
+        real_get = table.get_item
+
+        def sibling_read_drops(**kwargs):
+            if "ProjectionExpression" not in kwargs:
+                raise EndpointConnectionError(endpoint_url="https://dynamodb.invalid")
+            return real_get(**kwargs)
+
+        with patch.object(table, "get_item", side_effect=sibling_read_drops):
+            assert propagate_shard_count(table, _doubling_record(table, 2), TUE_1400) == 1
+        shard_1 = _must(table, 1)
+        assert shard_1["shard_count"] == 4
+        assert "b_rpd_gc" not in shard_1, "no freeze without the read"
+        assert _stored(table, 2) is None and _stored(table, 3) is None, "no quota clone"
+        (warning,) = [e for e in _logged(capsys) if e["message"].startswith("Sibling read failed")]
+        assert warning["error_type"] == "EndpointConnectionError"
+        assert warning["resource"] == MOVE_RESOURCE
+        assert "entity_id" not in warning
+        assert MOVE_ENTITY not in json.dumps(warning)
+
 
 class TestPathOneFreezesEveryLegacyQuota:
     """A lagging sibling can carry a legacy quota shard 0's image does not
@@ -4751,6 +4778,9 @@ class TestQuotaCloneOvertakenWhileCreated:
         assert warning["error_type"] == "EndpointConnectionError"
         assert "entity_id" not in warning
         assert _must(table, 2)["shard_count"] == 4, "the failed write left the clone alone"
+        clone_3 = _must(table, 3)
+        assert clone_3["shard_count"] == 8, "one clone's failure skips only that clone"
+        assert clone_3["b_rpd_gc"] == 4
 
     def test_a_clone_already_raised_is_left_alone(self, mock_dynamodb) -> None:
         table = _moto_table()
