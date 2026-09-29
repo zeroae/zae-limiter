@@ -959,3 +959,139 @@ class TestAcceptance:
         item = await _item(repo, "r5", 0)
         assert item["b_rpd_tk"]["N"] == "499000"
         assert item["b_rpd_gc"]["N"] == "2"
+
+
+class TestCreateOvertakenByADoubling:
+    """I1 of the final review: a create is not pinned to its planned count.
+
+    Client A plans shard 3 at count 4. Before its ``Put`` lands, client B
+    doubles shard 0 to 8 and creates shard 7 — whose slot shard 3's count-4
+    grant also covers — and the doubling's propagation finds no shard 3 to
+    raise. A's ``Put`` then lands at count 4. Unrepaired, shard 3 resets at
+    count 4 every period (``{3, 7}`` at 250) beside shard 7 (``{7}`` at 125):
+    one new share, 125, over the quota every period. The repair reads shard
+    0's count after the ``Put`` and raises shard 3 to 8, freezing its current
+    grant at 4, so the next reset grants it 125.
+    """
+
+    QUOTA = Limit.quota("rpd", 1000, cron=QUOTA_CRON)
+
+    async def _race(self, limiter, eid):
+        repo = limiter._repository
+        ns = repo._namespace_id
+        repo._now_ms = lambda: T0
+        await seed_shard0(limiter, eid, self.QUOTA, T0)
+        await _set_attr(repo, eid, 0, "shard_count", 4)
+        repo._entity_cache[(ns, eid)] = (False, None, {RESOURCE: 4})
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        real = repo.transact_write
+        raced: list[int] = []
+
+        async def b_doubles_and_creates_shard_7(items):
+            if not raced:
+                raced.append(1)
+                await _set_attr(repo, eid, 0, "shard_count", 8)
+                repo._entity_cache[(ns, eid)] = (False, None, {RESOURCE: 8})
+                with patch("zae_limiter.repository.random.randrange", return_value=7):
+                    async with slow.acquire(eid, RESOURCE, {"rpd": 0}):
+                        pass
+            return await real(items)
+
+        with patch.object(repo, "transact_write", b_doubles_and_creates_shard_7):
+            with patch("zae_limiter.repository.random.randrange", return_value=3):
+                async with slow.acquire(eid, RESOURCE, {"rpd": 0}):
+                    pass
+        assert raced, "B ran inside A's commit"
+        return repo, slow
+
+    async def _next_period_grants(self, repo, slow, eid) -> int:
+        day = 86_400_000
+        repo._now_ms = lambda: (T0 // day + 1) * day + 1_000
+        for shard in (0, 3, 7, 1, 2, 4, 5, 6):
+            assert await materialise(slow, eid, "rpd", shard, amount=0) == 1
+        return await spendable(repo, eid, "rpd", 8, RESOURCE)
+
+    async def test_the_created_shard_is_raised_with_its_grant_frozen(self, limiter):
+        repo, slow = await self._race(limiter, "overtaken")
+        shard3 = await _item(repo, "overtaken", 3)
+        assert shard3["shard_count"]["N"] == "8"
+        assert shard3["b_rpd_gc"]["N"] == "4", "the current grant keeps its size"
+        assert shard3["b_rpd_tk"]["N"] == "250000"
+        shard7 = await _item(repo, "overtaken", 7)
+        assert shard7["shard_count"]["N"] == "8"
+        assert shard7["b_rpd_gc"]["N"] == "8"
+        # This period: everything moved off shard 0, nothing minted.
+        assert await spendable(repo, "overtaken", "rpd", 8, RESOURCE) == 1000
+        assert await self._next_period_grants(repo, slow, "overtaken") == 1000
+
+    async def test_without_the_repair_the_overlap_recurs(self, limiter):
+        """The reviewer's +125 per period, reproduced with the repair disabled."""
+        repo = limiter._repository
+
+        async def no_repair(*_args, **_kwargs):
+            return False
+
+        with patch.object(repo, "repair_created_quota_shard", no_repair):
+            repo, slow = await self._race(limiter, "unrepaired")
+        assert (await _item(repo, "unrepaired", 3))["shard_count"]["N"] == "4"
+        assert await self._next_period_grants(repo, slow, "unrepaired") == 1125
+
+    async def test_a_current_create_reads_and_writes_nothing_more(self, limiter):
+        """No lag: one consistent read of shard 0, no write."""
+        repo = limiter._repository
+        repo._now_ms = lambda: T0
+        await seed_shard0(limiter, "current", self.QUOTA, T0)
+        assert await repo.bump_shard_count("current", RESOURCE, 1) == 2
+        with patch.object(
+            repo, "_build_quota_count_freeze", wraps=repo._build_quota_count_freeze
+        ) as spy:
+            with patch("zae_limiter.repository.random.randrange", return_value=1):
+                async with RateLimiter(repository=repo, speculative_writes=False).acquire(
+                    "current", RESOURCE, {"rpd": 0}
+                ):
+                    pass
+        spy.assert_not_called()
+        assert (await _item(repo, "current", 1))["shard_count"]["N"] == "2"
+
+    async def test_a_failed_repair_never_fails_the_acquire(self, limiter, caplog):
+        repo = limiter._repository
+
+        async def broken(*_args, **_kwargs):
+            raise ClientError(
+                {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": "x"}},
+                "GetItem",
+            )
+
+        with patch.object(repo, "repair_created_quota_shard", broken):
+            repo, _slow = await self._race(limiter, "secret-entity")
+        assert (await _item(repo, "secret-entity", 3))["shard_count"]["N"] == "4"
+        assert "quota shard count repair failed" in caplog.text
+        assert "secret-entity" not in caplog.text
+
+    async def test_repair_is_a_no_op_for_shard_zero_or_no_quota(self, limiter):
+        repo = limiter._repository
+        assert await repo.repair_created_quota_shard("e", RESOURCE, 0, 1, ["rpd"]) is False
+        assert await repo.repair_created_quota_shard("e", RESOURCE, 3, 4, []) is False
+        # Shard 0 missing: nothing to compare against.
+        assert await repo.repair_created_quota_shard("e", RESOURCE, 3, 4, ["rpd"]) is False
+
+    async def test_a_repair_losing_to_another_raise_is_quiet(self, limiter):
+        repo = limiter._repository
+        repo._now_ms = lambda: T0
+        await seed_shard0(limiter, "lost", self.QUOTA, T0)
+        await _set_attr(repo, "lost", 0, "shard_count", 8)
+        await _write_shard(repo, "lost", self.QUOTA, 3, 250_000, grant_count=4, shard_count=8)
+        assert await repo.repair_created_quota_shard("lost", RESOURCE, 3, 4, ["rpd"]) is False
+
+    async def test_any_other_repair_write_error_propagates(self, limiter):
+        repo = limiter._repository
+        repo._now_ms = lambda: T0
+        await seed_shard0(limiter, "boom", self.QUOTA, T0)
+        await _set_attr(repo, "boom", 0, "shard_count", 8)
+        client = await repo._get_client()
+        error = ClientError(
+            {"Error": {"Code": "InternalServerError", "Message": "x"}}, "UpdateItem"
+        )
+        with patch.object(client, "update_item", side_effect=error):
+            with pytest.raises(ClientError):
+                await repo.repair_created_quota_shard("boom", RESOURCE, 3, 4, ["rpd"])

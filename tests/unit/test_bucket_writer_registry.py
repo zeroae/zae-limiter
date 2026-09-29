@@ -56,6 +56,7 @@ REPOSITORY = {
     "bump_shard_count": (False, False),  # shard_count on shard 0
     "_propagate_shard_count": (False, False),  # shard_count on siblings (R6 residual)
     "_freeze_and_raise_shard_counts": (False, True),  # the planner's raise, with the freeze
+    "repair_created_quota_shard": (False, True),  # raise a create a doubling overtook, freeze
     "_propagate_window_start": (False, False),  # ws / rsa / vu / wtc, never tk
     "_stamp_bucket_disabled": (False, False),  # disabled flag
     "_sync_one_bucket_shard": (False, False),  # issues _build_bucket_param_update
@@ -155,8 +156,9 @@ def test_the_fast_path_never_writes_gc():
 def test_only_grant_writers_write_gc():
     """I3: ``gc`` is written only where a grant is sized — a reset or roll
     (normal path, aggregator refill), a create or seed (create, normal, Path 2
-    clone), or the freeze that preserves an existing grant's size when a
-    legacy item's count is raised."""
+    clone), or the freeze that preserves an existing grant's size when an
+    item's count is raised — a legacy sibling's, or a just-created shard's
+    that a doubling overtook."""
     gc_writers = {
         name for table in (REPOSITORY, AGGREGATOR) for name, v in table.items() if v and v[1]
     }
@@ -166,6 +168,7 @@ def test_only_grant_writers_write_gc():
         "build_composite_normal",
         "_build_quota_count_freeze",
         "_freeze_and_raise_shard_counts",
+        "repair_created_quota_shard",
         "get_or_create_bucket",
         "purge_namespace",
         "try_refill_bucket",

@@ -307,6 +307,7 @@ class SyncLease:
             groups.setdefault(key, []).append(entry)
         items: list[dict[str, Any]] = []
         window_fanouts: dict[tuple[str, str, int, int], dict[str, tuple[int, int]]] = {}
+        quota_creates: list[tuple[str, str, int, int, list[str]]] = []
         for (entity_id, resource, shard_id), group_entries in groups.items():
             is_new = group_entries[0]._is_new
             has_custom_config = group_entries[0]._has_custom_config
@@ -345,6 +346,11 @@ class SyncLease:
                 if created:
                     window_fanouts[entity_id, resource, shard_id, first_entry._shard_count] = (
                         created
+                    )
+                created_quotas = [e.limit.name for e in group_entries if e.limit.is_quota]
+                if shard_id != 0 and created_quotas:
+                    quota_creates.append(
+                        (entity_id, resource, shard_id, first_entry._shard_count, created_quotas)
                     )
             else:
                 consumed: dict[str, int] = {}
@@ -574,7 +580,41 @@ class SyncLease:
         for entry in self.entries:
             entry._initial_consumed = entry.consumed
         if not condition_failed:
+            self._repair_created_quota_shards(quota_creates)
             self._fan_out_windows(window_fanouts)
+
+    def _repair_created_quota_shards(
+        self, quota_creates: list[tuple[str, str, int, int, list[str]]]
+    ) -> None:
+        """Raise each quota shard this commit created if a doubling overtook it (ADR-145).
+
+        A create is not pinned to the count it planned at: another client can
+        double shard 0 between this pass's plan and its ``Put``, and that
+        doubling's propagation finds nothing at this shard yet. Left alone, the
+        shard resets at the old count every period, covering slots a shard
+        created at the new count also covers. One strongly consistent read of
+        shard 0's count per created quota shard (1 RCU), and a write only when
+        it lags (:meth:`SyncRepository.repair_created_quota_shard`). The current
+        grant keeps its size, so at most one new share can overlap, once, in
+        this period (design §8).
+
+        After the commit, like the window fan-out: the caller was admitted and
+        the write landed, so a failure here is logged — without the entity id,
+        routinely an API key — and swallowed. Only when the rf-locked write
+        itself landed; a create that lost its race is some other writer's item.
+        """
+        for entity_id, resource, shard_id, created_count, names in quota_creates:
+            try:
+                self.repository.repair_created_quota_shard(
+                    entity_id, resource, shard_id, created_count, names
+                )
+            except Exception:
+                logger.warning(
+                    "quota shard count repair failed for resource=%s shard=%d; the shard keeps its created count until a doubling reaches it",
+                    resource,
+                    shard_id,
+                    exc_info=True,
+                )
 
     def _fan_out_windows(
         self, window_fanouts: dict[tuple[str, str, int, int], dict[str, tuple[int, int]]]

@@ -6977,6 +6977,69 @@ class Repository:
             "ExpressionAttributeValues": values,
         }
 
+    async def repair_created_quota_shard(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int,
+        created_count: int,
+        quota_names: Sequence[str],
+    ) -> bool:
+        """Raise a quota shard this client just created, if a doubling overtook it (ADR-145).
+
+        A create ``Put`` is guarded only by ``attribute_not_exists(PK)``, not by
+        the count it planned at. Another client can double shard 0 between this
+        client's plan and its ``Put``; that doubling's propagation finds no item
+        at this shard and writes nothing, so the ``Put`` lands at the old count.
+        The shard would then reset at the old count every period and cover the
+        slots a shard created at the new count also covers — a recurring
+        over-admission of one new share per period.
+
+        So after the ``Put`` lands: one **strongly consistent** projected
+        ``GetItem`` of shard 0's ``shard_count`` (1 RCU), and, only when it is
+        higher, the grant-size freeze (:meth:`_build_quota_count_freeze`):
+        ``SET shard_count = :new, gc = if_not_exists(gc, :old)`` under
+        ``shard_count < :new``. The current grant keeps the size it was planned
+        at; the next reset grants at the new count. Shard 0 is never written.
+
+        Returns:
+            True when the created item was raised.
+        """
+        if shard_id == 0 or not quota_names:
+            return False
+        client = await self._get_client()
+        response = await client.get_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+            ProjectionExpression="#qsc",
+            ExpressionAttributeNames={"#qsc": "shard_count"},
+            ConsistentRead=True,
+        )
+        item = response.get("Item")
+        if not item:
+            return False
+        current = self._stored_shard_count(item)
+        if current <= created_count:
+            return False
+        try:
+            await client.update_item(
+                **self._build_quota_count_freeze(
+                    entity_id,
+                    resource,
+                    shard_id,
+                    current,
+                    [(name, created_count) for name in quota_names],
+                )
+            )
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+                return False  # Already raised by another writer
+            raise
+        return True
+
     @staticmethod
     def _stored_shard_count(item: dict[str, Any]) -> int:
         """An item's stored ``shard_count``; absent or corrupt (< 1) reads as 1."""

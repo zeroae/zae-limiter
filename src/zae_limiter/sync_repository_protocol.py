@@ -773,6 +773,25 @@ class SyncRepositoryProtocol(Protocol):
         """
         ...
 
+    def repair_created_quota_shard(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int,
+        created_count: int,
+        quota_names: Sequence[str],
+    ) -> bool:
+        """Raise a just-created quota shard whose count a doubling overtook (ADR-145).
+
+        One strongly consistent read of shard 0's ``shard_count``; when it is
+        higher than ``created_count``, the created item's count is raised with
+        its current grant size frozen (``gc = if_not_exists(gc, :old)``).
+
+        Returns:
+            True when the created item was raised.
+        """
+        ...
+
     def build_quota_donor_debits(
         self, entity_id: str, resource: str, debits: Sequence["QuotaDonorDebit"]
     ) -> list[dict[str, Any]]:
