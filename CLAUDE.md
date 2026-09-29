@@ -84,6 +84,8 @@ async def _safe(item):
 results = await asyncio.gather(*[_safe(i) for i in items])
 ```
 
+**A starred `asyncio.gather` argument must be a list comprehension or generator expression (#666).** The generator defers each element into a `lambda <names>=<names>: <expr>` capturing every name the `for` targets bind — plain names, tuples/lists of names (nested) and starred names, across every `for` clause — so `gather(*[f(a, b) for a, b in pairs])` is fine. Anything else aborts generation with `UnsupportedAsyncConstructError`: a pre-built `*tasks`, `*[self._a(), self._b()]`, `*map(...)` or a set comprehension (their calls have already run, so a translation would call each result), and inside a comprehension an attribute/subscript target, `async for`, or `:=`.
+
 `asyncio.wait_for` is guarded the same way: its `timeout` is discarded by design (sync has no cancellation), any other keyword aborts generation.
 
 ```python

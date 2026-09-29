@@ -32,6 +32,7 @@ Full template for release preparation pull requests.
 - [ ] No regressions in test suite
 - [ ] New features have test coverage
 - [ ] No security vulnerabilities introduced
+- [ ] AWS e2e suite passed on the release commit (`pytest -m aws --run-aws`): <sha>, <date>, <passed>/<total>
 
 ### Backwards Compatibility
 - [ ] No breaking changes OR breaking changes documented below

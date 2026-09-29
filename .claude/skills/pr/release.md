@@ -69,6 +69,18 @@ For each whose work ships in this release, run `/adr accept <number>` and includ
 transitions in the release PR. A release PR that leaves a Proposed ADR describing shipped code
 is not ready — report it as a blocking open item.
 
+### 5b. Run the AWS E2E Suite
+
+A release is not ready until the AWS e2e suite passes on the commit being tagged
+(`.claude/rules/release-planning.md`, "AWS End-to-End Run"):
+
+```bash
+AWS_PROFILE=zeroae-code/AWSPowerUserAccess uv run pytest -m aws --run-aws -v
+```
+
+Record the commit SHA, date and pass/fail counts in the release PR body. A failure is a
+blocking open item.
+
 ### 6. Generate PR
 
 Use template from [release-template.md](release-template.md).

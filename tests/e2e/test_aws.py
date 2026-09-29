@@ -1178,7 +1178,7 @@ class TestE2EAWSSpeculativeConsume:
         )
 
         assert result.success is True
-        bucket = result.buckets[0]
+        bucket = next(b for b in result.buckets if b.limit_name == "rpm")
         assert bucket.entity_id == "spec-fields"
         assert bucket.resource == "api"
         assert bucket.limit_name == "rpm"
@@ -1204,14 +1204,16 @@ class TestE2EAWSSpeculativeConsume:
                 entity_id="spec-drain", resource="api", consume={"rpm": 3}
             )
             assert result.success is True
-            assert result.buckets[0].tokens_milli == expected_remaining
+            rpm_bucket = next(b for b in result.buckets if b.limit_name == "rpm")
+            assert rpm_bucket.tokens_milli == expected_remaining
 
         result = await repo.speculative_consume(
             entity_id="spec-drain", resource="api", consume={"rpm": 3}
         )
         assert result.success is False
         assert result.old_buckets is not None
-        assert result.old_buckets[0].tokens_milli == 1_000
+        rpm_old_bucket = next(b for b in result.old_buckets if b.limit_name == "rpm")
+        assert rpm_old_bucket.tokens_milli == 1_000
 
 
 class TestE2EAWSProvisioner:
