@@ -196,7 +196,7 @@ low-level typed values.
 
 | | Today | New |
 |---|---|---|
-| Reads | Query + BatchGet | same |
+| Reads | Query + BatchGet | same, + 1 RCU (consistent `GetItem` of shard 0) after a quota shard N>0 create, §8 R7 |
 | Mint | 1 WCU `Put` | same |
 | Move | 1 WCU `Put` + 1 WCU per clamped sibling | 4 WCU (2-item transaction) |
 | Rejected acquire | clamps + `persist_seed` | the same transaction |
@@ -238,17 +238,34 @@ Costs this design adds that did not exist before:
 | R4 | Aggregator doubles during a create / seed | Count pin, now on every write that sets `gc` |
 | R5 | A sibling whose stored `shard_count` lags a doubling resets at the lower count, covering a slot someone else just minted | Propagate before minting (§6 step 3) **and** pin every reset/roll write on `shard_count <= :gc`; a stale reset fails its pin once and retries |
 | R6 | Client whose config cache predates the quota creates a shard without it (#642 source a) | Seeded later by the rule |
+| R7 | A create lands after a doubling it did not plan for: client A plans shard 3 at 4; client B doubles shard 0 to 8 and creates shard 7; the doubling's propagation finds no shard 3; A's `Put` (guarded only by `attribute_not_exists(PK)`) lands at 4 | **Repaired after the create** (final review I1, owner option B): one strongly consistent read of shard 0's `shard_count`, and when it is higher, raise the created item with its current grant frozen (`gc = if_not_exists(gc, :old)`). Without it shard 3 resets at 4 every period beside shard 7, one new share over (+125/period at C = 1000). The aggregator's Path 2 clone does the same against the old items it read plus one read of shard 0 |
 
-No known over-admission remains; the `C·(1/S′ − 1/S)` residual documented for
-#642 is removed. Race tests step interleavings deterministically with stubs —
-moto is not thread-safe (#656).
+The `C·(1/S′ − 1/S)` residual documented for #642 is removed. Two bounded
+residuals remain, both at most one share, once:
+
+- **R7's first period.** Within the period of the race, shard 3's count-4 grant
+  and shard 7's count-8 grant both cover slot 7: at most one new share
+  (`C // S′`) is admitted twice, once. The repair makes the next reset grant
+  shard 3 at the new count, so it never recurs. A repair that fails (logged,
+  never failing the acquire) leaves the shard at its created count until a
+  later doubling's propagation reaches it.
+- **The legacy residual of §9**, the period after upgrade.
+
+Race tests step interleavings deterministically with stubs — moto is not
+thread-safe (#656).
 
 ## 9. Compatibility
 
 **Item with the quota but no `gc`** → read as `gc = its shard_count` (owner
 decision, option 1). Exactly today's meaning; the #642 residual survives at most
 one period after upgrade, on a quota sharded and spent across a doubling, and the
-next reset writes `gc`.
+next reset writes `gc`. Within that period a count raise that does not freeze the
+legacy grant size — the client's generic doubling propagation, the aggregator's
+Path 1 when it could not read the siblings (a read failure or an undecodable
+schedule), or any v0.14 writer — shrinks the item's coverage, and a later shard
+can be granted a slot it still holds tokens for: up to one old share, once. Every
+raise that did read the sibling freezes **every** legacy quota it carries, not only
+the ones being planned.
 
 **v0.14 writers** (calendar quotas shipped in v0.14; session quotas are hidden
 from v0.14 by ADR-142) can only under-admit:

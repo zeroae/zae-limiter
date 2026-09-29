@@ -311,7 +311,9 @@ It round-trips through the `Custom::ZaeLimiterLimits` CloudFormation resource as
   shards mid-window, a new shard is funded by moving tokens off the shard whose share covers it,
   never by creating new allowance, and never by discarding any
   ([ADR-145](../adr/145-sharded-quota-conserves-allowance.md)): a doubling neither creates nor
-  destroys allowance, so the entity admits exactly its quota per window. The price is that
+  destroys allowance, so the entity admits its quota per window. One narrow race can let one
+  shard's share through twice, once: a shard created just as another client doubles the entity
+  (repaired immediately, so it does not recur). The price is that
   balances need not be even — a shard that spent its share early passes nothing on, so a request
   drawn to an empty shard is rejected while the entity still holds tokens on another. The
   per-shard `capacity` a `RateLimitExceeded` reports can also differ between shards (the share

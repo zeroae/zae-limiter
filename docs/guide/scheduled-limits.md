@@ -318,7 +318,10 @@ which has no rate to divide by, the wait is the time to the next reset edge — 
 - **A sharded quota's balance can be uneven until the next reset.** When a busy entity splits
   into more shards mid-period, a new shard is funded by moving tokens off the shard whose share
   covers it — never by creating allowance, and never by discarding any — so the entity admits
-  exactly its quota per period ([ADR-145](../adr/145-sharded-quota-conserves-allowance.md)). A
+  its quota per period ([ADR-145](../adr/145-sharded-quota-conserves-allowance.md)). Two narrow
+  races can let one shard's share through twice, once: a shard created just as another client
+  doubles the entity (repaired immediately, so it does not recur), and — only in the first
+  period after upgrading from v0.14 — a shard written by the older version. A
   shard that spent its share early has nothing to pass on, so a request drawn to an empty shard
   can be rejected while the entity still holds tokens on another, and the per-shard `capacity`
   a `RateLimitExceeded` reports can differ between shards. Both settle at the next reset, when

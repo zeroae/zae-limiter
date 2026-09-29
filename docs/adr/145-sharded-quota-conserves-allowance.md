@@ -34,7 +34,8 @@ when no such sibling exists.
 
 **Positive:**
 - A doubling neither creates nor destroys quota allowance: per period, admitted plus
-  held plus still-grantable equals the configured capacity.
+  held plus still-grantable equals the configured capacity, apart from the bounded
+  residuals below.
 - #637 and #642 close together, including the aggregator's proactive clone.
 - The speculative fast path is untouched.
 
@@ -44,6 +45,10 @@ when no such sibling exists.
   entity holds tokens elsewhere, until the next reset.
 - A shard creation that moves tokens is a transaction, and can conflict with writes
   on a busy donor.
+- A create is not pinned to the count it planned at: a doubling that lands before its write
+  cannot reach a shard that does not exist yet. The creator reads shard 0's count after the
+  write and raises the new shard (1 RCU per quota shard creation), so it never resets at the
+  stale count, but within that period one new share can be granted twice, once.
 - A shard written before the record exists is read as granted at its stored count (or a lower
   one its balance implies), so #642's residual survives at most one period after upgrade. Within
   that period a count raise that does not also record the old grant size — the client's plain
