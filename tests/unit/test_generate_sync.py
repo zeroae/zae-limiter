@@ -43,8 +43,9 @@ def transform(source: str, *, source_file: str = "repository.py") -> str:
     return ast.unparse(new_tree)
 
 
-# The three distinct shapes the gather rewrite recognises, each reaching a
-# different `keywords=[]` construction site in `visit_Call`.
+# Three gather shapes. The keyword guard runs before any of them is handled,
+# so all three must refuse a keyword. `generic_starred` is not a translatable
+# shape at all (#666): without a keyword it aborts on its own, see below.
 GATHER_SHAPES = {
     "fixed_positional": "await asyncio.gather(work(1), work(2){kw})",
     "generic_starred": "await asyncio.gather(*tasks{kw})",
@@ -61,7 +62,10 @@ def _wrap(call: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("shape", sorted(GATHER_SHAPES))
+TRANSLATABLE_GATHER_SHAPES = sorted(set(GATHER_SHAPES) - {"generic_starred"})
+
+
+@pytest.mark.parametrize("shape", TRANSLATABLE_GATHER_SHAPES)
 def test_gather_positional_only_rewrites_to_run_in_executor(shape: str) -> None:
     """Every gather shape without keywords still becomes _run_in_executor."""
     result = transform(_wrap(GATHER_SHAPES[shape].format(kw="")))
@@ -309,24 +313,61 @@ def test_gather_single_name_listcomp_output_is_unchanged() -> None:
     assert "self._run_in_executor(*[lambda x=x: self._one(x) for x in items])" in result
 
 
-def test_gather_generic_starred_name_is_unchanged() -> None:
-    """A plain ``*tasks`` (not a comprehension) keeps the generic translation."""
-    result = transform(_wrap("await asyncio.gather(*tasks)"))
+@pytest.mark.parametrize(
+    "starred",
+    [
+        pytest.param("tasks", id="name"),
+        pytest.param("[self._a(), self._b()]", id="list_display"),
+        pytest.param("{f(x) for x in xs}", id="set_comprehension"),
+        pytest.param("map(f, xs)", id="map_call"),
+    ],
+)
+def test_gather_non_comprehension_starred_aborts_generation(starred: str) -> None:
+    """A starred iterable of already-built awaitables has nothing left to defer.
 
-    assert "self._run_in_executor(*[lambda fn=fn: fn() for fn in tasks])" in result
+    Translating it would call every element eagerly and then call its result
+    (#666), so generation aborts, naming file, line and the argument.
+    """
+    source = "async def run(self):\n    x = 1\n    return " + (f"await asyncio.gather(*{starred})")
+
+    with pytest.raises(generate_sync.UnsupportedAsyncConstructError) as excinfo:
+        transform(source, source_file="repository.py")
+
+    message = str(excinfo.value)
+    assert "repository.py:3:" in message
+    assert f"`{starred}`" in message
+    assert "list comprehension" in message
+
+
+def test_gather_tasks_list_built_earlier_aborts_generation() -> None:
+    """The `tasks = [...]; gather(*tasks)` idiom aborts rather than running eagerly."""
+    source = (
+        "async def run(self):\n"
+        "    tasks = [self._one(x) for x in items]\n"
+        "    return await asyncio.gather(*tasks)\n"
+    )
+
+    with pytest.raises(generate_sync.UnsupportedAsyncConstructError) as excinfo:
+        transform(source, source_file="repository.py")
+
+    assert "repository.py:3:" in str(excinfo.value)
 
 
 @pytest.mark.parametrize(
-    ("comprehension", "construct"),
+    ("comprehension", "construct", "remedy"),
     [
-        pytest.param("[f(x) for self.x in xs]", "self.x", id="attribute_target"),
-        pytest.param("[f(x) for d[0] in xs]", "d[0]", id="subscript_target"),
-        pytest.param("[f(x) async for x in xs]", "async for", id="async_for"),
-        pytest.param("[f(y) for x in xs if (y := x)]", "y := x", id="walrus"),
+        pytest.param(
+            "[f(x) for self.x in xs]", "self.x", "Bind a plain name", id="attribute_target"
+        ),
+        pytest.param("[f(x) for d[0] in xs]", "d[0]", "Bind a plain name", id="subscript_target"),
+        pytest.param(
+            "[f(x) async for x in xs]", "async for", "Materialise the async", id="async_for"
+        ),
+        pytest.param("[f(y) for x in xs if (y := x)]", "y := x", "Compute the value", id="walrus"),
     ],
 )
 def test_gather_untranslatable_comprehension_aborts_generation(
-    comprehension: str, construct: str
+    comprehension: str, construct: str, remedy: str
 ) -> None:
     """A shape whose bindings cannot be captured aborts, naming file, line and construct."""
     source = "async def run(self):\n    x = 1\n    return " + (
@@ -339,3 +380,4 @@ def test_gather_untranslatable_comprehension_aborts_generation(
     message = str(excinfo.value)
     assert "repository.py:3:" in message
     assert construct in message
+    assert remedy in message
