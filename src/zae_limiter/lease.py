@@ -747,6 +747,10 @@ class Lease:
             # could not carry the move. The acquire re-plans (design §6 step 6).
             raise QuotaMoveLostError from condition_exc
 
+        # Bucket items whose create `Put` was re-issued on the retry path and
+        # landed there: a doubling can overtake them exactly as it can the
+        # first transaction's, so they get the same repair (ADR-145 R7).
+        reissued_creates: set[tuple[str, str, int]] = set()
         if condition_failed:
             # Retry path: ADD consumption only, CONDITION tk>=consumed per limit
             logger.debug("Normal write failed (optimistic lock), retrying consumption-only")
@@ -863,6 +867,15 @@ class Lease:
                     retry_items = downgraded
                     retry_groups = downgraded_groups
 
+            # The loop exits only by a landed write (or with nothing to send);
+            # every failure above raises. So each `Put` still in the list is
+            # a re-issued create that landed — a lost one was downgraded.
+            reissued_creates = {
+                key
+                for item, (key, _group) in zip(retry_items, retry_groups, strict=True)
+                if isinstance(item, dict) and "Put" in item
+            }
+
         # Record initial consumed amounts after successful write
         self._initial_committed = True
         for entry in self.entries:
@@ -875,6 +888,10 @@ class Lease:
         if not condition_failed:
             await self._repair_created_quota_shards(quota_creates)
             await self._fan_out_windows(window_fanouts)
+        elif reissued_creates:
+            await self._repair_created_quota_shards(
+                [c for c in quota_creates if (c[0], c[1], c[2]) in reissued_creates]
+            )
 
     async def _repair_created_quota_shards(
         self, quota_creates: list[tuple[str, str, int, int, list[str]]]
@@ -893,8 +910,10 @@ class Lease:
 
         After the commit, like the window fan-out: the caller was admitted and
         the write landed, so a failure here is logged — without the entity id,
-        routinely an API key — and swallowed. Only when the rf-locked write
-        itself landed; a create that lost its race is some other writer's item.
+        routinely an API key — and swallowed. Only for a ``Put`` that landed:
+        in the rf-locked write itself, or re-issued as-is on the
+        consumption-only retry after a sibling item failed its condition. A
+        create that lost its race is some other writer's item.
         """
         for entity_id, resource, shard_id, created_count, names in quota_creates:
             try:

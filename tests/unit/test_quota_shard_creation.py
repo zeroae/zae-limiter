@@ -1164,3 +1164,77 @@ class TestCreateOvertakenByADoubling:
         with patch.object(client, "update_item", side_effect=error):
             with pytest.raises(ClientError):
                 await repo.repair_created_quota_shard("boom", RESOURCE, 3, 4, ["rpd"])
+
+
+class TestReissuedCreateOvertakenByADoubling:
+    """R18: the innocent create re-issued after a sibling's rf lock failed.
+
+    A cascade commit carries the child's quota shard-1 ``Put`` beside the
+    parent's rf-locked ``Update``. A concurrent refill moves the parent's
+    ``rf``, so the transaction is cancelled on the parent while the ``Put`` is
+    innocent, and the ``Put`` is re-issued as-is on the consumption-only
+    retry. A doubling of the child's shard 0 (2 → 4) lands in between, and its
+    propagation finds no shard 1. The re-issued ``Put`` lands at count 2; left
+    unrepaired it would reset at 2 every period beside a shard 3 created at 4.
+    """
+
+    QUOTA = Limit.quota("rpd", 1000, cron=QUOTA_CRON)
+
+    async def _race(self, limiter, repair=True):
+        repo = limiter._repository
+        ns = repo._namespace_id
+        repo._now_ms = lambda: T0
+        await limiter.create_entity("parent")
+        await limiter.create_entity("child", parent_id="parent", cascade=True)
+        await limiter.set_system_defaults([self.QUOTA])
+        # Child shard 0 at count 2 holding its own count-2 grant: slot 1 is
+        # uncovered, so shard 1 mints and the commit carries no donor debit.
+        await _write_shard(repo, "child", self.QUOTA, 0, 500_000, grant_count=2, shard_count=2)
+        await _write_shard(repo, "parent", self.QUOTA, 0, 1_000_000, shard_count=1)
+        repo._entity_cache[(ns, "child")] = (True, "parent", {RESOURCE: 2})
+        repo._entity_cache[(ns, "parent")] = (False, None, {RESOURCE: 1})
+        real = repo.transact_write
+        sent: list[list[str]] = []
+
+        async def refill_and_doubling_land_first(items):
+            sent.append([next(iter(item)) for item in items])
+            if len(sent) == 1:
+                await _set_attr(repo, "parent", 0, schema.BUCKET_FIELD_RF, T0 + 5)
+                await _set_attr(repo, "child", 0, "shard_count", 4)
+            return await real(items)
+
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        with patch.object(repo, "transact_write", refill_and_doubling_land_first):
+            with patch("zae_limiter.repository.random.randrange", return_value=1):
+                async with slow.acquire("child", RESOURCE, {"rpd": 1}):
+                    pass
+        # The first transaction was cancelled on the parent; the re-issued
+        # Put and the parent's consumption-only debit landed on the retry.
+        assert sent == [["Put", "Update"], ["Put", "Update"]]
+        return repo
+
+    async def test_the_reissued_create_is_raised_with_its_grant_frozen(self, limiter):
+        repo = await self._race(limiter)
+        shard1 = await _item(repo, "child", 1)
+        assert shard1["shard_count"]["N"] == "4"
+        assert shard1["b_rpd_gc"]["N"] == "2", "the current grant keeps its size"
+        assert shard1["b_rpd_tk"]["N"] == "499000"
+        parent = await _item(repo, "parent", 0)
+        assert parent["b_rpd_tk"]["N"] == "999000"
+
+    async def test_a_failed_repair_of_a_reissued_create_never_fails_the_acquire(
+        self, limiter, caplog
+    ):
+        repo = limiter._repository
+
+        async def broken(*_args, **_kwargs):
+            raise ClientError(
+                {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": "x"}},
+                "GetItem",
+            )
+
+        with patch.object(repo, "repair_created_quota_shard", broken):
+            await self._race(limiter)
+        assert (await _item(repo, "child", 1))["shard_count"]["N"] == "2"
+        assert "quota shard count repair failed" in caplog.text
+        assert "child" not in caplog.text

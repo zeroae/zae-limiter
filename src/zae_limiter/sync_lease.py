@@ -491,6 +491,7 @@ class SyncLease:
                 raise
         if condition_failed and donor_items:
             raise QuotaMoveLostError from condition_exc
+        reissued_creates: set[tuple[str, str, int]] = set()
         if condition_failed:
             logger.debug("Normal write failed (optimistic lock), retrying consumption-only")
             reason_codes = (
@@ -576,12 +577,21 @@ class SyncLease:
                         raise RateLimitExceeded(statuses) from retry_exc
                     retry_items = downgraded
                     retry_groups = downgraded_groups
+            reissued_creates = {
+                key
+                for item, (key, _group) in zip(retry_items, retry_groups, strict=True)
+                if isinstance(item, dict) and "Put" in item
+            }
         self._initial_committed = True
         for entry in self.entries:
             entry._initial_consumed = entry.consumed
         if not condition_failed:
             self._repair_created_quota_shards(quota_creates)
             self._fan_out_windows(window_fanouts)
+        elif reissued_creates:
+            self._repair_created_quota_shards(
+                [c for c in quota_creates if (c[0], c[1], c[2]) in reissued_creates]
+            )
 
     def _repair_created_quota_shards(
         self, quota_creates: list[tuple[str, str, int, int, list[str]]]
@@ -600,8 +610,10 @@ class SyncLease:
 
         After the commit, like the window fan-out: the caller was admitted and
         the write landed, so a failure here is logged — without the entity id,
-        routinely an API key — and swallowed. Only when the rf-locked write
-        itself landed; a create that lost its race is some other writer's item.
+        routinely an API key — and swallowed. Only for a ``Put`` that landed:
+        in the rf-locked write itself, or re-issued as-is on the
+        consumption-only retry after a sibling item failed its condition. A
+        create that lost its race is some other writer's item.
         """
         for entity_id, resource, shard_id, created_count, names in quota_creates:
             try:
