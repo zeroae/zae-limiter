@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 
 import pytest
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, EndpointConnectionError
 
 from zae_limiter.schedule import ScheduleEntry, decode, decode_reset
 from zae_limiter.schema import BUCKET_SCHED_NONE
@@ -4703,6 +4703,54 @@ class TestQuotaCloneOvertakenWhileCreated:
         ]
         assert warning["error_code"] == "InternalServerError"
         assert "entity_id" not in warning
+
+    def test_a_connection_error_on_the_read_is_logged_and_swallowed(
+        self, mock_dynamodb, capsys
+    ) -> None:
+        """R19: a ``BotoCoreError`` is not a ``ClientError``; it must not escape
+        ``propagate_shard_count`` and fail the stream batch."""
+        table = _moto_table()
+        _put_quota_shard(table, 0, tk=1_000_000, shard_count=4, b_rpd_gc=1)
+        real_get = table.get_item
+
+        def repair_read_drops(**kwargs):
+            if "ProjectionExpression" in kwargs:
+                raise EndpointConnectionError(endpoint_url="https://dynamodb.invalid")
+            return real_get(**kwargs)
+
+        with patch.object(table, "get_item", side_effect=repair_read_drops):
+            assert propagate_shard_count(table, _doubling_record(table, 2), TUE_1400) == 2
+        (warning,) = [
+            e for e in _logged(capsys) if e["message"].startswith("Quota clone count repair")
+        ]
+        assert warning["error_type"] == "EndpointConnectionError"
+        assert warning["resource"] == MOVE_RESOURCE
+        assert warning["shard"] == 0
+        assert "entity_id" not in warning
+        assert MOVE_ENTITY not in str(warning)
+
+    def test_a_connection_error_on_a_clone_write_is_logged_and_swallowed(
+        self, mock_dynamodb, capsys
+    ) -> None:
+        table = _moto_table()
+        _put_quota_shard(table, 0, tk=1_000_000, shard_count=4, b_rpd_gc=1)
+        real_update = table.update_item
+
+        def clone_write_drops(**kwargs):
+            if kwargs["Key"]["PK"].endswith("#2"):
+                raise EndpointConnectionError(endpoint_url="https://dynamodb.invalid")
+            return real_update(**kwargs)
+
+        with patch.object(table.meta.client, "transact_write_items", side_effect=self._race(table)):
+            with patch.object(table, "update_item", side_effect=clone_write_drops):
+                assert propagate_shard_count(table, _doubling_record(table, 2), TUE_1400) == 2
+        (warning,) = [
+            e for e in _logged(capsys) if e["message"].startswith("Quota clone count repair")
+        ]
+        assert warning["shard"] == 2
+        assert warning["error_type"] == "EndpointConnectionError"
+        assert "entity_id" not in warning
+        assert _must(table, 2)["shard_count"] == 4, "the failed write left the clone alone"
 
     def test_a_clone_already_raised_is_left_alone(self, mock_dynamodb) -> None:
         table = _moto_table()

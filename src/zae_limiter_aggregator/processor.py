@@ -9,7 +9,7 @@ from typing import Any
 
 import boto3
 from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 
 from zae_limiter.bucket import refill_bucket
 from zae_limiter.models import (
@@ -1739,9 +1739,12 @@ def _repair_quota_clones(
     ``shard_count`` (1 RCU), compared with the counts the old shards already
     read; when either is higher, each created clone is raised with its current
     grant frozen at ``new_count`` (:func:`_quota_count_freeze`). Shard 0 is
-    never written. A failure is logged, without the entity id, and swallowed:
-    the clones exist and are funded; only the next period's grant is at stake.
+    never written. A failure — a ``ClientError`` or a ``BotoCoreError`` such
+    as a dropped connection — is logged, without the entity id, and swallowed:
+    the clones exist and are funded; only the next period's grant is at stake,
+    and failing the stream batch would re-drive writes that already landed.
     """
+    shard = 0  # the item being read or written, for the log line
     try:
         response = table.get_item(
             Key={"PK": pk_bucket(namespace_id, entity_id, resource, 0), "SK": sk_state()},
@@ -1764,7 +1767,15 @@ def _repair_quota_clones(
         logger.warning(
             "Quota clone count repair failed - clones keep their created count",
             resource=resource,
+            shard=shard,
             error_code=e.response.get("Error", {}).get("Code"),
+        )
+    except BotoCoreError as e:
+        logger.warning(
+            "Quota clone count repair failed - clones keep their created count",
+            resource=resource,
+            shard=shard,
+            error_type=type(e).__name__,
         )
 
 
