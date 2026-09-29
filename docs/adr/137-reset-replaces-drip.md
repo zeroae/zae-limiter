@@ -1,8 +1,14 @@
 # ADR-137: A limit drips or resets, never both
 
-**Status:** Accepted
+**Status:** Accepted (zero-rate clause partially superseded by [ADR-139](139-duration-reset-windows.md))
 **Date:** 2026-09-15
 **Issue:** [#222](https://github.com/zeroae/zae-limiter/issues/222)
+
+> **Partially superseded by [ADR-139](139-duration-reset-windows.md):** a `refill_amount` of zero is
+> accepted when exactly one of `reset_schedule` or `reset_after` is present, not `reset_schedule`
+> alone. A limit still recovers by drip or by reset, never both and never neither; a duration
+> window is the second kind of reset. The same reading applies to ADR-136's "a limit that neither
+> drips nor resets". The rest of this decision is unchanged.
 
 ## Context
 

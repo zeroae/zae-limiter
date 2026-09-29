@@ -76,4 +76,6 @@ Rejected because: the function does the reading, and the template creates it onl
 also available.
 
 ### Hide the configuration from pre-v0.15 readers
-Decided separately in [ADR-142](142-hide-reset-after-config.md).
+Rejected as a replacement because: it hides the limit from old clients but cannot keep an old
+aggregator from cloning a bucket that carries one; adopted alongside this gate in
+[ADR-142](142-hide-reset-after-config.md).

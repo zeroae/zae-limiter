@@ -35,6 +35,8 @@ Implement centralized configuration with these architectural choices:
 | Disable flag | [ADR-125](125-resource-disable.md) | Tri-state `disabled` beside limits, resolved by an independent walk over the entity and resource levels |
 | Bucket TTL | [ADR-136](136-entity-config-bucket-ttl.md) | The resolved level decides whether a bucket persists or expires |
 | Schedules on config | [ADR-135](135-scheduled-limits.md) | Per-limit `sched`/`rsched`, with one `sched_tz` hoisted per item |
+| Duration window on config | [ADR-139](139-duration-reset-windows.md) | Per-limit `rsa` (`reset_after` seconds), the alternative to `rsched` |
+| Hidden session-limit config | [ADR-142](142-hide-reset-after-config.md) | A `reset_after` limit's config is stored under `w_`, which pre-v0.15 readers do not scan |
 
 ## Consequences
 

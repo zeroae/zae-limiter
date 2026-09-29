@@ -30,7 +30,7 @@ v0.14.0 are in #640 and CLAUDE.md "Hidden config (#640)".
 ## Decision
 
 A `reset_after` limit's config attributes must be stored under the `w_` prefix (`w_{name}_*`),
-which pre-v0.15 readers do not read, and every v0.15 config reader must read both prefixes and
+which pre-v0.15 readers do not read, and every config reader from v0.15 on must read both prefixes and
 must treat a name stored under both, or a `w_` limit without its window length, as a corrupt item.
 
 **Owner decision (2026-09-27):** accepted that under `on_unavailable="block"` a pre-v0.15 client

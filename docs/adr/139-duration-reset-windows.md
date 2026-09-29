@@ -19,7 +19,8 @@ field rather than a second reading of the first. Feasibility, costing and the fu
 are in `docs/plans/2026-09-15-rolling-session-windows-analysis.md` and
 `docs/plans/2026-09-15-session-quotas-plan.md`.
 
-This record lifts ADR-138's deferral of duration-based windows. ADR-138's own decision — that
+This record lifts ADR-138's deferral of duration-based windows; #597 is the request ADR-138's
+rejected "support both, select per limit" alternative waited for. ADR-138's own decision — that
 `reset_schedule` names only fixed calendar windows — is unaffected: this is a new mechanism, not
 a reinterpretation of `reset_schedule`. How an entity's shards agree on one window is
 [ADR-140](140-duration-window-shard-coherence.md); when such a limit may be stored at all is
@@ -32,6 +33,9 @@ A limit may carry `reset_after`, a duration quota (ADR-137) that must not also c
 open at the entity's first admitted, committed request after the previous window ended
 (idle-restarting, never tiling), must be anchored per entity so a cascade parent never follows
 its child, and its start must be stored per limit on the bucket item, never derived from `vu`.
+A `refill_amount` of zero is therefore accepted when exactly one of `reset_schedule` or
+`reset_after` is present; this supersedes ADR-137's zero-rate clause, which named
+`reset_schedule` alone.
 
 ## Consequences
 
