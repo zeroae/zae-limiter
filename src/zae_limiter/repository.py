@@ -3836,7 +3836,7 @@ class Repository:
                     return 0  # Already at or above the new count
                 raise
 
-        # List comprehension, not a generator: the sync transformer rewrites
+        # A comprehension, not a pre-built list: the sync transformer rewrites
         # `gather(*[expr for x in it])` into `_run_in_executor(*[lambda x=x:
         # expr for x in it])`, which needs the call deferred into the lambda.
         results = await asyncio.gather(*[stamp(n) for n in range(1, old_count)])
@@ -4017,10 +4017,6 @@ class Repository:
             if n != shard_id
             for name, window in sorted(windows.items())
         ]
-        # One bare-name comprehension target, not `for n, name, w in ...`:
-        # the sync transformer defers the call into a `lambda t=t:` only for a
-        # plain Name target. A tuple target falls through to its generic
-        # branch, which calls `stamp(...)` eagerly and then calls the int.
         results = await asyncio.gather(*[stamp(*t) for t in targets])
         return sum(results)
 

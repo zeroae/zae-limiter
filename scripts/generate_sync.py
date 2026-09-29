@@ -378,6 +378,63 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
             f"keyword argument(s): {', '.join(dropped)}.\n\n{help_text}"
         )
 
+    def _comprehension_capture_names(
+        self, node: ast.Call, comp: ast.ListComp | ast.GeneratorExp
+    ) -> list[str]:
+        """Return every name the comprehension's `for` targets bind, in order.
+
+        Each deferred lambda must capture all of them as default arguments, or it
+        would read the loop variables late (after the comprehension finished).
+        Aborts generation (issue #666) on any shape whose bindings cannot be
+        captured that way, rather than emit a sync twin that diverges silently.
+        """
+
+        def unsupported(construct: str, remedy: str) -> UnsupportedAsyncConstructError:
+            return UnsupportedAsyncConstructError(
+                f"{self.source_file}:{node.lineno}: `asyncio.gather(*<comprehension>)` "
+                f"cannot be translated faithfully: {construct}.\n\n"
+                "The sync generator rewrites each element into a deferred "
+                "`lambda <names>=<names>: <expr>`, capturing every name the `for` "
+                f"targets bind as a default argument. {remedy}"
+            )
+
+        names: list[str] = []
+
+        def collect(target: ast.expr) -> None:
+            if isinstance(target, ast.Name):
+                if target.id not in names:
+                    names.append(target.id)
+            elif isinstance(target, (ast.Tuple, ast.List)):
+                for elt in target.elts:
+                    collect(elt)
+            elif isinstance(target, ast.Starred):
+                collect(target.value)
+            else:
+                raise unsupported(
+                    f"loop target `{ast.unparse(target)}` is not a name",
+                    "Bind a plain name in the `for` target and assign it inside the element.",
+                )
+
+        for gen in comp.generators:
+            if gen.is_async:
+                raise unsupported(
+                    "`async for` in the comprehension",
+                    "Materialise the async iterable into a list first, then gather "
+                    "over a plain `for`.",
+                )
+            collect(gen.target)
+
+        # A walrus inside a comprehension binds in the *enclosing* scope, so the
+        # lambda would read its final value rather than the per-element one.
+        for sub in ast.walk(comp):
+            if isinstance(sub, ast.NamedExpr):
+                raise unsupported(
+                    f"assignment expression `{ast.unparse(sub)}`",
+                    "Compute the value inside the element, or pre-build the list of "
+                    "arguments and gather over it.",
+                )
+        return names
+
     @staticmethod
     def _rewrite_docstring(body: list[ast.stmt]) -> None:
         """Rewrite async-specific language in the docstring of a body (if present)."""
@@ -476,75 +533,56 @@ class AsyncToSyncTransformer(ast.NodeTransformer):
                 ctx=ast.Load(),
             )
 
-            # Handle starred arg: asyncio.gather(*[expr for x in iter])
+            # Handle starred comprehension: asyncio.gather(*[expr for x in iter])
             # -> self._run_in_executor(*[lambda x=x: expr for x in iter])
             if len(node.args) == 1 and isinstance(node.args[0], ast.Starred):
                 starred = node.args[0]
-                if isinstance(starred.value, ast.ListComp):
+                if isinstance(starred.value, (ast.ListComp, ast.GeneratorExp)):
+                    # A comprehension must never reach the generic `*tasks`
+                    # branch below: that branch assumes the iterable already
+                    # holds callables, so it would evaluate `expr` eagerly and
+                    # then call each result (issue #666).
                     comp = starred.value
-                    # Build lambda with default-arg capture from comprehension vars
-                    # to avoid late-binding closure bug.
-                    # [expr for x in iter] -> [lambda x=x: expr for x in iter]
-                    gen = comp.generators[0]
-                    if isinstance(gen.target, ast.Name):
-                        capture_name = gen.target.id
-                        lambda_node = ast.Lambda(
-                            args=ast.arguments(
-                                posonlyargs=[],
-                                args=[ast.arg(arg=capture_name)],
-                                kwonlyargs=[],
-                                kw_defaults=[],
-                                defaults=[ast.Name(id=capture_name, ctx=ast.Load())],
-                            ),
-                            body=comp.elt,
-                        )
-                        new_comp = ast.ListComp(
-                            elt=lambda_node,
-                            generators=comp.generators,
-                        )
-                        return ast.copy_location(
-                            ast.Call(
-                                func=executor_func,
-                                args=[ast.Starred(value=new_comp, ctx=ast.Load())],
-                                keywords=[],
-                            ),
-                            node,
-                        )
-                    # Fall through to generic starred handling
-                # Generic: asyncio.gather(*tasks)
-                # -> self._run_in_executor(*[lambda fn=fn: fn() for fn in tasks])
-                iter_name = "fn"
-                new_comp = ast.ListComp(
-                    elt=ast.Lambda(
+                    capture_names = self._comprehension_capture_names(node, comp)
+                    # Default-arg capture of every name the targets bind, to
+                    # avoid the late-binding closure bug:
+                    # [f(a, b) for a, b in it] -> [lambda a=a, b=b: f(a, b) for a, b in it]
+                    lambda_node = ast.Lambda(
                         args=ast.arguments(
                             posonlyargs=[],
-                            args=[ast.arg(arg=iter_name)],
+                            args=[ast.arg(arg=name) for name in capture_names],
                             kwonlyargs=[],
                             kw_defaults=[],
-                            defaults=[ast.Name(id=iter_name, ctx=ast.Load())],
+                            defaults=[ast.Name(id=name, ctx=ast.Load()) for name in capture_names],
                         ),
-                        body=ast.Call(
-                            func=ast.Name(id=iter_name, ctx=ast.Load()),
-                            args=[],
+                        body=comp.elt,
+                    )
+                    new_comp = ast.ListComp(
+                        elt=lambda_node,
+                        generators=comp.generators,
+                    )
+                    return ast.copy_location(
+                        ast.Call(
+                            func=executor_func,
+                            args=[ast.Starred(value=new_comp, ctx=ast.Load())],
                             keywords=[],
                         ),
-                    ),
-                    generators=[
-                        ast.comprehension(
-                            target=ast.Name(id=iter_name, ctx=ast.Store()),
-                            iter=starred.value,
-                            ifs=[],
-                            is_async=0,
-                        )
-                    ],
-                )
-                return ast.copy_location(
-                    ast.Call(
-                        func=executor_func,
-                        args=[ast.Starred(value=new_comp, ctx=ast.Load())],
-                        keywords=[],
-                    ),
-                    node,
+                        node,
+                    )
+                # Anything else (`*tasks`, `*[self._a(), self._b()]`, `*map(...)`,
+                # a set comprehension) holds already-evaluated calls by the time
+                # the sync twin sees it: there is no expression left to defer,
+                # so a translation would run every call eagerly and then call
+                # its result (issue #666). Refuse it instead.
+                raise UnsupportedAsyncConstructError(
+                    f"{self.source_file}:{node.lineno}: `asyncio.gather(*...)` cannot be "
+                    f"translated faithfully: starred argument "
+                    f"`{ast.unparse(starred.value)}` is not a list comprehension or "
+                    "generator expression.\n\n"
+                    "The sync generator defers each element into a lambda, which needs "
+                    "the call expression itself, not an iterable of its results. "
+                    "Rewrite the argument as a list comprehension, "
+                    "`*[expr for x in it]`, or pass the awaitables positionally."
                 )
 
             # Fixed positional args: asyncio.gather(a, b)
