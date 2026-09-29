@@ -1851,16 +1851,38 @@ def propagate_shard_count(
     # Read *before* Path 1 raises their counts: a legacy (no `gc`) sibling's
     # grant size is inferred from the count it stores (R7), exactly as the
     # client's planner reads it, and Path 1 then freezes that size onto it.
+    #
+    # A failed read must not cost the propagation itself: Path 1 still raises
+    # every lagging shard (without the grant-size freeze, which needs what the
+    # read would have said — the one-period legacy residual of design §9), and
+    # no quota clone is pre-created, since its funding cannot be sized. Every
+    # clone of this item carries the quota, so that is every clone; the client
+    # creates them lazily.
     old_items: dict[int, dict[str, Any]] = {}
     siblings: dict[str, list[QuotaSibling]] = {}
+    read_failed = False
     if quota_shares and clone_error is None:
-        for shard in range(old_count):
-            response = table.get_item(
-                Key={"PK": pk_bucket(namespace_id, entity_id, resource, shard), "SK": sk_state()},
-                ConsistentRead=True,
+        try:
+            for shard in range(old_count):
+                response = table.get_item(
+                    Key={
+                        "PK": pk_bucket(namespace_id, entity_id, resource, shard),
+                        "SK": sk_state(),
+                    },
+                    ConsistentRead=True,
+                )
+                if "Item" in response:
+                    old_items[shard] = response["Item"]
+        except ClientError as e:
+            # Never the entity id: it is routinely an API key.
+            logger.warning(
+                "Sibling read failed - propagating without the quota freeze or clones",
+                resource=resource,
+                error_code=e.response.get("Error", {}).get("Code"),
             )
-            if "Item" in response:
-                old_items[shard] = response["Item"]
+            old_items = {}
+            read_failed = True
+    if quota_shares and clone_error is None and not read_failed:
         for limit_name in quota_shares:
             siblings[limit_name] = [
                 sibling
@@ -1915,6 +1937,8 @@ def propagate_shard_count(
             limit_name=clone_error[0],
             reason=clone_error[1],
         )
+        return updated
+    if read_failed:
         return updated
 
     # Path 2: Pre-create new shards (full item cloned from shard 0)

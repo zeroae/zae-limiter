@@ -4546,6 +4546,32 @@ def _logged(capsys) -> list[dict]:
     ]
 
 
+class TestPathOneWhenTheSiblingReadFails:
+    """I2 of the final review: the old siblings are read before Path 1, so a
+    failed read used to propagate out of the handler and skip the shard-count
+    propagation entirely. Path 1 now runs without the freeze and no quota
+    clone is pre-created (the same shape as an undecodable schedule)."""
+
+    def test_path_1_still_raises_every_lagging_shard(self, mock_dynamodb, capsys) -> None:
+        table = _moto_table()
+        _put_quota_shard(table, 0, tk=500_000, shard_count=4, b_rpd_gc=2)
+        _put_quota_shard(table, 1, tk=400_000, shard_count=2)
+        error = ClientError(
+            {"Error": {"Code": "ProvisionedThroughputExceededException", "Message": "no"}},
+            "GetItem",
+        )
+        with patch.object(table, "get_item", side_effect=error):
+            assert propagate_shard_count(table, _doubling_record(table, 2), TUE_1400) == 1
+        shard_1 = _must(table, 1)
+        assert shard_1["shard_count"] == 4
+        assert "b_rpd_gc" not in shard_1, "no freeze without the read"
+        assert _stored(table, 2) is None and _stored(table, 3) is None, "no quota clone"
+        (warning,) = [e for e in _logged(capsys) if e["message"].startswith("Sibling read failed")]
+        assert warning["error_code"] == "ProvisionedThroughputExceededException"
+        assert "entity_id" not in warning
+        assert MOVE_ENTITY not in json.dumps(warning)
+
+
 class TestQuotaCloneOvertakenWhileCreated:
     """I1 of the final review, aggregator side: a client doubles shard 0 after
     Path 2 read the old shards, so the clones land at the record's count while
