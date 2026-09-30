@@ -910,6 +910,92 @@ class TestDurationWindowStamp:
             repo._deserialize_composite_bucket(item)
 
 
+class TestGrantCountStorage:
+    """`b_{q}_gc` round-trips through a bucket item (Refs #637, #642)."""
+
+    def test_limit_item_attrs_emits_gc_only_when_set(self, repo):
+        state = BucketState.from_limit(
+            "e1", "gpt-4", Limit.quota("rpd", 1000, cron="0 0 * * *"), 1000, shard_count=4
+        )
+        from zae_limiter import schema
+
+        state.grant_count = None
+        assert schema.BUCKET_FIELD_GC not in repo._limit_item_attrs(state)
+        state.grant_count = 4
+        assert repo._limit_item_attrs(state)[schema.BUCKET_FIELD_GC] == {"N": "4"}
+
+    def test_deserialize_reads_gc(self, repo):
+        from zae_limiter import schema
+
+        item = {
+            "PK": {"S": schema.pk_bucket(repo._namespace_id, "e1", "gpt-4", 1)},
+            "SK": {"S": schema.sk_state()},
+            "entity_id": {"S": "e1"},
+            "resource": {"S": "gpt-4"},
+            "rf": {"N": "1000"},
+            "shard_count": {"N": "4"},
+            "b_rpd_tk": {"N": "250000"},
+            "b_rpd_cp": {"N": "1000000"},
+            "b_rpd_ra": {"N": "0"},
+            "b_rpd_rp": {"N": "1000"},
+            "b_rpd_tc": {"N": "0"},
+            "b_rpd_gc": {"N": "2"},
+        }
+        (state,) = [s for s in repo._deserialize_composite_bucket(item) if s.limit_name == "rpd"]
+        assert state.grant_count == 2
+
+    def test_deserialize_missing_gc_is_none(self, repo):
+        from zae_limiter import schema
+
+        item = {
+            "PK": {"S": schema.pk_bucket(repo._namespace_id, "e1", "gpt-4", 0)},
+            "SK": {"S": schema.sk_state()},
+            "entity_id": {"S": "e1"},
+            "resource": {"S": "gpt-4"},
+            "rf": {"N": "1000"},
+            "b_rpd_tk": {"N": "1"},
+            "b_rpd_cp": {"N": "1000000"},
+            "b_rpd_ra": {"N": "0"},
+            "b_rpd_rp": {"N": "1000"},
+        }
+        (state,) = [s for s in repo._deserialize_composite_bucket(item) if s.limit_name == "rpd"]
+        assert state.grant_count is None
+
+
+class TestPlanQuotaShardRaise:
+    """ADR-145 R5 raise through ``plan_quota_shard`` — generated into the sync twin."""
+
+    def test_a_lagging_legacy_sibling_is_raised_and_its_grant_frozen(self, repo):
+        from zae_limiter import schema
+
+        quota = Limit.quota("rpd", 1000, cron="0 0 * * *")
+        now = repo._now_ms()
+        for shard_id, tokens, grant_count, shard_count in ((0, 500000, None, 2), (1, 0, 4, 4)):
+            state = BucketState.from_limit("e1", "gpt-4", quota, now)
+            state.tokens_milli = tokens
+            state.grant_count = grant_count
+            repo.transact_write(
+                [
+                    repo.build_composite_create(
+                        "e1", "gpt-4", [state], now, shard_id=shard_id, shard_count=shard_count
+                    )
+                ]
+            )
+        count, grants, debits = repo.plan_quota_shard("e1", "gpt-4", [quota], 3, 4, now)
+        assert count == 4
+        assert grants["rpd"].donor_shard is None and debits == []
+        client = repo._get_client()
+        response = client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, "e1", "gpt-4", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+        )
+        assert response["Item"]["shard_count"] == {"N": "4"}
+        assert response["Item"][bucket_attr("rpd", schema.BUCKET_FIELD_GC)] == {"N": "2"}
+
+
 class TestPropagateWindowStart:
     """The rollover fan-out (ADR-140, #624).
 

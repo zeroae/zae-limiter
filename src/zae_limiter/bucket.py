@@ -132,7 +132,7 @@ def try_consume(
         tokens_milli=state.tokens_milli,
         last_refill_ms=state.last_refill_ms,
         now_ms=now_ms,
-        capacity_milli=state.effective_capacity_milli(now_ms),
+        capacity_milli=state.ceiling_milli(now_ms),
         refill_amount_milli=state.effective_refill_amount_milli(now_ms),
         refill_period_ms=state.effective_refill_period_ms(now_ms),
     )
@@ -237,7 +237,7 @@ def _restored_if_window_ended(state: BucketState, now_ms: int) -> BucketState:
         # A live, pending roll: the share less what the shard spent since the
         # fan-out's snapshot (#640) — the balance the slow path will restore.
         return replace(state, tokens_milli=state.window_roll_target_milli(now_ms))
-    return replace(state, tokens_milli=state.effective_capacity_milli(now_ms))
+    return replace(state, tokens_milli=state.reset_target_milli(now_ms))
 
 
 def retry_after_for_deficit(state: BucketState, deficit_milli: int, now_ms: int) -> float:
@@ -287,7 +287,7 @@ def retry_after_for_deficit(state: BucketState, deficit_milli: int, now_ms: int)
         # ``requested`` recovered as the deficit plus the balance it was
         # measured against — the caller may hand in the burnt image or the
         # already-restored one, and both must agree.
-        still_short = deficit_milli + state.tokens_milli - state.effective_capacity_milli(now_ms)
+        still_short = deficit_milli + state.tokens_milli - state.reset_target_milli(now_ms)
         if still_short <= 0:
             return 0.0
         # `end` is not None, so the window length is on the state.
@@ -414,7 +414,7 @@ def calculate_available(
         tokens_milli=state.tokens_milli,
         last_refill_ms=state.last_refill_ms,
         now_ms=now_ms,
-        capacity_milli=state.effective_capacity_milli(now_ms),
+        capacity_milli=state.ceiling_milli(now_ms),
         refill_amount_milli=state.effective_refill_amount_milli(now_ms),
         refill_period_ms=state.effective_refill_period_ms(now_ms),
     )
@@ -441,7 +441,7 @@ def calculate_time_until_available(
         tokens_milli=state.tokens_milli,
         last_refill_ms=state.last_refill_ms,
         now_ms=now_ms,
-        capacity_milli=state.effective_capacity_milli(now_ms),
+        capacity_milli=state.ceiling_milli(now_ms),
         refill_amount_milli=state.effective_refill_amount_milli(now_ms),
         refill_period_ms=state.effective_refill_period_ms(now_ms),
     )
@@ -476,7 +476,7 @@ def force_consume(
         tokens_milli=state.tokens_milli,
         last_refill_ms=state.last_refill_ms,
         now_ms=now_ms,
-        capacity_milli=state.effective_capacity_milli(now_ms),
+        capacity_milli=state.ceiling_milli(now_ms),
         refill_amount_milli=state.effective_refill_amount_milli(now_ms),
         refill_period_ms=state.effective_refill_period_ms(now_ms),
     )
@@ -579,7 +579,7 @@ def declared_statuses(
             build_limit_status(
                 entity_id=state.entity_id,
                 resource=state.resource,
-                limit=Limit.from_bucket_state(state).per_shard(state.shard_count, now_ms),
+                limit=Limit.from_bucket_state(state).per_shard(state.report_shard_count, now_ms),
                 state=state,
                 requested=consume[state.limit_name],
                 now_ms=now_ms,

@@ -7,8 +7,8 @@ whose tokens are built from the name is rejected by DynamoDB (and by moto)
 with a `ValidationException`, on every path except the create `Put`.
 
 This file builds every bucket write the library issues — the fast path, the
-three composite builders, the aggregator refill, and (as regressions) the
-reclaim, param-sync and disable fan-out writes that were already positional —
+three composite builders, the aggregator refill and clone funding, and (as
+regressions) the param-sync and disable fan-out writes that were already positional —
 for limits named `rpm.v2` and `req-min`, and checks each against the token
 rules and against its own declarations.
 """
@@ -20,12 +20,20 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from zae_limiter import Limit, RateLimiter, Repository
+from zae_limiter.models import QuotaDonorDebit
 from zae_limiter.schedule import ScheduleEntry
-from zae_limiter.schema import BUCKET_FIELD_TK, BUCKET_FIELD_WA, bucket_attr, pk_bucket
+from zae_limiter.schema import (
+    BUCKET_FIELD_GC,
+    BUCKET_FIELD_TK,
+    BUCKET_FIELD_WA,
+    bucket_attr,
+    pk_bucket,
+)
 from zae_limiter_aggregator.processor import (
     BucketRefillState,
     LimitRefillInfo,
-    _reclaim_quota_surplus,
+    _donor_update_items,
+    _quota_count_freeze,
     try_refill_bucket,
 )
 from zae_limiter_provisioner.bucket_sync import build_bucket_param_update
@@ -232,27 +240,24 @@ class TestCompositeBuilders:
             now_ms=2_000,
             expected_rf=1_000,
             seeds={HYPHENATED: self._seed_states()[HYPHENATED]},
-            seed_shard_count=2,
+            pin_shard_count=2,
         )["Update"]
         assert_expression_safe(update)
         assert "#pinsc <= :pinsc" in update["ConditionExpression"]
 
-    async def test_persist_seed(self) -> None:
-        """Both attempts of the transfer-seed persist (#633), captured."""
-        from unittest.mock import AsyncMock
-
-        from botocore.exceptions import ClientError
-
-        repo = _repo()
-        client = MagicMock()
-        lost = ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")
-        client.update_item = AsyncMock(side_effect=[lost, {}])
-        with patch.object(repo, "_get_client", AsyncMock(return_value=client)):
-            assert await repo.persist_seed(
-                "user-1", "api", 0, self._seed_states()["sess.v1"], vu=9, seed_shard_count=2
-            )
-        for call in client.update_item.call_args_list:
-            assert_expression_safe(call.kwargs)
+    def test_normal_with_grant_counts(self) -> None:
+        update = _repo().build_composite_normal(
+            entity_id="e",
+            resource="r",
+            consumed={DOTTED: 1000, HYPHENATED: 0},
+            refill_amounts={},
+            now_ms=2,
+            expected_rf=1,
+            grant_counts={DOTTED: 4, HYPHENATED: 4},
+            pin_shard_count=4,
+        )["Update"]
+        assert_expression_safe(update)
+        assert "#pinsc <= :pinsc" in update["ConditionExpression"]
 
     def test_retry_with_seeds(self) -> None:
         seeds = self._seed_states()
@@ -278,6 +283,40 @@ class TestCompositeBuilders:
             "user-1", "api", deltas={DOTTED: 1000, "rpm": 0, HYPHENATED: -2000}
         )["Update"]
         assert_expression_safe(update)
+
+    def test_quota_donor_debits(self) -> None:
+        for item in _repo().build_quota_donor_debits(
+            "e",
+            "r",
+            [
+                QuotaDonorDebit(0, DOTTED, 1, 1, 5, None),
+                QuotaDonorDebit(0, HYPHENATED, 1, 2, None, 7),
+            ],
+        ):
+            assert_expression_safe(item["Update"])
+
+    def test_quota_donor_debit_off_a_legacy_donor(self) -> None:
+        """R7: an inferred grant count and the stored count are two tokens."""
+        (item,) = _repo().build_quota_donor_debits(
+            "e", "r", [QuotaDonorDebit(0, DOTTED, 1, 1, 5, None, legacy_shard_count=2)]
+        )
+        assert_expression_safe(item["Update"])
+        values = item["Update"]["ExpressionAttributeValues"]
+        assert (values[":qg0"], values[":ql0"]) == ({"N": "1"}, {"N": "2"})
+
+    def test_quota_count_freeze(self) -> None:
+        assert_expression_safe(
+            _repo()._build_quota_count_freeze("e", "r", 0, 4, [(DOTTED, 2), (HYPHENATED, 1)])
+        )
+
+    def test_quota_count_freeze_without_quotas(self) -> None:
+        assert_expression_safe(_repo()._build_quota_count_freeze("e", "r", 1, 4, []))
+
+    def test_quota_donor_debit_without_a_period_guard(self) -> None:
+        for item in _repo().build_quota_donor_debits(
+            "e", "r", [QuotaDonorDebit(1, DOTTED, 1, 2, None, None)]
+        ):
+            assert_expression_safe(item["Update"])
 
 
 class TestParamSyncBuilders:
@@ -400,13 +439,62 @@ class TestAggregatorWrites:
             bucket_attr(HYPHENATED, BUCKET_FIELD_WA): self.NOW - 120_000,
         }
 
-    def test_reclaim(self) -> None:
+    def test_reset_stamps_the_grant_count_and_pins_the_shard_count(self) -> None:
+        """ADR-145 I3/I4: the reset's `gc` SET and the `shard_count` pin ride
+        on positional `#gq*` tokens beside the `#rt*` reset delta."""
+        state = self._state()
+        state.shard_count = 4
         table = MagicMock()
-        table.update_item.return_value = {"Attributes": {}}
-        _reclaim_quota_surplus(table, "ns", "user-1", "api", 1, {DOTTED: 1, HYPHENATED: 1})
-        assert table.update_item.call_count == 2
-        for call in table.update_item.call_args_list:
-            assert_expression_safe(call.kwargs)
+        assert try_refill_bucket(table, state, self.NOW + 1) is True
+        kwargs = table.update_item.call_args.kwargs
+        assert_expression_safe(kwargs)
+        names, values = kwargs["ExpressionAttributeNames"], kwargs["ExpressionAttributeValues"]
+        assert names["#gq0"] == bucket_attr(HYPHENATED, BUCKET_FIELD_GC)
+        assert values[":gq0"] == 4
+        assert names["#gqsc"] == "shard_count"
+        assert values[":gqpin"] == 4
+
+    def test_window_roll_stamps_the_grant_count(self) -> None:
+        window = {"cp_milli": 5_000_000, "ra_milli": 0, "rp_ms": 1_000}
+        state = BucketRefillState(
+            namespace_id="ns",
+            entity_id="user-1",
+            resource="api",
+            rf_ms=self.NOW - 60_000,
+            shard_count=2,
+            limits={
+                DOTTED: LimitRefillInfo(
+                    tc_delta=0,
+                    tk_milli=0,
+                    window_start_ms=self.NOW - 1_000,
+                    window_applied_ms=self.NOW - 18_000_000,
+                    reset_after_seconds=18_000,
+                    **window,
+                ),
+            },
+        )
+        table = MagicMock()
+        assert try_refill_bucket(table, state, self.NOW) is True
+        kwargs = table.update_item.call_args.kwargs
+        assert_expression_safe(kwargs)
+        assert kwargs["ExpressionAttributeNames"]["#gq0"] == bucket_attr(DOTTED, BUCKET_FIELD_GC)
+
+    def test_clone_donor_update(self) -> None:
+        """Path 2's donor debit (ADR-145): both guards, legacy branch, two
+        quotas sharing one donor, all on positional tokens."""
+        debits = [
+            QuotaDonorDebit(1, DOTTED, 1_000, 2, 1_700_000_000_000, None),
+            QuotaDonorDebit(1, HYPHENATED, 2_000, 2, None, 1_700_000_000_000, 4),
+            QuotaDonorDebit(3, DOTTED, 500, 4, None, None),
+        ]
+        items = _donor_update_items("t", "ns", "user-1", "api", debits)
+        assert len(items) == 2, "one Update per donor shard"
+        for item in items:
+            assert_expression_safe(item["Update"])
+
+    def test_path_1_freeze(self) -> None:
+        kwargs = _quota_count_freeze({"PK": "p", "SK": "s"}, 4, [(DOTTED, 2), (HYPHENATED, 1)])
+        assert_expression_safe(kwargs)
 
 
 class TestClientWritesThroughMoto:
@@ -451,7 +539,10 @@ class TestClientWritesThroughMoto:
             )
         assert_expression_safe(spy.call_args.kwargs)
 
-    async def test_reclaim(self, limiter: RateLimiter) -> None:
+    async def test_quota_move_transaction(self, limiter: RateLimiter) -> None:
+        """An ADR-145 move — the seed's rf-locked write plus the donor debit —
+        reaches moto as one transaction whose every item is token-safe, and
+        lands: dotted and hyphenated quota names both moved."""
         repo = limiter._repository
         await repo.set_limits(
             "user-1",
@@ -463,13 +554,22 @@ class TestClientWritesThroughMoto:
         )
         async with limiter.acquire("user-1", "api", consume={DOTTED: 1}):
             pass
+        assert await repo.bump_shard_count("user-1", "api", 1) == 2
         client = await repo._get_client()
-        spy = await self._spy(repo)
-        with patch.object(client, "update_item", spy.forward):
-            await repo.reclaim_quota_surplus("user-1", "api", {DOTTED: 1_000, HYPHENATED: 1_000})
-        assert spy.call_count == 2
-        for call in spy.call_args_list:
-            assert_expression_safe(call.kwargs)
+        original = client.transact_write_items
+        sent: list[dict[str, Any]] = []
+
+        async def forward(**kwargs: Any) -> Any:
+            sent.extend(kwargs["TransactItems"])
+            return await original(**kwargs)
+
+        with patch.object(client, "transact_write_items", forward):
+            with patch("zae_limiter.repository.random.randrange", return_value=1):
+                async with limiter.acquire("user-1", "api", consume={DOTTED: 1}):
+                    pass
+        assert [next(iter(item)) for item in sent] == ["Put", "Update"]
+        for item in sent:
+            assert_expression_safe(next(iter(item.values())))
 
     async def test_disable_fan_out(self, limiter: RateLimiter) -> None:
         repo = limiter._repository

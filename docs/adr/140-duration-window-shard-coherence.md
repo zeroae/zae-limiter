@@ -1,6 +1,6 @@
 # ADR-140: Shards of one entity share one duration window
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-09-27
 **Issue:** [#624](https://github.com/zeroae/zae-limiter/issues/624), [#625](https://github.com/zeroae/zae-limiter/issues/625), [#635](https://github.com/zeroae/zae-limiter/issues/635), [#640](https://github.com/zeroae/zae-limiter/issues/640)
 **Related:** [ADR-139](139-duration-reset-windows.md), [ADR-142](142-hide-reset-after-config.md), ADR-133, ADR-134, [#597](https://github.com/zeroae/zae-limiter/issues/597)
@@ -27,8 +27,7 @@ And a writer whose clock runs behind can move a shard's last-refill stamp `rf` b
 which the shard would believe a window it already applied is new (#635). Pre-v0.15 clients
 writing windowed buckets ([ADR-142](142-hide-reset-after-config.md)) stamp `rf` from their own
 clock and drop the fast path's `vu` gate, so `rf` cannot record a reset, and a shard can spend an
-ended window's leftover inside the next one before its reset. Mechanism, writer rows and costs
-are in CLAUDE.md "Session Quotas" and the DynamoDB writer table.
+ended window's leftover inside the next one before its reset (mechanism: CLAUDE.md).
 
 ## Decision
 
@@ -36,17 +35,19 @@ Every shard of an entity must converge on one window start: the opener must prop
 start and a snapshot `wtc` of the sibling's consumption counter, never tokens, and only to
 siblings whose own window had ended and that carry a window-applied marker `wa` or an `rf` older
 than the new start; each shard must record in `wa` the start its balance reflects, must reset
-when its start is newer than `wa` (than `rf` where no `wa` exists) to its share less the
-consumption since `wtc` and never above its share, and no materialising writer may move `rf`
-backward. A shard created mid-window must join shard 0's live window, read strongly consistently,
-and may open and propagate its own only when shard 0's window has ended or it has none.
+when its start is newer than `wa` (than `rf` where no `wa` exists) to its current share,
+recorded as its grant ([ADR-145](145-sharded-quota-conserves-allowance.md)), less the consumption
+since `wtc` and never above that share, and no materialising writer may move `rf` backward. A
+shard created mid-window must join shard 0's live window, read strongly consistently, and may
+open and propagate its own only when shard 0's window has ended or it has none.
 
 ## Consequences
 
 **Positive:**
 - `check_availability` and `RateLimitExceeded` can report one honest reset instant per entity.
-- No shard's balance is ever decremented to fund another's, so the #587 over-admission cannot
-  recur through a rollover.
+- A rollover never decrements one shard's balance to fund another's, so the #587 over-admission
+  cannot recur through it. Funding a shard *created* mid-window is a separate, atomic move off the
+  shard whose grant covers it ([ADR-145](145-sharded-quota-conserves-allowance.md)).
 - The reset is a set, not an add: idempotent, one reset however many windows an idle shard slept
   through, and the consumption counter `tc` stays monotonic.
 - Monotonic `rf` costs nothing on items without a window, since refill treats non-positive
@@ -95,4 +96,5 @@ Rejected because: the start is the monotonic half, which is what makes the propa
 idempotent.
 
 ### Redistribute balance across shards instead of transferring it
-Rejected because: admission gates on per-shard balance, and a quota's debt is never repaid.
+Rejected because: admission gates on per-shard balance, and a quota's debt is never repaid. The
+transfer that replaced it is ADR-145's move.

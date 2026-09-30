@@ -518,18 +518,43 @@ class TestSizeBudget:
         (session-quotas plan Task 3, Step 6). Neither owner measured the
         other's budget in isolation, so re-measure the combined worst case:
         §4.2's worst shared schedule (6 limits x 4 entries) plus one of those
-        six limits also carrying a duration reset window.
+        six limits also carrying a duration reset window, ADR-140's `wa`/`wtc`
+        window-applied markers, and ADR-145's `gc` grant count (#637, #642) --
+        all four riding on the same rolling limit's shard item. As of the `gc`
+        addition the measured size is 917 B, 107 B under the boundary.
         """
         item = _bucket_item(6, self.WORST_SHARED)
         # One of the six limits (`lim0`) is also a rolling/session quota:
         # `ws` (epoch ms) and `rsa` (seconds), per schema.BUCKET_FIELD_WS /
-        # schema.BUCKET_FIELD_RSA.
+        # schema.BUCKET_FIELD_RSA -- plus the ADR-140 `wa`/`wtc` markers and
+        # the ADR-145 `gc` grant count, all sharing this item.
         item["b_lim0_ws"] = {"N": "1757000000000"}
         item["b_lim0_rsa"] = {"N": "18000"}
+        item["b_lim0_wa"] = {"N": "1757000000000"}
+        item["b_lim0_wtc"] = {"N": "0"}
+        item["b_lim0_gc"] = {"N": "32"}
         measured = _ddb_item_size(item)
         assert measured < 1024, (
             f"combined worst case is {measured} B, at or over the 1 KB WCU boundary"
         )
+
+    def test_the_worst_shared_case_with_six_quotas_each_carrying_gc_stays_under_one_kb(self):
+        """ADR-145 adds ``b_{q}_gc`` to **every** quota on the item, not one.
+
+        §4.2's worst shared schedule with all six limits made calendar quotas
+        (``ra = 0``, one item-level daily ``rsched``) and each carrying a
+        two-digit ``gc`` — the most grant records one item of this shape can
+        hold. Pinned exactly, like the base case: measured 905 B, 119 B under
+        the boundary.
+        """
+        item = _bucket_item(6, self.WORST_SHARED)
+        item["rsched"] = {"S": "1m0h0"}
+        for i in range(6):
+            item[f"b_lim{i}_ra"] = {"N": "0"}
+            item[f"b_lim{i}_gc"] = {"N": "32"}
+        measured = _ddb_item_size(item)
+        assert measured < 1024
+        assert measured == 905, "update the docstring if this moves"
 
 
 class TestResetEncoding:

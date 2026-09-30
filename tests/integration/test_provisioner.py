@@ -445,7 +445,8 @@ class TestHandlerIntegration:
 
         buckets = await test_repo.get_buckets("user-1", resource="gpt-4")
         assert buckets, "a bucket must exist before the apply for the fan-out to have work"
-        assert buckets[0].reset_after_seconds == 3600
+        session_bucket = next(b for b in buckets if b.limit_name == "session")
+        assert session_bucket.reset_after_seconds == 3600
 
         # An entity-level manifest apply widens the window to 6h.
         manifest = {
@@ -474,7 +475,8 @@ class TestHandlerIntegration:
 
         # 2. The fan-out re-stamped the LIVE bucket, not just config.
         buckets = await test_repo.get_buckets("user-1", resource="gpt-4")
-        assert buckets[0].reset_after_seconds == 21_600
+        session_bucket = next(b for b in buckets if b.limit_name == "session")
+        assert session_bucket.reset_after_seconds == 21_600
 
     @pytest.mark.asyncio
     async def test_undecodable_stored_schedule_still_records_state(self, test_repo):

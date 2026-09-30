@@ -6,7 +6,7 @@ import logging
 import random
 import time
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
 from aiobotocore.session import AioSession, get_session
@@ -30,10 +30,15 @@ from .models import (
     Entity,
     Limit,
     OnUnavailableAction,
+    QuotaDonorDebit,
+    QuotaGrant,
+    QuotaSibling,
     StackOptions,
     UsageSnapshot,
     UsageSummary,
     hoisted_schedule_timezone,
+    plan_quota_grant,
+    quota_grant_is_current,
     validate_identifier,
     validate_resource,
 )
@@ -83,6 +88,7 @@ _SEED_TOKEN = {
     schema.BUCKET_FIELD_RSA: "y",
     schema.BUCKET_FIELD_WS: "w",
     schema.BUCKET_FIELD_WA: "g",
+    schema.BUCKET_FIELD_GC: "k",
 }
 
 
@@ -2531,6 +2537,8 @@ class Repository:
             schema.BUCKET_FIELD_RP: {"N": str(state.refill_period_ms)},
             schema.BUCKET_FIELD_TC: {"N": str(tc)},
         }
+        if state.grant_count is not None:
+            attrs[schema.BUCKET_FIELD_GC] = {"N": str(state.grant_count)}
         if include_window:
             if state.reset_after_seconds is not None:
                 attrs[schema.BUCKET_FIELD_RSA] = {"N": str(state.reset_after_seconds)}
@@ -2695,8 +2703,9 @@ class Repository:
         rf_ms: int | None = None,
         window_lengths: dict[str, int] | None = None,
         seeds: dict[str, BucketState] | None = None,
-        seed_shard_count: int | None = None,
+        pin_shard_count: int | None = None,
         applied_windows: dict[str, int] | None = None,
+        grant_counts: dict[str, int] | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -2774,8 +2783,9 @@ class Repository:
                 older client. Explicit ``SET`` rather than ``if_not_exists``:
                 the guard makes it exact, and the same attribute cannot also
                 be ``ADD``ed in one expression (#168).
-            seed_shard_count: The shard count a **quota** seed's share was
-                sized for, or ``None`` when no quota is seeded. Pins the write
+            pin_shard_count: The shard count a **quota** seed's share, or a
+                reset or roll's grant (ADR-145 I4), was sized for, or ``None``
+                when the write grants no quota. Pins the write
                 on ``attribute_not_exists(shard_count) OR shard_count <=
                 :sized``: a quota never drips, so a share sized for a count
                 a doubling has since overtaken would be spent by the fast
@@ -2926,9 +2936,15 @@ class Repository:
             condition_parts.append(
                 f"(attribute_not_exists(#sp{j}) OR attribute_not_exists(#st{j}))"
             )
-        if seed_shard_count is not None:
+        # ADR-145 I3: a reset or roll on this write re-grants its quota at the
+        # item's count. Positional tokens (`#gc{i}`), disjoint from the rest.
+        for i, (name, count) in enumerate(sorted((grant_counts or {}).items())):
+            attr_names[f"#gc{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_GC)
+            set_parts.append(f"#gc{i} = :gc{i}")
+            attr_values[f":gc{i}"] = {"N": str(count)}
+        if pin_shard_count is not None:
             attr_names["#pinsc"] = "shard_count"
-            attr_values[":pinsc"] = {"N": str(seed_shard_count)}
+            attr_values[":pinsc"] = {"N": str(pin_shard_count)}
             condition_parts.append("(attribute_not_exists(#pinsc) OR #pinsc <= :pinsc)")
         if seeded_tz is not None:
             # One zone per item (§4.1). Every limit written by this pass was
@@ -3127,117 +3143,6 @@ class Repository:
                 "ExpressionAttributeValues": attr_values,
             }
         }
-
-    async def persist_seed(
-        self,
-        entity_id: str,
-        resource: str,
-        shard_id: int,
-        state: BucketState,
-        vu: int | None = None,
-        seed_shard_count: int | None = None,
-    ) -> bool:
-        """Write a transfer seed on a pass that will not write it itself (#633, #587).
-
-        A quota missing from an existing shard of a sharded entity may be
-        seeded by **transfer**: :meth:`reclaim_quota_seed` clamps the siblings
-        holding a surplus and the seed is what that took. The clamp is a
-        write, and it lands before admission. If this pass then writes no seed
-        — the acquire is rejected, or its rf-locked write loses the lock and
-        the consumption-only retry (which never seeds a quota) runs instead —
-        the surplus would be destroyed and the *next* pass, seeing none left,
-        would seed a full share on top of what the siblings already spent.
-        So the seed is persisted here, at ``state.tokens_milli`` (what the
-        clamp took, capped at one share) with nothing consumed.
-
-        The caller skips the persist when the item's ``rf`` is behind the
-        limit's current period (a calendar reset edge, or a joined window's
-        start, after ``rf``): this write leaves ``rf`` alone, so the next slow
-        pass would apply that edge and reset the shard to a full share on top
-        of the persisted transfer the fast path had already spent.
-
-        This does not weaken write-on-enter further than #587 already did: the
-        clamp already writes on the rejection path, and this completes that
-        same transfer rather than admitting anything. It is a separate write
-        rather than one ``TransactWriteItems`` with the clamps because the
-        clamps run before admission is known (their result sizes the seed),
-        and a transaction would have to be rebuilt around the admission
-        decision for a path that is taken only on a rejection or a lost lock.
-
-        ``SET`` of the limit's attributes (``tk``, ``tc = 0``, ``cp``/``ra``/
-        ``rp``, explicit ``sched``/``rsched`` overrides, ``sched_tz``, and a
-        joined window's ``ws``/``rsa``) under ``attribute_exists(PK) AND
-        attribute_not_exists(tk)`` — a limit another writer seeded first, or a
-        stray ``tk`` an older client left, is never overwritten — plus the
-        shard-count pin of :meth:`build_composite_normal`. ``vu`` is lowered
-        to the seed's boundary when the item's is absent or later; an earlier
-        one is left alone (it forces a pass sooner, which is safe) by a second,
-        ``vu``-free attempt. So at most 2 WCU, once per transfer seed.
-
-        Returns:
-            Whether the seed was written.
-        """
-        tz, overrides = self._explicit_schedule_attrs(state)
-        fields = {
-            **self._limit_item_attrs(state),
-            **{field: {"S": compact} for field, compact in overrides.items()},
-            schema.BUCKET_FIELD_TC: {"N": "0"},
-        }
-        attr_names: dict[str, str] = {}
-        attr_values: dict[str, Any] = {}
-        set_parts: list[str] = []
-        for field, value in fields.items():
-            alias = f"#s{_SEED_TOKEN[field]}0"
-            placeholder = f":s{_SEED_TOKEN[field]}0"
-            attr_names[alias] = schema.bucket_attr(state.limit_name, field)
-            attr_values[placeholder] = value
-            set_parts.append(f"{alias} = {placeholder}")
-        if tz is not None:
-            set_parts.append("#stz = :stz")
-            attr_names["#stz"] = schema.BUCKET_FIELD_SCHED_TZ
-            attr_values[":stz"] = {"S": tz}
-        conditions = ["attribute_exists(PK)", "attribute_not_exists(#st0)"]
-        if seed_shard_count is not None:
-            attr_names["#pinsc"] = "shard_count"
-            attr_values[":pinsc"] = {"N": str(seed_shard_count)}
-            conditions.append("(attribute_not_exists(#pinsc) OR #pinsc <= :pinsc)")
-        key = {
-            "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)},
-            "SK": {"S": schema.sk_state()},
-        }
-        attempts: list[tuple[list[str], list[str], dict[str, Any]]] = []
-        if vu is None:
-            attempts.append((set_parts, conditions, {}))
-        else:
-            vu_values = {":vu": {"N": str(vu)}}
-            attempts.append(
-                (
-                    [*set_parts, "#vu = :vu"],
-                    [*conditions, "(attribute_not_exists(#vu) OR #vu >= :vu)"],
-                    vu_values,
-                )
-            )
-            attempts.append((set_parts, [*conditions, "#vu < :vu"], vu_values))
-        client = await self._get_client()
-        for parts, conds, extra_values in attempts:
-            names = dict(attr_names)
-            if extra_values:
-                names["#vu"] = schema.BUCKET_FIELD_VU
-            try:
-                await client.update_item(
-                    TableName=self.table_name,
-                    Key=key,
-                    UpdateExpression=f"SET {', '.join(parts)}",
-                    ConditionExpression=" AND ".join(conds),
-                    ExpressionAttributeNames=names,
-                    ExpressionAttributeValues={**attr_values, **extra_values},
-                )
-            except ClientError as e:
-                if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-                    continue
-                raise
-            return True
-        return False
 
     async def transact_write(self, items: list[dict[str, Any]]) -> None:
         """Execute a write, using single-item API when possible to halve WCU cost."""
@@ -3836,7 +3741,7 @@ class Repository:
                     return 0  # Already at or above the new count
                 raise
 
-        # List comprehension, not a generator: the sync transformer rewrites
+        # A comprehension, not a pre-built list: the sync transformer rewrites
         # `gather(*[expr for x in it])` into `_run_in_executor(*[lambda x=x:
         # expr for x in it])`, which needs the call deferred into the lambda.
         results = await asyncio.gather(*[stamp(n) for n in range(1, old_count)])
@@ -4017,10 +3922,6 @@ class Repository:
             if n != shard_id
             for name, window in sorted(windows.items())
         ]
-        # One bare-name comprehension target, not `for n, name, w in ...`:
-        # the sync transformer defers the call into a `lambda t=t:` only for a
-        # plain Name target. A tuple target falls through to its generic
-        # branch, which calls `stamp(...)` eagerly and then calls the int.
         results = await asyncio.gather(*[stamp(*t) for t in targets])
         return sum(results)
 
@@ -6286,6 +6187,11 @@ class Repository:
             window_consumed_mark = self._decode_stored_window_int(
                 wtc_name, item.get(wtc_name, {}).get("N")
             )
+            # `b_{name}_gc` (ADR-145): absent on an item written before it,
+            # where the caller reads `None` as "use the item's `shard_count`"
+            # (design §9) — decoded here, not defaulted here.
+            gc_name = schema.bucket_attr(name, schema.BUCKET_FIELD_GC)
+            grant_count = self._decode_stored_window_int(gc_name, item.get(gc_name, {}).get("N"))
 
             # `wcu` is never scheduled — it tracks partition write pressure,
             # not a user limit, and is the one limit `effective_params` must
@@ -6322,6 +6228,7 @@ class Repository:
                     reset_after_seconds=reset_after_seconds,
                     window_applied_ms=window_applied_ms,
                     window_consumed_mark_milli=window_consumed_mark,
+                    grant_count=grant_count,
                 )
             )
 
@@ -6877,69 +6784,6 @@ class Repository:
 
         return pks
 
-    async def reclaim_quota_surplus(
-        self,
-        entity_id: str,
-        resource: str,
-        shares_milli: dict[str, int],
-    ) -> tuple[int, dict[str, int]]:
-        """Clamp a quota's existing shards to their new share, and report the take (#587).
-
-        Called once, just before the slow path creates a shard that does not
-        exist yet, and only for limits that are quotas. A doubling shrinks every
-        shard's ceiling from ``cp // old_count`` to ``cp // new_count``, and
-        ``bucket.refill_bucket`` would trim each shard to the new one on its
-        next materialising pass anyway (``min(capacity, tokens)``, #496 / #222
-        §3.3). Doing it here instead makes the trim and the new shard's grant a
-        single conserving **transfer**: what comes off the siblings is exactly
-        what the new shard is created with, so the entity's spendable total does
-        not move across a doubling.
-
-        Eager rather than lazy because the speculative fast path is a pure
-        ``ADD`` with no ceiling arithmetic (#469 / #222 §3.3). An unclamped
-        sibling can spend its surplus at full speed while the new shard holds a
-        grant made from that same surplus — the over-admission of #587 in
-        transient form. Nothing is destroyed that was not already doomed, so a
-        reclaim followed by a rejected acquire costs the entity nothing.
-
-        A **dripping** limit must never be passed here. Its stored ``ra`` is
-        undivided, so its shards' ceilings still sum to the configured capacity
-        and a new shard starting full costs at most one ``time_to_fill`` of
-        burst, which token-bucket semantics allow; clamping it early would only
-        throw away tokens the refill is about to re-add.
-
-        Cost: 1 GSI3 KEYS_ONLY query + 1 ``BatchGetItem`` + one conditional
-        ``UpdateItem`` per shard that actually holds a surplus — none at all in
-        the common case of an entity that has already spent down. Paid once per
-        shard creation, bounded by ``MAX_SHARD_COUNT`` over the life of an
-        (entity, resource).
-
-        Args:
-            entity_id: Entity owning the shards.
-            resource: Resource the shards belong to.
-            shares_milli: ``{limit_name: capacity_milli // shard_count}`` for
-                the quota limits only — the ceiling each shard is clamped to.
-
-        Returns:
-            ``(shards_found, {limit_name: reclaimed_milli})``. ``shards_found``
-            is 0 when nothing has been materialised for this (entity, resource)
-            at all, which is **not** the same as reclaiming nothing: the caller
-            grants a full share in that case and a capped transfer otherwise.
-        """
-        reclaimed: dict[str, int] = dict.fromkeys(shares_milli, 0)
-        if not shares_milli:
-            return 0, reclaimed
-
-        items = await self._entity_bucket_items(entity_id, resource)
-        if not items:
-            return 0, reclaimed
-
-        for item in items:
-            for name, share in shares_milli.items():
-                reclaimed[name] += await self._clamp_quota_shard(item, name, share)
-
-        return len(items), reclaimed
-
     async def _entity_bucket_items(self, entity_id: str, resource: str) -> list[dict[str, Any]]:
         """Every shard item of one (entity, resource): GSI3 discovery + BatchGetItem."""
         pks = await self._discover_entity_bucket_pks(entity_id, resource)
@@ -6957,152 +6801,461 @@ class Repository:
             )
         return items
 
-    async def _clamp_quota_shard(self, item: dict[str, Any], name: str, share: int) -> int:
-        """Clamp one shard's quota balance to ``share``; return what it took (#587).
-
-        ``SET tk = :share`` under ``tk > :share``, ``ReturnValues=UPDATED_OLD``.
-        A shard not carrying the limit, or already at or under the share,
-        costs nothing and yields 0.
-        """
-        attr = schema.bucket_attr(name, schema.BUCKET_FIELD_TK)
-        raw = item.get(attr, {}).get("N")
-        if raw is None or int(raw) <= share:
-            return 0
-        client = await self._get_client()
-        try:
-            response = await client.update_item(
-                TableName=self.table_name,
-                Key={"PK": item["PK"], "SK": {"S": schema.sk_state()}},
-                UpdateExpression="SET #tk = :share",
-                ConditionExpression="#tk > :share",
-                ExpressionAttributeNames={"#tk": attr},
-                ExpressionAttributeValues={":share": {"N": str(share)}},
-                ReturnValues="UPDATED_OLD",
-            )
-        except ClientError as e:
-            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-                # Spent below the new ceiling since the read. There is
-                # no surplus left to move, which is the right answer.
-                return 0
-            raise
-        return int(response["Attributes"][attr]["N"]) - share
-
-    async def reclaim_quota_seed(
+    async def plan_quota_shard(
         self,
         entity_id: str,
         resource: str,
-        capacities_milli: dict[str, int],
+        limits: Sequence[Limit],
+        shard_id: int,
         shard_count: int,
-    ) -> tuple[int, dict[str, int]]:
-        """How quotas missing from an existing shard may be seeded (#633, #587).
+        now_ms: int,
+    ) -> tuple[int, dict[str, QuotaGrant], list[QuotaDonorDebit]]:
+        """Plan the grant of every quota in ``limits`` for shard ``shard_id`` (ADR-145).
 
-        A quota configured after an entity's shards already existed is missing
-        from each of them, and each is seeded once, on its own next admitted
-        slow pass, at its **current share** ``C // S``. The rule is decided by
-        the surplus each sibling actually *holds* above that share, never by
-        what it has consumed:
+        Reads the siblings once — one GSI3 KEYS_ONLY query + one
+        ``BatchGetItem``, the #587 reclaim's cost — and decides per quota, with
+        the pure ``models.plan_quota_grant``: a **move** off the current-period
+        sibling covering this slot, or a fresh grant when none covers it.
 
-        * **no sibling holds more than the share** → the full share (the
-          limit is absent from the returned transfers);
-        * **some sibling holds more** → a transfer: every sibling above the
-          share is clamped to it (:meth:`_clamp_quota_shard`, the #587 clamp)
-          and the seed is what that took, capped at one share by the caller.
-
-        **Why this never starves.** A seed is below the share only on a pass
-        that clamped a sibling holding a surplus. The clamp removes it, so on
-        every later pass no sibling holds one and the seed is the full share —
-        whatever any sibling has spent, in this period or any earlier one. A
-        rule reading ``tc`` could not say that: ``tc`` is cumulative across
-        periods, so a sibling that consumed before a reset edge (or a session
-        rollover) looked over-granted forever, every seed took a transfer of
-        nothing, the acquire was rejected before any write, and the shard was
-        never seeded at all.
-
-        **Why the full share does not mint.** Within one period (between two
-        reset edges, or one session window) each shard is granted at most one
-        share by its reset, create or seed. Shares at one shard count sum to
-        the capacity, so the full share is safe for every sibling granted at
-        the **current** count, whatever it has since spent. The one way a
-        sibling is granted more is a grant taken at a **lower** count earlier
-        in the period — seeded, created or reset before a doubling that has
-        not yet been clamped away. While that grant is unspent it is held as
-        a surplus above the share, and the transfer moves exactly the part of
-        it this shard's slice was carved from.
-
-        Two ways a pass could still grant too much are closed elsewhere:
-
-        * **a transfer seed that is then not written** — the acquire is
-          rejected, or its rf-locked write loses the lock — would leave the
-          clamped surplus destroyed and the next pass seeding in full;
-          :meth:`persist_seed` writes it at what the clamp took instead;
-        * **a doubling racing the seed** (the aggregator's proactive doubling
-          lands between this read and the seed's write, and does not move
-          ``rf``) would leave the seed sized for the old count; the seed's
-          write pins ``shard_count <= :sized`` and a lost pin falls to the
-          retry, which never seeds a quota. The refill clamp would not have
-          saved it: a quota never drips, and the fast path (a pure ``ADD``)
-          spends the oversized share before any materialising pass trims it.
-
-        **One residual remains, tracked separately:** a sibling granted a share
-        at a **lower** shard count in this period that has **already spent**
-        into the surplus above its current share. Its spent part is gone from
-        ``tk`` and cannot be told from a legitimate earlier-period spend without
-        a per-period grant record, so the full share is granted on top of it.
-        Preconditions: that lower-count grant, *and* a shard that lacks the quota
-        after it. Two sources produce such a shard, neither needing a race:
-
-        * a create by a client whose config cache has not yet seen the quota
-          (within ``config_cache_ttl`` of configuring it) across a doubling; and
-        * the aggregator's proactive doubling cloning new shards from an
-          **unseeded shard 0**'s image — the clone carries only the quotas that
-          image carries and reclaims only those, so a sibling seeded before
-          shard 0 keeps a surplus nobody reclaims (measured 1250 against 1000
-          with shard 1 seeded at count 2, then a doubling to 4).
-
-        Bound: at most the part of that
-        sibling's surplus it had spent, once, in the period of the doubling
-        (``C · (1/S' − 1/S)`` per such sibling for a grant at count ``S'``). A
-        transfer can also under-grant for the rest of a period (a surplus
-        carved for a shard not yet created handed to this one), never beyond
-        the next reset.
-
-        The shard count the share is taken at is the largest of ``shard_count``
-        and every sibling's stored count, off the items already read (no extra
-        read), so a doubling not yet propagated to the seeding item is still
-        honoured; one that lands after these reads is caught by the pin.
-
-        Cost: 1 GSI3 KEYS_ONLY query + 1 ``BatchGetItem`` + one conditional
-        ``UpdateItem`` per sibling holding a surplus. Paid only for a quota,
-        only when ``shard_count > 1``, on each slow pass until the seed lands.
-
-        Args:
-            entity_id: Entity owning the shards.
-            resource: Resource the shards belong to.
-            capacities_milli: ``{limit_name: capacity_milli}`` in force now,
-                **undivided**, for the quota limits missing from the shard.
-            shard_count: The shard count the caller would seed at.
+        The count is the largest of ``shard_count`` and every sibling's stored
+        count, and each quota's share is its schedule-effective capacity at
+        ``now_ms`` over that count. Before a fresh grant, a sibling still below
+        that count has it raised (design §8 R5) — a write only when a lag is
+        seen — and a legacy (no ``gc``) quota on it has its grant size frozen
+        at the count read, which is also the ``grant_count`` every planned
+        debit expects, so the move and the freeze agree. Writes nothing else:
+        the returned debits ride in the acquire's own transaction (I5), built
+        by :meth:`build_quota_donor_debits`.
 
         Returns:
-            ``(shard_count, {limit_name: reclaimed_milli})``: the count the
-            share was taken at, and the limits that must take a transfer. A
-            name absent from the mapping is granted its full share.
+            ``(count, {quota_name: QuotaGrant}, debits)``. Grants and debits
+            are empty when ``limits`` holds no quota or ``shard_count <= 1``
+            (no sibling to read); a quota absent from the grants takes its full
+            share.
         """
-        items = await self._entity_bucket_items(entity_id, resource)
-        count = max(
-            [shard_count] + [int(item.get("shard_count", {}).get("N", "1")) for item in items]
+        quotas = [limit for limit in limits if limit.is_quota]
+        if not quotas or shard_count <= 1:
+            return shard_count, {}, []
+        stored: dict[int, dict[str, Any]] = {}
+        for item in await self._entity_bucket_items(entity_id, resource):
+            sibling_id = schema.parse_bucket_pk(item["PK"]["S"])[3]
+            if sibling_id != shard_id:
+                stored[sibling_id] = item
+        counts = {sid: self._stored_shard_count(item) for sid, item in stored.items()}
+        count = max([shard_count, *counts.values()])
+
+        grants: dict[str, QuotaGrant] = {}
+        debits: list[QuotaDonorDebit] = []
+        # The grant size each sibling is read at, per quota it carries — the
+        # stored `gc`, or a legacy item's inferred one (R7) — which is what a
+        # raise freezes onto it.
+        sizes: dict[int, list[tuple[str, int]]] = {}
+        for limit in quotas:
+            capacity_milli = schedule.effective_params(
+                limit.capacity * 1000,
+                0,
+                limit.refill_period_seconds * 1000,
+                limit.schedule,
+                now_ms,
+            )[0]
+            siblings = [
+                sibling
+                for sibling in (
+                    self._quota_sibling(sid, item, limit, now_ms, capacity_milli)
+                    for sid, item in stored.items()
+                )
+                if sibling is not None
+            ]
+            for sibling in siblings:
+                sizes.setdefault(sibling.shard_id, []).append((limit.name, sibling.grant_count))
+            grant = plan_quota_grant(siblings, shard_id, count, capacity_milli // count)
+            grants[limit.name] = grant
+            if (
+                grant.donor_shard is not None
+                and grant.donor_grant_count is not None
+                and grant.tokens_milli > 0
+            ):
+                debits.append(
+                    self._donor_debit(
+                        grant.donor_shard,
+                        grant.donor_grant_count,
+                        grant.tokens_milli,
+                        limit,
+                        stored[grant.donor_shard],
+                        now_ms,
+                    )
+                )
+
+        if any(grant.donor_shard is None for grant in grants.values()):
+            lagging = sorted(sid for sid, stored_count in counts.items() if stored_count < count)
+            planned = {limit.name for limit in quotas}
+            for sid in lagging:
+                # Every legacy quota the sibling carries is frozen, not only
+                # the planned ones: an unfrozen one would read as granted at
+                # the raised count, and a later plan would mint a slot it
+                # still holds tokens for (design §9).
+                sizes.setdefault(sid, []).extend(
+                    self._legacy_quota_sizes(sid, stored[sid], planned, now_ms)
+                )
+            if lagging:
+                await self._freeze_and_raise_shard_counts(
+                    entity_id,
+                    resource,
+                    [(sid, sizes.get(sid, [])) for sid in lagging],
+                    count,
+                )
+        return count, grants, debits
+
+    async def _freeze_and_raise_shard_counts(
+        self,
+        entity_id: str,
+        resource: str,
+        lagging: Sequence[tuple[int, Sequence[tuple[str, int]]]],
+        new_count: int,
+    ) -> int:
+        """Raise lagging siblings to ``new_count``, freezing their legacy grant size (R5).
+
+        A quota on an item with no ``gc`` reads as granted at the item's
+        ``shard_count`` (design §9). Raising that count alone would shrink the
+        legacy grant's coverage to the new count, and a later plan would mint a
+        slot the sibling still holds tokens for; it would also fail a planned
+        donor debit's ``attribute_not_exists(gc) AND shard_count = :gc``
+        branch. So the same write stamps ``gc = if_not_exists(gc, :g)`` for
+        every planned quota the sibling carries, ``:g`` being the grant size
+        the planner read it at — the count read, or smaller where a legacy
+        balance showed a grant sized at a lower count (R7). The generic
+        :meth:`_propagate_shard_count` is left alone.
+
+        Args:
+            lagging: ``(shard_id, [(quota_name, grant_count), ...])`` each.
+            new_count: The count to raise them to.
+
+        Returns:
+            The number of siblings actually updated.
+        """
+        client = await self._get_client()
+
+        async def raise_one(shard_id: int, quota_grants: Sequence[tuple[str, int]]) -> int:
+            try:
+                await client.update_item(
+                    **self._build_quota_count_freeze(
+                        entity_id, resource, shard_id, new_count, quota_grants
+                    )
+                )
+                return 1
+            except ClientError as e:
+                if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+                    return 0  # Already at or above the new count
+                raise
+
+        # List comprehension over a single-name target, not a generator and not
+        # a tuple target: the sync transformer only defers the call into a
+        # lambda for `[expr for x in it]` (see _propagate_shard_count).
+        results = await asyncio.gather(*[raise_one(*entry) for entry in lagging])
+        return sum(results)
+
+    def _build_quota_count_freeze(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int,
+        new_count: int,
+        quota_grants: Sequence[tuple[str, int]],
+    ) -> dict[str, Any]:
+        """``SET shard_count = :new, gc = if_not_exists(gc, :g)`` per quota (#634 tokens)."""
+        names: dict[str, str] = {"#qsc": "shard_count"}
+        sets = ["#qsc = :qnew"]
+        values = {":qnew": {"N": str(new_count)}}
+        for i, (name, grant_count) in enumerate(quota_grants):
+            names[f"#qf{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_GC)
+            values[f":qo{i}"] = {"N": str(grant_count)}
+            sets.append(f"#qf{i} = if_not_exists(#qf{i}, :qo{i})")
+        return {
+            "TableName": self.table_name,
+            "Key": {
+                "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)},
+                "SK": {"S": schema.sk_state()},
+            },
+            "UpdateExpression": "SET " + ", ".join(sets),
+            "ConditionExpression": "#qsc < :qnew",
+            "ExpressionAttributeNames": names,
+            "ExpressionAttributeValues": values,
+        }
+
+    async def repair_created_quota_shard(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int,
+        created_count: int,
+        quota_names: Sequence[str],
+    ) -> bool:
+        """Raise a quota shard this client just created, if a doubling overtook it (ADR-145).
+
+        A create ``Put`` is guarded only by ``attribute_not_exists(PK)``, not by
+        the count it planned at. Another client can double shard 0 between this
+        client's plan and its ``Put``; that doubling's propagation finds no item
+        at this shard and writes nothing, so the ``Put`` lands at the old count.
+        The shard would then reset at the old count every period and cover the
+        slots a shard created at the new count also covers — a recurring
+        over-admission of one new share per period.
+
+        So after the ``Put`` lands: one **strongly consistent** projected
+        ``GetItem`` of shard 0's ``shard_count`` (1 RCU), and, only when it is
+        higher, the grant-size freeze (:meth:`_build_quota_count_freeze`):
+        ``SET shard_count = :new, gc = if_not_exists(gc, :old)`` under
+        ``shard_count < :new``. The current grant keeps the size it was planned
+        at; the next reset grants at the new count. Shard 0 is never written.
+
+        Returns:
+            True when the created item was raised.
+        """
+        if shard_id == 0 or not quota_names:
+            return False
+        client = await self._get_client()
+        response = await client.get_item(
+            TableName=self.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(self._namespace_id, entity_id, resource, 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+            ProjectionExpression="#qsc",
+            ExpressionAttributeNames={"#qsc": "shard_count"},
+            ConsistentRead=True,
         )
-        transfers: dict[str, int] = {}
-        for name, capacity in capacities_milli.items():
-            share = capacity // count
-            tk_attr = schema.bucket_attr(name, schema.BUCKET_FIELD_TK)
-            held = [int(item[tk_attr]["N"]) for item in items if tk_attr in item]
-            if not any(tk > share for tk in held):
+        item = response.get("Item")
+        if not item:
+            return False
+        current = self._stored_shard_count(item)
+        if current <= created_count:
+            return False
+        try:
+            await client.update_item(
+                **self._build_quota_count_freeze(
+                    entity_id,
+                    resource,
+                    shard_id,
+                    current,
+                    [(name, created_count) for name in quota_names],
+                )
+            )
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+                return False  # Already raised by another writer
+            raise
+        return True
+
+    @classmethod
+    def _legacy_quota_sizes(
+        cls, shard_id: int, item: dict[str, Any], skip: set[str], now_ms: int
+    ) -> list[tuple[str, int]]:
+        """``(name, grant_count)`` for every legacy quota ``item`` carries outside ``skip``.
+
+        A quota is read off the stored shape, the same key the aggregator's
+        ``_is_quota_limit`` uses: a zero refill rate beside a reset — the
+        limit's own ``b_{name}_rsa`` or ``b_{name}_rsched``, or the item-level
+        ``rsched`` unless the #541 ``BUCKET_SCHED_NONE`` marker blocks it. Only
+        one with no ``gc`` (design §9) is returned, sized by the R7 rule of
+        :meth:`_quota_sibling` against its schedule-effective capacity; an
+        undecodable schedule sizes against the base capacity.
+        """
+        tz = item.get(schema.BUCKET_FIELD_SCHED_TZ, {}).get("S", "UTC")
+        sizes: list[tuple[str, int]] = []
+        prefix, suffix = schema.BUCKET_ATTR_PREFIX, f"_{schema.BUCKET_FIELD_TK}"
+        for attr in item:
+            if not (attr.startswith(prefix) and attr.endswith(suffix)):
                 continue
-            taken = 0
-            for item in items:
-                taken += await self._clamp_quota_shard(item, name, share)
-            transfers[name] = taken
-        return count, transfers
+            name = attr[len(prefix) : -len(suffix)]
+            if (
+                not name
+                or name == schema.WCU_LIMIT_NAME
+                or name in skip
+                or schema.bucket_attr(name, schema.BUCKET_FIELD_GC) in item
+            ):
+                continue
+            if int(cls._limit_field(item, name, schema.BUCKET_FIELD_RA, "N") or "0") != 0:
+                continue
+            own_reset = cls._limit_field(item, name, schema.BUCKET_FIELD_RSCHED, "S")
+            is_quota = cls._limit_field(item, name, schema.BUCKET_FIELD_RSA, "N") is not None or (
+                own_reset != schema.BUCKET_SCHED_NONE
+                and bool(own_reset or item.get(schema.BUCKET_FIELD_RSCHED, {}).get("S"))
+            )
+            cp = cls._limit_field(item, name, schema.BUCKET_FIELD_CP, "N")
+            if not is_quota or cp is None:
+                continue
+            own_sched = cls._limit_field(item, name, schema.BUCKET_FIELD_SCHED, "S")
+            compact = (
+                None
+                if own_sched == schema.BUCKET_SCHED_NONE
+                else own_sched or item.get(schema.BUCKET_FIELD_SCHED, {}).get("S")
+            )
+            try:
+                sched = schedule.decode(compact, tz) if compact else ()
+            except ValueError:
+                sched = ()
+            rp = int(cls._limit_field(item, name, schema.BUCKET_FIELD_RP, "N") or "1000")
+            capacity = schedule.effective_params(int(cp), 0, rp, sched, now_ms)[0]
+            grant_count = cls._stored_shard_count(item)
+            tokens = int(item[attr]["N"])
+            while grant_count > 1 and tokens > capacity // grant_count:
+                grant_count //= 2
+            sizes.append((name, grant_count))
+        return sizes
+
+    @staticmethod
+    def _limit_field(item: dict[str, Any], name: str, key: str, kind: str) -> str | None:
+        """One per-limit bucket attribute's raw ``kind`` value, or ``None``."""
+        value = item.get(schema.bucket_attr(name, key), {}).get(kind)
+        return None if value is None else str(value)
+
+    @staticmethod
+    def _stored_shard_count(item: dict[str, Any]) -> int:
+        """An item's stored ``shard_count``; absent or corrupt (< 1) reads as 1."""
+        return max(1, int(item.get("shard_count", {}).get("N", "1")))
+
+    @classmethod
+    def _quota_sibling(
+        cls,
+        shard_id: int,
+        item: dict[str, Any],
+        limit: Limit,
+        now_ms: int,
+        capacity_milli: int,
+    ) -> QuotaSibling | None:
+        """One sibling as the ADR-145 planner sees it; ``None`` if it lacks the quota.
+
+        A sibling with no ``gc`` (a v0.14 item, or one written before the
+        quota's first reset under ADR-145) reads as ``gc = its shard_count``
+        (design §9) — unless its balance says otherwise (R7): a legacy item
+        holding more than one share at that count was granted at a lower one,
+        so its count is halved until the share covers what it holds. Broader
+        coverage only ever turns a mint into a move, never the reverse. A
+        corrupt ``gc < 1``, which would otherwise be a modulus of zero in the
+        coverage test, reads as the stored count.
+        """
+        tk = item.get(schema.bucket_attr(limit.name, schema.BUCKET_FIELD_TK), {}).get("N")
+        if tk is None:
+            return None
+        gc = item.get(schema.bucket_attr(limit.name, schema.BUCKET_FIELD_GC), {}).get("N")
+        if gc is None:
+            grant_count = cls._stored_shard_count(item)
+            while grant_count > 1 and int(tk) > capacity_milli // grant_count:
+                grant_count //= 2
+        else:
+            grant_count = int(gc)
+            if grant_count < 1:
+                grant_count = cls._stored_shard_count(item)
+        ws = item.get(schema.bucket_attr(limit.name, schema.BUCKET_FIELD_WS), {}).get("N")
+        wa = item.get(schema.bucket_attr(limit.name, schema.BUCKET_FIELD_WA), {}).get("N")
+        rf = int(item.get("rf", {}).get("N", "0"))
+        return QuotaSibling(
+            shard_id=shard_id,
+            tokens_milli=int(tk),
+            grant_count=grant_count,
+            current=quota_grant_is_current(
+                limit,
+                rf,
+                int(ws) if ws is not None else None,
+                int(wa) if wa is not None else None,
+                now_ms,
+            ),
+        )
+
+    @classmethod
+    def _donor_debit(
+        cls,
+        donor_shard: int,
+        donor_grant_count: int,
+        tokens_milli: int,
+        limit: Limit,
+        donor: dict[str, Any],
+        now_ms: int,
+    ) -> QuotaDonorDebit:
+        """The debit for a planned move, with the donor's current-period guard."""
+        if limit.reset_after is not None:
+            wa = donor.get(schema.bucket_attr(limit.name, schema.BUCKET_FIELD_WA), {}).get("N")
+            guard_rf_ms = None
+            guard_wa_ms = int(wa) if wa is not None else None
+        else:
+            guard_rf_ms = schedule.prev_reset_edge(limit.reset_schedule, now_ms)
+            guard_wa_ms = None
+        # A legacy donor (no `gc`) is matched on the count it actually stores,
+        # which differs from `donor_grant_count` when that was inferred (R7).
+        stored_gc = donor.get(schema.bucket_attr(limit.name, schema.BUCKET_FIELD_GC))
+        return QuotaDonorDebit(
+            shard_id=donor_shard,
+            limit_name=limit.name,
+            tokens_milli=tokens_milli,
+            grant_count=donor_grant_count,
+            guard_rf_ms=guard_rf_ms,
+            guard_wa_ms=guard_wa_ms,
+            legacy_shard_count=(cls._stored_shard_count(donor) if stored_gc is None else None),
+        )
+
+    def build_quota_donor_debits(
+        self, entity_id: str, resource: str, debits: Sequence[QuotaDonorDebit]
+    ) -> list[dict[str, Any]]:
+        """The donor side of each ADR-145 move, one ``Update`` per donor shard.
+
+        ``ADD tk -x`` under: the donor still exists; still holds ``x``; its
+        grant count is the one read (or absent and equal to its shard count —
+        a v0.14 item, design §9); and its grant is still the current period
+        (calendar ``rf >= edge``; session ``wa`` unchanged). Several quotas
+        moving off one donor share one ``Update``: a transaction may touch an
+        item once. Tokens are positional (#634).
+        """
+        by_shard: dict[int, list[QuotaDonorDebit]] = {}
+        for debit in debits:
+            by_shard.setdefault(debit.shard_id, []).append(debit)
+        items: list[dict[str, Any]] = []
+        for shard, group in sorted(by_shard.items()):
+            names: dict[str, str] = {"#qsc": "shard_count"}
+            values: dict[str, dict[str, str]] = {}
+            adds: list[str] = []
+            conds: list[str] = ["attribute_exists(PK)"]
+            for i, debit in enumerate(group):
+                names[f"#qt{i}"] = schema.bucket_attr(debit.limit_name, schema.BUCKET_FIELD_TK)
+                names[f"#qg{i}"] = schema.bucket_attr(debit.limit_name, schema.BUCKET_FIELD_GC)
+                values[f":qx{i}"] = {"N": str(debit.tokens_milli)}
+                values[f":qn{i}"] = {"N": str(-debit.tokens_milli)}
+                values[f":qg{i}"] = {"N": str(debit.grant_count)}
+                adds.append(f"#qt{i} :qn{i}")
+                conds.append(f"#qt{i} >= :qx{i}")
+                legacy = f":qg{i}"
+                if debit.legacy_shard_count is not None:
+                    legacy = f":ql{i}"
+                    values[legacy] = {"N": str(debit.legacy_shard_count)}
+                conds.append(
+                    f"(#qg{i} = :qg{i} OR (attribute_not_exists(#qg{i}) AND #qsc = {legacy}))"
+                )
+                if debit.guard_rf_ms is not None:
+                    names["#qrf"] = "rf"
+                    values[f":qe{i}"] = {"N": str(debit.guard_rf_ms)}
+                    conds.append(f"#qrf >= :qe{i}")
+                if debit.guard_wa_ms is not None:
+                    names[f"#qw{i}"] = schema.bucket_attr(debit.limit_name, schema.BUCKET_FIELD_WA)
+                    values[f":qw{i}"] = {"N": str(debit.guard_wa_ms)}
+                    conds.append(f"#qw{i} = :qw{i}")
+            items.append(
+                {
+                    "Update": {
+                        "TableName": self.table_name,
+                        "Key": {
+                            "PK": {
+                                "S": schema.pk_bucket(
+                                    self._namespace_id, entity_id, resource, shard
+                                )
+                            },
+                            "SK": {"S": schema.sk_state()},
+                        },
+                        "UpdateExpression": "ADD " + ", ".join(adds),
+                        "ConditionExpression": " AND ".join(conds),
+                        "ExpressionAttributeNames": names,
+                        "ExpressionAttributeValues": values,
+                    }
+                }
+            )
+        return items
 
     async def get_shard_window_starts(
         self,
@@ -7139,7 +7292,7 @@ class Repository:
         was written — including the write that rolled its window. An eventually
         consistent read can return the *pre-roll* ``ws``, which looks ended, so
         the caller opens a fresh window at full share instead of taking the
-        #587 transfer from the window shard 0 just opened: measured at 15
+        ADR-145 move from the window shard 0 just opened: measured at 15
         admitted against a quota of 10. The extra 0.5 RCU per shard creation
         is the whole price of closing that.
 

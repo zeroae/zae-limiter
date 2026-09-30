@@ -11,8 +11,10 @@ from __future__ import annotations
 import ast
 import importlib.util
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import pytest
 
@@ -41,8 +43,9 @@ def transform(source: str, *, source_file: str = "repository.py") -> str:
     return ast.unparse(new_tree)
 
 
-# The three distinct shapes the gather rewrite recognises, each reaching a
-# different `keywords=[]` construction site in `visit_Call`.
+# Three gather shapes. The keyword guard runs before any of them is handled,
+# so all three must refuse a keyword. `generic_starred` is not a translatable
+# shape at all (#666): without a keyword it aborts on its own, see below.
 GATHER_SHAPES = {
     "fixed_positional": "await asyncio.gather(work(1), work(2){kw})",
     "generic_starred": "await asyncio.gather(*tasks{kw})",
@@ -59,7 +62,10 @@ def _wrap(call: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("shape", sorted(GATHER_SHAPES))
+TRANSLATABLE_GATHER_SHAPES = sorted(set(GATHER_SHAPES) - {"generic_starred"})
+
+
+@pytest.mark.parametrize("shape", TRANSLATABLE_GATHER_SHAPES)
 def test_gather_positional_only_rewrites_to_run_in_executor(shape: str) -> None:
     """Every gather shape without keywords still becomes _run_in_executor."""
     result = transform(_wrap(GATHER_SHAPES[shape].format(kw="")))
@@ -193,3 +199,185 @@ def test_ordinary_call_keywords_are_preserved() -> None:
 
     assert "Key=key" in result
     assert "ReturnValues='ALL_NEW'" in result
+
+
+# ---------------------------------------------------------------------------
+# asyncio.gather over a comprehension: every target name is deferred (#666)
+# ---------------------------------------------------------------------------
+
+
+def _run_generated(comprehension: str, **env: object) -> tuple[list[object], list[object]]:
+    """Generate the sync twin of ``gather(*<comprehension>)``, run it, return results.
+
+    The executor records a marker before invoking any callable, so a sync twin
+    that evaluated an element eagerly shows up as a ``call`` logged before
+    ``"executor"`` -- and, since the eager result is then called, usually as a
+    ``TypeError`` too.
+    """
+    async_source = (
+        "class Worker:\n"
+        "    async def run(self):\n"
+        f"        return await asyncio.gather(*{comprehension})\n"
+    )
+    sync_source = transform(async_source)
+    log: list[object] = []
+
+    def _run_in_executor(self: object, *funcs: Callable[[], object]) -> list[object]:
+        log.append("executor")
+        assert all(callable(fn) for fn in funcs), funcs
+        return [fn() for fn in funcs]
+
+    def f(*args: object) -> object:
+        log.append(("call", args))
+        return sum(a for a in args if isinstance(a, int))
+
+    namespace: dict[str, object] = {"f": f, **env}
+    exec(compile(sync_source, "<generated>", "exec"), namespace)
+    worker_cls: Any = namespace["Worker"]
+    worker_cls._run_in_executor = _run_in_executor
+    results: list[object] = worker_cls().run()
+    return results, log
+
+
+def test_gather_tuple_target_defers_every_bound_name() -> None:
+    """The issue's shape: a tuple target is captured whole, and nothing runs eagerly."""
+    source = _wrap("await asyncio.gather(*[f(a, b) for a, b in pairs])")
+    assert "lambda a=a, b=b: f(a, b)" in transform(source)
+
+    results, log = _run_generated("[f(a, b) for a, b in pairs]", pairs=[(1, 2), (3, 4)])
+
+    assert results == [3, 7]
+    assert log == ["executor", ("call", (1, 2)), ("call", (3, 4))]
+
+
+@pytest.mark.parametrize(
+    ("comprehension", "env", "expected_args"),
+    [
+        pytest.param(
+            "[f(a, b, c) for a, (b, c) in rows]",
+            {"rows": [(1, (2, 3)), (4, (5, 6))]},
+            [(1, 2, 3), (4, 5, 6)],
+            id="nested_tuple",
+        ),
+        pytest.param(
+            "[f(a, b) for [a, b] in rows]",
+            {"rows": [[1, 2], [3, 4]]},
+            [(1, 2), (3, 4)],
+            id="list_target",
+        ),
+        pytest.param(
+            "[f(a, *rest) for a, *rest in rows]",
+            {"rows": [(1, 2, 3), (4,)]},
+            [(1, 2, 3), (4,)],
+            id="starred_target",
+        ),
+        pytest.param(
+            "[f(a, b) for a in xs for b in ys]",
+            {"xs": [1, 2], "ys": [10, 20]},
+            [(1, 10), (1, 20), (2, 10), (2, 20)],
+            id="two_for_clauses",
+        ),
+        pytest.param(
+            "[f(a, b) for a, b in pairs if a > 1]",
+            {"pairs": [(1, 2), (3, 4)]},
+            [(3, 4)],
+            id="if_filter",
+        ),
+        pytest.param(
+            "(f(a, b) for a, b in pairs)",
+            {"pairs": [(1, 2), (3, 4)]},
+            [(1, 2), (3, 4)],
+            id="generator_expression",
+        ),
+        pytest.param(
+            "[f(x) for x in xs]",
+            {"xs": [5, 6]},
+            [(5,), (6,)],
+            id="single_name",
+        ),
+    ],
+)
+def test_gather_comprehension_calls_are_deferred_and_correct(
+    comprehension: str, env: dict[str, object], expected_args: list[tuple[object, ...]]
+) -> None:
+    """Every translatable target shape runs each call inside the executor, once."""
+    _, log = _run_generated(comprehension, **env)
+
+    assert log == ["executor", *[("call", args) for args in expected_args]]
+
+
+def test_gather_single_name_listcomp_output_is_unchanged() -> None:
+    """The pre-#666 single-name translation is byte-identical."""
+    result = transform(_wrap("await asyncio.gather(*[self._one(x) for x in items])"))
+
+    assert "self._run_in_executor(*[lambda x=x: self._one(x) for x in items])" in result
+
+
+@pytest.mark.parametrize(
+    "starred",
+    [
+        pytest.param("tasks", id="name"),
+        pytest.param("[self._a(), self._b()]", id="list_display"),
+        pytest.param("{f(x) for x in xs}", id="set_comprehension"),
+        pytest.param("map(f, xs)", id="map_call"),
+    ],
+)
+def test_gather_non_comprehension_starred_aborts_generation(starred: str) -> None:
+    """A starred iterable of already-built awaitables has nothing left to defer.
+
+    Translating it would call every element eagerly and then call its result
+    (#666), so generation aborts, naming file, line and the argument.
+    """
+    source = "async def run(self):\n    x = 1\n    return " + (f"await asyncio.gather(*{starred})")
+
+    with pytest.raises(generate_sync.UnsupportedAsyncConstructError) as excinfo:
+        transform(source, source_file="repository.py")
+
+    message = str(excinfo.value)
+    assert "repository.py:3:" in message
+    assert f"`{starred}`" in message
+    assert "list comprehension" in message
+
+
+def test_gather_tasks_list_built_earlier_aborts_generation() -> None:
+    """The `tasks = [...]; gather(*tasks)` idiom aborts rather than running eagerly."""
+    source = (
+        "async def run(self):\n"
+        "    tasks = [self._one(x) for x in items]\n"
+        "    return await asyncio.gather(*tasks)\n"
+    )
+
+    with pytest.raises(generate_sync.UnsupportedAsyncConstructError) as excinfo:
+        transform(source, source_file="repository.py")
+
+    assert "repository.py:3:" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    ("comprehension", "construct", "remedy"),
+    [
+        pytest.param(
+            "[f(x) for self.x in xs]", "self.x", "Bind a plain name", id="attribute_target"
+        ),
+        pytest.param("[f(x) for d[0] in xs]", "d[0]", "Bind a plain name", id="subscript_target"),
+        pytest.param(
+            "[f(x) async for x in xs]", "async for", "Materialise the async", id="async_for"
+        ),
+        pytest.param("[f(y) for x in xs if (y := x)]", "y := x", "Compute the value", id="walrus"),
+    ],
+)
+def test_gather_untranslatable_comprehension_aborts_generation(
+    comprehension: str, construct: str, remedy: str
+) -> None:
+    """A shape whose bindings cannot be captured aborts, naming file, line and construct."""
+    source = "async def run(self):\n    x = 1\n    return " + (
+        f"await asyncio.gather(*{comprehension})"
+    )
+
+    with pytest.raises(generate_sync.UnsupportedAsyncConstructError) as excinfo:
+        transform(source, source_file="repository.py")
+
+    message = str(excinfo.value)
+    assert "repository.py:3:" in message
+    assert construct in message
+    assert remedy in message

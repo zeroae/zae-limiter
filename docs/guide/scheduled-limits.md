@@ -315,6 +315,17 @@ which has no rate to divide by, the wait is the time to the next reset edge — 
   also concentrates load at the boundary. For a window anchored to each caller's own activity,
   use a [session quota](session-quotas.md) (`reset_after`,
   [ADR-139](../adr/139-duration-reset-windows.md)) — a limit takes one or the other, never both.
+- **A sharded quota's balance can be uneven until the next reset.** When a busy entity splits
+  into more shards mid-period, a new shard is funded by moving tokens off the shard whose share
+  covers it — never by creating allowance, and never by discarding any — so the entity admits
+  its quota per period ([ADR-145](../adr/145-sharded-quota-conserves-allowance.md)). Two narrow
+  races can let one shard's share through twice, once: a shard created just as another client
+  doubles the entity (repaired immediately, so it does not recur), and — only in the first
+  period after upgrading from v0.14 — a shard written by the older version. A
+  shard that spent its share early has nothing to pass on, so a request drawn to an empty shard
+  can be rejected while the entity still holds tokens on another, and the per-shard `capacity`
+  a `RateLimitExceeded` reports can differ between shards. Both settle at the next reset, when
+  every shard starts again at an equal share.
 - **One time-varying mechanism per bucket.** A bucket uses cron scheduling or another dynamic
   mechanism, not both. This keeps "why is my limit this number" answerable.
 - **Extended cron syntax is not supported.** `L` (last), `W` (weekday) and `#` (nth weekday) are

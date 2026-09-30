@@ -14,7 +14,7 @@ from zae_limiter.bucket import (
     try_consume,
     would_refill_satisfy,
 )
-from zae_limiter.models import BucketState
+from zae_limiter.models import BucketState, Limit
 from zae_limiter.schedule import ScheduleEntry
 
 
@@ -611,8 +611,8 @@ class TestScheduledEffectiveParams:
         split the result. Dividing first would floor twice against a smaller
         numerator and drift."""
         state = _sched_state(shard_count=4, sched=BUSINESS)
-        assert state.effective_capacity_milli(TUE_1400) == 125_000  # (1_000_000*0.5)//4
-        assert state.effective_capacity_milli(TUE_0300) == 250_000  # 1_000_000//4, no match
+        assert state.ceiling_milli(TUE_1400) == 125_000  # (1_000_000*0.5)//4
+        assert state.ceiling_milli(TUE_0300) == 250_000  # 1_000_000//4, no match
 
     def test_scale_then_divide_is_not_divide_then_scale(self):
         """The ordering is observable, and this is a case where it shows.
@@ -628,7 +628,7 @@ class TestScheduledEffectiveParams:
         state = _sched_state(
             capacity_milli=1_000, refill_amount_milli=1_000, shard_count=7, sched=sched
         )
-        assert state.effective_capacity_milli(TUE_1400) == 141
+        assert state.ceiling_milli(TUE_1400) == 141
         assert state.effective_refill_amount_milli(TUE_1400) == 141
 
     def test_refill_scales_with_capacity(self):
@@ -638,14 +638,14 @@ class TestScheduledEffectiveParams:
 
     def test_unscheduled_state_is_unchanged_at_any_instant(self):
         state = _sched_state(shard_count=1)
-        assert state.effective_capacity_milli(TUE_1400) == 1_000_000
-        assert state.effective_capacity_milli(TUE_0300) == 1_000_000
+        assert state.ceiling_milli(TUE_1400) == 1_000_000
+        assert state.ceiling_milli(TUE_0300) == 1_000_000
 
     def test_absolute_entry_overrides_capacity(self):
         night = (ScheduleEntry(cron="* 0-6 * * *", tz="America/New_York", capacity=2000),)
         state = _sched_state(shard_count=1, sched=night)
-        assert state.effective_capacity_milli(TUE_0300) == 2_000_000
-        assert state.effective_capacity_milli(TUE_1400) == 1_000_000
+        assert state.ceiling_milli(TUE_0300) == 2_000_000
+        assert state.ceiling_milli(TUE_1400) == 1_000_000
 
     def test_retry_rate_falls_back_to_the_undivided_scheduled_rate(self):
         """A share that floors to 0 has no finite wait. Fall back to the
@@ -854,3 +854,14 @@ class TestDeclaredStatusesCarryTheWalk:
         assert statuses[0].limit.refill_amount == 0
         assert statuses[0].limit.is_quota
         assert statuses[0].limit.reset_schedule == DAILY
+
+
+def test_try_consume_keeps_a_quota_surplus_held_for_covered_slots():
+    # #637: a shard granted at count 2 holds 500 at count 4; the pass must not trim it.
+    limit = Limit.quota("rpd", 1000, cron="0 0 * * *")
+    state = BucketState.from_limit("e", "r", limit, 0, shard_count=4)
+    state.reset_sched = limit.reset_schedule
+    state.grant_count = 2
+    state.tokens_milli = 500_000
+    result = try_consume(state, 1, 10)
+    assert result.success and result.new_tokens_milli == 499_000

@@ -2,6 +2,7 @@
 
 import re
 import warnings
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from typing import Any, Literal
@@ -12,6 +13,7 @@ from .schedule import (
     MAX_TOKENS,
     ScheduleEntry,
     effective_params,
+    prev_reset_edge,
 )
 
 # ---------------------------------------------------------------------------
@@ -226,87 +228,6 @@ def is_accrual_rate(refill_amount_milli: int) -> bool:
     the limit at all.
     """
     return refill_amount_milli > 0
-
-
-def new_shard_starting_tokens_milli(
-    share_milli: int,
-    reclaimed_milli: int | None,
-    *,
-    is_quota: bool,
-) -> int:
-    """What a shard coming into existence right now may start with (#587).
-
-    A shard is created by the client slow path (ADR-133) and by the
-    aggregator's propagation clone, and until #587 both minted it a fresh
-    ``capacity // shard_count``. For a **dripping** limit that is sound: the
-    stored ``ra`` is undivided, each shard refills at ``ra // shard_count``, so
-    the ceilings across all shards still sum to the configured capacity and a
-    new shard starting full is a one-off burst of at most one ``time_to_fill``
-    — which token-bucket semantics already permit. That path is unchanged, and
-    ``is_quota=False`` returns ``share_milli`` verbatim.
-
-    A **quota** has no rate at all (ADR-137), so there is nothing for a fresh
-    share to amortise against and no pass that takes it back before the next
-    reset edge. Minting one hands the entity allowance it never earned: the
-    issue measured a 1000-a-day quota admitting 3496 inside a single frozen
-    period, 3.5x, by walking ``shard_count`` 1 -> 32.
-
-    So a quota's new shard is given a **transfer, never a mint**. Before it is
-    created, every shard that already exists is clamped to the freshly shrunken
-    per-shard ceiling — the same ``min(capacity, tokens)`` that
-    ``bucket.refill_bucket`` would apply on their next materialising pass (#496
-    / #222 §3.3), just taken now instead of eventually — and the new shard
-    starts with what that reclaimed, capped at its own share:
-
-    * an entity holding a **full** quota when it doubles gets a full new share,
-      precisely paid for by the clamp on the shard it split from — the behaviour
-      before #587, which was right for this case and is why the bug hid;
-    * an entity that has **spent** its quota gets nothing, because there is no
-      surplus to move. That is the fix; and
-    * everything in between conserves exactly, and both shards keep tokens, so
-      ADR-134's random re-draw still finds them.
-
-    Doing the clamp *eagerly* is what makes the conservation hold at the instant
-    of the doubling rather than eventually. Leaving it to the siblings' next
-    pass reopens the same hole in transient form: the speculative fast path is a
-    pure ``ADD`` with no ceiling arithmetic, so an unclamped sibling will happily
-    spend the surplus that has just been granted to the new shard as well. No
-    token is destroyed that was not already doomed — the clamp takes exactly
-    this much whenever it next runs — so a reclaim followed by an acquire that
-    is then rejected leaves the entity no worse off.
-
-    Zero-filling instead would also never over-admit, but it is not neutral: a
-    new shard that can admit nothing takes its share of the draws and rejects
-    them, the successful writes pile back onto the one shard that has tokens,
-    that shard trips ``wcu`` again, and the count runs away to
-    ``MAX_SHARD_COUNT`` with the whole balance clamped onto a single
-    ``C // 32``. Redistribution — deducting a blind ``old_share / 2`` from each
-    existing shard at the doubling — does not fix the over-admission at all: on
-    a spent quota the deduction lands as debt that nothing ever repays, while
-    the new shard's share is immediately spendable, so the entity still gains
-    ``C/2`` per doubling. Conserving the *sum* of the balances is not the same
-    as conserving what can be **spent**.
-
-    Args:
-        share_milli: This shard's ceiling — the capacity in force now,
-            divided by ``shard_count`` (``BucketState.effective_capacity_milli``).
-        reclaimed_milli: Millitokens taken off the existing shards of this
-            (entity, resource, limit) by the eager clamp. ``None`` means no
-            shard exists to reclaim from — nothing has been materialised for
-            this limit, so there is no spend to conserve against and the share
-            is granted in full.
-        is_quota: :attr:`Limit.is_quota` — the **structural** predicate. Not
-            :meth:`BucketState.accrues`, which is also true of a dripping limit
-            whose share has floored to zero; starving that limit's new shard
-            would be wrong, since it does recover.
-
-    Returns:
-        Starting balance in millitokens, never negative and never above
-        ``share_milli``.
-    """
-    if not is_quota or reclaimed_milli is None:
-        return share_milli
-    return max(0, min(share_milli, reclaimed_milli))
 
 
 def _schedule_entry_to_dict(entry: ScheduleEntry) -> dict[str, Any]:
@@ -934,7 +855,7 @@ class Limit:
         shard_count``, ``refill_amount // shard_count`` (GHSA-76rv). Dividing
         first and scaling second is a different integer, and it is the wrong
         one: the bucket itself refills against
-        ``BucketState.effective_capacity_milli``, which scales first.
+        ``BucketState.ceiling_milli``, which scales first.
 
         Both narrowings belong together because both feed ``LimitStatus`` and
         neither may be applied twice. A status reported from one shard has to
@@ -1263,6 +1184,10 @@ class BucketState:
     # `b_{name}_wtc` (#640): `tc` as it stood when a fan-out left this shard
     # with an unapplied window. `None` when the item carries none.
     window_consumed_mark_milli: int | None = None
+    # `b_{name}_gc` (ADR-145): the shard count this shard's current-period quota
+    # grant was sized at. `None` for a rate limit and for a quota item written
+    # before ADR-145 (read as `shard_count`, see `grant_shard_count`).
+    grant_count: int | None = None
 
     @property
     def tokens(self) -> int:
@@ -1288,8 +1213,31 @@ class BucketState:
             now_ms,
         )
 
-    def effective_capacity_milli(self, now_ms: int) -> int:
-        """This shard's share of the capacity in force at ``now_ms``.
+    @property
+    def is_quota_state(self) -> bool:
+        """Whether this state is a quota (ADR-137): a reset schedule or a duration window."""
+        return bool(self.reset_sched) or self.reset_after_seconds is not None
+
+    @property
+    def grant_shard_count(self) -> int:
+        """The count this shard's quota grant was sized at (ADR-145).
+
+        An item written before the grant record reads as its stored count
+        (design §9, owner decision option 1).
+        """
+        return self.grant_count if self.grant_count is not None else self.shard_count
+
+    @property
+    def report_shard_count(self) -> int:
+        """The divisor a reported per-shard limit uses (`Limit.per_shard`).
+
+        A quota shard reports what it was granted (`C // gc`), so a 429 never
+        shows more available than capacity. Everything else reports the share.
+        """
+        return self.grant_shard_count if self.is_quota_state else self.shard_count
+
+    def reset_target_milli(self, now_ms: int) -> int:
+        """The balance a reset or window roll sets: this shard's share at ``now_ms``.
 
         Scale first, divide second (#222 §2.1): the schedule applies to the
         whole limit and the shards split the result. Dividing first floors
@@ -1298,10 +1246,22 @@ class BucketState:
         cp, _ra, _rp = self._scheduled_params(now_ms)
         return cp // self.shard_count
 
+    def ceiling_milli(self, now_ms: int) -> int:
+        """The most this shard may hold at ``now_ms`` — the refill clamp (ADR-145).
+
+        A quota shard holds the unspent allowance of every slot its grant
+        covers, so its ceiling is ``C // gc``; trimming it to ``C // S`` would
+        discard allowance no other shard holds (#637). A dripping limit keeps
+        ``C // S``: its shards' ceilings must sum to the capacity.
+        """
+        cp, _ra, _rp = self._scheduled_params(now_ms)
+        divisor = self.grant_shard_count if self.is_quota_state else self.shard_count
+        return cp // divisor
+
     def effective_refill_amount_milli(self, now_ms: int) -> int:
         """This shard's share of the refill in force at ``now_ms``.
 
-        Scale first, divide second, exactly as ``effective_capacity_milli``.
+        Scale first, divide second, exactly as ``reset_target_milli``.
         """
         _cp, ra, _rp = self._scheduled_params(now_ms)
         return ra // self.shard_count
@@ -1378,7 +1338,7 @@ class BucketState:
         an opener or a newly created shard applies its window in the same
         write and restores the full share.
         """
-        share = self.effective_capacity_milli(now_ms)
+        share = self.reset_target_milli(now_ms)
         if self.window_consumed_mark_milli is None or self.total_consumed_milli is None:
             return share
         return share - max(0, self.total_consumed_milli - self.window_consumed_mark_milli)
@@ -1456,7 +1416,7 @@ class BucketState:
         limit: Limit,
         now_ms: int,
         shard_count: int = 1,
-        reclaimed_milli: int | None = None,
+        starting_tokens_milli: int | None = None,
     ) -> "BucketState":
         """
         Create a new bucket at full capacity from a Limit.
@@ -1472,12 +1432,13 @@ class BucketState:
             now_ms: Current time in milliseconds
             shard_count: Shards the bucket is split across; a new shard
                 starts at its effective share, ``capacity // shard_count``
-            reclaimed_milli: Millitokens the caller's eager clamp took off
-                the shards that already exist for this (entity, resource,
-                limit). Only a **quota** reads it, and only to take a transfer
-                instead of a mint (#587) — see
-                :func:`new_shard_starting_tokens_milli`. ``None`` (the default,
-                and every dripping limit) keeps the full share.
+            starting_tokens_milli: The balance a quota shard is created or
+                seeded with when it takes its share by an ADR-145 **move** off
+                the sibling covering its slot (``QuotaGrant.tokens_milli``).
+                ``None`` (the default, every dripping limit, and a quota whose
+                slot no current-period sibling covers) starts at the full
+                share, ``BucketState.reset_target_milli``. A quota's
+                ``grant_count`` is stamped ``shard_count`` either way (I3).
         """
         capacity_milli = limit.capacity * 1000
         state = cls(
@@ -1516,14 +1477,16 @@ class BucketState:
         # refiller trimmed it, which is exactly the window the schedule exists
         # to narrow.
         #
-        # A quota being added to shards that already exist takes a transfer of
-        # its siblings' surplus instead of a fresh share, because it has no
-        # rate for a mint to amortise against (#587).
-        state.tokens_milli = new_shard_starting_tokens_milli(
-            state.effective_capacity_milli(now_ms),
-            reclaimed_milli,
-            is_quota=limit.is_quota,
+        # A quota shard funded by a move off a covering sibling starts with
+        # what the move carries, never a fresh share (ADR-145 I1): a quota has
+        # no rate for a mint to amortise against (#587).
+        state.tokens_milli = (
+            state.reset_target_milli(now_ms)
+            if starting_tokens_milli is None
+            else starting_tokens_milli
         )
+        if limit.is_quota:
+            state.grant_count = shard_count
         return state
 
 
@@ -2158,3 +2121,130 @@ class AuditEvent:
             resource=data.get("resource"),
             details=data.get("details", {}),
         )
+
+
+# --- ADR-145: the quota grant decision ---------------------------------------
+
+
+@dataclass(frozen=True)
+class QuotaSibling:
+    """One existing shard of a quota, as the grant decision sees it (ADR-145)."""
+
+    shard_id: int
+    tokens_milli: int
+    grant_count: int
+    current: bool
+
+
+@dataclass(frozen=True)
+class QuotaGrant:
+    """What a new or seeded quota shard starts with, and where it comes from."""
+
+    donor_shard: int | None
+    tokens_milli: int
+    donor_grant_count: int | None = None
+
+
+@dataclass(frozen=True)
+class QuotaDonorDebit:
+    """The donor side of one ADR-145 move: ``tokens_milli`` off ``shard_id``.
+
+    Conditioned, when written, on the donor still holding the tokens, still
+    carrying the grant count read (``grant_count``), and its grant still
+    belonging to the current period: a calendar quota's ``rf`` at or past
+    ``guard_rf_ms`` (the reset edge in force), a session quota's ``wa`` still
+    ``guard_wa_ms``. ``None`` means that guard does not apply. A legacy donor
+    (no ``gc``) matches ``legacy_shard_count`` against its stored count.
+    """
+
+    shard_id: int
+    limit_name: str
+    tokens_milli: int
+    grant_count: int
+    guard_rf_ms: int | None
+    guard_wa_ms: int | None
+    # A donor with no stored `gc` (v0.14-shaped, design §9) is matched on the
+    # `shard_count` it stores, which differs from `grant_count` when the
+    # planner inferred a smaller grant count from its balance (R7).
+    legacy_shard_count: int | None = None
+
+
+def plan_quota_grant(
+    siblings: Sequence[QuotaSibling],
+    shard_id: int,
+    shard_count: int,
+    share_milli: int,
+) -> QuotaGrant:
+    """Decide how shard ``shard_id`` at count ``shard_count`` is funded (ADR-145).
+
+    A current-period sibling ``i`` whose grant was sized at count ``g`` covers
+    every slot ``j`` with ``j % g == i % g``. If one covers ``shard_id``, the
+    closest (largest ``g``, then lowest id) donates ``min(share, its tokens)``
+    — a move, never a mint. If none does, nobody has been granted this slot's
+    share this period, and it is granted fresh. Shared by the client and the
+    aggregator's Path 2 clone; imports nothing outside the vendored stub.
+    """
+    covering = [
+        s
+        for s in siblings
+        if s.current
+        and s.shard_id != shard_id
+        and shard_id % s.grant_count == s.shard_id % s.grant_count
+    ]
+    if not covering:
+        return QuotaGrant(donor_shard=None, tokens_milli=share_milli)
+    donor = min(covering, key=lambda s: (-s.grant_count, s.shard_id))
+    return QuotaGrant(
+        donor_shard=donor.shard_id,
+        tokens_milli=max(0, min(share_milli, donor.tokens_milli)),
+        donor_grant_count=donor.grant_count,
+    )
+
+
+def quota_grant_is_current(
+    limit: "Limit",
+    rf_ms: int,
+    window_start_ms: int | None,
+    window_applied_ms: int | None,
+    now_ms: int,
+) -> bool:
+    """Whether a sibling's quota grant belongs to the current period (design §5).
+
+    The exact negation of "a reset is pending": for a calendar quota, no reset
+    edge after ``rf`` (`RateLimiter._apply_reset_edge`); for a session quota, a
+    live window already applied (``BucketState.window_rolled``).
+    """
+    return quota_period_is_current(
+        limit.reset_schedule,
+        limit.reset_after_seconds,
+        rf_ms,
+        window_start_ms,
+        window_applied_ms,
+        now_ms,
+    )
+
+
+def quota_period_is_current(
+    reset_sched: tuple[ScheduleEntry, ...],
+    reset_after_seconds: int | None,
+    rf_ms: int,
+    window_start_ms: int | None,
+    window_applied_ms: int | None,
+    now_ms: int,
+) -> bool:
+    """:func:`quota_grant_is_current` on the raw pieces, with no ``Limit``.
+
+    The single statement of the rule (design §5), so the aggregator — which
+    holds stored attributes, not a ``Limit`` — asks the identical question.
+    ``reset_after_seconds`` present means a session quota and ``reset_sched``
+    is then ignored; otherwise it is a calendar quota.
+    """
+    if reset_after_seconds is not None:
+        if window_start_ms is None:
+            return False
+        if window_start_ms + reset_after_seconds * 1000 <= now_ms:
+            return False
+        applied = window_applied_ms if window_applied_ms is not None else rf_ms
+        return window_start_ms <= applied
+    edge = prev_reset_edge(reset_sched, now_ms)
+    return edge is None or edge <= rf_ms

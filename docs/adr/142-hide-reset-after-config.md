@@ -1,6 +1,6 @@
 # ADR-142: A reset_after limit's config is hidden from pre-v0.15 readers
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-09-27
 **Issue:** [#640](https://github.com/zeroae/zae-limiter/issues/640)
 **Related:** [ADR-139](139-duration-reset-windows.md), [ADR-140](140-duration-window-shard-coherence.md), [ADR-141](141-reset-after-version-gate.md), ADR-137, ADR-114, [#638](https://github.com/zeroae/zae-limiter/issues/638)
@@ -22,14 +22,15 @@ without error, and only the old aggregator mishandles them, which ADR-141 preven
 
 Hiding the limit lets old clients write buckets that carry a window, whose shared `rf` and `vu`
 they stamp from their own limits and clock. [ADR-140](140-duration-window-shard-coherence.md)
-makes the window mechanism independent of both, and the #633 seed fills a shard an old client
-creates by transfer from its siblings. The storage mapping, readers and verification against
+makes the window mechanism independent of both, and the seed funds a shard an old client creates
+by [ADR-145](145-sharded-quota-conserves-allowance.md)'s move off the sibling whose grant covers
+it. The storage mapping, readers and verification against
 v0.14.0 are in #640 and CLAUDE.md "Hidden config (#640)".
 
 ## Decision
 
 A `reset_after` limit's config attributes must be stored under the `w_` prefix (`w_{name}_*`),
-which pre-v0.15 readers do not read, and every v0.15 config reader must read both prefixes and
+which pre-v0.15 readers do not read, and every config reader from v0.15 on must read both prefixes and
 must treat a name stored under both, or a `w_` limit without its window length, as a corrupt item.
 
 **Owner decision (2026-09-27):** accepted that under `on_unavailable="block"` a pre-v0.15 client
@@ -55,7 +56,8 @@ enforces every other limit and skips only the session limit, rather than refusin
   hidden limit from config and leaves its balance on the buckets. Admin tooling must be upgraded
   first.
 - An old param sync can change the item-level schedule a session limit without its own override
-  inherits, and an old client's shard creation remains exposed to the #642 residual.
+  inherits. An old client's shard creation, funded on the next v0.15 pass by ADR-145's move, can
+  only under-admit.
 
 ## Alternatives Considered
 

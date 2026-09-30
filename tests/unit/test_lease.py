@@ -487,3 +487,52 @@ class TestRetryFailureStatusesFromImages:
         [status] = _build_retry_failure_statuses([entry], T0, {("user-1", "gpt-4", 0): image})
         assert status.exceeded
         assert status.retry_after_seconds == 0.001
+
+
+class TestCommitPinsTheGrantCount:
+    """ADR-145 I4 / R5: every grant on the write is pinned on `shard_count`."""
+
+    async def test_a_seed_and_a_reset_on_one_item_pin_the_tightest_count(self):
+        """A quota seed sized at 4 (the max of cached, item and sibling
+        counts) and a reset granted at the item's own count 2 share a write.
+        The pin must be 2: a doubling 2 -> 4 between the read and the write
+        passes a pin of 4, and the stale `gc = 2` reset would land (R5)."""
+        repo = _mock_repo(T0 + 1)
+        rpd = Limit.quota("rpd", 1_000, cron="0 0 * * *")
+        rpw = Limit.quota("rpw", 5_000, cron="0 0 * * 0")
+        reset_state = _session_state(
+            limit_name="rpd",
+            capacity_milli=1_000_000,
+            window_start_ms=None,
+            reset_after_seconds=None,
+            shard_count=2,
+            grant_count=2,
+        )
+        seed_state = _session_state(
+            limit_name="rpw",
+            capacity_milli=5_000_000,
+            window_start_ms=None,
+            reset_after_seconds=None,
+            shard_count=4,
+        )
+        reset = _entry(rpd, reset_state, _granted=True)
+        seed = _entry(rpw, seed_state, _seed=True)
+        await Lease(repository=repo, entries=[reset, seed])._commit_initial()
+        kwargs = repo.build_composite_normal.call_args.kwargs
+        assert kwargs["grant_counts"] == {"rpd": 2}
+        assert kwargs["pin_shard_count"] == 2
+
+    async def test_a_window_ending_between_the_readings_is_a_grant(self):
+        """The commit-time re-anchor restores the balance at the item's count,
+        so it stamps `gc` and pins exactly as an acquire-path roll does."""
+        repo = _mock_repo(T0 + FIVE_HOURS_MS + 1)
+        entry = _entry(
+            SESSION,
+            _session_state(tokens_milli=0),
+            consumed=1,
+            _window_end_ms=T0 + FIVE_HOURS_MS,
+        )
+        await Lease(repository=repo, entries=[entry])._commit_initial()
+        kwargs = repo.build_composite_normal.call_args.kwargs
+        assert kwargs["grant_counts"] == {"session": 1}
+        assert kwargs["pin_shard_count"] == 1

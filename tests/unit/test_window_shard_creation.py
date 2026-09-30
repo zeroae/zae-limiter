@@ -20,9 +20,10 @@ from tests.fixtures.sharding import (
     pinned_shard,
     spendable,
     walk_doublings,
+    walk_doublings_no_spend,
 )
 from tests.fixtures.windows import FIVE_HOURS_MS, SESSION_10, T0
-from zae_limiter import RateLimiter, RateLimiterUnavailable
+from zae_limiter import RateLimiter, RateLimiterUnavailable, RateLimitExceeded
 from zae_limiter.schema import (
     BUCKET_FIELD_RF,
     BUCKET_FIELD_TK,
@@ -97,9 +98,10 @@ class TestNewShardJoinsTheWindow:
         item = await _raw(repo, "user-1", 1)
         assert int(item[BUCKET_FIELD_RF]["N"]) == now
         assert int(item[BUCKET_FIELD_VU]["N"]) == T0 + FIVE_HOURS_MS, "vu at the joined end"
-        # Joining a live window keeps the #587 transfer: shard 0 held 9 against
-        # a new share of 5, so 4 moved and the creating acquire spent 1.
-        assert await _balances(repo, "user-1", 2) == [5_000, 3_000]
+        # Joining a live window takes an ADR-145 move: shard 0 held 9, its
+        # grant (sized at count 1) covers slot 1, so one new share of 5 moved
+        # and the creating acquire spent 1.
+        assert await _balances(repo, "user-1", 2) == [4_000, 4_000]
         assert await spendable(repo, "user-1", "session", 2, resource=RESOURCE) == 8
         # And a live-inherit create never fans out: shard 0 keeps its window.
         assert await _stored_ws_on(repo, "user-1", "session", 0) == T0
@@ -153,12 +155,11 @@ class TestNewShardJoinsTheWindow:
         assert await _stored_ws_on(repo, "user-1", "session", 0) == now
         assert await spendable(repo, "user-1", "session", 2, resource=RESOURCE) == 8
 
-    async def test_a_dead_windows_surplus_is_clamped_and_the_new_shard_gets_its_share(
-        self, limiter
-    ):
-        """Shard 0 still holds 9 from the window that ended. The reclaim clamps
-        it to the new share of 5 and the 4 it takes are thrown away: the new
-        shard starts at exactly its share, never share plus the dead surplus.
+    async def test_a_dead_windows_balance_never_funds_the_new_shard(self, limiter):
+        """Shard 0 still holds 9 from the window that ended. Its grant is not
+        current (design §5), so it neither donates nor covers: the new shard
+        opens its own window at exactly its fresh share, and shard 0 keeps the
+        dead balance until it rolls under its own lock (a SET to its share).
         """
         repo = limiter._repository
         await _first_use(limiter, "user-1", T0)
@@ -167,7 +168,7 @@ class TestNewShardJoinsTheWindow:
         now = T0 + FIVE_HOURS_MS + 3_600_000
         repo._now_ms = lambda: now
         assert await materialise(limiter, "user-1", "session", 1, resource=RESOURCE) == 1
-        assert await _balances(repo, "user-1", 2) == [5_000, 4_000]
+        assert await _balances(repo, "user-1", 2) == [9_000, 4_000]
         assert await _stored_ws_on(repo, "user-1", "session", 1) == now
 
     async def test_a_cascade_parent_shard_inherits_the_parents_window(self, limiter):
@@ -200,13 +201,13 @@ class TestNewShardJoinsTheWindow:
         assert await _stored_ws_on(repo, "parent", "session", 1) == t_parent
         assert await _stored_ws_on(repo, "child", "session", 1) == T0
 
-    async def test_a_new_quota_shard_is_still_filled_by_transfer(self, limiter):
-        """A duration window is a quota, so PR #594's reclaim-then-grant must
-        fire for it too — a mint here would be #587 again for this feature.
-        Measured as #594 measures it: sum(max(0, tk)) across shards.
+    async def test_a_new_quota_shard_is_still_filled_by_a_move(self, limiter):
+        """A duration window is a quota, so the ADR-145 move must fire for it
+        too — a mint here would be #587 again for this feature. Measured as
+        #594 measures it: sum(max(0, tk)) across shards.
 
-        Shard 0 holds 7 against a new share of 5, so exactly 2 transfer. A mint
-        would create shard 1 at 5 and leave the entity with 9 spendable after
+        Shard 0 holds 7 and covers slot 1, so one new share of 5 moves. A mint
+        would create shard 1 at 5 and leave the entity with 11 spendable after
         one admission instead of 6.
         """
         repo = limiter._repository
@@ -217,7 +218,7 @@ class TestNewShardJoinsTheWindow:
         before = await spendable(repo, "user-1", "session", 1, resource=RESOURCE)
         assert before == 7
         assert await materialise(limiter, "user-1", "session", 0, resource=RESOURCE) == 1
-        assert await _balances(repo, "user-1", 2) == [5_000, 1_000]
+        assert await _balances(repo, "user-1", 2) == [2_000, 4_000]
         after = await spendable(repo, "user-1", "session", 2, resource=RESOURCE)
         assert after == before - 1, "conserved, less the one token admitted"
 
@@ -375,8 +376,8 @@ class TestDoublingWalkConservesAWindow:
 
     async def test_a_spent_entity_walk_mints_nothing(self, limiter):
         """The issue's probe (`walk_doublings`): every shard drained, then
-        `wcu` tripped, five generations. Nothing is left to transfer, so no
-        created shard may start with anything."""
+        `wcu` tripped, five generations. Only the drained remnants may move, so
+        every doubling conserves what is spendable less what it admitted."""
         from zae_limiter import schema
 
         repo = limiter._repository
@@ -387,8 +388,8 @@ class TestDoublingWalkConservesAWindow:
         )
 
         assert shard_count == schema.MAX_SHARD_COUNT
-        for index, (before, after) in enumerate(spends):
-            assert after == before, f"doubling {index}: {before} -> {after}"
+        for index, (before, after, generation) in enumerate(spends):
+            assert after + generation == before, f"doubling {index}: {spends}"
         left = await spendable(repo, "walker", self.LIMIT_NAME, shard_count, resource=RESOURCE)
         assert 1 + admitted + left <= 1_000
 
@@ -436,15 +437,103 @@ class TestDoublingWalkConservesAWindow:
         assert starts == {T0}, "every created shard joined the live window"
 
 
+class TestAcceptanceSession:
+    """Design §10 test 10: the acceptance tests with a session quota (ADR-145)."""
+
+    @staticmethod
+    def _quota():
+        from datetime import timedelta
+
+        from zae_limiter import Limit
+
+        return Limit.quota("session", 1_000, reset_after=timedelta(hours=5))
+
+    async def test_10_session_quota_walk_keeps_the_whole_quota(self, limiter):
+        """#637 for a session quota: nobody spends, `wcu` walk 1 -> 32, and the
+        whole allowance is still spendable — every created shard joined the
+        live window and took a move."""
+        from zae_limiter import schema
+
+        repo = limiter._repository
+        repo._now_ms = lambda: T0
+        await repo.set_limits("e1", [self._quota()], resource=RESOURCE)
+        count = await walk_doublings_no_spend(limiter, "e1", "session", resource=RESOURCE)
+        assert count == schema.MAX_SHARD_COUNT
+        assert await spendable(repo, "e1", "session", count, resource=RESOURCE) == 1_000
+        starts = {await _stored_ws_on(repo, "e1", "session", s) for s in range(count)}
+        assert starts == {T0}
+
+    async def test_3_window_ended_between_shards_then_seed(self, limiter):
+        """The session twin of the 1300 case: shard 0 spent 300 of its window,
+        the window ended, then shard 1 — which lacks the quota — seeds it. A
+        sibling from the ended window neither donates nor covers (design §5),
+        so the seed opens a fresh window at a fresh share and no move rides;
+        shard 0 rolls into the same window on its own next pass. The new
+        window admits exactly the configured 1000, never more."""
+        from zae_limiter import Limit
+        from zae_limiter.models import BucketState
+
+        rpm = Limit.per_minute("rpm", 100_000)
+        quota = self._quota()
+        repo = limiter._repository
+        eid = "sess-seed"
+        repo._now_ms = lambda: T0
+        await repo.set_limits(eid, [rpm, quota], resource=RESOURCE)
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        async with slow.acquire(eid, RESOURCE, consume={"session": 300}):
+            pass
+        assert await repo.bump_shard_count(eid, RESOURCE, 1) == 2
+        state = BucketState.from_limit(eid, RESOURCE, rpm, T0, shard_count=2)
+        await repo.transact_write(
+            [repo.build_composite_create(eid, RESOURCE, [state], T0, shard_id=1, shard_count=2)]
+        )
+
+        opened = T0 + FIVE_HOURS_MS + 60_000
+        repo._now_ms = lambda: opened
+        transacted: list[list[str]] = []
+        real = repo.transact_write
+
+        async def record(items):
+            transacted.append([next(iter(item)) for item in items])
+            return await real(items)
+
+        with patch.object(repo, "transact_write", record):
+            with patch("zae_limiter.repository.random.randrange", return_value=1):
+                async with slow.acquire(eid, RESOURCE, consume={"session": 1}):
+                    pass
+        assert transacted == [["Update"]], "a fresh grant: no donor debit rides"
+        assert await _stored_ws_on(repo, eid, "session", 1) == opened
+        assert await _stored_tk_on(repo, eid, "session", 1) == 499_000
+        assert await _stored_tk_on(repo, eid, "session", 0) == 700_000, "shard 0 untouched"
+
+        admitted = 1
+        repo._now_ms = lambda: opened + 1_000
+        fast = RateLimiter(repository=repo)
+        for shard in (0, 1, 0, 1):
+            for lim in (fast, slow):
+                while True:
+                    try:
+                        with patch("zae_limiter.repository.random.randrange", return_value=shard):
+                            async with lim.acquire(eid, RESOURCE, consume={"session": 10}):
+                                admitted += 10
+                    except RateLimitExceeded:
+                        break
+        assert await _stored_ws_on(repo, eid, "session", 0) == opened, "one window phase"
+        assert admitted <= 1_000
+        assert admitted == 991, "499 on shard 1 + 500 once shard 0 rolls, in tens"
+
+
 class TestAggregatorCloneOfAnUnappliedShardZero:
     """Path 2 clones shard 0 while shard 0 carries a window it has not applied.
 
     Shard 0 received a fan-out (``ws > rf``, ``vu = 0``) and the aggregator's
     proactive sharding doubles it before any client draws it. The clone copies
     ``ws``/``rsa``/``rf``/``vu`` verbatim, so it is unapplied too, and whatever
-    the #587 transfer granted it is overwritten when it rolls — a SET to the
-    share, never an ADD. After both shards roll the entity holds exactly one
-    allowance, whichever writer applies the roll.
+    it was granted is overwritten when it rolls — a SET to the share, never an
+    ADD. Shard 0's grant belongs to the window it has not applied, so it is no
+    donor (ADR-145, design §5): the clone's slot is granted fresh. After both
+    shards roll the entity holds exactly one allowance, whichever writer
+    applies the roll.
     """
 
     WINDOW_S = FIVE_HOURS_MS // 1000
@@ -509,10 +598,15 @@ class TestAggregatorCloneOfAnUnappliedShardZero:
                 image = await _raw(repo, "user-1", shard)
                 (state,) = aggregate_bucket_states([self._record(image, image)]).values()
                 rolled.append(try_refill_bucket(table, state, now))
-            # Spent: shard 0 holds 2 and the clone was granted nothing, so both
-            # are below their share of 5 and both roll. Unspent: the transfer
-            # left both at exactly 5, so neither has anything to restore.
-            assert rolled == [bool(spent), bool(spent)]
+            # Shard 0 always rolls: it holds 10 (unspent) or 2 (spent), never
+            # its share of 5, so the roll is a real write in both directions.
+            # The clone was granted a fresh share (ADR-145): its parent's
+            # grant belongs to the window it has not applied, so it neither
+            # donates nor covers (design §5). The clone therefore holds exactly
+            # its share and has nothing to restore; the client applies its
+            # roll below, as a SET.
+            assert rolled == [True, False]
+            assert await _stored_tk_on(repo, "user-1", "session", 1) == 5_000
             assert await spendable(repo, "user-1", "session", 2, resource=RESOURCE) == 10
 
         repo._now_ms = lambda: now

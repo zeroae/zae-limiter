@@ -3,16 +3,22 @@
 import json
 import time as time_module
 import traceback
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import boto3
-from boto3.dynamodb.types import TypeDeserializer
-from botocore.exceptions import ClientError
+from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
+from botocore.exceptions import BotoCoreError, ClientError
 
 from zae_limiter.bucket import refill_bucket
-from zae_limiter.models import is_accrual_rate
+from zae_limiter.models import (
+    QuotaDonorDebit,
+    QuotaSibling,
+    is_accrual_rate,
+    plan_quota_grant,
+    quota_period_is_current,
+)
 from zae_limiter.schedule import (
     ScheduleEntry,
     decode,
@@ -24,6 +30,7 @@ from zae_limiter.schedule import (
 from zae_limiter.schema import (
     BUCKET_ATTR_PREFIX,
     BUCKET_FIELD_CP,
+    BUCKET_FIELD_GC,
     BUCKET_FIELD_RA,
     BUCKET_FIELD_RP,
     BUCKET_FIELD_RSA,
@@ -144,6 +151,9 @@ class LimitRefillInfo:
     # pending roll's target, `eff_cp - max(0, tc - wtc)`.
     tc_milli: int | None = None
     window_consumed_mark_milli: int | None = None
+    # `b_{name}_gc` (ADR-145): the shard count this shard's current-period
+    # quota grant was sized at. None on an item written before ADR-145.
+    grant_count: int | None = None
 
 
 @dataclass
@@ -354,6 +364,7 @@ class ParsedBucketLimit:
     window_applied_ms: int | None = None  # b_{name}_wa, epoch ms (#640)
     tc_milli: int | None = None  # b_{name}_tc from NewImage, absolute (#640)
     window_consumed_mark_milli: int | None = None  # b_{name}_wtc (#640)
+    grant_count: int | None = None  # b_{name}_gc, shard's grant sizing (ADR-145)
 
 
 @dataclass
@@ -566,6 +577,7 @@ def _parse_bucket_record(record: dict[str, Any]) -> ParsedBucketRecord | None:
         rsa_raw = new_image.get(bucket_attr(limit_name, BUCKET_FIELD_RSA), {}).get("N")
         wa_raw = new_image.get(bucket_attr(limit_name, BUCKET_FIELD_WA), {}).get("N")
         wtc_raw = new_image.get(bucket_attr(limit_name, BUCKET_FIELD_WTC), {}).get("N")
+        gc_raw = new_image.get(bucket_attr(limit_name, BUCKET_FIELD_GC), {}).get("N")
 
         limits[limit_name] = ParsedBucketLimit(
             tc_delta=tc_delta,
@@ -580,6 +592,7 @@ def _parse_bucket_record(record: dict[str, Any]) -> ParsedBucketRecord | None:
             window_applied_ms=int(wa_raw) if wa_raw is not None else None,
             tc_milli=int(new_tc_raw),
             window_consumed_mark_milli=int(wtc_raw) if wtc_raw is not None else None,
+            grant_count=int(gc_raw) if gc_raw is not None else None,
         )
 
     if not limits:
@@ -735,6 +748,7 @@ def aggregate_bucket_states(
                 existing.window_applied_ms = parsed_limit.window_applied_ms
                 existing.tc_milli = parsed_limit.tc_milli
                 existing.window_consumed_mark_milli = parsed_limit.window_consumed_mark_milli
+                existing.grant_count = parsed_limit.grant_count
             else:
                 state.limits[limit_name] = LimitRefillInfo(
                     tc_delta=parsed_limit.tc_delta,
@@ -749,6 +763,7 @@ def aggregate_bucket_states(
                     window_applied_ms=parsed_limit.window_applied_ms,
                     tc_milli=parsed_limit.tc_milli,
                     window_consumed_mark_milli=parsed_limit.window_consumed_mark_milli,
+                    grant_count=parsed_limit.grant_count,
                 )
 
     return bucket_states
@@ -937,6 +952,10 @@ def try_refill_bucket(
     expr_names: dict[str, str] = {}
     any_needs_refill = False
     rolled: list[str] = []
+    # Quotas this write re-grants (ADR-145 I3): a reset edge or a window roll
+    # it applies, whether or not the balance needed a delta. Each gets
+    # `gc = shard_count` and the write is pinned on `shard_count` (I4).
+    granted: list[str] = []
     # Limits given a reset or drip delta, in token order: `refilled[i]` is the
     # limit behind `#rt{i}` / `:rd{i}`. Positional tokens, never the limit
     # name (#634) — `NAME_PATTERN` allows `.` and `-`, and an inline
@@ -950,6 +969,7 @@ def try_refill_bucket(
             # partition — `_deserialize_composite_bucket` and the Path 2 clone
             # below both say so) and a user's schedule must never scale it.
             effective_cp = info.cp_milli
+            ceiling_cp = info.cp_milli
             effective_ra = info.ra_milli
             effective_rp = info.rp_ms
             # `rsched` is item-level and applies to every limit on the item by
@@ -974,6 +994,15 @@ def try_refill_bucket(
             effective_cp = scaled_cp // state.shard_count
             effective_ra = scaled_ra // state.shard_count
             reset_sched = info.reset_sched
+            # ADR-145 I7: a quota shard holds every slot its grant covers, so
+            # its ceiling is `C // gc`, never `C // shard_count` (#637). The
+            # reset / roll target stays `effective_cp`: a re-grant is sized
+            # at the item's count. A dripping limit keeps `C // shard_count`.
+            is_quota = bool(reset_sched) or info.reset_after_seconds is not None
+            grant_count = info.grant_count
+            if not is_quota or grant_count is None or grant_count < 1:
+                grant_count = state.shard_count
+            ceiling_cp = scaled_cp // grant_count
 
         # A duration window rolled since this item was last refilled sets the
         # balance to the effective capacity (ADR-140), which as an `ADD` is
@@ -1014,6 +1043,7 @@ def try_refill_bucket(
             if info.window_consumed_mark_milli is not None and info.tc_milli is not None:
                 target -= max(0, info.tc_milli - info.window_consumed_mark_milli)
             roll_delta = target - info.tk_milli
+            granted.append(limit_name)
             if roll_delta != 0:
                 any_needs_refill = True
                 idx = len(rolled)
@@ -1047,6 +1077,7 @@ def try_refill_bucket(
             reset_edge = prev_reset_edge(reset_sched, now_ms)
             if reset_edge is not None and reset_edge > state.rf_ms:
                 reset_delta = effective_cp - info.tk_milli
+                granted.append(limit_name)
                 if reset_delta != 0:
                     any_needs_refill = True
                     idx = len(refilled)
@@ -1069,7 +1100,7 @@ def try_refill_bucket(
             tokens_milli=info.tk_milli,
             last_refill_ms=state.rf_ms,
             now_ms=now_ms,
-            capacity_milli=effective_cp,
+            capacity_milli=ceiling_cp,
             refill_amount_milli=effective_ra,
             refill_period_ms=effective_rp,
         )
@@ -1190,6 +1221,22 @@ def try_refill_bucket(
     # lost lock. One term per rolled limit, positional aliases only.
     for idx in range(len(rolled)):
         condition += f" AND #wws{idx} = :ews{idx}"
+
+    # ADR-145 I3/I4: a reset or roll this write applies re-grants that quota
+    # at the item's count, so it stamps `gc` in the same write — and pins the
+    # count it sized the grant at. A shard whose `shard_count` a doubling
+    # raised after this image was captured would otherwise reset at the lower
+    # count and cover a slot someone else was just granted (design §8 R5).
+    # `<=`, not `=`: the pin only forbids a count above the one read.
+    # Positional tokens (#634); `#gq*` is disjoint from every other family here.
+    for idx, name in enumerate(granted):
+        set_parts.append(f"#gq{idx} = :gq{idx}")
+        expr_names[f"#gq{idx}"] = bucket_attr(name, BUCKET_FIELD_GC)
+        expr_values[f":gq{idx}"] = state.shard_count
+    if granted:
+        expr_names["#gqsc"] = "shard_count"
+        expr_values[":gqpin"] = state.shard_count
+        condition += " AND (attribute_not_exists(#gqsc) OR #gqsc <= :gqpin)"
 
     # An expired `vu` means this pass is the materialisation the fast path is
     # waiting on: stamp the next boundary so it can resume. A `vu` still in the
@@ -1414,52 +1461,334 @@ def _is_quota_limit(limit_name: str, image: dict[str, Any]) -> bool:
     return bool(image.get(BUCKET_FIELD_RSCHED, {}).get("S"))
 
 
-def _reclaim_quota_surplus(
+def _quota_reset_rule(
+    limit_name: str, image: dict[str, Any]
+) -> tuple[tuple[ScheduleEntry, ...], int | None, str | None]:
+    """``(reset_sched, reset_after_seconds, error)`` of a quota, off a stream image.
+
+    Resolved exactly as :func:`_parse_bucket_record` resolves it: the limit's
+    own ``b_{name}_rsched`` override, the #541 ``BUCKET_SCHED_NONE`` marker
+    blocking the item-level ``rsched``, and otherwise that default. A duration
+    window's ``b_{name}_rsa`` makes it a session quota — unless a reset
+    schedule rides beside it, the corrupt shape the calendar branch keeps
+    (:func:`_window_in_force`). It resolves the rule from shard 0's image and
+    applies it to every sibling, which is sound because the #468 fan-out
+    keeps a limit's reset rule uniform across an entity's shards.
+    """
+    tz = image.get(BUCKET_FIELD_SCHED_TZ, {}).get("S", "UTC")
+    own = image.get(bucket_attr(limit_name, BUCKET_FIELD_RSCHED), {}).get("S")
+    if own == BUCKET_SCHED_NONE:
+        reset_sched: tuple[ScheduleEntry, ...] = ()
+        error = None
+    else:
+        compact = own or image.get(BUCKET_FIELD_RSCHED, {}).get("S")
+        reset_sched, error = _decode_reset_schedule(compact, tz)
+    rsa_raw = image.get(bucket_attr(limit_name, BUCKET_FIELD_RSA), {}).get("N")
+    rsa = int(rsa_raw) if rsa_raw is not None and not reset_sched else None
+    return reset_sched, rsa, error
+
+
+def _stored_count(item: dict[str, Any]) -> int:
+    """An item's stored ``shard_count`` (native value); absent or < 1 reads as 1."""
+    return max(1, int(item.get("shard_count", 1)))
+
+
+def _quota_sibling_from_image(
+    shard_id: int,
+    item: dict[str, Any],
+    limit_name: str,
+    reset_rule: tuple[tuple[ScheduleEntry, ...], int | None],
+    capacity_milli: int,
+    now_ms: int,
+) -> QuotaSibling | None:
+    """One sibling as the ADR-145 planner sees it, off a ``Table`` item.
+
+    The Lambda mirror of ``Repository._quota_sibling``, on the native values
+    the boto3 ``Table`` resource returns — the same rules, not a looser
+    variant. ``None`` when the shard lacks the quota. A sibling with no ``gc``
+    (design §9) reads as granted at its stored count, halved while its balance
+    holds more than one share at that count (R7: it was granted at a lower
+    one). A corrupt ``gc < 1`` reads as the stored count. Whether its grant
+    belongs to the current period is :func:`quota_period_is_current`, the
+    single statement of the rule, against the quota's reset rule as shard 0's
+    image resolves it.
+    """
+    tk = item.get(bucket_attr(limit_name, BUCKET_FIELD_TK))
+    if tk is None:
+        return None
+    tokens = int(tk)
+    gc = item.get(bucket_attr(limit_name, BUCKET_FIELD_GC))
+    if gc is None:
+        grant_count = _stored_count(item)
+        while grant_count > 1 and tokens > capacity_milli // grant_count:
+            grant_count //= 2
+    else:
+        grant_count = int(gc)
+        if grant_count < 1:
+            grant_count = _stored_count(item)
+    ws = item.get(bucket_attr(limit_name, BUCKET_FIELD_WS))
+    wa = item.get(bucket_attr(limit_name, BUCKET_FIELD_WA))
+    reset_sched, rsa = reset_rule
+    return QuotaSibling(
+        shard_id=shard_id,
+        tokens_milli=tokens,
+        grant_count=grant_count,
+        current=quota_period_is_current(
+            reset_sched,
+            rsa,
+            int(item.get("rf", 0)),
+            int(ws) if ws is not None else None,
+            int(wa) if wa is not None else None,
+            now_ms,
+        ),
+    )
+
+
+def _donor_debit(
+    donor_shard: int,
+    donor_grant_count: int,
+    tokens_milli: int,
+    limit_name: str,
+    donor: dict[str, Any],
+    reset_rule: tuple[tuple[ScheduleEntry, ...], int | None],
+    now_ms: int,
+) -> QuotaDonorDebit:
+    """The donor side of a planned move, with its current-period guard.
+
+    Mirrors ``Repository._donor_debit``: a session quota is guarded on the
+    donor's ``wa`` as read, a calendar quota on ``rf`` at or past the reset
+    edge in force; a legacy donor (no ``gc``) is matched on the count it
+    actually stores.
+    """
+    reset_sched, rsa = reset_rule
+    guard_rf_ms: int | None = None
+    guard_wa_ms: int | None = None
+    if rsa is not None:
+        wa = donor.get(bucket_attr(limit_name, BUCKET_FIELD_WA))
+        guard_wa_ms = int(wa) if wa is not None else None
+    else:
+        guard_rf_ms = prev_reset_edge(reset_sched, now_ms)
+    legacy = bucket_attr(limit_name, BUCKET_FIELD_GC) not in donor
+    return QuotaDonorDebit(
+        shard_id=donor_shard,
+        limit_name=limit_name,
+        tokens_milli=tokens_milli,
+        grant_count=donor_grant_count,
+        guard_rf_ms=guard_rf_ms,
+        guard_wa_ms=guard_wa_ms,
+        legacy_shard_count=_stored_count(donor) if legacy else None,
+    )
+
+
+def _donor_update_items(
+    table_name: str,
+    namespace_id: str,
+    entity_id: str,
+    resource: str,
+    debits: list[QuotaDonorDebit],
+) -> list[dict[str, Any]]:
+    """The donor ``Update`` items of one clone's transaction, native values.
+
+    The Lambda mirror of ``Repository.build_quota_donor_debits`` — same
+    condition, same positional tokens (#634): ``ADD tk -x`` under the donor
+    existing, still holding ``x``, still carrying the grant count read (or,
+    with no ``gc``, the ``shard_count`` read), and its grant still in the
+    current period (calendar ``rf >= edge``; session ``wa`` unchanged).
+    Several quotas moving off one donor share one ``Update``: a transaction
+    may touch an item once.
+
+    Native values, not ``{"N": ...}``: the call goes through
+    ``table.meta.client``, which shares the ``Table`` resource's parameter
+    transformer and serializes every attribute value itself — a typed value
+    would be wrapped a second time.
+    """
+    by_shard: dict[int, list[QuotaDonorDebit]] = {}
+    for debit in debits:
+        by_shard.setdefault(debit.shard_id, []).append(debit)
+    items: list[dict[str, Any]] = []
+    for shard, group in sorted(by_shard.items()):
+        names: dict[str, str] = {"#qsc": "shard_count"}
+        values: dict[str, int] = {}
+        adds: list[str] = []
+        conds: list[str] = ["attribute_exists(PK)"]
+        for i, debit in enumerate(group):
+            names[f"#qt{i}"] = bucket_attr(debit.limit_name, BUCKET_FIELD_TK)
+            names[f"#qg{i}"] = bucket_attr(debit.limit_name, BUCKET_FIELD_GC)
+            values[f":qx{i}"] = debit.tokens_milli
+            values[f":qn{i}"] = -debit.tokens_milli
+            values[f":qg{i}"] = debit.grant_count
+            adds.append(f"#qt{i} :qn{i}")
+            conds.append(f"#qt{i} >= :qx{i}")
+            legacy = f":qg{i}"
+            if debit.legacy_shard_count is not None:
+                legacy = f":ql{i}"
+                values[legacy] = debit.legacy_shard_count
+            conds.append(f"(#qg{i} = :qg{i} OR (attribute_not_exists(#qg{i}) AND #qsc = {legacy}))")
+            if debit.guard_rf_ms is not None:
+                names["#qrf"] = "rf"
+                values[f":qe{i}"] = debit.guard_rf_ms
+                conds.append(f"#qrf >= :qe{i}")
+            if debit.guard_wa_ms is not None:
+                names[f"#qw{i}"] = bucket_attr(debit.limit_name, BUCKET_FIELD_WA)
+                values[f":qw{i}"] = debit.guard_wa_ms
+                conds.append(f"#qw{i} = :qw{i}")
+        items.append(
+            {
+                "Update": {
+                    "TableName": table_name,
+                    "Key": {
+                        "PK": pk_bucket(namespace_id, entity_id, resource, shard),
+                        "SK": sk_state(),
+                    },
+                    "UpdateExpression": "ADD " + ", ".join(adds),
+                    "ConditionExpression": " AND ".join(conds),
+                    "ExpressionAttributeNames": names,
+                    "ExpressionAttributeValues": values,
+                }
+            }
+        )
+    return items
+
+
+def _quota_count_freeze(
+    key: dict[str, str], new_count: int, quota_grants: list[tuple[str, int]]
+) -> dict[str, Any]:
+    """Path 1's raise for a shard carrying a legacy quota, with its grant size frozen.
+
+    The Lambda mirror of ``Repository._build_quota_count_freeze``:
+    ``SET shard_count = :new, gc = if_not_exists(gc, :g)`` per quota, under
+    ``shard_count < :new``. Raising a legacy (no ``gc``) item's count alone
+    would shrink the grant the planner read it at to the new count — a slot it
+    still covers would be minted again later — and fail the donor debit's
+    legacy branch. Native values: this goes through the ``Table`` resource.
+    """
+    names: dict[str, str] = {"#qsc": "shard_count"}
+    sets = ["#qsc = :qnew"]
+    values: dict[str, int] = {":qnew": new_count}
+    for i, (name, grant_count) in enumerate(quota_grants):
+        names[f"#qf{i}"] = bucket_attr(name, BUCKET_FIELD_GC)
+        values[f":qo{i}"] = grant_count
+        sets.append(f"#qf{i} = if_not_exists(#qf{i}, :qo{i})")
+    return {
+        "Key": key,
+        "UpdateExpression": "SET " + ", ".join(sets),
+        "ConditionExpression": "#qsc < :qnew",
+        "ExpressionAttributeNames": names,
+        "ExpressionAttributeValues": values,
+    }
+
+
+def _legacy_quota_sizes(
+    shard_id: int, item: dict[str, Any], skip: set[str], now_ms: int
+) -> list[tuple[str, int]]:
+    """``(name, grant_count)`` for every legacy quota a ``Table`` item carries.
+
+    The quotas shard 0's image does not carry, which Path 1 would otherwise
+    raise without freezing: each one on ``item`` with no ``gc`` (design §9),
+    sized by the same R7 rule as :func:`_quota_sibling_from_image` against
+    its own schedule-effective capacity. The shape test is
+    :func:`_is_quota_limit`, on the item re-serialized to the stream's wire
+    format. A schedule that cannot be decoded sizes against the base
+    capacity: the freeze is then the one the reader would infer without it.
+    """
+    serializer = TypeSerializer()
+    wire = {key: serializer.serialize(value) for key, value in item.items()}
+    tz = wire.get(BUCKET_FIELD_SCHED_TZ, {}).get("S", "UTC")
+    sizes: list[tuple[str, int]] = []
+    for limit_name, info in _extract_limit_attrs(wire).items():
+        if (
+            limit_name == WCU_LIMIT_NAME
+            or limit_name in skip
+            or bucket_attr(limit_name, BUCKET_FIELD_GC) in item
+            or not _is_quota_limit(limit_name, wire)
+        ):
+            continue
+        own = wire.get(bucket_attr(limit_name, BUCKET_FIELD_SCHED), {}).get("S")
+        sched: tuple[ScheduleEntry, ...] = ()
+        if own != BUCKET_SCHED_NONE:
+            sched, error = _decode_schedule(own or wire.get(BUCKET_FIELD_SCHED, {}).get("S"), tz)
+            if error is not None:
+                sched = ()
+        capacity = effective_params(info["cp_milli"], 0, info["rp_ms"], sched, now_ms)[0]
+        sibling = _quota_sibling_from_image(
+            shard_id, item, limit_name, ((), None), capacity, now_ms
+        )
+        if sibling is not None:
+            sizes.append((limit_name, sibling.grant_count))
+    return sizes
+
+
+def _repair_quota_clones(
     table: Any,
     namespace_id: str,
     entity_id: str,
     resource: str,
-    old_count: int,
-    shares_milli: dict[str, int],
-) -> dict[str, int]:
-    """Clamp the shards a doubling splits from, and report the take (#587).
+    new_count: int,
+    clones: list[int],
+    quota_names: list[str],
+    seen_count: int,
+) -> None:
+    """Raise quota clones a later doubling overtook while they were created (ADR-145).
 
-    The Lambda mirror of ``Repository.reclaim_quota_surplus``. A quota's new
-    shards are filled by **transfer**, never minted: every shard that already
-    exists is trimmed to the ceiling the doubling just shrank it to — the clamp
-    ``bucket.refill_bucket`` would apply on its next pass anyway — and what
-    comes off is what the clones below are created with.
-
-    One conditional ``UpdateItem`` per shard, ``old_count`` of them, once per
-    doubling. The condition means a shard already at or below its new share is
-    not written and contributes nothing, which is the common case for a spent
-    quota. A shard spent below the ceiling between the read and the write fails
-    the condition and is skipped: there is no surplus left to move.
+    The clone ``Put`` is guarded only by ``attribute_not_exists(PK)``, not by
+    the count it was planned at. A client can double shard 0 after the old
+    shards were read; its propagation finds no clone to raise, and the clone
+    would then reset at ``new_count`` every period beside a shard created at
+    the higher count that covers one of its slots. So, once per record that
+    created a quota clone: one strongly consistent ``GetItem`` of shard 0's
+    ``shard_count`` (1 RCU), compared with the counts the old shards already
+    read; when either is higher, each created clone is raised with its current
+    grant frozen at ``new_count`` (:func:`_quota_count_freeze`). Shard 0 is
+    never written. A failure — a ``ClientError`` or a ``BotoCoreError`` such
+    as a dropped connection — is logged, without the entity id, and swallowed:
+    the clones exist and are funded; only the next period's grant is at stake,
+    and failing the stream batch would re-drive writes that already landed.
     """
-    reclaimed: dict[str, int] = dict.fromkeys(shares_milli, 0)
-    for shard in range(old_count):
-        for name, share in shares_milli.items():
-            attr = bucket_attr(name, BUCKET_FIELD_TK)
-            try:
-                response = table.update_item(
-                    Key={
-                        "PK": pk_bucket(namespace_id, entity_id, resource, shard),
-                        "SK": sk_state(),
-                    },
-                    UpdateExpression="SET #tk = :share",
-                    ConditionExpression="attribute_exists(PK) AND #tk > :share",
-                    ExpressionAttributeNames={"#tk": attr},
-                    ExpressionAttributeValues={":share": share},
-                    ReturnValues="UPDATED_OLD",
-                )
-            except ClientError as e:
-                if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-                    continue
-                raise
-            previous = response.get("Attributes", {}).get(attr)
-            if previous is not None:
-                reclaimed[name] += int(previous) - share
-    return reclaimed
+    try:
+        response = table.get_item(
+            Key={"PK": pk_bucket(namespace_id, entity_id, resource, 0), "SK": sk_state()},
+            ProjectionExpression="shard_count",
+            ConsistentRead=True,
+        )
+    except (ClientError, BotoCoreError) as e:
+        _log_clone_repair_failure(resource, 0, e)
+        return
+    current = max(seen_count, _stored_count(response.get("Item") or {}))
+    if current <= new_count:
+        return
+    # One clone's failure skips only that clone: each write is independent.
+    for shard in clones:
+        key = {"PK": pk_bucket(namespace_id, entity_id, resource, shard), "SK": sk_state()}
+        try:
+            table.update_item(
+                **_quota_count_freeze(key, current, [(name, new_count) for name in quota_names])
+            )
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                continue  # Already raised by another writer
+            _log_clone_repair_failure(resource, shard, e)
+        except BotoCoreError as e:
+            _log_clone_repair_failure(resource, shard, e)
+
+
+def _log_clone_repair_failure(
+    resource: str, shard: int, error: ClientError | BotoCoreError
+) -> None:
+    """Log one failed clone-repair read or write, never the entity id (an API key)."""
+    if isinstance(error, ClientError):
+        logger.warning(
+            "Quota clone count repair failed - clones keep their created count",
+            resource=resource,
+            shard=shard,
+            error_code=error.response.get("Error", {}).get("Code"),
+        )
+    else:
+        logger.warning(
+            "Quota clone count repair failed - clones keep their created count",
+            resource=resource,
+            shard=shard,
+            error_type=type(error).__name__,
+        )
 
 
 def propagate_shard_count(
@@ -1471,10 +1800,17 @@ def propagate_shard_count(
 
     Detects shard_count change in stream record (OldImage vs NewImage).
     Only propagates from shard 0. Two code paths:
-    - Existing shards (1..old_count-1): UpdateItem with shard_count < :new
+    - Existing shards (1..old_count-1): UpdateItem with shard_count < :new;
+      a shard carrying a quota also has the grant size it was read at frozen
+      (``gc = if_not_exists(gc, :g)``, ADR-145 R5).
     - New shards (old_count..new_count-1): PutItem cloned from shard 0's
       NewImage with adjusted PK/GSI keys and effective token capacity.
       Uses attribute_not_exists(PK) to avoid overwriting client-created items.
+      A quota on the clone is funded by a move off the current-period sibling
+      covering its slot — its parent ``target % old_count`` — in one
+      ``TransactWriteItems`` with the Put (ADR-145), or granted fresh when no
+      sibling covers it. When the item carries a quota, the old shards are
+      read once (strongly consistent ``GetItem`` each) before Path 1.
 
     Args:
         table: boto3 Table resource
@@ -1513,27 +1849,6 @@ def propagate_shard_count(
 
     updated = 0
 
-    # Path 1: Update existing shards (lightweight shard_count update)
-    for target_shard in range(1, old_count):
-        try:
-            table.update_item(
-                Key={
-                    "PK": pk_bucket(namespace_id, entity_id, resource, target_shard),
-                    "SK": sk_state(),
-                },
-                UpdateExpression="SET shard_count = :new",
-                ConditionExpression="shard_count < :new",
-                ExpressionAttributeValues={
-                    ":new": new_count,
-                },
-            )
-            updated += 1
-        except ClientError as e:
-            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-                continue  # Higher value already present
-            raise
-
-    # Path 2: Pre-create new shards (full item cloned from shard 0)
     # Deserialize wire format ({"S": "val"}, {"N": "1"}) to Python types
     # because table.put_item() (boto3 Table resource) auto-serializes.
     deserializer = TypeDeserializer()
@@ -1550,11 +1865,13 @@ def propagate_shard_count(
         new_image.get(BUCKET_FIELD_SCHED, {}).get("S"), sched_tz
     )
     # Per-limit starting balance, computed once rather than per target shard.
-    # A quota's is decided per target shard instead (#587), so it is held apart
-    # until the pool below is known.
+    # A quota's is decided per target shard instead (ADR-145), so its share,
+    # undivided capacity and reset rule are held apart.
     starting_tokens: dict[str, int] = {}
     quota_shares: dict[str, int] = {}
-    quota_pool: dict[str, int] = {}
+    quota_capacity: dict[str, int] = {}
+    quota_rules: dict[str, tuple[tuple[ScheduleEntry, ...], int | None]] = {}
+    clone_error: tuple[str, str] | None = None
     for limit_name, info in limit_attrs.items():
         if limit_name == WCU_LIMIT_NAME:
             starting_tokens[limit_name] = info["cp_milli"]  # per-partition, not divided
@@ -1571,15 +1888,12 @@ def propagate_shard_count(
             ((), None) if declares_none else _decode_schedule(limit_compact, sched_tz)
         )
         error = sched_error or limit_error
+        if error is None and _is_quota_limit(limit_name, new_image):
+            reset_sched, rsa, error = _quota_reset_rule(limit_name, new_image)
+            quota_rules[limit_name] = (reset_sched, rsa)
         if error is not None:
-            logger.warning(
-                "Undecodable stored schedule - not pre-creating shards",
-                entity_id=entity_id,
-                resource=resource,
-                limit_name=limit_name,
-                reason=error,
-            )
-            return updated
+            clone_error = (limit_name, error)
+            break
         scaled_cp, _ra, _rp = effective_params(
             info["cp_milli"],
             info["ra_milli"],
@@ -1588,54 +1902,287 @@ def propagate_shard_count(
             now_ms,
         )
         share = scaled_cp // new_count
-        if _is_quota_limit(limit_name, new_image):
+        if limit_name in quota_rules:
             quota_shares[limit_name] = share
+            quota_capacity[limit_name] = scaled_cp
         else:
             starting_tokens[limit_name] = share
 
-    # A quota has no drip to amortise a freshly minted share against (ADR-137),
-    # so its new shards are filled by **transfer** from the surplus the shrunken
-    # ceiling reclaims off the existing shards, never by a mint (#587).
-    if quota_shares:
-        quota_pool = _reclaim_quota_surplus(
-            table, namespace_id, entity_id, resource, old_count, quota_shares
-        )
-
-    for target_shard in range(old_count, new_count):
-        # The pool is handed out greedily rather than split evenly: a client
-        # that draws one of these shards first should find it usable, and the
-        # clamp reclaims the same total from the siblings either way.
-        for limit_name, share in quota_shares.items():
-            grant = max(0, min(share, quota_pool[limit_name]))
-            starting_tokens[limit_name] = grant
-            quota_pool[limit_name] -= grant
+    # ADR-145: a quota's clones are funded from the shards that already exist,
+    # read once per doubling — strongly consistent, because a donor debit
+    # sized off a stale balance only fails its condition and skips the clone.
+    # Read *before* Path 1 raises their counts: a legacy (no `gc`) sibling's
+    # grant size is inferred from the count it stores (R7), exactly as the
+    # client's planner reads it, and Path 1 then freezes that size onto it.
+    #
+    # A failed read must not cost the propagation itself: Path 1 still raises
+    # every lagging shard (without the grant-size freeze, which needs what the
+    # read would have said — the one-period legacy residual of design §9), and
+    # no quota clone is pre-created, since its funding cannot be sized. Every
+    # clone of this item carries the quota, so that is every clone; the client
+    # creates them lazily.
+    old_items: dict[int, dict[str, Any]] = {}
+    siblings: dict[str, list[QuotaSibling]] = {}
+    extra_frozen: dict[int, list[tuple[str, int]]] = {}
+    read_failed = False
+    if quota_shares and clone_error is None:
         try:
-            item = dict(base_item)
-            item["PK"] = pk_bucket(namespace_id, entity_id, resource, target_shard)
-            item["GSI2SK"] = gsi2_sk_bucket(entity_id, target_shard)
-            item["GSI3SK"] = gsi3_sk_bucket(resource, target_shard)
-            item["GSI4SK"] = gsi4_sk_bucket(entity_id, resource, target_shard)
-            item["shard_count"] = new_count
-            # Reset tokens to effective per-shard capacity (full bucket)
-            for limit_name, effective_cp in starting_tokens.items():
-                item[bucket_attr(limit_name, BUCKET_FIELD_TK)] = effective_cp
-                item[bucket_attr(limit_name, BUCKET_FIELD_TC)] = 0
-                # A clone of a shard with a pending roll inherits that roll
-                # (`ws`/`wa` are copied verbatim). Its consumption counter
-                # restarts at 0, so its snapshot does too (#640): everything
-                # the clone spends before the roll is charged to that window.
-                wtc_attr = bucket_attr(limit_name, BUCKET_FIELD_WTC)
-                if wtc_attr in item:
-                    item[wtc_attr] = 0
-            table.put_item(
-                Item=item,
-                ConditionExpression="attribute_not_exists(PK)",
+            for shard in range(old_count):
+                response = table.get_item(
+                    Key={
+                        "PK": pk_bucket(namespace_id, entity_id, resource, shard),
+                        "SK": sk_state(),
+                    },
+                    ConsistentRead=True,
+                )
+                if "Item" in response:
+                    old_items[shard] = response["Item"]
+        except ClientError as e:
+            # Never the entity id: it is routinely an API key.
+            logger.warning(
+                "Sibling read failed - propagating without the quota freeze or clones",
+                resource=resource,
+                error_code=e.response.get("Error", {}).get("Code"),
             )
+            old_items = {}
+            read_failed = True
+        except BotoCoreError as e:
+            # A dropped connection or timeout: same handling, never the batch.
+            logger.warning(
+                "Sibling read failed - propagating without the quota freeze or clones",
+                resource=resource,
+                error_type=type(e).__name__,
+            )
+            old_items = {}
+            read_failed = True
+    if quota_shares and clone_error is None and not read_failed:
+        # Every quota each sibling carries is frozen when Path 1 raises it,
+        # not only the ones shard 0's image carries: a legacy quota left
+        # unfrozen would read as granted at the raised count (design §9).
+        for shard, item in old_items.items():
+            legacy = _legacy_quota_sizes(shard, item, set(quota_shares), now_ms)
+            if legacy:
+                extra_frozen[shard] = legacy
+        for limit_name in quota_shares:
+            siblings[limit_name] = [
+                sibling
+                for sibling in (
+                    _quota_sibling_from_image(
+                        shard,
+                        item,
+                        limit_name,
+                        quota_rules[limit_name],
+                        quota_capacity[limit_name],
+                        now_ms,
+                    )
+                    for shard, item in sorted(old_items.items())
+                )
+                if sibling is not None
+            ]
+
+    # Path 1: Update existing shards (lightweight shard_count update). A shard
+    # carrying a quota also has the grant size the planner read it at frozen
+    # onto it (`gc = if_not_exists(gc, :g)`), mirroring the client's R5 raise.
+    for target_shard in range(1, old_count):
+        key = {"PK": pk_bucket(namespace_id, entity_id, resource, target_shard), "SK": sk_state()}
+        frozen = [
+            (name, sibling.grant_count)
+            for name, group in siblings.items()
+            for sibling in group
+            if sibling.shard_id == target_shard
+        ] + extra_frozen.get(target_shard, [])
+        try:
+            if frozen:
+                table.update_item(**_quota_count_freeze(key, new_count, frozen))
+            else:
+                table.update_item(
+                    Key=key,
+                    UpdateExpression="SET shard_count = :new",
+                    ConditionExpression="shard_count < :new",
+                    ExpressionAttributeValues={
+                        ":new": new_count,
+                    },
+                )
             updated += 1
         except ClientError as e:
             if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-                continue  # Client already created this shard
+                continue  # Higher value already present
             raise
+
+    if clone_error is not None:
+        logger.warning(
+            "Undecodable stored schedule - not pre-creating shards",
+            entity_id=entity_id,
+            resource=resource,
+            limit_name=clone_error[0],
+            reason=clone_error[1],
+        )
+        return updated
+    if read_failed:
+        return updated
+
+    # Path 2: Pre-create new shards (full item cloned from shard 0)
+    # A quota clone is planned at this record's `new_count`, which the client
+    # would not do: it plans at the largest count any sibling stores. With the
+    # stream lagging across two doublings, a clone sized at the older count
+    # covers slots a client may already have granted at the newer one — paid
+    # twice. So a record overtaken by a later doubling pre-creates no quota
+    # clone; a later record, or the client, creates them at the right count.
+    stored_counts = [_stored_count(item) for item in old_items.values()]
+    if quota_shares and any(count > new_count for count in stored_counts):
+        logger.debug(
+            "Quota clones skipped - the record is overtaken by a later doubling",
+            resource=resource,
+            record_count=new_count,
+            stored_count=max(stored_counts),
+        )
+        return updated
+    client = table.meta.client
+    # The quotas whose grant on shard 0's image is not current — a reset or
+    # roll pending there, which every clone of that image inherits (R13).
+    image_rf = int(new_image.get("rf", {}).get("N", "0"))
+    stale_on_image: set[str] = set()
+    for limit_name, (reset_sched, rsa) in quota_rules.items():
+        ws_raw = new_image.get(bucket_attr(limit_name, BUCKET_FIELD_WS), {}).get("N")
+        wa_raw = new_image.get(bucket_attr(limit_name, BUCKET_FIELD_WA), {}).get("N")
+        if not quota_period_is_current(
+            reset_sched,
+            rsa,
+            image_rf,
+            int(ws_raw) if ws_raw is not None else None,
+            int(wa_raw) if wa_raw is not None else None,
+            now_ms,
+        ):
+            stale_on_image.add(limit_name)
+    created_clones: list[int] = []
+    for target_shard in range(old_count, new_count):
+        item = dict(base_item)
+        item["PK"] = pk_bucket(namespace_id, entity_id, resource, target_shard)
+        item["GSI2SK"] = gsi2_sk_bucket(entity_id, target_shard)
+        item["GSI3SK"] = gsi3_sk_bucket(resource, target_shard)
+        item["GSI4SK"] = gsi4_sk_bucket(entity_id, resource, target_shard)
+        item["shard_count"] = new_count
+        # A quota never drips (ADR-137), so a clone is funded by a **move**,
+        # never a mint of a slot someone was already granted (ADR-145): the
+        # shared planner picks the current-period sibling covering this slot
+        # — its parent `target % old_count` whenever the parent's grant covers
+        # it — and the clone takes `min(share, donor tk)` off it in one
+        # transaction with its own Put. No covering sibling means nobody was
+        # granted this slot this period, and it gets a fresh share.
+        grants: dict[str, int] = dict(starting_tokens)
+        debits: list[QuotaDonorDebit] = []
+        stale_move = False
+        for limit_name, share in quota_shares.items():
+            grant = plan_quota_grant(siblings[limit_name], target_shard, new_count, share)
+            grants[limit_name] = grant.tokens_milli
+            item[bucket_attr(limit_name, BUCKET_FIELD_GC)] = new_count
+            if grant.donor_shard is not None and limit_name in stale_on_image:
+                stale_move = True
+            if (
+                grant.donor_shard is not None
+                and grant.donor_grant_count is not None
+                and grant.tokens_milli > 0
+            ):
+                debits.append(
+                    _donor_debit(
+                        grant.donor_shard,
+                        grant.donor_grant_count,
+                        grant.tokens_milli,
+                        limit_name,
+                        old_items[grant.donor_shard],
+                        quota_rules[limit_name],
+                        now_ms,
+                    )
+                )
+        if stale_move:
+            # R13: the clone copies shard 0's `rf`/`ws`/`wa`, so it would
+            # inherit shard 0's pending reset or roll for this quota. Its next
+            # pass would then SET a fresh share over what it was moved,
+            # while the donor's grant still covers the slot — that slot paid
+            # twice. Pre-create nothing (no Put, no debit): the client creates
+            # the shard lazily and stamps its own period.
+            logger.debug(
+                "Clone skipped - a quota move onto a pending reset or roll",
+                resource=resource,
+                shard_id=target_shard,
+            )
+            continue
+        for limit_name, tokens in grants.items():
+            item[bucket_attr(limit_name, BUCKET_FIELD_TK)] = tokens
+            item[bucket_attr(limit_name, BUCKET_FIELD_TC)] = 0
+            # A clone of a shard with a pending roll inherits that roll
+            # (`ws`/`wa` are copied verbatim). Its consumption counter
+            # restarts at 0, so its snapshot does too (#640): everything
+            # the clone spends before the roll is charged to that window.
+            wtc_attr = bucket_attr(limit_name, BUCKET_FIELD_WTC)
+            if wtc_attr in item:
+                item[wtc_attr] = 0
+        try:
+            if debits:
+                # The boto3 `Table` resource has no transaction call, so this
+                # goes through `table.meta.client`, which shares the resource's
+                # serializer: native values, exactly like `put_item` below.
+                # Put and Update inside a transaction are authorised by
+                # PutItem / UpdateItem, which the aggregator role already has
+                # (design §6) — no ConditionCheck.
+                client.transact_write_items(
+                    TransactItems=[
+                        {
+                            "Put": {
+                                "TableName": table.name,
+                                "Item": item,
+                                "ConditionExpression": "attribute_not_exists(PK)",
+                            }
+                        },
+                        *_donor_update_items(table.name, namespace_id, entity_id, resource, debits),
+                    ]
+                )
+            else:
+                table.put_item(
+                    Item=item,
+                    ConditionExpression="attribute_not_exists(PK)",
+                )
+            updated += 1
+        except ClientError as e:
+            code = e.response["Error"]["Code"]
+            if code in ("ConditionalCheckFailedException", "TransactionCanceledException"):
+                # The client already created this shard, or a donor moved
+                # since the read. Either way the whole write is undone (the
+                # donor untouched) and the client creates the shard lazily.
+                if code == "TransactionCanceledException":
+                    logger.debug(
+                        "Clone transaction cancelled - left to the client",
+                        resource=resource,
+                        shard_id=target_shard,
+                        reasons=[
+                            reason.get("Code", "None")
+                            for reason in e.response.get("CancellationReasons", [])
+                        ],
+                    )
+                continue
+            raise
+        if quota_shares:
+            created_clones.append(target_shard)
+        # A later clone planning off the same donor sees what it has left.
+        for debit in debits:
+            siblings[debit.limit_name] = [
+                replace(s, tokens_milli=s.tokens_milli - debit.tokens_milli)
+                if s.shard_id == debit.shard_id
+                else s
+                for s in siblings[debit.limit_name]
+            ]
+
+    if created_clones:
+        _repair_quota_clones(
+            table,
+            namespace_id,
+            entity_id,
+            resource,
+            new_count,
+            created_clones,
+            list(quota_shares),
+            max(stored_counts, default=new_count),
+        )
 
     if updated > 0:
         logger.info(
