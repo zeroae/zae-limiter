@@ -873,13 +873,15 @@ class TestEnsureTags:
                 }
             )
             mock_client.update_stack = MagicMock()
+            mock_client.get_template = MagicMock(return_value={"TemplateBody": "Resources: {}\n"})
             mock_get_client.return_value = mock_client
             manager = SyncStackManager(stack_name="my-app", region="us-east-1")
             result = manager.ensure_tags()
             assert result is True
             mock_client.update_stack.assert_called_once()
             call_kwargs = mock_client.update_stack.call_args[1]
-            assert call_kwargs["UsePreviousTemplate"] is True
+            assert call_kwargs["TemplateBody"] == "Resources: {}\n"
+            assert "UsePreviousTemplate" not in call_kwargs
             tag_dict = {t["Key"]: t["Value"] for t in call_kwargs["Tags"]}
             assert tag_dict["ManagedBy"] == "zae-limiter"
 
@@ -888,6 +890,7 @@ class TestEnsureTags:
         client = MagicMock()
         client.describe_stacks = MagicMock(return_value={"Stacks": [{"Tags": tags}]})
         client.update_stack = MagicMock()
+        client.get_template = MagicMock(return_value={"TemplateBody": "Resources: {}\n"})
         return client
 
     def test_refreshes_stale_version_tags(self) -> None:
@@ -968,7 +971,9 @@ class TestEnsureTags:
             {"ParameterKey": "EnableAggregator", "UsePreviousValue": True},
             {"ParameterKey": "PermissionBoundary", "UsePreviousValue": True},
         ]
-        assert kwargs["UsePreviousTemplate"] is True
+        client.get_template.assert_called_once_with(StackName="my-app", TemplateStage="Original")
+        assert kwargs["TemplateBody"] == "Resources: {}\n"
+        assert "UsePreviousTemplate" not in kwargs
         assert kwargs["Capabilities"] == ["CAPABILITY_NAMED_IAM"]
 
     def test_wait_blocks_on_update_complete(self) -> None:
@@ -1065,6 +1070,21 @@ class TestEnsureTags:
         client.update_stack.assert_not_called()
         client.create_stack.assert_not_called()
 
+    def test_resends_a_json_template_as_json(self) -> None:
+        """botocore parses a JSON template into a dict; it is sent back serialized."""
+        import json
+
+        with patch.object(
+            SyncStackManager, "_get_client", new_callable=MagicMock
+        ) as mock_get_client:
+            client = self._stack_with([{"Key": "ManagedBy", "Value": "zae-limiter"}])
+            client.get_template.return_value = {"TemplateBody": {"Resources": {}}}
+            mock_get_client.return_value = client
+            manager = SyncStackManager(stack_name="my-app", region="us-east-1")
+            assert manager.ensure_tags() is True
+        body = client.update_stack.call_args[1]["TemplateBody"]
+        assert json.loads(body) == {"Resources": {}}
+
     def test_preserves_existing_user_tags(self) -> None:
         """update_stack replaces the tag set, so tags already on the stack are carried over."""
         tags_in = [
@@ -1145,6 +1165,7 @@ class TestEnsureTags:
         ) as mock_get_client:
             mock_client = MagicMock()
             mock_client.describe_stacks = MagicMock(return_value={"Stacks": [{"Tags": []}]})
+            mock_client.get_template = MagicMock(return_value={"TemplateBody": "Resources: {}\n"})
             mock_client.update_stack = MagicMock(
                 side_effect=ClientError(
                     {
@@ -1168,6 +1189,7 @@ class TestEnsureTags:
         ) as mock_get_client:
             mock_client = MagicMock()
             mock_client.describe_stacks = MagicMock(return_value={"Stacks": [{"Tags": []}]})
+            mock_client.get_template = MagicMock(return_value={"TemplateBody": "Resources: {}\n"})
             mock_client.update_stack = MagicMock(
                 side_effect=ClientError(
                     {"Error": {"Code": "AccessDenied", "Message": "Not authorized"}}, "UpdateStack"
