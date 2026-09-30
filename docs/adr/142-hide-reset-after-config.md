@@ -1,6 +1,6 @@
 # ADR-142: A reset_after limit's config is hidden from pre-v0.15 readers
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-09-27
 **Issue:** [#640](https://github.com/zeroae/zae-limiter/issues/640)
 **Related:** [ADR-139](139-duration-reset-windows.md), [ADR-140](140-duration-window-shard-coherence.md), [ADR-141](141-reset-after-version-gate.md), ADR-137, ADR-114, [#638](https://github.com/zeroae/zae-limiter/issues/638)
@@ -30,7 +30,7 @@ v0.14.0 are in #640 and CLAUDE.md "Hidden config (#640)".
 ## Decision
 
 A `reset_after` limit's config attributes must be stored under the `w_` prefix (`w_{name}_*`),
-which pre-v0.15 readers do not read, and every v0.15 config reader must read both prefixes and
+which pre-v0.15 readers do not read, and every config reader from v0.15 on must read both prefixes and
 must treat a name stored under both, or a `w_` limit without its window length, as a corrupt item.
 
 **Owner decision (2026-09-27):** accepted that under `on_unavailable="block"` a pre-v0.15 client

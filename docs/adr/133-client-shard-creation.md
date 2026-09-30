@@ -1,8 +1,15 @@
 # ADR-133: Client-Side Shard Bucket Creation
 
-**Status:** Accepted
+**Status:** Accepted (partially superseded by [ADR-145](145-sharded-quota-conserves-allowance.md) for quota limits)
 **Date:** 2026-09-11
 **Issue:** [#439](https://github.com/zeroae/zae-limiter/issues/439)
+
+> **Partially superseded by [ADR-145](145-sharded-quota-conserves-allowance.md):** this record's token
+> sizing (`capacity_milli // shard_count`) and its create-race routing (consumption-only retry)
+> apply to **dripping** limits only. A quota limit's starting tokens, its per-shard ceiling
+> (`C // gc`) and a lost create race that carries a move follow ADR-145; ADR-134's per-shard-share
+> wording reads the same way. Shard targeting, the undivided `wcu` and the
+> `attribute_not_exists(PK)` guard still apply to every bucket.
 
 ## Context
 

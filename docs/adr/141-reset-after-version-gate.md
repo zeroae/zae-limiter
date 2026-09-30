@@ -1,6 +1,6 @@
 # ADR-141: Storing a reset_after limit is gated on reader versions
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-09-27
 **Issue:** [#638](https://github.com/zeroae/zae-limiter/issues/638)
 **Related:** [ADR-139](139-duration-reset-windows.md), ADR-137, ADR-009, [#640](https://github.com/zeroae/zae-limiter/issues/640), [#644](https://github.com/zeroae/zae-limiter/issues/644)
@@ -76,4 +76,6 @@ Rejected because: the function does the reading, and the template creates it onl
 also available.
 
 ### Hide the configuration from pre-v0.15 readers
-Decided separately in [ADR-142](142-hide-reset-after-config.md).
+Rejected as a replacement because: it hides the limit from old clients but cannot keep an old
+aggregator from cloning a bucket that carries one; adopted alongside this gate in
+[ADR-142](142-hide-reset-after-config.md).

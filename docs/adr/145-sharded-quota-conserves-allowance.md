@@ -1,6 +1,6 @@
 # ADR-145: A sharded quota conserves its allowance
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-09-28
 **Issue:** [#637](https://github.com/zeroae/zae-limiter/issues/637), [#642](https://github.com/zeroae/zae-limiter/issues/642)
 **Related:** ADR-133, ADR-134, ADR-137, [ADR-140](140-duration-window-shard-coherence.md), [#587](https://github.com/zeroae/zae-limiter/issues/587), [#477](https://github.com/zeroae/zae-limiter/issues/477)
@@ -28,7 +28,8 @@ sibling still holds; the two look identical in the tokens.
 Every quota shard must record the shard count its current-period grant was sized at,
 and a new or seeded quota shard must be funded by an atomic move from the
 current-period sibling whose grant covers its slot, receiving fresh allowance only
-when no such sibling exists.
+when no such sibling exists. This supersedes ADR-133's sizing and create-race clauses
+for quota limits; ADR-133 still governs dripping limits.
 
 ## Consequences
 
