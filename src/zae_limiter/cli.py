@@ -1711,7 +1711,8 @@ def upgrade(
                 click.echo("[3/4] Updating stack tags...")
                 try:
                     tags_updated = await manager.ensure_tags(
-                        lambda_version=__version__ if current else None
+                        lambda_version=__version__ if current else None,
+                        wait=True,
                     )
                     if tags_updated:
                         click.echo("      Stack tags updated")

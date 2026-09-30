@@ -1666,15 +1666,6 @@ class Repository:
             # Unreachable under skip_absent (each is pushed or proven absent); kept as a guard.
             stamp = __version__ if current else self._lambda_version
 
-            # Keep the stack's version tags (and the table's and functions',
-            # which inherit them) in step with the code just pushed. Tags are
-            # cosmetic: a role that cannot update the stack must not fail the
-            # update.
-            try:
-                await manager.ensure_tags(lambda_version=__version__ if current else None)
-            except Exception:
-                logger.warning("Could not refresh stack version tags", exc_info=True)
-
             # client_min_version is left as stored (#638 C): a Lambda update
             # must never lower a minimum a reset_after write ratcheted up.
             await self.set_version_record(

@@ -1142,6 +1142,46 @@ class TestEnsureTags:
         assert "zae-limiter:lambda-version" not in tags
 
     @pytest.mark.asyncio
+    async def test_passes_previous_parameter_values(self) -> None:
+        """Every current parameter is carried over, not reset to its template default."""
+        with patch.object(StackManager, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            client = self._stack_with([{"Key": "ManagedBy", "Value": "zae-limiter"}])
+            client.describe_stacks.return_value["Stacks"][0]["Parameters"] = [
+                {"ParameterKey": "EnableAggregator", "ParameterValue": "false"},
+                {"ParameterKey": "PermissionBoundary", "ParameterValue": "arn:pb"},
+            ]
+            mock_get_client.return_value = client
+
+            manager = StackManager(stack_name="my-app", region="us-east-1")
+            await manager.ensure_tags()
+
+        assert client.update_stack.call_args[1]["Parameters"] == [
+            {"ParameterKey": "EnableAggregator", "UsePreviousValue": True},
+            {"ParameterKey": "PermissionBoundary", "UsePreviousValue": True},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_wait_blocks_on_update_complete(self) -> None:
+        """wait=True waits on stack_update_complete; a failed update is surfaced."""
+        from zae_limiter.exceptions import StackOperationError
+
+        with patch.object(StackManager, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            client = self._stack_with([{"Key": "ManagedBy", "Value": "zae-limiter"}])
+            waiter = MagicMock()
+            waiter.wait = AsyncMock()
+            client.get_waiter = MagicMock(return_value=waiter)
+            mock_get_client.return_value = client
+
+            manager = StackManager(stack_name="my-app", region="us-east-1")
+            assert await manager.ensure_tags(wait=True) is True
+            client.get_waiter.assert_called_once_with("stack_update_complete")
+            waiter.wait.assert_called_once_with(StackName="my-app")
+
+            waiter.wait.side_effect = RuntimeError("UPDATE_ROLLBACK_COMPLETE")
+            with pytest.raises(StackOperationError):
+                await manager.ensure_tags(wait=True)
+
+    @pytest.mark.asyncio
     async def test_preserves_existing_user_tags(self) -> None:
         """update_stack replaces the tag set, so tags already on the stack are carried over."""
         tags_in = [

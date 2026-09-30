@@ -324,6 +324,7 @@ class StackManager:
         user_tags: dict[str, str] | None = None,
         *,
         lambda_version: str | None = None,
+        wait: bool = False,
     ) -> bool:
         """
         Ensure stack has current discovery and version tags.
@@ -346,9 +347,16 @@ class StackManager:
             user_tags: Optional user-defined tags to include
             lambda_version: Value for the ``zae-limiter:lambda-version`` tag;
                 None keeps the stack's current value
+            wait: Wait for the stack update to finish. ``UpdateStack`` only
+                starts the update, so without this a later rollback is not
+                reported
 
         Returns:
             True if tags were added/updated, False if already current
+
+        Raises:
+            StackOperationError: If ``wait`` is set and the update fails or
+                rolls back
         """
         client = await self._get_client()
 
@@ -359,6 +367,12 @@ class StackManager:
                 return False
 
             current_tags = {tag["Key"]: tag["Value"] for tag in stacks[0].get("Tags", [])}
+            # update_stack resets any parameter not named to its template
+            # default, so every current one is passed through unchanged.
+            previous_parameters = [
+                {"ParameterKey": p["ParameterKey"], "UsePreviousValue": True}
+                for p in stacks[0].get("Parameters", [])
+            ]
         except ClientError:
             return False
 
@@ -384,6 +398,7 @@ class StackManager:
             await client.update_stack(
                 StackName=self.stack_name,
                 UsePreviousTemplate=True,
+                Parameters=previous_parameters,
                 Tags=new_tags,
                 Capabilities=["CAPABILITY_NAMED_IAM"],
             )
@@ -392,6 +407,16 @@ class StackManager:
             if "No updates" in str(e):
                 return False
             raise
+
+        if wait:
+            waiter = client.get_waiter("stack_update_complete")
+            try:
+                await waiter.wait(StackName=self.stack_name)
+            except Exception as e:
+                raise StackOperationError(
+                    stack_name=self.stack_name,
+                    reason=f"Stack tag update failed: {e}",
+                ) from e
 
         return True
 

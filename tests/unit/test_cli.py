@@ -1901,7 +1901,7 @@ class TestUpgradeEnsureTags:
 
         assert result.exit_code == 0
         # Both Lambdas were pushed, so the stack may claim this version for them.
-        mock_manager.ensure_tags.assert_called_once_with(lambda_version="1.1.0")
+        mock_manager.ensure_tags.assert_called_once_with(lambda_version="1.1.0", wait=True)
         assert "Stack tags updated" in result.output
 
     @patch("zae_limiter.__version__", "1.1.0")

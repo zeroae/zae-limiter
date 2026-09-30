@@ -657,10 +657,8 @@ class TestVersionManagementCodePaths:
             await repo.close()
 
     @pytest.mark.asyncio
-    async def test_perform_lambda_update_refreshes_stack_tags(self, mock_dynamodb):
-        """The stack's version tags follow the pushed code, and a tag failure is non-fatal."""
-        from zae_limiter import __version__
-
+    async def test_perform_lambda_update_does_not_touch_stack_tags(self, mock_dynamodb):
+        """Auto-update runs in application code and must not start a stack update."""
         repo = await _create_table("test-lambda-update-tags")
         try:
             mock_manager = AsyncMock()
@@ -674,10 +672,7 @@ class TestVersionManagementCodePaths:
                 return_value=mock_manager,
             ):
                 await repo._perform_lambda_update()
-                mock_manager.ensure_tags.assert_awaited_once_with(lambda_version=__version__)
-
-                mock_manager.ensure_tags.side_effect = RuntimeError("AccessDenied")
-                await repo._perform_lambda_update()  # must not raise
+                mock_manager.ensure_tags.assert_not_called()
         finally:
             await repo.close()
 
