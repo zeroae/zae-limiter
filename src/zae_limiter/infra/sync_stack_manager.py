@@ -30,6 +30,10 @@ MANAGED_BY_TAG_KEY = "ManagedBy"
 MANAGED_BY_TAG_VALUE = "zae-limiter"
 NAME_TAG_KEY = f"{VERSION_TAG_PREFIX}name"
 TYPE_TAG_KEY = f"{VERSION_TAG_PREFIX}type"
+_VERSION_TAG_KEYS = (VERSION_TAG_KEY, SCHEMA_VERSION_TAG_KEY, LAMBDA_VERSION_TAG_KEY)
+MAX_STACK_TAGS = 50
+TAG_UPDATE_WAIT_SECONDS = 900
+_TAG_UPDATE_WAIT_DELAY = 10
 
 
 def lambda_function_exists(
@@ -287,20 +291,30 @@ class SyncStackManager:
         self,
         user_tags: dict[str, str] | None = None,
         *,
+        refresh_versions: bool = False,
         lambda_version: str | None = None,
         wait: bool = False,
     ) -> bool:
         """
-        Ensure stack has current discovery and version tags.
+        Ensure stack has discovery tags, and optionally current version tags.
 
-        Checks the ``ManagedBy``, ``zae-limiter:name``, ``zae-limiter:version``
-        and ``zae-limiter:schema-version`` tags and updates the stack tags via
-        CloudFormation when any is missing or stale. CloudFormation propagates
-        stack tags to the table and Lambda functions, so this is what keeps
-        their ``zae-limiter:version`` tags current after an upgrade.
+        By default only the discovery tags matter: when ``ManagedBy`` and
+        ``zae-limiter:name`` are present nothing is written, and when they are
+        missing they are added without touching the version tags. This is the
+        mode ``create_stack`` uses on an existing stack, so ``deploy``,
+        ``builder().build()`` and ``open()`` never start a stack update just
+        because the client version differs, and an older client never
+        rewrites ``zae-limiter:version`` downwards.
+
+        With ``refresh_versions`` (CLI ``upgrade``), ``zae-limiter:version``
+        and ``zae-limiter:schema-version`` are also compared and moved to this
+        build's values. CloudFormation propagates stack tags to the table and
+        Lambda functions, so this is what keeps their ``zae-limiter:version``
+        tags current after an upgrade.
 
         ``update_stack`` replaces the whole tag set, so tags already on the
-        stack (user-defined ones included) are carried over.
+        stack (user-defined ones included) are carried over, and every stack
+        parameter is passed through with ``UsePreviousValue``.
 
         ``zae-limiter:lambda-version`` claims what the functions run, so it is
         only moved when the caller has pushed (or proven absent) every
@@ -309,18 +323,21 @@ class SyncStackManager:
 
         Args:
             user_tags: Optional user-defined tags to include
-            lambda_version: Value for the ``zae-limiter:lambda-version`` tag;
-                None keeps the stack's current value
-            wait: Wait for the stack update to finish. ``UpdateStack`` only
-                starts the update, so without this a later rollback is not
-                reported
+            refresh_versions: Also bring the version tags up to date
+            lambda_version: Value for the ``zae-limiter:lambda-version`` tag
+                (only with ``refresh_versions``); None keeps the stack's
+                current value
+            wait: Wait for the stack update to finish (at most
+                ``TAG_UPDATE_WAIT_SECONDS``). ``UpdateStack`` only starts the
+                update, so without this a later rollback is not reported
 
         Returns:
             True if tags were added/updated, False if already current
 
         Raises:
-            StackOperationError: If ``wait`` is set and the update fails or
-                rolls back
+            StackOperationError: If the tag set would exceed CloudFormation's
+                limit of ``MAX_STACK_TAGS``, or if ``wait`` is set and the
+                update fails, rolls back or does not finish in time
         """
         client = self._get_client()
         try:
@@ -338,15 +355,34 @@ class SyncStackManager:
         settable = {k: v for k, v in current_tags.items() if not k.startswith("aws:")}
         desired = dict(settable)
         managed = {t["Key"]: t["Value"] for t in self._get_all_tags(user_tags)}
-        if lambda_version is not None:
-            managed[LAMBDA_VERSION_TAG_KEY] = lambda_version
-        elif LAMBDA_VERSION_TAG_KEY in current_tags:
-            managed[LAMBDA_VERSION_TAG_KEY] = current_tags[LAMBDA_VERSION_TAG_KEY]
+        if refresh_versions:
+            if lambda_version is not None:
+                managed[LAMBDA_VERSION_TAG_KEY] = lambda_version
+            elif LAMBDA_VERSION_TAG_KEY in current_tags:
+                managed[LAMBDA_VERSION_TAG_KEY] = current_tags[LAMBDA_VERSION_TAG_KEY]
+            else:
+                managed.pop(LAMBDA_VERSION_TAG_KEY, None)
         else:
-            managed.pop(LAMBDA_VERSION_TAG_KEY, None)
+            from ..naming import PREFIX
+
+            user_name = self.stack_name
+            if user_name.startswith(PREFIX):
+                user_name = user_name[len(PREFIX) :]
+            if (
+                current_tags.get(MANAGED_BY_TAG_KEY) == MANAGED_BY_TAG_VALUE
+                and current_tags.get(NAME_TAG_KEY) == user_name
+            ):
+                return False
+            for key in _VERSION_TAG_KEYS:
+                managed.pop(key, None)
         desired.update(managed)
         if desired == settable:
             return False
+        if len(desired) > MAX_STACK_TAGS:
+            raise StackOperationError(
+                stack_name=self.stack_name,
+                reason=f"Stack tags not updated: {len(desired)} tags would exceed CloudFormation's limit of {MAX_STACK_TAGS}",
+            )
         new_tags = [{"Key": k, "Value": v} for k, v in desired.items()]
         try:
             client.update_stack(
@@ -363,7 +399,13 @@ class SyncStackManager:
         if wait:
             waiter = client.get_waiter("stack_update_complete")
             try:
-                waiter.wait(StackName=self.stack_name)
+                waiter.wait(
+                    StackName=self.stack_name,
+                    WaiterConfig={
+                        "Delay": _TAG_UPDATE_WAIT_DELAY,
+                        "MaxAttempts": TAG_UPDATE_WAIT_SECONDS // _TAG_UPDATE_WAIT_DELAY,
+                    },
+                )
             except Exception as e:
                 raise StackOperationError(
                     stack_name=self.stack_name, reason=f"Stack tag update failed: {e}"

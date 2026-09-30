@@ -1096,7 +1096,7 @@ class TestEnsureTags:
             mock_get_client.return_value = client
 
             manager = StackManager(stack_name="my-app", region="us-east-1")
-            result = await manager.ensure_tags(lambda_version=__version__)
+            result = await manager.ensure_tags(refresh_versions=True, lambda_version=__version__)
 
         assert result is True
         tags = {t["Key"]: t["Value"] for t in client.update_stack.call_args[1]["Tags"]}
@@ -1119,7 +1119,7 @@ class TestEnsureTags:
             mock_get_client.return_value = client
 
             manager = StackManager(stack_name="my-app", region="us-east-1")
-            assert await manager.ensure_tags() is True
+            assert await manager.ensure_tags(refresh_versions=True) is True
 
         tags = {t["Key"]: t["Value"] for t in client.update_stack.call_args[1]["Tags"]}
         assert tags["zae-limiter:lambda-version"] == "0.13.0"
@@ -1136,7 +1136,7 @@ class TestEnsureTags:
             mock_get_client.return_value = client
 
             manager = StackManager(stack_name="my-app", region="us-east-1")
-            await manager.ensure_tags()
+            await manager.ensure_tags(refresh_versions=True)
 
         tags = {t["Key"]: t["Value"] for t in client.update_stack.call_args[1]["Tags"]}
         assert "zae-limiter:lambda-version" not in tags
@@ -1155,10 +1155,13 @@ class TestEnsureTags:
             manager = StackManager(stack_name="my-app", region="us-east-1")
             await manager.ensure_tags()
 
-        assert client.update_stack.call_args[1]["Parameters"] == [
+        kwargs = client.update_stack.call_args[1]
+        assert kwargs["Parameters"] == [
             {"ParameterKey": "EnableAggregator", "UsePreviousValue": True},
             {"ParameterKey": "PermissionBoundary", "UsePreviousValue": True},
         ]
+        assert kwargs["UsePreviousTemplate"] is True
+        assert kwargs["Capabilities"] == ["CAPABILITY_NAMED_IAM"]
 
     @pytest.mark.asyncio
     async def test_wait_blocks_on_update_complete(self) -> None:
@@ -1175,11 +1178,90 @@ class TestEnsureTags:
             manager = StackManager(stack_name="my-app", region="us-east-1")
             assert await manager.ensure_tags(wait=True) is True
             client.get_waiter.assert_called_once_with("stack_update_complete")
-            waiter.wait.assert_called_once_with(StackName="my-app")
+            waiter.wait.assert_called_once_with(
+                StackName="my-app",
+                WaiterConfig={"Delay": 10, "MaxAttempts": 90},
+            )
 
             waiter.wait.side_effect = RuntimeError("UPDATE_ROLLBACK_COMPLETE")
             with pytest.raises(StackOperationError):
                 await manager.ensure_tags(wait=True)
+
+    @pytest.mark.asyncio
+    async def test_default_leaves_stale_version_tags_alone(self) -> None:
+        """Without refresh_versions, present discovery tags mean no update at all."""
+        tags_in = [
+            {"Key": "ManagedBy", "Value": "zae-limiter"},
+            {"Key": "zae-limiter:name", "Value": "my-app"},
+            {"Key": "zae-limiter:version", "Value": "9.9.9"},
+            {"Key": "zae-limiter:lambda-version", "Value": "9.9.9"},
+        ]
+        with patch.object(StackManager, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            client = self._stack_with(tags_in)
+            mock_get_client.return_value = client
+
+            manager = StackManager(stack_name="my-app", region="us-east-1")
+            assert await manager.ensure_tags() is False
+
+        client.update_stack.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_default_adds_discovery_tags_without_touching_versions(self) -> None:
+        """Missing discovery tags are added; version tags keep whatever the stack has."""
+        tags_in = [
+            {"Key": "zae-limiter:version", "Value": "9.9.9"},
+            {"Key": "zae-limiter:schema-version", "Value": "9.0.0"},
+        ]
+        with patch.object(StackManager, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            client = self._stack_with(tags_in)
+            mock_get_client.return_value = client
+
+            manager = StackManager(stack_name="my-app", region="us-east-1")
+            assert await manager.ensure_tags() is True
+
+        tags = {t["Key"]: t["Value"] for t in client.update_stack.call_args[1]["Tags"]}
+        assert tags["ManagedBy"] == "zae-limiter"
+        assert tags["zae-limiter:name"] == "my-app"
+        assert tags["zae-limiter:version"] == "9.9.9"
+        assert tags["zae-limiter:schema-version"] == "9.0.0"
+        assert "zae-limiter:lambda-version" not in tags
+
+    @pytest.mark.asyncio
+    async def test_refuses_more_than_fifty_tags(self) -> None:
+        """UpdateStack takes at most 50 tags; above that nothing is sent."""
+        from zae_limiter.exceptions import StackOperationError
+
+        tags_in = [{"Key": f"user-{i}", "Value": "x"} for i in range(48)]
+        with patch.object(StackManager, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            client = self._stack_with(tags_in)
+            mock_get_client.return_value = client
+
+            manager = StackManager(stack_name="my-app", region="us-east-1")
+            with pytest.raises(StackOperationError, match="limit of 50"):
+                await manager.ensure_tags(refresh_versions=True)
+
+        client.update_stack.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_create_stack_on_existing_stack_keeps_version_tags(self) -> None:
+        """deploy/build()/open() on an existing stack never rewrite its version tags."""
+        tags_in = [
+            {"Key": "ManagedBy", "Value": "zae-limiter"},
+            {"Key": "zae-limiter:name", "Value": "my-app"},
+            {"Key": "zae-limiter:version", "Value": "9.9.9"},
+            {"Key": "zae-limiter:lambda-version", "Value": "9.9.9"},
+        ]
+        with patch.object(StackManager, "_get_client", new_callable=AsyncMock) as mock_get_client:
+            client = self._stack_with(tags_in)
+            client.describe_stacks.return_value["Stacks"][0]["StackStatus"] = "UPDATE_COMPLETE"
+            mock_get_client.return_value = client
+
+            manager = StackManager(stack_name="my-app", region="us-east-1")
+            result = await manager.create_stack(wait=False)
+
+        assert result["status"] == "UPDATE_COMPLETE"
+        client.update_stack.assert_not_called()
+        client.create_stack.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_preserves_existing_user_tags(self) -> None:
@@ -1196,7 +1278,7 @@ class TestEnsureTags:
             mock_get_client.return_value = client
 
             manager = StackManager(stack_name="my-app", region="us-east-1")
-            await manager.ensure_tags()
+            await manager.ensure_tags(refresh_versions=True)
 
         tags = {t["Key"]: t["Value"] for t in client.update_stack.call_args[1]["Tags"]}
         assert tags["team"] == "platform"
