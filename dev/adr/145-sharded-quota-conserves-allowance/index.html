@@ -3752,7 +3752,7 @@
 
 
 <h1 id="adr-145-a-sharded-quota-conserves-its-allowance">ADR-145: A sharded quota conserves its allowance<a class="headerlink" href="#adr-145-a-sharded-quota-conserves-its-allowance" title="Permanent link">&para;</a></h1>
-<p><strong>Status:</strong> Proposed
+<p><strong>Status:</strong> Accepted
 <strong>Date:</strong> 2026-09-28
 <strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/637">#637</a>, <a href="https://github.com/zeroae/zae-limiter/issues/642">#642</a>
 <strong>Related:</strong> ADR-133, ADR-134, ADR-137, <a href="../140-duration-window-shard-coherence/">ADR-140</a>, <a href="https://github.com/zeroae/zae-limiter/issues/587">#587</a>, <a href="https://github.com/zeroae/zae-limiter/issues/477">#477</a></p>
@@ -3774,7 +3774,8 @@ sibling still holds; the two look identical in the tokens.</p>
 <p>Every quota shard must record the shard count its current-period grant was sized at,
 and a new or seeded quota shard must be funded by an atomic move from the
 current-period sibling whose grant covers its slot, receiving fresh allowance only
-when no such sibling exists.</p>
+when no such sibling exists. This supersedes ADR-133's sizing and create-race clauses
+for quota limits; ADR-133 still governs dripping limits.</p>
 <h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>
 <p><strong>Positive:</strong>
 - A doubling neither creates nor destroys quota allowance: per period, admitted plus

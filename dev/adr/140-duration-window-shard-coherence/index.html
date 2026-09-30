@@ -3842,7 +3842,7 @@
 
 
 <h1 id="adr-140-shards-of-one-entity-share-one-duration-window">ADR-140: Shards of one entity share one duration window<a class="headerlink" href="#adr-140-shards-of-one-entity-share-one-duration-window" title="Permanent link">&para;</a></h1>
-<p><strong>Status:</strong> Proposed
+<p><strong>Status:</strong> Accepted
 <strong>Date:</strong> 2026-09-27
 <strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/624">#624</a>, <a href="https://github.com/zeroae/zae-limiter/issues/625">#625</a>, <a href="https://github.com/zeroae/zae-limiter/issues/635">#635</a>, <a href="https://github.com/zeroae/zae-limiter/issues/640">#640</a>
 <strong>Related:</strong> <a href="../139-duration-reset-windows/">ADR-139</a>, <a href="../142-hide-reset-after-config/">ADR-142</a>, ADR-133, ADR-134, <a href="https://github.com/zeroae/zae-limiter/issues/597">#597</a></p>
@@ -3865,17 +3865,17 @@ And a writer whose clock runs behind can move a shard's last-refill stamp <code>
 which the shard would believe a window it already applied is new (#635). Pre-v0.15 clients
 writing windowed buckets (<a href="../142-hide-reset-after-config/">ADR-142</a>) stamp <code>rf</code> from their own
 clock and drop the fast path's <code>vu</code> gate, so <code>rf</code> cannot record a reset, and a shard can spend an
-ended window's leftover inside the next one before its reset. Mechanism, writer rows and costs
-are in CLAUDE.md "Session Quotas" and the DynamoDB writer table.</p>
+ended window's leftover inside the next one before its reset (mechanism: CLAUDE.md).</p>
 <h2 id="decision">Decision<a class="headerlink" href="#decision" title="Permanent link">&para;</a></h2>
 <p>Every shard of an entity must converge on one window start: the opener must propagate only the
 start and a snapshot <code>wtc</code> of the sibling's consumption counter, never tokens, and only to
 siblings whose own window had ended and that carry a window-applied marker <code>wa</code> or an <code>rf</code> older
 than the new start; each shard must record in <code>wa</code> the start its balance reflects, must reset
-when its start is newer than <code>wa</code> (than <code>rf</code> where no <code>wa</code> exists) to its share less the
-consumption since <code>wtc</code> and never above its share, and no materialising writer may move <code>rf</code>
-backward. A shard created mid-window must join shard 0's live window, read strongly consistently,
-and may open and propagate its own only when shard 0's window has ended or it has none.</p>
+when its start is newer than <code>wa</code> (than <code>rf</code> where no <code>wa</code> exists) to its current share,
+recorded as its grant (<a href="../145-sharded-quota-conserves-allowance/">ADR-145</a>), less the consumption
+since <code>wtc</code> and never above that share, and no materialising writer may move <code>rf</code> backward. A
+shard created mid-window must join shard 0's live window, read strongly consistently, and may
+open and propagate its own only when shard 0's window has ended or it has none.</p>
 <h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>
 <p><strong>Positive:</strong>
 - <code>check_availability</code> and <code>RateLimitExceeded</code> can report one honest reset instant per entity.

@@ -3776,7 +3776,7 @@
 
 
 <h1 id="adr-141-storing-a-reset_after-limit-is-gated-on-reader-versions">ADR-141: Storing a reset_after limit is gated on reader versions<a class="headerlink" href="#adr-141-storing-a-reset_after-limit-is-gated-on-reader-versions" title="Permanent link">&para;</a></h1>
-<p><strong>Status:</strong> Proposed
+<p><strong>Status:</strong> Accepted
 <strong>Date:</strong> 2026-09-27
 <strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/638">#638</a>
 <strong>Related:</strong> <a href="../139-duration-reset-windows/">ADR-139</a>, ADR-137, ADR-009, <a href="https://github.com/zeroae/zae-limiter/issues/640">#640</a>, <a href="https://github.com/zeroae/zae-limiter/issues/644">#644</a></p>
@@ -3838,7 +3838,9 @@ aggregator.</p>
 <p>Rejected because: the function does the reading, and the template creates it only when a role is
 also available.</p>
 <h3 id="hide-the-configuration-from-pre-v015-readers">Hide the configuration from pre-v0.15 readers<a class="headerlink" href="#hide-the-configuration-from-pre-v015-readers" title="Permanent link">&para;</a></h3>
-<p>Decided separately in <a href="../142-hide-reset-after-config/">ADR-142</a>.</p>
+<p>Rejected as a replacement because: it hides the limit from old clients but cannot keep an old
+aggregator from cloning a bucket that carries one; adopted alongside this gate in
+<a href="../142-hide-reset-after-config/">ADR-142</a>.</p>
 
 
 

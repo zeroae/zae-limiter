@@ -3826,6 +3826,16 @@ below, each of which owns one architectural choice. Those records stay immutable
 <td><a href="../135-scheduled-limits/">ADR-135</a></td>
 <td>Per-limit <code>sched</code>/<code>rsched</code>, with one <code>sched_tz</code> hoisted per item</td>
 </tr>
+<tr>
+<td>Duration window on config</td>
+<td><a href="../139-duration-reset-windows/">ADR-139</a></td>
+<td>Per-limit <code>rsa</code> (<code>reset_after</code> seconds), the alternative to <code>rsched</code></td>
+</tr>
+<tr>
+<td>Hidden session-limit config</td>
+<td><a href="../142-hide-reset-after-config/">ADR-142</a></td>
+<td>A <code>reset_after</code> limit's config is stored under <code>w_</code>, which pre-v0.15 readers do not scan</td>
+</tr>
 </tbody>
 </table>
 <h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>

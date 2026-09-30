@@ -3732,9 +3732,16 @@
 
 
 <h1 id="adr-137-a-limit-drips-or-resets-never-both">ADR-137: A limit drips or resets, never both<a class="headerlink" href="#adr-137-a-limit-drips-or-resets-never-both" title="Permanent link">&para;</a></h1>
-<p><strong>Status:</strong> Accepted
+<p><strong>Status:</strong> Accepted (zero-rate clause partially superseded by <a href="../139-duration-reset-windows/">ADR-139</a>)
 <strong>Date:</strong> 2026-09-15
 <strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/222">#222</a></p>
+<blockquote>
+<p><strong>Partially superseded by <a href="../139-duration-reset-windows/">ADR-139</a>:</strong> a <code>refill_amount</code> of zero is
+accepted when exactly one of <code>reset_schedule</code> or <code>reset_after</code> is present, not <code>reset_schedule</code>
+alone. A limit still recovers by drip or by reset, never both and never neither; a duration
+window is the second kind of reset. The same reading applies to ADR-136's "a limit that neither
+drips nor resets". The rest of this decision is unchanged.</p>
+</blockquote>
 <h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
 <p>The token bucket refills continuously and in proportion to elapsed time, so any positive
 refill rate returns tokens constantly. <code>reset_schedule</code> (design §3.6) instead sets the balance

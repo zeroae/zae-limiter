@@ -3776,9 +3776,17 @@
 
 
 <h1 id="adr-133-client-side-shard-bucket-creation">ADR-133: Client-Side Shard Bucket Creation<a class="headerlink" href="#adr-133-client-side-shard-bucket-creation" title="Permanent link">&para;</a></h1>
-<p><strong>Status:</strong> Accepted
+<p><strong>Status:</strong> Accepted (partially superseded by <a href="../145-sharded-quota-conserves-allowance/">ADR-145</a> for quota limits)
 <strong>Date:</strong> 2026-09-11
 <strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/439">#439</a></p>
+<blockquote>
+<p><strong>Partially superseded by <a href="../145-sharded-quota-conserves-allowance/">ADR-145</a>:</strong> this record's token
+sizing (<code>capacity_milli // shard_count</code>) and its create-race routing (consumption-only retry)
+apply to <strong>dripping</strong> limits only. A quota limit's starting tokens, its per-shard ceiling
+(<code>C // gc</code>) and a lost create race that carries a move follow ADR-145; ADR-134's per-shard-share
+wording reads the same way. Shard targeting, the undivided <code>wcu</code> and the
+<code>attribute_not_exists(PK)</code> guard still apply to every bucket.</p>
+</blockquote>
 <h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
 <p>GHSA-76rv-2r9v-c5m6 mitigates DynamoDB hot partitions with pre-shard buckets: every
 bucket carries a reserved <code>wcu</code> limit, and when a speculative write exhausts it the client

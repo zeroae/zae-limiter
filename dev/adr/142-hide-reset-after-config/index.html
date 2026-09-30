@@ -3776,7 +3776,7 @@
 
 
 <h1 id="adr-142-a-reset_after-limits-config-is-hidden-from-pre-v015-readers">ADR-142: A reset_after limit's config is hidden from pre-v0.15 readers<a class="headerlink" href="#adr-142-a-reset_after-limits-config-is-hidden-from-pre-v015-readers" title="Permanent link">&para;</a></h1>
-<p><strong>Status:</strong> Proposed
+<p><strong>Status:</strong> Accepted
 <strong>Date:</strong> 2026-09-27
 <strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/640">#640</a>
 <strong>Related:</strong> <a href="../139-duration-reset-windows/">ADR-139</a>, <a href="../140-duration-window-shard-coherence/">ADR-140</a>, <a href="../141-reset-after-version-gate/">ADR-141</a>, ADR-137, ADR-114, <a href="https://github.com/zeroae/zae-limiter/issues/638">#638</a></p>
@@ -3800,7 +3800,7 @@ it. The storage mapping, readers and verification against
 v0.14.0 are in #640 and CLAUDE.md "Hidden config (#640)".</p>
 <h2 id="decision">Decision<a class="headerlink" href="#decision" title="Permanent link">&para;</a></h2>
 <p>A <code>reset_after</code> limit's config attributes must be stored under the <code>w_</code> prefix (<code>w_{name}_*</code>),
-which pre-v0.15 readers do not read, and every v0.15 config reader must read both prefixes and
+which pre-v0.15 readers do not read, and every config reader from v0.15 on must read both prefixes and
 must treat a name stored under both, or a <code>w_</code> limit without its window length, as a corrupt item.</p>
 <p><strong>Owner decision (2026-09-27):</strong> accepted that under <code>on_unavailable="block"</code> a pre-v0.15 client
 enforces every other limit and skips only the session limit, rather than refusing the level.</p>
