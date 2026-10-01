@@ -820,6 +820,18 @@ class TestGetAllTags:
         assert tag_dict["zae-limiter:name"] == "my-app"
 
 
+def _current_version_tags(lambda_version: str | None = None) -> list[dict[str, str]]:
+    """Version tags as a freshly created stack would carry them."""
+    from zae_limiter import __version__
+    from zae_limiter.version import get_schema_version
+
+    return [
+        {"Key": "zae-limiter:version", "Value": __version__},
+        {"Key": "zae-limiter:schema-version", "Value": get_schema_version()},
+        {"Key": "zae-limiter:lambda-version", "Value": lambda_version or __version__},
+    ]
+
+
 class TestEnsureTags:
     """Test ensure_tags method for auto-tagging existing stacks."""
 
@@ -836,6 +848,8 @@ class TestEnsureTags:
                             "Tags": [
                                 {"Key": "ManagedBy", "Value": "zae-limiter"},
                                 {"Key": "zae-limiter:name", "Value": "my-app"},
+                                {"Key": "zae-limiter:type", "Value": "limiter"},
+                                *_current_version_tags(),
                             ]
                         }
                     ]
@@ -859,15 +873,237 @@ class TestEnsureTags:
                 }
             )
             mock_client.update_stack = MagicMock()
+            mock_client.get_template = MagicMock(return_value={"TemplateBody": "Resources: {}\n"})
             mock_get_client.return_value = mock_client
             manager = SyncStackManager(stack_name="my-app", region="us-east-1")
             result = manager.ensure_tags()
             assert result is True
             mock_client.update_stack.assert_called_once()
             call_kwargs = mock_client.update_stack.call_args[1]
-            assert call_kwargs["UsePreviousTemplate"] is True
+            assert call_kwargs["TemplateBody"] == "Resources: {}\n"
+            assert "UsePreviousTemplate" not in call_kwargs
             tag_dict = {t["Key"]: t["Value"] for t in call_kwargs["Tags"]}
             assert tag_dict["ManagedBy"] == "zae-limiter"
+
+    @staticmethod
+    def _stack_with(tags: list[dict[str, str]]) -> MagicMock:
+        client = MagicMock()
+        client.describe_stacks = MagicMock(return_value={"Stacks": [{"Tags": tags}]})
+        client.update_stack = MagicMock()
+        client.get_template = MagicMock(return_value={"TemplateBody": "Resources: {}\n"})
+        return client
+
+    def test_refreshes_stale_version_tags(self) -> None:
+        """A stack tagged by an older release is re-tagged with this build's versions."""
+        from zae_limiter import __version__
+
+        stale = [
+            {"Key": "ManagedBy", "Value": "zae-limiter"},
+            {"Key": "zae-limiter:name", "Value": "my-app"},
+            {"Key": "zae-limiter:type", "Value": "limiter"},
+            {"Key": "zae-limiter:version", "Value": "0.13.0"},
+            {"Key": "zae-limiter:schema-version", "Value": "0.0.1"},
+            {"Key": "zae-limiter:lambda-version", "Value": "0.13.0"},
+        ]
+        with patch.object(
+            SyncStackManager, "_get_client", new_callable=MagicMock
+        ) as mock_get_client:
+            client = self._stack_with(stale)
+            mock_get_client.return_value = client
+            manager = SyncStackManager(stack_name="my-app", region="us-east-1")
+            result = manager.ensure_tags(refresh_versions=True, lambda_version=__version__)
+        assert result is True
+        tags = {t["Key"]: t["Value"] for t in client.update_stack.call_args[1]["Tags"]}
+        assert tags["zae-limiter:version"] == __version__
+        assert tags["zae-limiter:lambda-version"] == __version__
+        assert tags["zae-limiter:schema-version"] != "0.0.1"
+
+    def test_keeps_lambda_version_unless_told(self) -> None:
+        """Without lambda_version the stack's claim about its functions is not moved."""
+        tags_in = [
+            {"Key": "ManagedBy", "Value": "zae-limiter"},
+            {"Key": "zae-limiter:name", "Value": "my-app"},
+            {"Key": "zae-limiter:type", "Value": "limiter"},
+            {"Key": "zae-limiter:version", "Value": "0.13.0"},
+            {"Key": "zae-limiter:lambda-version", "Value": "0.13.0"},
+        ]
+        with patch.object(
+            SyncStackManager, "_get_client", new_callable=MagicMock
+        ) as mock_get_client:
+            client = self._stack_with(tags_in)
+            mock_get_client.return_value = client
+            manager = SyncStackManager(stack_name="my-app", region="us-east-1")
+            assert manager.ensure_tags(refresh_versions=True) is True
+        tags = {t["Key"]: t["Value"] for t in client.update_stack.call_args[1]["Tags"]}
+        assert tags["zae-limiter:lambda-version"] == "0.13.0"
+
+    def test_does_not_invent_lambda_version(self) -> None:
+        """A stack with no lambda-version tag does not gain one unless the caller supplies it."""
+        tags_in = [
+            {"Key": "ManagedBy", "Value": "zae-limiter"},
+            {"Key": "zae-limiter:name", "Value": "my-app"},
+        ]
+        with patch.object(
+            SyncStackManager, "_get_client", new_callable=MagicMock
+        ) as mock_get_client:
+            client = self._stack_with(tags_in)
+            mock_get_client.return_value = client
+            manager = SyncStackManager(stack_name="my-app", region="us-east-1")
+            manager.ensure_tags(refresh_versions=True)
+        tags = {t["Key"]: t["Value"] for t in client.update_stack.call_args[1]["Tags"]}
+        assert "zae-limiter:lambda-version" not in tags
+
+    def test_passes_previous_parameter_values(self) -> None:
+        """Every current parameter is carried over, not reset to its template default."""
+        with patch.object(
+            SyncStackManager, "_get_client", new_callable=MagicMock
+        ) as mock_get_client:
+            client = self._stack_with([{"Key": "ManagedBy", "Value": "zae-limiter"}])
+            client.describe_stacks.return_value["Stacks"][0]["Parameters"] = [
+                {"ParameterKey": "EnableAggregator", "ParameterValue": "false"},
+                {"ParameterKey": "PermissionBoundary", "ParameterValue": "arn:pb"},
+            ]
+            mock_get_client.return_value = client
+            manager = SyncStackManager(stack_name="my-app", region="us-east-1")
+            manager.ensure_tags()
+        kwargs = client.update_stack.call_args[1]
+        assert kwargs["Parameters"] == [
+            {"ParameterKey": "EnableAggregator", "UsePreviousValue": True},
+            {"ParameterKey": "PermissionBoundary", "UsePreviousValue": True},
+        ]
+        client.get_template.assert_called_once_with(StackName="my-app", TemplateStage="Original")
+        assert kwargs["TemplateBody"] == "Resources: {}\n"
+        assert "UsePreviousTemplate" not in kwargs
+        assert kwargs["Capabilities"] == ["CAPABILITY_NAMED_IAM"]
+
+    def test_wait_blocks_on_update_complete(self) -> None:
+        """wait=True waits on stack_update_complete; a failed update is surfaced."""
+        from zae_limiter.exceptions import StackOperationError
+
+        with patch.object(
+            SyncStackManager, "_get_client", new_callable=MagicMock
+        ) as mock_get_client:
+            client = self._stack_with([{"Key": "ManagedBy", "Value": "zae-limiter"}])
+            waiter = MagicMock()
+            waiter.wait = MagicMock()
+            client.get_waiter = MagicMock(return_value=waiter)
+            mock_get_client.return_value = client
+            manager = SyncStackManager(stack_name="my-app", region="us-east-1")
+            assert manager.ensure_tags(wait=True) is True
+            client.get_waiter.assert_called_once_with("stack_update_complete")
+            waiter.wait.assert_called_once_with(
+                StackName="my-app", WaiterConfig={"Delay": 10, "MaxAttempts": 90}
+            )
+            waiter.wait.side_effect = RuntimeError("UPDATE_ROLLBACK_COMPLETE")
+            with pytest.raises(StackOperationError):
+                manager.ensure_tags(wait=True)
+
+    def test_default_leaves_stale_version_tags_alone(self) -> None:
+        """Without refresh_versions, present discovery tags mean no update at all."""
+        tags_in = [
+            {"Key": "ManagedBy", "Value": "zae-limiter"},
+            {"Key": "zae-limiter:name", "Value": "my-app"},
+            {"Key": "zae-limiter:version", "Value": "9.9.9"},
+            {"Key": "zae-limiter:lambda-version", "Value": "9.9.9"},
+        ]
+        with patch.object(
+            SyncStackManager, "_get_client", new_callable=MagicMock
+        ) as mock_get_client:
+            client = self._stack_with(tags_in)
+            mock_get_client.return_value = client
+            manager = SyncStackManager(stack_name="my-app", region="us-east-1")
+            assert manager.ensure_tags() is False
+        client.update_stack.assert_not_called()
+
+    def test_default_adds_discovery_tags_without_touching_versions(self) -> None:
+        """Missing discovery tags are added; version tags keep whatever the stack has."""
+        tags_in = [
+            {"Key": "zae-limiter:version", "Value": "9.9.9"},
+            {"Key": "zae-limiter:schema-version", "Value": "9.0.0"},
+        ]
+        with patch.object(
+            SyncStackManager, "_get_client", new_callable=MagicMock
+        ) as mock_get_client:
+            client = self._stack_with(tags_in)
+            mock_get_client.return_value = client
+            manager = SyncStackManager(stack_name="my-app", region="us-east-1")
+            assert manager.ensure_tags() is True
+        tags = {t["Key"]: t["Value"] for t in client.update_stack.call_args[1]["Tags"]}
+        assert tags["ManagedBy"] == "zae-limiter"
+        assert tags["zae-limiter:name"] == "my-app"
+        assert tags["zae-limiter:version"] == "9.9.9"
+        assert tags["zae-limiter:schema-version"] == "9.0.0"
+        assert "zae-limiter:lambda-version" not in tags
+
+    def test_refuses_more_than_fifty_tags(self) -> None:
+        """UpdateStack takes at most 50 tags; above that nothing is sent."""
+        from zae_limiter.exceptions import StackOperationError
+
+        tags_in = [{"Key": f"user-{i}", "Value": "x"} for i in range(48)]
+        with patch.object(
+            SyncStackManager, "_get_client", new_callable=MagicMock
+        ) as mock_get_client:
+            client = self._stack_with(tags_in)
+            mock_get_client.return_value = client
+            manager = SyncStackManager(stack_name="my-app", region="us-east-1")
+            with pytest.raises(StackOperationError, match="limit of 50"):
+                manager.ensure_tags(refresh_versions=True)
+        client.update_stack.assert_not_called()
+
+    def test_create_stack_on_existing_stack_keeps_version_tags(self) -> None:
+        """deploy/build()/open() on an existing stack never rewrite its version tags."""
+        tags_in = [
+            {"Key": "ManagedBy", "Value": "zae-limiter"},
+            {"Key": "zae-limiter:name", "Value": "my-app"},
+            {"Key": "zae-limiter:version", "Value": "9.9.9"},
+            {"Key": "zae-limiter:lambda-version", "Value": "9.9.9"},
+        ]
+        with patch.object(
+            SyncStackManager, "_get_client", new_callable=MagicMock
+        ) as mock_get_client:
+            client = self._stack_with(tags_in)
+            client.describe_stacks.return_value["Stacks"][0]["StackStatus"] = "UPDATE_COMPLETE"
+            mock_get_client.return_value = client
+            manager = SyncStackManager(stack_name="my-app", region="us-east-1")
+            result = manager.create_stack(wait=False)
+        assert result["status"] == "UPDATE_COMPLETE"
+        client.update_stack.assert_not_called()
+        client.create_stack.assert_not_called()
+
+    def test_resends_a_json_template_as_json(self) -> None:
+        """botocore parses a JSON template into a dict; it is sent back serialized."""
+        import json
+
+        with patch.object(
+            SyncStackManager, "_get_client", new_callable=MagicMock
+        ) as mock_get_client:
+            client = self._stack_with([{"Key": "ManagedBy", "Value": "zae-limiter"}])
+            client.get_template.return_value = {"TemplateBody": {"Resources": {}}}
+            mock_get_client.return_value = client
+            manager = SyncStackManager(stack_name="my-app", region="us-east-1")
+            assert manager.ensure_tags() is True
+        body = client.update_stack.call_args[1]["TemplateBody"]
+        assert json.loads(body) == {"Resources": {}}
+
+    def test_preserves_existing_user_tags(self) -> None:
+        """update_stack replaces the tag set, so tags already on the stack are carried over."""
+        tags_in = [
+            {"Key": "ManagedBy", "Value": "zae-limiter"},
+            {"Key": "zae-limiter:name", "Value": "my-app"},
+            {"Key": "zae-limiter:version", "Value": "0.13.0"},
+            {"Key": "team", "Value": "platform"},
+            {"Key": "aws:cloudformation:stack-name", "Value": "my-app"},
+        ]
+        with patch.object(
+            SyncStackManager, "_get_client", new_callable=MagicMock
+        ) as mock_get_client:
+            client = self._stack_with(tags_in)
+            mock_get_client.return_value = client
+            manager = SyncStackManager(stack_name="my-app", region="us-east-1")
+            manager.ensure_tags(refresh_versions=True)
+        tags = {t["Key"]: t["Value"] for t in client.update_stack.call_args[1]["Tags"]}
+        assert tags["team"] == "platform"
+        assert not any(k.startswith("aws:") for k in tags)
 
     def test_returns_false_on_describe_error(self) -> None:
         """ensure_tags returns False if describe_stacks fails."""
@@ -910,6 +1146,8 @@ class TestEnsureTags:
                             "Tags": [
                                 {"Key": "ManagedBy", "Value": "zae-limiter"},
                                 {"Key": "zae-limiter:name", "Value": "my-app"},
+                                {"Key": "zae-limiter:type", "Value": "limiter"},
+                                *_current_version_tags(),
                             ]
                         }
                     ]
@@ -927,6 +1165,7 @@ class TestEnsureTags:
         ) as mock_get_client:
             mock_client = MagicMock()
             mock_client.describe_stacks = MagicMock(return_value={"Stacks": [{"Tags": []}]})
+            mock_client.get_template = MagicMock(return_value={"TemplateBody": "Resources: {}\n"})
             mock_client.update_stack = MagicMock(
                 side_effect=ClientError(
                     {
@@ -950,6 +1189,7 @@ class TestEnsureTags:
         ) as mock_get_client:
             mock_client = MagicMock()
             mock_client.describe_stacks = MagicMock(return_value={"Stacks": [{"Tags": []}]})
+            mock_client.get_template = MagicMock(return_value={"TemplateBody": "Resources: {}\n"})
             mock_client.update_stack = MagicMock(
                 side_effect=ClientError(
                     {"Error": {"Code": "AccessDenied", "Message": "Not authorized"}}, "UpdateStack"

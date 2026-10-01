@@ -1900,8 +1900,11 @@ class TestUpgradeEnsureTags:
         )
 
         assert result.exit_code == 0
-        mock_manager.ensure_tags.assert_called_once()
-        assert "Discovery tags added" in result.output
+        # Both Lambdas were pushed, so the stack may claim this version for them.
+        mock_manager.ensure_tags.assert_called_once_with(
+            refresh_versions=True, lambda_version="1.1.0", wait=True
+        )
+        assert "Stack tags updated" in result.output
 
     @patch("zae_limiter.__version__", "1.1.0")
     @patch("zae_limiter.cli.StackManager")
@@ -1945,7 +1948,7 @@ class TestUpgradeEnsureTags:
         )
 
         assert result.exit_code == 0
-        assert "Tags already present" in result.output
+        assert "Tags already current" in result.output
 
     @patch("zae_limiter.__version__", "1.1.0")
     @patch("zae_limiter.cli.StackManager")
@@ -1991,6 +1994,9 @@ class TestUpgradeEnsureTags:
         assert result.exit_code == 0
         assert "Tag update failed" in result.output
         assert "Upgrade complete" in result.output
+        # A tag failure is cosmetic: the version record is still stamped.
+        mock_repo.set_version_record.assert_awaited_once()
+        assert mock_repo.set_version_record.call_args.kwargs["lambda_version"] == "1.1.0"
 
     @patch("zae_limiter.__version__", "1.1.0")
     @patch("zae_limiter.cli.StackManager")
