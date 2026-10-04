@@ -559,9 +559,12 @@ class TestRunAsWorker:
         result = worker_mod._run_as_worker({"master_host": "10.0.0.1"}, ctx)
         assert result["worker_id"] == "lambda_abcdef12"
 
-    def test_worker_id_falls_back_to_a_uuid(self, fake_locust):
+    @pytest.mark.parametrize("has_context", [False, True], ids=["no-context", "no-request-id"])
+    def test_worker_id_falls_back_to_a_uuid(self, fake_locust, has_context):
+        """No context at all, or a context that carries no ``aws_request_id``."""
+        ctx = _context([100_000, 90_000]) if has_context else None
         with patch("uuid.uuid4", return_value=types.SimpleNamespace(hex="0123456789abcdef")):
-            result = worker_mod._run_as_worker({"master_host": "10.0.0.1"}, None)
+            result = worker_mod._run_as_worker({"master_host": "10.0.0.1"}, ctx)
         assert result["worker_id"] == "lambda_01234567"
 
     def test_unique_id_is_set_before_the_runner_is_created(self, fake_locust):
