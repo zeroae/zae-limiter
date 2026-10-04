@@ -2631,6 +2631,32 @@ class SyncRepository:
                 "UpdateExpression": update_expr,
                 "ExpressionAttributeNames": attr_names,
                 "ExpressionAttributeValues": attr_values,
+                "ReturnValues": "UPDATED_NEW",
+            }
+        }
+
+    def build_vu_reset(self, entity_id: str, resource: str, shard_id: int = 0) -> dict[str, Any]:
+        """Build an UpdateItem that forces one materialising pass (#679).
+
+        ``vu = 0`` fails the speculative condition, so the next acquire takes the
+        slow path, which clamps every limit to its ceiling under the ``rf`` lock
+        and clears ``vu`` again — the mechanism the limit-change sync uses after a
+        capacity shrink (#222 Task 13). Used after a credit lifted a balance above
+        its ceiling, which the fast path (a pure ``ADD``) would otherwise spend.
+        """
+        return {
+            "Update": {
+                "TableName": self.table_name,
+                "Key": {
+                    "PK": {
+                        "S": schema.pk_bucket(self._namespace_id, entity_id, resource, shard_id)
+                    },
+                    "SK": {"S": schema.sk_state()},
+                },
+                "UpdateExpression": "SET #vu = :zero",
+                "ConditionExpression": "attribute_exists(PK)",
+                "ExpressionAttributeNames": {"#vu": schema.BUCKET_FIELD_VU},
+                "ExpressionAttributeValues": {":zero": {"N": "0"}},
             }
         }
 
@@ -2652,23 +2678,30 @@ class SyncRepository:
         else:
             client.transact_write_items(TransactItems=items)
 
-    def write_each(self, items: list[dict[str, Any]]) -> None:
+    def write_each(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Write items independently without cross-item atomicity (1 WCU each).
 
         Each item is dispatched as a single PutItem, UpdateItem, or DeleteItem
         call. Use for unconditional writes (e.g., ADD adjustments) where partial
         success is acceptable.
+
+        Returns one entry per item: the ``Attributes`` an UpdateItem returned
+        (non-empty only when the item asked for ``ReturnValues``), else ``{}``.
         """
         if not items:
-            return
+            return []
         client = self._get_client()
+        results: list[dict[str, Any]] = []
         for item in items:
+            response: dict[str, Any] = {}
             if "Put" in item:
                 client.put_item(**item["Put"])
             elif "Update" in item:
-                client.update_item(**item["Update"])
+                response = client.update_item(**item["Update"])
             elif "Delete" in item:
                 client.delete_item(**item["Delete"])
+            results.append(response.get("Attributes", {}))
+        return results
 
     def speculative_consume(
         self,

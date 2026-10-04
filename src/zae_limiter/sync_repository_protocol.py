@@ -645,7 +645,7 @@ class SyncRepositoryProtocol(Protocol):
         """
         ...
 
-    def write_each(self, items: list[dict[str, Any]]) -> None:
+    def write_each(self, items: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
         """
         Write items independently without cross-item atomicity.
 
@@ -655,6 +655,12 @@ class SyncRepositoryProtocol(Protocol):
 
         Args:
             items: List of items to write independently
+
+        Returns:
+            One entry per item: the attributes an UpdateItem returned (when the
+            item asked for ``ReturnValues``), else an empty dict. A backend may
+            return ``None``; callers then skip the post-credit ceiling check
+            (#679) rather than fail.
         """
         ...
 

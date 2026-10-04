@@ -284,6 +284,11 @@ class TestCompositeBuilders:
         )["Update"]
         assert_expression_safe(update)
 
+    def test_vu_reset(self) -> None:
+        """#679: forces a clamping pass after a credit above the ceiling."""
+        update = _repo().build_vu_reset("user-1", "api", shard_id=3)["Update"]
+        assert_expression_safe(update)
+
     def test_quota_donor_debits(self) -> None:
         for item in _repo().build_quota_donor_debits(
             "e",

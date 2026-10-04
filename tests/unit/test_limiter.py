@@ -12574,3 +12574,36 @@ class TestCreditAboveCapacity:
         item = await self._raw(repo, "rollback")
         assert item[tk]["N"] == "105000"  # 90 + 5 + 10 returned
         assert item[BUCKET_FIELD_VU]["N"] == "0"
+
+    async def test_a_backend_without_the_reset_builder_skips_the_check(self, limiter, monkeypatch):
+        """A third-party backend need not grow the new builder; it keeps the old behaviour."""
+        repo = limiter._repository
+        await repo.set_limits("no-builder", [self.SLOW], resource="r")
+        monkeypatch.delattr(type(repo), "build_vu_reset")
+
+        async with limiter.acquire("no-builder", "r", consume={"q": 10}) as lease:
+            await lease.release(q=500)
+
+        assert BUCKET_FIELD_VU not in await self._raw(repo, "no-builder")
+
+    async def test_a_failed_clamp_write_is_logged_not_raised(self, limiter, monkeypatch, caplog):
+        """The lease already committed; a failed follow-up must not fail the caller."""
+        import logging
+
+        repo = limiter._repository
+        await repo.set_limits("ghost-clamp", [self.SLOW], resource="r")
+        original = repo.build_vu_reset
+
+        def aim_at_a_missing_item(_entity, resource, shard):
+            return original("ghost", resource, shard)  # its condition fails
+
+        monkeypatch.setattr(repo, "build_vu_reset", aim_at_a_missing_item)
+
+        with caplog.at_level(logging.WARNING, logger="zae_limiter.lease"):
+            async with limiter.acquire("ghost-clamp", "r", consume={"q": 10}) as lease:
+                await lease.release(q=500)
+
+        assert "Failed to force a clamp after a credit above capacity" in caplog.text
+
+    async def test_write_each_of_nothing_returns_nothing(self, limiter):
+        assert await limiter._repository.write_each([]) == []
