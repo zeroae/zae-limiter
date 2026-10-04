@@ -611,6 +611,86 @@ limits:
 Both are emitted into the generated CloudFormation template as `Schedule` and `ResetSchedule`
 properties. See [Declarative Limits](../cli.md#declarative-limits) for the full field reference.
 
+### Reusing Limits with YAML Anchors
+
+Each level's `limits` **replaces** the levels below it — it does not merge with them (see
+[Configuration Hierarchy](../guide/config-hierarchy.md)). A resource that sets only `rpm` is
+limited on `rpm` only, and the system `tpm` no longer applies to it. To avoid repeating every
+limit at every level, use YAML anchors (`&name`), aliases (`*name`) and merge keys (`<<:`). The
+manifest is parsed with `yaml.safe_load`, which expands them before anything is sent to the
+provisioner, so `plan`, `apply`, `diff` and `cfn-template` all see the full set at every level.
+
+```yaml
+# limits-anchors.yaml
+namespace: default
+
+# Reusable pieces. Top-level keys other than namespace, system, resources
+# and entities are ignored, so they can hold anchors.
+x-parts:
+  rate: &rate {rpm: {capacity: 300}}
+  tokens: &tokens
+    tpm: &sys_tpm
+      capacity: 10000
+      schedule:
+        - {cron: "* 0-6 * * *", tz: America/New_York, scale: 2}
+
+system:
+  limits: &sys
+    <<: [*rate, *tokens]
+
+resources:
+  # Extend system, override one limit -> rpm 600, tpm 10000 (+ schedule)
+  gpt-4:
+    limits: &gpt4
+      <<: *sys
+      rpm: {capacity: 600}
+
+  # Leave one limit out: alias only what you keep -> rpm 300, no tpm
+  gpt-3.5-turbo:
+    limits:
+      <<: [*rate]
+
+  # Keep the numbers, replace only the schedule -> tpm 10000, daytime 0.5x
+  gpt-4o:
+    limits:
+      <<: *sys
+      tpm: {<<: *sys_tpm, schedule: [{cron: "* 9-17 * * 1-5", tz: America/New_York, scale: 0.5}]}
+
+entities:
+  user-premium:
+    resources:
+      # Extend gpt-4, which extends system -> rpm 1000, tpm 10000 (+ schedule)
+      gpt-4:
+        limits:
+          <<: *gpt4
+          rpm: {capacity: 1000}
+  user-basic:
+    resources:
+      # Keep the numbers, drop the inherited schedule -> rpm 600, tpm 10000
+      gpt-4:
+        limits:
+          <<: *gpt4
+          tpm: {<<: *sys_tpm, schedule: []}
+```
+
+| Pattern | Spelling |
+|---------|----------|
+| Extend the level below, override one limit | `<<: *sys` then the limit to change |
+| Extend a level that already extends another | Anchor the merged mapping (`limits: &gpt4`) and merge that |
+| Leave one limit out | Anchor limits separately and merge only the ones to keep: `<<: [*rate]` |
+| Keep a limit's numbers, change only its schedule | `tpm: {<<: *sys_tpm, schedule: [...]}` |
+| Keep a limit's numbers, drop its schedule | `tpm: {<<: *sys_tpm, schedule: []}` |
+
+A merge copies the whole mapping, so a nested key such as `schedule` replaces the inherited one
+rather than adding entries to it.
+
+!!! warning "Anchors save typing; they do not change resolution"
+    Every level is still stored as a complete, independent set of limits. Changing an anchored
+    value takes effect everywhere it is aliased **on the next `limits apply`** — anchors are
+    expanded when the file is read, and live configuration does not remember where a value came
+    from. A level written without `<<:` still overrides everything below it. Anchors only work
+    within one file, which is also the unit `limits apply` manages: one manifest per namespace.
+
 ### CLI Workflow
 
 The typical workflow mirrors `terraform plan` / `terraform apply`:

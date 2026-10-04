@@ -1128,3 +1128,26 @@ class TestLimitsCfnTemplateDurationWindow:
         )
         assert limits["rpm"] == {"Capacity": 1000}
         assert "ResetAfterSeconds" not in limits["rpm"]
+
+
+class TestCfnTemplateFromYamlAnchors:
+    """``limits cfn-template`` on the anchored manifest the operator guide documents."""
+
+    def test_anchors_are_expanded_and_extra_keys_dropped(self, tmp_path):
+        from tests.fixtures.manifests import documented_anchor_manifest
+
+        path = tmp_path / "limits-anchors.yaml"
+        path.write_text(documented_anchor_manifest())
+
+        result = CliRunner().invoke(
+            cli, ["limits", "cfn-template", "--name", "test-app", "-f", str(path)]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "x-parts" not in result.output
+        props = yaml.safe_load(result.output)["Resources"]["TenantLimits"]["Properties"]
+        assert set(props["Resources"]["gpt-4"]["Limits"]) == {"rpm", "tpm"}
+        assert set(props["Resources"]["gpt-3.5-turbo"]["Limits"]) == {"rpm"}
+        premium = props["Entities"]["user-premium"]["Resources"]["gpt-4"]["Limits"]
+        assert premium["rpm"]["Capacity"] == 1000
+        assert premium["tpm"]["Capacity"] == 10000
