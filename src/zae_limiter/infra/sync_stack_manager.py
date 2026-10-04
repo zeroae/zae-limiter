@@ -6,7 +6,6 @@ This module provides synchronous versions of the async classes.
 Changes should be made to the source file, then regenerated.
 """
 
-import json
 import logging
 import time
 from collections.abc import Callable
@@ -384,15 +383,11 @@ class SyncStackManager:
                 stack_name=self.stack_name,
                 reason=f"Stack tags not updated: {len(desired)} tags would exceed CloudFormation's limit of {MAX_STACK_TAGS}",
             )
-        template = client.get_template(StackName=self.stack_name, TemplateStage="Original")
-        template_body = template["TemplateBody"]
-        if not isinstance(template_body, str):
-            template_body = json.dumps(template_body)
         new_tags = [{"Key": k, "Value": v} for k, v in desired.items()]
         try:
             client.update_stack(
                 StackName=self.stack_name,
-                TemplateBody=template_body,
+                UsePreviousTemplate=True,
                 Parameters=previous_parameters,
                 Tags=new_tags,
                 Capabilities=["CAPABILITY_NAMED_IAM"],

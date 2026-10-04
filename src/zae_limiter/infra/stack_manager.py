@@ -1,7 +1,6 @@
 """CloudFormation stack management for zae-limiter infrastructure."""
 
 import asyncio
-import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -437,20 +436,12 @@ class StackManager:
                 ),
             )
 
-        # Apply tags via a stack update that resends the stack's own template,
-        # so no resource changes. The template is read back rather than passed
-        # as UsePreviousTemplate, which LocalStack rejects ("Specify exactly
-        # one of 'TemplateBody' or 'TemplateUrl'"). "Original" is the template
-        # as submitted; botocore parses a JSON one into a dict.
-        template = await client.get_template(StackName=self.stack_name, TemplateStage="Original")
-        template_body = template["TemplateBody"]
-        if not isinstance(template_body, str):
-            template_body = json.dumps(template_body)
+        # Apply tags via stack update (UsePreviousTemplate preserves resources)
         new_tags = [{"Key": k, "Value": v} for k, v in desired.items()]
         try:
             await client.update_stack(
                 StackName=self.stack_name,
-                TemplateBody=template_body,
+                UsePreviousTemplate=True,
                 Parameters=previous_parameters,
                 Tags=new_tags,
                 Capabilities=["CAPABILITY_NAMED_IAM"],
