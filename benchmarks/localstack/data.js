@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790743119726,
+  "lastUpdate": 1791081714107,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -29424,6 +29424,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.010992963913181043",
             "extra": "mean: 1.0819841763999931 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "28f11c9ad4fb1562af6796c327a197f6ab7d9401",
+          "message": "🐛 fix(infra): refresh stack version tags on upgrade (#663)\n\n## Summary\n\nAfter an upgrade, the CloudFormation stack and DynamoDB table kept the\nold `zae-limiter:version` (and `zae-limiter:lambda-version`) tags. The\nLambda functions had a current `zae-limiter:lambda-version`, because\n`deploy_lambda_code` / `deploy_provisioner_code` tag them directly on\npush, but a stale `zae-limiter:version`.\n\n**Root cause:** `StackManager.ensure_tags()` returned early as soon as\nthe `ManagedBy` and `zae-limiter:name` tags existed. The version tags\n(`version`, `schema-version`, `lambda-version`) were therefore written\nonly at stack creation and never refreshed. CloudFormation propagates\nstack tags to the table and functions, so all of them inherited the\nstale values.\n\n## Changes\n\n- `ensure_tags(refresh_versions=True)` compares the full managed tag set\nand updates the stack when any tag is missing or stale. Only\n`zae-limiter upgrade` passes it, after pushing code, and waits for the\nupdate to finish (at most 15 minutes). A failure, rollback or timeout is\nreported as the existing non-fatal \"Tag update failed\" warning, and the\nversion record is still stamped.\n- With the default `refresh_versions=False`, the behaviour matches\n`main`: nothing is written while the discovery tags are present, and\nwhen they are missing only they are added. `create_stack` on an existing\nstack (`deploy`, `builder().build()`, `open()`) uses this mode, so it\nnever starts a stack update over a version difference, and an older\nclient never rewrites `zae-limiter:version` downwards.\n- `open(auto_update=True)` does not touch stack tags. Application code\nshould not need `UpdateStack` or start a stack update.\n- `zae-limiter:lambda-version` claims what the functions run, so it only\nmoves when `upgrade` pushed or proved absent every function. Otherwise\nthe stack's current value is kept, and a missing tag is not invented.\nThis is the same \"stamp must be earned\" rule as the version record\n(#638).\n- The update keeps everything it should leave alone:\n- every stack parameter is passed through with `UsePreviousValue`;\nomitting one resets it to its template default;\n- tags already on the stack, user-defined ones included, are carried\nover, since `update_stack` replaces the whole set; `aws:*` tags are\nskipped;\n- the stack's own template is resent (`GetTemplate`,\n`TemplateStage=\"Original\"`) rather than using `UsePreviousTemplate`,\nwhich LocalStack rejects. On AWS this is the same tags-only update.\n- More than 50 tags (CloudFormation's limit) is refused before\n`update_stack` is called, with a `StackOperationError`.\n- Regenerated the sync twins.\n\n## Test plan\n\n- [x] Unit tests for each mode: stale-version refresh; `lambda-version`\nkept unless passed, and not invented; user and `aws:` tags; parameter\npass-through; template resend (YAML and JSON); `Capabilities`; the wait\nand its timeout config; the 50-tag refusal; `create_stack` on an\nexisting stale stack not calling `update_stack`; and `upgrade` stamping\nthe version record when the tag update fails.\n- [x] Full unit suite, `ruff`, `mypy`, the sync-generation hook, and\n`diff-cover` at 100% against `origin/main`.\n- [x] LocalStack (`tests/e2e/test_upgrade_partial_stacks.py`, all three\npartial-stack shapes): deployed with stale version tags and a user tag,\n`upgrade` does not fail its tag refresh, the stack stays `*_COMPLETE`,\nevery parameter, the user tag and `ManagedBy` survive, and `open()`\nleaves the tags alone.\n- [ ] **That the version tags actually change is not checked in CI.**\nLocalStack answers a tags-only `UpdateStack` with \"No updates are to be\nperformed\". This, and the propagation to the table and functions, need\nthe real-AWS check before release.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01M1vMtshJozAenit2XEXjhu",
+          "timestamp": "2026-10-03T22:35:23-04:00",
+          "tree_id": "0a23a9fddf848d2ada0a063176be5c7050a24ce8",
+          "url": "https://github.com/zeroae/zae-limiter/commit/28f11c9ad4fb1562af6796c327a197f6ab7d9401"
+        },
+        "date": 1791081712742,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 24.941920451886027,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009759924849275127",
+            "extra": "mean: 40.093143666665135 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 17.685836609182076,
+            "unit": "iter/sec",
+            "range": "stddev: 0.011590745811301236",
+            "extra": "mean: 56.542419909093994 msec\nrounds: 11"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 40.0045818581047,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0038502861494886342",
+            "extra": "mean: 24.997136666669242 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 36.883314349676056,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006478051552460185",
+            "extra": "mean: 27.112530899999854 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 19.722021006476155,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00986150334210932",
+            "extra": "mean: 50.70474266666831 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 86.57989243126814,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0010735829293877892",
+            "extra": "mean: 11.55002589999583 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 24.979208139784483,
+            "unit": "iter/sec",
+            "range": "stddev: 0.008860680211427061",
+            "extra": "mean: 40.03329466666704 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 18.356724305143107,
+            "unit": "iter/sec",
+            "range": "stddev: 0.060667633496222645",
+            "extra": "mean: 54.47595025000318 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 26.605186186190878,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005645126292245124",
+            "extra": "mean: 37.58665671428523 msec\nrounds: 28"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 25.743369954271433,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005974275650698943",
+            "extra": "mean: 38.84495315789362 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 27.990541483170922,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006043431059633237",
+            "extra": "mean: 35.726354225810226 msec\nrounds: 31"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 26.530629963027607,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004159012283251768",
+            "extra": "mean: 37.69228251999948 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 30.89934442887636,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004403120887176934",
+            "extra": "mean: 32.363146160003 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.8890958416472239,
+            "unit": "iter/sec",
+            "range": "stddev: 0.020724514018527616",
+            "extra": "mean: 529.3537670000035 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9279557128892184,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0011336701802251092",
+            "extra": "mean: 518.6841135999998 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9378731478964826,
+            "unit": "iter/sec",
+            "range": "stddev: 0.012220675427644928",
+            "extra": "mean: 1.0662422761999948 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9159895887494826,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005793587164383257",
+            "extra": "mean: 1.0917154652000023 sec\nrounds: 5"
           }
         ]
       }
