@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791085513953,
+  "lastUpdate": 1791086830001,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -29853,6 +29853,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.004826280689301261",
             "extra": "mean: 1.0768744680000055 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f661cbd4ee2a72b9107aa83f05e59cb7fab9c135",
+          "message": "🔖 chore: release prep v0.15.1 (#673)\n\n## Release Prep: v0.15.1\n\n**Theme:** Patch release: stack version tags refresh on upgrade\n**Milestone:**\n[v0.15.1](https://github.com/zeroae/zae-limiter/milestone/26)\n**Epic:** none\n\n---\n\n## Pre-Release Checklist\n\n### Milestone Status\n- [x] All issues closed (5/5: #663, #671, #605, #672 and issue #357,\ndone by #672)\n- [x] All PRs merged (4 first-parent commits on `main` since the v0.15.0\nrelease prep)\n- [x] Ad-hoc work tagged to milestone (every PR since `v0.15.0` carries\n`v0.15.1`)\n\n### Code Quality\n- [ ] CI passing on main (`536d91c3`: lint, Verify Generated Sync Code,\nAnalyze (actions) green; unit, integration, e2e, build, benchmarks still\nrunning when this PR was opened)\n- [x] New features have test coverage (no new features; the fix in #663\ncarries unit + LocalStack tests and a real-AWS test, `5e8cd316`)\n- [x] AWS e2e suite passed on the release commit:\n`AWS_PROFILE=zeroae-code/AWSPowerUserAccess uv run pytest -m aws\n--run-aws -v` on `34dd7db07bb354680366300471ccca3c765c31df` (this PR's\nhead, clean checkout), 2026-10-04 03:43:46Z–03:59:03Z UTC (15m09s): **58\npassed, 0 failed, 2 skipped, 1 xfailed, 2 xpassed**\n- **Skipped (2):** the two `gevent` parametrizations in\n`tests/benchmark/test_aws.py`; they need `GEVENT=1`, by design.\n- **Xfailed (1):**\n`tests/e2e/test_aws.py::TestE2EAWSXRayTracingEnabled::test_xray_traces_created`\n(Refs #194).\n- **Xpassed (2):**\n`tests/benchmark/test_aws.py::test_cascade_concurrent_throughput_aws`,\n`xfail(strict=False)` for Refs #332; passed on both parametrizations\nthis run.\n-\n`tests/e2e/test_aws_upgrade_tags.py::test_upgrade_refreshes_stale_version_tags`\n**PASSED**: the real-AWS proof that `upgrade` refreshes the\nstack/table/function version tags (Refs #663). LocalStack cannot show\nthis; it answers a tags-only `UpdateStack` with \"No updates are to be\nperformed\".\n\n### Backwards Compatibility\n- [x] No breaking API changes (no `!` / `BREAKING CHANGE` commits)\n- [ ] Behaviour change below reviewed\n\n### Documentation\n- [x] No Proposed ADRs in `docs/adr/` (checked on `origin/main`),\nnothing to accept\n- [x] docs/ updated for the YAML-anchors section (#671)\n\n---\n\n## Changes in This Release\n\n### 🐛 Bug Fixes\n- Refresh stack version tags on `zae-limiter upgrade` (#663). The stack,\ntable and Lambda `zae-limiter:version` / `schema-version` /\n`lambda-version` tags were written only at stack creation and never\nrefreshed.\n\n### 📝 Documentation\n- Document reusing limits in the declarative manifest with YAML anchors\n(#671)\n\n### ✅ Tests\n- Cover the Lambda load-test worker's run loops and boto3 pool (#672,\nissue #357)\n- Pin the documented YAML anchor patterns (#671)\n- Check upgrade's stack tag refresh on real AWS (#663)\n\n### ⬆️ Dependencies\n- Bump ruff 0.16.6 → 0.16.10, pinned in all five places (#605)\n\n**Changelog note:** git-cliff will list `97d446e7` (\"resend the stack's\ntemplate on a tag refresh\") under Bug Fixes and its revert `fa088f7e`\nunder Revert. Both landed inside #663; the net effect is nil. Left as\nis.\n\n---\n\n## Open Issues\n\nAll issues in milestone are closed.\n\n---\n\n## Behaviour Change (not API-breaking)\n\n- **`zae-limiter upgrade` now issues a CloudFormation `UpdateStack`**\n(tags only) when the managed version tags are missing or stale, and\nwaits for it (at most 15 minutes). The caller needs\n`cloudformation:UpdateStack`. A failure, rollback or timeout is a\nnon-fatal \"Tag update failed\" warning; the version record is still\nstamped. Every parameter is kept (`UsePreviousValue`), and user tags are\ncarried over.\n- `deploy`, `builder().build()`, `open()` and `open(auto_update=True)`\nnever start a stack update for a version difference.\n\n---\n\n## Next Steps\n\n1. Wait for the `Tests` workflow on `main` (`536d91c3`) to conclude\ngreen.\n2. ~~Run the AWS e2e suite on the release commit~~ Done on `34dd7db0`,\nsee the checklist above.\n3. Merge this PR (merge commit; the repo allows no squash or rebase, so\n`34dd7db0` lands on `main` as-is).\n4. Tag the release-prep commit `34dd7db0`, the exact commit the AWS e2e\nsuite passed on. This matches v0.15.0, which is tagged at its prep\ncommit `dd889b60`:\n   ```bash\ngit fetch origin && git merge-base --is-ancestor\n34dd7db07bb354680366300471ccca3c765c31df origin/main\ngit tag -a v0.15.1 34dd7db07bb354680366300471ccca3c765c31df -m \"v0.15.1\"\n   git push origin v0.15.1\n   ```\n5. Verify GitHub Actions creates the release and publishes to PyPI;\nwatch the conda-forge feedstock bump.\n\n---\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)",
+          "timestamp": "2026-10-04T00:02:03-04:00",
+          "tree_id": "0a676bfe170d9dab96f3f791e60f429deeb48fa3",
+          "url": "https://github.com/zeroae/zae-limiter/commit/f661cbd4ee2a72b9107aa83f05e59cb7fab9c135"
+        },
+        "date": 1791086828661,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 22.497948018406458,
+            "unit": "iter/sec",
+            "range": "stddev: 0.013042929864517166",
+            "extra": "mean: 44.44849811111043 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 18.651183078944232,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0072211426121887535",
+            "extra": "mean: 53.61590177777645 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 35.16662151100149,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0067754885736102674",
+            "extra": "mean: 28.436055470587675 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 39.97591371247191,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00472378738951407",
+            "extra": "mean: 25.015062999998783 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 24.470731934012587,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010038281617212558",
+            "extra": "mean: 40.865144642856826 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 64.61739431575964,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0015505806013564902",
+            "extra": "mean: 15.47570914285704 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 26.366457782855598,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0047903436546924685",
+            "extra": "mean: 37.92697556249802 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 27.53916751674167,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005140465720551446",
+            "extra": "mean: 36.31191826666793 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 21.805879432628796,
+            "unit": "iter/sec",
+            "range": "stddev: 0.04119932608038775",
+            "extra": "mean: 45.85919146666792 msec\nrounds: 30"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 26.414926533012743,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004736860604548773",
+            "extra": "mean: 37.85738335293963 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 24.147559044446908,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0071937999367235085",
+            "extra": "mean: 41.41205320833308 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 23.523894778802255,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009062428133182358",
+            "extra": "mean: 42.50996739286198 msec\nrounds: 28"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 29.809449571440002,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004892031428834007",
+            "extra": "mean: 33.54640942307386 msec\nrounds: 26"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9285077663535948,
+            "unit": "iter/sec",
+            "range": "stddev: 0.002502626990108219",
+            "extra": "mean: 518.5356354000021 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.934822450290351,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0009128426332354452",
+            "extra": "mean: 516.8432896000013 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9334065274142557,
+            "unit": "iter/sec",
+            "range": "stddev: 0.022171946421727772",
+            "extra": "mean: 1.0713445542000044 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9136930263675384,
+            "unit": "iter/sec",
+            "range": "stddev: 0.01175973668075877",
+            "extra": "mean: 1.0944594859999994 sec\nrounds: 5"
           }
         ]
       }
