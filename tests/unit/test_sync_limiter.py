@@ -10304,3 +10304,26 @@ class TestCreditAboveCapacity:
 
     def test_write_each_of_nothing_returns_nothing(self, sync_limiter):
         assert sync_limiter._repository.write_each([]) == []
+
+    def test_a_failing_check_neither_raises_nor_rolls_back(self, sync_limiter, monkeypatch, caplog):
+        """The credit already landed: an error in the check must not undo the lease.
+
+        Escaping ``_commit_adjustments`` before ``_committed`` is set would make the
+        context manager roll back the initial consumption on top of the applied
+        adjustment — a double credit.
+        """
+        import logging
+
+        repo = sync_limiter._repository
+        repo.set_limits("broken-check", [self.SLOW], resource="r")
+
+        def boom(self, now_ms):
+            raise ValueError("corrupt state")
+
+        with caplog.at_level(logging.WARNING, logger="zae_limiter.sync_lease"):
+            with sync_limiter.acquire("broken-check", "r", consume={"q": 10}) as lease:
+                lease.release(q=500)
+                monkeypatch.setattr(BucketState, "ceiling_milli", boom)
+        assert "Could not check a credit against its ceiling" in caplog.text
+        item = self._raw(repo, "broken-check")
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "590000"

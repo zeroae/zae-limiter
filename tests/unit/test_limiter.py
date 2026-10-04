@@ -12607,3 +12607,31 @@ class TestCreditAboveCapacity:
 
     async def test_write_each_of_nothing_returns_nothing(self, limiter):
         assert await limiter._repository.write_each([]) == []
+
+    async def test_a_failing_check_neither_raises_nor_rolls_back(
+        self, limiter, monkeypatch, caplog
+    ):
+        """The credit already landed: an error in the check must not undo the lease.
+
+        Escaping ``_commit_adjustments`` before ``_committed`` is set would make the
+        context manager roll back the initial consumption on top of the applied
+        adjustment — a double credit.
+        """
+        import logging
+
+        repo = limiter._repository
+        await repo.set_limits("broken-check", [self.SLOW], resource="r")
+
+        def boom(self, now_ms):
+            raise ValueError("corrupt state")
+
+        with caplog.at_level(logging.WARNING, logger="zae_limiter.lease"):
+            async with limiter.acquire("broken-check", "r", consume={"q": 10}) as lease:
+                await lease.release(q=500)
+                # Break only the post-commit check: admission and release() use
+                # the same method, so it fails from here, on the way out.
+                monkeypatch.setattr(BucketState, "ceiling_milli", boom)
+
+        assert "Could not check a credit against its ceiling" in caplog.text
+        item = await self._raw(repo, "broken-check")
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "590000"  # 100 - 10 + 500, once

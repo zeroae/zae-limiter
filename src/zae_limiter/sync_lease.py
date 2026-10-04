@@ -755,13 +755,14 @@ class SyncLease:
         if items:
             try:
                 results = repo.write_each(items)
-                self._trim_credits_above_ceiling(written, results)
             except Exception:
                 logger.warning(
                     "Failed to rollback consumed tokens for entities: %s",
                     list(groups.keys()),
                     exc_info=True,
                 )
+                return
+            self._trim_credits_above_ceiling(written, results)
 
     def _trim_credits_above_ceiling(
         self, written: list[_AdjustedItem], results: list[dict[str, Any]] | None
@@ -779,12 +780,32 @@ class SyncLease:
         The ceiling is the one the lease resolved (``BucketState.ceiling_milli``:
         schedule, shard share and quota grant, ADR-145). If a schedule boundary
         moved it since, the item's own ``vu`` has already expired anyway.
+
+        Never raises: it runs after the credit landed, so an error here must not
+        fail the caller, mislabel a rollback, or roll back a committed lease.
         """
-        if not isinstance(results, list) or len(results) != len(written):
+        try:
+            resets = self._clamps_for_credits_above_ceiling(written, results)
+        except Exception:
+            logger.warning("Could not check a credit against its ceiling", exc_info=True)
             return
+        for reset in resets:
+            try:
+                self.repository.write_each([reset])
+            except Exception:
+                logger.warning(
+                    "Failed to force a clamp after a credit above capacity", exc_info=True
+                )
+
+    def _clamps_for_credits_above_ceiling(
+        self, written: list[_AdjustedItem], results: list[dict[str, Any]] | None
+    ) -> list[dict[str, Any]]:
+        """The ``vu = 0`` writes for every item a credit lifted above its ceiling."""
+        if not isinstance(results, list) or len(results) != len(written):
+            return []
         build = getattr(self.repository, "build_vu_reset", None)
         if build is None:
-            return
+            return []
         now_ms = self.repository._now_ms()
         resets: list[dict[str, Any]] = []
         for (entity_id, resource, shard_id, group_entries, deltas), attrs in zip(
@@ -797,13 +818,7 @@ class SyncLease:
                 if value is not None and int(value["N"]) > entry.state.ceiling_milli(now_ms):
                     resets.append(build(entity_id, resource, shard_id))
                     break
-        for reset in resets:
-            try:
-                self.repository.write_each([reset])
-            except Exception:
-                logger.warning(
-                    "Failed to force a clamp after a credit above capacity", exc_info=True
-                )
+        return resets
 
 
 def _get_cancellation_reason_codes(exc: Exception) -> list[str] | None:
