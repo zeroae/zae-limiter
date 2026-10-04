@@ -1645,6 +1645,22 @@ def upgrade(
                 click.echo("Infrastructure is already up to date.")
                 click.echo(f"  Client:   {__version__}")
                 click.echo(f"  Lambda:   {infra_version.lambda_version}")
+                # open(auto_update=True) pushes Lambda code but leaves the stack
+                # tags alone, so a current version record can sit beside stale
+                # tags. Refresh them, but only when this build is the one the
+                # record names: an older or tagless client also lands here, and
+                # ensure_tags would write its own version over a newer one.
+                if infra_version.lambda_version == __version__:
+                    try:
+                        async with StackManager(name, region, endpoint_url) as manager:
+                            if await manager.ensure_tags(
+                                refresh_versions=True,
+                                lambda_version=infra_version.lambda_version,
+                                wait=True,
+                            ):
+                                click.echo("  Stack tags updated")
+                    except Exception as e:
+                        click.echo(f"⚠️  Tag update failed: {e}", err=True)
                 return
 
             if compat.requires_schema_migration:
@@ -1694,21 +1710,8 @@ def upgrade(
                     click.echo(f"✗ Provisioner deployment failed: {e}", err=True)
                     sys.exit(1)
 
-                # Step 3: Ensure discovery tags
-                click.echo("[3/4] Ensuring discovery tags...")
-                try:
-                    tags_added = await manager.ensure_tags()
-                    if tags_added:
-                        click.echo("      Discovery tags added")
-                    else:
-                        click.echo("      Tags already present")
-                except Exception as e:
-                    click.echo(f"⚠️  Tag update failed: {e}", err=True)
-                    # Non-fatal — continue with upgrade
-
-                # Step 4: Update version record, by the rule every writer of
-                # the stamp shares (#638): each function pushed or absent.
-                click.echo("[4/4] Updating version record...")
+                # The stamp rule every writer of it shares (#638): each
+                # function pushed or absent. Decides the lambda-version tag too.
                 aggregator_pushed, aggregator_exists = pushed_or_absent(result)
                 provisioner_pushed, provisioner_exists = pushed_or_absent(provisioner_result)
                 current = await stack_lambdas_current(
@@ -1718,6 +1721,26 @@ def upgrade(
                     aggregator_exists=aggregator_exists,
                     provisioner_exists=provisioner_exists,
                 )
+
+                # Step 3: Refresh discovery and version tags. CloudFormation
+                # propagates them to the table and the Lambda functions.
+                click.echo("[3/4] Updating stack tags...")
+                try:
+                    tags_updated = await manager.ensure_tags(
+                        refresh_versions=True,
+                        lambda_version=__version__ if current else None,
+                        wait=True,
+                    )
+                    if tags_updated:
+                        click.echo("      Stack tags updated")
+                    else:
+                        click.echo("      Tags already current")
+                except Exception as e:
+                    click.echo(f"⚠️  Tag update failed: {e}", err=True)
+                    # Non-fatal — continue with upgrade
+
+                # Step 4: Update version record
+                click.echo("[4/4] Updating version record...")
                 # client_min_version is left as stored (#638 C). The stored stamp is
                 # unreachable under skip_absent (each is pushed or proven absent); a guard.
                 await repo.set_version_record(
