@@ -240,8 +240,10 @@ class SyncLease:
         balance over its ceiling, the item is marked (``vu = 0``) so the next
         acquire takes the slow path, which clamps every limit, and the
         aggregator does not reopen the fast path meanwhile (#679, #681).
-        Two cases are not covered: a backend whose ``write_each`` reports no
-        balances, and the speculative compensation a rejected cascade writes,
+        Not covered: a backend whose ``write_each`` reports no balances; a
+        ``vu = 0`` write that itself fails (logged, the excess then waits for
+        the next materialising pass); an adjustment commit that fails partway
+        (#682); and the speculative compensation a rejected cascade writes,
         which credits back a debit one round trip old.
 
         Only limits declared in ``acquire(consume=...)`` can be adjusted;
