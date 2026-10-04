@@ -10184,3 +10184,159 @@ class TestResetAfterOverrideGate:
         finally:
             client.get_item = original
         assert reads == []
+
+
+class TestCreditAboveCapacity:
+    """A credit can lift a balance above its ceiling; the fast path must not spend it (#679).
+
+    ``release()`` and a negative ``adjust()`` write an unconditional ``ADD``, and a
+    rollback returns consumption after refill may have accrued. The speculative
+    fast path is a pure ``ADD`` with no cap, so an excess was admitted there while
+    the slow path clamped it and ``check_availability`` reported the cap.
+    """
+
+    SLOW = Limit.custom("q", capacity=100, refill_amount=1, refill_period_seconds=86400)
+
+    @staticmethod
+    def _raw(repo, entity_id, resource="r", shard=0):
+        client = repo._get_client()
+        response = client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, resource, shard)},
+                "SK": {"S": sk_state()},
+            },
+        )
+        return response["Item"]
+
+    def test_a_release_above_capacity_is_not_spent_by_the_fast_path(self, sync_limiter):
+        repo = sync_limiter._repository
+        repo.set_limits("over", [self.SLOW], resource="r")
+        with sync_limiter.acquire("over", "r", consume={"q": 10}) as lease:
+            lease.release(q=500)
+        assert self._raw(repo, "over")[BUCKET_FIELD_VU]["N"] == "0"
+        with pytest.raises(RateLimitExceeded):
+            with sync_limiter.acquire("over", "r", consume={"q": 200}):
+                pass
+
+    def test_an_overshoot_from_a_fast_path_lease_is_caught_too(self, sync_limiter):
+        """A warm bucket: the lease's state is the speculative ALL_NEW image, not a read."""
+        repo = sync_limiter._repository
+        repo.set_limits("warm", [self.SLOW], resource="r")
+        with sync_limiter.acquire("warm", "r", consume={"q": 1}):
+            pass
+        with sync_limiter.acquire("warm", "r", consume={"q": 10}) as lease:
+            lease.release(q=500)
+        assert self._raw(repo, "warm")[BUCKET_FIELD_VU]["N"] == "0"
+        with pytest.raises(RateLimitExceeded):
+            with sync_limiter.acquire("warm", "r", consume={"q": 200}):
+                pass
+
+    def test_the_forced_pass_trims_the_excess_to_the_ceiling(self, sync_limiter):
+        repo = sync_limiter._repository
+        repo.set_limits("trim", [self.SLOW], resource="r")
+        with sync_limiter.acquire("trim", "r", consume={"q": 10}) as lease:
+            lease.release(q=500)
+        with sync_limiter.acquire("trim", "r", consume={"q": 100}):
+            pass
+        with pytest.raises(RateLimitExceeded):
+            with sync_limiter.acquire("trim", "r", consume={"q": 1}):
+                pass
+
+    def test_a_credit_within_capacity_costs_nothing_extra(self, sync_limiter):
+        """The common LLM reconcile (estimate high, return the rest) stays on the fast path."""
+        repo = sync_limiter._repository
+        repo.set_limits("within", [self.SLOW], resource="r")
+        with sync_limiter.acquire("within", "r", consume={"q": 1}):
+            pass
+        client = repo._get_client()
+        calls: list[str] = []
+        original = client.update_item
+
+        def spy(**kwargs):
+            calls.append(kwargs["UpdateExpression"])
+            return original(**kwargs)
+
+        client.update_item = spy
+        try:
+            with sync_limiter.acquire("within", "r", consume={"q": 50}) as lease:
+                lease.release(q=20)
+        finally:
+            client.update_item = original
+        assert len(calls) == 2
+        assert BUCKET_FIELD_VU not in self._raw(repo, "within")
+
+    def test_a_rollback_that_overshoots_is_trimmed(self, sync_limiter):
+        """Returning consumption after a refill landed can overshoot as well."""
+        repo = sync_limiter._repository
+        repo.set_limits("rollback", [self.SLOW], resource="r")
+        client = repo._get_client()
+        tk = bucket_attr("q", BUCKET_FIELD_TK)
+        with pytest.raises(RuntimeError):
+            with sync_limiter.acquire("rollback", "r", consume={"q": 10}):
+                client.update_item(
+                    TableName=repo.table_name,
+                    Key={
+                        "PK": {"S": pk_bucket(repo._namespace_id, "rollback", "r", 0)},
+                        "SK": {"S": sk_state()},
+                    },
+                    UpdateExpression="ADD #tk :c",
+                    ExpressionAttributeNames={"#tk": tk},
+                    ExpressionAttributeValues={":c": {"N": "5000"}},
+                )
+                raise RuntimeError("caller failed; the lease rolls back")
+        item = self._raw(repo, "rollback")
+        assert item[tk]["N"] == "105000"
+        assert item[BUCKET_FIELD_VU]["N"] == "0"
+
+    def test_a_backend_without_the_reset_builder_skips_the_check(self, sync_limiter, monkeypatch):
+        """A third-party backend need not grow the new builder; it keeps the old behaviour."""
+        repo = sync_limiter._repository
+        repo.set_limits("no-builder", [self.SLOW], resource="r")
+        monkeypatch.delattr(type(repo), "build_vu_reset")
+        with sync_limiter.acquire("no-builder", "r", consume={"q": 10}) as lease:
+            lease.release(q=500)
+        assert BUCKET_FIELD_VU not in self._raw(repo, "no-builder")
+
+    def test_a_failed_clamp_write_is_logged_not_raised(self, sync_limiter, monkeypatch, caplog):
+        """The lease already committed; a failed follow-up must not fail the caller."""
+        import logging
+
+        repo = sync_limiter._repository
+        repo.set_limits("ghost-clamp", [self.SLOW], resource="r")
+        original = repo.build_vu_reset
+
+        def aim_at_a_missing_item(_entity, resource, shard):
+            return original("ghost", resource, shard)
+
+        monkeypatch.setattr(repo, "build_vu_reset", aim_at_a_missing_item)
+        with caplog.at_level(logging.WARNING, logger="zae_limiter.sync_lease"):
+            with sync_limiter.acquire("ghost-clamp", "r", consume={"q": 10}) as lease:
+                lease.release(q=500)
+        assert "Failed to force a clamp after a credit above capacity" in caplog.text
+
+    def test_write_each_of_nothing_returns_nothing(self, sync_limiter):
+        assert sync_limiter._repository.write_each([]) == []
+
+    def test_a_failing_check_neither_raises_nor_rolls_back(self, sync_limiter, monkeypatch, caplog):
+        """The credit already landed: an error in the check must not undo the lease.
+
+        Escaping ``_commit_adjustments`` before ``_committed`` is set would make the
+        context manager roll back the initial consumption on top of the applied
+        adjustment — a double credit.
+        """
+        import logging
+
+        repo = sync_limiter._repository
+        repo.set_limits("broken-check", [self.SLOW], resource="r")
+
+        def boom(self, now_ms):
+            raise ValueError("corrupt state")
+
+        with caplog.at_level(logging.WARNING, logger="zae_limiter.sync_lease"):
+            with sync_limiter.acquire("broken-check", "r", consume={"q": 10}) as lease:
+                lease.release(q=500)
+                monkeypatch.setattr(BucketState, "ceiling_milli", boom)
+        assert "Could not check a credit against its ceiling" in caplog.text
+        item = self._raw(repo, "broken-check")
+        assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "590000"

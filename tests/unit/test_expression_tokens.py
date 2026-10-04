@@ -284,6 +284,11 @@ class TestCompositeBuilders:
         )["Update"]
         assert_expression_safe(update)
 
+    def test_vu_reset(self) -> None:
+        """#679: forces a clamping pass after a credit above the ceiling."""
+        update = _repo().build_vu_reset("user-1", "api", shard_id=3)["Update"]
+        assert_expression_safe(update)
+
     def test_quota_donor_debits(self) -> None:
         for item in _repo().build_quota_donor_debits(
             "e",
@@ -384,6 +389,21 @@ class TestAggregatorWrites:
             },
         )
         return state
+
+    def test_restamp_pins_each_unclamped_quota(self) -> None:
+        """#681: re-opening the gate is pinned on a skipped quota staying within its ceiling."""
+        now = self.NOW + 3_600_000  # an hour past midnight: no reset edge in the gap
+        state = self._state()
+        state.rf_ms = now - 60_000
+        state.vu_ms = 0  # expired: this pass may re-stamp it
+        table = MagicMock()
+        assert try_refill_bucket(table, state, now) is True
+        kwargs = table.update_item.call_args.kwargs
+        assert_expression_safe(kwargs)
+        assert kwargs["ExpressionAttributeNames"]["#vq0"] == bucket_attr(
+            HYPHENATED, BUCKET_FIELD_TK
+        )
+        assert "#vq0 <= :vq0" in kwargs["ConditionExpression"]
 
     def test_refill_and_reset(self) -> None:
         table = MagicMock()

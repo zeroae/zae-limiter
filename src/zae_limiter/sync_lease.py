@@ -61,6 +61,10 @@ class LeaseEntry:
     _donor_debit: QuotaDonorDebit | None = None
 
 
+_AdjustedItem = tuple[str, str, int, list[LeaseEntry], dict[str, int]]
+"(entity_id, resource, shard_id, entries, deltas) for one adjust write (#679)."
+
+
 class QuotaMoveLostError(Exception):
     """A commit carrying an ADR-145 quota move did not land (internal).
 
@@ -230,6 +234,19 @@ class SyncLease:
         Never raises - allows bucket to go negative.
         Use for post-hoc reconciliation (e.g., LLM token counts).
 
+        A negative delta is a credit, written as an unconditional ``ADD``, so
+        the stored balance can land above the shard's ceiling. The excess is
+        trimmed before the fast path can spend it: when the write reports a
+        balance over its ceiling, the item is marked (``vu = 0``) so the next
+        acquire takes the slow path, which clamps every limit, and the
+        aggregator does not reopen the fast path meanwhile (#679, #681).
+        Not covered: the one round trip between the credit and its ``vu = 0``
+        write (two separate writes); a backend whose ``write_each`` reports no balances; a
+        ``vu = 0`` write that itself fails (logged, the excess then waits for
+        the next materialising pass); an adjustment commit that fails partway
+        (#682); and the speculative compensation a rejected cascade writes,
+        which credits back a debit one round trip old.
+
         Only limits declared in ``acquire(consume=...)`` can be adjusted;
         other keys are reported (Issue #455) and ignored.
 
@@ -261,9 +278,11 @@ class SyncLease:
         """
         Return unused capacity to bucket.
 
-        Equivalent to ``adjust()`` with every amount negated: the returned
-        tokens are credited unconditionally, so the bucket can end up above
-        its capacity until the next refill re-caps it.
+        Equivalent to ``adjust()`` with every amount negated, so the same
+        ceiling rule applies: the stored balance can land above the shard's
+        ceiling, and the excess is trimmed before the fast path can spend it
+        (#679, #681). Returning more than was consumed is therefore not a way
+        to grant extra capacity.
 
         Only limits declared in ``acquire(consume=...)`` can be released;
         other keys are reported (Issue #455) and ignored.
@@ -694,6 +713,7 @@ class SyncLease:
             key = (entry.entity_id, entry.resource, entry._shard_id)
             groups.setdefault(key, []).append(entry)
         items: list[dict[str, Any]] = []
+        written: list[_AdjustedItem] = []
         for (entity_id, resource, shard_id), group_entries in groups.items():
             deltas: dict[str, int] = {}
             for entry in group_entries:
@@ -706,8 +726,10 @@ class SyncLease:
                 )
                 if item:
                     items.append(item)
+                    written.append((entity_id, resource, shard_id, group_entries, deltas))
         if items:
-            repo.write_each(items)
+            results = repo.write_each(items)
+            self._trim_credits_above_ceiling(written, results)
         self._committed = True
 
     def _rollback(self) -> None:
@@ -729,6 +751,7 @@ class SyncLease:
             key = (entry.entity_id, entry.resource, entry._shard_id)
             groups.setdefault(key, []).append(entry)
         items: list[dict[str, Any]] = []
+        written: list[_AdjustedItem] = []
         for (entity_id, resource, shard_id), group_entries in groups.items():
             deltas: dict[str, int] = {}
             for entry in group_entries:
@@ -740,15 +763,74 @@ class SyncLease:
                 )
                 if item:
                     items.append(item)
+                    written.append((entity_id, resource, shard_id, group_entries, deltas))
         if items:
             try:
-                repo.write_each(items)
+                results = repo.write_each(items)
             except Exception:
                 logger.warning(
                     "Failed to rollback consumed tokens for entities: %s",
                     list(groups.keys()),
                     exc_info=True,
                 )
+                return
+            self._trim_credits_above_ceiling(written, results)
+
+    def _trim_credits_above_ceiling(
+        self, written: list[_AdjustedItem], results: list[dict[str, Any]] | None
+    ) -> None:
+        """Force one clamping pass on any item a credit lifted above its ceiling (#679).
+
+        A credit (``release()``, a negative ``adjust()``, a rollback) is an
+        unconditional ``ADD``, so a balance can land above the shard's ceiling.
+        The slow path clamps it, but the speculative fast path is a pure ``ADD``
+        with no cap and would spend the excess first. The adjust write returns
+        the new balances for free; only when one is over its ceiling does this
+        stamp ``vu = 0`` (1 WCU), which sends the next acquire to the slow path.
+        A credit within the ceiling — the common reconcile — costs nothing more.
+
+        The ceiling is the one the lease resolved (``BucketState.ceiling_milli``:
+        schedule, shard share and quota grant, ADR-145). If a schedule boundary
+        moved it since, the item's own ``vu`` has already expired anyway.
+
+        Never raises: it runs after the credit landed, so an error here must not
+        fail the caller, mislabel a rollback, or roll back a committed lease.
+        """
+        try:
+            resets = self._clamps_for_credits_above_ceiling(written, results)
+        except Exception:
+            logger.warning("Could not check a credit against its ceiling", exc_info=True)
+            return
+        for reset in resets:
+            try:
+                self.repository.write_each([reset])
+            except Exception:
+                logger.warning(
+                    "Failed to force a clamp after a credit above capacity", exc_info=True
+                )
+
+    def _clamps_for_credits_above_ceiling(
+        self, written: list[_AdjustedItem], results: list[dict[str, Any]] | None
+    ) -> list[dict[str, Any]]:
+        """The ``vu = 0`` writes for every item a credit lifted above its ceiling."""
+        if not isinstance(results, list) or len(results) != len(written):
+            return []
+        build = getattr(self.repository, "build_vu_reset", None)
+        if build is None:
+            return []
+        now_ms = self.repository._now_ms()
+        resets: list[dict[str, Any]] = []
+        for (entity_id, resource, shard_id, group_entries, deltas), attrs in zip(
+            written, results, strict=True
+        ):
+            for entry in group_entries:
+                if deltas.get(entry.limit.name, 0) >= 0:
+                    continue
+                value = attrs.get(bucket_attr(entry.limit.name, BUCKET_FIELD_TK))
+                if value is not None and int(value["N"]) > entry.state.ceiling_milli(now_ms):
+                    resets.append(build(entity_id, resource, shard_id))
+                    break
+        return resets
 
 
 def _get_cancellation_reason_codes(exc: Exception) -> list[str] | None:

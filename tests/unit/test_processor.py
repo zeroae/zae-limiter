@@ -4827,3 +4827,104 @@ class TestQuotaCloneOvertakenWhileCreated:
         clone = _must(table, 2)
         assert clone["shard_count"] == 16
         assert clone["b_rpd_gc"] == 4
+
+
+class TestNoReopeningAboveTheCeiling:
+    """#679: the aggregator must not re-open the fast path over a balance above its ceiling.
+
+    A credit above the ceiling stamps ``vu = 0`` so the next acquire takes the
+    client slow path, which clamps. The aggregator trims a dripping limit itself
+    (``refill_bucket`` clamps), but skips a quota (no accrual rate, ADR-137); if it
+    then re-stamped ``vu`` to the next boundary while writing another limit's
+    refill, the fast path would spend the quota's excess.
+    """
+
+    # Drained and consumed past one minute's refill, so this pass writes it.
+    RPM = {"tk": 0, "cp": 1_000_000, "ra": 1_000_000, "rp": 60_000, "tc": 1_500_000}
+
+    def _calendar(self, quota_tk: int) -> dict:
+        return _sched_record(
+            limits={
+                "rpm": dict(self.RPM),
+                "q": {"tk": quota_tk, "cp": 100_000, "ra": 0, "rp": 1_000, "tc": 10_000},
+            },
+            rf_ms=TUE_1400 - 60_000,
+            rsched=DAILY_RESET_COMPACT,
+            limit_rsched={"rpm": BUCKET_SCHED_NONE},
+            vu_ms=0,
+        )
+
+    def _session(self, session_tk: int) -> dict:
+        return _session_record(
+            rf_ms=WS + 60_000,
+            limits={"rpm": dict(self.RPM), "session": _session_limit(tk=session_tk, wa=WS)},
+            vu_ms=0,
+        )
+
+    @staticmethod
+    def _restamped(record: dict, now_ms: int) -> bool:
+        table = MagicMock()
+        state = next(iter(aggregate_bucket_states([record]).values()))
+        assert try_refill_bucket(table, state, now_ms=now_ms) is True  # rpm is refilled
+        return ":new_vu" in table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+
+    def test_a_calendar_quota_above_its_ceiling_keeps_the_gate_shut(self) -> None:
+        assert self._restamped(self._calendar(quota_tk=590_000), TUE_1400) is False
+
+    def test_a_calendar_quota_within_its_ceiling_reopens_the_gate(self) -> None:
+        """Control: the same pass re-stamps ``vu`` when nothing is over its ceiling."""
+        assert self._restamped(self._calendar(quota_tk=90_000), TUE_1400) is True
+
+    def test_a_session_quota_above_its_ceiling_keeps_the_gate_shut(self) -> None:
+        assert self._restamped(self._session(session_tk=SESSION_CP * 5), WS + 120_000) is False
+
+    def test_a_session_quota_within_its_ceiling_reopens_the_gate(self) -> None:
+        assert self._restamped(self._session(session_tk=SESSION_CP // 2), WS + 120_000) is True
+
+    @staticmethod
+    def _on_a_real_table(record: dict, credit_milli: int | None) -> tuple[bool, dict]:
+        """Put the record's image, optionally credit the quota after it was captured, refill."""
+        import boto3
+
+        client = boto3.client("dynamodb", region_name="us-east-1")
+        client.create_table(
+            TableName="t681",
+            KeySchema=[
+                {"AttributeName": "PK", "KeyType": "HASH"},
+                {"AttributeName": "SK", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "PK", "AttributeType": "S"},
+                {"AttributeName": "SK", "AttributeType": "S"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        image = record["dynamodb"]["NewImage"]
+        client.put_item(TableName="t681", Item=image)
+        state = next(iter(aggregate_bucket_states([record]).values()))
+        if credit_milli is not None:
+            # The lease's credit lands after the image; its `vu = 0` changes nothing.
+            client.update_item(
+                TableName="t681",
+                Key={"PK": image["PK"], "SK": image["SK"]},
+                UpdateExpression="ADD #tk :c SET #vu = :zero",
+                ExpressionAttributeNames={"#tk": "b_q_tk", "#vu": "vu"},
+                ExpressionAttributeValues={":c": {"N": str(credit_milli)}, ":zero": {"N": "0"}},
+            )
+        table = boto3.resource("dynamodb", region_name="us-east-1").Table("t681")
+        wrote = try_refill_bucket(table, state, now_ms=TUE_1400)
+        item = client.get_item(TableName="t681", Key={"PK": image["PK"], "SK": image["SK"]})
+        return wrote, item["Item"]
+
+    def test_a_credit_landing_after_the_image_keeps_the_gate_shut(self, mock_dynamodb) -> None:
+        """The race the `vu` pin cannot see: `vu` was already 0, the credit wrote 0 again."""
+        wrote, item = self._on_a_real_table(self._calendar(quota_tk=90_000), credit_milli=500_000)
+        assert wrote is False  # skipped as a lost race
+        assert item["vu"] == {"N": "0"}
+        assert item["b_q_tk"] == {"N": "590000"}  # left for the client slow pass to clamp
+
+    def test_without_a_credit_the_real_item_is_reopened(self, mock_dynamodb) -> None:
+        """Control on the same table: the pin passes and `vu` moves to the next reset."""
+        wrote, item = self._on_a_real_table(self._calendar(quota_tk=90_000), credit_milli=None)
+        assert wrote is True
+        assert int(item["vu"]["N"]) > TUE_1400

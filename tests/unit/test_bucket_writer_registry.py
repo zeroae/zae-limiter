@@ -48,6 +48,7 @@ REPOSITORY = {
     "build_composite_normal": (True, True),  # rf-locked: reset/roll/seed stamp gc, pinned
     "build_composite_retry": (True, False),  # ADD only; never seeds a quota
     "build_composite_adjust": (True, False),  # adjust / rollback ADD
+    "build_vu_reset": (False, False),  # vu = 0 after a credit above the ceiling (#679)
     "build_quota_donor_debits": (True, False),  # the donor side of a move
     "_build_quota_count_freeze": (False, True),  # gc = if_not_exists(gc, :g) on a raise
     "_build_bucket_param_update": (False, False),  # param sync: cp/ra/rp/sched, vu = 0
@@ -233,6 +234,7 @@ def _non_gc_builds() -> dict[str, list[dict[str, Any]]]:
         "build_composite_adjust": [
             repo.build_composite_adjust("e", "r", deltas={"cal": 1_000, "ses": -1_000})["Update"]
         ],
+        "build_vu_reset": [repo.build_vu_reset("e", "r", shard_id=1)["Update"]],
         "build_quota_donor_debits": [
             item["Update"]
             for item in repo.build_quota_donor_debits(
