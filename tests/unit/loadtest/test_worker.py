@@ -435,12 +435,14 @@ class _FakeEnvironment:
     """Stand-in for ``locust.env.Environment`` that records how it was driven."""
 
     instances: list[_FakeEnvironment] = []
+    greenlet_len = 0
+    """Size of the worker runner's greenlet group; 0 means the master stopped it."""
 
     def __init__(self, user_classes, events, host):
         self.user_classes = user_classes
         self.events = events
         self.host = host
-        self.runner = None
+        self.runner: Any = None
         self.stats = types.SimpleNamespace(total=_FakeStats())
         self.worker_runner_args = None
         self.unique_id_at_create = None
@@ -455,9 +457,8 @@ class _FakeEnvironment:
         self.worker_runner_args = (master_host, master_port)
         self.unique_id_at_create = os.environ.get("LOCUST_UNIQUE_ID")
         self.runner = MagicMock(name="worker_runner")
-        # An empty greenlet group means the master stopped the worker.
         self.runner.greenlet = MagicMock(name="greenlet_group")
-        self.runner.greenlet.__len__.return_value = 0
+        self.runner.greenlet.__len__.return_value = _FakeEnvironment.greenlet_len
 
 
 def _context(remaining_ms, request_id=None):
@@ -484,6 +485,7 @@ def fake_locust():
     env_mod = types.ModuleType("locust.env")
     env_mod.Environment = _FakeEnvironment  # type: ignore[attr-defined]
     _FakeEnvironment.instances = []
+    _FakeEnvironment.greenlet_len = 0
 
     user = type("LoadUser", (_FakeUserBase,), {"abstract": False})
     with (
@@ -579,6 +581,17 @@ class TestRunAsWorker:
         runner.quit.assert_called_once_with()
         runner.greenlet.join.assert_not_called()
         assert result == {"status": "worker_completed", "worker_id": "lambda_abcdef12"}
+
+    def test_shutdown_buffer_is_a_fraction_of_the_initial_time(self, fake_locust):
+        # 200 s at start, 25% -> a 50 s buffer: 60 s left keeps waiting on the
+        # master, 49.999 s left quits.
+        _FakeEnvironment.greenlet_len = 1  # the master has not stopped the worker
+        ctx = _context([200_000, 60_000, 49_999], request_id="abcdef1234567890")
+        worker_mod._run_as_worker({"master_host": "10.0.0.1"}, ctx, shutdown_buffer_pct=0.25)
+
+        runner = _FakeEnvironment.instances[0].runner
+        runner.greenlet.join.assert_called_once_with(timeout=5)
+        runner.quit.assert_called_once_with()
 
     def test_returns_completed_when_the_master_stops_the_worker(self, fake_locust):
         result = worker_mod._run_as_worker({"master_host": "10.0.0.1"}, None)
