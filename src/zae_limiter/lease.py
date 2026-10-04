@@ -353,7 +353,8 @@ class Lease:
         balance over its ceiling, the item is marked (``vu = 0``) so the next
         acquire takes the slow path, which clamps every limit, and the
         aggregator does not reopen the fast path meanwhile (#679, #681).
-        Not covered: a backend whose ``write_each`` reports no balances; a
+        Not covered: the one round trip between the credit and its ``vu = 0``
+        write (two separate writes); a backend whose ``write_each`` reports no balances; a
         ``vu = 0`` write that itself fails (logged, the excess then waits for
         the next materialising pass); an adjustment commit that fails partway
         (#682); and the speculative compensation a rejected cascade writes,
