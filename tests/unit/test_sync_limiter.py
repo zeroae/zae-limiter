@@ -10219,6 +10219,19 @@ class TestCreditAboveCapacity:
             with sync_limiter.acquire("over", "r", consume={"q": 200}):
                 pass
 
+    def test_an_overshoot_from_a_fast_path_lease_is_caught_too(self, sync_limiter):
+        """A warm bucket: the lease's state is the speculative ALL_NEW image, not a read."""
+        repo = sync_limiter._repository
+        repo.set_limits("warm", [self.SLOW], resource="r")
+        with sync_limiter.acquire("warm", "r", consume={"q": 1}):
+            pass
+        with sync_limiter.acquire("warm", "r", consume={"q": 10}) as lease:
+            lease.release(q=500)
+        assert self._raw(repo, "warm")[BUCKET_FIELD_VU]["N"] == "0"
+        with pytest.raises(RateLimitExceeded):
+            with sync_limiter.acquire("warm", "r", consume={"q": 200}):
+                pass
+
     def test_the_forced_pass_trims_the_excess_to_the_ceiling(self, sync_limiter):
         repo = sync_limiter._repository
         repo.set_limits("trim", [self.SLOW], resource="r")
