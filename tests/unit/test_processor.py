@@ -4880,3 +4880,51 @@ class TestNoReopeningAboveTheCeiling:
 
     def test_a_session_quota_within_its_ceiling_reopens_the_gate(self) -> None:
         assert self._restamped(self._session(session_tk=SESSION_CP // 2), WS + 120_000) is True
+
+    @staticmethod
+    def _on_a_real_table(record: dict, credit_milli: int | None) -> tuple[bool, dict]:
+        """Put the record's image, optionally credit the quota after it was captured, refill."""
+        import boto3
+
+        client = boto3.client("dynamodb", region_name="us-east-1")
+        client.create_table(
+            TableName="t681",
+            KeySchema=[
+                {"AttributeName": "PK", "KeyType": "HASH"},
+                {"AttributeName": "SK", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "PK", "AttributeType": "S"},
+                {"AttributeName": "SK", "AttributeType": "S"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        image = record["dynamodb"]["NewImage"]
+        client.put_item(TableName="t681", Item=image)
+        state = next(iter(aggregate_bucket_states([record]).values()))
+        if credit_milli is not None:
+            # The lease's credit lands after the image; its `vu = 0` changes nothing.
+            client.update_item(
+                TableName="t681",
+                Key={"PK": image["PK"], "SK": image["SK"]},
+                UpdateExpression="ADD #tk :c SET #vu = :zero",
+                ExpressionAttributeNames={"#tk": "b_q_tk", "#vu": "vu"},
+                ExpressionAttributeValues={":c": {"N": str(credit_milli)}, ":zero": {"N": "0"}},
+            )
+        table = boto3.resource("dynamodb", region_name="us-east-1").Table("t681")
+        wrote = try_refill_bucket(table, state, now_ms=TUE_1400)
+        item = client.get_item(TableName="t681", Key={"PK": image["PK"], "SK": image["SK"]})
+        return wrote, item["Item"]
+
+    def test_a_credit_landing_after_the_image_keeps_the_gate_shut(self, mock_dynamodb) -> None:
+        """The race the `vu` pin cannot see: `vu` was already 0, the credit wrote 0 again."""
+        wrote, item = self._on_a_real_table(self._calendar(quota_tk=90_000), credit_milli=500_000)
+        assert wrote is False  # skipped as a lost race
+        assert item["vu"] == {"N": "0"}
+        assert item["b_q_tk"] == {"N": "590000"}  # left for the client slow pass to clamp
+
+    def test_without_a_credit_the_real_item_is_reopened(self, mock_dynamodb) -> None:
+        """Control on the same table: the pin passes and `vu` moves to the next reset."""
+        wrote, item = self._on_a_real_table(self._calendar(quota_tk=90_000), credit_milli=None)
+        assert wrote is True
+        assert int(item["vu"]["N"]) > TUE_1400

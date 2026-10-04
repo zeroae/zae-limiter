@@ -961,9 +961,11 @@ def try_refill_bucket(
     # name (#634) — `NAME_PATTERN` allows `.` and `-`, and an inline
     # `b_rpm.v2_tk` parses as a nested document path.
     refilled: list[str] = []
-    # Limits this pass leaves above their ceiling: a quota it does not reset
-    # or roll (it never drips, so `refill_bucket` never clamps it). While any
-    # is set, `vu` must not be re-stamped (#679, see below).
+    # Limits this pass leaves unclamped — a quota it does not reset or roll (it
+    # never drips, so `refill_bucket` never clamps it) — with their ceilings.
+    # `vu` is not re-stamped while one is above its ceiling, and a re-stamp is
+    # pinned on each staying within it (#679, #681, see below).
+    unclamped: list[tuple[str, int]] = []
     over_ceiling: list[str] = []
 
     for limit_name, info in state.limits.items():
@@ -1098,6 +1100,7 @@ def try_refill_bucket(
         # `refill_bucket` would add nothing and the `rp_ms` half of the guard
         # exists to keep its drift division off a zero denominator.
         if info.rp_ms <= 0 or not is_accrual_rate(info.ra_milli):
+            unclamped.append((limit_name, ceiling_cp))
             if info.tk_milli > ceiling_cp:
                 over_ceiling.append(limit_name)
             continue
@@ -1271,6 +1274,17 @@ def try_refill_bucket(
             else:
                 condition += " AND #sched = :expected_sched"
                 expr_values[":expected_sched"] = state.sched_compact
+            # The `rf` and `vu` pins cannot see a credit that landed after this
+            # image when the item's `vu` was already 0: the lease's `vu = 0`
+            # writes the same value and an adjust does not move `rf`. So the
+            # re-stamp is pinned on every unclamped limit still being within its
+            # ceiling; if a credit lifted one above it meanwhile, the write is
+            # skipped like any lost race and the gate stays shut (#679, #681).
+            # Positional tokens (#634); `#vq*` is disjoint from every family here.
+            for idx, (name, ceiling) in enumerate(unclamped):
+                expr_names[f"#vq{idx}"] = bucket_attr(name, BUCKET_FIELD_TK)
+                expr_values[f":vq{idx}"] = ceiling
+                condition += f" AND #vq{idx} <= :vq{idx}"
 
     update_expr = f"SET {', '.join(set_parts)} ADD {', '.join(add_parts)}"
 
