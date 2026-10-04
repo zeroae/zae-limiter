@@ -4,7 +4,7 @@ repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     # Pinned exactly. scripts/check_ruff_pin.py (the check-ruff-pin hook below)
     # fails if this rev and pyproject.toml's ruff pins disagree — see #486.
-    rev: v0.16.6
+    rev: v0.16.10
     hooks:
       - id: ruff
         args: [--fix]
