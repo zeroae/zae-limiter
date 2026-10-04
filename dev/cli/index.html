@@ -9514,6 +9514,8 @@ and update, and the data commands that write register a missing namespace.</p>
 <h2 id="declarative-limits">Declarative Limits<a class="headerlink" href="#declarative-limits" title="Permanent link">&para;</a></h2>
 <p>The <code>limits</code> command group manages rate limits declaratively via YAML manifest files. Changes are applied through a Lambda provisioner that tracks managed state and computes diffs, similar to how <code>terraform plan</code> and <code>terraform apply</code> work.</p>
 <h3 id="yaml-manifest-format">YAML Manifest Format<a class="headerlink" href="#yaml-manifest-format" title="Permanent link">&para;</a></h3>
+<p>Each level's <code>limits</code> replaces the levels below it. To reuse limits across levels without
+repeating them, see <a href="../infra/deployment/#reusing-limits-with-yaml-anchors">Reusing Limits with YAML Anchors</a>.</p>
 <div class="language-yaml highlight"><pre><span></span><code><span id="__span-120-1"><a id="__codelineno-120-1" name="__codelineno-120-1" href="#__codelineno-120-1"></a><span class="nt">namespace</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">default</span>
 </span><span id="__span-120-2"><a id="__codelineno-120-2" name="__codelineno-120-2" href="#__codelineno-120-2"></a>
 </span><span id="__span-120-3"><a id="__codelineno-120-3" name="__codelineno-120-3" href="#__codelineno-120-3"></a><span class="nt">system</span><span class="p">:</span>

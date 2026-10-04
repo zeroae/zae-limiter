@@ -3960,6 +3960,10 @@
 <li><strong>System defaults</strong> - Global limits for all resources</li>
 <li><strong>Constructor defaults</strong> - Fallback from code</li>
 </ol>
+<p>The first level with any limits supplies the <strong>whole</strong> set: levels override, they do not merge.
+A resource that sets only <code>rpm</code> is not limited by the system's <code>tpm</code>. In a YAML manifest, use
+<a href="../../infra/deployment/#reusing-limits-with-yaml-anchors">YAML anchors</a> to reuse the lower
+level's limits instead of repeating them.</p>
 <div class="admonition info">
 <p class="admonition-title">Namespace Scoping</p>
 <p>All config levels (system, resource, entity) are scoped to a single namespace. Each namespace has its own independent configuration hierarchy. Changing system defaults in one namespace does not affect other namespaces.</p>

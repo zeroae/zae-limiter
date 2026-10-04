@@ -1202,6 +1202,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#reusing-limits-with-yaml-anchors" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reusing Limits with YAML Anchors
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#cli-workflow" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -4571,6 +4582,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#reusing-limits-with-yaml-anchors" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reusing Limits with YAML Anchors
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#cli-workflow" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -5423,16 +5445,114 @@ use CLI deployment or CloudFormation template export. See the
 </span></code></pre></div>
 <p>Both are emitted into the generated CloudFormation template as <code>Schedule</code> and <code>ResetSchedule</code>
 properties. See <a href="../../cli/#declarative-limits">Declarative Limits</a> for the full field reference.</p>
+<h3 id="reusing-limits-with-yaml-anchors">Reusing Limits with YAML Anchors<a class="headerlink" href="#reusing-limits-with-yaml-anchors" title="Permanent link">&para;</a></h3>
+<p>Each level's <code>limits</code> <strong>replaces</strong> the levels below it — it does not merge with them (see
+<a href="../../guide/config-hierarchy/">Configuration Hierarchy</a>). A resource that sets only <code>rpm</code> is
+limited on <code>rpm</code> only, and the system <code>tpm</code> no longer applies to it. To avoid repeating every
+limit at every level, use YAML anchors (<code>&amp;name</code>), aliases (<code>*name</code>) and merge keys (<code>&lt;&lt;:</code>). The
+manifest is parsed with <code>yaml.safe_load</code>, which expands them before anything is sent to the
+provisioner, so <code>plan</code>, <code>apply</code>, <code>diff</code> and <code>cfn-template</code> all see the full set at every level.</p>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-27-1"><a id="__codelineno-27-1" name="__codelineno-27-1" href="#__codelineno-27-1"></a><span class="c1"># limits-anchors.yaml</span>
+</span><span id="__span-27-2"><a id="__codelineno-27-2" name="__codelineno-27-2" href="#__codelineno-27-2"></a><span class="nt">namespace</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">default</span>
+</span><span id="__span-27-3"><a id="__codelineno-27-3" name="__codelineno-27-3" href="#__codelineno-27-3"></a>
+</span><span id="__span-27-4"><a id="__codelineno-27-4" name="__codelineno-27-4" href="#__codelineno-27-4"></a><span class="c1"># Reusable pieces. Top-level keys other than namespace, system, resources</span>
+</span><span id="__span-27-5"><a id="__codelineno-27-5" name="__codelineno-27-5" href="#__codelineno-27-5"></a><span class="c1"># and entities are ignored, so they can hold anchors.</span>
+</span><span id="__span-27-6"><a id="__codelineno-27-6" name="__codelineno-27-6" href="#__codelineno-27-6"></a><span class="nt">x-parts</span><span class="p">:</span>
+</span><span id="__span-27-7"><a id="__codelineno-27-7" name="__codelineno-27-7" href="#__codelineno-27-7"></a><span class="w">  </span><span class="nt">rate</span><span class="p">:</span><span class="w"> </span><span class="nl">&amp;rate</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt">rpm</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt">capacity</span><span class="p">:</span><span class="w"> </span><span class="nv">300</span><span class="p p-Indicator">}}</span>
+</span><span id="__span-27-8"><a id="__codelineno-27-8" name="__codelineno-27-8" href="#__codelineno-27-8"></a><span class="w">  </span><span class="nt">tokens</span><span class="p">:</span><span class="w"> </span><span class="nl">&amp;tokens</span>
+</span><span id="__span-27-9"><a id="__codelineno-27-9" name="__codelineno-27-9" href="#__codelineno-27-9"></a><span class="w">    </span><span class="nt">tpm</span><span class="p">:</span><span class="w"> </span><span class="nl">&amp;sys_tpm</span>
+</span><span id="__span-27-10"><a id="__codelineno-27-10" name="__codelineno-27-10" href="#__codelineno-27-10"></a><span class="w">      </span><span class="nt">capacity</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10000</span>
+</span><span id="__span-27-11"><a id="__codelineno-27-11" name="__codelineno-27-11" href="#__codelineno-27-11"></a><span class="w">      </span><span class="nt">schedule</span><span class="p">:</span>
+</span><span id="__span-27-12"><a id="__codelineno-27-12" name="__codelineno-27-12" href="#__codelineno-27-12"></a><span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt">cron</span><span class="p">:</span><span class="w"> </span><span class="s">"*</span><span class="nv"> </span><span class="s">0-6</span><span class="nv"> </span><span class="s">*</span><span class="nv"> </span><span class="s">*</span><span class="nv"> </span><span class="s">*"</span><span class="p p-Indicator">,</span><span class="nt"> tz</span><span class="p">:</span><span class="w"> </span><span class="nv">America/New_York</span><span class="p p-Indicator">,</span><span class="nt"> scale</span><span class="p">:</span><span class="w"> </span><span class="nv">2</span><span class="p p-Indicator">}</span>
+</span><span id="__span-27-13"><a id="__codelineno-27-13" name="__codelineno-27-13" href="#__codelineno-27-13"></a>
+</span><span id="__span-27-14"><a id="__codelineno-27-14" name="__codelineno-27-14" href="#__codelineno-27-14"></a><span class="nt">system</span><span class="p">:</span>
+</span><span id="__span-27-15"><a id="__codelineno-27-15" name="__codelineno-27-15" href="#__codelineno-27-15"></a><span class="w">  </span><span class="nt">limits</span><span class="p">:</span><span class="w"> </span><span class="nl">&amp;sys</span>
+</span><span id="__span-27-16"><a id="__codelineno-27-16" name="__codelineno-27-16" href="#__codelineno-27-16"></a><span class="w">    </span><span class="nt">&lt;&lt;</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">*rate</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">*tokens</span><span class="p p-Indicator">]</span>
+</span><span id="__span-27-17"><a id="__codelineno-27-17" name="__codelineno-27-17" href="#__codelineno-27-17"></a>
+</span><span id="__span-27-18"><a id="__codelineno-27-18" name="__codelineno-27-18" href="#__codelineno-27-18"></a><span class="nt">resources</span><span class="p">:</span>
+</span><span id="__span-27-19"><a id="__codelineno-27-19" name="__codelineno-27-19" href="#__codelineno-27-19"></a><span class="w">  </span><span class="c1"># Extend system, override one limit -&gt; rpm 600, tpm 10000 (+ schedule)</span>
+</span><span id="__span-27-20"><a id="__codelineno-27-20" name="__codelineno-27-20" href="#__codelineno-27-20"></a><span class="w">  </span><span class="nt">gpt-4</span><span class="p">:</span>
+</span><span id="__span-27-21"><a id="__codelineno-27-21" name="__codelineno-27-21" href="#__codelineno-27-21"></a><span class="w">    </span><span class="nt">limits</span><span class="p">:</span><span class="w"> </span><span class="nl">&amp;gpt4</span>
+</span><span id="__span-27-22"><a id="__codelineno-27-22" name="__codelineno-27-22" href="#__codelineno-27-22"></a><span class="w">      </span><span class="nt">&lt;&lt;</span><span class="p">:</span><span class="w"> </span><span class="nv">*sys</span>
+</span><span id="__span-27-23"><a id="__codelineno-27-23" name="__codelineno-27-23" href="#__codelineno-27-23"></a><span class="w">      </span><span class="nt">rpm</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt">capacity</span><span class="p">:</span><span class="w"> </span><span class="nv">600</span><span class="p p-Indicator">}</span>
+</span><span id="__span-27-24"><a id="__codelineno-27-24" name="__codelineno-27-24" href="#__codelineno-27-24"></a>
+</span><span id="__span-27-25"><a id="__codelineno-27-25" name="__codelineno-27-25" href="#__codelineno-27-25"></a><span class="w">  </span><span class="c1"># Leave one limit out: alias only what you keep -&gt; rpm 300, no tpm</span>
+</span><span id="__span-27-26"><a id="__codelineno-27-26" name="__codelineno-27-26" href="#__codelineno-27-26"></a><span class="w">  </span><span class="nt">gpt-3.5-turbo</span><span class="p">:</span>
+</span><span id="__span-27-27"><a id="__codelineno-27-27" name="__codelineno-27-27" href="#__codelineno-27-27"></a><span class="w">    </span><span class="nt">limits</span><span class="p">:</span>
+</span><span id="__span-27-28"><a id="__codelineno-27-28" name="__codelineno-27-28" href="#__codelineno-27-28"></a><span class="w">      </span><span class="nt">&lt;&lt;</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">*rate</span><span class="p p-Indicator">]</span>
+</span><span id="__span-27-29"><a id="__codelineno-27-29" name="__codelineno-27-29" href="#__codelineno-27-29"></a>
+</span><span id="__span-27-30"><a id="__codelineno-27-30" name="__codelineno-27-30" href="#__codelineno-27-30"></a><span class="w">  </span><span class="c1"># Keep the numbers, replace only the schedule -&gt; tpm 10000, daytime 0.5x</span>
+</span><span id="__span-27-31"><a id="__codelineno-27-31" name="__codelineno-27-31" href="#__codelineno-27-31"></a><span class="w">  </span><span class="nt">gpt-4o</span><span class="p">:</span>
+</span><span id="__span-27-32"><a id="__codelineno-27-32" name="__codelineno-27-32" href="#__codelineno-27-32"></a><span class="w">    </span><span class="nt">limits</span><span class="p">:</span>
+</span><span id="__span-27-33"><a id="__codelineno-27-33" name="__codelineno-27-33" href="#__codelineno-27-33"></a><span class="w">      </span><span class="nt">&lt;&lt;</span><span class="p">:</span><span class="w"> </span><span class="nv">*sys</span>
+</span><span id="__span-27-34"><a id="__codelineno-27-34" name="__codelineno-27-34" href="#__codelineno-27-34"></a><span class="w">      </span><span class="nt">tpm</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt">&lt;&lt;</span><span class="p">:</span><span class="w"> </span><span class="nv">*sys_tpm</span><span class="p p-Indicator">,</span><span class="nt"> schedule</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[{</span><span class="nt">cron</span><span class="p">:</span><span class="w"> </span><span class="s">"*</span><span class="nv"> </span><span class="s">9-17</span><span class="nv"> </span><span class="s">*</span><span class="nv"> </span><span class="s">*</span><span class="nv"> </span><span class="s">1-5"</span><span class="p p-Indicator">,</span><span class="nt"> tz</span><span class="p">:</span><span class="w"> </span><span class="nv">America/New_York</span><span class="p p-Indicator">,</span><span class="nt"> scale</span><span class="p">:</span><span class="w"> </span><span class="nv">0.5</span><span class="p p-Indicator">}]}</span>
+</span><span id="__span-27-35"><a id="__codelineno-27-35" name="__codelineno-27-35" href="#__codelineno-27-35"></a>
+</span><span id="__span-27-36"><a id="__codelineno-27-36" name="__codelineno-27-36" href="#__codelineno-27-36"></a><span class="nt">entities</span><span class="p">:</span>
+</span><span id="__span-27-37"><a id="__codelineno-27-37" name="__codelineno-27-37" href="#__codelineno-27-37"></a><span class="w">  </span><span class="nt">user-premium</span><span class="p">:</span>
+</span><span id="__span-27-38"><a id="__codelineno-27-38" name="__codelineno-27-38" href="#__codelineno-27-38"></a><span class="w">    </span><span class="nt">resources</span><span class="p">:</span>
+</span><span id="__span-27-39"><a id="__codelineno-27-39" name="__codelineno-27-39" href="#__codelineno-27-39"></a><span class="w">      </span><span class="c1"># Extend gpt-4, which extends system -&gt; rpm 1000, tpm 10000 (+ schedule)</span>
+</span><span id="__span-27-40"><a id="__codelineno-27-40" name="__codelineno-27-40" href="#__codelineno-27-40"></a><span class="w">      </span><span class="nt">gpt-4</span><span class="p">:</span>
+</span><span id="__span-27-41"><a id="__codelineno-27-41" name="__codelineno-27-41" href="#__codelineno-27-41"></a><span class="w">        </span><span class="nt">limits</span><span class="p">:</span>
+</span><span id="__span-27-42"><a id="__codelineno-27-42" name="__codelineno-27-42" href="#__codelineno-27-42"></a><span class="w">          </span><span class="nt">&lt;&lt;</span><span class="p">:</span><span class="w"> </span><span class="nv">*gpt4</span>
+</span><span id="__span-27-43"><a id="__codelineno-27-43" name="__codelineno-27-43" href="#__codelineno-27-43"></a><span class="w">          </span><span class="nt">rpm</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt">capacity</span><span class="p">:</span><span class="w"> </span><span class="nv">1000</span><span class="p p-Indicator">}</span>
+</span><span id="__span-27-44"><a id="__codelineno-27-44" name="__codelineno-27-44" href="#__codelineno-27-44"></a><span class="w">  </span><span class="nt">user-basic</span><span class="p">:</span>
+</span><span id="__span-27-45"><a id="__codelineno-27-45" name="__codelineno-27-45" href="#__codelineno-27-45"></a><span class="w">    </span><span class="nt">resources</span><span class="p">:</span>
+</span><span id="__span-27-46"><a id="__codelineno-27-46" name="__codelineno-27-46" href="#__codelineno-27-46"></a><span class="w">      </span><span class="c1"># Keep the numbers, drop the inherited schedule -&gt; rpm 600, tpm 10000</span>
+</span><span id="__span-27-47"><a id="__codelineno-27-47" name="__codelineno-27-47" href="#__codelineno-27-47"></a><span class="w">      </span><span class="nt">gpt-4</span><span class="p">:</span>
+</span><span id="__span-27-48"><a id="__codelineno-27-48" name="__codelineno-27-48" href="#__codelineno-27-48"></a><span class="w">        </span><span class="nt">limits</span><span class="p">:</span>
+</span><span id="__span-27-49"><a id="__codelineno-27-49" name="__codelineno-27-49" href="#__codelineno-27-49"></a><span class="w">          </span><span class="nt">&lt;&lt;</span><span class="p">:</span><span class="w"> </span><span class="nv">*gpt4</span>
+</span><span id="__span-27-50"><a id="__codelineno-27-50" name="__codelineno-27-50" href="#__codelineno-27-50"></a><span class="w">          </span><span class="nt">tpm</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt">&lt;&lt;</span><span class="p">:</span><span class="w"> </span><span class="nv">*sys_tpm</span><span class="p p-Indicator">,</span><span class="nt"> schedule</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[]}</span>
+</span></code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Pattern</th>
+<th>Spelling</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Extend the level below, override one limit</td>
+<td><code>&lt;&lt;: *sys</code> then the limit to change</td>
+</tr>
+<tr>
+<td>Extend a level that already extends another</td>
+<td>Anchor the merged mapping (<code>limits: &amp;gpt4</code>) and merge that</td>
+</tr>
+<tr>
+<td>Leave one limit out</td>
+<td>Anchor limits separately and merge only the ones to keep: <code>&lt;&lt;: [*rate]</code></td>
+</tr>
+<tr>
+<td>Keep a limit's numbers, change only its schedule</td>
+<td><code>tpm: {&lt;&lt;: *sys_tpm, schedule: [...]}</code></td>
+</tr>
+<tr>
+<td>Keep a limit's numbers, drop its schedule</td>
+<td><code>tpm: {&lt;&lt;: *sys_tpm, schedule: []}</code></td>
+</tr>
+</tbody>
+</table>
+<p>A merge copies the whole mapping, so a nested key such as <code>schedule</code> replaces the inherited one
+rather than adding entries to it.</p>
+<div class="admonition warning">
+<p class="admonition-title">Anchors save typing; they do not change resolution</p>
+<p>Every level is still stored as a complete, independent set of limits. Changing an anchored
+value takes effect everywhere it is aliased <strong>on the next <code>limits apply</code></strong> — anchors are
+expanded when the file is read, and live configuration does not remember where a value came
+from. A level written without <code>&lt;&lt;:</code> still overrides everything below it. Anchors only work
+within one file, which is also the unit <code>limits apply</code> manages: one manifest per namespace.</p>
+</div>
 <h3 id="cli-workflow">CLI Workflow<a class="headerlink" href="#cli-workflow" title="Permanent link">&para;</a></h3>
 <p>The typical workflow mirrors <code>terraform plan</code> / <code>terraform apply</code>:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-27-1"><a id="__codelineno-27-1" name="__codelineno-27-1" href="#__codelineno-27-1"></a><span class="c1"># 1. Preview what would change</span>
-</span><span id="__span-27-2"><a id="__codelineno-27-2" name="__codelineno-27-2" href="#__codelineno-27-2"></a>zae-limiter<span class="w"> </span>limits<span class="w"> </span>plan<span class="w"> </span>-n<span class="w"> </span>my-app<span class="w"> </span>-f<span class="w"> </span>limits.yaml
-</span><span id="__span-27-3"><a id="__codelineno-27-3" name="__codelineno-27-3" href="#__codelineno-27-3"></a>
-</span><span id="__span-27-4"><a id="__codelineno-27-4" name="__codelineno-27-4" href="#__codelineno-27-4"></a><span class="c1"># 2. Apply the changes</span>
-</span><span id="__span-27-5"><a id="__codelineno-27-5" name="__codelineno-27-5" href="#__codelineno-27-5"></a>zae-limiter<span class="w"> </span>limits<span class="w"> </span>apply<span class="w"> </span>-n<span class="w"> </span>my-app<span class="w"> </span>-f<span class="w"> </span>limits.yaml
-</span><span id="__span-27-6"><a id="__codelineno-27-6" name="__codelineno-27-6" href="#__codelineno-27-6"></a>
-</span><span id="__span-27-7"><a id="__codelineno-27-7" name="__codelineno-27-7" href="#__codelineno-27-7"></a><span class="c1"># 3. Later, check for drift</span>
-</span><span id="__span-27-8"><a id="__codelineno-27-8" name="__codelineno-27-8" href="#__codelineno-27-8"></a>zae-limiter<span class="w"> </span>limits<span class="w"> </span>diff<span class="w"> </span>-n<span class="w"> </span>my-app<span class="w"> </span>-f<span class="w"> </span>limits.yaml
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-28-1"><a id="__codelineno-28-1" name="__codelineno-28-1" href="#__codelineno-28-1"></a><span class="c1"># 1. Preview what would change</span>
+</span><span id="__span-28-2"><a id="__codelineno-28-2" name="__codelineno-28-2" href="#__codelineno-28-2"></a>zae-limiter<span class="w"> </span>limits<span class="w"> </span>plan<span class="w"> </span>-n<span class="w"> </span>my-app<span class="w"> </span>-f<span class="w"> </span>limits.yaml
+</span><span id="__span-28-3"><a id="__codelineno-28-3" name="__codelineno-28-3" href="#__codelineno-28-3"></a>
+</span><span id="__span-28-4"><a id="__codelineno-28-4" name="__codelineno-28-4" href="#__codelineno-28-4"></a><span class="c1"># 2. Apply the changes</span>
+</span><span id="__span-28-5"><a id="__codelineno-28-5" name="__codelineno-28-5" href="#__codelineno-28-5"></a>zae-limiter<span class="w"> </span>limits<span class="w"> </span>apply<span class="w"> </span>-n<span class="w"> </span>my-app<span class="w"> </span>-f<span class="w"> </span>limits.yaml
+</span><span id="__span-28-6"><a id="__codelineno-28-6" name="__codelineno-28-6" href="#__codelineno-28-6"></a>
+</span><span id="__span-28-7"><a id="__codelineno-28-7" name="__codelineno-28-7" href="#__codelineno-28-7"></a><span class="c1"># 3. Later, check for drift</span>
+</span><span id="__span-28-8"><a id="__codelineno-28-8" name="__codelineno-28-8" href="#__codelineno-28-8"></a>zae-limiter<span class="w"> </span>limits<span class="w"> </span>diff<span class="w"> </span>-n<span class="w"> </span>my-app<span class="w"> </span>-f<span class="w"> </span>limits.yaml
 </span></code></pre></div>
 <p><code>plan</code> and <code>diff</code> are read-only: they never deploy the stack, register the manifest's
 namespace, or update the Lambdas. They exit 1 when the stack or namespace is missing, or when
@@ -5441,38 +5561,38 @@ registers a new namespace itself (see <a href="../../cli/#read-only-commands">Re
 <p>The provisioner tracks which items it manages in a <code>#PROVISIONER</code> state record. When you remove an item from the manifest and re-apply, the provisioner deletes it from DynamoDB. Items created outside the manifest (via <code>set-defaults</code> or <code>set-limits</code> CLI commands) are not affected.</p>
 <h3 id="multi-namespace">Multi-Namespace<a class="headerlink" href="#multi-namespace" title="Permanent link">&para;</a></h3>
 <p>Each manifest targets a single namespace. To manage limits for multiple namespaces, use separate YAML files:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-28-1"><a id="__codelineno-28-1" name="__codelineno-28-1" href="#__codelineno-28-1"></a><span class="c1"># Different limits per tenant</span>
-</span><span id="__span-28-2"><a id="__codelineno-28-2" name="__codelineno-28-2" href="#__codelineno-28-2"></a>zae-limiter<span class="w"> </span>limits<span class="w"> </span>apply<span class="w"> </span>-n<span class="w"> </span>my-app<span class="w"> </span>-N<span class="w"> </span>tenant-alpha<span class="w"> </span>-f<span class="w"> </span>alpha-limits.yaml
-</span><span id="__span-28-3"><a id="__codelineno-28-3" name="__codelineno-28-3" href="#__codelineno-28-3"></a>zae-limiter<span class="w"> </span>limits<span class="w"> </span>apply<span class="w"> </span>-n<span class="w"> </span>my-app<span class="w"> </span>-N<span class="w"> </span>tenant-beta<span class="w"> </span>-f<span class="w"> </span>beta-limits.yaml
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-29-1"><a id="__codelineno-29-1" name="__codelineno-29-1" href="#__codelineno-29-1"></a><span class="c1"># Different limits per tenant</span>
+</span><span id="__span-29-2"><a id="__codelineno-29-2" name="__codelineno-29-2" href="#__codelineno-29-2"></a>zae-limiter<span class="w"> </span>limits<span class="w"> </span>apply<span class="w"> </span>-n<span class="w"> </span>my-app<span class="w"> </span>-N<span class="w"> </span>tenant-alpha<span class="w"> </span>-f<span class="w"> </span>alpha-limits.yaml
+</span><span id="__span-29-3"><a id="__codelineno-29-3" name="__codelineno-29-3" href="#__codelineno-29-3"></a>zae-limiter<span class="w"> </span>limits<span class="w"> </span>apply<span class="w"> </span>-n<span class="w"> </span>my-app<span class="w"> </span>-N<span class="w"> </span>tenant-beta<span class="w"> </span>-f<span class="w"> </span>beta-limits.yaml
 </span></code></pre></div>
 <h3 id="cloudformation-integration">CloudFormation Integration<a class="headerlink" href="#cloudformation-integration" title="Permanent link">&para;</a></h3>
 <p>Generate a CloudFormation template to manage limits as infrastructure-as-code:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-29-1"><a id="__codelineno-29-1" name="__codelineno-29-1" href="#__codelineno-29-1"></a><span class="c1"># Generate the template</span>
-</span><span id="__span-29-2"><a id="__codelineno-29-2" name="__codelineno-29-2" href="#__codelineno-29-2"></a>zae-limiter<span class="w"> </span>limits<span class="w"> </span>cfn-template<span class="w"> </span>-n<span class="w"> </span>my-app<span class="w"> </span>-f<span class="w"> </span>limits.yaml<span class="w"> </span>&gt;<span class="w"> </span>limits-stack.yaml
-</span><span id="__span-29-3"><a id="__codelineno-29-3" name="__codelineno-29-3" href="#__codelineno-29-3"></a>
-</span><span id="__span-29-4"><a id="__codelineno-29-4" name="__codelineno-29-4" href="#__codelineno-29-4"></a><span class="c1"># Deploy with AWS CLI</span>
-</span><span id="__span-29-5"><a id="__codelineno-29-5" name="__codelineno-29-5" href="#__codelineno-29-5"></a>aws<span class="w"> </span>cloudformation<span class="w"> </span>deploy<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-29-6"><a id="__codelineno-29-6" name="__codelineno-29-6" href="#__codelineno-29-6"></a><span class="w">    </span>--template-file<span class="w"> </span>limits-stack.yaml<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-29-7"><a id="__codelineno-29-7" name="__codelineno-29-7" href="#__codelineno-29-7"></a><span class="w">    </span>--stack-name<span class="w"> </span>my-app-limits
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-30-1"><a id="__codelineno-30-1" name="__codelineno-30-1" href="#__codelineno-30-1"></a><span class="c1"># Generate the template</span>
+</span><span id="__span-30-2"><a id="__codelineno-30-2" name="__codelineno-30-2" href="#__codelineno-30-2"></a>zae-limiter<span class="w"> </span>limits<span class="w"> </span>cfn-template<span class="w"> </span>-n<span class="w"> </span>my-app<span class="w"> </span>-f<span class="w"> </span>limits.yaml<span class="w"> </span>&gt;<span class="w"> </span>limits-stack.yaml
+</span><span id="__span-30-3"><a id="__codelineno-30-3" name="__codelineno-30-3" href="#__codelineno-30-3"></a>
+</span><span id="__span-30-4"><a id="__codelineno-30-4" name="__codelineno-30-4" href="#__codelineno-30-4"></a><span class="c1"># Deploy with AWS CLI</span>
+</span><span id="__span-30-5"><a id="__codelineno-30-5" name="__codelineno-30-5" href="#__codelineno-30-5"></a>aws<span class="w"> </span>cloudformation<span class="w"> </span>deploy<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-30-6"><a id="__codelineno-30-6" name="__codelineno-30-6" href="#__codelineno-30-6"></a><span class="w">    </span>--template-file<span class="w"> </span>limits-stack.yaml<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-30-7"><a id="__codelineno-30-7" name="__codelineno-30-7" href="#__codelineno-30-7"></a><span class="w">    </span>--stack-name<span class="w"> </span>my-app-limits
 </span></code></pre></div>
 <p>The generated template creates a <code>Custom::ZaeLimiterLimits</code> resource backed by the provisioner Lambda. The Lambda ARN is imported from the main zae-limiter stack via <code>Fn::ImportValue</code>:</p>
-<div class="language-yaml highlight"><pre><span></span><code><span id="__span-30-1"><a id="__codelineno-30-1" name="__codelineno-30-1" href="#__codelineno-30-1"></a><span class="nt">Resources</span><span class="p">:</span>
-</span><span id="__span-30-2"><a id="__codelineno-30-2" name="__codelineno-30-2" href="#__codelineno-30-2"></a><span class="w">  </span><span class="nt">TenantLimits</span><span class="p">:</span>
-</span><span id="__span-30-3"><a id="__codelineno-30-3" name="__codelineno-30-3" href="#__codelineno-30-3"></a><span class="w">    </span><span class="nt">Type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Custom::ZaeLimiterLimits</span>
-</span><span id="__span-30-4"><a id="__codelineno-30-4" name="__codelineno-30-4" href="#__codelineno-30-4"></a><span class="w">    </span><span class="nt">Properties</span><span class="p">:</span>
-</span><span id="__span-30-5"><a id="__codelineno-30-5" name="__codelineno-30-5" href="#__codelineno-30-5"></a><span class="w">      </span><span class="nt">ServiceToken</span><span class="p">:</span><span class="w"> </span><span class="kt">!ImportValue</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-app-ProvisionerArn</span>
-</span><span id="__span-30-6"><a id="__codelineno-30-6" name="__codelineno-30-6" href="#__codelineno-30-6"></a><span class="w">      </span><span class="nt">TableName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-app</span>
-</span><span id="__span-30-7"><a id="__codelineno-30-7" name="__codelineno-30-7" href="#__codelineno-30-7"></a><span class="w">      </span><span class="nt">Namespace</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">default</span>
-</span><span id="__span-30-8"><a id="__codelineno-30-8" name="__codelineno-30-8" href="#__codelineno-30-8"></a><span class="w">      </span><span class="nt">System</span><span class="p">:</span>
-</span><span id="__span-30-9"><a id="__codelineno-30-9" name="__codelineno-30-9" href="#__codelineno-30-9"></a><span class="w">        </span><span class="nt">OnUnavailable</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">block</span>
-</span><span id="__span-30-10"><a id="__codelineno-30-10" name="__codelineno-30-10" href="#__codelineno-30-10"></a><span class="w">        </span><span class="nt">Limits</span><span class="p">:</span>
-</span><span id="__span-30-11"><a id="__codelineno-30-11" name="__codelineno-30-11" href="#__codelineno-30-11"></a><span class="w">          </span><span class="nt">rpm</span><span class="p">:</span>
-</span><span id="__span-30-12"><a id="__codelineno-30-12" name="__codelineno-30-12" href="#__codelineno-30-12"></a><span class="w">            </span><span class="nt">Capacity</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1000</span>
-</span><span id="__span-30-13"><a id="__codelineno-30-13" name="__codelineno-30-13" href="#__codelineno-30-13"></a><span class="w">      </span><span class="nt">Resources</span><span class="p">:</span>
-</span><span id="__span-30-14"><a id="__codelineno-30-14" name="__codelineno-30-14" href="#__codelineno-30-14"></a><span class="w">        </span><span class="nt">gpt-4</span><span class="p">:</span>
-</span><span id="__span-30-15"><a id="__codelineno-30-15" name="__codelineno-30-15" href="#__codelineno-30-15"></a><span class="w">          </span><span class="nt">Limits</span><span class="p">:</span>
-</span><span id="__span-30-16"><a id="__codelineno-30-16" name="__codelineno-30-16" href="#__codelineno-30-16"></a><span class="w">            </span><span class="nt">rpm</span><span class="p">:</span>
-</span><span id="__span-30-17"><a id="__codelineno-30-17" name="__codelineno-30-17" href="#__codelineno-30-17"></a><span class="w">              </span><span class="nt">Capacity</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">500</span>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-31-1"><a id="__codelineno-31-1" name="__codelineno-31-1" href="#__codelineno-31-1"></a><span class="nt">Resources</span><span class="p">:</span>
+</span><span id="__span-31-2"><a id="__codelineno-31-2" name="__codelineno-31-2" href="#__codelineno-31-2"></a><span class="w">  </span><span class="nt">TenantLimits</span><span class="p">:</span>
+</span><span id="__span-31-3"><a id="__codelineno-31-3" name="__codelineno-31-3" href="#__codelineno-31-3"></a><span class="w">    </span><span class="nt">Type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Custom::ZaeLimiterLimits</span>
+</span><span id="__span-31-4"><a id="__codelineno-31-4" name="__codelineno-31-4" href="#__codelineno-31-4"></a><span class="w">    </span><span class="nt">Properties</span><span class="p">:</span>
+</span><span id="__span-31-5"><a id="__codelineno-31-5" name="__codelineno-31-5" href="#__codelineno-31-5"></a><span class="w">      </span><span class="nt">ServiceToken</span><span class="p">:</span><span class="w"> </span><span class="kt">!ImportValue</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-app-ProvisionerArn</span>
+</span><span id="__span-31-6"><a id="__codelineno-31-6" name="__codelineno-31-6" href="#__codelineno-31-6"></a><span class="w">      </span><span class="nt">TableName</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-app</span>
+</span><span id="__span-31-7"><a id="__codelineno-31-7" name="__codelineno-31-7" href="#__codelineno-31-7"></a><span class="w">      </span><span class="nt">Namespace</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">default</span>
+</span><span id="__span-31-8"><a id="__codelineno-31-8" name="__codelineno-31-8" href="#__codelineno-31-8"></a><span class="w">      </span><span class="nt">System</span><span class="p">:</span>
+</span><span id="__span-31-9"><a id="__codelineno-31-9" name="__codelineno-31-9" href="#__codelineno-31-9"></a><span class="w">        </span><span class="nt">OnUnavailable</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">block</span>
+</span><span id="__span-31-10"><a id="__codelineno-31-10" name="__codelineno-31-10" href="#__codelineno-31-10"></a><span class="w">        </span><span class="nt">Limits</span><span class="p">:</span>
+</span><span id="__span-31-11"><a id="__codelineno-31-11" name="__codelineno-31-11" href="#__codelineno-31-11"></a><span class="w">          </span><span class="nt">rpm</span><span class="p">:</span>
+</span><span id="__span-31-12"><a id="__codelineno-31-12" name="__codelineno-31-12" href="#__codelineno-31-12"></a><span class="w">            </span><span class="nt">Capacity</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1000</span>
+</span><span id="__span-31-13"><a id="__codelineno-31-13" name="__codelineno-31-13" href="#__codelineno-31-13"></a><span class="w">      </span><span class="nt">Resources</span><span class="p">:</span>
+</span><span id="__span-31-14"><a id="__codelineno-31-14" name="__codelineno-31-14" href="#__codelineno-31-14"></a><span class="w">        </span><span class="nt">gpt-4</span><span class="p">:</span>
+</span><span id="__span-31-15"><a id="__codelineno-31-15" name="__codelineno-31-15" href="#__codelineno-31-15"></a><span class="w">          </span><span class="nt">Limits</span><span class="p">:</span>
+</span><span id="__span-31-16"><a id="__codelineno-31-16" name="__codelineno-31-16" href="#__codelineno-31-16"></a><span class="w">            </span><span class="nt">rpm</span><span class="p">:</span>
+</span><span id="__span-31-17"><a id="__codelineno-31-17" name="__codelineno-31-17" href="#__codelineno-31-17"></a><span class="w">              </span><span class="nt">Capacity</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">500</span>
 </span></code></pre></div>
 <p>This approach lets you manage limits alongside other infrastructure in CloudFormation, with full lifecycle support (Create, Update, Delete).</p>
 <div class="admonition warning">
