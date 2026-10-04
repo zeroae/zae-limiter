@@ -296,6 +296,7 @@ class TestLoadUserClasses:
         mock_mod = self._make_mock_module(MyUser=self._make_user_class("MyUser"))
 
         monkeypatch.setenv("LOCUSTFILE", "from_env.py")
+        monkeypatch.delenv("LOCUST_USER_CLASSES", raising=False)
         with patch.object(
             worker_mod.importlib, "import_module", return_value=mock_mod
         ) as mock_import:
