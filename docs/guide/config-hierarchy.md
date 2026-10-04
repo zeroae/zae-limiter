@@ -25,6 +25,11 @@ flowchart TD
 4. **System defaults** - Global limits for all resources
 5. **Constructor defaults** - Fallback from code
 
+The first level with any limits supplies the **whole** set: levels override, they do not merge.
+A resource that sets only `rpm` is not limited by the system's `tpm`. In a YAML manifest, use
+[YAML anchors](../infra/deployment.md#reusing-limits-with-yaml-anchors) to reuse the lower
+level's limits instead of repeating them.
+
 !!! info "Namespace Scoping"
     All config levels (system, resource, entity) are scoped to a single namespace. Each namespace has its own independent configuration hierarchy. Changing system defaults in one namespace does not affect other namespaces.
 

@@ -96,6 +96,9 @@ The `limits` command group manages rate limits declaratively via YAML manifest f
 
 ### YAML Manifest Format
 
+Each level's `limits` replaces the levels below it. To reuse limits across levels without
+repeating them, see [Reusing Limits with YAML Anchors](infra/deployment.md#reusing-limits-with-yaml-anchors).
+
 ```yaml
 namespace: default
 
