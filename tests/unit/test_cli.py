@@ -7641,6 +7641,68 @@ class TestClientMinVersionSurvivesTheCli:
         assert "already up to date" in result.output
         manager.deploy_lambda_code.assert_not_called()
 
+    def test_upgrade_refreshes_stale_tags_on_a_current_stack(
+        self, mock_dynamodb, runner: CliRunner
+    ) -> None:
+        """open(auto_update=True) pushes Lambda code without touching the
+        stack tags, so a current record can sit beside stale tags. upgrade
+        refreshes them without pushing code, claiming the record's version."""
+        import asyncio
+
+        asyncio.run(self._seed("0.15.1", "0.0.0"))
+        manager = self._manager()
+        manager.ensure_tags = AsyncMock(return_value=True)
+        with (
+            patch("zae_limiter.__version__", "0.15.1"),
+            patch("zae_limiter.cli.StackManager", return_value=manager),
+        ):
+            result = runner.invoke(cli, ["upgrade", "--name", self.TABLE, "--region", "us-east-1"])
+        assert result.exit_code == 0, result.output
+        assert "already up to date" in result.output
+        assert "Stack tags updated" in result.output
+        manager.ensure_tags.assert_called_once_with(
+            refresh_versions=True, lambda_version="0.15.1", wait=True
+        )
+        manager.deploy_lambda_code.assert_not_called()
+        manager.deploy_provisioner_code.assert_not_called()
+
+    def test_upgrade_on_a_current_stack_survives_a_tag_failure(
+        self, mock_dynamodb, runner: CliRunner
+    ) -> None:
+        """Tags are cosmetic: a failed refresh is a warning, not an error."""
+        import asyncio
+
+        asyncio.run(self._seed("0.15.1", "0.0.0"))
+        manager = self._manager()
+        manager.ensure_tags = AsyncMock(side_effect=Exception("Access denied"))
+        with (
+            patch("zae_limiter.__version__", "0.15.1"),
+            patch("zae_limiter.cli.StackManager", return_value=manager),
+        ):
+            result = runner.invoke(cli, ["upgrade", "--name", self.TABLE, "--region", "us-east-1"])
+        assert result.exit_code == 0, result.output
+        assert "Tag update failed: Access denied" in result.output
+        assert asyncio.run(self._record())["lambda_version"] == "0.15.1"
+
+    def test_upgrade_by_an_older_client_leaves_newer_tags_alone(
+        self, mock_dynamodb, runner: CliRunner
+    ) -> None:
+        """An older client is also "up to date" against newer Lambdas, and
+        ensure_tags stamps the caller's own version, so refreshing here would
+        rewrite zae-limiter:version downwards."""
+        import asyncio
+
+        asyncio.run(self._seed("0.16.0", "0.0.0"))
+        manager = self._manager()
+        with (
+            patch("zae_limiter.__version__", "0.15.1"),
+            patch("zae_limiter.cli.StackManager", return_value=manager),
+        ):
+            result = runner.invoke(cli, ["upgrade", "--name", self.TABLE, "--region", "us-east-1"])
+        assert result.exit_code == 0, result.output
+        assert "already up to date" in result.output
+        manager.ensure_tags.assert_not_called()
+
     def test_upgrade_updates_an_unknown_lambda_version_without_force(
         self, mock_dynamodb, runner: CliRunner
     ) -> None:

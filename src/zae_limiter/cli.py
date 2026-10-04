@@ -1645,6 +1645,22 @@ def upgrade(
                 click.echo("Infrastructure is already up to date.")
                 click.echo(f"  Client:   {__version__}")
                 click.echo(f"  Lambda:   {infra_version.lambda_version}")
+                # open(auto_update=True) pushes Lambda code but leaves the stack
+                # tags alone, so a current version record can sit beside stale
+                # tags. Refresh them, but only when this build is the one the
+                # record names: an older or tagless client also lands here, and
+                # ensure_tags would write its own version over a newer one.
+                if infra_version.lambda_version == __version__:
+                    try:
+                        async with StackManager(name, region, endpoint_url) as manager:
+                            if await manager.ensure_tags(
+                                refresh_versions=True,
+                                lambda_version=infra_version.lambda_version,
+                                wait=True,
+                            ):
+                                click.echo("  Stack tags updated")
+                    except Exception as e:
+                        click.echo(f"⚠️  Tag update failed: {e}", err=True)
                 return
 
             if compat.requires_schema_migration:
