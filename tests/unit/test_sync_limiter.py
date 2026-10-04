@@ -10184,3 +10184,94 @@ class TestResetAfterOverrideGate:
         finally:
             client.get_item = original
         assert reads == []
+
+
+class TestCreditAboveCapacity:
+    """A credit can lift a balance above its ceiling; the fast path must not spend it (#679).
+
+    ``release()`` and a negative ``adjust()`` write an unconditional ``ADD``, and a
+    rollback returns consumption after refill may have accrued. The speculative
+    fast path is a pure ``ADD`` with no cap, so an excess was admitted there while
+    the slow path clamped it and ``check_availability`` reported the cap.
+    """
+
+    SLOW = Limit.custom("q", capacity=100, refill_amount=1, refill_period_seconds=86400)
+
+    @staticmethod
+    def _raw(repo, entity_id, resource="r", shard=0):
+        client = repo._get_client()
+        response = client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, resource, shard)},
+                "SK": {"S": sk_state()},
+            },
+        )
+        return response["Item"]
+
+    def test_a_release_above_capacity_is_not_spent_by_the_fast_path(self, sync_limiter):
+        repo = sync_limiter._repository
+        repo.set_limits("over", [self.SLOW], resource="r")
+        with sync_limiter.acquire("over", "r", consume={"q": 10}) as lease:
+            lease.release(q=500)
+        assert self._raw(repo, "over")[BUCKET_FIELD_VU]["N"] == "0"
+        with pytest.raises(RateLimitExceeded):
+            with sync_limiter.acquire("over", "r", consume={"q": 200}):
+                pass
+
+    def test_the_forced_pass_trims_the_excess_to_the_ceiling(self, sync_limiter):
+        repo = sync_limiter._repository
+        repo.set_limits("trim", [self.SLOW], resource="r")
+        with sync_limiter.acquire("trim", "r", consume={"q": 10}) as lease:
+            lease.release(q=500)
+        with sync_limiter.acquire("trim", "r", consume={"q": 100}):
+            pass
+        with pytest.raises(RateLimitExceeded):
+            with sync_limiter.acquire("trim", "r", consume={"q": 1}):
+                pass
+
+    def test_a_credit_within_capacity_costs_nothing_extra(self, sync_limiter):
+        """The common LLM reconcile (estimate high, return the rest) stays on the fast path."""
+        repo = sync_limiter._repository
+        repo.set_limits("within", [self.SLOW], resource="r")
+        with sync_limiter.acquire("within", "r", consume={"q": 1}):
+            pass
+        client = repo._get_client()
+        calls: list[str] = []
+        original = client.update_item
+
+        def spy(**kwargs):
+            calls.append(kwargs["UpdateExpression"])
+            return original(**kwargs)
+
+        client.update_item = spy
+        try:
+            with sync_limiter.acquire("within", "r", consume={"q": 50}) as lease:
+                lease.release(q=20)
+        finally:
+            client.update_item = original
+        assert len(calls) == 2
+        assert BUCKET_FIELD_VU not in self._raw(repo, "within")
+
+    def test_a_rollback_that_overshoots_is_trimmed(self, sync_limiter):
+        """Returning consumption after a refill landed can overshoot as well."""
+        repo = sync_limiter._repository
+        repo.set_limits("rollback", [self.SLOW], resource="r")
+        client = repo._get_client()
+        tk = bucket_attr("q", BUCKET_FIELD_TK)
+        with pytest.raises(RuntimeError):
+            with sync_limiter.acquire("rollback", "r", consume={"q": 10}):
+                client.update_item(
+                    TableName=repo.table_name,
+                    Key={
+                        "PK": {"S": pk_bucket(repo._namespace_id, "rollback", "r", 0)},
+                        "SK": {"S": sk_state()},
+                    },
+                    UpdateExpression="ADD #tk :c",
+                    ExpressionAttributeNames={"#tk": tk},
+                    ExpressionAttributeValues={":c": {"N": "5000"}},
+                )
+                raise RuntimeError("caller failed; the lease rolls back")
+        item = self._raw(repo, "rollback")
+        assert item[tk]["N"] == "105000"
+        assert item[BUCKET_FIELD_VU]["N"] == "0"

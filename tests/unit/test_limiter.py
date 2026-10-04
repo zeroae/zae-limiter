@@ -12472,3 +12472,105 @@ class TestResetAfterOverrideGate:
         finally:
             client.get_item = original
         assert reads == []
+
+
+class TestCreditAboveCapacity:
+    """A credit can lift a balance above its ceiling; the fast path must not spend it (#679).
+
+    ``release()`` and a negative ``adjust()`` write an unconditional ``ADD``, and a
+    rollback returns consumption after refill may have accrued. The speculative
+    fast path is a pure ``ADD`` with no cap, so an excess was admitted there while
+    the slow path clamped it and ``check_availability`` reported the cap.
+    """
+
+    # ~no refill during a test, so refill cannot blur the arithmetic
+    SLOW = Limit.custom("q", capacity=100, refill_amount=1, refill_period_seconds=86400)
+
+    @staticmethod
+    async def _raw(repo, entity_id, resource="r", shard=0):
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, resource, shard)},
+                "SK": {"S": sk_state()},
+            },
+        )
+        return response["Item"]
+
+    async def test_a_release_above_capacity_is_not_spent_by_the_fast_path(self, limiter):
+        repo = limiter._repository
+        await repo.set_limits("over", [self.SLOW], resource="r")
+
+        async with limiter.acquire("over", "r", consume={"q": 10}) as lease:
+            await lease.release(q=500)  # 100 - 10 + 500 = 590 > 100
+
+        assert (await self._raw(repo, "over"))[BUCKET_FIELD_VU]["N"] == "0"
+        with pytest.raises(RateLimitExceeded):
+            async with limiter.acquire("over", "r", consume={"q": 200}):
+                pass
+
+    async def test_the_forced_pass_trims_the_excess_to_the_ceiling(self, limiter):
+        repo = limiter._repository
+        await repo.set_limits("trim", [self.SLOW], resource="r")
+
+        async with limiter.acquire("trim", "r", consume={"q": 10}) as lease:
+            await lease.release(q=500)
+
+        async with limiter.acquire("trim", "r", consume={"q": 100}):
+            pass  # exactly the ceiling: admitted, and spends all of it
+
+        with pytest.raises(RateLimitExceeded):
+            async with limiter.acquire("trim", "r", consume={"q": 1}):
+                pass
+
+    async def test_a_credit_within_capacity_costs_nothing_extra(self, limiter):
+        """The common LLM reconcile (estimate high, return the rest) stays on the fast path."""
+        repo = limiter._repository
+        await repo.set_limits("within", [self.SLOW], resource="r")
+        async with limiter.acquire("within", "r", consume={"q": 1}):
+            pass  # warm: the bucket exists, so the next acquire is speculative
+
+        client = await repo._get_client()
+        calls: list[str] = []
+        original = client.update_item
+
+        async def spy(**kwargs):
+            calls.append(kwargs["UpdateExpression"])
+            return await original(**kwargs)
+
+        client.update_item = spy
+        try:
+            async with limiter.acquire("within", "r", consume={"q": 50}) as lease:
+                await lease.release(q=20)
+        finally:
+            client.update_item = original
+
+        assert len(calls) == 2  # the speculative debit and the adjustment, nothing more
+        assert BUCKET_FIELD_VU not in await self._raw(repo, "within")
+
+    async def test_a_rollback_that_overshoots_is_trimmed(self, limiter):
+        """Returning consumption after a refill landed can overshoot as well."""
+        repo = limiter._repository
+        await repo.set_limits("rollback", [self.SLOW], resource="r")
+        client = await repo._get_client()
+        tk = bucket_attr("q", BUCKET_FIELD_TK)
+
+        with pytest.raises(RuntimeError):
+            async with limiter.acquire("rollback", "r", consume={"q": 10}):
+                # Another writer credits the bucket while the lease is open.
+                await client.update_item(
+                    TableName=repo.table_name,
+                    Key={
+                        "PK": {"S": pk_bucket(repo._namespace_id, "rollback", "r", 0)},
+                        "SK": {"S": sk_state()},
+                    },
+                    UpdateExpression="ADD #tk :c",
+                    ExpressionAttributeNames={"#tk": tk},
+                    ExpressionAttributeValues={":c": {"N": "5000"}},
+                )
+                raise RuntimeError("caller failed; the lease rolls back")
+
+        item = await self._raw(repo, "rollback")
+        assert item[tk]["N"] == "105000"  # 90 + 5 + 10 returned
+        assert item[BUCKET_FIELD_VU]["N"] == "0"
