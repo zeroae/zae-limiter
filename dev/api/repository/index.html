@@ -1715,6 +1715,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#zae_limiter.repository.Repository.build_vu_reset" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;build_vu_reset
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#zae_limiter.repository.Repository.transact_write" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -5902,6 +5913,17 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;build_composite_adjust
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#zae_limiter.repository.Repository.build_vu_reset" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;build_vu_reset
       
     </span>
   </a>
@@ -10995,6 +11017,31 @@ Negative delta = consumed less (add tokens, subtract from counter).</p>
 <div class="doc doc-object doc-function">
 
 
+<h4 id="zae_limiter.repository.Repository.build_vu_reset" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">build_vu_reset</span>
+
+
+<a href="#zae_limiter.repository.Repository.build_vu_reset" class="headerlink" title="Permanent link">&para;</a></h4>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_vu_reset</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Build an UpdateItem that forces one materialising pass (#679).</p>
+<p><code>vu = 0</code> fails the speculative condition, so the next acquire takes the
+slow path, which clamps every limit to its ceiling under the <code>rf</code> lock
+and clears <code>vu</code> again — the mechanism the limit-change sync uses after a
+capacity shrink (#222 Task 13). Used after a credit lifted a balance above
+its ceiling, which the fast path (a pure <code>ADD</code>) would otherwise spend.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
 <h4 id="zae_limiter.repository.Repository.transact_write" class="doc doc-heading">
 <code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">transact_write</span>
 
@@ -11037,6 +11084,8 @@ Negative delta = consumed less (add tokens, subtract from counter).</p>
 <p>Each item is dispatched as a single PutItem, UpdateItem, or DeleteItem
 call. Use for unconditional writes (e.g., ADD adjustments) where partial
 success is acceptable.</p>
+<p>Returns one entry per item: the <code>Attributes</code> an UpdateItem returned
+(non-empty only when the item asked for <code>ReturnValues</code>), else <code>{}</code>.</p>
 
 
     </div>
@@ -17605,6 +17654,59 @@ where partial success is acceptable.</p>
             </td>
             <td>
                 <em>required</em>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="list">list</span>[<span title="dict">dict</span>[<span title="str">str</span>, <span title="typing.Any">Any</span>]] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>One entry per item: the attributes an UpdateItem returned (when the</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="list">list</span>[<span title="dict">dict</span>[<span title="str">str</span>, <span title="typing.Any">Any</span>]] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>item asked for <code>ReturnValues</code>), else an empty dict. A backend may</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="list">list</span>[<span title="dict">dict</span>[<span title="str">str</span>, <span title="typing.Any">Any</span>]] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>return <code>None</code>; callers then skip the post-credit ceiling check</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="list">list</span>[<span title="dict">dict</span>[<span title="str">str</span>, <span title="typing.Any">Any</span>]] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>(#679) rather than fail.</p>
+              </div>
             </td>
           </tr>
       </tbody>

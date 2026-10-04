@@ -12452,6 +12452,18 @@ explicitly where that lease is built, never inferred from an empty
         <p>Adjust consumption by delta (positive or negative).</p>
 <p>Never raises - allows bucket to go negative.
 Use for post-hoc reconciliation (e.g., LLM token counts).</p>
+<p>A negative delta is a credit, written as an unconditional <code>ADD</code>, so
+the stored balance can land above the shard's ceiling. The excess is
+trimmed before the fast path can spend it: when the write reports a
+balance over its ceiling, the item is marked (<code>vu = 0</code>) so the next
+acquire takes the slow path, which clamps every limit, and the
+aggregator does not reopen the fast path meanwhile (#679, #681).
+Not covered: the one round trip between the credit and its <code>vu = 0</code>
+write (two separate writes); a backend whose <code>write_each</code> reports no balances; a
+<code>vu = 0</code> write that itself fails (logged, the excess then waits for
+the next materialising pass); an adjustment commit that fails partway
+(#682); and the speculative compensation a rejected cascade writes,
+which credits back a debit one round trip old.</p>
 <p>Only limits declared in <code>acquire(consume=...)</code> can be adjusted;
 other keys are reported (Issue #455) and ignored.</p>
 
@@ -12567,9 +12579,11 @@ other keys are reported (Issue #455) and ignored.</p>
     <div class="doc doc-contents ">
 
         <p>Return unused capacity to bucket.</p>
-<p>Equivalent to <code>adjust()</code> with every amount negated: the returned
-tokens are credited unconditionally, so the bucket can end up above
-its capacity until the next refill re-caps it.</p>
+<p>Equivalent to <code>adjust()</code> with every amount negated, so the same
+ceiling rule applies: the stored balance can land above the shard's
+ceiling, and the excess is trimmed before the fast path can spend it
+(#679, #681). Returning more than was consumed is therefore not a way
+to grant extra capacity.</p>
 <p>Only limits declared in <code>acquire(consume=...)</code> can be released;
 other keys are reported (Issue #455) and ignored.</p>
 
@@ -12735,6 +12749,18 @@ explicitly where that lease is built, never inferred from an empty
         <p>Adjust consumption by delta (positive or negative).</p>
 <p>Never raises - allows bucket to go negative.
 Use for post-hoc reconciliation (e.g., LLM token counts).</p>
+<p>A negative delta is a credit, written as an unconditional <code>ADD</code>, so
+the stored balance can land above the shard's ceiling. The excess is
+trimmed before the fast path can spend it: when the write reports a
+balance over its ceiling, the item is marked (<code>vu = 0</code>) so the next
+acquire takes the slow path, which clamps every limit, and the
+aggregator does not reopen the fast path meanwhile (#679, #681).
+Not covered: the one round trip between the credit and its <code>vu = 0</code>
+write (two separate writes); a backend whose <code>write_each</code> reports no balances; a
+<code>vu = 0</code> write that itself fails (logged, the excess then waits for
+the next materialising pass); an adjustment commit that fails partway
+(#682); and the speculative compensation a rejected cascade writes,
+which credits back a debit one round trip old.</p>
 <p>Only limits declared in <code>acquire(consume=...)</code> can be adjusted;
 other keys are reported (Issue #455) and ignored.</p>
 
@@ -12842,9 +12868,11 @@ other keys are reported (Issue #455) and ignored.</p>
     <div class="doc doc-contents ">
 
         <p>Return unused capacity to bucket.</p>
-<p>Equivalent to <code>adjust()</code> with every amount negated: the returned
-tokens are credited unconditionally, so the bucket can end up above
-its capacity until the next refill re-caps it.</p>
+<p>Equivalent to <code>adjust()</code> with every amount negated, so the same
+ceiling rule applies: the stored balance can land above the shard's
+ceiling, and the excess is trimmed before the fast path can spend it
+(#679, #681). Returning more than was consumed is therefore not a way
+to grant extra capacity.</p>
 <p>Only limits declared in <code>acquire(consume=...)</code> can be released;
 other keys are reported (Issue #455) and ignored.</p>
 
