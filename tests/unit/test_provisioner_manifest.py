@@ -724,3 +724,66 @@ class TestScheduleSurvivesToChangeData:
         rpm = next(c for c in changes if c.level == "resource").data["limits"]["rpm"]
         assert "schedule" not in rpm
         assert "reset_schedule" not in rpm
+
+
+@pytest.fixture(scope="module")
+def anchored_manifest() -> LimitsManifest:
+    from tests.fixtures.manifests import documented_anchor_manifest
+
+    return LimitsManifest.from_yaml(documented_anchor_manifest())
+
+
+def _effective(limits) -> dict:
+    return {
+        name: (decl.capacity, [(entry.cron, entry.scale) for entry in decl.schedule])
+        for name, decl in limits.items()
+    }
+
+
+class TestDocumentedYamlAnchors:
+    """YAML anchors and merge keys, as docs/infra/deployment.md documents them."""
+
+    NIGHT = ("* 0-6 * * *", 2)
+    DAY = ("* 9-17 * * 1-5", 0.5)
+
+    def test_system_is_assembled_from_parts(self, anchored_manifest):
+        assert _effective(anchored_manifest.system.limits) == {
+            "rpm": (300, []),
+            "tpm": (10000, [self.NIGHT]),
+        }
+
+    def test_a_resource_extends_system_and_overrides_one_limit(self, anchored_manifest):
+        assert _effective(anchored_manifest.resources["gpt-4"].limits) == {
+            "rpm": (600, []),
+            "tpm": (10000, [self.NIGHT]),
+        }
+
+    def test_a_resource_leaves_one_limit_out(self, anchored_manifest):
+        assert _effective(anchored_manifest.resources["gpt-3.5-turbo"].limits) == {"rpm": (300, [])}
+
+    def test_a_resource_replaces_only_a_schedule(self, anchored_manifest):
+        assert _effective(anchored_manifest.resources["gpt-4o"].limits) == {
+            "rpm": (300, []),
+            "tpm": (10000, [self.DAY]),
+        }
+
+    def test_an_entity_extends_a_resource_that_extends_system(self, anchored_manifest):
+        limits = anchored_manifest.entities["user-premium"].resources["gpt-4"].limits
+        assert _effective(limits) == {"rpm": (1000, []), "tpm": (10000, [self.NIGHT])}
+
+    def test_an_entity_drops_an_inherited_schedule(self, anchored_manifest):
+        limits = anchored_manifest.entities["user-basic"].resources["gpt-4"].limits
+        assert _effective(limits) == {"rpm": (600, []), "tpm": (10000, [])}
+
+    def test_unknown_top_level_keys_are_ignored(self):
+        """The documented pattern keeps its anchors under ``x-parts:``."""
+        system = {"limits": {"rpm": {"capacity": 300}}}
+        with_parts = LimitsManifest.from_dict(
+            {
+                "namespace": "default",
+                "x-parts": {"rate": {"rpm": {"capacity": 1}}},
+                "system": system,
+            }
+        )
+        without = LimitsManifest.from_dict({"namespace": "default", "system": system})
+        assert with_parts.to_dict() == without.to_dict()
