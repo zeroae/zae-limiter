@@ -347,6 +347,16 @@ class Lease:
         Never raises - allows bucket to go negative.
         Use for post-hoc reconciliation (e.g., LLM token counts).
 
+        A negative delta is a credit, written as an unconditional ``ADD``, so
+        the stored balance can land above the shard's ceiling. The excess is
+        trimmed before the fast path can spend it: when the write reports a
+        balance over its ceiling, the item is marked (``vu = 0``) so the next
+        acquire takes the slow path, which clamps every limit, and the
+        aggregator does not reopen the fast path meanwhile (#679, #681).
+        Two cases are not covered: a backend whose ``write_each`` reports no
+        balances, and the speculative compensation a rejected cascade writes,
+        which credits back a debit one round trip old.
+
         Only limits declared in ``acquire(consume=...)`` can be adjusted;
         other keys are reported (Issue #455) and ignored.
 
@@ -383,12 +393,11 @@ class Lease:
         """
         Return unused capacity to bucket.
 
-        Equivalent to ``adjust()`` with every amount negated: the returned
-        tokens are credited unconditionally, so the stored balance can land
-        above the shard's ceiling. It is never spent there: when the write
-        reports a balance over its ceiling, the item is marked so the next
-        acquire takes the slow path, which trims it (#679). Returning more
-        than was consumed is therefore not a way to grant extra capacity.
+        Equivalent to ``adjust()`` with every amount negated, so the same
+        ceiling rule applies: the stored balance can land above the shard's
+        ceiling, and the excess is trimmed before the fast path can spend it
+        (#679, #681). Returning more than was consumed is therefore not a way
+        to grant extra capacity.
 
         Only limits declared in ``acquire(consume=...)`` can be released;
         other keys are reported (Issue #455) and ignored.
