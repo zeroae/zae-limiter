@@ -961,6 +961,10 @@ def try_refill_bucket(
     # name (#634) — `NAME_PATTERN` allows `.` and `-`, and an inline
     # `b_rpm.v2_tk` parses as a nested document path.
     refilled: list[str] = []
+    # Limits this pass leaves above their ceiling: a quota it does not reset
+    # or roll (it never drips, so `refill_bucket` never clamps it). While any
+    # is set, `vu` must not be re-stamped (#679, see below).
+    over_ceiling: list[str] = []
 
     for limit_name, info in state.limits.items():
         if limit_name == WCU_LIMIT_NAME:
@@ -1094,6 +1098,8 @@ def try_refill_bucket(
         # `refill_bucket` would add nothing and the `rp_ms` half of the guard
         # exists to keep its drift division off a zero denominator.
         if info.rp_ms <= 0 or not is_accrual_rate(info.ra_milli):
+            if info.tk_milli > ceiling_cp:
+                over_ceiling.append(limit_name)
             continue
 
         result = refill_bucket(
@@ -1244,7 +1250,12 @@ def try_refill_bucket(
     # already honouring. A boundary at or before `now` means a duration window
     # is waiting for a client to anchor it (ended, or never opened): the gate
     # must stay shut, so the stamp is left exactly as it is.
-    if state.vu_ms is not None and state.vu_ms <= now_ms:
+    #
+    # Nor is it re-opened while a limit this pass does not clamp sits above its
+    # ceiling (#679): a quota lifted there by a credit or left there by a
+    # capacity shrink. The fast path is a pure `ADD` and would spend the excess;
+    # the client slow pass the expired `vu` forces clamps every limit first.
+    if state.vu_ms is not None and state.vu_ms <= now_ms and not over_ceiling:
         boundary = _item_next_boundary(state, now_ms)
         if boundary is not None and boundary > now_ms:
             set_parts.append("#vu = :new_vu")
