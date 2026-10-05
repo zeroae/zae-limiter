@@ -157,6 +157,7 @@ class SyncRepository:
         self._config_cache_ttl = config_cache_ttl
         self._shard_cap_warned: set[tuple[str, str]] = set()
         self._entity_cache: dict[tuple[str, str], tuple[bool, str | None, dict[str, int]]] = {}
+        self._cascade_cache: dict[tuple[str, str, str], bool] = {}
         self._on_unavailable_cache: OnUnavailableAction | None = None
         self._namespace_cache: dict[str, str] = {}
         self._parallel_mode = parallel_mode
@@ -464,6 +465,7 @@ class SyncRepository:
             ttl_seconds=self._config_cache_ttl, namespace_id=namespace_id
         )
         scoped._entity_cache = self._entity_cache
+        scoped._cascade_cache = self._cascade_cache
         scoped._namespace_cache = self._namespace_cache
         scoped._on_unavailable_cache = None
         scoped._lambda_version_read = self._lambda_version_read
@@ -2772,7 +2774,10 @@ class SyncRepository:
         cache_entry = self._entity_cache.get(cache_key)
         effective_shard_id, _shard_count = self.select_shard(entity_id, resource)
         if cache_entry is not None:
-            cascade_cached, parent_id_cached, shards_cached = cache_entry
+            entity_cascade, parent_id_cached, shards_cached = cache_entry
+            cascade_cached = self._cascade_cache.get(
+                (self._namespace_id, entity_id, resource), entity_cascade
+            )
             if cascade_cached and parent_id_cached:
                 child_result: SpeculativeResult
                 parent_result: SpeculativeResult
@@ -3025,6 +3030,8 @@ class SyncRepository:
         count = max(observed, shards.get(resource, 1))
         shards[resource] = count
         self._entity_cache[cache_key] = (cascade, parent_id, shards)
+        if meta is not None and meta[1] is not None:
+            self._cascade_cache[self._namespace_id, entity_id, resource] = meta[0]
         return count
 
     def select_shard(

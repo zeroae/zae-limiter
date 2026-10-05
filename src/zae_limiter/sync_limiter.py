@@ -780,6 +780,13 @@ class SyncRateLimiter:
                     _parent_id=result.parent_id,
                 )
             )
+        if result.parent_result is not None and (not result.cascade) and result.parent_id:
+            parent_result = result.parent_result
+            if parent_result.success and parent_result.buckets:
+                self._compensate_speculative(
+                    parent_result.buckets[0].entity_id, resource, consume, parent_result.shard_id
+                )
+            result.parent_result = None
         if result.parent_result is not None:
             if result.parent_result.success:
                 for state in result.parent_result.buckets:

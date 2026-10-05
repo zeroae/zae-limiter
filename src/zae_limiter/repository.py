@@ -199,6 +199,12 @@ class Repository:
         # Value: (cascade, parent_id, {resource: shard_count})
         # cascade/parent_id are immutable; shard_count updated on doubling
         self._entity_cache: dict[tuple[str, str], tuple[bool, str | None, dict[str, int]]] = {}
+        # The cascade policy per (namespace, entity, resource), learned from the
+        # bucket item's own stamp (ADR-146): the warm path decides with it, and
+        # the entity-wide flag above is only the guess for a resource not yet
+        # seen. Consulted only while the entity has an entry, so dropping that
+        # entry still means "start cold".
+        self._cascade_cache: dict[tuple[str, str, str], bool] = {}
 
         # Cached on_unavailable from system config (issue #366)
         # Once loaded, used as fallback when DynamoDB is unreachable
@@ -532,6 +538,7 @@ class Repository:
         )
         # Share mutable caches
         scoped._entity_cache = self._entity_cache
+        scoped._cascade_cache = self._cascade_cache
         scoped._namespace_cache = self._namespace_cache
         # Scoped repos start with no on_unavailable cache (each namespace
         # has its own system config)
@@ -3301,7 +3308,13 @@ class Repository:
         effective_shard_id, _shard_count = self.select_shard(entity_id, resource)
 
         if cache_entry is not None:
-            cascade_cached, parent_id_cached, shards_cached = cache_entry
+            entity_cascade, parent_id_cached, shards_cached = cache_entry
+            # This resource's own policy when an item has shown it (ADR-146);
+            # the entity-wide flag is only the guess for a resource not yet
+            # seen, and the item the write returns overrules either.
+            cascade_cached = self._cascade_cache.get(
+                (self._namespace_id, entity_id, resource), entity_cascade
+            )
             if cascade_cached and parent_id_cached:
                 child_result: SpeculativeResult
                 parent_result: SpeculativeResult
@@ -3636,6 +3649,12 @@ class Repository:
         count = max(observed, shards.get(resource, 1))
         shards[resource] = count
         self._entity_cache[cache_key] = (cascade, parent_id, shards)
+        if meta is not None and meta[1] is not None:
+            # `meta` comes off this entity's own item for this resource, whose
+            # `cascade` is the policy resolved for exactly that pair (ADR-146).
+            # A stamp without `parent_id` is not one: an older version wrote it
+            # for a parent from its child's view (#684), so it teaches nothing.
+            self._cascade_cache[(self._namespace_id, entity_id, resource)] = meta[0]
         return count
 
     def select_shard(

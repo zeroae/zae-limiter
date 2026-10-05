@@ -313,3 +313,106 @@ class TestSlowPathFollowsThePolicy:
 
         assert (await _bucket(repo, "user", "llm"))["cascade"] == {"BOOL": False}
         assert await _consumed(repo, "team", "llm") == 1  # the first call only
+
+
+class TestWarmPathFollowsTheItem:
+    """The cache holds cascade per (entity, resource); the item overrules it (ADR-146)."""
+
+    async def _warm_cascading_user(self, limiter):
+        repo = limiter._repository
+        for resource in ("gpt-4", "llm"):
+            await repo.set_resource_defaults(resource, [RPM])
+        await repo.create_entity("team")
+        await repo.create_entity("user", parent_id="team", cascade=True)
+        for resource in ("gpt-4", "llm"):
+            async with limiter.acquire("user", resource, consume={"rpm": 1}):
+                pass  # both buckets exist, both cascading, cache warm
+
+    async def _stamp_bucket(self, repo, entity_id, resource, value):
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, resource, 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="SET #c = :c",
+            ExpressionAttributeNames={"#c": "cascade"},
+            ExpressionAttributeValues={":c": {"BOOL": value}},
+        )
+
+    async def test_a_parent_debited_on_a_stale_guess_is_refunded(self, cascade_limiter):
+        repo = cascade_limiter._repository
+        await self._warm_cascading_user(cascade_limiter)
+        await self._stamp_bucket(repo, "user", "llm", False)  # the policy turned off
+        repo._cascade_cache.clear()  # this process has not seen it yet
+        team_before = await _consumed(repo, "team", "llm")
+
+        async with cascade_limiter.acquire("user", "llm", consume={"rpm": 3}) as lease:
+            assert {e.entity_id for e in lease.entries} == {"user"}
+
+        assert await _consumed(repo, "team", "llm") == team_before
+        assert repo._cascade_cache[(repo._namespace_id, "user", "llm")] is False
+
+    async def test_a_failed_parent_write_needs_no_refund(self, cascade_limiter):
+        repo = cascade_limiter._repository
+        await self._warm_cascading_user(cascade_limiter)
+        await self._stamp_bucket(repo, "user", "llm", False)
+        repo._cascade_cache.clear()
+        client = await repo._get_client()
+        await client.delete_item(  # the parent's write will find no bucket
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, "team", "llm", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+        )
+
+        async with cascade_limiter.acquire("user", "llm", consume={"rpm": 3}) as lease:
+            assert {e.entity_id for e in lease.entries} == {"user"}
+
+        assert await _bucket(repo, "team", "llm") is None
+
+    async def test_a_stamp_without_parent_teaches_nothing(self, cascade_repo):
+        cascade_repo._learn_shard_count("parent", "llm", 1, meta=(False, None))
+        assert (cascade_repo._namespace_id, "parent", "llm") not in cascade_repo._cascade_cache
+
+    async def test_after_one_correction_the_warm_path_skips_the_parent(self, cascade_limiter):
+        repo = cascade_limiter._repository
+        await self._warm_cascading_user(cascade_limiter)
+        await self._stamp_bucket(repo, "user", "llm", False)
+        repo._cascade_cache.clear()
+        async with cascade_limiter.acquire("user", "llm", consume={"rpm": 1}):
+            pass  # learns the item's policy
+        writes = []
+        real = repo._speculative_consume_single
+
+        async def spy(entity_id, *args, **kwargs):
+            writes.append(entity_id)
+            return await real(entity_id, *args, **kwargs)
+
+        repo._speculative_consume_single = spy
+        async with cascade_limiter.acquire("user", "llm", consume={"rpm": 1}):
+            pass
+
+        assert writes == ["user"]
+
+    async def test_one_resource_does_not_decide_another(self, cascade_limiter):
+        repo = cascade_limiter._repository
+        await self._warm_cascading_user(cascade_limiter)
+        await self._stamp_bucket(repo, "user", "llm", False)
+        repo._cascade_cache.clear()
+        async with cascade_limiter.acquire("user", "llm", consume={"rpm": 1}):
+            pass
+        team_before = await _consumed(repo, "team", "gpt-4")
+
+        async with cascade_limiter.acquire("user", "gpt-4", consume={"rpm": 2}):
+            pass
+
+        assert await _consumed(repo, "team", "gpt-4") == team_before + 2
+
+    async def test_a_scoped_repository_shares_what_was_learned(self, cascade_repo):
+        await cascade_repo.register_namespace("tenant-b")
+        scoped = await cascade_repo.namespace("tenant-b")
+        cascade_repo._learn_shard_count("user", "llm", 1, meta=(False, "team"))
+        assert scoped._cascade_cache is cascade_repo._cascade_cache

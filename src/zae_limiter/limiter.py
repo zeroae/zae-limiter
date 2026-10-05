@@ -986,6 +986,27 @@ class RateLimiter:
                 )
             )
 
+        # The child's own item overrules the cache (ADR-146): the parallel path
+        # debited the parent on the cache's guess, but this resource's policy,
+        # stamped on the item, says it does not cascade. Refund the parent and
+        # keep a child-only lease. Once per (process, entity, resource): the
+        # write just taught the cache the item's policy.
+        #
+        # Only a stamp carrying `parent_id` is a policy: the owner stamp always
+        # writes both. `cascade=False` with no `parent_id` is a bucket an older
+        # version created for a parent from its child's view (#684); trusting
+        # it would stop the cascade, so the cache's answer stands, as before.
+        if result.parent_result is not None and not result.cascade and result.parent_id:
+            parent_result = result.parent_result
+            if parent_result.success and parent_result.buckets:
+                await self._compensate_speculative(
+                    parent_result.buckets[0].entity_id,
+                    resource,
+                    consume,
+                    parent_result.shard_id,
+                )
+            result.parent_result = None
+
         # Handle parent result from parallel path (issue #318)
         if result.parent_result is not None:
             if result.parent_result.success:
