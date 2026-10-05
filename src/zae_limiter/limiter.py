@@ -1012,12 +1012,19 @@ class RateLimiter:
                 )
                 return nested, result.shard_id, result.shard_count, parent_hint
         elif result.cascade and result.parent_id:
-            # Cache miss cascade — sequential parent speculative
+            # Cache miss cascade — sequential parent speculative. One item, the
+            # parent's: an explicit shard (the parent's own count, #474) routes
+            # to the single-item write, which never cascades. Without it the
+            # call ran its own cascade check on the PARENT's cache entry and
+            # also debited the grandparent, outside this lease — never
+            # reconciled, never refunded. The grandparent is the parent's own
+            # acquires' business.
             parent_id = result.parent_id
             parent_result = await self._repository.speculative_consume(
                 entity_id=parent_id,
                 resource=resource,
                 consume=consume,
+                shard_id=self._repository.select_shard(parent_id, resource)[0],
                 now_ms=now_ms,
             )
 

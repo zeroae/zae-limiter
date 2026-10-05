@@ -804,7 +804,11 @@ class SyncRateLimiter:
         elif result.cascade and result.parent_id:
             parent_id = result.parent_id
             parent_result = self._repository.speculative_consume(
-                entity_id=parent_id, resource=resource, consume=consume, now_ms=now_ms
+                entity_id=parent_id,
+                resource=resource,
+                consume=consume,
+                shard_id=self._repository.select_shard(parent_id, resource)[0],
+                now_ms=now_ms,
             )
             if parent_result.success:
                 for state in parent_result.buckets:
