@@ -2603,6 +2603,12 @@ def _format_limit(limit: Limit) -> str:
     return base
 
 
+def _echo_cascade_policy(policy: bool | None) -> None:
+    """Show a level's explicit cascade policy (ADR-146); nothing when it inherits."""
+    if policy is not None:
+        click.echo(f"Cascade: {'on' if policy else 'off'} (explicit)")
+
+
 def _echo_limit(limit: Limit, indent: str = "  ") -> None:
     """Print one limit and the schedule block that belongs under it.
 
@@ -2792,6 +2798,7 @@ def resource_get_defaults(
                 click.echo("Status: DISABLED")
             elif disabled is False:
                 click.echo("Status: enabled (explicit override)")
+            _echo_cascade_policy(await repo.get_resource_cascade(resource_name))
         except ValidationError as e:
             click.echo(f"Error: {e.reason}", err=True)
             sys.exit(1)
@@ -3057,6 +3064,130 @@ def resource_clear_disabled(
             )
         except Exception as e:
             click.echo(f"Error: Failed to clear resource disabled flag: {e}", err=True)
+            sys.exit(1)
+        finally:
+            await repo.close()
+
+    asyncio.run(_run())
+
+
+@resource.command(
+    "set-cascade",
+    epilog="""\b
+Examples:
+    \b
+    # Model limits cascade to the org; the shared budget does not
+    zae-limiter resource set-cascade gpt-4 on
+    zae-limiter resource set-cascade llm off
+""",
+)
+@click.argument("resource_name")
+@click.argument("value", type=click.Choice(["on", "off"]))
+@click.option(
+    "--name",
+    "-n",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Stack identifier used as the CloudFormation stack name.",
+)
+@click.option("--region", help="AWS region (default: use boto3 defaults)")
+@click.option(
+    "--endpoint-url",
+    help="AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)",
+)
+@namespace_option
+def resource_set_cascade(
+    resource_name: str,
+    value: str,
+    name: str,
+    region: str | None,
+    endpoint_url: str | None,
+    namespace: str,
+) -> None:
+    """Set whether entities cascade to their parent on a resource.
+
+    RESOURCE_NAME is the resource (e.g., 'gpt-4'); VALUE is 'on' or 'off'.
+    An entity's own policy for the resource (or its entity-wide one) still
+    wins. Existing buckets are restamped immediately. Requires a stack whose
+    Lambdas are 0.16.0 or later (run 'zae-limiter upgrade' first if not).
+
+    \f
+
+    **Examples:**
+        ```bash
+        zae-limiter resource set-cascade gpt-4 on
+        zae-limiter resource set-cascade llm off
+        ```
+    """
+
+    async def _run() -> None:
+        repo = await _connect(name, region, endpoint_url, namespace)
+        try:
+            count = await repo.set_resource_cascade(resource_name, value == "on")
+            click.echo(
+                f"Set cascade {value} for resource '{resource_name}' ({count} buckets stamped)"
+            )
+        except Exception as e:
+            click.echo(f"Error: Failed to set resource cascade: {e}", err=True)
+            sys.exit(1)
+        finally:
+            await repo.close()
+
+    asyncio.run(_run())
+
+
+@resource.command(
+    "clear-cascade",
+    epilog="""\b
+Examples:
+    \b
+    # Go back to each entity's own cascade setting
+    zae-limiter resource clear-cascade llm
+""",
+)
+@click.argument("resource_name")
+@click.option(
+    "--name",
+    "-n",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Stack identifier used as the CloudFormation stack name.",
+)
+@click.option("--region", help="AWS region (default: use boto3 defaults)")
+@click.option(
+    "--endpoint-url",
+    help="AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)",
+)
+@namespace_option
+def resource_clear_cascade(
+    resource_name: str,
+    name: str,
+    region: str | None,
+    endpoint_url: str | None,
+    namespace: str,
+) -> None:
+    """Clear a resource's cascade policy, reverting to inherit.
+
+    RESOURCE_NAME is the resource to clear (e.g., 'llm'). Entities then
+    cascade per their own policy, or per the flag they were created with.
+
+    \f
+
+    **Examples:**
+        ```bash
+        zae-limiter resource clear-cascade llm
+        ```
+    """
+
+    async def _run() -> None:
+        repo = await _connect(name, region, endpoint_url, namespace)
+        try:
+            count = await repo.clear_resource_cascade(resource_name)
+            click.echo(
+                f"Cleared cascade policy for resource '{resource_name}' ({count} buckets updated)"
+            )
+        except Exception as e:
+            click.echo(f"Error: Failed to clear resource cascade: {e}", err=True)
             sys.exit(1)
         finally:
             await repo.close()
@@ -3801,6 +3932,7 @@ def entity_get_limits(
                 click.echo("Status: DISABLED")
             elif disabled is False:
                 click.echo("Status: enabled (explicit override)")
+            _echo_cascade_policy(await repo.get_entity_cascade(entity_id, resource_name))
         except ValidationError as e:
             click.echo(f"Error: {e.reason}", err=True)
             sys.exit(1)
@@ -4101,6 +4233,140 @@ def entity_clear_disabled(
             click.echo(f"Cleared disabled flag for entity '{entity_id}' ({count} buckets updated)")
         except Exception as e:
             click.echo(f"Error: Failed to clear entity disabled flag: {e}", err=True)
+            sys.exit(1)
+        finally:
+            await repo.close()
+
+    asyncio.run(_run())
+
+
+@entity.command(
+    "set-cascade",
+    epilog="""\b
+Examples:
+    \b
+    # This user's model calls count against its org too
+    zae-limiter entity set-cascade user-123 on --resource gpt-4
+    \b
+    # This user never cascades, on any resource without its own policy
+    zae-limiter entity set-cascade user-123 off
+""",
+)
+@click.argument("entity_id")
+@click.argument("value", type=click.Choice(["on", "off"]))
+@click.option(
+    "--resource",
+    default=None,
+    help="Resource to scope to. Omit to apply across all resources for this entity.",
+)
+@click.option(
+    "--name",
+    "-n",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Stack identifier used as the CloudFormation stack name.",
+)
+@click.option("--region", help="AWS region (default: use boto3 defaults)")
+@click.option(
+    "--endpoint-url",
+    help="AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)",
+)
+@namespace_option
+def entity_set_cascade(
+    entity_id: str,
+    value: str,
+    resource: str | None,
+    name: str,
+    region: str | None,
+    endpoint_url: str | None,
+    namespace: str,
+) -> None:
+    """Set whether an entity cascades to its parent.
+
+    ENTITY_ID is the entity (e.g., 'user-123'); VALUE is 'on' or 'off'. Omit
+    --resource to set it for every resource that has no policy of its own
+    (targets the entity's `_default_` config). Existing buckets are restamped
+    immediately. Requires a stack whose Lambdas are 0.16.0 or later.
+
+    \f
+
+    **Examples:**
+        ```bash
+        zae-limiter entity set-cascade user-123 on --resource gpt-4
+        zae-limiter entity set-cascade user-123 off
+        ```
+    """
+
+    async def _run() -> None:
+        repo = await _connect(name, region, endpoint_url, namespace)
+        try:
+            count = await repo.set_entity_cascade(entity_id, value == "on", resource=resource)
+            click.echo(f"Set cascade {value} for entity '{entity_id}' ({count} buckets stamped)")
+        except Exception as e:
+            click.echo(f"Error: Failed to set entity cascade: {e}", err=True)
+            sys.exit(1)
+        finally:
+            await repo.close()
+
+    asyncio.run(_run())
+
+
+@entity.command(
+    "clear-cascade",
+    epilog="""\b
+Examples:
+    \b
+    # Revert an entity to the resource's (or its own creation-time) setting
+    zae-limiter entity clear-cascade user-123 --resource gpt-4
+""",
+)
+@click.argument("entity_id")
+@click.option(
+    "--resource",
+    default=None,
+    help="Resource to scope to. Omit to apply across all resources for this entity.",
+)
+@click.option(
+    "--name",
+    "-n",
+    default=DEFAULT_STACK_NAME,
+    show_default=True,
+    help="Stack identifier used as the CloudFormation stack name.",
+)
+@click.option("--region", help="AWS region (default: use boto3 defaults)")
+@click.option(
+    "--endpoint-url",
+    help="AWS endpoint URL (e.g., http://localhost:4566 for LocalStack)",
+)
+@namespace_option
+def entity_clear_cascade(
+    entity_id: str,
+    resource: str | None,
+    name: str,
+    region: str | None,
+    endpoint_url: str | None,
+    namespace: str,
+) -> None:
+    """Clear an entity's cascade policy, reverting to inherit.
+
+    ENTITY_ID is the entity to clear (e.g., 'user-123'). Omit --resource to
+    clear its entity-wide policy (the entity's `_default_` config).
+
+    \f
+
+    **Examples:**
+        ```bash
+        zae-limiter entity clear-cascade user-123 --resource gpt-4
+        ```
+    """
+
+    async def _run() -> None:
+        repo = await _connect(name, region, endpoint_url, namespace)
+        try:
+            count = await repo.clear_entity_cascade(entity_id, resource=resource)
+            click.echo(f"Cleared cascade policy for entity '{entity_id}' ({count} buckets updated)")
+        except Exception as e:
+            click.echo(f"Error: Failed to clear entity cascade: {e}", err=True)
             sys.exit(1)
         finally:
             await repo.close()

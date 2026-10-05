@@ -1,6 +1,7 @@
 """Tests for CLI commands."""
 
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -3669,6 +3670,7 @@ class TestResourceCommands:
         mock_repo = Mock()
         mock_repo.get_resource_defaults = AsyncMock(return_value=mock_limits)
         mock_repo.get_resource_disabled = AsyncMock(return_value=None)
+        mock_repo.get_resource_cascade = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
         _serve_read_only(mock_repo_class, mock_repo)
@@ -3691,6 +3693,7 @@ class TestResourceCommands:
         mock_repo = Mock()
         mock_repo.get_resource_defaults = AsyncMock(return_value=[])
         mock_repo.get_resource_disabled = AsyncMock(return_value=None)
+        mock_repo.get_resource_cascade = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
         _serve_read_only(mock_repo_class, mock_repo)
@@ -3712,6 +3715,7 @@ class TestResourceCommands:
         mock_repo = Mock()
         mock_repo.get_resource_defaults = AsyncMock(return_value=[])
         mock_repo.get_resource_disabled = AsyncMock(return_value=True)
+        mock_repo.get_resource_cascade = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
         _serve_read_only(mock_repo_class, mock_repo)
@@ -4990,6 +4994,7 @@ class TestEntityCommands:
         mock_repo = Mock()
         mock_repo.get_limits = AsyncMock(return_value=mock_limits)
         mock_repo.get_entity_disabled = AsyncMock(return_value=None)
+        mock_repo.get_entity_cascade = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
         _serve_read_only(mock_repo_class, mock_repo)
@@ -5013,6 +5018,7 @@ class TestEntityCommands:
         mock_repo = Mock()
         mock_repo.get_limits = AsyncMock(return_value=[])
         mock_repo.get_entity_disabled = AsyncMock(return_value=None)
+        mock_repo.get_entity_cascade = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
         _serve_read_only(mock_repo_class, mock_repo)
@@ -5035,6 +5041,7 @@ class TestEntityCommands:
         mock_repo = Mock()
         mock_repo.get_limits = AsyncMock(return_value=[])
         mock_repo.get_entity_disabled = AsyncMock(return_value=True)
+        mock_repo.get_entity_cascade = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
         mock_repo_class.return_value = mock_repo
         _serve_read_only(mock_repo_class, mock_repo)
@@ -6584,6 +6591,172 @@ class TestNamespaceOption:
         assert mock_repo._resolve_namespace.call_args[0][0] == "tenant-beta"
 
 
+class TestCascadeCommands:
+    """set-cascade / clear-cascade commands and the read-command line (ADR-146)."""
+
+    @staticmethod
+    def _writable(mock_repo_class: Mock, **methods: Any) -> Mock:
+        mock_repo = Mock()
+        for name, value in methods.items():
+            setattr(mock_repo, name, AsyncMock(**value))
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        return mock_repo
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            ["resource", "set-cascade"],
+            ["resource", "clear-cascade"],
+            ["entity", "set-cascade"],
+            ["entity", "clear-cascade"],
+        ],
+    )
+    def test_help(self, runner: CliRunner, command: list[str]) -> None:
+        result = runner.invoke(cli, [*command, "--help"])
+        assert result.exit_code == 0
+        assert "cascade" in result.output.lower()
+        assert "--namespace" in result.output
+
+    def test_the_value_must_be_on_or_off(self, runner: CliRunner) -> None:
+        result = runner.invoke(cli, ["resource", "set-cascade", "llm", "maybe"])
+        assert result.exit_code != 0
+        assert "'on'" in result.output and "'off'" in result.output
+
+    @pytest.mark.parametrize(("value", "expected"), [("on", True), ("off", False)])
+    @patch("zae_limiter.repository.Repository")
+    def test_resource_set_cascade(
+        self, mock_repo_class: Mock, runner: CliRunner, value: str, expected: bool
+    ) -> None:
+        repo = self._writable(mock_repo_class, set_resource_cascade={"return_value": 3})
+
+        result = runner.invoke(cli, ["resource", "set-cascade", "llm", value])
+
+        assert result.exit_code == 0, result.output
+        assert f"Set cascade {value} for resource 'llm'" in result.output
+        assert "3 buckets stamped" in result.output
+        repo.set_resource_cascade.assert_called_once_with("llm", expected)
+
+    @patch("zae_limiter.repository.Repository")
+    def test_resource_clear_cascade(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        repo = self._writable(mock_repo_class, clear_resource_cascade={"return_value": 2})
+
+        result = runner.invoke(cli, ["resource", "clear-cascade", "llm"])
+
+        assert result.exit_code == 0, result.output
+        assert "Cleared cascade policy for resource 'llm'" in result.output
+        assert "2 buckets updated" in result.output
+        repo.clear_resource_cascade.assert_called_once_with("llm")
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_set_cascade(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        repo = self._writable(mock_repo_class, set_entity_cascade={"return_value": 1})
+
+        result = runner.invoke(
+            cli, ["entity", "set-cascade", "user-123", "on", "--resource", "gpt-4"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "Set cascade on for entity 'user-123'" in result.output
+        repo.set_entity_cascade.assert_called_once_with("user-123", True, resource="gpt-4")
+
+    @patch("zae_limiter.repository.Repository")
+    def test_entity_clear_cascade_entity_wide(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        repo = self._writable(mock_repo_class, clear_entity_cascade={"return_value": 4})
+
+        result = runner.invoke(cli, ["entity", "clear-cascade", "user-123"])
+
+        assert result.exit_code == 0, result.output
+        assert "Cleared cascade policy for entity 'user-123'" in result.output
+        repo.clear_entity_cascade.assert_called_once_with("user-123", resource=None)
+
+    @pytest.mark.parametrize(
+        ("command", "method", "message"),
+        [
+            (["resource", "set-cascade", "llm", "off"], "set_resource_cascade", "resource"),
+            (["resource", "clear-cascade", "llm"], "clear_resource_cascade", "resource"),
+            (["entity", "set-cascade", "u", "off"], "set_entity_cascade", "entity"),
+            (["entity", "clear-cascade", "u"], "clear_entity_cascade", "entity"),
+        ],
+    )
+    @patch("zae_limiter.repository.Repository")
+    def test_a_refusal_exits_1_with_the_reason(
+        self,
+        mock_repo_class: Mock,
+        runner: CliRunner,
+        command: list[str],
+        method: str,
+        message: str,
+    ) -> None:
+        from zae_limiter.exceptions import VersionMismatchError
+
+        refusal = VersionMismatchError(
+            client_version="0.16.0",
+            schema_version="1.0.0",
+            lambda_version="0.15.1",
+            message="Refusing to store a cascade policy: run 'zae-limiter upgrade' first",
+            can_auto_update=True,
+        )
+        self._writable(mock_repo_class, **{method: {"side_effect": refusal}})
+
+        result = runner.invoke(cli, command)
+
+        assert result.exit_code == 1
+        assert f"Failed to {command[1].split('-')[0]} {message} cascade" in result.output
+        assert "zae-limiter upgrade" in result.output
+
+    @pytest.mark.parametrize(("policy", "line"), [(True, "on"), (False, "off")])
+    @patch("zae_limiter.repository.Repository")
+    def test_get_defaults_shows_an_explicit_policy(
+        self, mock_repo_class: Mock, runner: CliRunner, policy: bool, line: str
+    ) -> None:
+        mock_repo = Mock()
+        mock_repo.get_resource_defaults = AsyncMock(return_value=[])
+        mock_repo.get_resource_disabled = AsyncMock(return_value=None)
+        mock_repo.get_resource_cascade = AsyncMock(return_value=policy)
+        mock_repo.close = AsyncMock(return_value=None)
+        _serve_read_only(mock_repo_class, mock_repo)
+
+        result = runner.invoke(cli, ["resource", "get-defaults", "llm"])
+
+        assert result.exit_code == 0, result.output
+        assert f"Cascade: {line} (explicit)" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_get_limits_says_nothing_when_the_policy_is_inherited(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        mock_repo = Mock()
+        mock_repo.get_limits = AsyncMock(return_value=[])
+        mock_repo.get_entity_disabled = AsyncMock(return_value=None)
+        mock_repo.get_entity_cascade = AsyncMock(return_value=None)
+        mock_repo.close = AsyncMock(return_value=None)
+        _serve_read_only(mock_repo_class, mock_repo)
+
+        result = runner.invoke(cli, ["entity", "get-limits", "user-123", "-r", "llm"])
+
+        assert result.exit_code == 0, result.output
+        assert "Cascade:" not in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_get_limits_shows_an_explicit_policy(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        mock_repo = Mock()
+        mock_repo.get_limits = AsyncMock(return_value=[])
+        mock_repo.get_entity_disabled = AsyncMock(return_value=None)
+        mock_repo.get_entity_cascade = AsyncMock(return_value=True)
+        mock_repo.close = AsyncMock(return_value=None)
+        _serve_read_only(mock_repo_class, mock_repo)
+
+        result = runner.invoke(cli, ["entity", "get-limits", "user-123", "-r", "llm"])
+
+        assert result.exit_code == 0, result.output
+        assert "Cascade: on (explicit)" in result.output
+
+
 class TestDisableCommands:
     """Disable/enable commands (ADR-125)."""
 
@@ -6854,6 +7027,7 @@ class TestDisableCommands:
             ]
         )
         mock_repo.get_resource_disabled = AsyncMock(return_value=True)
+        mock_repo.get_resource_cascade = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
         _serve_read_only(mock_repo_class, mock_repo)
 
@@ -6875,6 +7049,7 @@ class TestDisableCommands:
             ]
         )
         mock_repo.get_resource_disabled = AsyncMock(return_value=False)
+        mock_repo.get_resource_cascade = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
         _serve_read_only(mock_repo_class, mock_repo)
 
@@ -6896,6 +7071,7 @@ class TestDisableCommands:
             ]
         )
         mock_repo.get_resource_disabled = AsyncMock(return_value=None)
+        mock_repo.get_resource_cascade = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
         _serve_read_only(mock_repo_class, mock_repo)
 
@@ -6917,6 +7093,7 @@ class TestDisableCommands:
             ]
         )
         mock_repo.get_entity_disabled = AsyncMock(return_value=True)
+        mock_repo.get_entity_cascade = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
         _serve_read_only(mock_repo_class, mock_repo)
 
@@ -6938,6 +7115,7 @@ class TestDisableCommands:
             ]
         )
         mock_repo.get_entity_disabled = AsyncMock(return_value=False)
+        mock_repo.get_entity_cascade = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
         _serve_read_only(mock_repo_class, mock_repo)
 
@@ -6959,6 +7137,7 @@ class TestDisableCommands:
             ]
         )
         mock_repo.get_entity_disabled = AsyncMock(return_value=None)
+        mock_repo.get_entity_cascade = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
         _serve_read_only(mock_repo_class, mock_repo)
 
@@ -6993,6 +7172,7 @@ class TestScheduleDisplay:
         mock_repo = Mock()
         mock_repo.get_limits = AsyncMock(return_value=limits)
         mock_repo.get_entity_disabled = AsyncMock(return_value=None)
+        mock_repo.get_entity_cascade = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
         _serve_read_only(mock_repo_class, mock_repo)
         return runner.invoke(cli, ["entity", "get-limits", "user-123", "-r", "gpt-4"])
@@ -7002,6 +7182,7 @@ class TestScheduleDisplay:
         mock_repo = Mock()
         mock_repo.get_resource_defaults = AsyncMock(return_value=limits)
         mock_repo.get_resource_disabled = AsyncMock(return_value=None)
+        mock_repo.get_resource_cascade = AsyncMock(return_value=None)
         mock_repo.close = AsyncMock(return_value=None)
         _serve_read_only(mock_repo_class, mock_repo)
         return runner.invoke(cli, ["resource", "get-defaults", "gpt-4"])
