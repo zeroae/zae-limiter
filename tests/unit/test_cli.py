@@ -6707,6 +6707,26 @@ class TestCascadeCommands:
         assert f"Failed to {command[1].split('-')[0]} {message} cascade" in result.output
         assert "zae-limiter upgrade" in result.output
 
+    @patch("zae_limiter.repository.Repository")
+    def test_a_partial_fanout_tells_the_operator_to_rerun(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        from zae_limiter.exceptions import FanoutIncomplete
+
+        self._writable(
+            mock_repo_class,
+            set_resource_cascade={
+                "side_effect": FanoutIncomplete(7, RuntimeError("throttled"), resource="llm")
+            },
+        )
+
+        result = runner.invoke(cli, ["resource", "set-cascade", "llm", "off"])
+
+        assert result.exit_code == 1
+        assert "7 bucket" in result.output
+        assert "partially applied" in result.output.lower()
+        assert "re-run" in result.output.lower()
+
     @pytest.mark.parametrize(("policy", "line"), [(True, "on"), (False, "off")])
     @patch("zae_limiter.repository.Repository")
     def test_get_defaults_shows_an_explicit_policy(
