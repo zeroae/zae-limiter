@@ -1513,9 +1513,44 @@ class Repository:
         if not any(limit.reset_after is not None for limit in limits):
             return
 
+        from .version import MIN_READER_VERSION_FOR_RESET_AFTER, reset_after_refusal
+
+        await self._require_readers(
+            MIN_READER_VERSION_FOR_RESET_AFTER, reset_after_refusal, ratchet=ratchet
+        )
+
+    async def _require_cascade_policy_readers(self) -> None:
+        """Refuse to store a cascade policy the stack cannot keep (ADR-146).
+
+        The ``reset_after`` gate (ADR-141), for the cascade policy: one strongly
+        consistent ``GetItem`` of the version record (1 RCU), then the
+        ``client_min_version`` ratchet to 0.16.0 the first time. Called only by
+        a write that sets or clears a policy, never on the acquire path.
+
+        Raises:
+            VersionMismatchError: the record is missing, or its
+                ``lambda_version`` is unknown or predates the cascade policy.
+        """
+        from .version import MIN_READER_VERSION_FOR_CASCADE_POLICY, cascade_policy_refusal
+
+        await self._require_readers(MIN_READER_VERSION_FOR_CASCADE_POLICY, cascade_policy_refusal)
+
+    async def _require_readers(
+        self,
+        minimum: str,
+        refusal: Callable[[bool, str | None], tuple[str, bool]],
+        *,
+        ratchet: bool = True,
+    ) -> None:
+        """The version gate shared by ``reset_after`` and the cascade policy.
+
+        Refuses unless the version record's ``lambda_version`` is at least
+        ``minimum`` (or this very build), then raises ``client_min_version`` to
+        ``minimum`` — never lowering it — unless ``ratchet`` is False.
+        """
         from . import __version__
         from .exceptions import VersionMismatchError
-        from .version import ratcheted_client_min_version, reads_reset_after, reset_after_refusal
+        from .version import ratcheted_client_min_version, reads_reset_after
 
         client = await self._get_client()
         key = {
@@ -1531,8 +1566,8 @@ class Repository:
             lambda_version = (item or {}).get("lambda_version", {}).get("S")
             if item:
                 self._remember_lambda_version(lambda_version)
-            if not item or not reads_reset_after(lambda_version, __version__):
-                message, can_auto_update = reset_after_refusal(bool(item), lambda_version)
+            if not item or not reads_reset_after(lambda_version, __version__, minimum):
+                message, can_auto_update = refusal(bool(item), lambda_version)
                 raise VersionMismatchError(
                     client_version=__version__,
                     schema_version=(item or {}).get("schema_version", {}).get("S", "unknown"),
@@ -1544,7 +1579,7 @@ class Repository:
                 return
             assert item is not None
             stored_min = item.get("client_min_version", {}).get("S")
-            new_min = ratcheted_client_min_version(stored_min, __version__)
+            new_min = ratcheted_client_min_version(stored_min, __version__, minimum)
             if new_min is None:
                 return
             # Never lowered: conditioned on the value just read, so a concurrent

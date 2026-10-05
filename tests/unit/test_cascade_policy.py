@@ -1,8 +1,11 @@
 """Tests for the per-resource cascade policy (ADR-146, #676)."""
 
+from unittest.mock import patch
+
 import pytest
 
 from zae_limiter import RateLimiter, schema
+from zae_limiter.exceptions import VersionMismatchError
 from zae_limiter.models import Entity, Limit, effective_cascade
 from zae_limiter.repository import Repository
 
@@ -563,3 +566,68 @@ class TestFanout:
         with pytest.raises(FanoutIncomplete) as info:
             await repo._fanout_cascade(resource="llm")
         assert info.value.stamped == 0
+
+
+class TestCascadePolicyVersionGate:
+    """Storing a cascade policy is gated on the readers' version (ADR-146, ADR-141)."""
+
+    @staticmethod
+    async def _stamp(repo, lambda_version, client_min_version="0.0.0"):
+        from zae_limiter.version import get_schema_version
+
+        await repo.set_version_record(
+            schema_version=get_schema_version(),
+            lambda_version=lambda_version,
+            client_min_version=client_min_version,
+        )
+
+    @staticmethod
+    async def _client_min(repo):
+        record = await repo.get_version_record()
+        return record["client_min_version"]
+
+    async def test_refused_while_the_lambdas_predate_it(self, cascade_repo):
+        await self._stamp(cascade_repo, "0.15.1")
+        with patch("zae_limiter.__version__", "0.16.0"):
+            with pytest.raises(VersionMismatchError) as exc_info:
+                await cascade_repo._require_cascade_policy_readers()
+        assert "cascade policy" in str(exc_info.value)
+        assert "zae-limiter upgrade" in str(exc_info.value)
+        assert exc_info.value.can_auto_update is True
+        assert await self._client_min(cascade_repo) == "0.0.0"
+
+    async def test_admitted_and_ratcheted_once_the_lambdas_read_it(self, cascade_repo):
+        await self._stamp(cascade_repo, "0.16.0")
+        with patch("zae_limiter.__version__", "0.16.1"):
+            await cascade_repo._require_cascade_policy_readers()
+        assert await self._client_min(cascade_repo) == "0.16.0"
+
+    async def test_a_dev_build_proves_itself_and_caps_the_ratchet(self, cascade_repo):
+        dev = "0.15.2.dev7+gabc1234"
+        await self._stamp(cascade_repo, dev)
+        with patch("zae_limiter.__version__", dev):
+            await cascade_repo._require_cascade_policy_readers()
+        assert await self._client_min(cascade_repo) == dev
+
+    async def test_a_missing_record_fails_closed(self, cascade_repo):
+        with patch("zae_limiter.__version__", "0.16.0"):
+            with pytest.raises(VersionMismatchError) as exc_info:
+                await cascade_repo._require_cascade_policy_readers()
+        assert "no version record" in str(exc_info.value)
+        assert exc_info.value.can_auto_update is False
+
+    async def test_an_unknown_lambda_version_proves_nothing(self, cascade_repo):
+        await self._stamp(cascade_repo, None)
+        with patch("zae_limiter.__version__", "0.16.0"):
+            with pytest.raises(VersionMismatchError) as exc_info:
+                await cascade_repo._require_cascade_policy_readers()
+        assert "Run 'zae-limiter upgrade' to deploy it" in str(exc_info.value)
+        assert exc_info.value.can_auto_update is False
+
+    def test_the_reset_after_minimum_is_still_the_default(self):
+        from zae_limiter.version import ratcheted_client_min_version, reads_reset_after
+
+        assert reads_reset_after("0.15.0", "0.16.0") is True
+        assert reads_reset_after("0.15.0", "0.16.0", "0.16.0") is False
+        assert ratcheted_client_min_version("0.0.0", "0.16.0") == "0.15.0"
+        assert ratcheted_client_min_version("0.0.0", "0.16.0", "0.16.0") == "0.16.0"
