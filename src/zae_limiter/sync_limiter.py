@@ -1452,7 +1452,9 @@ class SyncRateLimiter:
         """
         now_ms = self._repository._now_ms()
         parent_limits, parent_config_source = self._resolve_limits(parent_id, resource, None)
-        parent_buckets = self._fetch_buckets([parent_id], resource, parent_shard)
+        parent_entity, parent_buckets = self._fetch_entity_and_buckets(
+            parent_id, resource, parent_shard
+        )
         parent_entries: list[LeaseEntry] = []
         statuses: list[LimitStatus] = []
         has_custom_config = _is_custom_config(parent_config_source)
@@ -1494,6 +1496,9 @@ class SyncRateLimiter:
                     _declared=status is not None,
                     _shard_id=parent_shard,
                     _shard_count=parent_shard_count,
+                    _cascade=parent_entity.cascade if parent_entity else False,
+                    _parent_id=parent_entity.parent_id if parent_entity else None,
+                    _stamp_owner=parent_entity is not None,
                     _boundary_ms=parent_boundary_ms,
                     _reset_edge_ms=parent_reset_edge_ms,
                     _window_start_ms=parent_new_ws,
@@ -1629,6 +1634,7 @@ class SyncRateLimiter:
             )
         entity, child_buckets = self._fetch_entity_and_buckets(entity_id, resource, child_shard)
         entity_ids = [entity_id]
+        owners: dict[str, Entity | None] = {entity_id: entity}
         existing_buckets: dict[tuple[str, str, str], BucketState] = dict(child_buckets)
         entity_limits: dict[str, list[Limit]] = {entity_id: child_limits}
         entity_config_sources: dict[str, str] = {entity_id: child_config_source}
@@ -1648,7 +1654,10 @@ class SyncRateLimiter:
             entity_shards[parent_id] = self._repository.select_shard(
                 parent_id, resource, parent_shard_id
             )
-            parent_buckets = self._fetch_buckets([parent_id], resource, entity_shards[parent_id][0])
+            parent_entity, parent_buckets = self._fetch_entity_and_buckets(
+                parent_id, resource, entity_shards[parent_id][0]
+            )
+            owners[parent_id] = parent_entity
             existing_buckets.update(parent_buckets)
         known_limits = [limit for eid in entity_ids for limit in entity_limits[eid]]
         unknown_keys = self._warn_unknown_limits(
@@ -1659,6 +1668,7 @@ class SyncRateLimiter:
         statuses: list[LimitStatus] = []
         for eid in entity_ids:
             eid_shard, eid_shard_count = entity_shards[eid]
+            owner = owners.get(eid)
             item_states = [
                 state for (b_eid, _res, _name), state in existing_buckets.items() if b_eid == eid
             ]
@@ -1802,8 +1812,9 @@ class SyncRateLimiter:
                         _has_custom_config=has_custom_config,
                         _shard_id=eid_shard,
                         _shard_count=eid_shard_count,
-                        _cascade=entity.cascade if entity and eid == entity_id else False,
-                        _parent_id=entity.parent_id if entity and eid == entity_id else None,
+                        _cascade=owner.cascade if owner else False,
+                        _parent_id=owner.parent_id if owner else None,
+                        _stamp_owner=owner is not None,
                         _declared=status is not None,
                         _boundary_ms=boundary_ms,
                         _reset_edge_ms=reset_edge_ms,

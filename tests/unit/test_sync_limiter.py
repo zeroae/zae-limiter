@@ -4876,7 +4876,7 @@ class TestSpeculativeAcquire:
             refill_period_ms=60000,
         )
         original_speculative = sync_limiter._repository.speculative_consume
-        original_fetch = sync_limiter._fetch_buckets
+        original_fetch = sync_limiter._fetch_entity_and_buckets
         call_count = 0
         fetch_call_count = 0
 
@@ -4891,15 +4891,17 @@ class TestSpeculativeAcquire:
                 return SpeculativeResult(success=False, old_buckets=[parent_bucket_old])
             return original_speculative(entity_id, resource, consume, ttl_seconds)
 
-        def mock_fetch_buckets(entity_ids, resource, shard_id):
+        def mock_fetch_buckets(entity_id, resource, shard_id):
             nonlocal fetch_call_count
-            fetch_call_count += 1
-            if fetch_call_count == 1:
-                return {}
-            return original_fetch(entity_ids, resource, shard_id)
+            entity, buckets = original_fetch(entity_id, resource, shard_id)
+            if entity_id == "parent-1":
+                fetch_call_count += 1
+                if fetch_call_count == 1:
+                    return (entity, {})
+            return (entity, buckets)
 
         sync_limiter._repository.speculative_consume = mock_speculative
-        sync_limiter._fetch_buckets = mock_fetch_buckets
+        sync_limiter._fetch_entity_and_buckets = mock_fetch_buckets
         try:
             with sync_limiter.acquire("child-1", "gpt-4", {"rpm": 1}) as lease:
                 entity_ids = {e.entity_id for e in lease.entries}
@@ -4907,7 +4909,8 @@ class TestSpeculativeAcquire:
                 assert "parent-1" in entity_ids
         finally:
             sync_limiter._repository.speculative_consume = original_speculative
-            sync_limiter._fetch_buckets = original_fetch
+            sync_limiter._fetch_entity_and_buckets = original_fetch
+        assert fetch_call_count >= 1
 
     def test_speculative_cascade_parent_only_commit_fails(self, sync_limiter):
         """Parent-only slow path: _commit_initial raises → return None.
@@ -5175,6 +5178,7 @@ class TestSpeculativeAcquire:
         )
         original_speculative = sync_limiter._repository.speculative_consume
         original_fetch = sync_limiter._fetch_buckets
+        original_entity_fetch = sync_limiter._fetch_entity_and_buckets
         spec_call_count = 0
         fetch_call_count = 0
 
@@ -5190,15 +5194,15 @@ class TestSpeculativeAcquire:
                 return SpeculativeResult(success=False, old_buckets=[parent_bucket_old])
             return original_speculative(entity_id, resource, consume, ttl_seconds)
 
-        def mock_fetch_raising(entity_ids, resource, shard_id):
+        def mock_fetch_raising(entity_id, resource, shard_id):
             nonlocal fetch_call_count
             fetch_call_count += 1
-            if fetch_call_count == 1 and "parent-1" in entity_ids:
+            if fetch_call_count == 1 and entity_id == "parent-1":
                 raise RuntimeError("DynamoDB service unavailable")
-            return original_fetch(entity_ids, resource, shard_id)
+            return original_entity_fetch(entity_id, resource, shard_id)
 
         sync_limiter._repository.speculative_consume = mock_speculative
-        sync_limiter._fetch_buckets = mock_fetch_raising
+        sync_limiter._fetch_entity_and_buckets = mock_fetch_raising
         try:
             with pytest.raises(RateLimiterUnavailable, match="DynamoDB service unavailable"):
                 with sync_limiter.acquire("child-1", "gpt-4", {"rpm": 10}):
@@ -5210,7 +5214,7 @@ class TestSpeculativeAcquire:
             )
         finally:
             sync_limiter._repository.speculative_consume = original_speculative
-            sync_limiter._fetch_buckets = original_fetch
+            sync_limiter._fetch_entity_and_buckets = original_entity_fetch
 
 
 class TestCascadeEntityCache:
@@ -6381,14 +6385,14 @@ class TestClientShardCreation:
         repo._entity_cache[ns, "parent-1"] = (False, None, {"gpt-4": 2})
         sync_limiter._speculative_writes = True
         parent_reads: list[int] = []
-        original_fetch = sync_limiter._fetch_buckets
+        original_fetch = sync_limiter._fetch_entity_and_buckets
 
-        def spy(entity_ids, resource, shard_id):
-            if "parent-1" in entity_ids:
+        def spy(entity_id, resource, shard_id):
+            if entity_id == "parent-1":
                 parent_reads.append(shard_id)
-            return original_fetch(entity_ids, resource, shard_id)
+            return original_fetch(entity_id, resource, shard_id)
 
-        sync_limiter._fetch_buckets = spy
+        sync_limiter._fetch_entity_and_buckets = spy
         with patch("zae_limiter.sync_repository.random.randrange", side_effect=[1, 0, 0]):
             with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 10}) as lease:
                 parent_entry = next(e for e in lease.entries if e.entity_id == "parent-1")
@@ -7039,14 +7043,14 @@ class TestCascadeParentSharding:
             parent_rf_ms=now_ms - 100000,
         )
         parent_reads: list[int] = []
-        original_fetch = sync_limiter._fetch_buckets
+        original_fetch = sync_limiter._fetch_entity_and_buckets
 
-        def spy(entity_ids, resource, shard_id):
-            if "parent-1" in entity_ids:
+        def spy(entity_id, resource, shard_id):
+            if entity_id == "parent-1":
                 parent_reads.append(shard_id)
-            return original_fetch(entity_ids, resource, shard_id)
+            return original_fetch(entity_id, resource, shard_id)
 
-        sync_limiter._fetch_buckets = spy
+        sync_limiter._fetch_entity_and_buckets = spy
         with patch("zae_limiter.sync_repository.random.randrange", side_effect=[2]):
             with sync_limiter.acquire("user-1", "gpt-4", {"rpm": 10}) as lease:
                 parent_entry = next(e for e in lease.entries if e.entity_id == "parent-1")

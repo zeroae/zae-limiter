@@ -1826,7 +1826,11 @@ class RateLimiter:
         # child. A parent tracking a subset of the child's limits is a valid
         # configuration; keys with no parent limit are simply not applied.
 
-        parent_buckets = await self._fetch_buckets([parent_id], resource, parent_shard)
+        # The parent's META rides in the same BatchGetItem (+0.5 RCU) so its
+        # bucket carries the parent's own cascade / parent_id (#684).
+        parent_entity, parent_buckets = await self._fetch_entity_and_buckets(
+            parent_id, resource, parent_shard
+        )
 
         # Process parent buckets: refill + try_consume
         parent_entries: list[LeaseEntry] = []
@@ -1906,6 +1910,9 @@ class RateLimiter:
                     _declared=status is not None,
                     _shard_id=parent_shard,
                     _shard_count=parent_shard_count,
+                    _cascade=parent_entity.cascade if parent_entity else False,
+                    _parent_id=parent_entity.parent_id if parent_entity else None,
+                    _stamp_owner=parent_entity is not None,
                     _boundary_ms=parent_boundary_ms,
                     _reset_edge_ms=parent_reset_edge_ms,
                     _window_start_ms=parent_new_ws,
@@ -2081,6 +2088,9 @@ class RateLimiter:
 
         # Determine cascade
         entity_ids = [entity_id]
+        # Each item's owner as read from META this pass (#684); the write
+        # stamps an item with its owner's cascade / parent_id.
+        owners: dict[str, Entity | None] = {entity_id: entity}
         existing_buckets: dict[tuple[str, str, str], BucketState] = dict(child_buckets)
         entity_limits: dict[str, list[Limit]] = {entity_id: child_limits}
         # Track config source per entity (for TTL calculation, issue #271)
@@ -2111,9 +2121,14 @@ class RateLimiter:
             entity_shards[parent_id] = self._repository.select_shard(
                 parent_id, resource, parent_shard_id
             )
-            parent_buckets = await self._fetch_buckets(
-                [parent_id], resource, entity_shards[parent_id][0]
+            # The parent's META rides in the same BatchGetItem (+0.5 RCU): its
+            # bucket is stamped with the parent's OWN cascade / parent_id, which
+            # its own fast path decides from. Stamping the child's view (no
+            # cascade) stopped a middle entity reaching its parent (#684).
+            parent_entity, parent_buckets = await self._fetch_entity_and_buckets(
+                parent_id, resource, entity_shards[parent_id][0]
             )
+            owners[parent_id] = parent_entity
             existing_buckets.update(parent_buckets)
 
         # Unknown-key check (Issue #455) against every limit this acquire can
@@ -2139,6 +2154,7 @@ class RateLimiter:
 
         for eid in entity_ids:
             eid_shard, eid_shard_count = entity_shards[eid]
+            owner = owners.get(eid)
             # Whether the bucket *item* exists on this shard. Decided from
             # everything read off it — the reserved `wcu` and limits no longer
             # configured included — not from the resolved limits alone: an
@@ -2432,8 +2448,9 @@ class RateLimiter:
                         _has_custom_config=has_custom_config,
                         _shard_id=eid_shard,
                         _shard_count=eid_shard_count,
-                        _cascade=entity.cascade if entity and eid == entity_id else False,
-                        _parent_id=entity.parent_id if entity and eid == entity_id else None,
+                        _cascade=owner.cascade if owner else False,
+                        _parent_id=owner.parent_id if owner else None,
+                        _stamp_owner=owner is not None,
                         _declared=status is not None,
                         _boundary_ms=boundary_ms,
                         _reset_edge_ms=reset_edge_ms,

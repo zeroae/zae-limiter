@@ -6462,7 +6462,7 @@ class TestSpeculativeAcquire:
         )
 
         original_speculative = limiter._repository.speculative_consume
-        original_fetch = limiter._fetch_buckets
+        original_fetch = limiter._fetch_entity_and_buckets
         call_count = 0
         fetch_call_count = 0
 
@@ -6480,16 +6480,18 @@ class TestSpeculativeAcquire:
                 return SpeculativeResult(success=False, old_buckets=[parent_bucket_old])
             return await original_speculative(entity_id, resource, consume, ttl_seconds)
 
-        async def mock_fetch_buckets(entity_ids, resource, shard_id):
+        async def mock_fetch_buckets(entity_id, resource, shard_id):
             nonlocal fetch_call_count
-            fetch_call_count += 1
-            if fetch_call_count == 1:
-                # First call from _try_parent_only_acquire — return empty
-                return {}
-            return await original_fetch(entity_ids, resource, shard_id)
+            entity, buckets = await original_fetch(entity_id, resource, shard_id)
+            if entity_id == "parent-1":
+                fetch_call_count += 1
+                if fetch_call_count == 1:
+                    # First parent read, from _try_parent_only_acquire — no bucket
+                    return entity, {}
+            return entity, buckets
 
         limiter._repository.speculative_consume = mock_speculative
-        limiter._fetch_buckets = mock_fetch_buckets
+        limiter._fetch_entity_and_buckets = mock_fetch_buckets
         try:
             # _try_parent_only_acquire finds no parent bucket → returns None
             # → compensate child → full _do_acquire
@@ -6499,7 +6501,8 @@ class TestSpeculativeAcquire:
                 assert "parent-1" in entity_ids
         finally:
             limiter._repository.speculative_consume = original_speculative
-            limiter._fetch_buckets = original_fetch
+            limiter._fetch_entity_and_buckets = original_fetch
+        assert fetch_call_count >= 1  # the parent-only read was the one emptied
 
     async def test_speculative_cascade_parent_only_commit_fails(self, limiter):
         """Parent-only slow path: _commit_initial raises → return None.
@@ -6816,6 +6819,7 @@ class TestSpeculativeAcquire:
 
         original_speculative = limiter._repository.speculative_consume
         original_fetch = limiter._fetch_buckets
+        original_entity_fetch = limiter._fetch_entity_and_buckets
         spec_call_count = 0
         fetch_call_count = 0
 
@@ -6835,15 +6839,15 @@ class TestSpeculativeAcquire:
                 return SpeculativeResult(success=False, old_buckets=[parent_bucket_old])
             return await original_speculative(entity_id, resource, consume, ttl_seconds)
 
-        async def mock_fetch_raising(entity_ids, resource, shard_id):
+        async def mock_fetch_raising(entity_id, resource, shard_id):
             nonlocal fetch_call_count
             fetch_call_count += 1
-            if fetch_call_count == 1 and "parent-1" in entity_ids:
+            if fetch_call_count == 1 and entity_id == "parent-1":
                 raise RuntimeError("DynamoDB service unavailable")
-            return await original_fetch(entity_ids, resource, shard_id)
+            return await original_entity_fetch(entity_id, resource, shard_id)
 
         limiter._repository.speculative_consume = mock_speculative
-        limiter._fetch_buckets = mock_fetch_raising
+        limiter._fetch_entity_and_buckets = mock_fetch_raising
         try:
             with pytest.raises(RateLimiterUnavailable, match="DynamoDB service unavailable"):
                 async with limiter.acquire("child-1", "gpt-4", {"rpm": 10}):
@@ -6858,7 +6862,7 @@ class TestSpeculativeAcquire:
             )
         finally:
             limiter._repository.speculative_consume = original_speculative
-            limiter._fetch_buckets = original_fetch
+            limiter._fetch_entity_and_buckets = original_entity_fetch
 
 
 class TestCascadeEntityCache:
@@ -8267,14 +8271,14 @@ class TestClientShardCreation:
         limiter._speculative_writes = True
 
         parent_reads: list[int] = []
-        original_fetch = limiter._fetch_buckets
+        original_fetch = limiter._fetch_entity_and_buckets
 
-        async def spy(entity_ids, resource, shard_id):
-            if "parent-1" in entity_ids:
+        async def spy(entity_id, resource, shard_id):
+            if entity_id == "parent-1":
                 parent_reads.append(shard_id)
-            return await original_fetch(entity_ids, resource, shard_id)
+            return await original_fetch(entity_id, resource, shard_id)
 
-        limiter._fetch_buckets = spy
+        limiter._fetch_entity_and_buckets = spy
         # First draw (parent speculative) -> shard 1; a second draw would give 0
         with patch("zae_limiter.repository.random.randrange", side_effect=[1, 0, 0]):
             async with limiter.acquire("user-1", "gpt-4", {"rpm": 10}) as lease:
@@ -8974,14 +8978,14 @@ class TestCascadeParentSharding:
         )
 
         parent_reads: list[int] = []
-        original_fetch = limiter._fetch_buckets
+        original_fetch = limiter._fetch_entity_and_buckets
 
-        async def spy(entity_ids, resource, shard_id):
-            if "parent-1" in entity_ids:
+        async def spy(entity_id, resource, shard_id):
+            if entity_id == "parent-1":
                 parent_reads.append(shard_id)
-            return await original_fetch(entity_ids, resource, shard_id)
+            return await original_fetch(entity_id, resource, shard_id)
 
-        limiter._fetch_buckets = spy
+        limiter._fetch_entity_and_buckets = spy
         with patch("zae_limiter.repository.random.randrange", side_effect=[2]):
             async with limiter.acquire("user-1", "gpt-4", {"rpm": 10}) as lease:
                 parent_entry = next(e for e in lease.entries if e.entity_id == "parent-1")
