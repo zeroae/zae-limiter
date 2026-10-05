@@ -7,6 +7,7 @@ Lambda where aiobotocore is not available.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -16,12 +17,15 @@ from botocore.exceptions import ClientError
 from zae_limiter.exceptions import VersionMismatchError
 from zae_limiter.schedule import encode, encode_reset
 from zae_limiter.schema import (
+    CONFIG_FIELD_CASCADE,
     CONFIG_FIELD_DISABLED,
     CONFIG_FIELD_SCHED_TZ,
     LIMIT_FIELD_RSA,
     LIMIT_FIELD_RSCHED,
     LIMIT_FIELD_SCHED,
     RESERVED_NAMESPACE,
+    decode_cascade,
+    encode_cascade,
     limit_attr,
     pk_entity,
     pk_resource,
@@ -30,6 +34,9 @@ from zae_limiter.schema import (
     sk_version,
 )
 from zae_limiter.version import (
+    MIN_READER_VERSION_FOR_CASCADE_POLICY,
+    MIN_READER_VERSION_FOR_RESET_AFTER,
+    cascade_policy_refusal,
     ratcheted_client_min_version,
     reads_reset_after,
     reset_after_refusal,
@@ -57,6 +64,9 @@ class ApplyResult:
     updated: int = 0
     deleted: int = 0
     errors: list[str] = field(default_factory=list)
+    # (level, target) of every change whose stored cascade policy it changed
+    # (ADR-146). Only these need their buckets restamped.
+    cascade_changed: list[tuple[str, str]] = field(default_factory=list)
 
 
 def _build_limit_item(
@@ -192,7 +202,44 @@ def require_reset_after_readers(
     )
     if not declares_reset_after:
         return
+    _require_readers(table_name, client, MIN_READER_VERSION_FOR_RESET_AFTER, reset_after_refusal)
 
+
+def require_cascade_policy_readers(
+    changes: list[Change],
+    table_name: str,
+    client: Any | None = None,
+) -> None:
+    """Refuse an apply that sets a cascade policy the stack cannot keep (ADR-146).
+
+    The ``require_reset_after_readers`` contract, for the cascade policy: free
+    unless a create/update change declares ``cascade``, then the same version
+    check and ``client_min_version`` ratchet, against 0.16.0. Mirrors
+    ``Repository._require_cascade_policy_readers``.
+
+    Raises:
+        VersionMismatchError: the record is missing, or its ``lambda_version``
+            is unknown or predates the cascade policy.
+    """
+    declares_cascade = any(
+        (change.data or {}).get("cascade") is not None
+        for change in changes
+        if change.action in ("create", "update")
+    )
+    if not declares_cascade:
+        return
+    _require_readers(
+        table_name, client, MIN_READER_VERSION_FOR_CASCADE_POLICY, cascade_policy_refusal
+    )
+
+
+def _require_readers(
+    table_name: str,
+    client: Any | None,
+    minimum: str,
+    refusal: Callable[[bool, str | None], tuple[str, bool]],
+) -> None:
+    """The version gate shared by ``reset_after`` and the cascade policy."""
     if client is None:
         client = boto3.client("dynamodb")
 
@@ -201,8 +248,8 @@ def require_reset_after_readers(
     for _ in range(_CLIENT_MIN_RATCHET_ATTEMPTS):
         item = client.get_item(TableName=table_name, Key=key, ConsistentRead=True).get("Item")
         lambda_version = (item or {}).get("lambda_version", {}).get("S")
-        if not item or not reads_reset_after(lambda_version, __version__):
-            message, can_auto_update = reset_after_refusal(bool(item), lambda_version)
+        if not item or not reads_reset_after(lambda_version, __version__, minimum):
+            message, can_auto_update = refusal(bool(item), lambda_version)
             raise VersionMismatchError(
                 client_version=__version__,
                 schema_version=(item or {}).get("schema_version", {}).get("S", "unknown"),
@@ -211,7 +258,7 @@ def require_reset_after_readers(
                 can_auto_update=can_auto_update,
             )
         stored_min = item.get("client_min_version", {}).get("S")
-        new_min = ratcheted_client_min_version(stored_min, __version__)
+        new_min = ratcheted_client_min_version(stored_min, __version__, minimum)
         if new_min is None:
             return
         condition = (
@@ -266,11 +313,16 @@ def apply_changes(
 
     for change in changes:
         try:
+            # The write's own ALL_OLD image says what the policy was, at no
+            # extra read: only a level whose policy actually changed has its
+            # buckets restamped (ADR-146), so a routine apply writes no more.
             if change.action == "delete":
-                _apply_delete(client, table_name, namespace_id, change)
+                old = _apply_delete(client, table_name, namespace_id, change)
+                _note_cascade_change(result, change, old, None)
                 result.deleted += 1
             elif change.action in ("create", "update"):
-                _apply_set(client, table_name, namespace_id, change)
+                old = _apply_set(client, table_name, namespace_id, change)
+                _note_cascade_change(result, change, old, (change.data or {}).get("cascade"))
                 if change.action == "create":
                     result.created += 1
                 else:
@@ -287,8 +339,8 @@ def _apply_set(
     table_name: str,
     namespace_id: str,
     change: Change,
-) -> None:
-    """Apply a create or update change (PutItem)."""
+) -> dict[str, Any]:
+    """Apply a create or update change (PutItem); return the replaced item, or {}."""
     data = change.data or {}
     limits = data.get("limits", {})
 
@@ -307,9 +359,7 @@ def _apply_set(
         pk = pk_resource(namespace_id, resource)
         sk = sk_config()
         extra = {"resource": {"S": resource}}
-        disabled = data.get("disabled")
-        if disabled is not None:
-            extra[CONFIG_FIELD_DISABLED] = {"BOOL": bool(disabled)}
+        _add_flags(extra, data)
         item = _build_limit_item(pk, sk, namespace_id, limits, extra)
 
     elif change.level == "entity":
@@ -318,15 +368,42 @@ def _apply_set(
         pk = pk_entity(namespace_id, entity_id)
         sk = sk_config(resource)
         extra = {"entity_id": {"S": entity_id}, "resource": {"S": resource}}
-        disabled = data.get("disabled")
-        if disabled is not None:
-            extra[CONFIG_FIELD_DISABLED] = {"BOOL": bool(disabled)}
+        _add_flags(extra, data)
         item = _build_limit_item(pk, sk, namespace_id, limits, extra)
 
     else:
         raise ValueError(f"Unknown level: {change.level}")
 
-    client.put_item(TableName=table_name, Item=item)
+    response = client.put_item(TableName=table_name, Item=item, ReturnValues="ALL_OLD")
+    return _old_image(response)
+
+
+def _add_flags(extra: dict[str, Any], data: dict[str, Any]) -> None:
+    """The tri-state `disabled` (ADR-125) and `cascade` (ADR-146) flags, when declared.
+
+    Written only when the manifest declares them: the item is a full-replace
+    `PutItem`, so leaving a flag out is how the manifest clears it.
+    """
+    disabled = data.get("disabled")
+    if disabled is not None:
+        extra[CONFIG_FIELD_DISABLED] = {"BOOL": bool(disabled)}
+    cascade_attr = encode_cascade(data.get("cascade"))
+    if cascade_attr is not None:
+        extra[CONFIG_FIELD_CASCADE] = cascade_attr
+
+
+def _note_cascade_change(
+    result: ApplyResult, change: Change, old: dict[str, Any], new: bool | None
+) -> None:
+    """Record a resource or entity change that changed its stored cascade policy."""
+    if change.target is not None and decode_cascade(old) != new:
+        result.cascade_changed.append((change.level, change.target))
+
+
+def _old_image(response: Any) -> dict[str, Any]:
+    """The `ALL_OLD` image a write returned, or {} when there was none."""
+    old = response.get("Attributes") if isinstance(response, dict) else None
+    return old if isinstance(old, dict) else {}
 
 
 def _apply_delete(
@@ -334,8 +411,8 @@ def _apply_delete(
     table_name: str,
     namespace_id: str,
     change: Change,
-) -> None:
-    """Apply a delete change (DeleteItem)."""
+) -> dict[str, Any]:
+    """Apply a delete change (DeleteItem); return the deleted item, or {}."""
     if change.level == "system":
         pk = pk_system(namespace_id)
         sk = sk_config()
@@ -355,4 +432,7 @@ def _apply_delete(
     else:
         raise ValueError(f"Unknown level: {change.level}")
 
-    client.delete_item(TableName=table_name, Key={"PK": {"S": pk}, "SK": {"S": sk}})
+    response = client.delete_item(
+        TableName=table_name, Key={"PK": {"S": pk}, "SK": {"S": sk}}, ReturnValues="ALL_OLD"
+    )
+    return _old_image(response)

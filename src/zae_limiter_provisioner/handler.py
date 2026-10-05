@@ -27,7 +27,12 @@ from zae_limiter.schema import (
     sk_provisioner,
 )
 
-from .applier import ApplyResult, apply_changes, require_reset_after_readers
+from .applier import (
+    ApplyResult,
+    apply_changes,
+    require_cascade_policy_readers,
+    require_reset_after_readers,
+)
 from .bucket_sync import DEFAULT_TTL_MULTIPLIER, resolve_effective_limits, sync_bucket_params
 from .differ import Change, compute_diff
 from .fanout import fanout_entity, fanout_resource, resolve_disabled
@@ -186,6 +191,7 @@ def _apply_and_record(
     # Before anything is written (#638): a refusal raises, which is a clean
     # CloudFormation FAILED / CLI error because the table is untouched.
     require_reset_after_readers(changes, table_name)
+    require_cascade_policy_readers(changes, table_name)
     result = apply_changes(changes, table_name, namespace_id)
     result.errors.extend(_fanout_disabled_changes(table_name, namespace_id, changes))
     result.errors.extend(_sync_bucket_param_changes(table_name, namespace_id, changes))

@@ -6,7 +6,11 @@ import pytest
 from botocore.exceptions import ClientError
 
 from zae_limiter.exceptions import VersionMismatchError
-from zae_limiter_provisioner.applier import apply_changes, require_reset_after_readers
+from zae_limiter_provisioner.applier import (
+    apply_changes,
+    require_cascade_policy_readers,
+    require_reset_after_readers,
+)
 from zae_limiter_provisioner.differ import Change
 
 
@@ -707,3 +711,114 @@ class TestResetAfterVersionGate:
                 require_reset_after_readers(
                     self._changes({"session": self.SESSION}), self.TABLE, client=spy
                 )
+
+
+class TestCascadePolicy:
+    """The applier writes the cascade policy, notes what it changed, and gates it (ADR-146)."""
+
+    RPM = {"capacity": 100, "refill_amount": 100, "refill_period": 60}
+
+    @staticmethod
+    def _client(old_cascade=None):
+        client = MagicMock()
+        old = {} if old_cascade is None else {"cascade": {"BOOL": old_cascade}}
+        client.put_item.return_value = {"Attributes": old} if old else {}
+        client.delete_item.return_value = {"Attributes": old} if old else {}
+        return client
+
+    def _change(self, cascade, level="resource", target="llm", action="update"):
+        data: dict = {"limits": {"rpm": self.RPM}}
+        if cascade is not None:
+            data["cascade"] = cascade
+        return Change(action=action, level=level, target=target, data=data)
+
+    @pytest.mark.parametrize(("level", "target"), [("resource", "llm"), ("entity", "u1/llm")])
+    def test_a_declared_policy_is_written(self, level, target):
+        client = self._client()
+        apply_changes([self._change(False, level=level, target=target)], "t", "ns", client)
+        assert client.put_item.call_args[1]["Item"]["cascade"] == {"BOOL": False}
+        assert client.put_item.call_args[1]["ReturnValues"] == "ALL_OLD"
+
+    def test_an_omitted_policy_is_not_written(self):
+        client = self._client()
+        apply_changes([self._change(None)], "t", "ns", client)
+        assert "cascade" not in client.put_item.call_args[1]["Item"]
+
+    @pytest.mark.parametrize(
+        ("old", "new", "changed"),
+        [(None, None, False), (True, True, False), (None, False, True), (True, None, True)],
+    )
+    def test_only_a_changed_policy_is_noted(self, old, new, changed):
+        result = apply_changes([self._change(new)], "t", "ns", self._client(old))
+        assert result.cascade_changed == ([("resource", "llm")] if changed else [])
+
+    @pytest.mark.parametrize(("old", "changed"), [(False, True), (None, False)])
+    def test_deleting_a_level_notes_a_policy_it_held(self, old, changed):
+        change = Change(action="delete", level="entity", target="u1/llm", data=None)
+        client = self._client(old)
+        result = apply_changes([change], "t", "ns", client)
+        assert result.cascade_changed == ([("entity", "u1/llm")] if changed else [])
+        assert client.delete_item.call_args[1]["ReturnValues"] == "ALL_OLD"
+
+    def test_a_system_change_is_never_noted(self):
+        change = Change(action="update", level="system", target=None, data={"limits": {}})
+        result = apply_changes([change], "t", "ns", self._client(True))
+        assert result.cascade_changed == []
+
+    def test_a_write_returning_no_image_reads_as_no_policy(self):
+        client = MagicMock()
+        client.put_item.return_value = None
+        result = apply_changes([self._change(True)], "t", "ns", client)
+        assert result.cascade_changed == [("resource", "llm")]
+
+    def test_the_gate_is_free_without_a_declared_policy(self):
+        client = MagicMock()
+        require_cascade_policy_readers([self._change(None)], "t", client=client)
+        client.get_item.assert_not_called()
+
+    def test_the_gate_ignores_a_delete(self):
+        client = MagicMock()
+        change = Change(action="delete", level="resource", target="llm", data={"cascade": True})
+        require_cascade_policy_readers([change], "t", client=client)
+        client.get_item.assert_not_called()
+
+    @pytest.fixture
+    def table(self, mock_dynamodb):
+        import boto3
+
+        from zae_limiter.sync_repository import SyncRepository
+
+        setup = SyncRepository(
+            name="cascade-gate", region="us-east-1", _skip_deprecation_warning=True
+        )
+        setup.create_table()
+        setup.close()
+        return boto3.client("dynamodb", region_name="us-east-1")
+
+    @staticmethod
+    def _stamp(client, lambda_version):
+        client.put_item(
+            TableName="cascade-gate",
+            Item={
+                "PK": {"S": "_/SYSTEM#"},
+                "SK": {"S": "#VERSION"},
+                "schema_version": {"S": "0.10.0"},
+                "client_min_version": {"S": "0.0.0"},
+                "lambda_version": {"S": lambda_version},
+            },
+        )
+
+    def test_the_gate_refuses_lambdas_that_predate_it(self, table):
+        self._stamp(table, "0.15.1")
+        with patch("zae_limiter_provisioner.applier.__version__", "0.16.0"):
+            with pytest.raises(VersionMismatchError, match="cascade policy"):
+                require_cascade_policy_readers([self._change(False)], "cascade-gate", client=table)
+
+    def test_the_gate_admits_and_ratchets(self, table):
+        self._stamp(table, "0.16.0")
+        with patch("zae_limiter_provisioner.applier.__version__", "0.16.1"):
+            require_cascade_policy_readers([self._change(True)], "cascade-gate", client=table)
+        record = table.get_item(
+            TableName="cascade-gate", Key={"PK": {"S": "_/SYSTEM#"}, "SK": {"S": "#VERSION"}}
+        )["Item"]
+        assert record["client_min_version"] == {"S": "0.16.0"}
