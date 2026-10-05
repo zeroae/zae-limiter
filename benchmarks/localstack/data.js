@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791159341957,
+  "lastUpdate": 1791165883792,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -30282,6 +30282,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.007380113025602595",
             "extra": "mean: 1.0870845010000039 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d1b095a421f933b6cc7217bcdc3d855aa3ad64b2",
+          "message": "🐛 fix(limiter): stamp a parent's bucket with the parent's own cascade (#685)\n\n## Summary\n\n**The bug.** When a cascading child's slow path created or rewrote its\nparent's bucket, it stamped that bucket with the *child's* flags:\n`cascade=False` and no `parent_id`. The fast path reads those\ndenormalized flags, so in a `user -> team -> org` hierarchy the team's\n**own** acquires stopped debiting the org. Reproduced on moto: the org\nwas debited **0 instead of 5**.\n\n**The fix.**\n- The parent's `#META` item is read in the **same `BatchGetItem`** as\nits bucket, in both `_do_acquire` and `_try_parent_only_acquire`. Cost:\n**+0.5 RCU on cascade slow paths only**.\n- `LeaseEntry._stamp_owner` carries each bucket owner's own `cascade` /\n`parent_id`.\n- `build_composite_normal(owner=...)` re-stamps `cascade` / `parent_id`\non **every rf-locked write**, so an item already carrying a wrong stamp\nheals on its next slow pass.\n- The fast path is unchanged: still **0 RCU + 1 WCU**.\n\n**Known gap.** An item that only ever takes the fast path keeps a wrong\nstamp until its next slow pass.\n\n**Docs.** CLAUDE.md records the owner stamp and the cost change:\nspeculative cascade fallback **$1.94/M -> $2.00/M**.\n\n**Tests.** Four existing tests patched `_fetch_buckets`; they now patch\n`_fetch_entity_and_buckets`. One of them had become vacuous under the\nold patch target (it no longer intercepted the call it was meant to).\n\nNo security advisory (owner decision).\n\nRefs #676, #674\n\n## Also fixes #686 (found in review)\n\n**The bug.** On a cold child cache, the sequential parent write called\n`speculative_consume` **without a shard**. That call ran its own cascade\ncheck on the parent's cache entry and also debited the **grandparent**\noutside the child's lease: never reconciled by `adjust()`, never\nrefunded by rollback. Reproduced on moto: the org's `tc` went **1 -> 4**\nfor a user acquire of 3.\n\n**Why now.** Present on `main`. #684 made it common, because cascade\nslow paths now cache the parent's real META.\n\n**The fix.** Pass the parent's own shard (`select_shard(parent_id,\nresource)`), which routes to the single-item, **non-cascading** write.\n\n**Regression test.** Fails without the fix (`assert 4 == 1`) and passes\nwith it. The speculative test doubles now forward `shard_id`.\n\n**Trade-off accepted.** A cold-path parent success no longer grows the\nparent's cached shard count. It is learned lazily from the next failure\nimage (already documented in CLAUDE.md).\n\n## Test plan\n\nDone locally:\n- [x] Pre-push gate: 6114 unit passed, 45 gevent passed, diff coverage\n100%\n- [x] Limiter suites: 996 passed\n- [x] Expression tokens / bucket writer registry / quota conservation\nfuzz: 62 passed\n- [x] Capacity benchmarks: 30 passed\n- [x] mypy and ruff clean\n- [x] Fresh-context review of #684: REQUEST CHANGES -> resolved by the\n#686 fix\n- [x] Fresh-context review of #686: APPROVE WITH NITS (test doubles now\nforward `shard_id`)\n\nNot yet done:\n- [ ] CI\n\nFixes #684\nFixes #686\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)",
+          "timestamp": "2026-10-04T21:57:54-04:00",
+          "tree_id": "fc02305591fb6100c877705c012d844bbd72c840",
+          "url": "https://github.com/zeroae/zae-limiter/commit/d1b095a421f933b6cc7217bcdc3d855aa3ad64b2"
+        },
+        "date": 1791165882487,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 33.76673975571265,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0068133365738874945",
+            "extra": "mean: 29.614940833333492 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 25.09492067481517,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009330682977331457",
+            "extra": "mean: 39.848701374999074 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 51.621488107469176,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0037871934545484656",
+            "extra": "mean: 19.37177785185369 msec\nrounds: 27"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 54.22850750091404,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004669052551192439",
+            "extra": "mean: 18.440485384613332 msec\nrounds: 26"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 31.547145078887638,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0055095378650537735",
+            "extra": "mean: 31.69858944444491 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 117.6543373360848,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0012930506331235347",
+            "extra": "mean: 8.499474160000204 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 25.749654765142438,
+            "unit": "iter/sec",
+            "range": "stddev: 0.04814041167689059",
+            "extra": "mean: 38.83547213043453 msec\nrounds: 23"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 31.911511027715054,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006159498397829667",
+            "extra": "mean: 31.33665463636313 msec\nrounds: 22"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 33.79950467413582,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006095835071299496",
+            "extra": "mean: 29.586232391305536 msec\nrounds: 23"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 35.06952096931618,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007572738691867509",
+            "extra": "mean: 28.51478926315939 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 34.30189775119803,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006451558377972162",
+            "extra": "mean: 29.15290597777711 msec\nrounds: 45"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 32.05477323047022,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007128051986515914",
+            "extra": "mean: 31.196601916666584 msec\nrounds: 36"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 39.4673226860031,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004931553776828708",
+            "extra": "mean: 25.337416676471076 msec\nrounds: 34"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9440820363395874,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0017347708761969128",
+            "extra": "mean: 514.3815853999911 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9469909441869002,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0016091074971558178",
+            "extra": "mean: 513.6130719999926 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9551256662621481,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00847064775831116",
+            "extra": "mean: 1.046982648799991 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9338843220949418,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00886006965826711",
+            "extra": "mean: 1.0707964319999974 sec\nrounds: 5"
           }
         ]
       }
