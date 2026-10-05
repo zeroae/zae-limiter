@@ -576,6 +576,10 @@ def _cfn_properties_to_manifest(properties: dict[str, Any]) -> dict[str, Any]:
             )
         if "Limits" in cfn_system:
             system["limits"] = _cfn_limits_to_manifest(cfn_system["Limits"], where="System.Limits")
+        if "Cascade" in cfn_system:
+            # Carried through so the manifest rejects it with its reason
+            # (ADR-146: no system-level policy) rather than dropping it here.
+            system["cascade"] = _coerce_bool(cfn_system["Cascade"], "System.Cascade")
         manifest["system"] = system
 
     if "Resources" in properties:
@@ -597,6 +601,11 @@ def _cfn_properties_to_manifest(properties: dict[str, Any]) -> dict[str, Any]:
                 resource_entry["disabled"] = _coerce_bool(
                     cfn_resource["Disabled"], f"Resources.{resource_name}.Disabled"
                 )
+            # The cascade policy (ADR-146), tri-state by the same rule.
+            if "Cascade" in cfn_resource:
+                resource_entry["cascade"] = _coerce_bool(
+                    cfn_resource["Cascade"], f"Resources.{resource_name}.Cascade"
+                )
             resources[resource_name] = resource_entry
         manifest["resources"] = resources
 
@@ -614,6 +623,10 @@ def _cfn_properties_to_manifest(properties: dict[str, Any]) -> dict[str, Any]:
                 if "Disabled" in cfn_res:
                     entity_resource_entry["disabled"] = _coerce_bool(
                         cfn_res["Disabled"], f"{prefix}.Disabled"
+                    )
+                if "Cascade" in cfn_res:
+                    entity_resource_entry["cascade"] = _coerce_bool(
+                        cfn_res["Cascade"], f"{prefix}.Cascade"
                     )
                 entity_resources[resource_name] = entity_resource_entry
             entities[entity_id] = {"resources": entity_resources}

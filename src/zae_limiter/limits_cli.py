@@ -178,6 +178,10 @@ def limits_cfn_template(name: str, file_path: str) -> None:
             system_props["OnUnavailable"] = sys_data["on_unavailable"]
         if "limits" in sys_data:
             system_props["Limits"] = _limits_to_cfn(sys_data["limits"])
+        if "cascade" in sys_data:
+            # Passed through so the provisioner rejects it with its reason
+            # (ADR-146: no system-level policy), not dropped here unseen.
+            system_props["Cascade"] = sys_data["cascade"]
         properties["System"] = system_props
 
     if "resources" in manifest_data:
@@ -190,6 +194,9 @@ def limits_cfn_template(name: str, file_path: str) -> None:
             # dropped or coerced.
             if "disabled" in res_data:
                 res_props["Disabled"] = res_data["disabled"]
+            # The cascade policy (ADR-146), tri-state by the same rule.
+            if "cascade" in res_data:
+                res_props["Cascade"] = res_data["cascade"]
             resources_props[res_name] = res_props
         properties["Resources"] = resources_props
 
@@ -203,6 +210,8 @@ def limits_cfn_template(name: str, file_path: str) -> None:
                 }
                 if "disabled" in res_data:
                     ent_res_props["Disabled"] = res_data["disabled"]
+                if "cascade" in res_data:
+                    ent_res_props["Cascade"] = res_data["cascade"]
                 ent_resources[res_name] = ent_res_props
             entities_props[ent_id] = {"Resources": ent_resources}
         properties["Entities"] = entities_props
