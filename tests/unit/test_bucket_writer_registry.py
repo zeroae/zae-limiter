@@ -60,6 +60,7 @@ REPOSITORY = {
     "repair_created_quota_shard": (False, True),  # raise a create a doubling overtook, freeze
     "_propagate_window_start": (False, False),  # ws / rsa / vu / wtc, never tk
     "_stamp_bucket_disabled": (False, False),  # disabled flag
+    "_stamp_bucket_cascade": (False, False),  # cascade policy + owner parent_id (ADR-146)
     "_sync_one_bucket_shard": (False, False),  # issues _build_bucket_param_update
     "get_or_create_bucket": (True, True),  # legacy create via build_bucket_put_item
     "purge_namespace": (True, True),  # deletes whole items, buckets included

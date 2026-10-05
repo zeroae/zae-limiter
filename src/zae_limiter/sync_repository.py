@@ -43,6 +43,7 @@ from .models import (
     StackOptions,
     UsageSnapshot,
     UsageSummary,
+    effective_cascade,
     hoisted_schedule_timezone,
     plan_quota_grant,
     quota_grant_is_current,
@@ -3906,10 +3907,14 @@ class SyncRepository:
                 "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
                 "SK": {"S": schema.sk_config(resource)},
             },
-            ProjectionExpression="#disabled",
-            ExpressionAttributeNames={"#disabled": schema.CONFIG_FIELD_DISABLED},
+            ProjectionExpression="#disabled, #cascade",
+            ExpressionAttributeNames={
+                "#disabled": schema.CONFIG_FIELD_DISABLED,
+                "#cascade": schema.CONFIG_FIELD_CASCADE,
+            },
         )
         had_disabled = schema.CONFIG_FIELD_DISABLED in (existing.get("Item") or {})
+        had_cascade = schema.CONFIG_FIELD_CASCADE in (existing.get("Item") or {})
         try:
             client.transact_write_items(
                 TransactItems=[
@@ -3954,6 +3959,8 @@ class SyncRepository:
             else:
                 effective, _level = self.resolve_disabled(entity_id, resource)
                 self._fanout_entity(entity_id, resource, disabled=effective)
+        if had_cascade:
+            self._fanout_cascade(entity_id=entity_id, resource=resource)
         self._log_audit_event(
             action=AuditAction.LIMITS_DELETED,
             entity_id=entity_id,
@@ -4179,6 +4186,7 @@ class SyncRepository:
             ReturnValues="ALL_OLD",
         )
         had_disabled = schema.CONFIG_FIELD_DISABLED in (deleted.get("Attributes") or {})
+        had_cascade = schema.CONFIG_FIELD_CASCADE in (deleted.get("Attributes") or {})
         client.update_item(
             TableName=self.table_name,
             Key={
@@ -4190,6 +4198,8 @@ class SyncRepository:
         )
         if had_disabled:
             self._fanout_resource(resource, disabled=False)
+        if had_cascade:
+            self._fanout_cascade(resource=resource)
         self._log_audit_event(
             action=AuditAction.LIMITS_DELETED,
             entity_id=f"$RESOURCE:{resource}",
@@ -6280,6 +6290,91 @@ class SyncRepository:
                 except Exception as e:
                     raise FanoutIncomplete(
                         len(stamped), e, resource=resource, entity_id=entity_id
+                    ) from e
+                stamped.add(pk)
+        return len(stamped)
+
+    def _stamp_bucket_cascade(self, pk: str, cascade: bool, parent_id: str | None) -> None:
+        """Write one bucket's effective cascade policy and owner `parent_id` (ADR-146).
+
+        The same pair the slow path's owner stamp writes (#684), so whichever
+        writer runs last leaves a stamp the fast path can trust.
+        """
+        client = self._get_client()
+        names = {"#c": "cascade", "#p": "parent_id"}
+        values: dict[str, Any] = {":c": {"BOOL": cascade}}
+        if parent_id is not None:
+            update = "SET #c = :c, #p = :p"
+            values[":p"] = {"S": parent_id}
+        else:
+            update = "SET #c = :c REMOVE #p"
+        try:
+            client.update_item(
+                TableName=self.table_name,
+                Key={"PK": {"S": pk}, "SK": {"S": schema.sk_state()}},
+                UpdateExpression=update,
+                ConditionExpression="attribute_exists(PK)",
+                ExpressionAttributeNames=names,
+                ExpressionAttributeValues=values,
+            )
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                raise
+
+    def _fanout_cascade(self, *, resource: str | None = None, entity_id: str | None = None) -> int:
+        """Restamp every bucket a cascade-policy change can reach (ADR-146).
+
+        Scoped to one resource (a resource-level change, GSI2 discovery) or to
+        one entity (GSI3 discovery; ``resource`` None or ``_default_`` means
+        every resource of the entity). Every discovered bucket is stamped with
+        the policy resolved for **its own** entity and resource, so a
+        resource-level change never clobbers an entity override, and a clear
+        restamps whatever level now decides. Two discovery passes, as for
+        ``disabled`` (ADR-125): the second catches buckets an in-flight acquire
+        created during the first. A bucket whose entity has no META record is
+        skipped — the slow path does not stamp those either.
+
+        Raises:
+            FanoutIncomplete: A write failed part-way; carries how many landed.
+                Every write is idempotent, so re-running reconciles the rest.
+
+        Returns:
+            Number of bucket items stamped.
+        """
+        stamped: set[str] = set()
+        entities: dict[str, Entity | None] = {}
+        targets: dict[tuple[str, str], tuple[bool, str | None] | None] = {}
+        scope = None if resource == schema.DEFAULT_RESOURCE else resource
+        for _pass in range(2):
+            if entity_id is not None:
+                pks = self._discover_entity_bucket_pks(entity_id, scope)
+            else:
+                assert scope is not None
+                pks = [pk for pk, _eid in self._discover_resource_bucket_pks(scope)]
+            for pk in pks:
+                if pk in stamped:
+                    continue
+                _ns, eid, bucket_resource, _shard = schema.parse_bucket_pk(pk)
+                key = (eid, bucket_resource)
+                if key not in targets:
+                    if eid not in entities:
+                        entities[eid] = self.get_entity(eid)
+                    owner = entities[eid]
+                    access = self.resolve_access(eid, bucket_resource)
+                    targets[key] = (
+                        None
+                        if owner is None
+                        else (effective_cascade(access.cascade, owner), owner.parent_id)
+                    )
+                    self._cascade_cache.pop((self._namespace_id, eid, bucket_resource), None)
+                target = targets[key]
+                if target is None:
+                    continue
+                try:
+                    self._stamp_bucket_cascade(pk, *target)
+                except Exception as e:
+                    raise FanoutIncomplete(
+                        len(stamped), e, resource=scope, entity_id=entity_id
                     ) from e
                 stamped.add(pk)
         return len(stamped)

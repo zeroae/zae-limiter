@@ -416,3 +416,150 @@ class TestWarmPathFollowsTheItem:
         scoped = await cascade_repo.namespace("tenant-b")
         cascade_repo._learn_shard_count("user", "llm", 1, meta=(False, "team"))
         assert scoped._cascade_cache is cascade_repo._cascade_cache
+
+
+class TestFanout:
+    """A policy change restamps existing buckets, each from its own resolution (ADR-146)."""
+
+    async def _two_users(self, limiter):
+        repo = limiter._repository
+        await repo.set_resource_defaults("llm", [RPM])
+        await repo.set_resource_defaults("gpt-4", [RPM])
+        await repo.create_entity("team")
+        for user in ("user-1", "user-2"):
+            await repo.create_entity(user, parent_id="team", cascade=True)
+            for resource in ("llm", "gpt-4"):
+                async with limiter.acquire(user, resource, consume={"rpm": 1}):
+                    pass
+
+    @staticmethod
+    async def _cascade_of(repo, entity_id, resource):
+        return (await _bucket(repo, entity_id, resource))["cascade"]["BOOL"]
+
+    async def test_a_resource_change_restamps_every_entity_but_an_override(self, cascade_limiter):
+        repo = cascade_limiter._repository
+        ns = repo._namespace_id
+        await self._two_users(cascade_limiter)
+        await _stamp_config_cascade(repo, schema.pk_resource(ns, "llm"), schema.sk_config(), False)
+        await repo.set_limits("user-2", [RPM], resource="llm")
+        await _stamp_config_cascade(
+            repo, schema.pk_entity(ns, "user-2"), schema.sk_config("llm"), True
+        )
+        repo._learn_shard_count("user-1", "llm", 1, meta=(True, "team"))
+
+        stamped = await repo._fanout_cascade(resource="llm")
+
+        assert stamped >= 2
+        assert await self._cascade_of(repo, "user-1", "llm") is False
+        assert await self._cascade_of(repo, "user-2", "llm") is True  # its own override
+        assert await self._cascade_of(repo, "user-1", "gpt-4") is True  # another resource
+        assert (ns, "user-1", "llm") not in repo._cascade_cache
+        assert (await _bucket(repo, "user-1", "llm"))["parent_id"] == {"S": "team"}
+
+    async def test_an_entity_wide_change_resolves_each_resource(self, cascade_limiter):
+        repo = cascade_limiter._repository
+        ns = repo._namespace_id
+        await self._two_users(cascade_limiter)
+        await repo.set_limits("user-1", [RPM])  # entity-wide config
+        await _stamp_config_cascade(
+            repo, schema.pk_entity(ns, "user-1"), schema.sk_config(schema.DEFAULT_RESOURCE), False
+        )
+        await repo.set_limits("user-1", [RPM], resource="gpt-4")
+        await _stamp_config_cascade(
+            repo, schema.pk_entity(ns, "user-1"), schema.sk_config("gpt-4"), True
+        )
+
+        await repo._fanout_cascade(entity_id="user-1", resource=schema.DEFAULT_RESOURCE)
+
+        assert await self._cascade_of(repo, "user-1", "llm") is False
+        assert await self._cascade_of(repo, "user-1", "gpt-4") is True
+        assert await self._cascade_of(repo, "user-2", "llm") is True  # untouched
+
+    async def test_an_entity_without_a_parent_is_stamped_without_one(self, cascade_limiter):
+        repo = cascade_limiter._repository
+        await repo.set_resource_defaults("llm", [RPM])
+        await repo.create_entity("solo")
+        async with cascade_limiter.acquire("solo", "llm", consume={"rpm": 1}):
+            pass
+
+        await repo._fanout_cascade(entity_id="solo", resource="llm")
+
+        item = await _bucket(repo, "solo", "llm")
+        assert item["cascade"] == {"BOOL": False}
+        assert "parent_id" not in item
+
+    async def test_a_bucket_whose_entity_has_no_meta_is_skipped(self, cascade_limiter):
+        repo = cascade_limiter._repository
+        await repo.set_resource_defaults("llm", [RPM])
+        async with cascade_limiter.acquire("ghost", "llm", consume={"rpm": 1}):
+            pass  # never create_entity()'d
+
+        assert await repo._fanout_cascade(resource="llm") == 0
+
+    async def test_deleting_a_deciding_resource_config_restamps(self, cascade_limiter):
+        repo = cascade_limiter._repository
+        ns = repo._namespace_id
+        await self._two_users(cascade_limiter)
+        await _stamp_config_cascade(repo, schema.pk_resource(ns, "llm"), schema.sk_config(), False)
+        await repo._fanout_cascade(resource="llm")
+        assert await self._cascade_of(repo, "user-1", "llm") is False
+
+        await repo.delete_resource_defaults("llm")
+
+        assert await self._cascade_of(repo, "user-1", "llm") is True  # back to META
+
+    async def test_deleting_a_deciding_entity_config_restamps(self, cascade_limiter):
+        repo = cascade_limiter._repository
+        ns = repo._namespace_id
+        await self._two_users(cascade_limiter)
+        await repo.set_limits("user-1", [RPM], resource="llm")
+        await _stamp_config_cascade(
+            repo, schema.pk_entity(ns, "user-1"), schema.sk_config("llm"), False
+        )
+        await repo._fanout_cascade(entity_id="user-1", resource="llm")
+        assert await self._cascade_of(repo, "user-1", "llm") is False
+
+        await repo.delete_limits("user-1", resource="llm")
+
+        assert await self._cascade_of(repo, "user-1", "llm") is True
+
+    async def test_a_delete_with_no_policy_does_not_fan_out(self, cascade_limiter, monkeypatch):
+        repo = cascade_limiter._repository
+        await self._two_users(cascade_limiter)
+        await repo.set_limits("user-1", [RPM], resource="llm")
+        calls = []
+
+        async def spy(**kwargs):
+            calls.append(kwargs)
+            return 0
+
+        monkeypatch.setattr(repo, "_fanout_cascade", spy)
+        await repo.delete_limits("user-1", resource="llm")
+        await repo.delete_resource_defaults("llm")
+
+        assert calls == []
+
+    async def test_a_vanished_bucket_is_not_an_error(self, cascade_limiter):
+        repo = cascade_limiter._repository
+        pk = schema.pk_bucket(repo._namespace_id, "nobody", "llm", 0)
+        await repo._stamp_bucket_cascade(pk, True, "team")  # no exception
+        assert await _bucket(repo, "nobody", "llm") is None
+
+    async def test_a_failed_write_reports_partial_progress(self, cascade_limiter, monkeypatch):
+        from botocore.exceptions import ClientError
+
+        from zae_limiter.exceptions import FanoutIncomplete
+
+        repo = cascade_limiter._repository
+        await self._two_users(cascade_limiter)
+        client = await repo._get_client()
+
+        async def throttled(**kwargs):
+            raise ClientError(
+                {"Error": {"Code": "ProvisionedThroughputExceededException"}}, "UpdateItem"
+            )
+
+        monkeypatch.setattr(client, "update_item", throttled)
+        with pytest.raises(FanoutIncomplete) as info:
+            await repo._fanout_cascade(resource="llm")
+        assert info.value.stamped == 0

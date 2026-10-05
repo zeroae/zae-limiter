@@ -620,3 +620,19 @@ class TestClientWritesThroughMoto:
             await repo._stamp_bucket_disabled(pk, False)
         for call in spy.call_args_list:
             assert_expression_safe(call.kwargs)
+
+    async def test_cascade_fan_out(self, limiter: RateLimiter) -> None:
+        """ADR-146: the cascade-policy stamp, with and without a parent."""
+        repo = limiter._repository
+        await repo.set_limits("user-1", [Limit.per_minute(DOTTED, 10)], resource="api")
+        async with limiter.acquire("user-1", "api", consume={DOTTED: 1}):
+            pass
+        client = await repo._get_client()
+        spy = await self._spy(repo)
+        pk = pk_bucket(repo._namespace_id, "user-1", "api", 0)
+        with patch.object(client, "update_item", spy.forward):
+            await repo._stamp_bucket_cascade(pk, True, "org-1")
+            await repo._stamp_bucket_cascade(pk, False, None)
+        assert spy.call_count == 2
+        for call in spy.call_args_list:
+            assert_expression_safe(call.kwargs)
