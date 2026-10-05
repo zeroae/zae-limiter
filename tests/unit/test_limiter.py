@@ -12804,3 +12804,77 @@ class TestMiddleEntityKeepsCascading:
             assert {e.entity_id for e in lease.entries} == {"user", "team"}
 
         assert await self._org_consumed(repo) == org_before
+
+
+class TestAdjustmentCommitFailure:
+    """#682: an adjustment commit that fails never refunds the initial consumption.
+
+    The adjustment commit runs after the caller's code finished, so the work happened.
+    ``write_each`` writes one item at a time; when a later item failed, the context
+    manager used to call ``_rollback()``, which refunded the initial consumption on
+    every item — including one whose adjustment had already landed, crediting it twice.
+    """
+
+    RPM = Limit.per_minute("rpm", 100)
+
+    async def _cascade(self, limiter) -> None:
+        repo = limiter._repository
+        await repo.set_resource_defaults("gpt-4", [self.RPM])
+        await repo.create_entity("org")
+        await repo.create_entity("user", parent_id="org", cascade=True)
+
+    @staticmethod
+    async def _consumed(repo, entity_id: str) -> int:
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "gpt-4", 0)},
+                "SK": {"S": sk_state()},
+            },
+        )
+        return int(response["Item"][bucket_attr("rpm", "tc")]["N"]) // 1000
+
+    @staticmethod
+    def _fail_writes_to(repo, *entity_ids: str) -> None:
+        """Make the next independent write to these entities' buckets raise, once.
+
+        Later writes land, so a refund the fix must not make would be visible.
+        """
+        failing = {pk_bucket(repo._namespace_id, e, "gpt-4", 0) for e in entity_ids}
+        real_write_each = repo.write_each
+
+        async def write_each(items):
+            results = []
+            for item in items:
+                if item["Update"]["Key"]["PK"]["S"] in failing:
+                    failing.clear()
+                    raise RuntimeError("throttled")
+                results.extend(await real_write_each([item]))
+            return results
+
+        repo.write_each = write_each
+
+    async def test_a_failed_parent_adjustment_leaves_the_child_credited_once(self, limiter):
+        repo = limiter._repository
+        await self._cascade(limiter)
+
+        with pytest.raises(RuntimeError, match="throttled"):
+            async with limiter.acquire("user", "gpt-4", consume={"rpm": 10}) as lease:
+                await lease.consume(rpm=5)
+                self._fail_writes_to(repo, "org")
+
+        assert await self._consumed(repo, "user") == 15  # initial + adjustment, once
+        assert await self._consumed(repo, "org") == 10  # initial stands, adjustment lost
+
+    async def test_a_failed_first_adjustment_refunds_nothing(self, limiter):
+        repo = limiter._repository
+        await self._cascade(limiter)
+
+        with pytest.raises(RuntimeError, match="throttled"):
+            async with limiter.acquire("user", "gpt-4", consume={"rpm": 10}) as lease:
+                await lease.consume(rpm=5)
+                self._fail_writes_to(repo, "user", "org")
+
+        assert await self._consumed(repo, "user") == 10
+        assert await self._consumed(repo, "org") == 10
