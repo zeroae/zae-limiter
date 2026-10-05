@@ -12650,3 +12650,79 @@ class TestCreditAboveCapacity:
         assert "Could not check a credit against its ceiling" in caplog.text
         item = await self._raw(repo, "broken-check")
         assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "590000"  # 100 - 10 + 500, once
+
+
+class TestMiddleEntityKeepsCascading:
+    """#684: a parent bucket a child created must still cascade on the parent's own acquires.
+
+    Bucket items denormalise ``cascade`` / ``parent_id`` so the fast path can decide
+    without reading META. A child's slow path that created its parent's bucket used
+    to stamp it ``cascade=False`` with no ``parent_id``, so the middle entity's own
+    acquires silently stopped debiting the grandparent — over-admission there.
+    """
+
+    RPM = Limit.per_minute("rpm", 100)
+
+    async def _chain(self, limiter) -> None:
+        repo = limiter._repository
+        await repo.set_resource_defaults("gpt-4", [self.RPM])
+        await repo.create_entity("org")
+        await repo.create_entity("team", parent_id="org", cascade=True)
+        await repo.create_entity("user", parent_id="team", cascade=True)
+        async with limiter.acquire("user", "gpt-4", consume={"rpm": 1}):
+            pass  # creates the user's and the team's buckets
+
+    @staticmethod
+    async def _raw(repo, entity_id, resource="gpt-4", shard=0):
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, resource, shard)},
+                "SK": {"S": sk_state()},
+            },
+        )
+        return response.get("Item")
+
+    async def _org_consumed(self, repo) -> int:
+        item = await self._raw(repo, "org")
+        return 0 if item is None else int(item[bucket_attr("rpm", "tc")]["N"]) // 1000
+
+    async def test_the_child_stamps_the_parent_bucket_with_the_parents_own_cascade(self, limiter):
+        await self._chain(limiter)
+        team = await self._raw(limiter._repository, "team")
+        assert team["cascade"] == {"BOOL": True}
+        assert team["parent_id"] == {"S": "org"}
+
+    async def test_the_middle_entitys_own_acquire_reaches_its_parent(self, limiter):
+        repo = limiter._repository
+        await self._chain(limiter)
+        repo._entity_cache.clear()  # a fresh process: decide from the item
+
+        async with limiter.acquire("team", "gpt-4", consume={"rpm": 5}):
+            pass
+
+        assert await self._org_consumed(repo) == 5
+
+    async def test_a_slow_pass_repairs_a_bucket_an_older_version_mis_stamped(self, limiter):
+        repo = limiter._repository
+        await self._chain(limiter)
+        client = await repo._get_client()
+        await client.update_item(  # what v0.15 left behind
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, "team", "gpt-4", 0)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="SET #c = :f REMOVE parent_id",
+            ExpressionAttributeNames={"#c": "cascade"},
+            ExpressionAttributeValues={":f": {"BOOL": False}},
+        )
+
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        async with slow.acquire("team", "gpt-4", consume={"rpm": 1}):
+            pass
+
+        team = await self._raw(repo, "team")
+        assert team["cascade"] == {"BOOL": True}
+        assert team["parent_id"] == {"S": "org"}
