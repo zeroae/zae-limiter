@@ -4442,7 +4442,9 @@ class TestSpeculativeAcquire:
             call_count += 1
             if call_count == 1:
                 return SpeculativeResult(success=False, old_buckets=[old_bucket_rpm_only])
-            return original_speculative(entity_id, resource, consume, ttl_seconds)
+            return original_speculative(
+                entity_id, resource, consume, ttl_seconds, shard_id=shard_id, now_ms=now_ms
+            )
 
         sync_limiter._repository.speculative_consume = mock_speculative
         try:
@@ -4494,7 +4496,9 @@ class TestSpeculativeAcquire:
                 )
             if call_count == 2:
                 return SpeculativeResult(success=False, old_buckets=[parent_bucket])
-            return original_speculative(entity_id, resource, consume, ttl_seconds)
+            return original_speculative(
+                entity_id, resource, consume, ttl_seconds, shard_id=shard_id, now_ms=now_ms
+            )
 
         sync_limiter._repository.speculative_consume = mock_speculative
         try:
@@ -4538,7 +4542,9 @@ class TestSpeculativeAcquire:
                 )
             if call_count == 2:
                 return SpeculativeResult(success=False, old_buckets=None)
-            return original_speculative(entity_id, resource, consume, ttl_seconds)
+            return original_speculative(
+                entity_id, resource, consume, ttl_seconds, shard_id=shard_id, now_ms=now_ms
+            )
 
         sync_limiter._repository.speculative_consume = mock_speculative
         try:
@@ -4590,7 +4596,9 @@ class TestSpeculativeAcquire:
                 )
             if call_count == 2:
                 return SpeculativeResult(success=False, old_buckets=[parent_bucket_wrong_limit])
-            return original_speculative(entity_id, resource, consume, ttl_seconds)
+            return original_speculative(
+                entity_id, resource, consume, ttl_seconds, shard_id=shard_id, now_ms=now_ms
+            )
 
         sync_limiter._repository.speculative_consume = mock_speculative
         try:
@@ -4642,7 +4650,9 @@ class TestSpeculativeAcquire:
                 )
             if call_count == 2:
                 return SpeculativeResult(success=False, old_buckets=[parent_bucket_exhausted])
-            return original_speculative(entity_id, resource, consume, ttl_seconds)
+            return original_speculative(
+                entity_id, resource, consume, ttl_seconds, shard_id=shard_id, now_ms=now_ms
+            )
 
         sync_limiter._repository.speculative_consume = mock_speculative
         try:
@@ -4702,7 +4712,9 @@ class TestSpeculativeAcquire:
                 )
             if call_count == 2:
                 return SpeculativeResult(success=False, old_buckets=[parent_bucket])
-            return original_speculative(entity_id, resource, consume, ttl_seconds)
+            return original_speculative(
+                entity_id, resource, consume, ttl_seconds, shard_id=shard_id, now_ms=now_ms
+            )
 
         def mock_write_each(items):
             nonlocal child_compensated
@@ -4780,7 +4792,9 @@ class TestSpeculativeAcquire:
                 )
             if call_count == 2:
                 return SpeculativeResult(success=False, old_buckets=[parent_bucket])
-            return original_speculative(entity_id, resource, consume, ttl_seconds)
+            return original_speculative(
+                entity_id, resource, consume, ttl_seconds, shard_id=shard_id, now_ms=now_ms
+            )
 
         sync_limiter._repository.speculative_consume = mock_speculative
         try:
@@ -4846,7 +4860,9 @@ class TestSpeculativeAcquire:
                 )
             if call_count == 2:
                 return SpeculativeResult(success=False, old_buckets=[parent_bucket_old])
-            return original_speculative(entity_id, resource, consume, ttl_seconds)
+            return original_speculative(
+                entity_id, resource, consume, ttl_seconds, shard_id=shard_id, now_ms=now_ms
+            )
 
         with sync_limiter.acquire("parent-1", "gpt-4", {"rpm": 9}):
             pass
@@ -4907,7 +4923,9 @@ class TestSpeculativeAcquire:
                 )
             if call_count == 2:
                 return SpeculativeResult(success=False, old_buckets=[parent_bucket_old])
-            return original_speculative(entity_id, resource, consume, ttl_seconds)
+            return original_speculative(
+                entity_id, resource, consume, ttl_seconds, shard_id=shard_id, now_ms=now_ms
+            )
 
         def mock_fetch_buckets(entity_id, resource, shard_id):
             nonlocal fetch_call_count
@@ -4979,7 +4997,9 @@ class TestSpeculativeAcquire:
                 )
             if call_count == 2:
                 return SpeculativeResult(success=False, old_buckets=[parent_bucket_old])
-            return original_speculative(entity_id, resource, consume, ttl_seconds)
+            return original_speculative(
+                entity_id, resource, consume, ttl_seconds, shard_id=shard_id, now_ms=now_ms
+            )
 
         def mock_transact_write(items):
             nonlocal transact_call_count
@@ -5113,7 +5133,9 @@ class TestSpeculativeAcquire:
                 return SpeculativeResult(
                     success=True, buckets=[parent_rpm, parent_tpm], cascade=False, parent_id=None
                 )
-            return original_speculative(entity_id, resource, consume, ttl_seconds)
+            return original_speculative(
+                entity_id, resource, consume, ttl_seconds, shard_id=shard_id, now_ms=now_ms
+            )
 
         sync_limiter._repository.speculative_consume = mock_speculative
         try:
@@ -5154,7 +5176,9 @@ class TestSpeculativeAcquire:
             call_count += 1
             if call_count == 1:
                 return SpeculativeResult(success=False, old_buckets=[old_bucket])
-            return original_speculative(entity_id, resource, consume, ttl_seconds)
+            return original_speculative(
+                entity_id, resource, consume, ttl_seconds, shard_id=shard_id, now_ms=now_ms
+            )
 
         sync_limiter._repository.speculative_consume = mock_speculative
         try:
@@ -5214,13 +5238,17 @@ class TestSpeculativeAcquire:
             nonlocal spec_call_count
             spec_call_count += 1
             if spec_call_count == 1:
-                original_speculative(entity_id, resource, consume, ttl_seconds)
+                original_speculative(
+                    entity_id, resource, consume, ttl_seconds, shard_id=shard_id, now_ms=now_ms
+                )
                 return SpeculativeResult(
                     success=True, buckets=[child_bucket], cascade=True, parent_id="parent-1"
                 )
             if spec_call_count == 2:
                 return SpeculativeResult(success=False, old_buckets=[parent_bucket_old])
-            return original_speculative(entity_id, resource, consume, ttl_seconds)
+            return original_speculative(
+                entity_id, resource, consume, ttl_seconds, shard_id=shard_id, now_ms=now_ms
+            )
 
         def mock_fetch_raising(entity_id, resource, shard_id):
             nonlocal fetch_call_count
