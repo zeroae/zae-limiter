@@ -1764,6 +1764,10 @@ supported on system config. Proposed until v0.16.0 ships.
   `set_limits(..., cascade=)` with the `PRESERVE_CASCADE` sentinel; `set_resource_cascade` /
   `clear_resource_cascade`; `set_entity_cascade` / `clear_entity_cascade` (`resource=None` =
   the entity's `_default_`); `get_resource_cascade` / `get_entity_cascade`.
+- **CLI:** `resource set-cascade NAME on|off` / `resource clear-cascade NAME`, `entity
+  set-cascade ID on|off [--resource R]` / `entity clear-cascade ID [--resource R]`;
+  `resource get-defaults` / `entity get-limits` print `Cascade: on|off (explicit)` for a level
+  that sets one.
 
 ### Namespace Registry
 
