@@ -101,6 +101,13 @@ class TestLimitsPlan:
                     "org": {"resources": {"gpt-4": {"limits": {"rpm": {"capacity": 500}}}}}
                 },
             },
+            {  # an entity-wide `_default_` entry outranks the resource level
+                "namespace": "x",
+                "resources": {"gpt-4": {"cascade": True, "limits": {"rpm": {"capacity": 5}}}},
+                "entities": {
+                    "org": {"resources": {"_default_": {"limits": {"tpm": {"capacity": 9}}}}}
+                },
+            },
             {  # not cascading
                 "namespace": "x",
                 "resources": {"llm": {"cascade": False, "limits": {"rpm": {"capacity": 5}}}},

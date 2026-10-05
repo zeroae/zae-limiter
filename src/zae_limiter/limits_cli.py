@@ -328,6 +328,10 @@ def _cascade_warnings(manifest_data: dict[str, Any]) -> list[str]:
         for entity in (manifest_data.get("entities") or {}).values()
         for resource in ((entity or {}).get("resources") or {})
     }
+    if "_default_" in covered:
+        # An entity-wide `_default_` entry outranks the resource level for
+        # every resource, so it covers them all.
+        return []
     return [
         f"resources.{name} sets cascade: true, but no entity in this manifest has its own "
         f"limits for '{name}', so parents will be limited by the per-user resource defaults"
