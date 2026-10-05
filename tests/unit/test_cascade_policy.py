@@ -212,3 +212,104 @@ class TestResolveCascade:
         access = await cascade_repo.resolve_access("user-1", schema.DEFAULT_RESOURCE)
 
         assert (access.cascade, access.cascade_level) == (False, "entity")
+
+
+async def _bucket(repo: Repository, entity_id: str, resource: str) -> dict | None:
+    client = await repo._get_client()
+    response = await client.get_item(
+        TableName=repo.table_name,
+        Key={
+            "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, resource, 0)},
+            "SK": {"S": schema.sk_state()},
+        },
+    )
+    return response.get("Item")
+
+
+async def _consumed(repo: Repository, entity_id: str, resource: str) -> int:
+    item = await _bucket(repo, entity_id, resource)
+    return 0 if item is None else int(item[schema.bucket_attr("rpm", "tc")]["N"]) // 1000
+
+
+class TestSlowPathFollowsThePolicy:
+    """The slow path cascades per the resolved policy and stamps it (ADR-146)."""
+
+    async def _hierarchy(self, repo, *, user_cascade=True, team_cascade=True):
+        for resource in ("gpt-4", "llm"):
+            await repo.set_resource_defaults(resource, [RPM])
+        await repo.create_entity("org")
+        await repo.create_entity("team", parent_id="org", cascade=team_cascade)
+        await repo.create_entity("user", parent_id="team", cascade=user_cascade)
+
+    async def _set_resource_policy(self, repo, resource, value):
+        await _stamp_config_cascade(
+            repo, schema.pk_resource(repo._namespace_id, resource), schema.sk_config(), value
+        )
+        repo.invalidate_config_cache()
+
+    async def test_no_policy_keeps_the_entity_flag(self, cascade_limiter):
+        repo = cascade_limiter._repository
+        await self._hierarchy(repo)
+
+        async with cascade_limiter.acquire("user", "llm", consume={"rpm": 3}):
+            pass
+
+        assert await _consumed(repo, "team", "llm") == 3
+        assert (await _bucket(repo, "user", "llm"))["cascade"] == {"BOOL": True}
+
+    async def test_a_policy_off_stops_a_cascading_entity(self, cascade_limiter):
+        repo = cascade_limiter._repository
+        await self._hierarchy(repo)
+        await self._set_resource_policy(repo, "llm", False)
+
+        async with cascade_limiter.acquire("user", "llm", consume={"rpm": 3}):
+            pass
+        async with cascade_limiter.acquire("user", "gpt-4", consume={"rpm": 3}):
+            pass
+
+        assert await _bucket(repo, "team", "llm") is None
+        assert (await _bucket(repo, "user", "llm"))["cascade"] == {"BOOL": False}
+        assert await _consumed(repo, "team", "gpt-4") == 3
+
+    async def test_a_policy_on_cascades_an_entity_created_without_it(self, cascade_limiter):
+        repo = cascade_limiter._repository
+        await self._hierarchy(repo, user_cascade=False)
+        await self._set_resource_policy(repo, "gpt-4", True)
+
+        async with cascade_limiter.acquire("user", "gpt-4", consume={"rpm": 3}):
+            pass
+
+        assert await _consumed(repo, "team", "gpt-4") == 3
+        assert (await _bucket(repo, "user", "gpt-4"))["cascade"] == {"BOOL": True}
+
+    async def test_the_parent_bucket_carries_the_parents_own_policy(self, cascade_limiter):
+        repo = cascade_limiter._repository
+        await self._hierarchy(repo)
+        ns = repo._namespace_id
+        await repo.set_limits("team", [RPM], resource="gpt-4")
+        await _stamp_config_cascade(
+            repo, schema.pk_entity(ns, "team"), schema.sk_config("gpt-4"), False
+        )
+        repo.invalidate_config_cache()
+
+        async with cascade_limiter.acquire("user", "gpt-4", consume={"rpm": 3}):
+            pass
+
+        team = await _bucket(repo, "team", "gpt-4")
+        assert team["cascade"] == {"BOOL": False}
+        assert team["parent_id"] == {"S": "org"}
+
+    async def test_a_slow_pass_repairs_a_stale_stamp(self, cascade_repo):
+        repo = cascade_repo
+        await self._hierarchy(repo)
+        limiter = RateLimiter(repository=repo, speculative_writes=False)
+        async with limiter.acquire("user", "llm", consume={"rpm": 1}):
+            pass
+        assert (await _bucket(repo, "user", "llm"))["cascade"] == {"BOOL": True}
+
+        await self._set_resource_policy(repo, "llm", False)
+        async with limiter.acquire("user", "llm", consume={"rpm": 1}):
+            pass
+
+        assert (await _bucket(repo, "user", "llm"))["cascade"] == {"BOOL": False}
+        assert await _consumed(repo, "team", "llm") == 1  # the first call only
