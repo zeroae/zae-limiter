@@ -346,7 +346,10 @@ parser. `limits plan` warns (stderr, `limits_cli._cascade_warnings`) when a reso
 `cascade: true` and no entity in the manifest has its own limits for it — parents would be
 limited by the per-user resource defaults. Version gate: `applier.require_cascade_policy_readers`
 runs before any write and refuses unless the Lambdas are `>= 0.16.0` (or this build), then
-ratchets `client_min_version` — free when no change declares `cascade`.
+ratchets `client_min_version` — free when no change declares `cascade`. A cascade fan-out that
+fails is recorded in the `#PROVISIONER` record's `cascade_pending` and retried by the next apply
+(with that apply's own changes): being change-only, a re-run would otherwise see no change and
+never reconcile.
 
 **Provisioner Lambda:**
 - Function name: `{stack}-limits-provisioner`

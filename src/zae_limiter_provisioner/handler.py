@@ -100,7 +100,9 @@ def _handle_cli(event: dict[str, Any], context: Any) -> dict[str, Any]:
         return {"status": "planned", "changes": change_dicts}
 
     # Apply
-    result = _apply_and_record(manifest, changes, table_name, namespace_id)
+    result = _apply_and_record(
+        manifest, changes, table_name, namespace_id, previous.get("cascade_pending", [])
+    )
 
     return {
         "status": "applied",
@@ -136,7 +138,9 @@ def _handle_cfn(event: dict[str, Any], context: Any) -> dict[str, Any]:
     previous = _read_provisioner_state(table_name, namespace_id)
     changes = compute_diff(manifest, previous)
 
-    result = _apply_and_record(manifest, changes, table_name, namespace_id)
+    result = _apply_and_record(
+        manifest, changes, table_name, namespace_id, previous.get("cascade_pending", [])
+    )
 
     return {
         "physical_resource_id": physical_resource_id,
@@ -154,8 +158,15 @@ def _apply_and_record(
     changes: list[Change],
     table_name: str,
     namespace_id: str,
+    cascade_pending: list[tuple[str, str]] | None = None,
 ) -> ApplyResult:
     """Commit the config writes, fan out, then record the managed state (#563).
+
+    ``cascade_pending`` are the levels whose cascade fan-out failed on an
+    earlier apply (ADR-146): the cascade fan-out is change-only, so without
+    them re-running the same apply would restamp nothing and never reconcile.
+    They are retried here with this apply's own changes, and whatever still
+    fails is recorded for the next one.
 
     The single place both entry points run an apply, so the ordering contract
     below cannot drift between the CFN and CLI paths again — which is exactly
@@ -194,7 +205,13 @@ def _apply_and_record(
     require_cascade_policy_readers(changes, table_name)
     result = apply_changes(changes, table_name, namespace_id)
     result.errors.extend(_fanout_disabled_changes(table_name, namespace_id, changes))
-    result.errors.extend(_fanout_cascade_changes(table_name, namespace_id, result.cascade_changed))
+    cascade_targets: list[tuple[str, str]] = list(
+        dict.fromkeys([*(cascade_pending or []), *result.cascade_changed])
+    )
+    cascade_errors, cascade_failed = _fanout_cascade_changes(
+        table_name, namespace_id, cascade_targets
+    )
+    result.errors.extend(cascade_errors)
     result.errors.extend(_sync_bucket_param_changes(table_name, namespace_id, changes))
 
     manifest_hash = hashlib.sha256(
@@ -204,6 +221,7 @@ def _apply_and_record(
     new_state = manifest.managed_set()
     new_state["last_applied"] = datetime.now(UTC).isoformat()
     new_state["applied_hash"] = f"sha256:{manifest_hash}"
+    new_state["cascade_pending"] = cascade_failed
     _write_provisioner_state(table_name, namespace_id, new_state)
 
     return result
@@ -311,20 +329,24 @@ def _fanout_cascade_changes(
     table_name: str,
     namespace_id: str,
     changed: list[tuple[str, str]],
-) -> list[str]:
-    """Restamp buckets for every level whose cascade policy this apply changed (ADR-146).
+) -> tuple[list[str], list[tuple[str, str]]]:
+    """Restamp buckets for every level whose cascade policy changed (ADR-146).
 
     Unlike `disabled`, only the levels `apply_changes` saw change — from each
-    write's own ALL_OLD image — are fanned out, so a routine apply that
-    re-asserts an unchanged policy writes no bucket. Every bucket reached is
-    stamped from its own resolution (`fanout.fanout_cascade`), so an entity
-    override survives a resource-level change, and the order of the changes
-    does not matter. Failures are returned, not raised, as for `disabled`
-    (#563).
+    write's own ALL_OLD image — plus any an earlier apply failed to restamp are
+    fanned out, so a routine apply that re-asserts an unchanged policy writes
+    no bucket. Every bucket reached is stamped from its own resolution
+    (`fanout.fanout_cascade`), so an entity override survives a resource-level
+    change, and the order of the changes does not matter.
+
+    Returns ``(errors, failed)``: failures are reported, not raised, as for
+    `disabled` (#563), and ``failed`` is recorded so the next apply retries
+    them — every write is idempotent, so re-running reconciles the rest.
     """
     if not changed:
-        return []
+        return [], []
     errors: list[str] = []
+    failed: list[tuple[str, str]] = []
     client = boto3.client("dynamodb")
     for level, target in changed:
         try:
@@ -337,8 +359,9 @@ def _fanout_cascade_changes(
                 )
         except Exception as e:
             logger.warning("cascade fan-out failed for %s %s: %s", level, target, e)
-            errors.append(f"cascade fan-out {level} {target}: {e}")
-    return errors
+            errors.append(f"cascade fan-out {level} {target}: {e} (retried on the next apply)")
+            failed.append((level, target))
+    return errors, failed
 
 
 def _sync_bucket_param_changes(
@@ -777,6 +800,7 @@ def _read_provisioner_state(table_name: str, namespace_id: str) -> dict[str, Any
             "managed_system": False,
             "managed_resources": [],
             "managed_entities": {},
+            "cascade_pending": [],
         }
 
     managed_entities: dict[str, list[str]] = {}
@@ -788,6 +812,10 @@ def _read_provisioner_state(table_name: str, namespace_id: str) -> dict[str, Any
         "managed_system": item.get("managed_system", {}).get("BOOL", False),
         "managed_resources": [r["S"] for r in item.get("managed_resources", {}).get("L", [])],
         "managed_entities": managed_entities,
+        "cascade_pending": [
+            (entry["M"]["level"]["S"], entry["M"]["target"]["S"])
+            for entry in item.get("cascade_pending", {}).get("L", [])
+        ],
     }
 
 
@@ -812,6 +840,14 @@ def _write_provisioner_state(
         },
         "last_applied": {"S": state.get("last_applied", "")},
         "applied_hash": {"S": state.get("applied_hash", "")},
+        # Levels whose cascade fan-out failed (ADR-146): retried by the next
+        # apply, which would otherwise see no change and restamp nothing.
+        "cascade_pending": {
+            "L": [
+                {"M": {"level": {"S": level}, "target": {"S": target}}}
+                for level, target in state.get("cascade_pending", [])
+            ]
+        },
     }
     client.put_item(TableName=table_name, Item=item)
 

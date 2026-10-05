@@ -1974,11 +1974,11 @@ class TestCascadeFanoutChanges:
     def test_each_changed_level_is_fanned_out_once(self, mock_boto3, mock_fanout):
         from zae_limiter_provisioner.handler import _fanout_cascade_changes
 
-        errors = _fanout_cascade_changes(
+        errors, failed = _fanout_cascade_changes(
             "t", "ns", [("resource", "llm"), ("entity", "u1/_default_")]
         )
 
-        assert errors == []
+        assert (errors, failed) == ([], [])
         client = mock_boto3.client.return_value
         assert mock_fanout.call_args_list[0].args == (client, "t", "ns")
         assert mock_fanout.call_args_list[0].kwargs == {"resource": "llm"}
@@ -1991,36 +1991,81 @@ class TestCascadeFanoutChanges:
     def test_nothing_changed_means_no_work(self, mock_boto3):
         from zae_limiter_provisioner.handler import _fanout_cascade_changes
 
-        assert _fanout_cascade_changes("t", "ns", []) == []
+        assert _fanout_cascade_changes("t", "ns", []) == ([], [])
         mock_boto3.client.assert_not_called()
 
     @patch("zae_limiter_provisioner.handler.fanout_cascade", side_effect=RuntimeError("boom"))
     @patch("zae_limiter_provisioner.handler.boto3")
-    def test_a_failure_is_reported_not_raised(self, mock_boto3, mock_fanout):
+    def test_a_failure_is_reported_and_kept_for_retry(self, mock_boto3, mock_fanout):
         from zae_limiter_provisioner.handler import _fanout_cascade_changes
 
-        errors = _fanout_cascade_changes("t", "ns", [("resource", "llm")])
+        errors, failed = _fanout_cascade_changes("t", "ns", [("resource", "llm")])
 
-        assert errors == ["cascade fan-out resource llm: boom"]
+        assert errors == ["cascade fan-out resource llm: boom (retried on the next apply)"]
+        assert failed == [("resource", "llm")]
 
     @patch("zae_limiter_provisioner.handler._write_provisioner_state")
     @patch("zae_limiter_provisioner.handler._sync_bucket_param_changes", return_value=[])
     @patch("zae_limiter_provisioner.handler._fanout_disabled_changes", return_value=[])
-    @patch("zae_limiter_provisioner.handler._fanout_cascade_changes", return_value=[])
+    @patch("zae_limiter_provisioner.handler._fanout_cascade_changes")
     @patch("zae_limiter_provisioner.handler.apply_changes")
     @patch("zae_limiter_provisioner.handler.require_cascade_policy_readers")
     @patch("zae_limiter_provisioner.handler.require_reset_after_readers")
-    def test_an_apply_fans_out_what_the_applier_saw_change(
-        self, _gate1, mock_gate, mock_apply, mock_fanout, *_rest
+    def test_an_apply_retries_pending_and_records_what_still_fails(
+        self, _gate1, mock_gate, mock_apply, mock_fanout, _disabled, _sync, mock_write
     ):
         from zae_limiter_provisioner.applier import ApplyResult
         from zae_limiter_provisioner.handler import _apply_and_record
         from zae_limiter_provisioner.manifest import LimitsManifest
 
-        mock_apply.return_value = ApplyResult(cascade_changed=[("resource", "llm")])
+        mock_apply.return_value = ApplyResult(
+            cascade_changed=[("resource", "llm"), ("entity", "u1/llm")]
+        )
+        mock_fanout.return_value = (["err"], [("entity", "u1/llm")])
         changes = [Change(action="update", level="resource", target="llm", data={})]
 
-        _apply_and_record(LimitsManifest.from_dict({"namespace": "x"}), changes, "t", "ns")
+        result = _apply_and_record(
+            LimitsManifest.from_dict({"namespace": "x"}),
+            changes,
+            "t",
+            "ns",
+            [("entity", "old/gpt-4"), ("resource", "llm")],
+        )
 
         mock_gate.assert_called_once_with(changes, "t")
-        mock_fanout.assert_called_once_with("t", "ns", [("resource", "llm")])
+        # Pending first, then this apply's changes, without duplicates.
+        mock_fanout.assert_called_once_with(
+            "t", "ns", [("entity", "old/gpt-4"), ("resource", "llm"), ("entity", "u1/llm")]
+        )
+        assert "err" in result.errors
+        assert mock_write.call_args.args[2]["cascade_pending"] == [("entity", "u1/llm")]
+
+
+class TestCascadePendingState:
+    """The #PROVISIONER record carries the cascade fan-outs left to retry (ADR-146)."""
+
+    TABLE = "prov-pending"
+
+    @pytest.fixture
+    def table(self, mock_dynamodb):
+        from zae_limiter.sync_repository import SyncRepository
+
+        repo = SyncRepository(name=self.TABLE, region="us-east-1", _skip_deprecation_warning=True)
+        repo.create_table()
+        repo.close()
+
+    def test_round_trip(self, table):
+        from zae_limiter_provisioner.handler import (
+            _read_provisioner_state,
+            _write_provisioner_state,
+        )
+
+        pending = [("resource", "openai/gpt-4"), ("entity", "u1/_default_")]
+        _write_provisioner_state(self.TABLE, "ns", {"cascade_pending": pending})
+
+        assert _read_provisioner_state(self.TABLE, "ns")["cascade_pending"] == pending
+
+    def test_a_record_without_it_reads_as_none_pending(self, table):
+        from zae_limiter_provisioner.handler import _read_provisioner_state
+
+        assert _read_provisioner_state(self.TABLE, "ns")["cascade_pending"] == []
