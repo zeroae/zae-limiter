@@ -1098,8 +1098,12 @@ class TestWriteOnEnter:
         assert lease._committed is True
         mock_repo.transact_write.assert_not_called()
 
-    def test_commit_adjustments_failure_allows_rollback(self):
-        """_rollback works after _commit_adjustments fails (token leak fix)."""
+    def test_commit_adjustments_failure_leaves_nothing_to_roll_back(self):
+        """A failed adjustment write never refunds the initial consumption (#682).
+
+        The caller's code has finished, so the work happened: the lease is committed
+        before the first write and _rollback() is a no-op afterwards.
+        """
         from zae_limiter.sync_lease import SyncLease
 
         entry = self._make_entry(consumed=15, initial_consumed=10)
@@ -1109,13 +1113,28 @@ class TestWriteOnEnter:
         lease._initial_committed = True
         with pytest.raises(RuntimeError, match="network error"):
             lease._commit_adjustments()
-        assert lease._committed is False
+        assert lease._committed is True
         mock_repo.write_each.side_effect = None
+        mock_repo.write_each.reset_mock()
         lease._rollback()
-        assert lease._rolled_back is True
-        mock_repo.build_composite_adjust.assert_called_with(
-            entity_id="e1", resource="gpt-4", deltas={"rpm": -10000}, shard_id=0
-        )
+        assert lease._rolled_back is False
+        mock_repo.write_each.assert_not_called()
+
+    @pytest.mark.parametrize("returns", [[None, None], [[{}], None], [None, [{}]]])
+    def test_commit_adjustments_without_per_item_results_skips_the_ceiling(self, returns):
+        """A backend whose write_each reports nothing skips the #679 ceiling check."""
+        from zae_limiter.sync_lease import SyncLease
+
+        entries = [
+            self._make_entry(consumed=15, initial_consumed=10, entity_id="e1"),
+            self._make_entry(consumed=15, initial_consumed=10, entity_id="e2"),
+        ]
+        mock_repo = self._make_mock_repo()
+        mock_repo.write_each.side_effect = returns
+        lease = SyncLease(repository=mock_repo, entries=entries)
+        lease._commit_adjustments()
+        assert lease._committed is True
+        assert mock_repo.write_each.call_count == 2
 
     def test_rollback_skips_when_committed(self):
         """_rollback is no-op when already committed (line 358)."""
