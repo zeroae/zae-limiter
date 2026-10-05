@@ -1352,23 +1352,38 @@ class TestWriteOnEnter:
         assert lease._rolled_back is False
         mock_repo.write_each.assert_not_called()
 
-    @pytest.mark.parametrize("returns", [[None, None], [[{}], None], [None, [{}]]])
-    async def test_commit_adjustments_without_per_item_results_skips_the_ceiling(self, returns):
+    OVER = [{bucket_attr("rpm", "tk"): {"N": "999999"}}]  # above any ceiling below
+
+    @pytest.mark.parametrize(
+        ("returns", "clamps"),
+        [
+            ([OVER, OVER], 2),  # control: per-item results reach the ceiling check
+            ([None, None], 0),
+            ([OVER, None], 0),
+            ([None, OVER], 0),
+        ],
+    )
+    async def test_commit_adjustments_without_per_item_results_skips_the_ceiling(
+        self, returns, clamps
+    ):
         """A backend whose write_each reports nothing skips the #679 ceiling check."""
         from zae_limiter.lease import Lease
 
         entries = [
-            self._make_entry(consumed=15, initial_consumed=10, entity_id="e1"),
-            self._make_entry(consumed=15, initial_consumed=10, entity_id="e2"),
+            self._make_entry(consumed=5, initial_consumed=10, entity_id="e1"),  # a credit
+            self._make_entry(consumed=5, initial_consumed=10, entity_id="e2"),
         ]
+        for entry in entries:
+            entry.state.ceiling_milli.return_value = 100_000
         mock_repo = self._make_mock_repo()
-        mock_repo.write_each.side_effect = returns
+        mock_repo.write_each.side_effect = [*returns, None, None]
+        mock_repo.build_vu_reset = MagicMock(return_value={"Update": {}})
 
         lease = Lease(repository=mock_repo, entries=entries)
         await lease._commit_adjustments()
 
         assert lease._committed is True
-        assert mock_repo.write_each.call_count == 2  # one per item, no clamp writes
+        assert mock_repo.build_vu_reset.call_count == clamps
 
     async def test_rollback_skips_when_committed(self):
         """_rollback is no-op when already committed (line 358)."""

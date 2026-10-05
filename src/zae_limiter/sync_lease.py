@@ -706,6 +706,10 @@ class SyncLease:
         No-op if no adjust/consume/release calls were made during the context.
         Uses build_composite_adjust() for unconditional ADD, dispatched via
         write_each() (independent single-item writes, 1 WCU each).
+
+        The lease is marked committed before the first write, so a write that
+        fails is re-raised but never rolled back (#682): items that landed keep
+        their adjustment and the rest keep their initial consumption.
         """
         if self._committed or self._rolled_back:
             return

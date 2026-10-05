@@ -1120,21 +1120,29 @@ class TestWriteOnEnter:
         assert lease._rolled_back is False
         mock_repo.write_each.assert_not_called()
 
-    @pytest.mark.parametrize("returns", [[None, None], [[{}], None], [None, [{}]]])
-    def test_commit_adjustments_without_per_item_results_skips_the_ceiling(self, returns):
+    OVER = [{bucket_attr("rpm", "tk"): {"N": "999999"}}]
+
+    @pytest.mark.parametrize(
+        ("returns", "clamps"),
+        [([OVER, OVER], 2), ([None, None], 0), ([OVER, None], 0), ([None, OVER], 0)],
+    )
+    def test_commit_adjustments_without_per_item_results_skips_the_ceiling(self, returns, clamps):
         """A backend whose write_each reports nothing skips the #679 ceiling check."""
         from zae_limiter.sync_lease import SyncLease
 
         entries = [
-            self._make_entry(consumed=15, initial_consumed=10, entity_id="e1"),
-            self._make_entry(consumed=15, initial_consumed=10, entity_id="e2"),
+            self._make_entry(consumed=5, initial_consumed=10, entity_id="e1"),
+            self._make_entry(consumed=5, initial_consumed=10, entity_id="e2"),
         ]
+        for entry in entries:
+            entry.state.ceiling_milli.return_value = 100000
         mock_repo = self._make_mock_repo()
-        mock_repo.write_each.side_effect = returns
+        mock_repo.write_each.side_effect = [*returns, None, None]
+        mock_repo.build_vu_reset = MagicMock(return_value={"Update": {}})
         lease = SyncLease(repository=mock_repo, entries=entries)
         lease._commit_adjustments()
         assert lease._committed is True
-        assert mock_repo.write_each.call_count == 2
+        assert mock_repo.build_vu_reset.call_count == clamps
 
     def test_rollback_skips_when_committed(self):
         """_rollback is no-op when already committed (line 358)."""
