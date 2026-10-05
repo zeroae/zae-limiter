@@ -71,6 +71,48 @@ class TestLimitsPlan:
                 assert result.exit_code == 0
                 assert "up-to-date" in result.output.lower()
 
+    def _plan(self, manifest: dict):
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            yaml.dump(manifest, f)
+            f.flush()
+            with patch("zae_limiter.limits_cli._invoke_provisioner") as mock_invoke:
+                mock_invoke.return_value = {"status": "planned", "changes": []}
+                return CliRunner().invoke(cli, ["limits", "plan", "--name", "app", "-f", f.name])
+
+    def test_plan_warns_when_a_cascading_resource_has_no_entity_limits(self):
+        """ADR-146: the parent would be limited by the per-user resource defaults."""
+        result = self._plan(
+            {
+                "namespace": "x",
+                "resources": {"gpt-4": {"cascade": True, "limits": {"rpm": {"capacity": 5}}}},
+            }
+        )
+        assert result.exit_code == 0
+        assert "Warning: resources.gpt-4 sets cascade: true" in result.output
+        assert "per-user resource defaults" in result.output
+
+    @pytest.mark.parametrize(
+        "manifest",
+        [
+            {  # the parent has its own limits for the resource
+                "namespace": "x",
+                "resources": {"gpt-4": {"cascade": True, "limits": {"rpm": {"capacity": 5}}}},
+                "entities": {
+                    "org": {"resources": {"gpt-4": {"limits": {"rpm": {"capacity": 500}}}}}
+                },
+            },
+            {  # not cascading
+                "namespace": "x",
+                "resources": {"llm": {"cascade": False, "limits": {"rpm": {"capacity": 5}}}},
+            },
+            {"namespace": "x", "resources": {"llm": {"limits": {"rpm": {"capacity": 5}}}}},
+        ],
+    )
+    def test_plan_is_quiet_otherwise(self, manifest):
+        result = self._plan(manifest)
+        assert result.exit_code == 0
+        assert "Warning" not in result.output
+
 
 class TestLimitsApply:
     """Tests for `zae-limiter limits apply -f <file>`."""
