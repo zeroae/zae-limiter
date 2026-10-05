@@ -3365,8 +3365,9 @@ class SyncRepository:
         client = self._get_client()
         self._require_reset_after_readers(limits)
         disabled_explicit = disabled is not _PRESERVE_DISABLED
+        stored_disabled, cascade = self._get_entity_config_flags(entity_id, resource)
         if not disabled_explicit:
-            disabled = self.get_entity_disabled(entity_id, resource)
+            disabled = stored_disabled
         item: dict[str, Any] = {
             "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
             "SK": {"S": schema.sk_config(resource)},
@@ -3382,6 +3383,9 @@ class SyncRepository:
         disabled_attr = schema.encode_disabled(disabled)
         if disabled_attr is not None:
             item[schema.CONFIG_FIELD_DISABLED] = disabled_attr
+        cascade_attr = schema.encode_cascade(cascade)
+        if cascade_attr is not None:
+            item[schema.CONFIG_FIELD_CASCADE] = cascade_attr
         try:
             client.transact_write_items(
                 TransactItems=[
@@ -3830,19 +3834,40 @@ class SyncRepository:
         Returns:
             True or False when explicitly set, None when unset (inherit).
         """
+        disabled, _cascade = self._get_entity_config_flags(entity_id, resource)
+        return disabled
+
+    def get_entity_cascade(self, entity_id: str, resource: str) -> bool | None:
+        """Read the tri-state cascade policy from an entity config item (ADR-146).
+
+        Returns:
+            True or False when explicitly set, None when unset (inherit).
+        """
+        _disabled, cascade = self._get_entity_config_flags(entity_id, resource)
+        return cascade
+
+    def _get_entity_config_flags(
+        self, entity_id: str, resource: str
+    ) -> tuple[bool | None, bool | None]:
+        """The tri-state `(disabled, cascade)` stored on an entity config item."""
+        return self._get_config_flags(
+            schema.pk_entity(self._namespace_id, entity_id), schema.sk_config(resource)
+        )
+
+    def _get_config_flags(self, pk: str, sk: str) -> tuple[bool | None, bool | None]:
+        """The tri-state `(disabled, cascade)` stored on one config item.
+
+        One read serves both, so a full-replace setter preserving them costs what
+        preserving `disabled` alone did (ADR-125, ADR-146).
+        """
         client = self._get_client()
         response = client.get_item(
-            TableName=self.table_name,
-            Key={
-                "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
-                "SK": {"S": schema.sk_config(resource)},
-            },
-            ConsistentRead=False,
+            TableName=self.table_name, Key={"PK": {"S": pk}, "SK": {"S": sk}}, ConsistentRead=False
         )
         item = response.get("Item")
         if not item:
-            return None
-        return schema.decode_disabled(item)
+            return (None, None)
+        return (schema.decode_disabled(item), schema.decode_cascade(item))
 
     def delete_limits(
         self, entity_id: str, resource: str = schema.DEFAULT_RESOURCE, principal: str | None = None
@@ -4027,8 +4052,9 @@ class SyncRepository:
         client = self._get_client()
         self._require_reset_after_readers(limits)
         disabled_explicit = disabled is not _PRESERVE_DISABLED
+        stored_disabled, cascade = self._get_resource_config_flags(resource)
         if not disabled_explicit:
-            disabled = self.get_resource_disabled(resource)
+            disabled = stored_disabled
         item: dict[str, Any] = {
             "PK": {"S": schema.pk_resource(self._namespace_id, resource)},
             "SK": {"S": schema.sk_config()},
@@ -4041,6 +4067,9 @@ class SyncRepository:
         disabled_attr = schema.encode_disabled(disabled)
         if disabled_attr is not None:
             item[schema.CONFIG_FIELD_DISABLED] = disabled_attr
+        cascade_attr = schema.encode_cascade(cascade)
+        if cascade_attr is not None:
+            item[schema.CONFIG_FIELD_CASCADE] = cascade_attr
         client.put_item(TableName=self.table_name, Item=item)
         client.update_item(
             TableName=self.table_name,
@@ -4093,19 +4122,24 @@ class SyncRepository:
             True or False when explicitly set, None when unset (inherit).
         """
         validate_resource(resource)
-        client = self._get_client()
-        response = client.get_item(
-            TableName=self.table_name,
-            Key={
-                "PK": {"S": schema.pk_resource(self._namespace_id, resource)},
-                "SK": {"S": schema.sk_config()},
-            },
-            ConsistentRead=False,
+        disabled, _cascade = self._get_resource_config_flags(resource)
+        return disabled
+
+    def get_resource_cascade(self, resource: str) -> bool | None:
+        """Read the tri-state cascade policy from a resource config item (ADR-146).
+
+        Returns:
+            True or False when explicitly set, None when unset (inherit).
+        """
+        validate_resource(resource)
+        _disabled, cascade = self._get_resource_config_flags(resource)
+        return cascade
+
+    def _get_resource_config_flags(self, resource: str) -> tuple[bool | None, bool | None]:
+        """The tri-state `(disabled, cascade)` stored on a resource config item."""
+        return self._get_config_flags(
+            schema.pk_resource(self._namespace_id, resource), schema.sk_config()
         )
-        item = response.get("Item")
-        if not item:
-            return None
-        return schema.decode_disabled(item)
 
     def delete_resource_defaults(self, resource: str, principal: str | None = None) -> None:
         """
