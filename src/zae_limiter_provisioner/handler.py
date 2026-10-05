@@ -484,15 +484,16 @@ _ABSENT: Any = object()
 
 
 def _coerce_bool(value: Any, where: str) -> bool:
-    """Coerce a CloudFormation-delivered `Disabled` value to a real ``bool``.
+    """Coerce a CloudFormation-delivered `Disabled` or `Cascade` value to a real ``bool``.
 
     A case-insensitive allowlist that **raises** on anything else, rather than
     falling through to ``bool(value)``. Case matters concretely: an author
     writing ``Disabled: "True"`` (quoted, so YAML keeps it a string) would
     otherwise arrive as ``'True'`` and be truthy by accident rather than by
     the allowlist. ``'1'``, ``'yes'``, ``''`` and every other spelling are
-    rejected: this is the ADR-125 kill switch, and guessing wrong either
-    disables a tenant or re-admits one that was meant to stay out.
+    rejected: both properties are tri-state switches (ADR-125, ADR-146), and
+    guessing wrong silently disables or re-admits a tenant, or turns its
+    cascade to a parent on or off.
     """
     if isinstance(value, bool):
         return value
@@ -502,8 +503,8 @@ def _coerce_bool(value: Any, where: str) -> bool:
         f"{where} must be true or false, got {value!r}. CloudFormation delivers "
         f"every property as a string, so this boundary accepts only 'true'/'false' "
         f"(any case) or a real boolean — anything else is rejected rather than "
-        f"guessed, because `disabled` is tri-state and a wrong guess silently "
-        f"disables or re-admits a tenant (ADR-125)."
+        f"guessed, because the property is tri-state and a wrong guess silently "
+        f"changes who is admitted or charged."
     )
 
 
