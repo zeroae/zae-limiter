@@ -2847,7 +2847,8 @@ class SyncRepository:
                         meta=(child_result.cascade, child_result.parent_id),
                     )
                 else:
-                    child_result.cascade = cascade_cached
+                    if child_result.parent_id is None:
+                        child_result.cascade = cascade_cached
                     child_result.parent_id = parent_id_cached
                 child_result.parent_result = parent_result
                 return child_result

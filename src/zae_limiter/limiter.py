@@ -887,8 +887,12 @@ class RateLimiter:
             # will hit the same disabled parent every time. Nothing was consumed
             # from the child here (its conditional write failed too), so unlike
             # the parent-succeeded branch above there is nothing to compensate.
+            # Only when the child cascades on this resource (ADR-146): the
+            # parallel write followed the cache's guess, and a child whose own
+            # stamp says it does not cascade is not answerable to that parent.
             if (
-                result.parent_result is not None
+                result.cascade
+                and result.parent_result is not None
                 and result.parent_result.failure_reason == SpeculativeFailureReason.DISABLED
             ):
                 assert result.parent_id is not None  # set by repository cache path

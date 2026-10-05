@@ -3404,10 +3404,17 @@ class Repository:
                         meta=(child_result.cascade, child_result.parent_id),
                     )
                 else:
-                    # On failure, _speculative_consume_single doesn't return
-                    # cascade/parent_id (only in ALL_NEW). Use cached values
-                    # so the caller can compensate the parent.
-                    child_result.cascade = cascade_cached
+                    # A failure image (ALL_OLD) carries the item's own stamp,
+                    # and a stamp with a parent_id is this resource's policy
+                    # (ADR-146): keep it, so an exhausted child whose policy
+                    # does not cascade is judged as such (no parent outranks
+                    # it, and the child-only shard retry stays open). With no
+                    # image (a missing bucket) or a pre-#684 stamp, the cache's
+                    # answer stands. parent_id is always the cached one: it is
+                    # the parent this path wrote to, and the caller compensates
+                    # it if that write landed.
+                    if child_result.parent_id is None:
+                        child_result.cascade = cascade_cached
                     child_result.parent_id = parent_id_cached
                 child_result.parent_result = parent_result
                 return child_result

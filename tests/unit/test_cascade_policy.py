@@ -376,6 +376,49 @@ class TestWarmPathFollowsTheItem:
 
         assert await _bucket(repo, "team", "llm") is None
 
+    async def test_a_failed_child_is_judged_by_its_own_stamp(self, cascade_limiter):
+        import time
+
+        from zae_limiter.exceptions import RateLimitExceeded
+
+        repo = cascade_limiter._repository
+        ns = repo._namespace_id
+        await self._warm_cascading_user(cascade_limiter)
+        client = await repo._get_client()
+        await client.update_item(  # the child: policy off, and exhausted
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(ns, "user", "llm", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="SET #c = :false, #tk = :zero, #rf = :now",
+            ExpressionAttributeNames={
+                "#c": "cascade",
+                "#tk": schema.bucket_attr("rpm", "tk"),
+                "#rf": "rf",
+            },
+            ExpressionAttributeValues={
+                ":false": {"BOOL": False},
+                ":zero": {"N": "0"},
+                ":now": {"N": str(int(time.time() * 1000))},
+            },
+        )
+        await client.update_item(  # the parent it no longer cascades to: disabled
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(ns, "team", "llm", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="SET #d = :true",
+            ExpressionAttributeNames={"#d": schema.BUCKET_FIELD_DISABLED},
+            ExpressionAttributeValues={":true": {"BOOL": True}},
+        )
+        repo._cascade_cache.clear()  # the warm guess for llm is the entity-wide True
+
+        with pytest.raises(RateLimitExceeded):
+            async with cascade_limiter.acquire("user", "llm", consume={"rpm": 1}):
+                pass
+
     async def test_a_stamp_without_parent_teaches_nothing(self, cascade_repo):
         cascade_repo._learn_shard_count("parent", "llm", 1, meta=(False, None))
         assert (cascade_repo._namespace_id, "parent", "llm") not in cascade_repo._cascade_cache
