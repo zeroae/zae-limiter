@@ -1098,8 +1098,12 @@ class TestWriteOnEnter:
         assert lease._committed is True
         mock_repo.transact_write.assert_not_called()
 
-    def test_commit_adjustments_failure_allows_rollback(self):
-        """_rollback works after _commit_adjustments fails (token leak fix)."""
+    def test_commit_adjustments_failure_leaves_nothing_to_roll_back(self):
+        """A failed adjustment write never refunds the initial consumption (#682).
+
+        The caller's code has finished, so the work happened: the lease is committed
+        before the first write and _rollback() is a no-op afterwards.
+        """
         from zae_limiter.sync_lease import SyncLease
 
         entry = self._make_entry(consumed=15, initial_consumed=10)
@@ -1109,13 +1113,36 @@ class TestWriteOnEnter:
         lease._initial_committed = True
         with pytest.raises(RuntimeError, match="network error"):
             lease._commit_adjustments()
-        assert lease._committed is False
+        assert lease._committed is True
         mock_repo.write_each.side_effect = None
+        mock_repo.write_each.reset_mock()
         lease._rollback()
-        assert lease._rolled_back is True
-        mock_repo.build_composite_adjust.assert_called_with(
-            entity_id="e1", resource="gpt-4", deltas={"rpm": -10000}, shard_id=0
-        )
+        assert lease._rolled_back is False
+        mock_repo.write_each.assert_not_called()
+
+    OVER = [{bucket_attr("rpm", "tk"): {"N": "999999"}}]
+
+    @pytest.mark.parametrize(
+        ("returns", "clamps"),
+        [([OVER, OVER], 2), ([None, None], 0), ([OVER, None], 0), ([None, OVER], 0)],
+    )
+    def test_commit_adjustments_without_per_item_results_skips_the_ceiling(self, returns, clamps):
+        """A backend whose write_each reports nothing skips the #679 ceiling check."""
+        from zae_limiter.sync_lease import SyncLease
+
+        entries = [
+            self._make_entry(consumed=5, initial_consumed=10, entity_id="e1"),
+            self._make_entry(consumed=5, initial_consumed=10, entity_id="e2"),
+        ]
+        for entry in entries:
+            entry.state.ceiling_milli.return_value = 100000
+        mock_repo = self._make_mock_repo()
+        mock_repo.write_each.side_effect = [*returns, None, None]
+        mock_repo.build_vu_reset = MagicMock(return_value={"Update": {}})
+        lease = SyncLease(repository=mock_repo, entries=entries)
+        lease._commit_adjustments()
+        assert lease._committed is True
+        assert mock_repo.build_vu_reset.call_count == clamps
 
     def test_rollback_skips_when_committed(self):
         """_rollback is no-op when already committed (line 358)."""
@@ -10488,3 +10515,73 @@ class TestMiddleEntityKeepsCascading:
         with sync_limiter.acquire("user", "gpt-4", consume={"rpm": 3}) as lease:
             assert {e.entity_id for e in lease.entries} == {"user", "team"}
         assert self._org_consumed(repo) == org_before
+
+
+class TestAdjustmentCommitFailure:
+    """#682: an adjustment commit that fails never refunds the initial consumption.
+
+    The adjustment commit runs after the caller's code finished, so the work happened.
+    ``write_each`` writes one item at a time; when a later item failed, the context
+    manager used to call ``_rollback()``, which refunded the initial consumption on
+    every item — including one whose adjustment had already landed, crediting it twice.
+    """
+
+    RPM = Limit.per_minute("rpm", 100)
+
+    def _cascade(self, sync_limiter) -> None:
+        repo = sync_limiter._repository
+        repo.set_resource_defaults("gpt-4", [self.RPM])
+        repo.create_entity("org")
+        repo.create_entity("user", parent_id="org", cascade=True)
+
+    @staticmethod
+    def _consumed(repo, entity_id: str) -> int:
+        client = repo._get_client()
+        response = client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, "gpt-4", 0)},
+                "SK": {"S": sk_state()},
+            },
+        )
+        return int(response["Item"][bucket_attr("rpm", "tc")]["N"]) // 1000
+
+    @staticmethod
+    def _fail_writes_to(repo, *entity_ids: str) -> None:
+        """Make the next independent write to these entities' buckets raise, once.
+
+        Later writes land, so a refund the fix must not make would be visible.
+        """
+        failing = {pk_bucket(repo._namespace_id, e, "gpt-4", 0) for e in entity_ids}
+        real_write_each = repo.write_each
+
+        def write_each(items):
+            results = []
+            for item in items:
+                if item["Update"]["Key"]["PK"]["S"] in failing:
+                    failing.clear()
+                    raise RuntimeError("throttled")
+                results.extend(real_write_each([item]))
+            return results
+
+        repo.write_each = write_each
+
+    def test_a_failed_parent_adjustment_leaves_the_child_credited_once(self, sync_limiter):
+        repo = sync_limiter._repository
+        self._cascade(sync_limiter)
+        with pytest.raises(RuntimeError, match="throttled"):
+            with sync_limiter.acquire("user", "gpt-4", consume={"rpm": 10}) as lease:
+                lease.consume(rpm=5)
+                self._fail_writes_to(repo, "org")
+        assert self._consumed(repo, "user") == 15
+        assert self._consumed(repo, "org") == 10
+
+    def test_a_failed_first_adjustment_refunds_nothing(self, sync_limiter):
+        repo = sync_limiter._repository
+        self._cascade(sync_limiter)
+        with pytest.raises(RuntimeError, match="throttled"):
+            with sync_limiter.acquire("user", "gpt-4", consume={"rpm": 10}) as lease:
+                lease.consume(rpm=5)
+                self._fail_writes_to(repo, "user", "org")
+        assert self._consumed(repo, "user") == 10
+        assert self._consumed(repo, "org") == 10

@@ -706,6 +706,10 @@ class SyncLease:
         No-op if no adjust/consume/release calls were made during the context.
         Uses build_composite_adjust() for unconditional ADD, dispatched via
         write_each() (independent single-item writes, 1 WCU each).
+
+        The lease is marked committed before the first write, so a write that
+        fails is re-raised but never rolled back (#682): items that landed keep
+        their adjustment and the rest keep their initial consumption.
         """
         if self._committed or self._rolled_back:
             return
@@ -732,10 +736,17 @@ class SyncLease:
                 if item:
                     items.append(item)
                     written.append((entity_id, resource, shard_id, group_entries, deltas))
-        if items:
-            results = repo.write_each(items)
-            self._trim_credits_above_ceiling(written, results)
         self._committed = True
+        landed: list[_AdjustedItem] = []
+        results: list[dict[str, Any]] | None = []
+        try:
+            for item, adjusted in zip(items, written, strict=True):
+                result = repo.write_each([item])
+                results = None if result is None or results is None else results + result
+                landed.append(adjusted)
+        finally:
+            if landed:
+                self._trim_credits_above_ceiling(landed, results)
 
     def _rollback(self) -> None:
         """Write compensating deltas to restore consumed tokens (Issue #309).
