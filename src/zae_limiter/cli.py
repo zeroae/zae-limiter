@@ -4286,7 +4286,8 @@ def entity_set_cascade(
     ENTITY_ID is the entity (e.g., 'user-123'); VALUE is 'on' or 'off'. Omit
     --resource to set it for every resource that has no policy of its own
     (targets the entity's `_default_` config). Existing buckets are restamped
-    immediately. Requires a stack whose Lambdas are 0.16.0 or later.
+    immediately. Requires a stack whose Lambdas are 0.16.0 or later (run
+    'zae-limiter upgrade' first if not).
 
     \f
 

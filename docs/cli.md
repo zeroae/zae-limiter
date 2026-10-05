@@ -416,7 +416,8 @@ entity with no parent never cascades.
 
 Like disabling, a change is eager: existing buckets are restamped immediately. Setting or
 clearing a policy needs a stack whose Lambdas are 0.16.0 or later — otherwise the command exits
-1 and names `zae-limiter upgrade` — and raises the stack's minimum client version to 0.16.0.
+1 and names `zae-limiter upgrade` (or `zae-limiter deploy`, when the stack has no version record)
+— and raises the stack's minimum client version to 0.16.0.
 
 `resource get-defaults` and `entity get-limits` print `Cascade: on (explicit)` or
 `Cascade: off (explicit)` when that level sets a policy, and nothing when it inherits.
