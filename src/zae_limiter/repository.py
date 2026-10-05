@@ -204,10 +204,12 @@ class Repository:
         # cascade/parent_id are immutable; shard_count updated on doubling
         self._entity_cache: dict[tuple[str, str], tuple[bool, str | None, dict[str, int]]] = {}
         # The cascade policy per (namespace, entity, resource), learned from the
-        # bucket item's own stamp (ADR-146): the warm path decides with it, and
-        # the entity-wide flag above is only the guess for a resource not yet
-        # seen. Consulted only while the entity has an entry, so dropping that
-        # entry still means "start cold".
+        # bucket item's own stamp (ADR-146): the warm path decides with it. The
+        # entity-wide flag above is only the guess for a resource not yet seen —
+        # META's value at first, then the last stamp the entity showed, so it
+        # can be another resource's policy; the item overrules a wrong guess.
+        # Consulted only while the entity has an entry, so dropping that entry
+        # still means "start cold".
         self._cascade_cache: dict[tuple[str, str, str], bool] = {}
 
         # Cached on_unavailable from system config (issue #366)
@@ -7774,8 +7776,11 @@ class Repository:
                         if owner is None
                         else (effective_cascade(access.cascade, owner), owner.parent_id)
                     )
-                    self._cascade_cache.pop((self._namespace_id, eid, bucket_resource), None)
                 target = targets[key]
+                if target is not None and target[1] is not None:
+                    # This process already knows the new policy; teach the warm
+                    # path rather than make it learn it from one mismatch.
+                    self._cascade_cache[(self._namespace_id, eid, bucket_resource)] = target[0]
                 if target is None:
                     continue
                 try:

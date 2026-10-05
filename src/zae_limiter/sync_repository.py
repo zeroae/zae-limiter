@@ -6430,8 +6430,9 @@ class SyncRepository:
                         if owner is None
                         else (effective_cascade(access.cascade, owner), owner.parent_id)
                     )
-                    self._cascade_cache.pop((self._namespace_id, eid, bucket_resource), None)
                 target = targets[key]
+                if target is not None and target[1] is not None:
+                    self._cascade_cache[self._namespace_id, eid, bucket_resource] = target[0]
                 if target is None:
                     continue
                 try:

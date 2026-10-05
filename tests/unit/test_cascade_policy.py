@@ -565,7 +565,8 @@ class TestFanout:
         assert await self._cascade_of(repo, "user-1", "llm") is False
         assert await self._cascade_of(repo, "user-2", "llm") is True  # its own override
         assert await self._cascade_of(repo, "user-1", "gpt-4") is True  # another resource
-        assert (ns, "user-1", "llm") not in repo._cascade_cache
+        assert repo._cascade_cache[(ns, "user-1", "llm")] is False  # taught, not forgotten
+        assert repo._cascade_cache[(ns, "user-2", "llm")] is True
         assert (await _bucket(repo, "user-1", "llm"))["parent_id"] == {"S": "team"}
 
     async def test_an_entity_wide_change_resolves_each_resource(self, cascade_limiter):
