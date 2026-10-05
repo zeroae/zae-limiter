@@ -2706,6 +2706,7 @@ class Repository:
         pin_shard_count: int | None = None,
         applied_windows: dict[str, int] | None = None,
         grant_counts: dict[str, int] | None = None,
+        owner: tuple[bool, str | None] | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -2849,6 +2850,23 @@ class Repository:
             # construction, never both in one expression (#488).
             remove_parts.append("#vu")
             attr_names["#vu"] = schema.BUCKET_FIELD_VU
+
+        # The owner's `cascade` / `parent_id`, read from its META this pass
+        # (#684). The fast path decides whether to debit the parent from these
+        # denormalised stamps, so a stamp a child wrote for its parent's item,
+        # or an older version left wrong, must be repaired here. A few bytes on
+        # a write that happens anyway. `cascade` is a reserved word: aliased.
+        if owner is not None:
+            owner_cascade, owner_parent = owner
+            set_parts.append("#ocs = :ocs")
+            attr_names["#ocs"] = "cascade"
+            attr_values[":ocs"] = {"BOOL": owner_cascade}
+            attr_names["#opid"] = "parent_id"
+            if owner_parent is not None:
+                set_parts.append("#opid = :opid")
+                attr_values[":opid"] = {"S": owner_parent}
+            else:
+                remove_parts.append("#opid")
 
         # ADR-140 duration window rollover. Monotonic counters, not the limit
         # name, mirroring the #487 stale-limit REMOVE aliases (`#stale{i}_{j}`):

@@ -64,6 +64,9 @@ class LeaseEntry:
     # Denormalized entity fields for speculative writes (Issue #315)
     _cascade: bool = False
     _parent_id: str | None = None
+    # True when `_cascade` / `_parent_id` are this entry's OWNER's values, read
+    # from its META this pass; the write then stamps them on the item (#684).
+    _stamp_owner: bool = False
     # Whether the caller named this limit in acquire(consume=...) (Issue #455).
     # `consume` is the declared scope of a lease: only declared entries are
     # visible through `consumed` and adjustable through adjust()/consume()/
@@ -482,8 +485,12 @@ class Lease:
             boundaries = [e._boundary_ms for e in group_entries if e._boundary_ms is not None]
             vu = min(boundaries) if boundaries else None
 
+            # The entry carrying the owner's META stamps, when this pass read
+            # them (#684): never a carrier or an entry built without them.
+            owner_entry = next((e for e in group_entries if e._stamp_owner), None)
+
             if is_new:
-                first_entry = group_entries[0]
+                first_entry = owner_entry or group_entries[0]
                 items.append(
                     repo.build_composite_create(
                         entity_id=entity_id,
@@ -694,6 +701,11 @@ class Lease:
                         # or not, to force exactly this pass), and the fast
                         # path would fail its `vu > now` guard forever.
                         clear_vu=not boundaries,
+                        owner=(
+                            (owner_entry._cascade, owner_entry._parent_id)
+                            if owner_entry is not None
+                            else None
+                        ),
                     )
                 )
                 # The rollover fan-out. A create fans out only in the one case

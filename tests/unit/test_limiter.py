@@ -5936,13 +5936,17 @@ class TestSpeculativeAcquire:
 
         call_count = 0
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, now_ms=None):
+        async def mock_speculative(
+            entity_id, resource, consume, ttl_seconds=None, shard_id=None, now_ms=None
+        ):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
                 # old_buckets has "rpm" but not "tpm" → config changed → slow path
                 return SpeculativeResult(success=False, old_buckets=[old_bucket_rpm_only])
-            return await original_speculative(entity_id, resource, consume, ttl_seconds)
+            return await original_speculative(
+                entity_id, resource, consume, ttl_seconds, shard_id=shard_id, now_ms=now_ms
+            )
 
         limiter._repository.speculative_consume = mock_speculative
         try:
@@ -5990,7 +5994,9 @@ class TestSpeculativeAcquire:
         original_speculative = limiter._repository.speculative_consume
         call_count = 0
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, now_ms=None):
+        async def mock_speculative(
+            entity_id, resource, consume, ttl_seconds=None, shard_id=None, now_ms=None
+        ):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -6004,7 +6010,9 @@ class TestSpeculativeAcquire:
             if call_count == 2:
                 # Parent fails but refill would help
                 return SpeculativeResult(success=False, old_buckets=[parent_bucket])
-            return await original_speculative(entity_id, resource, consume, ttl_seconds)
+            return await original_speculative(
+                entity_id, resource, consume, ttl_seconds, shard_id=shard_id, now_ms=now_ms
+            )
 
         limiter._repository.speculative_consume = mock_speculative
         try:
@@ -6043,7 +6051,9 @@ class TestSpeculativeAcquire:
         original_speculative = limiter._repository.speculative_consume
         call_count = 0
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, now_ms=None):
+        async def mock_speculative(
+            entity_id, resource, consume, ttl_seconds=None, shard_id=None, now_ms=None
+        ):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -6056,7 +6066,9 @@ class TestSpeculativeAcquire:
             if call_count == 2:
                 # Parent missing (no ALL_OLD)
                 return SpeculativeResult(success=False, old_buckets=None)
-            return await original_speculative(entity_id, resource, consume, ttl_seconds)
+            return await original_speculative(
+                entity_id, resource, consume, ttl_seconds, shard_id=shard_id, now_ms=now_ms
+            )
 
         limiter._repository.speculative_consume = mock_speculative
         try:
@@ -6102,7 +6114,9 @@ class TestSpeculativeAcquire:
         original_speculative = limiter._repository.speculative_consume
         call_count = 0
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, now_ms=None):
+        async def mock_speculative(
+            entity_id, resource, consume, ttl_seconds=None, shard_id=None, now_ms=None
+        ):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -6114,7 +6128,9 @@ class TestSpeculativeAcquire:
                 )
             if call_count == 2:
                 return SpeculativeResult(success=False, old_buckets=[parent_bucket_wrong_limit])
-            return await original_speculative(entity_id, resource, consume, ttl_seconds)
+            return await original_speculative(
+                entity_id, resource, consume, ttl_seconds, shard_id=shard_id, now_ms=now_ms
+            )
 
         limiter._repository.speculative_consume = mock_speculative
         try:
@@ -6159,7 +6175,9 @@ class TestSpeculativeAcquire:
         original_speculative = limiter._repository.speculative_consume
         call_count = 0
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, now_ms=None):
+        async def mock_speculative(
+            entity_id, resource, consume, ttl_seconds=None, shard_id=None, now_ms=None
+        ):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -6171,7 +6189,9 @@ class TestSpeculativeAcquire:
                 )
             if call_count == 2:
                 return SpeculativeResult(success=False, old_buckets=[parent_bucket_exhausted])
-            return await original_speculative(entity_id, resource, consume, ttl_seconds)
+            return await original_speculative(
+                entity_id, resource, consume, ttl_seconds, shard_id=shard_id, now_ms=now_ms
+            )
 
         limiter._repository.speculative_consume = mock_speculative
         try:
@@ -6227,7 +6247,9 @@ class TestSpeculativeAcquire:
         call_count = 0
         child_compensated = False
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, now_ms=None):
+        async def mock_speculative(
+            entity_id, resource, consume, ttl_seconds=None, shard_id=None, now_ms=None
+        ):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -6241,7 +6263,9 @@ class TestSpeculativeAcquire:
             if call_count == 2:
                 # Parent fails but refill would help
                 return SpeculativeResult(success=False, old_buckets=[parent_bucket])
-            return await original_speculative(entity_id, resource, consume, ttl_seconds)
+            return await original_speculative(
+                entity_id, resource, consume, ttl_seconds, shard_id=shard_id, now_ms=now_ms
+            )
 
         async def mock_write_each(items):
             nonlocal child_compensated
@@ -6316,7 +6340,9 @@ class TestSpeculativeAcquire:
         original_speculative = limiter._repository.speculative_consume
         call_count = 0
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, now_ms=None):
+        async def mock_speculative(
+            entity_id, resource, consume, ttl_seconds=None, shard_id=None, now_ms=None
+        ):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -6328,7 +6354,9 @@ class TestSpeculativeAcquire:
                 )
             if call_count == 2:
                 return SpeculativeResult(success=False, old_buckets=[parent_bucket])
-            return await original_speculative(entity_id, resource, consume, ttl_seconds)
+            return await original_speculative(
+                entity_id, resource, consume, ttl_seconds, shard_id=shard_id, now_ms=now_ms
+            )
 
         limiter._repository.speculative_consume = mock_speculative
         try:
@@ -6392,7 +6420,9 @@ class TestSpeculativeAcquire:
         original_speculative = limiter._repository.speculative_consume
         call_count = 0
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, now_ms=None):
+        async def mock_speculative(
+            entity_id, resource, consume, ttl_seconds=None, shard_id=None, now_ms=None
+        ):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -6405,7 +6435,9 @@ class TestSpeculativeAcquire:
             if call_count == 2:
                 # Parent fails, ALL_OLD says refill would help
                 return SpeculativeResult(success=False, old_buckets=[parent_bucket_old])
-            return await original_speculative(entity_id, resource, consume, ttl_seconds)
+            return await original_speculative(
+                entity_id, resource, consume, ttl_seconds, shard_id=shard_id, now_ms=now_ms
+            )
 
         # Drain parent so parent-only slow path's try_consume fails
         async with limiter.acquire("parent-1", "gpt-4", {"rpm": 9}):
@@ -6462,11 +6494,13 @@ class TestSpeculativeAcquire:
         )
 
         original_speculative = limiter._repository.speculative_consume
-        original_fetch = limiter._fetch_buckets
+        original_fetch = limiter._fetch_entity_and_buckets
         call_count = 0
         fetch_call_count = 0
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, now_ms=None):
+        async def mock_speculative(
+            entity_id, resource, consume, ttl_seconds=None, shard_id=None, now_ms=None
+        ):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -6478,18 +6512,22 @@ class TestSpeculativeAcquire:
                 )
             if call_count == 2:
                 return SpeculativeResult(success=False, old_buckets=[parent_bucket_old])
-            return await original_speculative(entity_id, resource, consume, ttl_seconds)
+            return await original_speculative(
+                entity_id, resource, consume, ttl_seconds, shard_id=shard_id, now_ms=now_ms
+            )
 
-        async def mock_fetch_buckets(entity_ids, resource, shard_id):
+        async def mock_fetch_buckets(entity_id, resource, shard_id):
             nonlocal fetch_call_count
-            fetch_call_count += 1
-            if fetch_call_count == 1:
-                # First call from _try_parent_only_acquire — return empty
-                return {}
-            return await original_fetch(entity_ids, resource, shard_id)
+            entity, buckets = await original_fetch(entity_id, resource, shard_id)
+            if entity_id == "parent-1":
+                fetch_call_count += 1
+                if fetch_call_count == 1:
+                    # First parent read, from _try_parent_only_acquire — no bucket
+                    return entity, {}
+            return entity, buckets
 
         limiter._repository.speculative_consume = mock_speculative
-        limiter._fetch_buckets = mock_fetch_buckets
+        limiter._fetch_entity_and_buckets = mock_fetch_buckets
         try:
             # _try_parent_only_acquire finds no parent bucket → returns None
             # → compensate child → full _do_acquire
@@ -6499,7 +6537,8 @@ class TestSpeculativeAcquire:
                 assert "parent-1" in entity_ids
         finally:
             limiter._repository.speculative_consume = original_speculative
-            limiter._fetch_buckets = original_fetch
+            limiter._fetch_entity_and_buckets = original_fetch
+        assert fetch_call_count >= 1  # the parent-only read was the one emptied
 
     async def test_speculative_cascade_parent_only_commit_fails(self, limiter):
         """Parent-only slow path: _commit_initial raises → return None.
@@ -6545,7 +6584,9 @@ class TestSpeculativeAcquire:
         call_count = 0
         transact_call_count = 0
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, now_ms=None):
+        async def mock_speculative(
+            entity_id, resource, consume, ttl_seconds=None, shard_id=None, now_ms=None
+        ):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -6557,7 +6598,9 @@ class TestSpeculativeAcquire:
                 )
             if call_count == 2:
                 return SpeculativeResult(success=False, old_buckets=[parent_bucket_old])
-            return await original_speculative(entity_id, resource, consume, ttl_seconds)
+            return await original_speculative(
+                entity_id, resource, consume, ttl_seconds, shard_id=shard_id, now_ms=now_ms
+            )
 
         async def mock_transact_write(items):
             nonlocal transact_call_count
@@ -6627,7 +6670,9 @@ class TestSpeculativeAcquire:
 
         original_speculative = limiter._repository.speculative_consume
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, now_ms=None):
+        async def mock_speculative(
+            entity_id, resource, consume, ttl_seconds=None, shard_id=None, now_ms=None
+        ):
             return SpeculativeResult(
                 success=True,
                 buckets=[rpm_bucket, tpm_bucket],
@@ -6694,7 +6739,9 @@ class TestSpeculativeAcquire:
         original_speculative = limiter._repository.speculative_consume
         call_count = 0
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, now_ms=None):
+        async def mock_speculative(
+            entity_id, resource, consume, ttl_seconds=None, shard_id=None, now_ms=None
+        ):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -6712,7 +6759,9 @@ class TestSpeculativeAcquire:
                     cascade=False,
                     parent_id=None,
                 )
-            return await original_speculative(entity_id, resource, consume, ttl_seconds)
+            return await original_speculative(
+                entity_id, resource, consume, ttl_seconds, shard_id=shard_id, now_ms=now_ms
+            )
 
         limiter._repository.speculative_consume = mock_speculative
         try:
@@ -6754,13 +6803,17 @@ class TestSpeculativeAcquire:
         original_speculative = limiter._repository.speculative_consume
         call_count = 0
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, now_ms=None):
+        async def mock_speculative(
+            entity_id, resource, consume, ttl_seconds=None, shard_id=None, now_ms=None
+        ):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
                 # Child fails but refill would help → slow path (line 821)
                 return SpeculativeResult(success=False, old_buckets=[old_bucket])
-            return await original_speculative(entity_id, resource, consume, ttl_seconds)
+            return await original_speculative(
+                entity_id, resource, consume, ttl_seconds, shard_id=shard_id, now_ms=now_ms
+            )
 
         limiter._repository.speculative_consume = mock_speculative
         try:
@@ -6816,15 +6869,20 @@ class TestSpeculativeAcquire:
 
         original_speculative = limiter._repository.speculative_consume
         original_fetch = limiter._fetch_buckets
+        original_entity_fetch = limiter._fetch_entity_and_buckets
         spec_call_count = 0
         fetch_call_count = 0
 
-        async def mock_speculative(entity_id, resource, consume, ttl_seconds=None, now_ms=None):
+        async def mock_speculative(
+            entity_id, resource, consume, ttl_seconds=None, shard_id=None, now_ms=None
+        ):
             nonlocal spec_call_count
             spec_call_count += 1
             if spec_call_count == 1:
                 # Child succeeds speculatively — deduct 10 rpm from real DDB
-                await original_speculative(entity_id, resource, consume, ttl_seconds)
+                await original_speculative(
+                    entity_id, resource, consume, ttl_seconds, shard_id=shard_id, now_ms=now_ms
+                )
                 return SpeculativeResult(
                     success=True,
                     buckets=[child_bucket],
@@ -6833,17 +6891,19 @@ class TestSpeculativeAcquire:
                 )
             if spec_call_count == 2:
                 return SpeculativeResult(success=False, old_buckets=[parent_bucket_old])
-            return await original_speculative(entity_id, resource, consume, ttl_seconds)
+            return await original_speculative(
+                entity_id, resource, consume, ttl_seconds, shard_id=shard_id, now_ms=now_ms
+            )
 
-        async def mock_fetch_raising(entity_ids, resource, shard_id):
+        async def mock_fetch_raising(entity_id, resource, shard_id):
             nonlocal fetch_call_count
             fetch_call_count += 1
-            if fetch_call_count == 1 and "parent-1" in entity_ids:
+            if fetch_call_count == 1 and entity_id == "parent-1":
                 raise RuntimeError("DynamoDB service unavailable")
-            return await original_fetch(entity_ids, resource, shard_id)
+            return await original_entity_fetch(entity_id, resource, shard_id)
 
         limiter._repository.speculative_consume = mock_speculative
-        limiter._fetch_buckets = mock_fetch_raising
+        limiter._fetch_entity_and_buckets = mock_fetch_raising
         try:
             with pytest.raises(RateLimiterUnavailable, match="DynamoDB service unavailable"):
                 async with limiter.acquire("child-1", "gpt-4", {"rpm": 10}):
@@ -6858,7 +6918,7 @@ class TestSpeculativeAcquire:
             )
         finally:
             limiter._repository.speculative_consume = original_speculative
-            limiter._fetch_buckets = original_fetch
+            limiter._fetch_entity_and_buckets = original_entity_fetch
 
 
 class TestCascadeEntityCache:
@@ -8267,14 +8327,14 @@ class TestClientShardCreation:
         limiter._speculative_writes = True
 
         parent_reads: list[int] = []
-        original_fetch = limiter._fetch_buckets
+        original_fetch = limiter._fetch_entity_and_buckets
 
-        async def spy(entity_ids, resource, shard_id):
-            if "parent-1" in entity_ids:
+        async def spy(entity_id, resource, shard_id):
+            if entity_id == "parent-1":
                 parent_reads.append(shard_id)
-            return await original_fetch(entity_ids, resource, shard_id)
+            return await original_fetch(entity_id, resource, shard_id)
 
-        limiter._fetch_buckets = spy
+        limiter._fetch_entity_and_buckets = spy
         # First draw (parent speculative) -> shard 1; a second draw would give 0
         with patch("zae_limiter.repository.random.randrange", side_effect=[1, 0, 0]):
             async with limiter.acquire("user-1", "gpt-4", {"rpm": 10}) as lease:
@@ -8974,14 +9034,14 @@ class TestCascadeParentSharding:
         )
 
         parent_reads: list[int] = []
-        original_fetch = limiter._fetch_buckets
+        original_fetch = limiter._fetch_entity_and_buckets
 
-        async def spy(entity_ids, resource, shard_id):
-            if "parent-1" in entity_ids:
+        async def spy(entity_id, resource, shard_id):
+            if entity_id == "parent-1":
                 parent_reads.append(shard_id)
-            return await original_fetch(entity_ids, resource, shard_id)
+            return await original_fetch(entity_id, resource, shard_id)
 
-        limiter._fetch_buckets = spy
+        limiter._fetch_entity_and_buckets = spy
         with patch("zae_limiter.repository.random.randrange", side_effect=[2]):
             async with limiter.acquire("user-1", "gpt-4", {"rpm": 10}) as lease:
                 parent_entry = next(e for e in lease.entries if e.entity_id == "parent-1")
@@ -12650,3 +12710,97 @@ class TestCreditAboveCapacity:
         assert "Could not check a credit against its ceiling" in caplog.text
         item = await self._raw(repo, "broken-check")
         assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "590000"  # 100 - 10 + 500, once
+
+
+class TestMiddleEntityKeepsCascading:
+    """#684: a parent bucket a child created must still cascade on the parent's own acquires.
+
+    Bucket items denormalise ``cascade`` / ``parent_id`` so the fast path can decide
+    without reading META. A child's slow path that created its parent's bucket used
+    to stamp it ``cascade=False`` with no ``parent_id``, so the middle entity's own
+    acquires silently stopped debiting the grandparent — over-admission there.
+    """
+
+    RPM = Limit.per_minute("rpm", 100)
+
+    async def _chain(self, limiter) -> None:
+        repo = limiter._repository
+        await repo.set_resource_defaults("gpt-4", [self.RPM])
+        await repo.create_entity("org")
+        await repo.create_entity("team", parent_id="org", cascade=True)
+        await repo.create_entity("user", parent_id="team", cascade=True)
+        async with limiter.acquire("user", "gpt-4", consume={"rpm": 1}):
+            pass  # creates the user's and the team's buckets
+
+    @staticmethod
+    async def _raw(repo, entity_id, resource="gpt-4", shard=0):
+        client = await repo._get_client()
+        response = await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, entity_id, resource, shard)},
+                "SK": {"S": sk_state()},
+            },
+        )
+        return response.get("Item")
+
+    async def _org_consumed(self, repo) -> int:
+        item = await self._raw(repo, "org")
+        return 0 if item is None else int(item[bucket_attr("rpm", "tc")]["N"]) // 1000
+
+    async def test_the_child_stamps_the_parent_bucket_with_the_parents_own_cascade(self, limiter):
+        await self._chain(limiter)
+        team = await self._raw(limiter._repository, "team")
+        assert team["cascade"] == {"BOOL": True}
+        assert team["parent_id"] == {"S": "org"}
+
+    async def test_the_middle_entitys_own_acquire_reaches_its_parent(self, limiter):
+        repo = limiter._repository
+        await self._chain(limiter)
+        repo._entity_cache.clear()  # a fresh process: decide from the item
+
+        async with limiter.acquire("team", "gpt-4", consume={"rpm": 5}):
+            pass
+
+        assert await self._org_consumed(repo) == 5
+
+    async def test_a_slow_pass_repairs_a_bucket_an_older_version_mis_stamped(self, limiter):
+        repo = limiter._repository
+        await self._chain(limiter)
+        client = await repo._get_client()
+        await client.update_item(  # what v0.15 left behind
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": pk_bucket(repo._namespace_id, "team", "gpt-4", 0)},
+                "SK": {"S": sk_state()},
+            },
+            UpdateExpression="SET #c = :f REMOVE parent_id",
+            ExpressionAttributeNames={"#c": "cascade"},
+            ExpressionAttributeValues={":f": {"BOOL": False}},
+        )
+
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        async with slow.acquire("team", "gpt-4", consume={"rpm": 1}):
+            pass
+
+        team = await self._raw(repo, "team")
+        assert team["cascade"] == {"BOOL": True}
+        assert team["parent_id"] == {"S": "org"}
+
+    async def test_a_childs_cold_cascade_never_reaches_the_grandparent(self, limiter):
+        """The child's lease covers child + parent only; the grandparent is the parent's own
+        acquire's business. The sequential parent write used to cascade by itself when the
+        parent's cache entry said so, debiting the grandparent with no lease entry: never
+        reconciled, never refunded.
+        """
+        repo = limiter._repository
+        await self._chain(limiter)
+        async with limiter.acquire("team", "gpt-4", consume={"rpm": 1}):
+            pass  # the team's own acquire: org's bucket exists, team cached as cascading
+        org_before = await self._org_consumed(repo)
+
+        repo._entity_cache.pop((repo._namespace_id, "user"), None)  # the child is cold
+        async with limiter.acquire("user", "gpt-4", consume={"rpm": 3}) as lease:
+            assert {e.entity_id for e in lease.entries} == {"user", "team"}
+
+        assert await self._org_consumed(repo) == org_before

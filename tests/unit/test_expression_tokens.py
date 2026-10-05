@@ -150,6 +150,7 @@ class TestCompositeBuilders:
             windows={DOTTED: (1_500, 3600)},
             window_lengths={HYPHENATED: 60},
             applied_windows={DOTTED: 1_500, HYPHENATED: 900},
+            owner=(True, "org-1"),
         )["Update"]
         assert_expression_safe(update)
         # #640: the window-applied marker is aliased positionally too.
@@ -158,6 +159,21 @@ class TestCompositeBuilders:
             bucket_attr(DOTTED, BUCKET_FIELD_WA),
             bucket_attr(HYPHENATED, BUCKET_FIELD_WA),
         }
+
+    def test_normal_repairing_an_owner_without_a_parent(self) -> None:
+        """#684: the owner stamp REMOVEs `parent_id` when the owner has none."""
+        update = _repo().build_composite_normal(
+            "user-1",
+            "api",
+            consumed={DOTTED: 1000},
+            refill_amounts={},
+            now_ms=2_000,
+            expected_rf=1_000,
+            ttl_seconds=0,
+            owner=(False, None),
+        )["Update"]
+        assert_expression_safe(update)
+        assert "#opid" in update["UpdateExpression"].split("REMOVE", 1)[1]
 
     def test_normal_removing_ttl_and_vu(self) -> None:
         update = _repo().build_composite_normal(

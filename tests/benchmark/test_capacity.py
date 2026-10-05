@@ -163,7 +163,8 @@ class TestCapacityConsumption:
         # disabled walk for that entity (ADR-125)
         assert len(capacity_counter.batch_get_item) == 4, (
             "Should have 4 BatchGetItem calls "
-            "(child disabled walk, child META+bucket, parent disabled walk, parent bucket)"
+            "(child disabled walk, child META+bucket, parent disabled walk, "
+            "parent META+bucket)"
         )
         assert capacity_counter.batch_get_item[0] == 3, (
             "First BatchGetItem should walk the child's disabled config"
@@ -174,8 +175,9 @@ class TestCapacityConsumption:
         assert capacity_counter.batch_get_item[2] == 3, (
             "Third BatchGetItem should walk the parent's disabled config"
         )
-        assert capacity_counter.batch_get_item[3] == 1, (
-            "Fourth BatchGetItem should fetch parent bucket"
+        assert capacity_counter.batch_get_item[3] == 2, (
+            "Fourth BatchGetItem should fetch parent META + parent bucket "
+            "(#684: the parent's bucket is stamped with its own cascade/parent_id)"
         )
         assert len(capacity_counter.transact_write_items) == 1, "Should have 1 transaction"
         assert capacity_counter.transact_write_items[0] == 2, (

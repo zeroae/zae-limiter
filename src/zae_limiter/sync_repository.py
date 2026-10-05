@@ -2279,6 +2279,7 @@ class SyncRepository:
         pin_shard_count: int | None = None,
         applied_windows: dict[str, int] | None = None,
         grant_counts: dict[str, int] | None = None,
+        owner: tuple[bool, str | None] | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -2404,6 +2405,17 @@ class SyncRepository:
         elif clear_vu:
             remove_parts.append("#vu")
             attr_names["#vu"] = schema.BUCKET_FIELD_VU
+        if owner is not None:
+            owner_cascade, owner_parent = owner
+            set_parts.append("#ocs = :ocs")
+            attr_names["#ocs"] = "cascade"
+            attr_values[":ocs"] = {"BOOL": owner_cascade}
+            attr_names["#opid"] = "parent_id"
+            if owner_parent is not None:
+                set_parts.append("#opid = :opid")
+                attr_values[":opid"] = {"S": owner_parent}
+            else:
+                remove_parts.append("#opid")
         for i, (name, (ws, rsa)) in enumerate(sorted((windows or {}).items())):
             attr_names[f"#ws{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_WS)
             attr_names[f"#rsa{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_RSA)

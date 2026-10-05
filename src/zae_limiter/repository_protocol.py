@@ -606,8 +606,13 @@ class RepositoryProtocol(Protocol):
         pin_shard_count: int | None = None,
         applied_windows: dict[str, int] | None = None,
         grant_counts: dict[str, int] | None = None,
+        owner: tuple[bool, str | None] | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
+
+        ``owner`` is ``(cascade, parent_id)`` from the item owner's META, read
+        this pass: when given, both stamps are rewritten so the fast path's
+        denormalised copy is repaired (#684). ``None`` leaves them as stored.
 
         Args:
             entity_id: Entity owning the bucket

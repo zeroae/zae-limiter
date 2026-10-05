@@ -50,6 +50,7 @@ class LeaseEntry:
     _shard_count: int = 1
     _cascade: bool = False
     _parent_id: str | None = None
+    _stamp_owner: bool = False
     _declared: bool = True
     _boundary_ms: int | None = None
     _reset_edge_ms: int | None = None
@@ -340,8 +341,9 @@ class SyncLease:
                 ttl_seconds = calculate_bucket_ttl_seconds(limits, multiplier)
             boundaries = [e._boundary_ms for e in group_entries if e._boundary_ms is not None]
             vu = min(boundaries) if boundaries else None
+            owner_entry = next((e for e in group_entries if e._stamp_owner), None)
             if is_new:
-                first_entry = group_entries[0]
+                first_entry = owner_entry or group_entries[0]
                 items.append(
                     repo.build_composite_create(
                         entity_id=entity_id,
@@ -462,6 +464,9 @@ class SyncLease:
                         pin_shard_count=min(pin, default=None),
                         rf_ms=_monotonic_rf(now_ms, expected_rf, group_entries),
                         clear_vu=not boundaries,
+                        owner=(owner_entry._cascade, owner_entry._parent_id)
+                        if owner_entry is not None
+                        else None,
                     )
                 )
                 if windows:
