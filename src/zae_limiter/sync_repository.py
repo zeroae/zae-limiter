@@ -52,6 +52,7 @@ from .models import (
 )
 from .naming import normalize_stack_name
 from .sync_config_cache import ConfigSource, SyncConfigCache
+from .sync_repository_protocol import PRESERVE_CASCADE as _PRESERVE_CASCADE
 from .sync_repository_protocol import PRESERVE_DISABLED as _PRESERVE_DISABLED
 from .sync_repository_protocol import SpeculativeFailureReason, SpeculativeResult
 
@@ -3392,6 +3393,7 @@ class SyncRepository:
         principal: str | None = None,
         *,
         disabled: bool | None = _PRESERVE_DISABLED,
+        cascade: bool | None = _PRESERVE_CASCADE,
     ) -> None:
         """
         Store limit configs for an entity (composite format, ADR-114).
@@ -3410,17 +3412,27 @@ class SyncRepository:
                 explicit value must be passed to change it; see ADR-125).
                 Passing an explicit value also fans out to existing buckets,
                 exactly as `disable_entity()`/`enable_entity()` do.
+            cascade: Tri-state cascade policy (ADR-146), preserved the same way.
+                An explicit value is gated on the stack's version and fans out
+                like `set_entity_cascade()`.
 
         Raises:
             VersionMismatchError: ``limits`` carries a ``reset_after`` limit
-                and the stack's Lambdas predate it (#638). Nothing is written.
+                and the stack's Lambdas predate it (#638), or an explicit
+                ``cascade`` and they predate the cascade policy. Nothing is
+                written.
         """
         client = self._get_client()
         self._require_reset_after_readers(limits)
+        cascade_explicit = cascade is not _PRESERVE_CASCADE
+        if cascade_explicit:
+            self._require_cascade_policy_readers()
         disabled_explicit = disabled is not _PRESERVE_DISABLED
-        stored_disabled, cascade = self._get_entity_config_flags(entity_id, resource)
+        stored_disabled, stored_cascade = self._get_entity_config_flags(entity_id, resource)
         if not disabled_explicit:
             disabled = stored_disabled
+        if not cascade_explicit:
+            cascade = stored_cascade
         item: dict[str, Any] = {
             "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
             "SK": {"S": schema.sk_config(resource)},
@@ -3482,6 +3494,8 @@ class SyncRepository:
             effective, _level = self.resolve_disabled(entity_id, resource)
             fanout_resource = None if resource == schema.DEFAULT_RESOURCE else resource
             self._fanout_entity(entity_id, fanout_resource, disabled=effective)
+        if cascade_explicit:
+            self._fanout_cascade(entity_id=entity_id, resource=resource)
         self._log_audit_event(
             action=AuditAction.LIMITS_SET,
             entity_id=entity_id,
@@ -4086,6 +4100,7 @@ class SyncRepository:
         principal: str | None = None,
         *,
         disabled: bool | None = _PRESERVE_DISABLED,
+        cascade: bool | None = _PRESERVE_CASCADE,
     ) -> None:
         """
         Store default limit configs for a resource (composite format, ADR-114).
@@ -4102,18 +4117,28 @@ class SyncRepository:
                 explicit value must be passed to change it; see ADR-125).
                 Passing an explicit value also fans out to existing buckets,
                 exactly as `disable_resource()`/`enable_resource()` do.
+            cascade: Tri-state cascade policy (ADR-146), preserved the same way.
+                An explicit value is gated on the stack's version and fans out
+                like `set_resource_cascade()`.
 
         Raises:
             VersionMismatchError: ``limits`` carries a ``reset_after`` limit
-                and the stack's Lambdas predate it (#638). Nothing is written.
+                and the stack's Lambdas predate it (#638), or an explicit
+                ``cascade`` and they predate the cascade policy. Nothing is
+                written.
         """
         validate_resource(resource)
         client = self._get_client()
         self._require_reset_after_readers(limits)
+        cascade_explicit = cascade is not _PRESERVE_CASCADE
+        if cascade_explicit:
+            self._require_cascade_policy_readers()
         disabled_explicit = disabled is not _PRESERVE_DISABLED
-        stored_disabled, cascade = self._get_resource_config_flags(resource)
+        stored_disabled, stored_cascade = self._get_resource_config_flags(resource)
         if not disabled_explicit:
             disabled = stored_disabled
+        if not cascade_explicit:
+            cascade = stored_cascade
         item: dict[str, Any] = {
             "PK": {"S": schema.pk_resource(self._namespace_id, resource)},
             "SK": {"S": schema.sk_config()},
@@ -4145,6 +4170,9 @@ class SyncRepository:
         )
         if disabled_explicit:
             self._fanout_resource(resource, disabled=bool(disabled))
+        if cascade_explicit:
+            self.invalidate_config_cache()
+            self._fanout_cascade(resource=resource)
         self._log_audit_event(
             action=AuditAction.LIMITS_SET,
             entity_id=f"$RESOURCE:{resource}",
@@ -6460,7 +6488,32 @@ class SyncRepository:
         than fabricating a stub with a bare REMOVE (ADR-125).
         """
         validate_resource(resource)
+        self._write_resource_config_flag(resource, schema.CONFIG_FIELD_DISABLED, value)
+        self.invalidate_config_cache()
+        count = self._fanout_resource(resource, disabled=bool(value))
+        self._log_audit_event(
+            action=AuditAction.LIMITS_SET,
+            entity_id=f"$RESOURCE:{resource}",
+            principal=principal,
+            resource=resource,
+            details={"disabled": value, "buckets_stamped": count},
+        )
+        return count
+
+    def _write_resource_config_flag(self, resource: str, field: str, value: bool | None) -> None:
+        """Set or clear one tri-state flag on a resource config item (ADR-125, ADR-146).
+
+        The config write is an UPSERT (no `ConditionExpression`) when setting an
+        explicit value, mirroring `set_resource_defaults`'s attributes exactly
+        (`resource`, `GSI4PK`, `GSI4SK`) via `if_not_exists` so a resource with no
+        prior config item — the common case when running purely on system
+        defaults — can still carry it. Clearing back to "inherit" only makes
+        sense against an item that already exists, so that branch keeps the
+        `attribute_exists(PK)` guard and treats a missing item as a no-op rather
+        than fabricating a stub with a bare REMOVE.
+        """
         client = self._get_client()
+        alias = f"#{field}"
         key = {
             "PK": {"S": schema.pk_resource(self._namespace_id, resource)},
             "SK": {"S": schema.sk_config()},
@@ -6470,8 +6523,8 @@ class SyncRepository:
                 client.update_item(
                     TableName=self.table_name,
                     Key=key,
-                    UpdateExpression="REMOVE #disabled",
-                    ExpressionAttributeNames={"#disabled": schema.CONFIG_FIELD_DISABLED},
+                    UpdateExpression=f"REMOVE {alias}",
+                    ExpressionAttributeNames={alias: field},
                     ConditionExpression="attribute_exists(PK)",
                 )
             except ClientError as e:
@@ -6481,11 +6534,8 @@ class SyncRepository:
             client.update_item(
                 TableName=self.table_name,
                 Key=key,
-                UpdateExpression="SET #disabled = :v, #resource = if_not_exists(#resource, :res), GSI4PK = if_not_exists(GSI4PK, :gsi4pk), GSI4SK = if_not_exists(GSI4SK, :gsi4sk)",
-                ExpressionAttributeNames={
-                    "#disabled": schema.CONFIG_FIELD_DISABLED,
-                    "#resource": "resource",
-                },
+                UpdateExpression=f"SET {alias} = :v, #resource = if_not_exists(#resource, :res), GSI4PK = if_not_exists(GSI4PK, :gsi4pk), GSI4SK = if_not_exists(GSI4SK, :gsi4sk)",
+                ExpressionAttributeNames={alias: field, "#resource": "resource"},
                 ExpressionAttributeValues={
                     ":v": {"BOOL": value},
                     ":res": {"S": resource},
@@ -6506,14 +6556,47 @@ class SyncRepository:
                     ":reg_gsi4sk": {"S": schema.pk_system(self._namespace_id)},
                 },
             )
+
+    def set_resource_cascade(
+        self, resource: str, cascade: bool, principal: str | None = None
+    ) -> int:
+        """Set whether entities cascade to their parent on this resource (ADR-146).
+
+        An entity-level policy for the resource, or the entity's own
+        ``_default_`` policy, still outranks it. Writes config, then restamps
+        every existing bucket of the resource (`_fanout_cascade`).
+
+        Raises:
+            VersionMismatchError: the stack's Lambdas predate the cascade policy.
+
+        Returns:
+            Number of bucket items stamped.
+        """
+        return self._set_resource_cascade(resource, cascade, principal)
+
+    def clear_resource_cascade(self, resource: str, principal: str | None = None) -> int:
+        """Remove the resource's cascade policy, reverting to inherit (ADR-146).
+
+        Returns:
+            Number of bucket items restamped.
+        """
+        return self._set_resource_cascade(resource, None, principal)
+
+    def _set_resource_cascade(
+        self, resource: str, value: bool | None, principal: str | None
+    ) -> int:
+        """Write the resource-level cascade policy, then fan out to buckets."""
+        validate_resource(resource)
+        self._require_cascade_policy_readers()
+        self._write_resource_config_flag(resource, schema.CONFIG_FIELD_CASCADE, value)
         self.invalidate_config_cache()
-        count = self._fanout_resource(resource, disabled=bool(value))
+        count = self._fanout_cascade(resource=resource)
         self._log_audit_event(
             action=AuditAction.LIMITS_SET,
             entity_id=f"$RESOURCE:{resource}",
             principal=principal,
             resource=resource,
-            details={"disabled": value, "buckets_stamped": count},
+            details={"cascade": value, "buckets_stamped": count},
         )
         return count
 
@@ -6566,7 +6649,30 @@ class SyncRepository:
         self, entity_id: str, resource: str | None, value: bool | None, principal: str | None
     ) -> int:
         target_resource = resource if resource is not None else schema.DEFAULT_RESOURCE
+        self._write_entity_config_flag(
+            entity_id, target_resource, schema.CONFIG_FIELD_DISABLED, value
+        )
+        self._config_cache.evict_entity(entity_id, target_resource)
+        if value is None:
+            effective, _level = self.resolve_disabled(entity_id, target_resource)
+        else:
+            effective = value
+        count = self._fanout_entity(entity_id, resource, disabled=effective)
+        self._log_audit_event(
+            action=AuditAction.LIMITS_SET,
+            entity_id=entity_id,
+            principal=principal,
+            resource=target_resource,
+            details={"disabled": value, "buckets_stamped": count},
+        )
+        return count
+
+    def _write_entity_config_flag(
+        self, entity_id: str, target_resource: str, field: str, value: bool | None
+    ) -> None:
+        """Set or clear one tri-state flag on an entity config item (ADR-125, ADR-146)."""
         client = self._get_client()
+        alias = f"#{field}"
         key = {
             "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
             "SK": {"S": schema.sk_config(target_resource)},
@@ -6576,16 +6682,16 @@ class SyncRepository:
                 client.update_item(
                     TableName=self.table_name,
                     Key=key,
-                    UpdateExpression="REMOVE #disabled",
-                    ExpressionAttributeNames={"#disabled": schema.CONFIG_FIELD_DISABLED},
+                    UpdateExpression=f"REMOVE {alias}",
+                    ExpressionAttributeNames={alias: field},
                     ConditionExpression="attribute_exists(PK)",
                 )
             except ClientError as e:
                 if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
                     raise
         else:
-            update_expression = "SET #disabled = :v, entity_id = if_not_exists(entity_id, :eid), #resource = if_not_exists(#resource, :res), GSI3PK = if_not_exists(GSI3PK, :gsi3pk), GSI3SK = if_not_exists(GSI3SK, :gsi3sk), GSI4PK = if_not_exists(GSI4PK, :ns), GSI4SK = if_not_exists(GSI4SK, :gsi4sk)"
-            names = {"#disabled": schema.CONFIG_FIELD_DISABLED, "#resource": "resource"}
+            update_expression = f"SET {alias} = :v, entity_id = if_not_exists(entity_id, :eid), #resource = if_not_exists(#resource, :res), GSI3PK = if_not_exists(GSI3PK, :gsi3pk), GSI3SK = if_not_exists(GSI3SK, :gsi3sk), GSI4PK = if_not_exists(GSI4PK, :ns), GSI4SK = if_not_exists(GSI4SK, :gsi4sk)"
+            names = {alias: field, "#resource": "resource"}
             values = {
                 ":v": {"BOOL": value},
                 ":eid": {"S": entity_id},
@@ -6639,18 +6745,59 @@ class SyncRepository:
                     ExpressionAttributeNames=names,
                     ExpressionAttributeValues=values,
                 )
+
+    def set_entity_cascade(
+        self,
+        entity_id: str,
+        cascade: bool,
+        resource: str | None = None,
+        principal: str | None = None,
+    ) -> int:
+        """Set whether an entity cascades to its parent (ADR-146).
+
+        Args:
+            entity_id: Entity to configure.
+            cascade: True to debit the parent on this entity's acquires.
+            resource: Resource to scope to. None targets the entity's
+                `_default_` config: every resource without its own policy.
+            principal: Caller identity for audit logging.
+
+        Raises:
+            VersionMismatchError: the stack's Lambdas predate the cascade policy.
+
+        Returns:
+            Number of bucket items stamped, each with the policy resolved for
+            its own resource.
+        """
+        return self._set_entity_cascade(entity_id, resource, cascade, principal)
+
+    def clear_entity_cascade(
+        self, entity_id: str, resource: str | None = None, principal: str | None = None
+    ) -> int:
+        """Remove the entity's cascade policy, reverting to inherit (ADR-146).
+
+        Returns:
+            Number of bucket items restamped.
+        """
+        return self._set_entity_cascade(entity_id, resource, None, principal)
+
+    def _set_entity_cascade(
+        self, entity_id: str, resource: str | None, value: bool | None, principal: str | None
+    ) -> int:
+        """Write an entity-level cascade policy, then fan out to its buckets."""
+        target_resource = resource if resource is not None else schema.DEFAULT_RESOURCE
+        self._require_cascade_policy_readers()
+        self._write_entity_config_flag(
+            entity_id, target_resource, schema.CONFIG_FIELD_CASCADE, value
+        )
         self._config_cache.evict_entity(entity_id, target_resource)
-        if value is None:
-            effective, _level = self.resolve_disabled(entity_id, target_resource)
-        else:
-            effective = value
-        count = self._fanout_entity(entity_id, resource, disabled=effective)
+        count = self._fanout_cascade(entity_id=entity_id, resource=target_resource)
         self._log_audit_event(
             action=AuditAction.LIMITS_SET,
             entity_id=entity_id,
             principal=principal,
             resource=target_resource,
-            details={"disabled": value, "buckets_stamped": count},
+            details={"cascade": value, "buckets_stamped": count},
         )
         return count
 

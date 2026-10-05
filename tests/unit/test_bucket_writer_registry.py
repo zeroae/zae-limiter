@@ -72,9 +72,9 @@ REPOSITORY = {
     "_initialize_version_record": NOT_BUCKET,
     "_log_audit_event": NOT_BUCKET,
     "_register_namespace": NOT_BUCKET,
-    "_require_reset_after_readers": NOT_BUCKET,
-    "_set_entity_disabled": NOT_BUCKET,
-    "_set_resource_disabled": NOT_BUCKET,
+    "_require_readers": NOT_BUCKET,  # the version gate's client_min_version ratchet
+    "_write_entity_config_flag": NOT_BUCKET,  # disabled / cascade on entity config
+    "_write_resource_config_flag": NOT_BUCKET,  # disabled / cascade on resource config
     "_write_audit_retention_config": NOT_BUCKET,
     "create_entity": NOT_BUCKET,
     "delete_limits": NOT_BUCKET,

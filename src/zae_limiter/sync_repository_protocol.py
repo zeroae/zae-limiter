@@ -88,6 +88,7 @@ class SpeculativeResult:
 
 
 PRESERVE_DISABLED: Any = object()
+PRESERVE_CASCADE: Any = object()
 
 
 @runtime_checkable
@@ -870,6 +871,7 @@ class SyncRepositoryProtocol(Protocol):
         principal: str | None = None,
         *,
         disabled: "bool | None" = PRESERVE_DISABLED,
+        cascade: "bool | None" = PRESERVE_CASCADE,
     ) -> None:
         """
         Store limit configs for an entity.
@@ -879,6 +881,8 @@ class SyncRepositoryProtocol(Protocol):
             limits: Limit configurations
             resource: Resource these limits apply to
             principal: Caller identity for audit logging
+            cascade: Tri-state cascade policy (ADR-146); defaults to preserving
+                the stored value. An explicit value fans out to buckets.
         """
         ...
 
@@ -944,6 +948,7 @@ class SyncRepositoryProtocol(Protocol):
         principal: str | None = None,
         *,
         disabled: "bool | None" = PRESERVE_DISABLED,
+        cascade: "bool | None" = PRESERVE_CASCADE,
     ) -> None:
         """
         Store default limits for a resource.
@@ -1261,6 +1266,40 @@ class SyncRepositoryProtocol(Protocol):
         self, entity_id: str, resource: str | None = None, principal: str | None = None
     ) -> int:
         """Remove the entity's explicit disabled value, reverting to inherit."""
+        ...
+
+    def get_resource_cascade(self, resource: str) -> "bool | None":
+        """Read the tri-state cascade policy from a resource config item (ADR-146)."""
+        ...
+
+    def get_entity_cascade(self, entity_id: str, resource: str) -> "bool | None":
+        """Read the tri-state cascade policy from an entity config item (ADR-146)."""
+        ...
+
+    def set_resource_cascade(
+        self, resource: str, cascade: bool, principal: str | None = None
+    ) -> int:
+        """Set a resource's cascade policy and restamp its buckets (ADR-146)."""
+        ...
+
+    def clear_resource_cascade(self, resource: str, principal: str | None = None) -> int:
+        """Remove the resource's cascade policy, reverting to inherit (ADR-146)."""
+        ...
+
+    def set_entity_cascade(
+        self,
+        entity_id: str,
+        cascade: bool,
+        resource: str | None = None,
+        principal: str | None = None,
+    ) -> int:
+        """Set an entity's cascade policy, for one resource or all (ADR-146)."""
+        ...
+
+    def clear_entity_cascade(
+        self, entity_id: str, resource: str | None = None, principal: str | None = None
+    ) -> int:
+        """Remove the entity's cascade policy, reverting to inherit (ADR-146)."""
         ...
 
     def resolve_on_unavailable(self) -> "OnUnavailableAction":

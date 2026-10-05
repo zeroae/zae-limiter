@@ -183,7 +183,7 @@ class TestResolveCascade:
 
     async def test_the_config_fetch_answers_the_same(self, cascade_repo):
         await self._setup(cascade_repo, None, True, False)
-        cascade_repo.invalidate_config_cache()
+        await cascade_repo.invalidate_config_cache()
         fetched: dict = {}
 
         await cascade_repo.resolve_limits("user-1", "gpt-4", cascade_out=fetched)
@@ -248,7 +248,7 @@ class TestSlowPathFollowsThePolicy:
         await _stamp_config_cascade(
             repo, schema.pk_resource(repo._namespace_id, resource), schema.sk_config(), value
         )
-        repo.invalidate_config_cache()
+        await repo.invalidate_config_cache()
 
     async def test_no_policy_keeps_the_entity_flag(self, cascade_limiter):
         repo = cascade_limiter._repository
@@ -293,7 +293,7 @@ class TestSlowPathFollowsThePolicy:
         await _stamp_config_cascade(
             repo, schema.pk_entity(ns, "team"), schema.sk_config("gpt-4"), False
         )
-        repo.invalidate_config_cache()
+        await repo.invalidate_config_cache()
 
         async with cascade_limiter.acquire("user", "gpt-4", consume={"rpm": 3}):
             pass
@@ -631,3 +631,123 @@ class TestCascadePolicyVersionGate:
         assert reads_reset_after("0.15.0", "0.16.0", "0.16.0") is False
         assert ratcheted_client_min_version("0.0.0", "0.16.0") == "0.15.0"
         assert ratcheted_client_min_version("0.0.0", "0.16.0", "0.16.0") == "0.16.0"
+
+
+@pytest.fixture
+async def gated_limiter(cascade_repo):
+    """A limiter on a stack whose version record admits a cascade policy."""
+    from zae_limiter import __version__
+    from zae_limiter.version import get_schema_version
+
+    await cascade_repo.set_version_record(
+        schema_version=get_schema_version(), lambda_version=__version__
+    )
+    limiter = RateLimiter(repository=cascade_repo)
+    async with limiter:
+        yield limiter
+
+
+class TestCascadePolicyApi:
+    """set_/clear_ methods and the setter keyword write, gate and fan out (ADR-146)."""
+
+    async def _setup(self, limiter):
+        repo = limiter._repository
+        for resource in ("gpt-4", "llm"):
+            await repo.set_resource_defaults(resource, [RPM])
+        await repo.create_entity("team")
+        await repo.create_entity("user", parent_id="team", cascade=True)
+        await repo.create_entity("quiet", parent_id="team")  # does not cascade
+        for entity in ("user", "quiet"):
+            for resource in ("gpt-4", "llm"):
+                async with limiter.acquire(entity, resource, consume={"rpm": 1}):
+                    pass
+
+    @staticmethod
+    async def _stamp(repo, entity_id, resource):
+        return (await _bucket(repo, entity_id, resource))["cascade"]["BOOL"]
+
+    async def test_a_resource_policy_round_trip(self, gated_limiter):
+        repo = gated_limiter._repository
+        await self._setup(gated_limiter)
+
+        assert await repo.set_resource_cascade("llm", False) >= 2
+        assert await repo.get_resource_cascade("llm") is False
+        assert await self._stamp(repo, "user", "llm") is False
+        team_before = await _consumed(repo, "team", "llm")
+        async with gated_limiter.acquire("user", "llm", consume={"rpm": 2}):
+            pass
+        assert await _consumed(repo, "team", "llm") == team_before
+
+        await repo.clear_resource_cascade("llm")
+        assert await repo.get_resource_cascade("llm") is None
+        assert await self._stamp(repo, "user", "llm") is True  # back to META
+        assert await self._stamp(repo, "quiet", "llm") is False
+
+    async def test_a_resource_policy_with_no_prior_config_registers_it(self, gated_limiter):
+        repo = gated_limiter._repository
+        await repo.set_resource_cascade("fresh-model", True)
+        assert await repo.get_resource_cascade("fresh-model") is True
+        assert "fresh-model" in await repo.list_resources_with_defaults()
+
+    async def test_clearing_a_resource_with_no_config_is_a_no_op(self, gated_limiter):
+        repo = gated_limiter._repository
+        assert await repo.clear_resource_cascade("never-configured") == 0
+
+    async def test_an_entity_policy_for_one_resource(self, gated_limiter):
+        repo = gated_limiter._repository
+        await self._setup(gated_limiter)
+
+        await repo.set_entity_cascade("quiet", True, resource="gpt-4")
+
+        assert await repo.get_entity_cascade("quiet", "gpt-4") is True
+        assert await self._stamp(repo, "quiet", "gpt-4") is True
+        assert await self._stamp(repo, "quiet", "llm") is False
+        team_before = await _consumed(repo, "team", "gpt-4")
+        async with gated_limiter.acquire("quiet", "gpt-4", consume={"rpm": 2}):
+            pass
+        assert await _consumed(repo, "team", "gpt-4") == team_before + 2
+
+    async def test_an_entity_wide_policy_and_its_clear(self, gated_limiter):
+        repo = gated_limiter._repository
+        await self._setup(gated_limiter)
+
+        await repo.set_entity_cascade("user", False)
+        assert await self._stamp(repo, "user", "gpt-4") is False
+        assert await self._stamp(repo, "user", "llm") is False
+
+        await repo.clear_entity_cascade("user")
+        assert await repo.get_entity_cascade("user", schema.DEFAULT_RESOURCE) is None
+        assert await self._stamp(repo, "user", "gpt-4") is True
+
+    async def test_the_setter_keyword_sets_and_clears(self, gated_limiter):
+        repo = gated_limiter._repository
+        await self._setup(gated_limiter)
+
+        await repo.set_resource_defaults("llm", [RPM], cascade=False)
+        assert await self._stamp(repo, "user", "llm") is False
+        await repo.set_limits("quiet", [RPM], resource="gpt-4", cascade=True)
+        assert await self._stamp(repo, "quiet", "gpt-4") is True
+
+        await repo.set_resource_defaults("llm", [RPM], cascade=None)
+        assert await repo.get_resource_cascade("llm") is None
+        assert await self._stamp(repo, "user", "llm") is True
+
+    async def test_a_refused_policy_writes_nothing(self, cascade_repo):
+        from zae_limiter.version import get_schema_version
+
+        await cascade_repo.set_version_record(
+            schema_version=get_schema_version(), lambda_version="0.15.1"
+        )
+        await cascade_repo.set_resource_defaults("llm", [RPM])
+        with patch("zae_limiter.__version__", "0.16.0"):
+            with pytest.raises(VersionMismatchError):
+                await cascade_repo.set_resource_cascade("llm", False)
+            with pytest.raises(VersionMismatchError):
+                await cascade_repo.set_entity_cascade("user", False)
+            with pytest.raises(VersionMismatchError):
+                await cascade_repo.set_resource_defaults("llm", [RPM], cascade=False)
+            with pytest.raises(VersionMismatchError):
+                await cascade_repo.set_limits("user", [RPM], cascade=False)
+        assert await cascade_repo.get_resource_cascade("llm") is None
+        assert await cascade_repo.get_entity_cascade("user", schema.DEFAULT_RESOURCE) is None
+        assert await cascade_repo.get_limits("user") == []

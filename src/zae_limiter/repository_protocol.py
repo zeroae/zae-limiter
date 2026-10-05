@@ -94,6 +94,10 @@ class SpeculativeResult:
 #: contract and its implementation share one object.
 PRESERVE_DISABLED: Any = object()
 
+#: Sentinel default for the tri-state ``cascade`` policy parameter (ADR-146),
+#: for the same reason: the setters' full-replace write would drop it.
+PRESERVE_CASCADE: Any = object()
+
 
 @runtime_checkable
 class RepositoryProtocol(Protocol):
@@ -946,6 +950,7 @@ class RepositoryProtocol(Protocol):
         principal: str | None = None,
         *,
         disabled: "bool | None" = PRESERVE_DISABLED,
+        cascade: "bool | None" = PRESERVE_CASCADE,
     ) -> None:
         """
         Store limit configs for an entity.
@@ -955,6 +960,8 @@ class RepositoryProtocol(Protocol):
             limits: Limit configurations
             resource: Resource these limits apply to
             principal: Caller identity for audit logging
+            cascade: Tri-state cascade policy (ADR-146); defaults to preserving
+                the stored value. An explicit value fans out to buckets.
         """
         ...
 
@@ -1034,6 +1041,7 @@ class RepositoryProtocol(Protocol):
         principal: str | None = None,
         *,
         disabled: "bool | None" = PRESERVE_DISABLED,
+        cascade: "bool | None" = PRESERVE_CASCADE,
     ) -> None:
         """
         Store default limits for a resource.
@@ -1400,6 +1408,43 @@ class RepositoryProtocol(Protocol):
         principal: str | None = None,
     ) -> int:
         """Remove the entity's explicit disabled value, reverting to inherit."""
+        ...
+
+    async def get_resource_cascade(self, resource: str) -> "bool | None":
+        """Read the tri-state cascade policy from a resource config item (ADR-146)."""
+        ...
+
+    async def get_entity_cascade(self, entity_id: str, resource: str) -> "bool | None":
+        """Read the tri-state cascade policy from an entity config item (ADR-146)."""
+        ...
+
+    async def set_resource_cascade(
+        self, resource: str, cascade: bool, principal: str | None = None
+    ) -> int:
+        """Set a resource's cascade policy and restamp its buckets (ADR-146)."""
+        ...
+
+    async def clear_resource_cascade(self, resource: str, principal: str | None = None) -> int:
+        """Remove the resource's cascade policy, reverting to inherit (ADR-146)."""
+        ...
+
+    async def set_entity_cascade(
+        self,
+        entity_id: str,
+        cascade: bool,
+        resource: str | None = None,
+        principal: str | None = None,
+    ) -> int:
+        """Set an entity's cascade policy, for one resource or all (ADR-146)."""
+        ...
+
+    async def clear_entity_cascade(
+        self,
+        entity_id: str,
+        resource: str | None = None,
+        principal: str | None = None,
+    ) -> int:
+        """Remove the entity's cascade policy, reverting to inherit (ADR-146)."""
         ...
 
     async def resolve_on_unavailable(self) -> "OnUnavailableAction":
