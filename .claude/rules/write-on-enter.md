@@ -43,5 +43,5 @@ With write-on-exit, there is a window between enter and exit where:
 2. `_commit_initial()` writes all consumption (child + parent if cascade) atomically via `transact_write()`
 3. `_commit_adjustments()` is a no-op when no `adjust()`, `consume()`, or `release()` calls were made
 4. `_commit_adjustments()` and `_rollback()` use `write_each()` (independent single-item writes, 1 WCU each) since they produce unconditional ADD operations that do not require cross-item atomicity
-5. `_rollback()` restores only what `_commit_initial()` wrote
+5. `_rollback()` restores only what `_commit_initial()` wrote, and **never runs once an adjustment commit has started** (#682). `_commit_adjustments()` runs after the caller's code finished, so the work happened: it marks the lease committed before its first write, and a write that fails leaves the items that landed with their adjustment and the rest with their initial consumption, then re-raises. Rolling back there refunded the initial consumption on top of an adjustment that had already landed
 6. Rollback failure is logged but does not mask the original exception
