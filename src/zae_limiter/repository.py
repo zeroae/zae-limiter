@@ -27,6 +27,7 @@ from .models import (
     AuditEvent,
     BackendCapabilities,
     BucketState,
+    ConfigAccess,
     Entity,
     Limit,
     OnUnavailableAction,
@@ -2186,6 +2187,7 @@ class Repository:
         self,
         keys: list[tuple[str, str]],
         disabled_out: dict[tuple[str, str], bool | None] | None = None,
+        cascade_out: dict[tuple[str, str], bool | None] | None = None,
     ) -> dict[tuple[str, str], tuple[list[Limit], OnUnavailableAction | None]]:
         """
         Batch get config items in a single DynamoDB call.
@@ -2205,6 +2207,9 @@ class Repository:
                 may be reused; anything served from the config cache must not
                 be, since caching the gate would let a first acquire with no
                 bucket yet be admitted to a disabled resource permanently.
+            cascade_out: The same, for the tri-state cascade policy (ADR-146),
+                and for the same reason: a bucket created from a stale cached
+                policy and then only ever hit on the fast path keeps it.
 
         Returns:
             Dict mapping (PK, SK) to (limits, on_unavailable) tuples.
@@ -2245,6 +2250,9 @@ class Repository:
             if disabled_out is not None:
                 for pk, sk in chunk:
                     disabled_out[(pk, sk)] = None
+            if cascade_out is not None:
+                for pk, sk in chunk:
+                    cascade_out[(pk, sk)] = None
 
             # Process responses: deserialize each item
             for item in items:
@@ -2260,6 +2268,8 @@ class Repository:
                     result[(pk, sk)] = (limits, on_unavailable)
                     if disabled_out is not None:
                         disabled_out[(pk, sk)] = schema.decode_disabled(item)
+                    if cascade_out is not None:
+                        cascade_out[(pk, sk)] = schema.decode_cascade(item)
 
         return result
 
@@ -6545,6 +6555,7 @@ class Repository:
         entity_id: str,
         resource: str,
         disabled_out: dict[tuple[str, str], bool | None] | None = None,
+        cascade_out: dict[tuple[str, str], bool | None] | None = None,
     ) -> tuple[list[Limit] | None, OnUnavailableAction | None, ConfigSource | None]:
         """Resolve effective limits using the four-level config hierarchy.
 
@@ -6562,6 +6573,8 @@ class Repository:
                 `resolve_disabled_from_fetched`. Levels served from the config
                 cache are deliberately absent from the dict: they are not
                 fresh, and the gate must never be answered from cache.
+            cascade_out: The same, for the tri-state cascade policy (ADR-146);
+                see `resolve_cascade_from_fetched`.
 
         Returns:
             Tuple of (limits, on_unavailable, config_source)
@@ -6570,8 +6583,10 @@ class Repository:
         if self.capabilities.supports_batch_operations:
             try:
                 fetch_fn = self.batch_get_configs
-                if disabled_out is not None:
-                    fetch_fn = functools.partial(self.batch_get_configs, disabled_out=disabled_out)
+                if disabled_out is not None or cascade_out is not None:
+                    fetch_fn = functools.partial(
+                        self.batch_get_configs, disabled_out=disabled_out, cascade_out=cascade_out
+                    )
                 return await self._config_cache.resolve_limits(
                     entity_id,
                     resource,
@@ -6686,6 +6701,34 @@ class Repository:
         value None was genuinely read and has no explicit value (so the walk
         moves on); a level absent from `fetched` was not read at all.
         """
+        walked = self._walk_fetched(entity_id, resource, fetched)
+        if walked is None:
+            return None
+        value, level = walked
+        return bool(value), level
+
+    def resolve_cascade_from_fetched(
+        self,
+        entity_id: str,
+        resource: str,
+        fetched: dict[tuple[str, str], bool | None],
+    ) -> tuple[bool | None, str | None] | None:
+        """Answer the cascade-policy walk from a config fetch, or decline (ADR-146).
+
+        The `resolve_disabled_from_fetched` contract, for `resolve_limits(
+        cascade_out=...)`: None means "the caller must call `resolve_access`",
+        because a level the config cache served must not answer it — a bucket
+        created from a stale cached policy and then only ever hit on the fast
+        path would keep it.
+
+        Returns:
+            `(policy, deciding_level)`; `policy` is None when no level sets it,
+            meaning the entity's own META `cascade` applies.
+        """
+        return self._walk_fetched(entity_id, resource, fetched)
+
+    def _walk_levels(self, entity_id: str, resource: str) -> list[tuple[str, tuple[str, str]]]:
+        """The ADR-125 walk: entity(resource) -> entity(_default_) -> resource."""
         ns = self._namespace_id
         levels: list[tuple[str, tuple[str, str]]] = [
             ("entity", (schema.pk_entity(ns, entity_id), schema.sk_config(resource))),
@@ -6698,15 +6741,31 @@ class Repository:
                 )
             )
         levels.append(("resource", (schema.pk_resource(ns, resource), schema.sk_config())))
+        return levels
 
+    def _walk_fetched(
+        self,
+        entity_id: str,
+        resource: str,
+        fetched: dict[tuple[str, str], bool | None],
+    ) -> tuple[bool | None, str | None] | None:
+        """First explicit value along the walk, or None when a level was not read."""
+        levels = self._walk_levels(entity_id, resource)
         if any(key not in fetched for _level, key in levels):
             return None
+        return self._first_explicit(levels, fetched)
 
+    @staticmethod
+    def _first_explicit(
+        levels: list[tuple[str, tuple[str, str]]],
+        fetched: dict[tuple[str, str], bool | None],
+    ) -> tuple[bool | None, str | None]:
+        """The first level with an explicit value, or `(None, None)` when none sets one."""
         for level, key in levels:
             value = fetched[key]
             if value is not None:
                 return value, level
-        return False, None
+        return None, None
 
     async def resolve_disabled(
         self,
@@ -6732,43 +6791,50 @@ class Repository:
             (effective_disabled, deciding_level) where deciding_level is
             "entity", "entity_default", "resource", or None if nothing set it.
         """
-        ns = self._namespace_id
-        levels: list[tuple[str, str, str]] = [
-            ("entity", schema.pk_entity(ns, entity_id), schema.sk_config(resource)),
-        ]
-        if resource != schema.DEFAULT_RESOURCE:
-            levels.append(
-                (
-                    "entity_default",
-                    schema.pk_entity(ns, entity_id),
-                    schema.sk_config(schema.DEFAULT_RESOURCE),
-                )
-            )
-        levels.append(("resource", schema.pk_resource(ns, resource), schema.sk_config()))
+        access = await self.resolve_access(entity_id, resource)
+        return access.disabled, access.disabled_level
 
-        # A withheld item is indistinguishable in the walk below from a level
-        # that sets no value, so a partial BatchGetItem would let an entity
-        # marked `disabled: true` fall through and be ADMITTED. _batch_get_all
-        # retries the remainder and refuses to answer rather than guess:
-        # returning (False, None) here cannot be told apart by the caller from
-        # "nothing is disabled".
+    async def resolve_access(self, entity_id: str, resource: str) -> ConfigAccess:
+        """Resolve `disabled` and the cascade policy from one uncached read.
+
+        Both walks cover the same three config items (ADR-125, ADR-146), so a
+        slow path that needs both — the parent of a cascade, or any level the
+        config cache served — pays for one BatchGetItem, as it did for
+        `disabled` alone. Never cached, for the reasons `resolve_disabled` gives.
+        """
+        disabled_fetched: dict[tuple[str, str], bool | None] = {}
+        cascade_fetched: dict[tuple[str, str], bool | None] = {}
+        levels = self._walk_levels(entity_id, resource)
+
+        # A withheld item is indistinguishable in the walk from a level that
+        # sets no value, so a partial BatchGetItem would let an entity marked
+        # `disabled: true` fall through and be ADMITTED. _batch_get_all retries
+        # the remainder and refuses to answer rather than guess: returning
+        # (False, None) here cannot be told apart by the caller from "nothing
+        # is disabled".
         items = await self._batch_get_all(
-            [{"PK": {"S": pk}, "SK": {"S": sk}} for _, pk, sk in levels],
+            [{"PK": {"S": pk}, "SK": {"S": sk}} for _, (pk, sk) in levels],
             context=f"disabled state for {entity_id!r}/{resource!r}",
             entity_id=entity_id,
             resource=resource,
         )
-        by_key = {(i.get("PK", {}).get("S", ""), i.get("SK", {}).get("S", "")): i for i in items}
+        for _level, key in levels:
+            disabled_fetched[key] = None
+            cascade_fetched[key] = None
+        for item in items:
+            key = (item.get("PK", {}).get("S", ""), item.get("SK", {}).get("S", ""))
+            disabled_fetched[key] = schema.decode_disabled(item)
+            cascade_fetched[key] = schema.decode_cascade(item)
 
-        for level, pk, sk in levels:
-            item = by_key.get((pk, sk))
-            if item is None:
-                continue
-            value = schema.decode_disabled(item)
-            if value is not None:
-                return value, level
-
-        return False, None
+        # Every level was just read, so neither walk can decline.
+        disabled, disabled_level = self._first_explicit(levels, disabled_fetched)
+        cascade, cascade_level = self._first_explicit(levels, cascade_fetched)
+        return ConfigAccess(
+            disabled=bool(disabled),
+            disabled_level=disabled_level,
+            cascade=cascade,
+            cascade_level=cascade_level,
+        )
 
     async def _stamp_bucket_disabled(self, pk: str, disabled: bool) -> None:
         """Set or remove the `disabled` attribute on one bucket item (ADR-125).

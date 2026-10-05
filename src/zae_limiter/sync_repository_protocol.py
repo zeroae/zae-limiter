@@ -19,6 +19,7 @@ if TYPE_CHECKING:
         AuditEvent,
         BackendCapabilities,
         BucketState,
+        ConfigAccess,
         Entity,
         Limit,
         OnUnavailableAction,
@@ -1143,6 +1144,7 @@ class SyncRepositoryProtocol(Protocol):
         entity_id: str,
         resource: str,
         disabled_out: "dict[tuple[str, str], bool | None] | None" = None,
+        cascade_out: "dict[tuple[str, str], bool | None] | None" = None,
     ) -> "tuple[list[Limit] | None, OnUnavailableAction | None, ConfigSource | None]":
         """
         Resolve effective limits using the four-level config hierarchy.
@@ -1166,6 +1168,8 @@ class SyncRepositoryProtocol(Protocol):
                 issuing a second, identical one (ADR-125). Levels served from
                 a backend cache must be omitted — see
                 ``resolve_disabled_from_fetched``.
+            cascade_out: The same, for the tri-state cascade policy (ADR-146);
+                see ``resolve_cascade_from_fetched``.
 
         Returns:
             Tuple of (limits, on_unavailable, config_source) where:
@@ -1178,6 +1182,25 @@ class SyncRepositoryProtocol(Protocol):
 
     def resolve_disabled(self, entity_id: str, resource: str) -> "tuple[bool, str | None]":
         """Resolve the effective disabled state for an entity+resource (ADR-125)."""
+        ...
+
+    def resolve_access(self, entity_id: str, resource: str) -> "ConfigAccess":
+        """Resolve ``disabled`` and the cascade policy from one uncached read (ADR-146).
+
+        Both walks cover the same config items, so a backend answers them from
+        one read. Never from cache, for the reasons ``resolve_disabled`` gives.
+        """
+        ...
+
+    def resolve_cascade_from_fetched(
+        self, entity_id: str, resource: str, fetched: "dict[tuple[str, str], bool | None]"
+    ) -> "tuple[bool | None, str | None] | None":
+        """Answer the cascade-policy walk from a config fetch, or decline (ADR-146).
+
+        Returns ``(policy, deciding_level)``, ``policy`` None when no level sets
+        it; or None when any level is absent from ``fetched``, meaning the
+        caller must fall back to ``resolve_access``.
+        """
         ...
 
     def get_entity_disabled(self, entity_id: str, resource: str) -> "bool | None":
