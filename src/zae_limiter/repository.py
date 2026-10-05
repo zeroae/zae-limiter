@@ -27,6 +27,7 @@ from .models import (
     AuditEvent,
     BackendCapabilities,
     BucketState,
+    ConfigAccess,
     Entity,
     Limit,
     OnUnavailableAction,
@@ -36,6 +37,7 @@ from .models import (
     StackOptions,
     UsageSnapshot,
     UsageSummary,
+    effective_cascade,
     hoisted_schedule_timezone,
     plan_quota_grant,
     quota_grant_is_current,
@@ -43,6 +45,9 @@ from .models import (
     validate_resource,
 )
 from .naming import normalize_stack_name
+from .repository_protocol import (
+    PRESERVE_CASCADE as _PRESERVE_CASCADE,
+)
 from .repository_protocol import (
     PRESERVE_DISABLED as _PRESERVE_DISABLED,
 )
@@ -198,6 +203,14 @@ class Repository:
         # Value: (cascade, parent_id, {resource: shard_count})
         # cascade/parent_id are immutable; shard_count updated on doubling
         self._entity_cache: dict[tuple[str, str], tuple[bool, str | None, dict[str, int]]] = {}
+        # The cascade policy per (namespace, entity, resource), learned from the
+        # bucket item's own stamp (ADR-146): the warm path decides with it. The
+        # entity-wide flag above is only the guess for a resource not yet seen —
+        # META's value at first, then the last stamp the entity showed, so it
+        # can be another resource's policy; the item overrules a wrong guess.
+        # Consulted only while the entity has an entry, so dropping that entry
+        # still means "start cold".
+        self._cascade_cache: dict[tuple[str, str, str], bool] = {}
 
         # Cached on_unavailable from system config (issue #366)
         # Once loaded, used as fallback when DynamoDB is unreachable
@@ -531,6 +544,7 @@ class Repository:
         )
         # Share mutable caches
         scoped._entity_cache = self._entity_cache
+        scoped._cascade_cache = self._cascade_cache
         scoped._namespace_cache = self._namespace_cache
         # Scoped repos start with no on_unavailable cache (each namespace
         # has its own system config)
@@ -1504,9 +1518,44 @@ class Repository:
         if not any(limit.reset_after is not None for limit in limits):
             return
 
+        from .version import MIN_READER_VERSION_FOR_RESET_AFTER, reset_after_refusal
+
+        await self._require_readers(
+            MIN_READER_VERSION_FOR_RESET_AFTER, reset_after_refusal, ratchet=ratchet
+        )
+
+    async def _require_cascade_policy_readers(self) -> None:
+        """Refuse to store a cascade policy the stack cannot keep (ADR-146).
+
+        The ``reset_after`` gate (ADR-141), for the cascade policy: one strongly
+        consistent ``GetItem`` of the version record (1 RCU), then the
+        ``client_min_version`` ratchet to 0.16.0 the first time. Called only by
+        a write that sets or clears a policy, never on the acquire path.
+
+        Raises:
+            VersionMismatchError: the record is missing, or its
+                ``lambda_version`` is unknown or predates the cascade policy.
+        """
+        from .version import MIN_READER_VERSION_FOR_CASCADE_POLICY, cascade_policy_refusal
+
+        await self._require_readers(MIN_READER_VERSION_FOR_CASCADE_POLICY, cascade_policy_refusal)
+
+    async def _require_readers(
+        self,
+        minimum: str,
+        refusal: Callable[[bool, str | None], tuple[str, bool]],
+        *,
+        ratchet: bool = True,
+    ) -> None:
+        """The version gate shared by ``reset_after`` and the cascade policy.
+
+        Refuses unless the version record's ``lambda_version`` is at least
+        ``minimum`` (or this very build), then raises ``client_min_version`` to
+        ``minimum`` — never lowering it — unless ``ratchet`` is False.
+        """
         from . import __version__
         from .exceptions import VersionMismatchError
-        from .version import ratcheted_client_min_version, reads_reset_after, reset_after_refusal
+        from .version import ratcheted_client_min_version, reads_reset_after
 
         client = await self._get_client()
         key = {
@@ -1522,8 +1571,8 @@ class Repository:
             lambda_version = (item or {}).get("lambda_version", {}).get("S")
             if item:
                 self._remember_lambda_version(lambda_version)
-            if not item or not reads_reset_after(lambda_version, __version__):
-                message, can_auto_update = reset_after_refusal(bool(item), lambda_version)
+            if not item or not reads_reset_after(lambda_version, __version__, minimum):
+                message, can_auto_update = refusal(bool(item), lambda_version)
                 raise VersionMismatchError(
                     client_version=__version__,
                     schema_version=(item or {}).get("schema_version", {}).get("S", "unknown"),
@@ -1535,7 +1584,7 @@ class Repository:
                 return
             assert item is not None
             stored_min = item.get("client_min_version", {}).get("S")
-            new_min = ratcheted_client_min_version(stored_min, __version__)
+            new_min = ratcheted_client_min_version(stored_min, __version__, minimum)
             if new_min is None:
                 return
             # Never lowered: conditioned on the value just read, so a concurrent
@@ -2186,6 +2235,7 @@ class Repository:
         self,
         keys: list[tuple[str, str]],
         disabled_out: dict[tuple[str, str], bool | None] | None = None,
+        cascade_out: dict[tuple[str, str], bool | None] | None = None,
     ) -> dict[tuple[str, str], tuple[list[Limit], OnUnavailableAction | None]]:
         """
         Batch get config items in a single DynamoDB call.
@@ -2205,6 +2255,9 @@ class Repository:
                 may be reused; anything served from the config cache must not
                 be, since caching the gate would let a first acquire with no
                 bucket yet be admitted to a disabled resource permanently.
+            cascade_out: The same, for the tri-state cascade policy (ADR-146),
+                and for the same reason: a bucket created from a stale cached
+                policy and then only ever hit on the fast path keeps it.
 
         Returns:
             Dict mapping (PK, SK) to (limits, on_unavailable) tuples.
@@ -2245,6 +2298,9 @@ class Repository:
             if disabled_out is not None:
                 for pk, sk in chunk:
                     disabled_out[(pk, sk)] = None
+            if cascade_out is not None:
+                for pk, sk in chunk:
+                    cascade_out[(pk, sk)] = None
 
             # Process responses: deserialize each item
             for item in items:
@@ -2260,6 +2316,8 @@ class Repository:
                     result[(pk, sk)] = (limits, on_unavailable)
                     if disabled_out is not None:
                         disabled_out[(pk, sk)] = schema.decode_disabled(item)
+                    if cascade_out is not None:
+                        cascade_out[(pk, sk)] = schema.decode_cascade(item)
 
         return result
 
@@ -3291,7 +3349,13 @@ class Repository:
         effective_shard_id, _shard_count = self.select_shard(entity_id, resource)
 
         if cache_entry is not None:
-            cascade_cached, parent_id_cached, shards_cached = cache_entry
+            entity_cascade, parent_id_cached, shards_cached = cache_entry
+            # This resource's own policy when an item has shown it (ADR-146);
+            # the entity-wide flag is only the guess for a resource not yet
+            # seen, and the item the write returns overrules either.
+            cascade_cached = self._cascade_cache.get(
+                (self._namespace_id, entity_id, resource), entity_cascade
+            )
             if cascade_cached and parent_id_cached:
                 child_result: SpeculativeResult
                 parent_result: SpeculativeResult
@@ -3342,10 +3406,17 @@ class Repository:
                         meta=(child_result.cascade, child_result.parent_id),
                     )
                 else:
-                    # On failure, _speculative_consume_single doesn't return
-                    # cascade/parent_id (only in ALL_NEW). Use cached values
-                    # so the caller can compensate the parent.
-                    child_result.cascade = cascade_cached
+                    # A failure image (ALL_OLD) carries the item's own stamp,
+                    # and a stamp with a parent_id is this resource's policy
+                    # (ADR-146): keep it, so an exhausted child whose policy
+                    # does not cascade is judged as such (no parent outranks
+                    # it, and the child-only shard retry stays open). With no
+                    # image (a missing bucket) or a pre-#684 stamp, the cache's
+                    # answer stands. parent_id is always the cached one: it is
+                    # the parent this path wrote to, and the caller compensates
+                    # it if that write landed.
+                    if child_result.parent_id is None:
+                        child_result.cascade = cascade_cached
                     child_result.parent_id = parent_id_cached
                 child_result.parent_result = parent_result
                 return child_result
@@ -3626,6 +3697,12 @@ class Repository:
         count = max(observed, shards.get(resource, 1))
         shards[resource] = count
         self._entity_cache[cache_key] = (cascade, parent_id, shards)
+        if meta is not None and meta[1] is not None:
+            # `meta` comes off this entity's own item for this resource, whose
+            # `cascade` is the policy resolved for exactly that pair (ADR-146).
+            # A stamp without `parent_id` is not one: an older version wrote it
+            # for a parent from its child's view (#684), so it teaches nothing.
+            self._cascade_cache[(self._namespace_id, entity_id, resource)] = meta[0]
         return count
 
     def select_shard(
@@ -3991,6 +4068,7 @@ class Repository:
         principal: str | None = None,
         *,
         disabled: bool | None = _PRESERVE_DISABLED,
+        cascade: bool | None = _PRESERVE_CASCADE,
     ) -> None:
         """
         Store limit configs for an entity (composite format, ADR-114).
@@ -4009,19 +4087,31 @@ class Repository:
                 explicit value must be passed to change it; see ADR-125).
                 Passing an explicit value also fans out to existing buckets,
                 exactly as `disable_entity()`/`enable_entity()` do.
+            cascade: Tri-state cascade policy (ADR-146), preserved the same way.
+                An explicit value is gated on the stack's version and fans out
+                like `set_entity_cascade()`.
 
         Raises:
             VersionMismatchError: ``limits`` carries a ``reset_after`` limit
-                and the stack's Lambdas predate it (#638). Nothing is written.
+                and the stack's Lambdas predate it (#638), or an explicit
+                ``cascade`` and they predate the cascade policy. Nothing is
+                written.
         """
         client = await self._get_client()
         await self._require_reset_after_readers(limits)
+        cascade_explicit = cascade is not _PRESERVE_CASCADE
+        if cascade_explicit:
+            await self._require_cascade_policy_readers()
 
-        # Full-replace PutItem would drop `disabled`; preserve it unless the
-        # caller passed an explicit value (ADR-125).
+        # Full-replace PutItem would drop `disabled` and `cascade`; preserve
+        # them unless the caller passed an explicit value (ADR-125, ADR-146).
+        # One read serves both.
         disabled_explicit = disabled is not _PRESERVE_DISABLED
+        stored_disabled, stored_cascade = await self._get_entity_config_flags(entity_id, resource)
         if not disabled_explicit:
-            disabled = await self.get_entity_disabled(entity_id, resource)
+            disabled = stored_disabled
+        if not cascade_explicit:
+            cascade = stored_cascade
 
         # Build composite config item with all limits
         item: dict[str, Any] = {
@@ -4044,6 +4134,9 @@ class Repository:
         disabled_attr = schema.encode_disabled(disabled)
         if disabled_attr is not None:
             item[schema.CONFIG_FIELD_DISABLED] = disabled_attr
+        cascade_attr = schema.encode_cascade(cascade)
+        if cascade_attr is not None:
+            item[schema.CONFIG_FIELD_CASCADE] = cascade_attr
 
         # Use transaction to atomically create config + increment registry (issue #288)
         # This prevents race conditions where concurrent creates both increment
@@ -4110,6 +4203,8 @@ class Repository:
             effective, _level = await self.resolve_disabled(entity_id, resource)
             fanout_resource = None if resource == schema.DEFAULT_RESOURCE else resource
             await self._fanout_entity(entity_id, fanout_resource, disabled=effective)
+        if cascade_explicit:
+            await self._fanout_cascade(entity_id=entity_id, resource=resource)
 
         # Log audit event
         await self._log_audit_event(
@@ -4632,19 +4727,42 @@ class Repository:
         Returns:
             True or False when explicitly set, None when unset (inherit).
         """
+        disabled, _cascade = await self._get_entity_config_flags(entity_id, resource)
+        return disabled
+
+    async def get_entity_cascade(self, entity_id: str, resource: str) -> bool | None:
+        """Read the tri-state cascade policy from an entity config item (ADR-146).
+
+        Returns:
+            True or False when explicitly set, None when unset (inherit).
+        """
+        _disabled, cascade = await self._get_entity_config_flags(entity_id, resource)
+        return cascade
+
+    async def _get_entity_config_flags(
+        self, entity_id: str, resource: str
+    ) -> tuple[bool | None, bool | None]:
+        """The tri-state `(disabled, cascade)` stored on an entity config item."""
+        return await self._get_config_flags(
+            schema.pk_entity(self._namespace_id, entity_id), schema.sk_config(resource)
+        )
+
+    async def _get_config_flags(self, pk: str, sk: str) -> tuple[bool | None, bool | None]:
+        """The tri-state `(disabled, cascade)` stored on one config item.
+
+        One read serves both, so a full-replace setter preserving them costs what
+        preserving `disabled` alone did (ADR-125, ADR-146).
+        """
         client = await self._get_client()
         response = await client.get_item(
             TableName=self.table_name,
-            Key={
-                "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
-                "SK": {"S": schema.sk_config(resource)},
-            },
+            Key={"PK": {"S": pk}, "SK": {"S": sk}},
             ConsistentRead=False,
         )
         item = response.get("Item")
         if not item:
-            return None
-        return schema.decode_disabled(item)
+            return None, None
+        return schema.decode_disabled(item), schema.decode_cascade(item)
 
     async def delete_limits(
         self,
@@ -4682,10 +4800,15 @@ class Repository:
                 "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
                 "SK": {"S": schema.sk_config(resource)},
             },
-            ProjectionExpression="#disabled",
-            ExpressionAttributeNames={"#disabled": schema.CONFIG_FIELD_DISABLED},
+            ProjectionExpression="#disabled, #cascade",
+            ExpressionAttributeNames={
+                "#disabled": schema.CONFIG_FIELD_DISABLED,
+                "#cascade": schema.CONFIG_FIELD_CASCADE,
+            },
         )
         had_disabled = schema.CONFIG_FIELD_DISABLED in (existing.get("Item") or {})
+        # The same question for the cascade policy (ADR-146), from the same read.
+        had_cascade = schema.CONFIG_FIELD_CASCADE in (existing.get("Item") or {})
 
         # Use transaction to atomically delete config + decrement registry (issue #288)
         # This prevents double-decrement if delete_limits is called twice
@@ -4749,6 +4872,9 @@ class Repository:
             else:
                 effective, _level = await self.resolve_disabled(entity_id, resource)
                 await self._fanout_entity(entity_id, resource, disabled=effective)
+        # Likewise for a cascade policy this level was deciding (ADR-146).
+        if had_cascade:
+            await self._fanout_cascade(entity_id=entity_id, resource=resource)
 
         # Log audit event
         await self._log_audit_event(
@@ -4863,6 +4989,7 @@ class Repository:
         principal: str | None = None,
         *,
         disabled: bool | None = _PRESERVE_DISABLED,
+        cascade: bool | None = _PRESERVE_CASCADE,
     ) -> None:
         """
         Store default limit configs for a resource (composite format, ADR-114).
@@ -4879,20 +5006,32 @@ class Repository:
                 explicit value must be passed to change it; see ADR-125).
                 Passing an explicit value also fans out to existing buckets,
                 exactly as `disable_resource()`/`enable_resource()` do.
+            cascade: Tri-state cascade policy (ADR-146), preserved the same way.
+                An explicit value is gated on the stack's version and fans out
+                like `set_resource_cascade()`.
 
         Raises:
             VersionMismatchError: ``limits`` carries a ``reset_after`` limit
-                and the stack's Lambdas predate it (#638). Nothing is written.
+                and the stack's Lambdas predate it (#638), or an explicit
+                ``cascade`` and they predate the cascade policy. Nothing is
+                written.
         """
         validate_resource(resource)
         client = await self._get_client()
         await self._require_reset_after_readers(limits)
+        cascade_explicit = cascade is not _PRESERVE_CASCADE
+        if cascade_explicit:
+            await self._require_cascade_policy_readers()
 
-        # Full-replace PutItem would drop `disabled`; preserve it unless the
-        # caller passed an explicit value (ADR-125).
+        # Full-replace PutItem would drop `disabled` and `cascade`; preserve
+        # them unless the caller passed an explicit value (ADR-125, ADR-146).
+        # One read serves both.
         disabled_explicit = disabled is not _PRESERVE_DISABLED
+        stored_disabled, stored_cascade = await self._get_resource_config_flags(resource)
         if not disabled_explicit:
-            disabled = await self.get_resource_disabled(resource)
+            disabled = stored_disabled
+        if not cascade_explicit:
+            cascade = stored_cascade
 
         # Build composite config item with all limits
         item: dict[str, Any] = {
@@ -4911,6 +5050,9 @@ class Repository:
         disabled_attr = schema.encode_disabled(disabled)
         if disabled_attr is not None:
             item[schema.CONFIG_FIELD_DISABLED] = disabled_attr
+        cascade_attr = schema.encode_cascade(cascade)
+        if cascade_attr is not None:
+            item[schema.CONFIG_FIELD_CASCADE] = cascade_attr
 
         # Single PutItem replaces any existing config for this resource
         await client.put_item(TableName=self.table_name, Item=item)
@@ -4940,6 +5082,9 @@ class Repository:
         # sentinel the stored value is unchanged, so no fan-out is needed.
         if disabled_explicit:
             await self._fanout_resource(resource, disabled=bool(disabled))
+        if cascade_explicit:
+            await self.invalidate_config_cache()
+            await self._fanout_cascade(resource=resource)
 
         # Log audit event with special prefix
         await self._log_audit_event(
@@ -4985,19 +5130,24 @@ class Repository:
             True or False when explicitly set, None when unset (inherit).
         """
         validate_resource(resource)
-        client = await self._get_client()
-        response = await client.get_item(
-            TableName=self.table_name,
-            Key={
-                "PK": {"S": schema.pk_resource(self._namespace_id, resource)},
-                "SK": {"S": schema.sk_config()},
-            },
-            ConsistentRead=False,
+        disabled, _cascade = await self._get_resource_config_flags(resource)
+        return disabled
+
+    async def get_resource_cascade(self, resource: str) -> bool | None:
+        """Read the tri-state cascade policy from a resource config item (ADR-146).
+
+        Returns:
+            True or False when explicitly set, None when unset (inherit).
+        """
+        validate_resource(resource)
+        _disabled, cascade = await self._get_resource_config_flags(resource)
+        return cascade
+
+    async def _get_resource_config_flags(self, resource: str) -> tuple[bool | None, bool | None]:
+        """The tri-state `(disabled, cascade)` stored on a resource config item."""
+        return await self._get_config_flags(
+            schema.pk_resource(self._namespace_id, resource), schema.sk_config()
         )
-        item = response.get("Item")
-        if not item:
-            return None
-        return schema.decode_disabled(item)
 
     async def delete_resource_defaults(
         self,
@@ -5028,6 +5178,7 @@ class Repository:
             ReturnValues="ALL_OLD",
         )
         had_disabled = schema.CONFIG_FIELD_DISABLED in (deleted.get("Attributes") or {})
+        had_cascade = schema.CONFIG_FIELD_CASCADE in (deleted.get("Attributes") or {})
 
         # Remove resource from the registry using atomic DELETE operation
         await client.update_item(
@@ -5057,6 +5208,9 @@ class Repository:
         # level re-enable does change the resolution.
         if had_disabled:
             await self._fanout_resource(resource, disabled=False)
+        # Likewise for a cascade policy the resource level was deciding (ADR-146).
+        if had_cascade:
+            await self._fanout_cascade(resource=resource)
 
         # Log audit event
         await self._log_audit_event(
@@ -6507,6 +6661,7 @@ class Repository:
         entity_id: str,
         resource: str,
         disabled_out: dict[tuple[str, str], bool | None] | None = None,
+        cascade_out: dict[tuple[str, str], bool | None] | None = None,
     ) -> tuple[list[Limit] | None, OnUnavailableAction | None, ConfigSource | None]:
         """Resolve effective limits using the four-level config hierarchy.
 
@@ -6524,6 +6679,8 @@ class Repository:
                 `resolve_disabled_from_fetched`. Levels served from the config
                 cache are deliberately absent from the dict: they are not
                 fresh, and the gate must never be answered from cache.
+            cascade_out: The same, for the tri-state cascade policy (ADR-146);
+                see `resolve_cascade_from_fetched`.
 
         Returns:
             Tuple of (limits, on_unavailable, config_source)
@@ -6532,8 +6689,10 @@ class Repository:
         if self.capabilities.supports_batch_operations:
             try:
                 fetch_fn = self.batch_get_configs
-                if disabled_out is not None:
-                    fetch_fn = functools.partial(self.batch_get_configs, disabled_out=disabled_out)
+                if disabled_out is not None or cascade_out is not None:
+                    fetch_fn = functools.partial(
+                        self.batch_get_configs, disabled_out=disabled_out, cascade_out=cascade_out
+                    )
                 return await self._config_cache.resolve_limits(
                     entity_id,
                     resource,
@@ -6648,6 +6807,34 @@ class Repository:
         value None was genuinely read and has no explicit value (so the walk
         moves on); a level absent from `fetched` was not read at all.
         """
+        walked = self._walk_fetched(entity_id, resource, fetched)
+        if walked is None:
+            return None
+        value, level = walked
+        return bool(value), level
+
+    def resolve_cascade_from_fetched(
+        self,
+        entity_id: str,
+        resource: str,
+        fetched: dict[tuple[str, str], bool | None],
+    ) -> tuple[bool | None, str | None] | None:
+        """Answer the cascade-policy walk from a config fetch, or decline (ADR-146).
+
+        The `resolve_disabled_from_fetched` contract, for `resolve_limits(
+        cascade_out=...)`: None means "the caller must call `resolve_access`",
+        because a level the config cache served must not answer it — a bucket
+        created from a stale cached policy and then only ever hit on the fast
+        path would keep it.
+
+        Returns:
+            `(policy, deciding_level)`; `policy` is None when no level sets it,
+            meaning the entity's own META `cascade` applies.
+        """
+        return self._walk_fetched(entity_id, resource, fetched)
+
+    def _walk_levels(self, entity_id: str, resource: str) -> list[tuple[str, tuple[str, str]]]:
+        """The ADR-125 walk: entity(resource) -> entity(_default_) -> resource."""
         ns = self._namespace_id
         levels: list[tuple[str, tuple[str, str]]] = [
             ("entity", (schema.pk_entity(ns, entity_id), schema.sk_config(resource))),
@@ -6660,15 +6847,31 @@ class Repository:
                 )
             )
         levels.append(("resource", (schema.pk_resource(ns, resource), schema.sk_config())))
+        return levels
 
+    def _walk_fetched(
+        self,
+        entity_id: str,
+        resource: str,
+        fetched: dict[tuple[str, str], bool | None],
+    ) -> tuple[bool | None, str | None] | None:
+        """First explicit value along the walk, or None when a level was not read."""
+        levels = self._walk_levels(entity_id, resource)
         if any(key not in fetched for _level, key in levels):
             return None
+        return self._first_explicit(levels, fetched)
 
+    @staticmethod
+    def _first_explicit(
+        levels: list[tuple[str, tuple[str, str]]],
+        fetched: dict[tuple[str, str], bool | None],
+    ) -> tuple[bool | None, str | None]:
+        """The first level with an explicit value, or `(None, None)` when none sets one."""
         for level, key in levels:
             value = fetched[key]
             if value is not None:
                 return value, level
-        return False, None
+        return None, None
 
     async def resolve_disabled(
         self,
@@ -6694,43 +6897,50 @@ class Repository:
             (effective_disabled, deciding_level) where deciding_level is
             "entity", "entity_default", "resource", or None if nothing set it.
         """
-        ns = self._namespace_id
-        levels: list[tuple[str, str, str]] = [
-            ("entity", schema.pk_entity(ns, entity_id), schema.sk_config(resource)),
-        ]
-        if resource != schema.DEFAULT_RESOURCE:
-            levels.append(
-                (
-                    "entity_default",
-                    schema.pk_entity(ns, entity_id),
-                    schema.sk_config(schema.DEFAULT_RESOURCE),
-                )
-            )
-        levels.append(("resource", schema.pk_resource(ns, resource), schema.sk_config()))
+        access = await self.resolve_access(entity_id, resource)
+        return access.disabled, access.disabled_level
 
-        # A withheld item is indistinguishable in the walk below from a level
-        # that sets no value, so a partial BatchGetItem would let an entity
-        # marked `disabled: true` fall through and be ADMITTED. _batch_get_all
-        # retries the remainder and refuses to answer rather than guess:
-        # returning (False, None) here cannot be told apart by the caller from
-        # "nothing is disabled".
+    async def resolve_access(self, entity_id: str, resource: str) -> ConfigAccess:
+        """Resolve `disabled` and the cascade policy from one uncached read.
+
+        Both walks cover the same three config items (ADR-125, ADR-146), so a
+        slow path that needs both — the parent of a cascade, or any level the
+        config cache served — pays for one BatchGetItem, as it did for
+        `disabled` alone. Never cached, for the reasons `resolve_disabled` gives.
+        """
+        disabled_fetched: dict[tuple[str, str], bool | None] = {}
+        cascade_fetched: dict[tuple[str, str], bool | None] = {}
+        levels = self._walk_levels(entity_id, resource)
+
+        # A withheld item is indistinguishable in the walk from a level that
+        # sets no value, so a partial BatchGetItem would let an entity marked
+        # `disabled: true` fall through and be ADMITTED. _batch_get_all retries
+        # the remainder and refuses to answer rather than guess: returning
+        # (False, None) here cannot be told apart by the caller from "nothing
+        # is disabled".
         items = await self._batch_get_all(
-            [{"PK": {"S": pk}, "SK": {"S": sk}} for _, pk, sk in levels],
+            [{"PK": {"S": pk}, "SK": {"S": sk}} for _, (pk, sk) in levels],
             context=f"disabled state for {entity_id!r}/{resource!r}",
             entity_id=entity_id,
             resource=resource,
         )
-        by_key = {(i.get("PK", {}).get("S", ""), i.get("SK", {}).get("S", "")): i for i in items}
+        for _level, key in levels:
+            disabled_fetched[key] = None
+            cascade_fetched[key] = None
+        for item in items:
+            key = (item.get("PK", {}).get("S", ""), item.get("SK", {}).get("S", ""))
+            disabled_fetched[key] = schema.decode_disabled(item)
+            cascade_fetched[key] = schema.decode_cascade(item)
 
-        for level, pk, sk in levels:
-            item = by_key.get((pk, sk))
-            if item is None:
-                continue
-            value = schema.decode_disabled(item)
-            if value is not None:
-                return value, level
-
-        return False, None
+        # Every level was just read, so neither walk can decline.
+        disabled, disabled_level = self._first_explicit(levels, disabled_fetched)
+        cascade, cascade_level = self._first_explicit(levels, cascade_fetched)
+        return ConfigAccess(
+            disabled=bool(disabled),
+            disabled_level=disabled_level,
+            cascade=cascade,
+            cascade_level=cascade_level,
+        )
 
     async def _stamp_bucket_disabled(self, pk: str, disabled: bool) -> None:
         """Set or remove the `disabled` attribute on one bucket item (ADR-125).
@@ -7489,6 +7699,99 @@ class Repository:
                 stamped.add(pk)
         return len(stamped)
 
+    async def _stamp_bucket_cascade(self, pk: str, cascade: bool, parent_id: str | None) -> None:
+        """Write one bucket's effective cascade policy and owner `parent_id` (ADR-146).
+
+        The same pair the slow path's owner stamp writes (#684), so whichever
+        writer runs last leaves a stamp the fast path can trust.
+        """
+        client = await self._get_client()
+        names = {"#c": "cascade", "#p": "parent_id"}  # `cascade` is a reserved word
+        values: dict[str, Any] = {":c": {"BOOL": cascade}}
+        if parent_id is not None:
+            update = "SET #c = :c, #p = :p"
+            values[":p"] = {"S": parent_id}
+        else:
+            update = "SET #c = :c REMOVE #p"
+        try:
+            await client.update_item(
+                TableName=self.table_name,
+                Key={"PK": {"S": pk}, "SK": {"S": schema.sk_state()}},
+                UpdateExpression=update,
+                # Never resurrect a bucket that TTL or a delete removed.
+                ConditionExpression="attribute_exists(PK)",
+                ExpressionAttributeNames=names,
+                ExpressionAttributeValues=values,
+            )
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                raise
+            # Bucket vanished between discovery and stamp — nothing to restamp.
+
+    async def _fanout_cascade(
+        self, *, resource: str | None = None, entity_id: str | None = None
+    ) -> int:
+        """Restamp every bucket a cascade-policy change can reach (ADR-146).
+
+        Scoped to one resource (a resource-level change, GSI2 discovery) or to
+        one entity (GSI3 discovery; ``resource`` None or ``_default_`` means
+        every resource of the entity). Every discovered bucket is stamped with
+        the policy resolved for **its own** entity and resource, so a
+        resource-level change never clobbers an entity override, and a clear
+        restamps whatever level now decides. Two discovery passes, as for
+        ``disabled`` (ADR-125): the second catches buckets an in-flight acquire
+        created during the first. A bucket whose entity has no META record is
+        skipped — the slow path does not stamp those either.
+
+        Raises:
+            FanoutIncomplete: A write failed part-way; carries how many landed.
+                Every write is idempotent, so re-running reconciles the rest.
+
+        Returns:
+            Number of bucket items stamped.
+        """
+        stamped: set[str] = set()
+        entities: dict[str, Entity | None] = {}
+        targets: dict[tuple[str, str], tuple[bool, str | None] | None] = {}
+        scope = None if resource == schema.DEFAULT_RESOURCE else resource
+
+        for _pass in range(2):
+            if entity_id is not None:
+                pks = await self._discover_entity_bucket_pks(entity_id, scope)
+            else:
+                assert scope is not None
+                pks = [pk for pk, _eid in await self._discover_resource_bucket_pks(scope)]
+            for pk in pks:
+                if pk in stamped:
+                    continue
+                _ns, eid, bucket_resource, _shard = schema.parse_bucket_pk(pk)
+                key = (eid, bucket_resource)
+                if key not in targets:
+                    if eid not in entities:
+                        entities[eid] = await self.get_entity(eid)
+                    owner = entities[eid]
+                    access = await self.resolve_access(eid, bucket_resource)
+                    targets[key] = (
+                        None
+                        if owner is None
+                        else (effective_cascade(access.cascade, owner), owner.parent_id)
+                    )
+                target = targets[key]
+                if target is not None and target[1] is not None:
+                    # This process already knows the new policy; teach the warm
+                    # path rather than make it learn it from one mismatch.
+                    self._cascade_cache[(self._namespace_id, eid, bucket_resource)] = target[0]
+                if target is None:
+                    continue
+                try:
+                    await self._stamp_bucket_cascade(pk, *target)
+                except Exception as e:
+                    raise FanoutIncomplete(
+                        len(stamped), e, resource=scope, entity_id=entity_id
+                    ) from e
+                stamped.add(pk)
+        return len(stamped)
+
     async def disable_resource(self, resource: str, principal: str | None = None) -> int:
         """Disable a resource for all entities without an explicit override (ADR-125).
 
@@ -7535,10 +7838,43 @@ class Repository:
         than fabricating a stub with a bare REMOVE (ADR-125).
         """
         validate_resource(resource)
-        client = await self._get_client()
 
         # 1. Write config first, so any acquire starting from now resolves the
         #    new value on the slow path.
+        await self._write_resource_config_flag(resource, schema.CONFIG_FIELD_DISABLED, value)
+
+        await self.invalidate_config_cache()
+
+        # 2. Fan out to existing buckets. For a clear, the effective value is
+        #    whatever the resource now inherits, which with no system-level
+        #    disable is always False.
+        count = await self._fanout_resource(resource, disabled=bool(value))
+
+        await self._log_audit_event(
+            action=AuditAction.LIMITS_SET,
+            entity_id=f"$RESOURCE:{resource}",
+            principal=principal,
+            resource=resource,
+            details={"disabled": value, "buckets_stamped": count},
+        )
+        return count
+
+    async def _write_resource_config_flag(
+        self, resource: str, field: str, value: bool | None
+    ) -> None:
+        """Set or clear one tri-state flag on a resource config item (ADR-125, ADR-146).
+
+        The config write is an UPSERT (no `ConditionExpression`) when setting an
+        explicit value, mirroring `set_resource_defaults`'s attributes exactly
+        (`resource`, `GSI4PK`, `GSI4SK`) via `if_not_exists` so a resource with no
+        prior config item — the common case when running purely on system
+        defaults — can still carry it. Clearing back to "inherit" only makes
+        sense against an item that already exists, so that branch keeps the
+        `attribute_exists(PK)` guard and treats a missing item as a no-op rather
+        than fabricating a stub with a bare REMOVE.
+        """
+        client = await self._get_client()
+        alias = f"#{field}"
         key = {
             "PK": {"S": schema.pk_resource(self._namespace_id, resource)},
             "SK": {"S": schema.sk_config()},
@@ -7548,8 +7884,8 @@ class Repository:
                 await client.update_item(
                     TableName=self.table_name,
                     Key=key,
-                    UpdateExpression="REMOVE #disabled",
-                    ExpressionAttributeNames={"#disabled": schema.CONFIG_FIELD_DISABLED},
+                    UpdateExpression=f"REMOVE {alias}",
+                    ExpressionAttributeNames={alias: field},
                     ConditionExpression="attribute_exists(PK)",
                 )
             except ClientError as e:
@@ -7564,13 +7900,13 @@ class Repository:
                 TableName=self.table_name,
                 Key=key,
                 UpdateExpression=(
-                    "SET #disabled = :v,"
+                    f"SET {alias} = :v,"
                     " #resource = if_not_exists(#resource, :res),"
                     " GSI4PK = if_not_exists(GSI4PK, :gsi4pk),"
                     " GSI4SK = if_not_exists(GSI4SK, :gsi4sk)"
                 ),
                 ExpressionAttributeNames={
-                    "#disabled": schema.CONFIG_FIELD_DISABLED,
+                    alias: field,
                     "#resource": "resource",
                 },
                 ExpressionAttributeValues={
@@ -7606,19 +7942,46 @@ class Repository:
                 },
             )
 
+    async def set_resource_cascade(
+        self, resource: str, cascade: bool, principal: str | None = None
+    ) -> int:
+        """Set whether entities cascade to their parent on this resource (ADR-146).
+
+        An entity-level policy for the resource, or the entity's own
+        ``_default_`` policy, still outranks it. Writes config, then restamps
+        every existing bucket of the resource (`_fanout_cascade`).
+
+        Raises:
+            VersionMismatchError: the stack's Lambdas predate the cascade policy.
+
+        Returns:
+            Number of bucket items stamped.
+        """
+        return await self._set_resource_cascade(resource, cascade, principal)
+
+    async def clear_resource_cascade(self, resource: str, principal: str | None = None) -> int:
+        """Remove the resource's cascade policy, reverting to inherit (ADR-146).
+
+        Returns:
+            Number of bucket items restamped.
+        """
+        return await self._set_resource_cascade(resource, None, principal)
+
+    async def _set_resource_cascade(
+        self, resource: str, value: bool | None, principal: str | None
+    ) -> int:
+        """Write the resource-level cascade policy, then fan out to buckets."""
+        validate_resource(resource)
+        await self._require_cascade_policy_readers()
+        await self._write_resource_config_flag(resource, schema.CONFIG_FIELD_CASCADE, value)
         await self.invalidate_config_cache()
-
-        # 2. Fan out to existing buckets. For a clear, the effective value is
-        #    whatever the resource now inherits, which with no system-level
-        #    disable is always False.
-        count = await self._fanout_resource(resource, disabled=bool(value))
-
+        count = await self._fanout_cascade(resource=resource)
         await self._log_audit_event(
             action=AuditAction.LIMITS_SET,
             entity_id=f"$RESOURCE:{resource}",
             principal=principal,
             resource=resource,
-            details={"disabled": value, "buckets_stamped": count},
+            details={"cascade": value, "buckets_stamped": count},
         )
         return count
 
@@ -7684,8 +8047,36 @@ class Repository:
         principal: str | None,
     ) -> int:
         target_resource = resource if resource is not None else schema.DEFAULT_RESOURCE
-        client = await self._get_client()
+        await self._write_entity_config_flag(
+            entity_id, target_resource, schema.CONFIG_FIELD_DISABLED, value
+        )
 
+        self._config_cache.evict_entity(entity_id, target_resource)
+
+        # For an explicit value the effective state is that value. For a clear,
+        # recompute what the entity now inherits.
+        if value is None:
+            effective, _level = await self.resolve_disabled(entity_id, target_resource)
+        else:
+            effective = value
+
+        count = await self._fanout_entity(entity_id, resource, disabled=effective)
+
+        await self._log_audit_event(
+            action=AuditAction.LIMITS_SET,
+            entity_id=entity_id,
+            principal=principal,
+            resource=target_resource,
+            details={"disabled": value, "buckets_stamped": count},
+        )
+        return count
+
+    async def _write_entity_config_flag(
+        self, entity_id: str, target_resource: str, field: str, value: bool | None
+    ) -> None:
+        """Set or clear one tri-state flag on an entity config item (ADR-125, ADR-146)."""
+        client = await self._get_client()
+        alias = f"#{field}"
         key = {
             "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
             "SK": {"S": schema.sk_config(target_resource)},
@@ -7695,8 +8086,8 @@ class Repository:
                 await client.update_item(
                     TableName=self.table_name,
                     Key=key,
-                    UpdateExpression="REMOVE #disabled",
-                    ExpressionAttributeNames={"#disabled": schema.CONFIG_FIELD_DISABLED},
+                    UpdateExpression=f"REMOVE {alias}",
+                    ExpressionAttributeNames={alias: field},
                     ConditionExpression="attribute_exists(PK)",
                 )
             except ClientError as e:
@@ -7720,7 +8111,7 @@ class Repository:
             # a transaction and falls back to a plain update — the same
             # create-vs-update split set_limits uses.
             update_expression = (
-                "SET #disabled = :v,"
+                f"SET {alias} = :v,"
                 " entity_id = if_not_exists(entity_id, :eid),"
                 " #resource = if_not_exists(#resource, :res),"
                 " GSI3PK = if_not_exists(GSI3PK, :gsi3pk),"
@@ -7729,7 +8120,7 @@ class Repository:
                 " GSI4SK = if_not_exists(GSI4SK, :gsi4sk)"
             )
             names = {
-                "#disabled": schema.CONFIG_FIELD_DISABLED,
+                alias: field,
                 "#resource": "resource",
             }
             values = {
@@ -7791,23 +8182,65 @@ class Repository:
                     ExpressionAttributeValues=values,
                 )
 
+    async def set_entity_cascade(
+        self,
+        entity_id: str,
+        cascade: bool,
+        resource: str | None = None,
+        principal: str | None = None,
+    ) -> int:
+        """Set whether an entity cascades to its parent (ADR-146).
+
+        Args:
+            entity_id: Entity to configure.
+            cascade: True to debit the parent on this entity's acquires.
+            resource: Resource to scope to. None targets the entity's
+                `_default_` config: every resource without its own policy.
+            principal: Caller identity for audit logging.
+
+        Raises:
+            VersionMismatchError: the stack's Lambdas predate the cascade policy.
+
+        Returns:
+            Number of bucket items stamped, each with the policy resolved for
+            its own resource.
+        """
+        return await self._set_entity_cascade(entity_id, resource, cascade, principal)
+
+    async def clear_entity_cascade(
+        self,
+        entity_id: str,
+        resource: str | None = None,
+        principal: str | None = None,
+    ) -> int:
+        """Remove the entity's cascade policy, reverting to inherit (ADR-146).
+
+        Returns:
+            Number of bucket items restamped.
+        """
+        return await self._set_entity_cascade(entity_id, resource, None, principal)
+
+    async def _set_entity_cascade(
+        self,
+        entity_id: str,
+        resource: str | None,
+        value: bool | None,
+        principal: str | None,
+    ) -> int:
+        """Write an entity-level cascade policy, then fan out to its buckets."""
+        target_resource = resource if resource is not None else schema.DEFAULT_RESOURCE
+        await self._require_cascade_policy_readers()
+        await self._write_entity_config_flag(
+            entity_id, target_resource, schema.CONFIG_FIELD_CASCADE, value
+        )
         self._config_cache.evict_entity(entity_id, target_resource)
-
-        # For an explicit value the effective state is that value. For a clear,
-        # recompute what the entity now inherits.
-        if value is None:
-            effective, _level = await self.resolve_disabled(entity_id, target_resource)
-        else:
-            effective = value
-
-        count = await self._fanout_entity(entity_id, resource, disabled=effective)
-
+        count = await self._fanout_cascade(entity_id=entity_id, resource=target_resource)
         await self._log_audit_event(
             action=AuditAction.LIMITS_SET,
             entity_id=entity_id,
             principal=principal,
             resource=target_resource,
-            details={"disabled": value, "buckets_stamped": count},
+            details={"cascade": value, "buckets_stamped": count},
         )
         return count
 

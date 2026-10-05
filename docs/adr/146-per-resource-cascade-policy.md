@@ -52,27 +52,37 @@ planning for #674. This ADR is their first written record.
 3. **The bucket item's `cascade` becomes the effective policy for (entity, resource).**
    The fast path keeps reading it from the item and stays **0 RCU**.
 
-4. **The entity cache holds cascade per (entity, resource), and the item overrules it**
-   (owner's "Option A"). `parent_id` stays per entity. On the warm path:
+4. **The cache holds cascade per (entity, resource), and the item overrules it**
+   (owner's "Option A"). The per-entity entry keeps `parent_id`, the shard counts and
+   the entity-wide flag; a separate map per (entity, resource), learned from the entity's
+   own item stamp, decides the warm path, with the entity-wide flag as the guess for a
+   resource not yet seen. On the warm path:
    - cache says cascade, the child's returned item says not → refund the parent's debit
      (1 WCU) and correct the cache;
    - cache says no cascade, the item says cascade → issue the parent write after the child
      (exactly the cold path today) and correct the cache.
    A mismatch happens only after a policy change, at most once per (process, entity,
-   resource).
+   resource). **Only a stamp carrying `parent_id` is a policy**: the owner stamp always
+   writes both, so `cascade=False` with no `parent_id` is a bucket an older version
+   created for a parent from its child's view (#684). For that one the cache's answer
+   stands, and the stamp teaches the cache nothing.
 
 5. **Stamps self-heal.** Every slow-path write — the create `Put` and the rf-locked normal
    write (the #684 owner stamp, `build_composite_normal(owner=...)`) — stamps the
    **resolved** policy and the owner's `parent_id`. A bucket the fan-out missed is
-   corrected on its next slow pass.
+   corrected on its next slow pass. The one exception is the parent-only fallback
+   (`_try_parent_only_acquire`), which never ran the disable walk: it stamps the
+   parent's policy only when its config fetch read fresh, and otherwise leaves the stamp
+   alone rather than pay a read for it.
 
-6. **A change fans out eagerly**, through the ADR-125 machinery (`_fanout_resource`,
-   `_fanout_entity`, two discovery passes) and its provisioner mirror
-   (`zae_limiter_provisioner/fanout.py`), which already consults per-entity overrides.
-   Each discovered bucket is stamped with the policy resolved **for that bucket's own
-   entity and resource**, so a resource-level change never clobbers an entity override.
+6. **A change fans out eagerly**, through the ADR-125 discovery (GSI2 for a resource,
+   GSI3 for an entity, two passes). Each discovered bucket is stamped with the policy
+   resolved **for that bucket's own entity and resource**, so a resource-level change
+   never clobbers an entity override, and a clear restamps whatever level now decides.
    A bucket that only ever takes the fast path is reached only by this fan-out, which is
-   why it is eager and not left to self-healing.
+   why it is eager and not left to self-healing. The provisioner's mirror
+   (`zae_limiter_provisioner/fanout.py`) ships with the manifest support, since before
+   that the provisioner cannot write a policy.
 
 7. **Version gate**, reusing the ADR-141 machinery:
    - **Writer gate:** writing any cascade policy (setter keyword, dedicated method, or the

@@ -177,6 +177,13 @@ BUCKET_SCHED_NONE = "-"
 CONFIG_FIELD_DISABLED = "disabled"
 BUCKET_FIELD_DISABLED = "disabled"
 
+# Cascade policy (ADR-146). Tri-state on resource and entity config items:
+# absent = inherit, True/False = explicit; resolved by the ADR-125 walk and,
+# when nothing sets it, falls back to the entity's own META `cascade`. Bucket
+# items keep their existing `cascade` attribute, which carries the resolved
+# policy for that (entity, resource).
+CONFIG_FIELD_CASCADE = "cascade"
+
 # Infrastructure limit: DynamoDB partition write capacity ceiling (GHSA-76rv)
 # Auto-injected on every bucket to track per-partition write pressure.
 # When exhausted, the client doubles shard_count to spread writes.
@@ -246,6 +253,27 @@ def decode_disabled(item: dict[str, Any]) -> bool | None:
         absent (meaning "inherit from the level above").
     """
     attr = item.get(CONFIG_FIELD_DISABLED)
+    if not attr:
+        return None
+    return bool(attr.get("BOOL", False))
+
+
+def encode_cascade(value: bool | None) -> dict[str, Any] | None:
+    """Encode a tri-state cascade policy as a DynamoDB attribute (ADR-146).
+
+    Returns None when the value is "inherit": the caller omits the attribute.
+    """
+    if value is None:
+        return None
+    return {"BOOL": value}
+
+
+def decode_cascade(item: dict[str, Any]) -> bool | None:
+    """Decode the tri-state cascade policy from a config item (ADR-146).
+
+    Returns True or False when explicitly set, None when absent (inherit).
+    """
+    attr = item.get(CONFIG_FIELD_CASCADE)
     if not attr:
         return None
     return bool(attr.get("BOOL", False))

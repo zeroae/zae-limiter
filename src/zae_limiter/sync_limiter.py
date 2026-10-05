@@ -49,6 +49,7 @@ from .models import (
     StackOptions,
     UsageSnapshot,
     UsageSummary,
+    effective_cascade,
     validate_identifier,
     validate_resource,
 )
@@ -723,8 +724,9 @@ class SyncRateLimiter:
             if result.failure_reason == SpeculativeFailureReason.DISABLED:
                 raise ResourceDisabled(entity_id=entity_id, resource=resource, level="bucket")
             if (
-                result.parent_result is not None
-                and result.parent_result.failure_reason == SpeculativeFailureReason.DISABLED
+                result.cascade
+                and result.parent_result is not None
+                and (result.parent_result.failure_reason == SpeculativeFailureReason.DISABLED)
             ):
                 assert result.parent_id is not None
                 raise ResourceDisabled(
@@ -779,6 +781,13 @@ class SyncRateLimiter:
                     _parent_id=result.parent_id,
                 )
             )
+        if result.parent_result is not None and (not result.cascade) and result.parent_id:
+            parent_result = result.parent_result
+            if parent_result.success and parent_result.buckets:
+                self._compensate_speculative(
+                    parent_result.buckets[0].entity_id, resource, consume, parent_result.shard_id
+                )
+            result.parent_result = None
         if result.parent_result is not None:
             if result.parent_result.success:
                 for state in result.parent_result.buckets:
@@ -1036,8 +1045,9 @@ class SyncRateLimiter:
             so the slow path creates or re-materialises it there instead of
             fast-rejecting on the drained shard that sent us here. Probing
             stops at the first such shard. None if every retried shard was
-            simply exhausted or no untried shards remain. Never called for
-            cascading entities.
+            simply exhausted or no untried shards remain. Never called when
+            the first shard's stamp says the resource cascades; a retried
+            shard whose own stamp says so is handed to the slow path too.
         """
         tried_shards = {result.shard_id}
         shard_count = result.shard_count
@@ -1051,6 +1061,10 @@ class SyncRateLimiter:
             retry = self._repository.speculative_consume(
                 entity_id, resource, consume, ttl_seconds, shard_id=new_shard, now_ms=now_ms
             )
+            if retry.success and retry.cascade and retry.parent_id:
+                self._compensate_speculative(entity_id, resource, consume, new_shard)
+                slow_path_shard = new_shard
+                break
             if retry.success:
                 return (
                     self._build_lease_from_speculative(entity_id, resource, consume, retry),
@@ -1455,7 +1469,13 @@ class SyncRateLimiter:
         Returns None if parent acquire fails (caller should compensate child).
         """
         now_ms = self._repository._now_ms()
-        parent_limits, parent_config_source = self._resolve_limits(parent_id, resource, None)
+        fetched_cascade: dict[tuple[str, str], bool | None] = {}
+        parent_limits, parent_config_source = self._resolve_limits(
+            parent_id, resource, None, cascade_out=fetched_cascade
+        )
+        parent_policy = self._repository.resolve_cascade_from_fetched(
+            parent_id, resource, fetched_cascade
+        )
         parent_entity, parent_buckets = self._fetch_entity_and_buckets(
             parent_id, resource, parent_shard
         )
@@ -1500,9 +1520,11 @@ class SyncRateLimiter:
                     _declared=status is not None,
                     _shard_id=parent_shard,
                     _shard_count=parent_shard_count,
-                    _cascade=parent_entity.cascade if parent_entity else False,
+                    _cascade=effective_cascade(parent_policy[0], parent_entity)
+                    if parent_policy is not None
+                    else False,
                     _parent_id=parent_entity.parent_id if parent_entity else None,
-                    _stamp_owner=parent_entity is not None,
+                    _stamp_owner=parent_entity is not None and parent_policy is not None,
                     _boundary_ms=parent_boundary_ms,
                     _reset_edge_ms=parent_reset_edge_ms,
                     _window_start_ms=parent_new_ws,
@@ -1623,14 +1645,18 @@ class SyncRateLimiter:
         )
         entity_shards: dict[str, tuple[int, int]] = {entity_id: (child_shard, child_shard_count)}
         fetched_disabled: dict[tuple[str, str], bool | None] = {}
+        fetched_cascade: dict[tuple[str, str], bool | None] = {}
         child_limits, child_config_source = self._resolve_limits(
-            entity_id, resource, limits_override, fetched_disabled
+            entity_id, resource, limits_override, fetched_disabled, fetched_cascade
         )
         resolved = self._repository.resolve_disabled_from_fetched(
             entity_id, resource, fetched_disabled
         )
-        if resolved is None:
-            resolved = self._repository.resolve_disabled(entity_id, resource)
+        policy = self._repository.resolve_cascade_from_fetched(entity_id, resource, fetched_cascade)
+        if resolved is None or policy is None:
+            access = self._repository.resolve_access(entity_id, resource)
+            resolved = (access.disabled, access.disabled_level)
+            policy = (access.cascade, access.cascade_level)
         disabled, level = resolved
         if disabled:
             raise ResourceDisabled(
@@ -1639,16 +1665,19 @@ class SyncRateLimiter:
         entity, child_buckets = self._fetch_entity_and_buckets(entity_id, resource, child_shard)
         entity_ids = [entity_id]
         owners: dict[str, Entity | None] = {entity_id: entity}
+        cascades: dict[str, bool] = {entity_id: effective_cascade(policy[0], entity)}
         existing_buckets: dict[tuple[str, str, str], BucketState] = dict(child_buckets)
         entity_limits: dict[str, list[Limit]] = {entity_id: child_limits}
         entity_config_sources: dict[str, str] = {entity_id: child_config_source}
-        if entity and entity.cascade and entity.parent_id:
+        if entity is not None and entity.parent_id and cascades[entity_id]:
             parent_id = entity.parent_id
             entity_ids.append(parent_id)
-            parent_disabled, parent_level = self._repository.resolve_disabled(parent_id, resource)
-            if parent_disabled:
+            parent_access = self._repository.resolve_access(parent_id, resource)
+            if parent_access.disabled:
                 raise ResourceDisabled(
-                    entity_id=parent_id, resource=resource, level=parent_level or "resource"
+                    entity_id=parent_id,
+                    resource=resource,
+                    level=parent_access.disabled_level or "resource",
                 )
             parent_limits, parent_config_source = self._resolve_limits(
                 parent_id, resource, limits_override
@@ -1662,6 +1691,7 @@ class SyncRateLimiter:
                 parent_id, resource, entity_shards[parent_id][0]
             )
             owners[parent_id] = parent_entity
+            cascades[parent_id] = effective_cascade(parent_access.cascade, parent_entity)
             existing_buckets.update(parent_buckets)
         known_limits = [limit for eid in entity_ids for limit in entity_limits[eid]]
         unknown_keys = self._warn_unknown_limits(
@@ -1816,7 +1846,7 @@ class SyncRateLimiter:
                         _has_custom_config=has_custom_config,
                         _shard_id=eid_shard,
                         _shard_count=eid_shard_count,
-                        _cascade=owner.cascade if owner else False,
+                        _cascade=cascades.get(eid, False),
                         _parent_id=owner.parent_id if owner else None,
                         _stamp_owner=owner is not None,
                         _declared=status is not None,
@@ -2027,6 +2057,7 @@ class SyncRateLimiter:
         resource: str,
         limits_override: list[Limit] | None,
         disabled_out: dict[tuple[str, str], bool | None] | None = None,
+        cascade_out: dict[tuple[str, str], bool | None] | None = None,
     ) -> tuple[list[Limit], ConfigSource | Literal["override"]]:
         """
         Resolve limits using four-tier hierarchy.
@@ -2054,7 +2085,7 @@ class SyncRateLimiter:
         if limits_override is not None:
             return (limits_override, "override")
         limits, _, config_source = self._repository.resolve_limits(
-            entity_id, resource, disabled_out
+            entity_id, resource, disabled_out, cascade_out
         )
         if limits is not None and config_source is not None:
             return (limits, config_source)

@@ -1356,7 +1356,7 @@ docs/
 1. **Write-on-enter**: `acquire()` writes initial consumption to DynamoDB before yielding the lease, making tokens immediately visible to concurrent callers. On exception, a compensating write restores the consumed tokens (see `.claude/rules/write-on-enter.md`)
 2. **Bucket can go negative (adjust only)**: `lease.adjust()` never throws, allows debt. The initial admission path (`try_consume` + `_commit_initial`) is a gate that MUST NOT over-admit — do not use "bucket can go negative" to justify skipping admission checks
    - **`consume` is the declared scope of a lease (Issue #455)**: only limits named in `acquire(consume=...)` are adjustable through `adjust()`/`consume()`/`release()` and reported by `lease.consumed`, on both the fast and slow paths. The slow path still builds a `LeaseEntry` for every resolved limit because `_commit_initial()` needs them (`build_composite_create` writes only the states it is handed; `build_composite_normal` advances the shared `rf` and credits refill only to the limits it is handed), but those carry `_declared=False` and are write-only. A key that names no declared limit (a typo, or the reserved `wcu`) is ignored with a `FutureWarning` (not `DeprecationWarning`, which Python hides by default outside `__main__` and so would never surface from application code) naming the keys and the declared limits; it becomes a `ValidationError` at v1.0.0. The `on_unavailable=ALLOW` no-op lease is constructed with `degraded=True` and is exempt — never infer degradation from `entries == []`
-3. **Cascade is per-entity config**: Set `cascade=True` on `create_entity()` to auto-cascade to parent on every `acquire()`
+3. **Cascade is decided per (entity, resource)** (ADR-146): `create_entity(cascade=True)` sets the entity's default; a tri-state cascade policy on resource or entity config overrides it per resource (see [Per-resource cascade policy](#per-resource-cascade-policy-adr-146)). With no policy set anywhere, every resource follows the entity's flag, as before
 4. **Stored limits are the default (v0.5.0+)**: Limits resolved from System/Resource/Entity config automatically. Pass `limits` parameter to override.
 5. **Initial writes are atomic + optimistic lock on refill**: `_commit_initial` uses `transact_write` for cross-item atomicity. `build_composite_normal` locks on `last_refill_ms` (`ConditionExpression: #rf = :expected_rf`) to prevent stale refill overwrites. On lock failure, `build_composite_retry` skips refill and uses `tk >= consumed` condition to prevent over-admission
 6. **Adjustments and rollbacks use independent writes**: `_commit_adjustments()` and `_rollback()` use `write_each()` (1 WCU each) since they produce unconditional ADD operations that do not require cross-item atomicity. Because they are independent, an adjustment commit can fail part-way, so it marks the lease committed before its first write and a failure never triggers `_rollback()` (#682): the caller's code has finished, the work happened, and rolling back refunded the initial consumption on top of an adjustment that had already landed
@@ -1729,6 +1729,41 @@ never clobbers a carve-out made out of band directly against the table.
   discovery pass, not eliminated.
 
 See [ADR-125](docs/adr/125-resource-disable.md) for the full design and alternatives considered.
+
+### Per-resource cascade policy (ADR-146)
+
+`cascade` is a **tri-state** policy on resource and entity config items, beside `disabled`
+(`schema.CONFIG_FIELD_CASCADE`): `true`, `false`, or absent = inherit. It resolves by the
+**ADR-125 walk** — entity(resource) → entity(`_default_`) → resource — and, when no level sets
+it, falls back to the entity's META `cascade` (`models.effective_cascade`), so a deployment that
+never sets a policy behaves exactly as before. An entity with no `parent_id` never cascades. Not
+supported on system config. Proposed until v0.16.0 ships.
+
+- **No extra reads.** The slow path records the policy from the config fetch it already makes
+  (`resolve_limits(cascade_out=...)` → `resolve_cascade_from_fetched`), or answers it with
+  `disabled` from one uncached read (`resolve_access`, which `resolve_disabled` now delegates
+  to). Never from the config cache, for the reason `disabled` is not: a bucket created from a
+  stale cached policy and then only ever hit on the fast path would keep it.
+- **The bucket item's `cascade` is the effective policy** for its (entity, resource), written by
+  every slow-path create and rf-locked write (the #684 owner stamp), so stamps self-heal. The
+  parent-only fallback stamps only when its config fetch read fresh.
+- **Warm path:** `Repository._cascade_cache[(ns, entity, resource)]`, learned from the entity's
+  own item stamp, decides; the entity-wide flag in `_entity_cache` is the guess for a resource
+  not yet seen. The item the write returns overrules: a parent debited on a stale guess is
+  refunded (1 WCU, once per process, entity and resource). Only a stamp carrying `parent_id` is
+  a policy — `cascade=False` with no `parent_id` is a pre-#684 parent bucket and is ignored.
+- **A change fans out** (`_fanout_cascade`: GSI2 for a resource, GSI3 for an entity, two
+  passes), stamping each bucket with the policy resolved for its own entity and resource plus
+  the owner's `parent_id` (`_stamp_bucket_cascade`). `delete_limits` / `delete_resource_defaults`
+  fan out when the deleted item carried a policy. `FanoutIncomplete` on a partial failure.
+- **Version gate** (ADR-141 machinery, `_require_readers`): setting or clearing a policy needs
+  `lambda_version >= 0.16.0` (`version.MIN_READER_VERSION_FOR_CASCADE_POLICY`) or this build, and
+  ratchets `client_min_version` to 0.16.0. A pre-0.16 provisioner would erase the policy on its
+  next apply; a pre-0.16 client stamps META cascade on the buckets it creates.
+- **API** (on `Repository` and `RepositoryProtocol`): `set_resource_defaults(..., cascade=)` /
+  `set_limits(..., cascade=)` with the `PRESERVE_CASCADE` sentinel; `set_resource_cascade` /
+  `clear_resource_cascade`; `set_entity_cascade` / `clear_entity_cascade` (`resource=None` =
+  the entity's `_default_`); `get_resource_cascade` / `get_entity_cascade`.
 
 ### Namespace Registry
 

@@ -2123,6 +2123,32 @@ class AuditEvent:
         )
 
 
+@dataclass(frozen=True)
+class ConfigAccess:
+    """What the ADR-125 walk decides for one (entity, resource) (ADR-146).
+
+    ``cascade`` is the explicit policy, or None when no level sets it — then
+    the entity's own META ``cascade`` applies (see ``effective_cascade``).
+    """
+
+    disabled: bool
+    disabled_level: str | None
+    cascade: bool | None
+    cascade_level: str | None
+
+
+def effective_cascade(policy: bool | None, entity: Entity | None) -> bool:
+    """Whether an entity's acquire on a resource debits its parent (ADR-146).
+
+    The resolved policy wins; with none set, the entity's META ``cascade`` does,
+    which is every deployment that never sets a policy. An entity with no
+    parent (or no META) never cascades.
+    """
+    if entity is None or not entity.parent_id:
+        return False
+    return entity.cascade if policy is None else policy
+
+
 # --- ADR-145: the quota grant decision ---------------------------------------
 
 

@@ -18,6 +18,7 @@ if TYPE_CHECKING:
         AuditEvent,
         BackendCapabilities,
         BucketState,
+        ConfigAccess,
         Entity,
         Limit,
         OnUnavailableAction,
@@ -92,6 +93,10 @@ class SpeculativeResult:
 #: or reverts it explicitly. It lives here rather than in repository.py so the
 #: contract and its implementation share one object.
 PRESERVE_DISABLED: Any = object()
+
+#: Sentinel default for the tri-state ``cascade`` policy parameter (ADR-146),
+#: for the same reason: the setters' full-replace write would drop it.
+PRESERVE_CASCADE: Any = object()
 
 
 @runtime_checkable
@@ -945,6 +950,7 @@ class RepositoryProtocol(Protocol):
         principal: str | None = None,
         *,
         disabled: "bool | None" = PRESERVE_DISABLED,
+        cascade: "bool | None" = PRESERVE_CASCADE,
     ) -> None:
         """
         Store limit configs for an entity.
@@ -954,6 +960,8 @@ class RepositoryProtocol(Protocol):
             limits: Limit configurations
             resource: Resource these limits apply to
             principal: Caller identity for audit logging
+            cascade: Tri-state cascade policy (ADR-146); defaults to preserving
+                the stored value. An explicit value fans out to buckets.
         """
         ...
 
@@ -1033,6 +1041,7 @@ class RepositoryProtocol(Protocol):
         principal: str | None = None,
         *,
         disabled: "bool | None" = PRESERVE_DISABLED,
+        cascade: "bool | None" = PRESERVE_CASCADE,
     ) -> None:
         """
         Store default limits for a resource.
@@ -1263,6 +1272,7 @@ class RepositoryProtocol(Protocol):
         entity_id: str,
         resource: str,
         disabled_out: "dict[tuple[str, str], bool | None] | None" = None,
+        cascade_out: "dict[tuple[str, str], bool | None] | None" = None,
     ) -> "tuple[list[Limit] | None, OnUnavailableAction | None, ConfigSource | None]":
         """
         Resolve effective limits using the four-level config hierarchy.
@@ -1286,6 +1296,8 @@ class RepositoryProtocol(Protocol):
                 issuing a second, identical one (ADR-125). Levels served from
                 a backend cache must be omitted — see
                 ``resolve_disabled_from_fetched``.
+            cascade_out: The same, for the tri-state cascade policy (ADR-146);
+                see ``resolve_cascade_from_fetched``.
 
         Returns:
             Tuple of (limits, on_unavailable, config_source) where:
@@ -1302,6 +1314,28 @@ class RepositoryProtocol(Protocol):
         resource: str,
     ) -> "tuple[bool, str | None]":
         """Resolve the effective disabled state for an entity+resource (ADR-125)."""
+        ...
+
+    async def resolve_access(self, entity_id: str, resource: str) -> "ConfigAccess":
+        """Resolve ``disabled`` and the cascade policy from one uncached read (ADR-146).
+
+        Both walks cover the same config items, so a backend answers them from
+        one read. Never from cache, for the reasons ``resolve_disabled`` gives.
+        """
+        ...
+
+    def resolve_cascade_from_fetched(
+        self,
+        entity_id: str,
+        resource: str,
+        fetched: "dict[tuple[str, str], bool | None]",
+    ) -> "tuple[bool | None, str | None] | None":
+        """Answer the cascade-policy walk from a config fetch, or decline (ADR-146).
+
+        Returns ``(policy, deciding_level)``, ``policy`` None when no level sets
+        it; or None when any level is absent from ``fetched``, meaning the
+        caller must fall back to ``resolve_access``.
+        """
         ...
 
     async def get_entity_disabled(self, entity_id: str, resource: str) -> "bool | None":
@@ -1374,6 +1408,43 @@ class RepositoryProtocol(Protocol):
         principal: str | None = None,
     ) -> int:
         """Remove the entity's explicit disabled value, reverting to inherit."""
+        ...
+
+    async def get_resource_cascade(self, resource: str) -> "bool | None":
+        """Read the tri-state cascade policy from a resource config item (ADR-146)."""
+        ...
+
+    async def get_entity_cascade(self, entity_id: str, resource: str) -> "bool | None":
+        """Read the tri-state cascade policy from an entity config item (ADR-146)."""
+        ...
+
+    async def set_resource_cascade(
+        self, resource: str, cascade: bool, principal: str | None = None
+    ) -> int:
+        """Set a resource's cascade policy and restamp its buckets (ADR-146)."""
+        ...
+
+    async def clear_resource_cascade(self, resource: str, principal: str | None = None) -> int:
+        """Remove the resource's cascade policy, reverting to inherit (ADR-146)."""
+        ...
+
+    async def set_entity_cascade(
+        self,
+        entity_id: str,
+        cascade: bool,
+        resource: str | None = None,
+        principal: str | None = None,
+    ) -> int:
+        """Set an entity's cascade policy, for one resource or all (ADR-146)."""
+        ...
+
+    async def clear_entity_cascade(
+        self,
+        entity_id: str,
+        resource: str | None = None,
+        principal: str | None = None,
+    ) -> int:
+        """Remove the entity's cascade policy, reverting to inherit (ADR-146)."""
         ...
 
     async def resolve_on_unavailable(self) -> "OnUnavailableAction":

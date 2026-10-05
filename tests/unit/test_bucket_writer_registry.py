@@ -60,6 +60,7 @@ REPOSITORY = {
     "repair_created_quota_shard": (False, True),  # raise a create a doubling overtook, freeze
     "_propagate_window_start": (False, False),  # ws / rsa / vu / wtc, never tk
     "_stamp_bucket_disabled": (False, False),  # disabled flag
+    "_stamp_bucket_cascade": (False, False),  # cascade policy + owner parent_id (ADR-146)
     "_sync_one_bucket_shard": (False, False),  # issues _build_bucket_param_update
     "get_or_create_bucket": (True, True),  # legacy create via build_bucket_put_item
     "purge_namespace": (True, True),  # deletes whole items, buckets included
@@ -71,9 +72,9 @@ REPOSITORY = {
     "_initialize_version_record": NOT_BUCKET,
     "_log_audit_event": NOT_BUCKET,
     "_register_namespace": NOT_BUCKET,
-    "_require_reset_after_readers": NOT_BUCKET,
-    "_set_entity_disabled": NOT_BUCKET,
-    "_set_resource_disabled": NOT_BUCKET,
+    "_require_readers": NOT_BUCKET,  # the version gate's client_min_version ratchet
+    "_write_entity_config_flag": NOT_BUCKET,  # disabled / cascade on entity config
+    "_write_resource_config_flag": NOT_BUCKET,  # disabled / cascade on resource config
     "_write_audit_retention_config": NOT_BUCKET,
     "create_entity": NOT_BUCKET,
     "delete_limits": NOT_BUCKET,

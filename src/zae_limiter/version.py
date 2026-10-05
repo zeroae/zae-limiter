@@ -21,6 +21,13 @@ CURRENT_SCHEMA_VERSION = "0.10.0"
 # record's `client_min_version` to it when they do (#638).
 MIN_READER_VERSION_FOR_RESET_AFTER = "0.15.0"
 
+# The first release whose readers understand a per-resource cascade policy
+# (ADR-146), gated the same way. A limits provisioner predating it rebuilds a
+# config item from the manifest without `cascade`, so its next apply erases a
+# policy; a client predating it decides cascade from the entity's META and
+# stamps that on the buckets it creates, undoing the policy there.
+MIN_READER_VERSION_FOR_CASCADE_POLICY = "0.16.0"
+
 
 @dataclass(frozen=True, order=False)
 class ParsedVersion:
@@ -259,8 +266,15 @@ def _release(version: ParsedVersion) -> ParsedVersion:
     return ParsedVersion(version.major, version.minor, version.patch)
 
 
-def reads_reset_after(lambda_version: str | None, own_version: str) -> bool:
+def reads_reset_after(
+    lambda_version: str | None,
+    own_version: str,
+    minimum: str = MIN_READER_VERSION_FOR_RESET_AFTER,
+) -> bool:
     """Whether a stack stamped ``lambda_version`` reads ``reset_after`` limits (#638).
+
+    ``minimum`` names the release that introduced the feature; it defaults to
+    ``reset_after``'s, and the cascade-policy gate (ADR-146) passes its own.
 
     True when the deployed Lambdas are at least
     :data:`MIN_READER_VERSION_FOR_RESET_AFTER`, compared on the release part
@@ -281,7 +295,7 @@ def reads_reset_after(lambda_version: str | None, own_version: str) -> bool:
         deployed = parse_version(lambda_version)
     except ValueError:
         return False
-    return _release(deployed) >= parse_version(MIN_READER_VERSION_FOR_RESET_AFTER)
+    return _release(deployed) >= parse_version(minimum)
 
 
 def reset_after_refusal(record_found: bool, lambda_version: str | None) -> tuple[str, bool]:
@@ -320,8 +334,44 @@ def reset_after_refusal(record_found: bool, lambda_version: str | None) -> tuple
     )
 
 
-def ratcheted_client_min_version(stored: str | None, own_version: str) -> str | None:
+def cascade_policy_refusal(record_found: bool, lambda_version: str | None) -> tuple[str, bool]:
+    """The message and ``can_auto_update`` for a refused cascade-policy write (ADR-146).
+
+    The ``reset_after_refusal`` contract, for the cascade policy.
+    """
+    minimum = MIN_READER_VERSION_FOR_CASCADE_POLICY
+    if not record_found:
+        return (
+            "Refusing to store a cascade policy: the stack has no version record, so "
+            f"nothing proves its limits provisioner keeps one (added in {minimum}). "
+            f"Re-run 'zae-limiter deploy' from {minimum} or later, which writes it.",
+            False,
+        )
+    if lambda_version is None:
+        return (
+            "Refusing to store a cascade policy: the version record does not say which "
+            "Lambda code is deployed, so nothing proves the limits provisioner keeps "
+            f"one (added in {minimum}). Run 'zae-limiter upgrade' to deploy it.",
+            False,
+        )
+    return (
+        f"Refusing to store a cascade policy: the deployed Lambdas predate {minimum} "
+        "(the limits provisioner would erase it on its next apply). Run "
+        "'zae-limiter upgrade' first, or open the stack with Repository.open() "
+        "and auto_update=True.",
+        True,
+    )
+
+
+def ratcheted_client_min_version(
+    stored: str | None,
+    own_version: str,
+    minimum: str = MIN_READER_VERSION_FOR_RESET_AFTER,
+) -> str | None:
     """The ``client_min_version`` a ``reset_after`` write must leave behind (#638 C).
+
+    ``minimum`` is the feature's release; the cascade-policy gate (ADR-146)
+    passes its own.
 
     Returns the new value to store, or None when the stored minimum is already
     high enough. **Never lowers it**: a stored minimum above the target is kept.
@@ -336,8 +386,7 @@ def ratcheted_client_min_version(stored: str | None, own_version: str) -> str | 
         own = parse_version(own_version)
     except ValueError:
         return None
-    minimum = parse_version(MIN_READER_VERSION_FOR_RESET_AFTER)
-    target = MIN_READER_VERSION_FOR_RESET_AFTER if own >= minimum else own_version
+    target = minimum if own >= parse_version(minimum) else own_version
     try:
         current = parse_version(stored or "0.0.0")
     except ValueError:

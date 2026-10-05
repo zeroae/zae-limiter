@@ -46,6 +46,7 @@ from .models import (
     StackOptions,
     UsageSnapshot,
     UsageSummary,
+    effective_cascade,
     validate_identifier,
     validate_resource,
 )
@@ -886,8 +887,12 @@ class RateLimiter:
             # will hit the same disabled parent every time. Nothing was consumed
             # from the child here (its conditional write failed too), so unlike
             # the parent-succeeded branch above there is nothing to compensate.
+            # Only when the child cascades on this resource (ADR-146): the
+            # parallel write followed the cache's guess, and a child whose own
+            # stamp says it does not cascade is not answerable to that parent.
             if (
-                result.parent_result is not None
+                result.cascade
+                and result.parent_result is not None
                 and result.parent_result.failure_reason == SpeculativeFailureReason.DISABLED
             ):
                 assert result.parent_id is not None  # set by repository cache path
@@ -984,6 +989,27 @@ class RateLimiter:
                     _parent_id=result.parent_id,
                 )
             )
+
+        # The child's own item overrules the cache (ADR-146): the parallel path
+        # debited the parent on the cache's guess, but this resource's policy,
+        # stamped on the item, says it does not cascade. Refund the parent and
+        # keep a child-only lease. Once per (process, entity, resource): the
+        # write just taught the cache the item's policy.
+        #
+        # Only a stamp carrying `parent_id` is a policy: the owner stamp always
+        # writes both. `cascade=False` with no `parent_id` is a bucket an older
+        # version created for a parent from its child's view (#684); trusting
+        # it would stop the cascade, so the cache's answer stands, as before.
+        if result.parent_result is not None and not result.cascade and result.parent_id:
+            parent_result = result.parent_result
+            if parent_result.success and parent_result.buckets:
+                await self._compensate_speculative(
+                    parent_result.buckets[0].entity_id,
+                    resource,
+                    consume,
+                    parent_result.shard_id,
+                )
+            result.parent_result = None
 
         # Handle parent result from parallel path (issue #318)
         if result.parent_result is not None:
@@ -1351,8 +1377,9 @@ class RateLimiter:
             so the slow path creates or re-materialises it there instead of
             fast-rejecting on the drained shard that sent us here. Probing
             stops at the first such shard. None if every retried shard was
-            simply exhausted or no untried shards remain. Never called for
-            cascading entities.
+            simply exhausted or no untried shards remain. Never called when
+            the first shard's stamp says the resource cascades; a retried
+            shard whose own stamp says so is handed to the slow path too.
         """
         tried_shards = {result.shard_id}
         shard_count = result.shard_count
@@ -1368,6 +1395,16 @@ class RateLimiter:
             retry = await self._repository.speculative_consume(
                 entity_id, resource, consume, ttl_seconds, shard_id=new_shard, now_ms=now_ms
             )
+            if retry.success and retry.cascade and retry.parent_id:
+                # This shard's own stamp says the resource cascades (ADR-146):
+                # shards of one (entity, resource) can disagree while a policy
+                # change fans out, and the stamp that let us retry child-only
+                # was the first shard's. A child-only lease here would skip the
+                # parent, so undo the debit and let the slow path commit child
+                # and parent together on this shard.
+                await self._compensate_speculative(entity_id, resource, consume, new_shard)
+                slow_path_shard = new_shard
+                break
             if retry.success:
                 return (
                     self._build_lease_from_speculative(entity_id, resource, consume, retry),
@@ -1827,8 +1864,18 @@ class RateLimiter:
         """
         now_ms = self._repository._now_ms()
 
-        # Resolve parent limits
-        parent_limits, parent_config_source = await self._resolve_limits(parent_id, resource, None)
+        # Resolve parent limits. The fetch also records the parent's cascade
+        # policy (ADR-146) when it actually read config; served from the config
+        # cache it declines, and this write then leaves the bucket's cascade
+        # stamp as it is rather than pay a read for it here (the full slow path
+        # and the policy fan-out keep the stamp current).
+        fetched_cascade: dict[tuple[str, str], bool | None] = {}
+        parent_limits, parent_config_source = await self._resolve_limits(
+            parent_id, resource, None, cascade_out=fetched_cascade
+        )
+        parent_policy = self._repository.resolve_cascade_from_fetched(
+            parent_id, resource, fetched_cascade
+        )
         # No unknown-key check here: the declaration in `consume` is about the
         # child. A parent tracking a subset of the child's limits is a valid
         # configuration; keys with no parent limit are simply not applied.
@@ -1917,9 +1964,13 @@ class RateLimiter:
                     _declared=status is not None,
                     _shard_id=parent_shard,
                     _shard_count=parent_shard_count,
-                    _cascade=parent_entity.cascade if parent_entity else False,
+                    _cascade=(
+                        effective_cascade(parent_policy[0], parent_entity)
+                        if parent_policy is not None
+                        else False
+                    ),
                     _parent_id=parent_entity.parent_id if parent_entity else None,
-                    _stamp_owner=parent_entity is not None,
+                    _stamp_owner=parent_entity is not None and parent_policy is not None,
                     _boundary_ms=parent_boundary_ms,
                     _reset_edge_ms=parent_reset_edge_ms,
                     _window_start_ms=parent_new_ws,
@@ -2068,8 +2119,9 @@ class RateLimiter:
         # The disable walk's levels are a subset of the config levels, so let
         # the config fetch hand back what it actually read (ADR-125).
         fetched_disabled: dict[tuple[str, str], bool | None] = {}
+        fetched_cascade: dict[tuple[str, str], bool | None] = {}
         child_limits, child_config_source = await self._resolve_limits(
-            entity_id, resource, limits_override, fetched_disabled
+            entity_id, resource, limits_override, fetched_disabled, fetched_cascade
         )
 
         # Slow path gate (ADR-125). Covers first acquire — no bucket exists yet,
@@ -2077,12 +2129,17 @@ class RateLimiter:
         #
         # Reuse the config fetch only when it genuinely read every level of the
         # walk; otherwise those levels came from the config cache and must not
-        # answer this gate. See Repository.resolve_disabled_from_fetched.
+        # answer this gate. See Repository.resolve_disabled_from_fetched. The
+        # cascade policy (ADR-146) walks the same levels under the same rule, so
+        # one uncached read answers both when the fetch cannot.
         resolved = self._repository.resolve_disabled_from_fetched(
             entity_id, resource, fetched_disabled
         )
-        if resolved is None:
-            resolved = await self._repository.resolve_disabled(entity_id, resource)
+        policy = self._repository.resolve_cascade_from_fetched(entity_id, resource, fetched_cascade)
+        if resolved is None or policy is None:
+            access = await self._repository.resolve_access(entity_id, resource)
+            resolved = (access.disabled, access.disabled_level)
+            policy = (access.cascade, access.cascade_level)
         disabled, level = resolved
         if disabled:
             raise ResourceDisabled(
@@ -2093,29 +2150,32 @@ class RateLimiter:
             entity_id, resource, child_shard
         )
 
-        # Determine cascade
+        # Determine cascade: the resolved policy for this resource, falling back
+        # to the entity's META flag when nothing sets one (ADR-146).
         entity_ids = [entity_id]
         # Each item's owner as read from META this pass (#684); the write
-        # stamps an item with its owner's cascade / parent_id.
+        # stamps an item with its owner's cascade policy and parent_id.
         owners: dict[str, Entity | None] = {entity_id: entity}
+        cascades: dict[str, bool] = {entity_id: effective_cascade(policy[0], entity)}
         existing_buckets: dict[tuple[str, str, str], BucketState] = dict(child_buckets)
         entity_limits: dict[str, list[Limit]] = {entity_id: child_limits}
         # Track config source per entity (for TTL calculation, issue #271)
         entity_config_sources: dict[str, str] = {entity_id: child_config_source}
 
-        if entity and entity.cascade and entity.parent_id:
+        if entity is not None and entity.parent_id and cascades[entity_id]:
             parent_id = entity.parent_id
             entity_ids.append(parent_id)
 
             # Slow path gate for the parent (ADR-125), same reasoning as the
             # child gate above: no parent bucket should be fetched or created
-            # once the parent is disabled.
-            parent_disabled, parent_level = await self._repository.resolve_disabled(
-                parent_id, resource
-            )
-            if parent_disabled:
+            # once the parent is disabled. The same read gives the parent's own
+            # cascade policy, which its bucket is stamped with (ADR-146).
+            parent_access = await self._repository.resolve_access(parent_id, resource)
+            if parent_access.disabled:
                 raise ResourceDisabled(
-                    entity_id=parent_id, resource=resource, level=parent_level or "resource"
+                    entity_id=parent_id,
+                    resource=resource,
+                    level=parent_access.disabled_level or "resource",
                 )
 
             # Phase 2: Resolve parent limits + fetch parent buckets
@@ -2136,6 +2196,7 @@ class RateLimiter:
                 parent_id, resource, entity_shards[parent_id][0]
             )
             owners[parent_id] = parent_entity
+            cascades[parent_id] = effective_cascade(parent_access.cascade, parent_entity)
             existing_buckets.update(parent_buckets)
 
         # Unknown-key check (Issue #455) against every limit this acquire can
@@ -2455,7 +2516,7 @@ class RateLimiter:
                         _has_custom_config=has_custom_config,
                         _shard_id=eid_shard,
                         _shard_count=eid_shard_count,
-                        _cascade=owner.cascade if owner else False,
+                        _cascade=cascades.get(eid, False),
                         _parent_id=owner.parent_id if owner else None,
                         _stamp_owner=owner is not None,
                         _declared=status is not None,
@@ -2698,6 +2759,7 @@ class RateLimiter:
         resource: str,
         limits_override: list[Limit] | None,
         disabled_out: dict[tuple[str, str], bool | None] | None = None,
+        cascade_out: dict[tuple[str, str], bool | None] | None = None,
     ) -> tuple[list[Limit], ConfigSource | Literal["override"]]:
         """
         Resolve limits using four-tier hierarchy.
@@ -2731,6 +2793,7 @@ class RateLimiter:
             entity_id,
             resource,
             disabled_out,
+            cascade_out,
         )
 
         if limits is not None and config_source is not None:
