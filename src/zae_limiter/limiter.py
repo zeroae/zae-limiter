@@ -1373,8 +1373,9 @@ class RateLimiter:
             so the slow path creates or re-materialises it there instead of
             fast-rejecting on the drained shard that sent us here. Probing
             stops at the first such shard. None if every retried shard was
-            simply exhausted or no untried shards remain. Never called for
-            cascading entities.
+            simply exhausted or no untried shards remain. Never called when
+            the first shard's stamp says the resource cascades; a retried
+            shard whose own stamp says so is handed to the slow path too.
         """
         tried_shards = {result.shard_id}
         shard_count = result.shard_count
@@ -1390,6 +1391,16 @@ class RateLimiter:
             retry = await self._repository.speculative_consume(
                 entity_id, resource, consume, ttl_seconds, shard_id=new_shard, now_ms=now_ms
             )
+            if retry.success and retry.cascade and retry.parent_id:
+                # This shard's own stamp says the resource cascades (ADR-146):
+                # shards of one (entity, resource) can disagree while a policy
+                # change fans out, and the stamp that let us retry child-only
+                # was the first shard's. A child-only lease here would skip the
+                # parent, so undo the debit and let the slow path commit child
+                # and parent together on this shard.
+                await self._compensate_speculative(entity_id, resource, consume, new_shard)
+                slow_path_shard = new_shard
+                break
             if retry.success:
                 return (
                     self._build_lease_from_speculative(entity_id, resource, consume, retry),

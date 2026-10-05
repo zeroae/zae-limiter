@@ -421,6 +421,72 @@ class TestWarmPathFollowsTheItem:
         assert scoped._cascade_cache is cascade_repo._cascade_cache
 
 
+class TestShardsThatDisagree:
+    """While a policy change fans out, one entity's shards can carry different stamps."""
+
+    async def test_a_child_only_retry_on_a_cascading_shard_still_debits_the_parent(
+        self, cascade_limiter
+    ):
+        import time
+
+        from zae_limiter.models import BucketState
+
+        repo = cascade_limiter._repository
+        ns = repo._namespace_id
+        await repo.set_resource_defaults("llm", [RPM])
+        await repo.create_entity("team")
+        await repo.create_entity("user", parent_id="team", cascade=True)
+        async with cascade_limiter.acquire("user", "llm", consume={"rpm": 1}):
+            pass  # shard 0 of user and team
+        # Shard 1: tokens, stamped as cascading (the policy being turned on).
+        now_ms = int(time.time() * 1000)
+        state = BucketState.from_limit("user", "llm", RPM, now_ms, 2)
+        await repo.transact_write(
+            [
+                repo.build_composite_create(
+                    "user",
+                    "llm",
+                    [state],
+                    now_ms,
+                    cascade=True,
+                    parent_id="team",
+                    shard_id=1,
+                    shard_count=2,
+                )
+            ]
+        )
+        # Shard 0: drained and still stamped as not cascading.
+        client = await repo._get_client()
+        await client.update_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(ns, "user", "llm", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="SET #tk = :zero, #sc = :two, #rf = :now, #c = :false",
+            ExpressionAttributeNames={
+                "#tk": schema.bucket_attr("rpm", "tk"),
+                "#sc": "shard_count",
+                "#rf": "rf",
+                "#c": "cascade",
+            },
+            ExpressionAttributeValues={
+                ":zero": {"N": "0"},
+                ":two": {"N": "2"},
+                ":now": {"N": str(now_ms)},
+                ":false": {"BOOL": False},
+            },
+        )
+        repo._entity_cache.clear()  # a cold process draws shard 0
+        repo._cascade_cache.clear()
+        team_before = await _consumed(repo, "team", "llm")
+
+        async with cascade_limiter.acquire("user", "llm", consume={"rpm": 1}) as lease:
+            assert "team" in {e.entity_id for e in lease.entries}
+
+        assert await _consumed(repo, "team", "llm") == team_before + 1
+
+
 class TestFanout:
     """A policy change restamps existing buckets, each from its own resolution (ADR-146)."""
 
