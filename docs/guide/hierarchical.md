@@ -136,6 +136,98 @@ async with limiter.acquire(
     ...
 ```
 
+## Cascade per Resource
+
+`cascade=True` on `create_entity()` applies to **every** resource the entity uses. Sometimes
+one entity needs different answers on different resources. Take an LLM gateway:
+
+| Resource | Cascade | Why |
+|----------|---------|-----|
+| One per model (`gpt-4`, `claude-sonnet`, …) | **on** | The org's per-model limit protects the provider's quota |
+| `llm` (a shared cost budget) | **off** | The budget is per user; debiting the org on every call costs a write for nothing |
+
+A **cascade policy** on resource or entity config decides this per resource. It is `on`,
+`off`, or unset (inherit), and resolves like [`disabled`](basic-usage.md#turning-a-resource-off):
+
+1. Entity config for this resource
+2. Entity config for all resources (`_default_`)
+3. Resource config
+
+The first level that sets a value wins. **When no level sets one, the entity's own
+`create_entity(cascade=...)` flag applies**, so nothing changes until you set a policy. An
+entity with no parent never cascades, whatever the policy says. There is no system-level
+policy.
+
+The policy methods live on `Repository`, like the disable methods:
+
+```python
+await limiter.create_entity(entity_id="org-acme")
+await limiter.create_entity(entity_id="user-alice", parent_id="org-acme", cascade=True)
+
+# The org's own limit for the model: this is what a cascade debits
+await limiter.set_limits("org-acme", [Limit.per_minute("tpm", 100_000)], resource="gpt-4")
+
+# Model limits count against the org; the shared budget stays per user
+await repo.set_resource_cascade("gpt-4", True)
+await repo.set_resource_cascade("llm", False)
+
+# One entity, one resource: an explicit override
+await repo.set_entity_cascade("user-alice", True, resource="llm")
+
+# Back to inheriting
+await repo.clear_entity_cascade("user-alice", resource="llm")
+```
+
+`set_resource_defaults()` and `set_limits()` also take a `cascade=` keyword, and
+`get_resource_cascade()` / `get_entity_cascade()` read a level's own value (`None` when it
+inherits).
+
+The same from the CLI (see [Cascade Policy per Resource](../cli.md#cascade-policy-per-resource)):
+
+```bash
+zae-limiter resource set-cascade gpt-4 on
+zae-limiter resource set-cascade llm off
+zae-limiter entity set-cascade user-alice on --resource llm
+zae-limiter entity clear-cascade user-alice --resource llm
+```
+
+Or in a [limits manifest](../cli.md#cascade-and-disabled), applied with `limits apply`:
+
+```yaml
+resources:
+  gpt-4:
+    cascade: true
+    limits:
+      tpm: {capacity: 10000}
+  llm:
+    cascade: false
+    limits:
+      cost: {capacity: 500}
+
+entities:
+  org-acme:
+    resources:
+      gpt-4:
+        limits:
+          tpm: {capacity: 100000}
+```
+
+!!! tip "Give the parent its own limits"
+    A cascading acquire debits the parent against the parent's **own** limits for that
+    resource. If the parent has none, it falls back to the resource defaults — the numbers
+    written for one user. `limits plan` warns when a manifest turns cascade on for a resource
+    and no entity in it has its own limits there.
+
+**Cost:** no extra reads per call. The fast path reads the policy from the bucket item it
+already writes, and the slow path reads it from the config items it already fetches. Changing
+a policy restamps the existing buckets it reaches (one write each), like disabling a resource.
+
+**Version requirement:** setting or clearing a policy needs a stack whose Lambdas are 0.16.0 or
+later, and raises the stack's minimum client version to 0.16.0. Run `zae-limiter upgrade`
+first if the call is refused.
+
+See [ADR-146](../adr/146-per-resource-cascade-policy.md) for the full design.
+
 ## Error Handling with Hierarchies
 
 When an entity has cascade enabled, `RateLimitExceeded` includes statuses for all entities:
@@ -216,7 +308,7 @@ await limiter.set_limits(
 
 - **Two levels only**: Parent → Child (no grandparents)
 - **Single parent**: Each entity can have at most one parent
-- **Cascade is per-entity**: Set `cascade=True` on `create_entity()` to enable; it applies to all `acquire()` calls for that entity
+- **Cascade defaults per entity**: Set `cascade=True` on `create_entity()` to enable it for every resource; a [cascade policy](#cascade-per-resource) can override it per resource
 
 ## Next Steps
 

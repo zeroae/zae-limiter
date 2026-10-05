@@ -182,6 +182,53 @@ limits:
 
 `reset_after_seconds` round trips through `Custom::ZaeLimiterLimits` as `ResetAfterSeconds`.
 
+### Cascade and Disabled
+
+Entries under `resources.<name>` and `entities.<id>.resources.<name>` may also set two flags,
+each `true`, `false`, or omitted:
+
+| Field | Meaning | See |
+|-------|---------|-----|
+| `disabled` | Turn the resource off (or re-admit one entity) | [Disabling Resources and Entities](#disabling-resources-and-entities) |
+| `cascade` | Whether acquires on this resource also debit the parent | [Cascade Policy per Resource](#cascade-policy-per-resource) |
+
+```yaml
+resources:
+  gpt-4:
+    cascade: true
+    limits:
+      tpm: {capacity: 10000}
+  llm:
+    cascade: false
+    limits:
+      cost: {capacity: 500}
+entities:
+  org-acme:
+    resources:
+      gpt-4:
+        limits:
+          tpm: {capacity: 100000}
+```
+
+- **The manifest owns both flags** for every item it declares. Omitting one clears a value set
+  earlier by `set-cascade`, `disable` or the Python API on the next `apply`.
+- **Neither applies to `system`.** `cascade` there is an error; `disabled` there is ignored.
+- **`cascade` must be a boolean**; a value like `"yes"` fails the plan.
+- **Bucket restamps:** `disabled` restamps every declared resource and entity level on each apply. `cascade`
+  restamps only the levels whose stored policy actually changed, so a routine apply writes no
+  buckets for it.
+- **CloudFormation:** both round trip through `Custom::ZaeLimiterLimits` as the `Disabled` and
+  `Cascade` properties on `Resources` and `Entities` entries.
+- **Version:** a manifest that sets `cascade` needs a stack whose Lambdas are 0.16.0 or later,
+  and raises the stack's minimum client version to 0.16.0.
+
+`limits plan` warns when a resource sets `cascade: true` and no entity in the manifest has its
+own limits for it, because parents would then be limited by the per-user resource defaults:
+
+```
+Warning: resources.gpt-4 sets cascade: true, but no entity in this manifest has its own limits for 'gpt-4', so parents will be limited by the per-user resource defaults
+```
+
 ### Preview Changes
 
 ```bash

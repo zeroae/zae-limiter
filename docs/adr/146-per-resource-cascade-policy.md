@@ -80,9 +80,11 @@ planning for #674. This ADR is their first written record.
    resolved **for that bucket's own entity and resource**, so a resource-level change
    never clobbers an entity override, and a clear restamps whatever level now decides.
    A bucket that only ever takes the fast path is reached only by this fan-out, which is
-   why it is eager and not left to self-healing. The provisioner's mirror
-   (`zae_limiter_provisioner/fanout.py`) ships with the manifest support, since before
-   that the provisioner cannot write a policy.
+   why it is eager and not left to self-healing. The provisioner mirrors it
+   (`fanout_cascade` in `zae_limiter_provisioner/fanout.py`). A manifest apply restamps
+   only the levels whose stored policy actually changed, read from the config write's own
+   `ALL_OLD` image at no extra read — unlike `disabled`, which fans out every declared
+   level on every apply.
 
 7. **Version gate**, reusing the ADR-141 machinery:
    - **Writer gate:** writing any cascade policy (setter keyword, dedicated method, or the
@@ -103,7 +105,10 @@ planning for #674. This ADR is their first written record.
      `clear_entity_cascade(entity_id, resource=None)`; CLI
      `resource set-cascade|clear-cascade` and `entity set-cascade|clear-cascade`.
    - Manifest `cascade:` on `resources.<name>` and `entities.<id>.resources.<name>`,
-     round-tripped through `Custom::ZaeLimiterLimits` as a `Cascade` property.
+     round-tripped through `Custom::ZaeLimiterLimits` as a `Cascade` property. The
+     manifest owns the policy for every item it declares: omitting `cascade` clears it on
+     the next apply, as for `disabled` (owner decision). `cascade` on `system` is rejected
+     with an error rather than ignored.
    - `get-defaults` / `get-limits` show an explicit policy, like `Status: DISABLED`.
 
 9. **`limits plan` warns** when a manifest sets `cascade: true` on a resource that has
