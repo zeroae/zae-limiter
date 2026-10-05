@@ -264,6 +264,14 @@ class SystemDecl:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> SystemDecl:
+        if "cascade" in d:
+            # Not silently dropped: the cascade policy (ADR-146) resolves over
+            # entity and resource levels only, so a system-level value would
+            # look applied and do nothing.
+            raise ValueError(
+                "system: 'cascade' is not supported at the system level; set it on "
+                "resources.<name> or entities.<id>.resources.<name>"
+            )
         limits = {name: LimitDecl.from_dict(val) for name, val in d.get("limits", {}).items()}
         return cls(limits=limits, on_unavailable=d.get("on_unavailable"))
 
@@ -276,17 +284,30 @@ class SystemDecl:
         return result
 
 
+def _parse_cascade(d: dict[str, Any]) -> bool | None:
+    """The tri-state cascade policy (ADR-146): absent = inherit, else a boolean.
+
+    Checked here rather than coerced: the manifest owns the level's policy, so
+    a mistyped value (`"yes"`) must fail the plan, not land as a truthy string.
+    """
+    value = d.get("cascade")
+    if value is None or isinstance(value, bool):
+        return value
+    raise ValueError(f"cascade: must be true or false, got {value!r}")
+
+
 @dataclass(frozen=True)
 class ResourceDecl:
     """Resource-level limit declaration."""
 
     limits: dict[str, LimitDecl]
     disabled: bool | None = None
+    cascade: bool | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> ResourceDecl:
         limits = {name: LimitDecl.from_dict(val) for name, val in d.get("limits", {}).items()}
-        return cls(limits=limits, disabled=d.get("disabled"))
+        return cls(limits=limits, disabled=d.get("disabled"), cascade=_parse_cascade(d))
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -294,6 +315,8 @@ class ResourceDecl:
         }
         if self.disabled is not None:
             result["disabled"] = self.disabled
+        if self.cascade is not None:
+            result["cascade"] = self.cascade
         return result
 
 
@@ -303,11 +326,12 @@ class EntityResourceDecl:
 
     limits: dict[str, LimitDecl]
     disabled: bool | None = None
+    cascade: bool | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> EntityResourceDecl:
         limits = {name: LimitDecl.from_dict(val) for name, val in d.get("limits", {}).items()}
-        return cls(limits=limits, disabled=d.get("disabled"))
+        return cls(limits=limits, disabled=d.get("disabled"), cascade=_parse_cascade(d))
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -315,6 +339,8 @@ class EntityResourceDecl:
         }
         if self.disabled is not None:
             result["disabled"] = self.disabled
+        if self.cascade is not None:
+            result["cascade"] = self.cascade
         return result
 
 
