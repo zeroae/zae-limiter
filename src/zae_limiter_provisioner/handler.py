@@ -35,7 +35,7 @@ from .applier import (
 )
 from .bucket_sync import DEFAULT_TTL_MULTIPLIER, resolve_effective_limits, sync_bucket_params
 from .differ import Change, compute_diff
-from .fanout import fanout_entity, fanout_resource, resolve_disabled
+from .fanout import fanout_cascade, fanout_entity, fanout_resource, resolve_disabled
 from .manifest import LimitsManifest
 
 logger = logging.getLogger(__name__)
@@ -194,6 +194,7 @@ def _apply_and_record(
     require_cascade_policy_readers(changes, table_name)
     result = apply_changes(changes, table_name, namespace_id)
     result.errors.extend(_fanout_disabled_changes(table_name, namespace_id, changes))
+    result.errors.extend(_fanout_cascade_changes(table_name, namespace_id, result.cascade_changed))
     result.errors.extend(_sync_bucket_param_changes(table_name, namespace_id, changes))
 
     manifest_hash = hashlib.sha256(
@@ -303,6 +304,40 @@ def _fanout_disabled_changes(
         except Exception as e:
             logger.warning("disable fan-out failed for %s %s: %s", change.level, change.target, e)
             errors.append(f"disable fan-out {change.level} {change.target}: {e}")
+    return errors
+
+
+def _fanout_cascade_changes(
+    table_name: str,
+    namespace_id: str,
+    changed: list[tuple[str, str]],
+) -> list[str]:
+    """Restamp buckets for every level whose cascade policy this apply changed (ADR-146).
+
+    Unlike `disabled`, only the levels `apply_changes` saw change — from each
+    write's own ALL_OLD image — are fanned out, so a routine apply that
+    re-asserts an unchanged policy writes no bucket. Every bucket reached is
+    stamped from its own resolution (`fanout.fanout_cascade`), so an entity
+    override survives a resource-level change, and the order of the changes
+    does not matter. Failures are returned, not raised, as for `disabled`
+    (#563).
+    """
+    if not changed:
+        return []
+    errors: list[str] = []
+    client = boto3.client("dynamodb")
+    for level, target in changed:
+        try:
+            if level == "resource":
+                fanout_cascade(client, table_name, namespace_id, resource=target)
+            else:
+                entity_id, resource = target.split("/", 1)
+                fanout_cascade(
+                    client, table_name, namespace_id, entity_id=entity_id, resource=resource
+                )
+        except Exception as e:
+            logger.warning("cascade fan-out failed for %s %s: %s", level, target, e)
+            errors.append(f"cascade fan-out {level} {target}: {e}")
     return errors
 
 

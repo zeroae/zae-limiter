@@ -1964,3 +1964,63 @@ class TestResetAfterVersionGateThroughTheHandler:
             Key={"PK": {"S": "ns123/RESOURCE#gpt-4"}, "SK": {"S": "#CONFIG"}},
         )["Item"]
         assert config["w_session_rsa"]["N"] == "18000"
+
+
+class TestCascadeFanoutChanges:
+    """Only levels whose cascade policy changed are fanned out (ADR-146, decision A)."""
+
+    @patch("zae_limiter_provisioner.handler.fanout_cascade")
+    @patch("zae_limiter_provisioner.handler.boto3")
+    def test_each_changed_level_is_fanned_out_once(self, mock_boto3, mock_fanout):
+        from zae_limiter_provisioner.handler import _fanout_cascade_changes
+
+        errors = _fanout_cascade_changes(
+            "t", "ns", [("resource", "llm"), ("entity", "u1/_default_")]
+        )
+
+        assert errors == []
+        client = mock_boto3.client.return_value
+        assert mock_fanout.call_args_list[0].args == (client, "t", "ns")
+        assert mock_fanout.call_args_list[0].kwargs == {"resource": "llm"}
+        assert mock_fanout.call_args_list[1].kwargs == {
+            "entity_id": "u1",
+            "resource": "_default_",
+        }
+
+    @patch("zae_limiter_provisioner.handler.boto3")
+    def test_nothing_changed_means_no_work(self, mock_boto3):
+        from zae_limiter_provisioner.handler import _fanout_cascade_changes
+
+        assert _fanout_cascade_changes("t", "ns", []) == []
+        mock_boto3.client.assert_not_called()
+
+    @patch("zae_limiter_provisioner.handler.fanout_cascade", side_effect=RuntimeError("boom"))
+    @patch("zae_limiter_provisioner.handler.boto3")
+    def test_a_failure_is_reported_not_raised(self, mock_boto3, mock_fanout):
+        from zae_limiter_provisioner.handler import _fanout_cascade_changes
+
+        errors = _fanout_cascade_changes("t", "ns", [("resource", "llm")])
+
+        assert errors == ["cascade fan-out resource llm: boom"]
+
+    @patch("zae_limiter_provisioner.handler._write_provisioner_state")
+    @patch("zae_limiter_provisioner.handler._sync_bucket_param_changes", return_value=[])
+    @patch("zae_limiter_provisioner.handler._fanout_disabled_changes", return_value=[])
+    @patch("zae_limiter_provisioner.handler._fanout_cascade_changes", return_value=[])
+    @patch("zae_limiter_provisioner.handler.apply_changes")
+    @patch("zae_limiter_provisioner.handler.require_cascade_policy_readers")
+    @patch("zae_limiter_provisioner.handler.require_reset_after_readers")
+    def test_an_apply_fans_out_what_the_applier_saw_change(
+        self, _gate1, mock_gate, mock_apply, mock_fanout, *_rest
+    ):
+        from zae_limiter_provisioner.applier import ApplyResult
+        from zae_limiter_provisioner.handler import _apply_and_record
+        from zae_limiter_provisioner.manifest import LimitsManifest
+
+        mock_apply.return_value = ApplyResult(cascade_changed=[("resource", "llm")])
+        changes = [Change(action="update", level="resource", target="llm", data={})]
+
+        _apply_and_record(LimitsManifest.from_dict({"namespace": "x"}), changes, "t", "ns")
+
+        mock_gate.assert_called_once_with(changes, "t")
+        mock_fanout.assert_called_once_with("t", "ns", [("resource", "llm")])

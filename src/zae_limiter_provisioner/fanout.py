@@ -22,7 +22,7 @@ level is written before anything reads it back.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any
 
 from zae_limiter.schema import (
@@ -30,6 +30,7 @@ from zae_limiter.schema import (
     DEFAULT_RESOURCE,
     GSI2_NAME,
     GSI3_NAME,
+    decode_cascade,
     decode_disabled,
     gsi2_pk_resource,
     gsi3_pk_entity,
@@ -37,6 +38,7 @@ from zae_limiter.schema import (
     pk_entity,
     pk_resource,
     sk_config,
+    sk_meta,
     sk_state,
 )
 
@@ -217,31 +219,177 @@ def _fanout(
     stamped: set[str] = set()
 
     for _pass in range(2):
-        start_key: dict[str, Any] | None = None
+        for pk in _query_bucket_pks(
+            client, table_name, index, pk_name, sk_name, pk_value, sk_prefix
+        ):
+            if pk not in stamped:
+                value = disabled if decide is None else decide(pk)
+                if value is None:
+                    continue
+                stamp_bucket(client, table_name, pk, value)
+                stamped.add(pk)
 
-        while True:
-            params: dict[str, Any] = {
-                "TableName": table_name,
-                "IndexName": index,
-                "KeyConditionExpression": f"{pk_name} = :pk AND begins_with({sk_name}, :sk)",
-                "ExpressionAttributeValues": {
-                    ":pk": {"S": pk_value},
-                    ":sk": {"S": sk_prefix},
-                },
-            }
-            if start_key:
-                params["ExclusiveStartKey"] = start_key
-            response = client.query(**params)
-            for item in response.get("Items", []):
-                pk = item.get("PK", {}).get("S", "")
-                if pk and pk not in stamped:
-                    value = disabled if decide is None else decide(pk)
-                    if value is None:
-                        continue
-                    stamp_bucket(client, table_name, pk, value)
-                    stamped.add(pk)
-            start_key = response.get("LastEvaluatedKey")
-            if not start_key:
-                break
+    return len(stamped)
 
+
+def _query_bucket_pks(
+    client: Any,
+    table_name: str,
+    index: str,
+    pk_name: str,
+    sk_name: str,
+    pk_value: str,
+    sk_prefix: str,
+) -> Iterator[str]:
+    """Every bucket PK one paginated discovery query returns."""
+    start_key: dict[str, Any] | None = None
+    while True:
+        params: dict[str, Any] = {
+            "TableName": table_name,
+            "IndexName": index,
+            "KeyConditionExpression": f"{pk_name} = :pk AND begins_with({sk_name}, :sk)",
+            "ExpressionAttributeValues": {
+                ":pk": {"S": pk_value},
+                ":sk": {"S": sk_prefix},
+            },
+        }
+        if start_key:
+            params["ExclusiveStartKey"] = start_key
+        response = client.query(**params)
+        for item in response.get("Items", []):
+            pk = item.get("PK", {}).get("S", "")
+            if pk:
+                yield pk
+        start_key = response.get("LastEvaluatedKey")
+        if not start_key:
+            return
+
+
+# --- ADR-146: the cascade policy --------------------------------------------
+
+
+def resolve_cascade(
+    client: Any,
+    table_name: str,
+    namespace_id: str,
+    entity_id: str,
+    resource: str,
+) -> bool | None:
+    """The cascade policy the ADR-125 walk resolves, or None when no level sets one.
+
+    Sync mirror of ``Repository.resolve_access``'s cascade half (ADR-146).
+    None means the entity's own META ``cascade`` decides.
+    """
+    for pk, sk in _walk_keys(namespace_id, entity_id, resource):
+        item = client.get_item(TableName=table_name, Key={"PK": {"S": pk}, "SK": {"S": sk}}).get(
+            "Item"
+        )
+        if item is not None:
+            value = decode_cascade(item)
+            if value is not None:
+                return value
+    return None
+
+
+def _walk_keys(namespace_id: str, entity_id: str, resource: str) -> list[tuple[str, str]]:
+    """entity(resource) -> entity(_default_) -> resource, as `resolve_disabled` walks."""
+    levels = [(pk_entity(namespace_id, entity_id), sk_config(resource))]
+    if resource != DEFAULT_RESOURCE:
+        levels.append((pk_entity(namespace_id, entity_id), sk_config(DEFAULT_RESOURCE)))
+    levels.append((pk_resource(namespace_id, resource), sk_config()))
+    return levels
+
+
+def _owner(
+    client: Any, table_name: str, namespace_id: str, entity_id: str
+) -> tuple[bool, str | None] | None:
+    """An entity's META ``(cascade, parent_id)``, or None when it has no META."""
+    item = client.get_item(
+        TableName=table_name,
+        Key={"PK": {"S": pk_entity(namespace_id, entity_id)}, "SK": {"S": sk_meta()}},
+    ).get("Item")
+    if item is None:
+        return None
+    return item.get("cascade", {}).get("BOOL", False), item.get("parent_id", {}).get("S")
+
+
+def stamp_bucket_cascade(
+    client: Any, table_name: str, pk: str, cascade: bool, parent_id: str | None
+) -> None:
+    """Write one bucket's effective cascade policy and owner `parent_id` (ADR-146).
+
+    Mirrors ``Repository._stamp_bucket_cascade``.
+    """
+    values: dict[str, Any] = {":c": {"BOOL": cascade}}
+    if parent_id is not None:
+        update = "SET #c = :c, #p = :p"
+        values[":p"] = {"S": parent_id}
+    else:
+        update = "SET #c = :c REMOVE #p"
+    try:
+        client.update_item(
+            TableName=table_name,
+            Key={"PK": {"S": pk}, "SK": {"S": sk_state()}},
+            UpdateExpression=update,
+            ConditionExpression="attribute_exists(PK)",
+            ExpressionAttributeNames={"#c": "cascade", "#p": "parent_id"},
+            ExpressionAttributeValues=values,
+        )
+    except client.exceptions.ConditionalCheckFailedException:
+        logger.debug("Bucket %s vanished before stamping", pk)
+
+
+def fanout_cascade(
+    client: Any,
+    table_name: str,
+    namespace_id: str,
+    *,
+    resource: str | None = None,
+    entity_id: str | None = None,
+) -> int:
+    """Restamp every bucket a cascade-policy change can reach (ADR-146).
+
+    Mirrors ``Repository._fanout_cascade``: scoped to a resource (GSI2) or an
+    entity (GSI3; ``resource`` None or ``_default_`` means every resource of
+    it), two discovery passes, and every bucket stamped with the policy
+    resolved for its own entity and resource, falling back to the entity's
+    META ``cascade``, plus the owner's ``parent_id``. A bucket whose entity
+    has no META is skipped.
+
+    Returns the number of buckets stamped.
+    """
+    scope = None if resource == DEFAULT_RESOURCE else resource
+    if entity_id is not None:
+        query = (GSI3_NAME, "GSI3PK", "GSI3SK", gsi3_pk_entity(namespace_id, entity_id))
+        prefix = f"BUCKET#{scope}#" if scope else "BUCKET#"
+    else:
+        assert scope is not None
+        query = (GSI2_NAME, "GSI2PK", "GSI2SK", gsi2_pk_resource(namespace_id, scope))
+        prefix = "BUCKET#"
+
+    owners: dict[str, tuple[bool, str | None] | None] = {}
+    targets: dict[tuple[str, str], tuple[bool, str | None] | None] = {}
+    stamped: set[str] = set()
+    for _pass in range(2):
+        for pk in _query_bucket_pks(client, table_name, *query, prefix):
+            if pk in stamped:
+                continue
+            _ns, eid, bucket_resource, _shard = parse_bucket_pk(pk)
+            key = (eid, bucket_resource)
+            if key not in targets:
+                if eid not in owners:
+                    owners[eid] = _owner(client, table_name, namespace_id, eid)
+                owner = owners[eid]
+                if owner is None:
+                    targets[key] = None
+                else:
+                    meta_cascade, parent_id = owner
+                    policy = resolve_cascade(client, table_name, namespace_id, eid, bucket_resource)
+                    effective = bool(parent_id) and (meta_cascade if policy is None else policy)
+                    targets[key] = (effective, parent_id)
+            target = targets[key]
+            if target is None:
+                continue
+            stamp_bucket_cascade(client, table_name, pk, *target)
+            stamped.add(pk)
     return len(stamped)
