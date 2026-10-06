@@ -150,13 +150,41 @@ storage.
    child before it learns the parent, and decision 1 needs that child's own stamp anyway.
 6. **Delivery.** A second PR stacked on #696, with its own fresh-context review.
 
+## Phase 3: refill from the cached state
+
+Agreed with the owner on 2026-10-06. When a bucket is low but refill since its last
+materialisation covers the request, today's path pays a failed speculative write
+(1 WCU), the slow path's read (1 RCU) and its locked write: **$1.375/M**. With a trusted
+cached state the read is redundant — the state is what the read would return, unless
+something wrote since, which the lock detects.
+
+1. **When.** Only from a **trusted** cached state (decision 3's age cap, before `vu` and
+   the bucket TTL, not disabled), and only when its **stored** balance cannot cover the
+   request (the speculative write would fail) but its projection to now can. Every
+   other case is unchanged: enough stored ⇒ the speculative write; short after refill ⇒
+   phases 1–2.
+2. **The write.** The slow path's rf-locked write (`build_composite_normal`), built from
+   the cached state and the same refill arithmetic, conditioned on `rf = :cached_rf`
+   **and** `vu` equal to the cached `vu` (absent if it was absent) **and** not
+   `disabled` **and** the TTL not expired. The `vu` pin is what keeps it safe: a limit
+   change made elsewhere (`_sync_bucket_params`, the provisioner) rewrites `cp`/`ra`/`rp`
+   and stamps `vu = 0` but never moves `rf`, so an `rf` lock alone would refill at the
+   **old** limits and over-admit after a cut — the aggregator pins `vu` for the same
+   reason (#508).
+3. **Lost condition.** Fall back to today's path (speculative write, then the slow
+   path). The worst case costs one extra write, and only after something wrote between
+   the state being cached and now.
+4. **Cascade.** Not used for a bucket whose trusted state cascades: child and parent
+   must commit in one transaction, which stays on today's path.
+5. **Quotas, windows, schedules, seeds.** Not used when any limit on the cached item is
+   a quota (calendar or session), carries a schedule, or is missing from the item:
+   resets, window rolls, ADR-145 grants and #633 seeds live only on the full slow path.
+   Plain dripping limits only.
+6. **Delivery.** A fourth PR, base `main`, merged after the phase-2 PR, with its own
+   fresh-context review.
+
 ## Building on this (designed in, delivered separately under #695)
 
-- **Refill from the cached state.** When the projection says refill would cover the
-  request, issue the slow path's rf-locked write directly from the cached state
-  (`rf = :cached_rf`, refill credited), skipping the failed write and the read:
-  **1 failed + 1 RCU + 1 write → 1 write** when the cached state is fresh. A lost lock
-  falls back to today's path.
 - **Multi-resource acquire (#675, ADR-148).** The N-record fast path consults the same
   cache per (entity, resource) before writing anything.
 

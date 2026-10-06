@@ -27,10 +27,12 @@ failure), and the client discards it after one decision.
 shard) for at most `rejection_cache_ttl` seconds (default 1.0, `0` disables), and the
 limiter must raise `RateLimitExceeded` without a DynamoDB call when that state, projected
 to now with the fast path's own refill arithmetic, cannot cover a limit declared in
-`consume` on every shard not known to have room; the cache must never admit a request.
-For a child whose own bucket shows it cascades on the resource, the same rule must apply
-to the parent's shards, and the child itself may be rejected locally only while a
-trusted parent state shows the parent is not disabled.
+`consume` on every shard not known to have room; the cache must never admit a request on
+its own: an admission it leads to must be a conditional write that fails if the item's
+`rf`, `vu`, `disabled` stamp or TTL changed since the state was seen. For a child whose
+own bucket shows it cascades on the resource, the same rule must apply to the parent's
+shards, and the child itself may be rejected locally only while a trusted parent state
+shows the parent is not disabled.
 
 The projection, its exceptions (a passed `vu`, a `wcu`-only shortfall, a differing
 `limits=` override, a degraded limiter, a `disabled` stamp), shard selection around
@@ -44,8 +46,9 @@ are specified in the design document.
   partition throughput.
 - Known-short shards are no longer probed, removing up to two failed writes per acquire.
 - A repeat cascade rejection, parent known short, costs 0 WCU instead of 3.
-- The cached state is the input the refill-from-cached-state write (#695) and the
-  multi-resource fast path (#675) build on.
+- A request that refill would cover costs one locked write instead of a failed write, a
+  read and a write.
+- The cached state is the input the multi-resource fast path (#675) builds on.
 
 **Negative:**
 - Admission can lag by up to `rejection_cache_ttl` per process when tokens return by a
