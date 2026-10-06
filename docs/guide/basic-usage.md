@@ -202,7 +202,7 @@ availability, or pass `{"tpm": 1}` for "when may I spend one more token".
 !!! warning "This is for display, not for gating"
     Checking here and then calling `acquire()` is a time-of-check/time-of-use
     race, and it costs an extra read. `acquire()` already answers "may I
-    proceed, and if not when" — in 1 WCU, or 0 RCU + 0 WCU on a fast rejection —
+    proceed, and if not when" — in 1 WCU either way, with no read —
     via `RateLimitExceeded.retry_after_seconds`. Use `check_availability()` when
     the answer is shown to a user, and `acquire()` when it is acted on.
 
@@ -460,7 +460,7 @@ limiter = RateLimiter(
 )
 ```
 
-With speculative writes, `acquire()` attempts a conditional UpdateItem directly instead of reading bucket state first. On success, this saves one DynamoDB round trip (0 RCU, 1 WCU instead of 1 RCU + 1 WCU). When the bucket is exhausted and refill would not help, it rejects immediately without any writes (0 RCU, 0 WCU).
+With speculative writes, `acquire()` attempts a conditional UpdateItem directly instead of reading bucket state first. On success, this saves one DynamoDB round trip (0 RCU, 1 WCU instead of 1 RCU + 1 WCU). When the bucket is exhausted and refill would not help, it rejects immediately without a read (0 RCU, 1 WCU: the failed conditional write is charged).
 
 The speculative path falls back to the normal read-write path when:
 

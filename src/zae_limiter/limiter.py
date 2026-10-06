@@ -2916,7 +2916,7 @@ class RateLimiter:
         Consumes nothing and writes nothing. This is a read; it is not a
         pre-flight check for :meth:`acquire`. Deciding with it and then calling
         ``acquire()`` is TOCTOU and costs an extra read — ``acquire()`` already
-        answers "may I proceed, and if not when" in 1 WCU, or 0 RCU + 0 WCU on
+        answers "may I proceed, and if not when" in 1 WCU, with no read even on
         a fast rejection, via ``RateLimitExceeded.retry_after_seconds``. Use
         this when the answer is *displayed* rather than acted on.
 

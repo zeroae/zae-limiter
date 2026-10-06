@@ -880,7 +880,7 @@ Bucket items use per-(entity, resource, shard) partition keys: `PK={ns}/BUCKET#{
 - Skips the read round trip (BatchGetItem) by issuing a conditional UpdateItem directly
 - Uses `ReturnValuesOnConditionCheckFailure=ALL_OLD` to inspect bucket state on failure
 - Falls back to the normal read-write path when the bucket is missing, config changed, or refill would help
-- Fast rejection: if refill would not help, raises `RateLimitExceeded` immediately (0 RCU, 0 WCU)
+- Fast rejection: if refill would not help, raises `RateLimitExceeded` immediately (0 RCU, 1 WCU: a failed conditional write still consumes write capacity)
 - Cascade/parent_id denormalized into bucket items to avoid entity metadata lookup on the fast path
 - **Parallel cascade writes (Issue #318):** After the first acquire populates the entity cache, subsequent cascade acquires issue child + parent speculative writes concurrently via `asyncio.gather` (async) or `SyncRepository._run_in_executor` (sync, strategy controlled by `parallel_mode` parameter), reducing cascade latency from 2 sequential round trips to 1 parallel round trip
 
@@ -1277,7 +1277,7 @@ when shards are staggered — and `None` when no shard has a live window.
 
 Non-consuming and write-free, and **not** a pre-flight gate for `acquire()`: check-then-acquire
 is TOCTOU and costs an extra read, where `acquire()` answers the same question in 1 WCU (0 RCU +
-0 WCU on a fast rejection) via `RateLimitExceeded.retry_after_seconds`. It is for *display*.
+1 WCU on a fast rejection too) via `RateLimitExceeded.retry_after_seconds`. It is for *display*.
 
 Cost: 1 GSI3 KEYS_ONLY query + 1 `BatchGetItem` + 1 config resolution, regardless of limit
 count or shard count. A missing bucket means full capacity and no wait.
@@ -1402,7 +1402,7 @@ On-demand pricing (us-east-1, post-Nov 2023 50% reduction):
 Non-cascade `acquire()` = 1 RCU + 1 WCU = $0.125 + $0.625 = **$0.75/M** (the project's advertised cost).
 
 Speculative non-cascade `acquire()` (success) = 0 RCU + 1 WCU = **$0.625/M** (~17% savings).
-Speculative fast rejection (exhausted) = 0 RCU + 0 WCU = **$0/M** (free).
+Speculative fast rejection (exhausted) = 0 RCU + 1 WCU = **$0.625/M**: a failed conditional write consumes 1 WCU ([AWS](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/WorkingWithItems.html#WorkingWithItems.ConditionalWrites.ReturnConsumedCapacity), measured on DynamoDB 2026-10-06, #695). What is free is the returned `ALL_OLD` image (0 RCU).
 Speculative fallback (refill helps) = 1 RCU + 2 WCU = $0.125 + $1.25 = **$1.375/M** (worse than normal).
 Client shard create (`BUCKET_MISSING` on shard N, ADR-133, warm config cache) = 2.5 RCU + 2 WCU (1 failed conditional + disable-walk BatchGet 1.5 RCU + META/bucket BatchGet 1 RCU + single-item `PutItem`) = $0.3125 + $1.25 = **$1.56/M**, paid **once per shard** (+1 WCU when a wcu bump precedes it: **$2.19/M**); the previous broken fallback cost the same on every acquire that drew a missing shard.
 Quota shard creation or seed on a sharded entity (ADR-145): adds the sibling read (1 GSI3 KEYS_ONLY Query + 1 `BatchGetItem`, one key per existing sibling); when a sibling covers the slot the write is a **2-item transaction** (the `Put` or seed `Update` plus the donor's `Update`): **4 WCU** instead of 1, once per shard, at most 31 per entity per period. No clamp writes. A quota shard N>0 create then reads shard 0's count once (**+1 RCU**, strongly consistent) to repair a create a doubling overtook, writing only when it did. The fast path is unchanged, 0 RCU + 1 WCU, and never reads or writes `gc` (`tests/benchmark/test_capacity.py::TestQuotaGrantCapacity`).
@@ -1410,7 +1410,7 @@ Session quota (ADR-139, ADR-140): an acquire inside a window costs exactly what 
 Speculative cascade (both succeed, sequential) = 0 RCU + 2 WCU = **$1.25/M** (vs $1.75/M normal cascade).
 Speculative cascade (both succeed, parallel, issue #318) = 0 RCU + 2 WCU = **$1.25/M** (same cost, lower latency).
 Speculative cascade fallback (parent refill helps) = 1 RCU + 3 WCU = **$2.00/M** (deferred compensation; the parent's META rides in its bucket read since #684, +0.5 RCU). Every cascade slow path pays the same +0.5 RCU (~$0.06/M) for the parent's META.
-Speculative cascade fast rejection (parent exhausted) = 0 RCU + 2 WCU = **$1.25/M** (child consumed + compensated).
+Speculative cascade fast rejection (parent exhausted) = 0 RCU + 3 WCU = **$1.875/M** (child consumed, failed parent write, compensation).
 
 `resolve_disabled()` (ADR-125) is deliberately uncached and only runs on the slow path — never
 on the speculative fast path — but when it does run it costs an extra up-to-3-key

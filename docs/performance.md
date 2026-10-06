@@ -21,7 +21,7 @@ Each zae-limiter operation has specific DynamoDB capacity costs. Use this table 
 | `acquire()` retry (contention) | 0 | 1 | ADD-based writes don't require re-read |
 | `acquire()` with adjustments | 0 | +1 per entity | Independent writes via `write_each()` (1 WCU each) |
 | `acquire()` rollback (on exception) | 0 | +1 per entity | Independent compensating writes (1 WCU each) |
-| Aggregator bucket refill (per active bucket) | 0 | 1 | Proactive refill via Lambda; 0 WCU if lock lost |
+| Aggregator bucket refill (per active bucket) | 0 | 1 | Proactive refill via Lambda; 1 WCU even if the lock is lost |
 | `acquire(limits=None)` with config cache miss | +3 | 0 | +3 GetItem operations for config hierarchy |
 | `acquire()` slow-path disabled walk (per entity) | +1.5 | 0 | ADR-125 gate: uncached 3-key BatchGetItem (entity, entity `_default_`, resource config). Cascade pays it per entity; the speculative fast path pays 0 |
 | `check_availability()` | 1 + shards/4 | 0 | Read-only. GSI3 KEYS_ONLY query + one `BatchGetItem` over the entity's shards (GHSA-76rv); both answers come from that one snapshot |
@@ -792,7 +792,7 @@ acquire(entity_id, resource, consume)
       +- Missing limit in ALL_OLD -> SLOW PATH
       +- Schedule boundary crossed (vu passed) -> SLOW PATH (re-materialises)
       +- Refill would help -> SLOW PATH
-      +- Refill won't help -> RateLimitExceeded (0 RCU, 0 WCU)
+      +- Refill won't help -> RateLimitExceeded (0 RCU, 1 WCU)
 ```
 
 **Subsequent acquires (parallel, issue #318):**
@@ -871,7 +871,7 @@ When the Lambda aggregator is enabled, it proactively refills token buckets for 
 3. If projected tokens after natural refill are insufficient to cover the observed consumption rate, it writes a proactive refill
 4. The refill uses `ADD` (commutative with concurrent speculative writes) and an optimistic lock on `rf` to prevent double-refill
 
-**Cost:** 1 WCU per refill written (0 WCU if another writer updated `rf` first). The cost is amortized across all stream records in a batch, so high-throughput workloads see fewer refills per request.
+**Cost:** 1 WCU per refill attempted, including one that loses the lock because another writer updated `rf` first (a failed conditional write is still charged). The cost is amortized across all stream records in a batch, so high-throughput workloads see fewer refills per request.
 
 !!! tip "Aggregator refill + speculative writes"
     The combination of aggregator-assisted refill and speculative writes provides the best latency and cost profile: the aggregator keeps buckets warm so speculative writes rarely fall back, achieving ~5-8ms p50 latency at $0.625/M requests (non-cascade).
