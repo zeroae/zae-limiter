@@ -39,6 +39,9 @@ class CacheStats:
     misses: int = 0
     size: int = 0
     ttl_seconds: int = 0
+    #: Rejections raised from the rejection cache without a DynamoDB call
+    #: (ADR-147); each one saved a failed conditional write (1 WCU).
+    local_rejections: int = 0
 
     def as_dict(self) -> dict[str, int]:
         """Return stats as a dictionary."""
@@ -47,6 +50,7 @@ class CacheStats:
             "misses": self.misses,
             "size": self.size,
             "ttl": self.ttl_seconds,
+            "local_rejections": self.local_rejections,
         }
 
 

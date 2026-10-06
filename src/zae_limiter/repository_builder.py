@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 
 from .exceptions import NamespaceNotFoundError
 from .naming import resolve_stack_name
+from .rejection_cache import DEFAULT_REJECTION_CACHE_SIZE, DEFAULT_REJECTION_CACHE_TTL
 
 if TYPE_CHECKING:
     from .models import OnUnavailableAction, StackOptions
@@ -48,6 +49,8 @@ class RepositoryBuilder:
         self._endpoint_url: str | None = None
         self._namespace_name: str | None = None
         self._config_cache_ttl = 60
+        self._rejection_cache_ttl: float = DEFAULT_REJECTION_CACHE_TTL
+        self._rejection_cache_size = DEFAULT_REJECTION_CACHE_SIZE
         self._auto_update = True
         self._bucket_ttl_multiplier = 7
         self._on_unavailable: OnUnavailableAction | None = None
@@ -87,6 +90,22 @@ class RepositoryBuilder:
     def config_cache_ttl(self, seconds: int) -> "RepositoryBuilder":
         """Set config cache TTL in seconds (default: 60, 0 to disable)."""
         self._config_cache_ttl = seconds
+        return self
+
+    def rejection_cache_ttl(self, seconds: float) -> "RepositoryBuilder":
+        """Set how long a cached bucket state may reject without a DynamoDB call.
+
+        Default 1.0 second, 0 to disable (ADR-147). A failed conditional write
+        costs 1 WCU, so a repeat rejection inside this window costs nothing;
+        the price is that tokens returned by another process are seen up to
+        this late.
+        """
+        self._rejection_cache_ttl = seconds
+        return self
+
+    def rejection_cache_size(self, entries: int) -> "RepositoryBuilder":
+        """Set the maximum number of cached bucket states (default: 10,000)."""
+        self._rejection_cache_size = entries
         return self
 
     def auto_update(self, enabled: bool) -> "RepositoryBuilder":
@@ -285,6 +304,8 @@ class RepositoryBuilder:
             endpoint_url=self._endpoint_url,
             stack_options=stack_opts,
             config_cache_ttl=self._config_cache_ttl,
+            rejection_cache_ttl=self._rejection_cache_ttl,
+            rejection_cache_size=self._rejection_cache_size,
             _skip_deprecation_warning=True,
         )
         repo._bucket_ttl_refill_multiplier = self._bucket_ttl_multiplier

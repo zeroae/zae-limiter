@@ -45,6 +45,11 @@ from .models import (
     validate_resource,
 )
 from .naming import normalize_stack_name
+from .rejection_cache import (
+    DEFAULT_REJECTION_CACHE_SIZE,
+    DEFAULT_REJECTION_CACHE_TTL,
+    RejectionCache,
+)
 from .repository_protocol import (
     PRESERVE_CASCADE as _PRESERVE_CASCADE,
 )
@@ -120,6 +125,9 @@ class Repository:
             Pass StackOptions to enable declarative infrastructure management.
         config_cache_ttl: TTL in seconds for config cache (default: 60, 0 to disable).
             Controls caching of resolved limit configs in resolve_limits().
+        rejection_cache_ttl: Seconds a cached bucket state may be used to reject a
+            request without a DynamoDB call (default: 1.0, 0 to disable). ADR-147.
+        rejection_cache_size: Maximum cached bucket states (default: 10,000).
 
     Example::
 
@@ -138,6 +146,8 @@ class Repository:
         stack_options: StackOptions | None = None,
         config_cache_ttl: int = 60,
         *,
+        rejection_cache_ttl: float = DEFAULT_REJECTION_CACHE_TTL,
+        rejection_cache_size: int = DEFAULT_REJECTION_CACHE_SIZE,
         _skip_deprecation_warning: bool = False,
     ) -> None:
         if not _skip_deprecation_warning:
@@ -211,6 +221,12 @@ class Repository:
         # Consulted only while the entity has an entry, so dropping that entry
         # still means "start cold".
         self._cascade_cache: dict[tuple[str, str, str], bool] = {}
+        # The last bucket state seen per (namespace, entity, resource, shard),
+        # used only to reject a request that cannot fit without a DynamoDB
+        # call (ADR-147, #695). Shared with every namespace() scope.
+        self._rejection_cache = RejectionCache(
+            ttl_seconds=rejection_cache_ttl, max_entries=rejection_cache_size
+        )
 
         # Cached on_unavailable from system config (issue #366)
         # Once loaded, used as fallback when DynamoDB is unreachable
@@ -252,6 +268,8 @@ class Repository:
         endpoint_url: str | None = None,
         config_cache_ttl: int = 60,
         auto_update: bool = True,
+        rejection_cache_ttl: float = DEFAULT_REJECTION_CACHE_TTL,
+        rejection_cache_size: int = DEFAULT_REJECTION_CACHE_SIZE,
     ) -> "Repository":
         """Open a repository, auto-provisioning infrastructure if needed.
 
@@ -287,6 +305,11 @@ class Repository:
                 0 to disable).
             auto_update: Auto-update Lambda on version mismatch
                 (default: True).
+            rejection_cache_ttl: Seconds a cached bucket state may be used to
+                reject a request without a DynamoDB call (default: 1.0, 0 to
+                disable). See ADR-147.
+            rejection_cache_size: Maximum cached bucket states (default:
+                10,000).
 
         Returns:
             Fully initialized Repository ready for use.
@@ -319,6 +342,8 @@ class Repository:
             region=region,
             endpoint_url=endpoint_url,
             config_cache_ttl=config_cache_ttl,
+            rejection_cache_ttl=rejection_cache_ttl,
+            rejection_cache_size=rejection_cache_size,
             _skip_deprecation_warning=True,
         )
         repo._auto_update = auto_update
@@ -364,6 +389,8 @@ class Repository:
         region: str | None = None,
         endpoint_url: str | None = None,
         config_cache_ttl: int = 60,
+        rejection_cache_ttl: float = DEFAULT_REJECTION_CACHE_TTL,
+        rejection_cache_size: int = DEFAULT_REJECTION_CACHE_SIZE,
     ) -> "Repository":
         """Connect to existing infrastructure without provisioning anything.
 
@@ -399,6 +426,11 @@ class Repository:
             endpoint_url: Custom endpoint URL (e.g., LocalStack).
             config_cache_ttl: Config cache TTL in seconds (default: 60,
                 0 to disable).
+            rejection_cache_ttl: Seconds a cached bucket state may be used to
+                reject a request without a DynamoDB call (default: 1.0, 0 to
+                disable). See ADR-147.
+            rejection_cache_size: Maximum cached bucket states (default:
+                10,000).
 
         Returns:
             Repository bound to the existing infrastructure.
@@ -430,6 +462,8 @@ class Repository:
             region=region,
             endpoint_url=endpoint_url,
             config_cache_ttl=config_cache_ttl,
+            rejection_cache_ttl=rejection_cache_ttl,
+            rejection_cache_size=rejection_cache_size,
             _skip_deprecation_warning=True,
         )
         repo._auto_update = False
@@ -545,6 +579,7 @@ class Repository:
         # Share mutable caches
         scoped._entity_cache = self._entity_cache
         scoped._cascade_cache = self._cascade_cache
+        scoped._rejection_cache = self._rejection_cache
         scoped._namespace_cache = self._namespace_cache
         # Scoped repos start with no on_unavailable cache (each namespace
         # has its own system config)
@@ -1856,6 +1891,9 @@ class Repository:
             entity_id: ID of the entity to delete
             principal: Caller identity for audit logging
         """
+        # An admin change can move any limit; drop every cached bucket
+        # state rather than reason about which ones (ADR-147).
+        self._rejection_cache.clear()
         client = await self._get_client()
 
         # Query entity items (metadata, config, usage, audit)
@@ -3175,7 +3213,12 @@ class Repository:
         Unconditional ADD for post-hoc correction. Can go negative by design.
         Positive delta = consumed more (subtract tokens, add to counter).
         Negative delta = consumed less (add tokens, subtract from counter).
+
+        Every refund, release, rollback and speculative compensation is built
+        here, so the shard's cached state is forgotten here (ADR-147): tokens
+        this process gives back must not be hidden by its own cache.
         """
+        self._rejection_cache.forget(self._namespace_id, entity_id, resource, shard_id)
         add_parts: list[str] = []
         attr_names: dict[str, str] = {}
         attr_values: dict[str, Any] = {}
@@ -3304,6 +3347,7 @@ class Repository:
         ttl_seconds: int | None = None,
         shard_id: int | None = None,
         now_ms: int | None = None,
+        avoid_shards: frozenset[int] = frozenset(),
     ) -> SpeculativeResult:
         """Attempt speculative UpdateItem with condition check.
 
@@ -3326,6 +3370,8 @@ class Repository:
                 ``acquire()`` observes one instant: the ``ttl`` stamp, the
                 TTL-expiry guard and the caller's decision all agree. None
                 reads the clock once here, for callers outside an acquire.
+            avoid_shards: Child shards the rejection cache knows are short
+                (ADR-147); the child shard is drawn among the others.
 
         Returns:
             SpeculativeResult with:
@@ -3346,7 +3392,14 @@ class Repository:
         cache_key = (self._namespace_id, entity_id)
         cache_entry = self._entity_cache.get(cache_key)
 
-        effective_shard_id, _shard_count = self.select_shard(entity_id, resource)
+        # `avoid` only when there is something to avoid, so a select_shard that
+        # predates it (a test double, a subclass) keeps working unchanged.
+        if avoid_shards:
+            effective_shard_id, _shard_count = self.select_shard(
+                entity_id, resource, avoid=avoid_shards
+            )
+        else:
+            effective_shard_id, _shard_count = self.select_shard(entity_id, resource)
 
         if cache_entry is not None:
             entity_cascade, parent_id_cached, shards_cached = cache_entry
@@ -3569,6 +3622,7 @@ class Repository:
             cascade = item.get("cascade", {}).get("BOOL", False)
             parent_id = item.get("parent_id", {}).get("S")
             shard_count = int(item.get("shard_count", {}).get("N", "1"))
+            self._remember_bucket_image(entity_id, resource, shard_id, item, buckets, shard_count)
             return SpeculativeResult(
                 success=True,
                 buckets=buckets,
@@ -3584,6 +3638,9 @@ class Repository:
                 if old_item:
                     old_buckets = self._deserialize_composite_bucket(old_item)
                     old_shard_count = int(old_item.get("shard_count", {}).get("N", "1"))
+                    self._remember_bucket_image(
+                        entity_id, resource, shard_id, old_item, old_buckets, old_shard_count
+                    )
                     # Denormalized on the item, so a failure knows whether this
                     # entity cascades even with a cold cache — a cascading child
                     # must never be admitted by a child-only shard retry.
@@ -3705,12 +3762,43 @@ class Repository:
             self._cascade_cache[(self._namespace_id, entity_id, resource)] = meta[0]
         return count
 
+    def _remember_bucket_image(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int,
+        item: dict[str, Any],
+        buckets: list[BucketState],
+        shard_count: int,
+    ) -> None:
+        """Keep the bucket state a speculative response showed (ADR-147).
+
+        Free: the image rode on the response. ``vu``, the item's ``ttl`` and
+        its ``disabled`` stamp ride along so the cache can refuse to reject
+        from a state the slow path would re-materialise, recreate or answer
+        with ``ResourceDisabled``.
+        """
+        vu_raw = item.get(schema.BUCKET_FIELD_VU, {}).get("N")
+        ttl_raw = item.get("ttl", {}).get("N")
+        self._rejection_cache.store(
+            self._namespace_id,
+            entity_id,
+            resource,
+            shard_id,
+            buckets,
+            shard_count=shard_count,
+            vu_ms=int(vu_raw) if vu_raw is not None else None,
+            ttl_epoch=int(ttl_raw) if ttl_raw is not None else None,
+            disabled=item.get(schema.BUCKET_FIELD_DISABLED, {}).get("BOOL", False),
+        )
+
     def select_shard(
         self,
         entity_id: str,
         resource: str,
         shard_id: int | None = None,
         shard_count: int | None = None,
+        avoid: frozenset[int] = frozenset(),
     ) -> tuple[int, int]:
         """Pick the bucket shard an acquire should target (GHSA-76rv, issue #439).
 
@@ -3731,6 +3819,10 @@ class Repository:
             shard_count: Count observed by the caller (e.g. on a speculative
                 failure image, which never updates the cache); None reads
                 the entity cache.
+            avoid: Shards the rejection cache knows cannot fit this request
+                (ADR-147). The draw is uniform over the others; when every
+                shard is in it the caller has already rejected, so it is
+                ignored rather than leaving nothing to draw from.
 
         Returns:
             ``(shard_id, shard_count)`` with shard_count from the argument or
@@ -3741,7 +3833,11 @@ class Repository:
             cache_entry = self._entity_cache.get(cache_key)
             shard_count = cache_entry[2].get(resource, 1) if cache_entry is not None else 1
         if shard_id is None:
-            shard_id = random.randrange(shard_count) if shard_count > 1 else 0
+            candidates = [s for s in range(shard_count) if s not in avoid] if avoid else []
+            if candidates:
+                shard_id = random.choice(candidates)
+            else:
+                shard_id = random.randrange(shard_count) if shard_count > 1 else 0
         return shard_id, shard_count
 
     async def bump_shard_count(self, entity_id: str, resource: str, current_count: int) -> int:
@@ -4097,6 +4193,9 @@ class Repository:
                 ``cascade`` and they predate the cascade policy. Nothing is
                 written.
         """
+        # An admin change can move any limit; drop every cached bucket
+        # state rather than reason about which ones (ADR-147).
+        self._rejection_cache.clear()
         client = await self._get_client()
         await self._require_reset_after_readers(limits)
         cascade_explicit = cascade is not _PRESERVE_CASCADE
@@ -4780,6 +4879,9 @@ class Repository:
             resource: Resource name (defaults to "_default_")
             principal: Caller identity for audit logging
         """
+        # An admin change can move any limit; drop every cached bucket
+        # state rather than reason about which ones (ADR-147).
+        self._rejection_cache.clear()
         client = await self._get_client()
 
         # Does this config actually decide `disabled`? If not, deleting it
@@ -5016,6 +5118,9 @@ class Repository:
                 ``cascade`` and they predate the cascade policy. Nothing is
                 written.
         """
+        # An admin change can move any limit; drop every cached bucket
+        # state rather than reason about which ones (ADR-147).
+        self._rejection_cache.clear()
         validate_resource(resource)
         client = await self._get_client()
         await self._require_reset_after_readers(limits)
@@ -5163,6 +5268,9 @@ class Repository:
             resource: Resource name
             principal: Caller identity for audit logging
         """
+        # An admin change can move any limit; drop every cached bucket
+        # state rather than reason about which ones (ADR-147).
+        self._rejection_cache.clear()
         validate_resource(resource)
         client = await self._get_client()
 
@@ -5264,6 +5372,9 @@ class Repository:
             VersionMismatchError: ``limits`` carries a ``reset_after`` limit
                 and the stack's Lambdas predate it (#638). Nothing is written.
         """
+        # An admin change can move any limit; drop every cached bucket
+        # state rather than reason about which ones (ADR-147).
+        self._rejection_cache.clear()
         client = await self._get_client()
         await self._require_reset_after_readers(limits)
 
@@ -5350,6 +5461,9 @@ class Repository:
         Args:
             principal: Caller identity for audit logging
         """
+        # An admin change can move any limit; drop every cached bucket
+        # state rather than reason about which ones (ADR-147).
+        self._rejection_cache.clear()
         client = await self._get_client()
 
         # Get existing limits for audit logging before deleting
@@ -7873,6 +7987,9 @@ class Repository:
         `attribute_exists(PK)` guard and treats a missing item as a no-op rather
         than fabricating a stub with a bare REMOVE.
         """
+        # An admin change can move any limit; drop every cached bucket
+        # state rather than reason about which ones (ADR-147).
+        self._rejection_cache.clear()
         client = await self._get_client()
         alias = f"#{field}"
         key = {
@@ -8075,6 +8192,9 @@ class Repository:
         self, entity_id: str, target_resource: str, field: str, value: bool | None
     ) -> None:
         """Set or clear one tri-state flag on an entity config item (ADR-125, ADR-146)."""
+        # An admin change can move any limit; drop every cached bucket
+        # state rather than reason about which ones (ADR-147).
+        self._rejection_cache.clear()
         client = await self._get_client()
         alias = f"#{field}"
         key = {
@@ -8246,12 +8366,17 @@ class Repository:
 
     async def invalidate_config_cache(self) -> None:
         """Invalidate all cached config entries (ADR-122)."""
+        # An admin change can move any limit; drop every cached bucket
+        # state rather than reason about which ones (ADR-147).
+        self._rejection_cache.clear()
         await self._config_cache.invalidate_async()
         self._on_unavailable_cache = None
 
     def get_cache_stats(self) -> CacheStats:
         """Get config cache performance statistics (ADR-122)."""
-        return self._config_cache.get_stats()
+        stats = self._config_cache.get_stats()
+        stats.local_rejections = self._rejection_cache.local_rejections
+        return stats
 
 
 # Type assertion: Repository implements RepositoryProtocol

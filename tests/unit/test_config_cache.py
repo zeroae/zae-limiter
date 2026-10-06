@@ -27,7 +27,7 @@ class TestCacheStats:
         stats = CacheStats(hits=100, misses=10, size=5, ttl_seconds=60)
         result = stats.as_dict()
 
-        assert result == {"hits": 100, "misses": 10, "size": 5, "ttl": 60}
+        assert result == {"hits": 100, "misses": 10, "size": 5, "ttl": 60, "local_rejections": 0}
 
 
 class TestConfigCacheBasics:
