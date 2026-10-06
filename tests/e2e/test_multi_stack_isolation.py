@@ -73,7 +73,13 @@ from tests.fixtures.stack_pairs import (
     wait_until_visible,
     where,
 )
-from zae_limiter import Limit, RateLimiter, RateLimitExceeded, Repository
+from zae_limiter import (
+    Limit,
+    RateLimiter,
+    RateLimitExceeded,
+    Repository,
+    SyncRateLimiter,
+)
 from zae_limiter.cli import cli
 from zae_limiter.exceptions import VersionMismatchError
 from zae_limiter.sync_repository import SyncRepository
@@ -145,7 +151,41 @@ class TestUpgradeIsolation:
 
     Both stacks are deployed as ``OLD``, so B is genuinely behind the client
     that upgrades A: a leak would have something to change.
+
+    A repository on B stays open in this process for the whole upgrade, so a
+    process-global cache keyed by region or endpoint alone (a ``StackManager``
+    or Lambda client remembering the last stack it served) would see B first
+    and could carry it into A's upgrade.
     """
+
+    @pytest.fixture
+    def live_b(self, upgrade_pair):
+        """An open handle on B, already served once; call it to acquire again.
+
+        Opened as ``OLD`` with ``auto_update=False``: B's stamp matches, so the
+        open is a plain read and the handle can never push code to B itself.
+        """
+        with patch("zae_limiter.__version__", OLD):
+            repo = SyncRepository.open(
+                stack=upgrade_pair.b,
+                region=REGION,
+                endpoint_url=upgrade_pair.endpoint_url,
+                auto_update=False,
+            )
+        limiter = SyncRateLimiter(repository=repo)
+
+        def serve() -> None:
+            # A request-time override: B has no stored limits in this class.
+            with limiter.acquire(
+                ENTITY, RESOURCE, consume={"rpm": 1}, limits=[Limit.per_minute("rpm", 100)]
+            ) as lease:
+                assert lease.consumed == {"rpm": 1}
+
+        try:
+            serve()
+            yield serve
+        finally:
+            repo.close()
 
     def _assert_b_untouched(self, upgrade_pair: StackPair, before: dict) -> None:
         after = snapshot(upgrade_pair.b, upgrade_pair.endpoint_url)
@@ -156,7 +196,7 @@ class TestUpgradeIsolation:
         assert after["provisioner"]["LastModified"] == before["provisioner"]["LastModified"]
         assert after == before
 
-    def test_the_cli_upgrade_of_a_leaves_b_alone(self, upgrade_pair):
+    def test_the_cli_upgrade_of_a_leaves_b_alone(self, upgrade_pair, live_b):
         endpoint = upgrade_pair.endpoint_url
         before = snapshot(upgrade_pair.b, endpoint)
         assert before["version_item"]["lambda_version"]["S"] == OLD
@@ -179,8 +219,10 @@ class TestUpgradeIsolation:
         # because nothing moved anywhere.
         assert function_config(upgrade_pair.a, endpoint)["LastModified"] != a_before["LastModified"]
         self._assert_b_untouched(upgrade_pair, before)
+        # The handle opened before the upgrade still serves B.
+        live_b()
 
-    def test_open_with_auto_update_of_a_leaves_b_alone(self, upgrade_pair):
+    def test_open_with_auto_update_of_a_leaves_b_alone(self, upgrade_pair, live_b):
         endpoint = upgrade_pair.endpoint_url
         before = snapshot(upgrade_pair.b, endpoint)
 
@@ -194,6 +236,7 @@ class TestUpgradeIsolation:
         assert _lambda_version(upgrade_pair.a, endpoint) == CLIENT
         assert function_config(upgrade_pair.a, endpoint)["LastModified"] != a_before["LastModified"]
         self._assert_b_untouched(upgrade_pair, before)
+        live_b()
 
 
 # ---------------------------------------------------------------------------
