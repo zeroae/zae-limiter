@@ -1066,6 +1066,51 @@ class TestCascadeParentPrecheck:
         async with RateLimiter(repository=repo) as limiter:
             assert limiter._known_short_shards("u", "r", {"rpm": 1}, repo._now_ms()) == (set(), 1)
 
+    async def test_a_disabled_child_gets_403_every_time(self, family, repo):
+        """Phase-2 review #1: a disabled child with a parent known short is 403, not 429."""
+        async with family.acquire("u", "r", consume={"rpm": 2}):  # slow path; drains org
+            pass
+        async with family.acquire("u", "r", consume={"rpm": 0}):  # fast path: stamps cached
+            pass
+        await repo.disable_entity("u", resource="r")  # through this process: clears the cache
+        for _ in range(4):
+            with pytest.raises(ResourceDisabled) as excinfo:
+                async with family.acquire("u", "r", consume={"rpm": 1}):
+                    pass
+            assert excinfo.value.entity_id == "u"
+        assert repo.get_cache_stats().local_rejections == 0
+
+    def test_parent_of_is_none_for_a_disabled_child(self):
+        cache = RejectionCache(ttl_seconds=1.0, max_entries=10, clock=_Clock())
+        cache.store(
+            "ns",
+            "u",
+            "r",
+            0,
+            [_state(0)],
+            shard_count=2,
+            vu_ms=None,
+            ttl_epoch=None,
+            disabled=False,
+            cascades=True,
+            parent_id="org",
+        )
+        assert cache.parent_of("ns", "u", "r") == "org"
+        cache.store(
+            "ns",
+            "u",
+            "r",
+            1,
+            [_state(0)],
+            shard_count=2,
+            vu_ms=None,
+            ttl_epoch=None,
+            disabled=True,
+            cascades=True,
+            parent_id="org",
+        )
+        assert cache.parent_of("ns", "u", "r") is None
+
 
 class TestCascadingChildKnownShort:
     """Decision 3: rejected locally only while the parent is known not disabled."""

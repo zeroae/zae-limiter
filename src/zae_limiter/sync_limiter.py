@@ -1073,6 +1073,8 @@ class SyncRateLimiter:
         that is a guess another resource's policy can supply (ADR-146), and a
         wrong guess here would reject a request the server admits.
         """
+        if cache.known_disabled(namespace_id, entity_id, resource):
+            return None
         parent_id = cache.parent_of(namespace_id, entity_id, resource)
         if parent_id:
             return str(parent_id)

@@ -193,6 +193,15 @@ class RejectionCache:
         shards = self._buckets.get((namespace_id, entity_id, resource)) or {}
         return any(entry.cascades for entry in list(shards.values()))
 
+    def known_disabled(self, namespace_id: str, entity_id: str, resource: str) -> bool:
+        """Whether any cached shard of this bucket is stamped ``disabled``.
+
+        Such a bucket gets the server's 403, never a parent-driven 429, so the
+        parent check and parent steering must not run for it (phase-2 review).
+        """
+        shards = self._buckets.get((namespace_id, entity_id, resource)) or {}
+        return any(entry.disabled for entry in list(shards.values()))
+
     def parent_of(self, namespace_id: str, entity_id: str, resource: str) -> str | None:
         """The parent a cached shard of this bucket says it cascades to, if any.
 
@@ -200,6 +209,8 @@ class RejectionCache:
         of #695 trusts it, rather than the entity-wide guess, to decide that a
         parent check applies at all.
         """
+        if self.known_disabled(namespace_id, entity_id, resource):
+            return None
         shards = self._buckets.get((namespace_id, entity_id, resource)) or {}
         for entry in list(shards.values()):
             if entry.cascades and entry.parent_id:
