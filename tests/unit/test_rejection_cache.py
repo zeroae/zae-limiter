@@ -423,6 +423,19 @@ class TestRejectionCacheStore:
         clock.now += 1.5
         assert cache.trusted_entry("ns", "u", "r", 0, now_ms=1) is None  # past the age cap
 
+    def test_slow_pass_records_are_capped(self):
+        clock = _Clock()
+        cache = RejectionCache(ttl_seconds=1.0, max_entries=2, clock=clock)
+        for entity in ("a", "b", "c"):
+            cache.note_slow_pass("ns", entity, "r")
+        assert not cache.slow_pass_within("ns", "a", "r", 60)  # the oldest went
+        assert cache.slow_pass_within("ns", "c", "r", 60)
+        clock.now += 61
+        assert not cache.slow_pass_within("ns", "c", "r", 60)  # past the window
+        disabled = RejectionCache(ttl_seconds=0)
+        disabled.note_slow_pass("ns", "a", "r")
+        assert not disabled.slow_pass_within("ns", "a", "r", 60)
+
     def test_counts_local_rejections(self):
         cache = RejectionCache(ttl_seconds=1.0, max_entries=10, clock=_Clock())
         cache.record_local_rejection()
@@ -1569,6 +1582,12 @@ class TestRefillFromCache:
         assert calls == ["update_item"]
         assert "ttl" not in await _bucket_item(repo, "u")
 
+    async def test_peek_is_none_while_any_level_is_uncached(self, repo):
+        await repo.set_limits("u", [RPM], resource="r")
+        assert repo._config_cache.peek_limits("u", "r") is None  # nothing resolved yet
+        await repo.resolve_limits("u", "r")
+        assert repo._config_cache.peek_limits("u", "r") is not None
+
     async def test_peek_is_none_when_no_level_has_limits(self, repo):
         await repo.resolve_limits("nobody", "r")  # every level cached, none with limits
         assert repo._config_cache.peek_limits("nobody", "r") is None
@@ -1714,6 +1733,11 @@ class TestRefillFromCache:
         await self._raw_update(repo, "SET #t = :past", {"#t": "ttl"}, {":past": {"N": "1"}})
         results = await self._refills(repo, limiter)
         assert results[0] is None  # the pinned write refused; today's path took it
+
+    async def test_get_entity_on_no_record_forgets_the_parent(self, repo):
+        repo._record_parents[(repo._namespace_id, "ghost")] = None  # a stale answer
+        assert await repo.get_entity("ghost") is None
+        assert (repo._namespace_id, "ghost") not in repo._record_parents
 
     async def test_create_entity_in_this_process_records_the_parent(self, repo):
         await repo.create_entity("org")
