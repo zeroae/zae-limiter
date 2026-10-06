@@ -3167,6 +3167,7 @@ class SyncRepository:
         now_ms: int,
         *,
         cached_tokens: dict[str, int],
+        cached_shard_count: int,
     ) -> dict[str, Any]:
         """The UpdateItem ``refill_from_cached_state`` sends (ADR-147 phase 3).
 
@@ -3179,7 +3180,9 @@ class SyncRepository:
         limit's stored balance at the cached one (a refund elsewhere ADDs
         tokens, and the clamp computed against the lower cached balance would
         then land above the ceiling; a debit elsewhere only lowers it, which is
-        safe).
+        safe), and ``cached_shard_count`` pins ``shard_count`` (a doubling
+        elsewhere — client bump, propagation, aggregator Path 1 — shrinks the
+        per-shard ceiling and rate the refill was computed against).
         """
         item = self.build_composite_normal(
             entity_id=entity_id,
@@ -3211,6 +3214,9 @@ class SyncRepository:
             )
             update["ExpressionAttributeValues"][f":ct{i}"] = {"N": str(tokens)}
             update["ConditionExpression"] += f" AND #ct{i} <= :ct{i}"
+        update["ExpressionAttributeNames"]["#csc"] = "shard_count"
+        update["ExpressionAttributeValues"][":csc"] = {"N": str(cached_shard_count)}
+        update["ConditionExpression"] += " AND (attribute_not_exists(#csc) OR #csc = :csc)"
         update["ReturnValues"] = "ALL_NEW"
         return item
 
@@ -3225,6 +3231,7 @@ class SyncRepository:
         now_ms: int,
         *,
         cached_tokens: dict[str, int],
+        cached_shard_count: int,
     ) -> SpeculativeResult | None:
         """The slow path's rf-locked write, built from a cached state (ADR-147 phase 3).
 
@@ -3249,6 +3256,7 @@ class SyncRepository:
             expected_rf,
             now_ms,
             cached_tokens=cached_tokens,
+            cached_shard_count=cached_shard_count,
         )["Update"]
         client = self._get_client()
         try:

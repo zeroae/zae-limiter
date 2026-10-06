@@ -1575,6 +1575,47 @@ class TestRefillFromCache:
                     pass
         assert admitted == 2
 
+    async def test_a_doubling_elsewhere_refuses_the_write(self, repo):
+        """Phase-3 review #3: shard_count moves without rf; it is pinned."""
+        await repo.set_limits("u", [Limit.per_minute("rpm", 100)], resource="r")
+        repo._rejection_cache._clock = _Clock()
+        async with RateLimiter(repository=repo) as limiter:
+            async with limiter.acquire("u", "r", consume={"rpm": 50}):  # slow path
+                pass
+            async with limiter.acquire("u", "r", consume={"rpm": 50}):  # cached tk 0, count 1
+                pass
+            client = await repo._get_client()
+            key = {
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, "u", "r", 0)},
+                "SK": {"S": schema.sk_state()},
+            }
+            await client.update_item(  # another process's bump_shard_count on shard 0
+                TableName=repo.table_name,
+                Key=key,
+                UpdateExpression="SET shard_count = :n",
+                ExpressionAttributeValues={":n": {"N": "2"}},
+            )
+            results: list[object] = []
+            real = repo.refill_from_cached_state
+
+            async def spy(*args, **kwargs):
+                result = await real(*args, **kwargs)
+                results.append(result)
+                return result
+
+            later = repo._now_ms() + 60_000
+            with (
+                patch.object(repo, "_now_ms", return_value=later),
+                patch.object(repo, "refill_from_cached_state", side_effect=spy),
+                patch("zae_limiter.repository.random.randrange", return_value=0),
+            ):
+                async with limiter.acquire("u", "r", consume={"rpm": 50}):
+                    pass
+            item = (await client.get_item(TableName=repo.table_name, Key=key))["Item"]
+        assert results == [None]  # the pinned write refused
+        # The slow path refilled toward the new per-shard ceiling (50) and debited 50.
+        assert int(item[schema.bucket_attr("rpm", schema.BUCKET_FIELD_TK)]["N"]) == 0
+
     def test_the_sync_limiter_refills_from_the_cache(self, mock_dynamodb):
         from contextlib import ExitStack
 

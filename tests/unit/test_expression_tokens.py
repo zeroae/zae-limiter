@@ -146,6 +146,7 @@ class TestCompositeBuilders:
             expected_rf=1_000,
             now_ms=2_000,
             cached_tokens={DOTTED: 0, HYPHENATED: 0},
+            cached_shard_count=1,
         )["Update"]
         assert_expression_safe(update)
         condition = update["ConditionExpression"]

@@ -1533,10 +1533,12 @@ class RateLimiter:
         has_no_parent = key in record_parents and record_parents[key] is None
         views = cache.views(namespace_id, entity_id, resource, now_ms)
         candidates: list[int] = []
+        entries: dict[int, Any] = {}
         for shard, buckets in views.items():
             entry = cache.trusted_entry(namespace_id, entity_id, resource, shard, now_ms)
             if entry is None or entry.vu_ms is not None:
                 continue
+            entries[shard] = entry
             if not (entry.parent_id or has_no_parent):
                 continue
             by_name = {b.limit_name: b for b in buckets}
@@ -1577,6 +1579,7 @@ class RateLimiter:
             views[shard][0].last_refill_ms,
             now_ms,
             cached_tokens={state.limit_name: state.tokens_milli for state in views[shard]},
+            cached_shard_count=entries[shard].shard_count,
         )
         if result is None:
             return None
