@@ -3184,8 +3184,10 @@ class SyncRepository:
         writers change them without moving ``rf``: ``cached_tokens`` caps each
         limit's stored balance at the cached one (a refund elsewhere ADDs
         tokens, and the clamp computed against the lower cached balance would
-        then land above the ceiling; a debit elsewhere only lowers it, which is
-        safe), and ``cached_shard_count`` pins ``shard_count`` (a doubling
+        then land above the ceiling; a debit elsewhere only lowers it, which
+        ``build_composite_normal``'s own floor ``tk >= consumed - refill``
+        refuses — that floor is a pin too, and must not be relaxed), and
+        ``cached_shard_count`` pins ``shard_count`` (a doubling
         elsewhere — client bump, propagation, aggregator Path 1 — shrinks the
         per-shard ceiling and rate the refill was computed against).
         """

@@ -6,8 +6,11 @@ bucket state at no read cost (``ALL_NEW`` on success, ``ALL_OLD`` on failure).
 This cache keeps it per (namespace, entity, resource, shard) so the limiter can
 project it to "now" and reject a request that cannot fit without a DynamoDB call.
 
-It may only ever be used to **reject**. Admission always needs a successful
-conditional write, so the cache cannot over-admit; its only error is a bounded
+It never admits **on its own**. A rejection from it is local; an admission it
+leads to (phase 3, ``Repository.build_cached_refill``) is a conditional write that
+fails if anything the admission was computed from changed since the state was
+seen — and only within one config-cache window of a real slow pass for the
+bucket (``note_slow_pass``). Its rejections err only toward a bounded
 under-admission (at most ``ttl_seconds``) when tokens return by a route the
 projection cannot see — another process's refund, an admin raising a limit.
 
@@ -199,8 +202,9 @@ class RejectionCache:
     ) -> _Entry | None:
         """One shard's entry, if it passes the trust test and is not disabled.
 
-        Phase 3 needs the item's ``vu`` and ``ttl`` beside its states, to pin
-        them on the write it builds from the state.
+        Phase 3 needs the entry's ``vu`` (it uses only an entry with none, and
+        pins ``vu`` absent), its shard count (pinned equal) and its stamps,
+        beside its states.
         """
         shards = self._buckets.get((namespace_id, entity_id, resource)) or {}
         entry = shards.get(shard_id)

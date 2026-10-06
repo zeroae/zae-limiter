@@ -177,14 +177,22 @@ something wrote since, which the lock detects.
    - `shard_count` equal to the cached one — a doubling elsewhere shrinks the
      per-shard ceiling and rate;
    - `cascade` absent or false — a policy turned on elsewhere stamps it (ADR-146);
-   - not `disabled`, and the TTL not expired.
+   - not `disabled`, and the TTL not expired;
+   - and `build_composite_normal`'s own floor `tk >= consumed − refill`, which is what
+     refuses a debit made elsewhere (it lowers `tk` without moving `rf`). It predates
+     phase 3, but it is a pin all the same and must not be relaxed.
 
-   It also uses phase 3 only when the stamp names a parent or the entity's META record
-   says it has none (a pre-#684 stamp can sit on a cascading child), and only when the
-   **warm config cache** resolves the bucket's limits with no schedule, reset or window
-   and every configured limit already on the item: the slow path attaches those from
-   config, and a resource- or system-level change never reaches the item. That answer
-   also gives the write the TTL the slow path would stamp.
+   It also uses phase 3 only when the stamp names a parent or the entity's **existing**
+   META record says it has none (a pre-#684 stamp can sit on a cascading child; an
+   entity with no record yet may be created later under a parent — verification
+   finding A); only within one config-cache window (`config_cache_ttl`, 60 s by
+   default) of the bucket's last real slow pass, which re-reads `disabled` and the
+   cascade policy from config (a stamp a fan-out missed is then re-checked as often as
+   config itself — verification finding B); and only when the **warm config cache**
+   resolves the bucket's limits with no schedule, reset or window and every configured
+   limit already on the item: the slow path attaches those from config, and a
+   resource- or system-level change never reaches the item. That answer also gives the
+   write the TTL the slow path would stamp.
 
    **Standing rule:** any new writer that changes a bucket item must change something
    this condition checks, or phase 3 can admit against a state it cannot see. See
