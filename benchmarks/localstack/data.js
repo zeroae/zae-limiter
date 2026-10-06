@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791227455292,
+  "lastUpdate": 1791248483830,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -30997,6 +30997,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.013548272014107922",
             "extra": "mean: 1.087869649199996 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "01ea3ed40841c22ebfc5dc5ac0d05d83ac61ec45",
+          "message": "✨ feat(provisioner): cascade policy in the limits manifest and CloudFormation (ADR-146) (#694)\n\n## Summary\n\nPR 3 of 3 for #676 (core #689, CLI #690). This one completes the issue.\n\n**Clears the v0.16.0 release blocker recorded on #674:** a `limits\napply` no longer erases a cascade policy, because the manifest now\ncarries it.\n\n- **Manifest:** `cascade: true|false` on `resources.<name>` and\n`entities.<id>.resources.<name>`. The value must be a boolean. On\n`system` it is rejected with an error.\n- **Applier:** writes the policy. The manifest owns the policy for the\nitems it declares — omitting `cascade` clears it, same as `disabled`\n(owner decision A). Which levels actually changed is read from the\n`PutItem` / `DeleteItem` `ALL_OLD` image, at no extra read.\n- **Version gate:** `require_cascade_policy_readers` runs before any\nwrite.\n- **Fan-out:** provisioner mirror `fanout_cascade`, run only for levels\nthat changed (owner decision A). A failed fan-out is recorded in the\n`#PROVISIONER` record (`cascade_pending`) and retried on the next apply,\nso a re-run reconciles.\n- **CloudFormation:** `Cascade` property in both directions.\n`System.Cascade` is passed through so it gets rejected rather than\nsilently dropped.\n- **`limits plan` warning** when a cascading resource has no\nentity-level limits (an entity `_default_` counts).\n- **Docs:** user guide section; `cli.md` \"Cascade and Disabled\" (also\nthe first user docs for manifest `disabled`); `deployment.md`;\ntroubleshooting runbook (\"Cascade Not Working\" now checks the policy and\nuses `set-cascade`); CLAUDE.md; ADR-146.\n\nFollow-up filed: #693 (manifest `disabled` on `system` is silently\nignored).\n\n## Test plan\n\n- [x] New/updated tests in `test_provisioner_manifest`, `test_applier`,\n`test_provisioner_fanout` (moto, real items),\n`test_provisioner_handler`, `test_limits_cli`\n- [x] Pre-push gate: 6263 unit + 45 gevent passed, diff coverage 100%\n(before the review fixes; re-run on push)\n- [x] Docs strict build passes\n- [x] Doctests: 378 passed\n- [x] Fresh-context review: APPROVE WITH NITS. Fixed: a re-apply did not\nreconcile a failed cascade fan-out (now retried via `cascade_pending`);\nthe plan warning ignored entity `_default_`; CloudFormation boolean\nerror wording. Skipped two parity nits shared with `disabled`\n(eventually consistent reads; raw error without a count)\n- [ ] CI\n\nCloses #676\nRefs #674, #693\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01ASEDQdfdZZeqM2KMM1WTMo",
+          "timestamp": "2026-10-05T20:54:27-04:00",
+          "tree_id": "ec29d44effc54259eeca421d701590f913ef558a",
+          "url": "https://github.com/zeroae/zae-limiter/commit/01ea3ed40841c22ebfc5dc5ac0d05d83ac61ec45"
+        },
+        "date": 1791248482511,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 24.86875724746499,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007295341005328836",
+            "extra": "mean: 40.211096600009455 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 17.08679504285953,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010045969280180325",
+            "extra": "mean: 58.52472611110847 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 40.38894171567069,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004208033360228189",
+            "extra": "mean: 24.759252347827807 msec\nrounds: 23"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 38.13591767071943,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004285370617931733",
+            "extra": "mean: 26.221999130436426 msec\nrounds: 23"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 22.235562106181476,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007462863901315672",
+            "extra": "mean: 44.973002941175956 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 83.28653046758201,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0013546222643185636",
+            "extra": "mean: 12.006743399993525 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 26.894618098472762,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006312492146103866",
+            "extra": "mean: 37.18216025000132 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 25.71275524517966,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005584697634119758",
+            "extra": "mean: 38.89120362499732 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 25.730547387033333,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00575449828686751",
+            "extra": "mean: 38.86431116129074 msec\nrounds: 31"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 30.070457236350958,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0041058830341293645",
+            "extra": "mean: 33.255230944448044 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 27.69918745668587,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004210992907494562",
+            "extra": "mean: 36.102142041665765 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 23.12965871658967,
+            "unit": "iter/sec",
+            "range": "stddev: 0.009344221995891881",
+            "extra": "mean: 43.234533299998645 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 30.13807987329473,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0037626078402012465",
+            "extra": "mean: 33.18061416666751 msec\nrounds: 36"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9254089480325636,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003796684250169154",
+            "extra": "mean: 519.3701841999996 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9252515962008014,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004408527087581327",
+            "extra": "mean: 519.4126325999946 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9414649437762187,
+            "unit": "iter/sec",
+            "range": "stddev: 0.012512195570989695",
+            "extra": "mean: 1.0621744405999833 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9171054857603957,
+            "unit": "iter/sec",
+            "range": "stddev: 0.012824187882125922",
+            "extra": "mean: 1.0903871097999969 sec\nrounds: 5"
           }
         ]
       }
