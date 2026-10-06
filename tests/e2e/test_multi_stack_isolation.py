@@ -1,4 +1,4 @@
-"""Isolation between stacks deployed side by side, on LocalStack (#691).
+"""Isolation between stacks deployed side by side, on LocalStack and real AWS (#691).
 
 Users deploy several stacks into one account and region (``my-app-test`` and
 ``my-app-prod``) and rely on the stack boundary to roll changes out safely:
@@ -28,14 +28,29 @@ version is pinned the way ``test_upgrade_partial_stacks`` does it: the ambient
 checkout version is not predictable (#655), and the ratchet is capped at the
 writer's own version for a dev build.
 
-To run locally::
+Every class runs twice through the class-scoped ``backend`` fixture: on
+LocalStack (marked ``integration``) and on real AWS (marked ``aws``, skipped
+without ``--run-aws``). The test bodies are shared; on AWS the stacks also get
+the PowerUser IAM flags, and assertions backed by an eventually consistent read
+(a GSI, a default ``GetItem``) poll through ``eventually``.
+
+To run on LocalStack::
 
     zae-limiter local up
     export AWS_ENDPOINT_URL=http://localhost:4566 AWS_ACCESS_KEY_ID=test \\
            AWS_SECRET_ACCESS_KEY=test AWS_DEFAULT_REGION=us-east-1
-    uv run pytest tests/e2e/test_multi_stack_isolation.py -v
+    uv run pytest tests/e2e/test_multi_stack_isolation.py -m integration -v
+
+To run on real AWS (``AWS_ENDPOINT_URL`` must be unset)::
+
+    AWS_PROFILE=zeroae-code/AWSPowerUserAccess \\
+      uv run pytest tests/e2e/test_multi_stack_isolation.py -m aws --run-aws -v
+
+WARNING: the AWS run creates six real stacks (three pairs, no aggregator, no
+alarms) and deletes them.
 """
 
+import os
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -44,12 +59,18 @@ from click.testing import CliRunner
 
 from tests.fixtures.stack_pairs import (
     REGION,
+    Backend,
     StackPair,
+    aws_backend,
     deployed_pair,
+    eventually,
     function_config,
+    localstack_backend,
     set_stamp,
     snapshot,
     version_item,
+    wait_until_visible,
+    where,
 )
 from zae_limiter import Limit, RateLimiter, RateLimitExceeded, Repository
 from zae_limiter.cli import cli
@@ -60,7 +81,7 @@ from zae_limiter.version import (
     ratcheted_client_min_version,
 )
 
-pytestmark = [pytest.mark.integration, pytest.mark.e2e]
+pytestmark = [pytest.mark.e2e]
 
 CLIENT = "0.99.0"
 """The client version the version-sensitive legs run as. Pinned, not read from
@@ -77,12 +98,29 @@ RESOURCE = "gpt-4"
 ENTITY = "user-1"
 
 
-def _client_min(stack: str, endpoint: str) -> str | None:
+@pytest.fixture(
+    scope="class",
+    params=[
+        pytest.param("localstack", marks=pytest.mark.integration),
+        pytest.param("aws", marks=pytest.mark.aws),
+    ],
+)
+def backend(request) -> Backend:
+    """Where this class deploys its pair: LocalStack, or real AWS under ``--run-aws``."""
+    if request.param == "localstack":
+        return localstack_backend(request.getfixturevalue("localstack_endpoint"))
+    if os.getenv("AWS_ENDPOINT_URL"):
+        # boto3 honours the variable, so "real AWS" would silently be LocalStack.
+        pytest.skip("AWS_ENDPOINT_URL is set; unset it to run against real AWS")
+    return aws_backend()
+
+
+def _client_min(stack: str, endpoint: str | None) -> str | None:
     attr = version_item(stack, endpoint).get("client_min_version")
     return None if attr is None else attr["S"]
 
 
-def _lambda_version(stack: str, endpoint: str) -> str | None:
+def _lambda_version(stack: str, endpoint: str | None) -> str | None:
     attr = version_item(stack, endpoint).get("lambda_version")
     return None if attr is None else attr["S"]
 
@@ -93,11 +131,11 @@ def _lambda_version(stack: str, endpoint: str) -> str | None:
 
 
 @pytest.fixture(scope="class")
-def upgrade_pair(localstack_endpoint, unique_name_class):
-    with deployed_pair(unique_name_class, localstack_endpoint, version=OLD) as pair:
+def upgrade_pair(backend, unique_name_class):
+    with deployed_pair(unique_name_class, backend, version=OLD) as pair:
         # Pin both stamps rather than trust what a deploy under a patched version wrote.
-        set_stamp(pair.a, localstack_endpoint, OLD)
-        set_stamp(pair.b, localstack_endpoint, OLD)
+        set_stamp(pair.a, pair.endpoint_url, OLD)
+        set_stamp(pair.b, pair.endpoint_url, OLD)
         yield pair
 
 
@@ -130,15 +168,7 @@ class TestUpgradeIsolation:
         with patch("zae_limiter.__version__", CLIENT):
             result = CliRunner().invoke(
                 cli,
-                [
-                    "upgrade",
-                    "--name",
-                    upgrade_pair.a,
-                    "--endpoint-url",
-                    endpoint,
-                    "--region",
-                    REGION,
-                ],
+                ["upgrade", *where(upgrade_pair.a, endpoint)],
             )
         assert result.exit_code == 0, f"Upgrade failed: {result.output}"
         assert "Upgrade complete" in result.output
@@ -171,11 +201,11 @@ class TestUpgradeIsolation:
 
 
 @pytest.fixture(scope="class")
-def ratchet_pair(localstack_endpoint, unique_name_class):
-    with deployed_pair(unique_name_class, localstack_endpoint, version=CLIENT) as pair:
+def ratchet_pair(backend, unique_name_class):
+    with deployed_pair(unique_name_class, backend, version=CLIENT) as pair:
         # Both stamped current, so the reset_after gate admits a write on either.
-        set_stamp(pair.a, localstack_endpoint, CLIENT)
-        set_stamp(pair.b, localstack_endpoint, CLIENT)
+        set_stamp(pair.a, pair.endpoint_url, CLIENT)
+        set_stamp(pair.b, pair.endpoint_url, CLIENT)
         yield pair
 
 
@@ -196,6 +226,14 @@ def ratcheted(ratchet_pair):
         finally:
             repo_a.close()
             repo_b.close()
+    # connect() and open() read the record eventually consistently: let the
+    # ratchet reach every replica before a test asks A to refuse a client.
+    expected = ratcheted_client_min_version(None, CLIENT)
+    wait_until_visible(
+        ratchet_pair.a,
+        endpoint,
+        lambda item: item.get("client_min_version", {}).get("S") == expected,
+    )
     return before_b
 
 
@@ -268,8 +306,8 @@ def _limits(capacity: int) -> list[Limit]:
 
 
 @pytest.fixture(scope="class")
-def process_pair(localstack_endpoint, unique_name_class):
-    with deployed_pair(unique_name_class, localstack_endpoint, version=CLIENT) as pair:
+def process_pair(backend, unique_name_class):
+    with deployed_pair(unique_name_class, backend, version=CLIENT) as pair:
         yield pair
 
 
@@ -316,7 +354,11 @@ class TestInProcessIsolation:
         assert {v.limit_name for v in rejected.value.violations} == {"rpm"}
 
         # A is drained, and none of it shows on B: still full, still no bucket.
-        assert (await limiter_a.check_availability(ENTITY, RESOURCE)).available == {"rpm": 0}
+        drained = await eventually(
+            lambda: limiter_a.check_availability(ENTITY, RESOURCE),
+            lambda availability: availability.available == {"rpm": 0},
+        )
+        assert drained.available == {"rpm": 0}
         after = await limiter_b.check_availability(ENTITY, RESOURCE)
         assert after.available == {"rpm": B_CAPACITY}
         assert after.allowed
@@ -325,15 +367,21 @@ class TestInProcessIsolation:
         # ... and B admits the very same request, in the same loop.
         async with limiter_b.acquire(ENTITY, RESOURCE, consume={"rpm": 1}):
             pass
-        (bucket_b,) = await repo_b.get_buckets(ENTITY, RESOURCE)
+        (bucket_b,) = await eventually(
+            lambda: repo_b.get_buckets(ENTITY, RESOURCE), lambda buckets: len(buckets) == 1
+        )
         assert bucket_b.capacity_milli == B_CAPACITY * 1000
         assert bucket_b.tokens_milli == (B_CAPACITY - 1) * 1000
-        (bucket_a,) = await repo_a.get_buckets(ENTITY, RESOURCE)
+        (bucket_a,) = await eventually(
+            lambda: repo_a.get_buckets(ENTITY, RESOURCE), lambda buckets: len(buckets) == 1
+        )
         assert bucket_a.capacity_milli == A_CAPACITY * 1000
         assert bucket_a.tokens_milli < 1000
-        assert (await limiter_b.check_availability(ENTITY, RESOURCE)).available == {
-            "rpm": B_CAPACITY - 1
-        }
+        spent_on_b = await eventually(
+            lambda: limiter_b.check_availability(ENTITY, RESOURCE),
+            lambda availability: availability.available == {"rpm": B_CAPACITY - 1},
+        )
+        assert spent_on_b.available == {"rpm": B_CAPACITY - 1}
 
     async def test_a_config_write_on_a_does_not_reach_a_warm_cache_on_b(self, repos):
         repo_a, repo_b = repos
@@ -350,13 +398,22 @@ class TestInProcessIsolation:
 
         # A's limits change; B is never told (no invalidate_config_cache() on B).
         await repo_a.set_resource_defaults(RESOURCE, _limits(A_CAPACITY + 2))
-        assert [limit.capacity for limit in await repo_a.get_resource_defaults(RESOURCE)] == [
-            A_CAPACITY + 2
-        ]
+        stored_a = await eventually(
+            lambda: repo_a.get_resource_defaults(RESOURCE),
+            lambda limits: [limit.capacity for limit in limits] == [A_CAPACITY + 2],
+        )
+        assert [limit.capacity for limit in stored_a] == [A_CAPACITY + 2]
+
         # A resource-level write does not evict the writer's own cache either (it
         # propagates by TTL, ADR-122), so A is evicted by hand to see the change.
-        await repo_a.invalidate_config_cache()
-        limits_a, _, _ = await repo_a.resolve_limits(ENTITY, RESOURCE)
+        async def resolve_a_fresh():
+            await repo_a.invalidate_config_cache()
+            return await repo_a.resolve_limits(ENTITY, RESOURCE)
+
+        limits_a, _, _ = await eventually(
+            resolve_a_fresh,
+            lambda resolved: [limit.capacity for limit in resolved[0] or []] == [A_CAPACITY + 2],
+        )
         assert limits_a is not None
         assert [limit.capacity for limit in limits_a] == [A_CAPACITY + 2]
 
@@ -377,8 +434,14 @@ class TestInProcessIsolation:
         assert repo_a.namespace_id != repo_b.namespace_id
 
         # Each stack's registry knows its own id for the name, and only that.
-        registry_a = {n["name"]: n["namespace_id"] for n in await repo_a.list_namespaces()}
-        registry_b = {n["name"]: n["namespace_id"] for n in await repo_b.list_namespaces()}
+        listed_a = await eventually(
+            repo_a.list_namespaces, lambda names: any(n["name"] == "default" for n in names)
+        )
+        listed_b = await eventually(
+            repo_b.list_namespaces, lambda names: any(n["name"] == "default" for n in names)
+        )
+        registry_a = {n["name"]: n["namespace_id"] for n in listed_a}
+        registry_b = {n["name"]: n["namespace_id"] for n in listed_b}
         assert registry_a["default"] == repo_a.namespace_id
         assert registry_b["default"] == repo_b.namespace_id
 
@@ -399,8 +462,12 @@ class TestInProcessIsolation:
         limiter_a = RateLimiter(repository=scoped_a)
         async with limiter_a.acquire(ENTITY, RESOURCE, consume={"rpm": 1}):
             pass
-        assert await scoped_a.get_entity(ENTITY) is not None
-        assert len(await scoped_a.get_buckets(ENTITY, RESOURCE)) == 1
+        entity_a = await eventually(lambda: scoped_a.get_entity(ENTITY), lambda e: e is not None)
+        assert entity_a is not None
+        buckets_a = await eventually(
+            lambda: scoped_a.get_buckets(ENTITY, RESOURCE), lambda buckets: len(buckets) == 1
+        )
+        assert len(buckets_a) == 1
 
         # ... none of it visible under the same name on B.
         assert await scoped_b.get_entity(ENTITY) is None
@@ -411,7 +478,11 @@ class TestInProcessIsolation:
         availability = await limiter_b.check_availability(ENTITY, RESOURCE)
         assert availability.available == {"rpm": A_CAPACITY}
         # ... and the two registries share no id.
-        assert {n["name"] for n in await repo_a.list_namespaces()} >= {"default", "shared-name"}
+        listed_a = await eventually(
+            repo_a.list_namespaces,
+            lambda names: {n["name"] for n in names} >= {"default", "shared-name"},
+        )
+        assert {n["name"] for n in listed_a} >= {"default", "shared-name"}
         assert {n["namespace_id"] for n in await repo_a.list_namespaces()}.isdisjoint(
             {n["namespace_id"] for n in await repo_b.list_namespaces()}
         )
