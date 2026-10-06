@@ -171,6 +171,7 @@ class SyncRepository:
         self._shard_cap_warned: set[tuple[str, str]] = set()
         self._entity_cache: dict[tuple[str, str], tuple[bool, str | None, dict[str, int]]] = {}
         self._cascade_cache: dict[tuple[str, str, str], bool] = {}
+        self._record_parents: dict[tuple[str, str], str | None] = {}
         self._rejection_cache = RejectionCache(
             ttl_seconds=rejection_cache_ttl, max_entries=rejection_cache_size
         )
@@ -501,6 +502,7 @@ class SyncRepository:
         scoped._entity_cache = self._entity_cache
         scoped._cascade_cache = self._cascade_cache
         scoped._rejection_cache = self._rejection_cache
+        scoped._record_parents = self._record_parents
         scoped._namespace_cache = self._namespace_cache
         scoped._on_unavailable_cache = None
         scoped._lambda_version_read = self._lambda_version_read
@@ -1588,9 +1590,11 @@ class SyncRepository:
         existing_shards = self._entity_cache.get(cache_key, (False, None, {}))[2]
         if not item:
             self._entity_cache[cache_key] = (False, None, existing_shards)
+            self._record_parents[cache_key] = None
             return None
         entity = self._deserialize_entity(item)
         self._entity_cache[cache_key] = (entity.cascade, entity.parent_id, existing_shards)
+        self._record_parents[cache_key] = entity.parent_id
         return entity
 
     @clears_rejection_cache
@@ -1908,6 +1912,7 @@ class SyncRepository:
             self._entity_cache[cache_key] = (entity.cascade, entity.parent_id, existing_shards)
         else:
             self._entity_cache[cache_key] = (False, None, existing_shards)
+        self._record_parents[cache_key] = entity.parent_id if entity is not None else None
         return (entity, buckets)
 
     def batch_get_configs(
@@ -3179,11 +3184,17 @@ class SyncRepository:
         )
         update = item["Update"]
         update["ExpressionAttributeNames"].update(
-            {"#cvu": schema.BUCKET_FIELD_VU, "#cdis": schema.BUCKET_FIELD_DISABLED, "#cttl": "ttl"}
+            {
+                "#cvu": schema.BUCKET_FIELD_VU,
+                "#cdis": schema.BUCKET_FIELD_DISABLED,
+                "#cttl": "ttl",
+                "#ccs": "cascade",
+            }
         )
         update["ExpressionAttributeValues"][":cnow"] = {"N": str(now_ms // 1000)}
+        update["ExpressionAttributeValues"][":cfalse"] = {"BOOL": False}
         update["ConditionExpression"] = (
-            f"{update['ConditionExpression']} AND attribute_not_exists(#cvu) AND attribute_not_exists(#cdis) AND (attribute_not_exists(#cttl) OR #cttl > :cnow)"
+            f"{update['ConditionExpression']} AND attribute_not_exists(#cvu) AND attribute_not_exists(#cdis) AND (attribute_not_exists(#cttl) OR #cttl > :cnow) AND (attribute_not_exists(#ccs) OR #ccs = :cfalse)"
         )
         update["ReturnValues"] = "ALL_NEW"
         return item

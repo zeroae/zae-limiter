@@ -1327,6 +1327,21 @@ class TestParentShardSteering:
         assert firsts and all(shard == 1 for shard in firsts)
 
 
+async def _consumed(repo: Repository, entity_id: str) -> int:
+    """`b_rpm_tc` (millitokens) on entity's r shard 0, read straight from the table."""
+    client = await repo._get_client()
+    item = (
+        await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, "r", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+        )
+    ).get("Item")
+    return 0 if item is None else int(item[schema.bucket_attr("rpm", "tc")]["N"])
+
+
 async def _spent_and_cached(limiter: RateLimiter) -> None:
     """Spend u/r's 2 rpm so that a fast-path success image (tk = 0) is cached."""
     async with limiter.acquire("u", "r", consume={"rpm": 1}):  # slow path creates
@@ -1472,6 +1487,67 @@ class TestRefillFromCache:
             async with RateLimiter(repository=repo) as limiter:
                 assert await limiter._refill_from_cache("u", "r", consume, now) is None
         refill.assert_not_called()
+
+    async def test_cascade_turned_on_elsewhere_still_debits_the_parent(self, repo):
+        """Phase-3 review #1: the write pins `cascade` off; a policy change refuses it."""
+        await repo.create_entity("org")
+        await repo.create_entity("u", parent_id="org", cascade=False)
+        await repo.set_limits("org", [Limit.per_minute("rpm", 100)], resource="r")
+        await repo.set_limits("u", [RPM], resource="r")
+        repo._rejection_cache._clock = _Clock()
+        async with RateLimiter(repository=repo) as limiter:
+            await _spent_and_cached(limiter)
+            async with limiter.acquire("org", "r", consume={"rpm": 1}):  # org's bucket exists
+                pass
+            before = await _consumed(repo, "org")
+            # Another process turns u's cascade on: its fan-out stamps `cascade`
+            # without moving rf or vu, and this process's cache does not hear of it.
+            other = Repository(
+                name="test-rejection", region="us-east-1", _skip_deprecation_warning=True
+            )
+            other._namespace_id = repo._namespace_id
+            await _stamp_current_lambdas(other)
+            await other.set_entity_cascade("u", True, resource="r")
+            await other.close()
+            later = repo._now_ms() + 60_000
+            with patch.object(repo, "_now_ms", return_value=later):
+                async with limiter.acquire("u", "r", consume={"rpm": 1}):
+                    pass
+        assert await _consumed(repo, "org") - before == 1000  # the parent was debited
+
+    async def test_a_pre_684_stamp_on_a_cascading_child_is_not_trusted(self, repo):
+        """Phase-3 review #1b: `cascade=False` with no `parent_id` on a child that has one."""
+        await repo.create_entity("org")
+        await repo.create_entity("u", parent_id="org", cascade=True)
+        await repo.set_limits("org", [Limit.per_minute("rpm", 100)], resource="r")
+        await repo.set_limits("u", [RPM], resource="r")
+        repo._rejection_cache._clock = _Clock()
+        async with RateLimiter(repository=repo) as limiter:
+            async with limiter.acquire("u", "r", consume={"rpm": 1}):  # slow path
+                pass
+            client = await repo._get_client()
+            await client.update_item(  # the stamp an older version left on u's item
+                TableName=repo.table_name,
+                Key={
+                    "PK": {"S": schema.pk_bucket(repo._namespace_id, "u", "r", 0)},
+                    "SK": {"S": schema.sk_state()},
+                },
+                UpdateExpression="SET #c = :f REMOVE parent_id",
+                ExpressionAttributeNames={"#c": "cascade"},
+                ExpressionAttributeValues={":f": {"BOOL": False}},
+            )
+            async with limiter.acquire("u", "r", consume={"rpm": 1}):  # fast path caches it
+                pass
+            before = await _consumed(repo, "org")
+            later = repo._now_ms() + 60_000
+            with (
+                patch.object(repo, "_now_ms", return_value=later),
+                patch.object(repo, "refill_from_cached_state") as refill,
+            ):
+                async with limiter.acquire("u", "r", consume={"rpm": 1}):
+                    pass
+        refill.assert_not_called()
+        assert await _consumed(repo, "org") - before == 1000  # the slow path cascaded
 
     def test_the_sync_limiter_refills_from_the_cache(self, mock_dynamodb):
         from contextlib import ExitStack

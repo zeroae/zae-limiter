@@ -222,6 +222,12 @@ class Repository:
         # Consulted only while the entity has an entry, so dropping that entry
         # still means "start cold".
         self._cascade_cache: dict[tuple[str, str, str], bool] = {}
+        # Each entity's parent as its own META record says (None: no parent,
+        # or no record). `_entity_cache` cannot answer that: a fast-path
+        # success re-learns parent_id from the bucket's stamp, and a pre-#684
+        # stamp carries none on a child that has a parent. ADR-147 phase 3
+        # trusts "no parent" only from here. META's parent_id never changes.
+        self._record_parents: dict[tuple[str, str], str | None] = {}
         # The last bucket state seen per (namespace, entity, resource, shard),
         # used only to reject a request that cannot fit without a DynamoDB
         # call (ADR-147, #695). Shared with every namespace() scope.
@@ -581,6 +587,7 @@ class Repository:
         scoped._entity_cache = self._entity_cache
         scoped._cascade_cache = self._cascade_cache
         scoped._rejection_cache = self._rejection_cache
+        scoped._record_parents = self._record_parents
         scoped._namespace_cache = self._namespace_cache
         # Scoped repos start with no on_unavailable cache (each namespace
         # has its own system config)
@@ -1874,10 +1881,12 @@ class Repository:
         existing_shards = self._entity_cache.get(cache_key, (False, None, {}))[2]
         if not item:
             self._entity_cache[cache_key] = (False, None, existing_shards)
+            self._record_parents[cache_key] = None
             return None
 
         entity = self._deserialize_entity(item)
         self._entity_cache[cache_key] = (entity.cascade, entity.parent_id, existing_shards)
+        self._record_parents[cache_key] = entity.parent_id
         return entity
 
     @clears_rejection_cache
@@ -2265,6 +2274,7 @@ class Repository:
             self._entity_cache[cache_key] = (entity.cascade, entity.parent_id, existing_shards)
         else:
             self._entity_cache[cache_key] = (False, None, existing_shards)
+        self._record_parents[cache_key] = entity.parent_id if entity is not None else None
 
         return entity, buckets
 
@@ -3821,13 +3831,18 @@ class Repository:
                 "#cvu": schema.BUCKET_FIELD_VU,
                 "#cdis": schema.BUCKET_FIELD_DISABLED,
                 "#cttl": "ttl",
+                "#ccs": "cascade",
             }
         )
         update["ExpressionAttributeValues"][":cnow"] = {"N": str(now_ms // 1000)}
+        update["ExpressionAttributeValues"][":cfalse"] = {"BOOL": False}
+        # `cascade` is pinned off: a policy turned on elsewhere stamps it
+        # (ADR-146) without moving `rf` or `vu`, and this write debits no parent.
         update["ConditionExpression"] = (
             f"{update['ConditionExpression']} AND attribute_not_exists(#cvu)"
             " AND attribute_not_exists(#cdis)"
             " AND (attribute_not_exists(#cttl) OR #cttl > :cnow)"
+            " AND (attribute_not_exists(#ccs) OR #ccs = :cfalse)"
         )
         update["ReturnValues"] = "ALL_NEW"
         return item

@@ -1523,11 +1523,21 @@ class RateLimiter:
             return None
         if cache.cascades(namespace_id, entity_id, resource):
             return None
+        # Known not to cascade: either the stamp names a parent (so its
+        # `cascade=False` is a policy, ADR-146), or the entity's own META
+        # record says it has no parent. A stamp with neither is a pre-#684 one
+        # that can sit on a cascading child; only the slow path's owner stamp
+        # repairs it. `_entity_cache` cannot say "no parent": a stamp teaches it.
+        record_parents = getattr(self._repository, "_record_parents", None) or {}
+        key = (namespace_id, entity_id)
+        has_no_parent = key in record_parents and record_parents[key] is None
         views = cache.views(namespace_id, entity_id, resource, now_ms)
         candidates: list[int] = []
         for shard, buckets in views.items():
             entry = cache.trusted_entry(namespace_id, entity_id, resource, shard, now_ms)
             if entry is None or entry.vu_ms is not None:
+                continue
+            if not (entry.parent_id or has_no_parent):
                 continue
             by_name = {b.limit_name: b for b in buckets}
             if not all(name in by_name for name in consume):
