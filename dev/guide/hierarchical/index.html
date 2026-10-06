@@ -646,6 +646,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#cascade-per-resource" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cascade per Resource
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#error-handling-with-hierarchies" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3753,6 +3764,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#cascade-per-resource" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cascade per Resource
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#error-handling-with-hierarchies" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3973,76 +3995,169 @@
 </span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="p">)</span> <span class="k">as</span> <span class="n">lease</span><span class="p">:</span>
 </span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>    <span class="o">...</span>
 </span></code></pre></div>
+<h2 id="cascade-per-resource">Cascade per Resource<a class="headerlink" href="#cascade-per-resource" title="Permanent link">&para;</a></h2>
+<p><code>cascade=True</code> on <code>create_entity()</code> applies to <strong>every</strong> resource the entity uses. Sometimes
+one entity needs different answers on different resources. Take an LLM gateway:</p>
+<table>
+<thead>
+<tr>
+<th>Resource</th>
+<th>Cascade</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>One per model (<code>gpt-4</code>, <code>claude-sonnet</code>, …)</td>
+<td><strong>on</strong></td>
+<td>The org's per-model limit protects the provider's quota</td>
+</tr>
+<tr>
+<td><code>llm</code> (a shared cost budget)</td>
+<td><strong>off</strong></td>
+<td>The budget is per user; debiting the org on every call costs a write for nothing</td>
+</tr>
+</tbody>
+</table>
+<p>A <strong>cascade policy</strong> on resource or entity config decides this per resource. It is <code>on</code>,
+<code>off</code>, or unset (inherit), and resolves like <a href="../basic-usage/#turning-a-resource-off"><code>disabled</code></a>:</p>
+<ol>
+<li>Entity config for this resource</li>
+<li>Entity config for all resources (<code>_default_</code>)</li>
+<li>Resource config</li>
+</ol>
+<p>The first level that sets a value wins. <strong>When no level sets one, the entity's own
+<code>create_entity(cascade=...)</code> flag applies</strong>, so nothing changes until you set a policy. An
+entity with no parent never cascades, whatever the policy says. There is no system-level
+policy.</p>
+<p>The policy methods live on <code>Repository</code>, like the disable methods:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">create_entity</span><span class="p">(</span><span class="n">entity_id</span><span class="o">=</span><span class="s2">"org-acme"</span><span class="p">)</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">create_entity</span><span class="p">(</span><span class="n">entity_id</span><span class="o">=</span><span class="s2">"user-alice"</span><span class="p">,</span> <span class="n">parent_id</span><span class="o">=</span><span class="s2">"org-acme"</span><span class="p">,</span> <span class="n">cascade</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="c1"># The org's own limit for the model: this is what a cascade debits</span>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span><span class="s2">"org-acme"</span><span class="p">,</span> <span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">"tpm"</span><span class="p">,</span> <span class="mi">100_000</span><span class="p">)],</span> <span class="n">resource</span><span class="o">=</span><span class="s2">"gpt-4"</span><span class="p">)</span>
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="c1"># Model limits count against the org; the shared budget stays per user</span>
+</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="k">await</span> <span class="n">repo</span><span class="o">.</span><span class="n">set_resource_cascade</span><span class="p">(</span><span class="s2">"gpt-4"</span><span class="p">,</span> <span class="kc">True</span><span class="p">)</span>
+</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="k">await</span> <span class="n">repo</span><span class="o">.</span><span class="n">set_resource_cascade</span><span class="p">(</span><span class="s2">"llm"</span><span class="p">,</span> <span class="kc">False</span><span class="p">)</span>
+</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>
+</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a><span class="c1"># One entity, one resource: an explicit override</span>
+</span><span id="__span-5-12"><a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a><span class="k">await</span> <span class="n">repo</span><span class="o">.</span><span class="n">set_entity_cascade</span><span class="p">(</span><span class="s2">"user-alice"</span><span class="p">,</span> <span class="kc">True</span><span class="p">,</span> <span class="n">resource</span><span class="o">=</span><span class="s2">"llm"</span><span class="p">)</span>
+</span><span id="__span-5-13"><a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a>
+</span><span id="__span-5-14"><a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a><span class="c1"># Back to inheriting</span>
+</span><span id="__span-5-15"><a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a><span class="k">await</span> <span class="n">repo</span><span class="o">.</span><span class="n">clear_entity_cascade</span><span class="p">(</span><span class="s2">"user-alice"</span><span class="p">,</span> <span class="n">resource</span><span class="o">=</span><span class="s2">"llm"</span><span class="p">)</span>
+</span></code></pre></div>
+<p><code>set_resource_defaults()</code> and <code>set_limits()</code> also take a <code>cascade=</code> keyword, and
+<code>get_resource_cascade()</code> / <code>get_entity_cascade()</code> read a level's own value (<code>None</code> when it
+inherits).</p>
+<p>The same from the CLI (see <a href="../../cli/#cascade-policy-per-resource">Cascade Policy per Resource</a>):</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>zae-limiter<span class="w"> </span>resource<span class="w"> </span>set-cascade<span class="w"> </span>gpt-4<span class="w"> </span>on
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>zae-limiter<span class="w"> </span>resource<span class="w"> </span>set-cascade<span class="w"> </span>llm<span class="w"> </span>off
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span>set-cascade<span class="w"> </span>user-alice<span class="w"> </span>on<span class="w"> </span>--resource<span class="w"> </span>llm
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span>clear-cascade<span class="w"> </span>user-alice<span class="w"> </span>--resource<span class="w"> </span>llm
+</span></code></pre></div>
+<p>Or in a <a href="../../cli/#cascade-and-disabled">limits manifest</a>, applied with <code>limits apply</code>:</p>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="nt">resources</span><span class="p">:</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span><span class="nt">gpt-4</span><span class="p">:</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">    </span><span class="nt">cascade</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">    </span><span class="nt">limits</span><span class="p">:</span>
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">      </span><span class="nt">tpm</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt">capacity</span><span class="p">:</span><span class="w"> </span><span class="nv">10000</span><span class="p p-Indicator">}</span>
+</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="w">  </span><span class="nt">llm</span><span class="p">:</span>
+</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="w">    </span><span class="nt">cascade</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span>
+</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="w">    </span><span class="nt">limits</span><span class="p">:</span>
+</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="w">      </span><span class="nt">cost</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt">capacity</span><span class="p">:</span><span class="w"> </span><span class="nv">500</span><span class="p p-Indicator">}</span>
+</span><span id="__span-7-10"><a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a>
+</span><span id="__span-7-11"><a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a><span class="nt">entities</span><span class="p">:</span>
+</span><span id="__span-7-12"><a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a><span class="w">  </span><span class="nt">org-acme</span><span class="p">:</span>
+</span><span id="__span-7-13"><a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a><span class="w">    </span><span class="nt">resources</span><span class="p">:</span>
+</span><span id="__span-7-14"><a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a><span class="w">      </span><span class="nt">gpt-4</span><span class="p">:</span>
+</span><span id="__span-7-15"><a id="__codelineno-7-15" name="__codelineno-7-15" href="#__codelineno-7-15"></a><span class="w">        </span><span class="nt">limits</span><span class="p">:</span>
+</span><span id="__span-7-16"><a id="__codelineno-7-16" name="__codelineno-7-16" href="#__codelineno-7-16"></a><span class="w">          </span><span class="nt">tpm</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt">capacity</span><span class="p">:</span><span class="w"> </span><span class="nv">100000</span><span class="p p-Indicator">}</span>
+</span></code></pre></div>
+<div class="admonition tip">
+<p class="admonition-title">Give the parent its own limits</p>
+<p>A cascading acquire debits the parent against the parent's <strong>own</strong> limits for that
+resource. If the parent has none, it falls back to the resource defaults — the numbers
+written for one user. <code>limits plan</code> warns when a manifest turns cascade on for a resource
+and no entity in it has its own limits there.</p>
+</div>
+<p><strong>Cost:</strong> no extra reads per call. The fast path reads the policy from the bucket item it
+already writes, and the slow path reads it from the config items it already fetches. Changing
+a policy restamps the existing buckets it reaches (one write each), like disabling a resource.</p>
+<p><strong>Version requirement:</strong> setting or clearing a policy needs a stack whose Lambdas are 0.16.0 or
+later, and raises the stack's minimum client version to 0.16.0. Run <code>zae-limiter upgrade</code>
+first if the call is refused.</p>
+<p>See <a href="../../adr/146-per-resource-cascade-policy/">ADR-146</a> for the full design.</p>
 <h2 id="error-handling-with-hierarchies">Error Handling with Hierarchies<a class="headerlink" href="#error-handling-with-hierarchies" title="Permanent link">&para;</a></h2>
 <p>When an entity has cascade enabled, <code>RateLimitExceeded</code> includes statuses for all entities:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="k">try</span><span class="p">:</span>
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>    <span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span>
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>        <span class="n">entity_id</span><span class="o">=</span><span class="s2">"key-abc"</span><span class="p">,</span>  <span class="c1"># Has cascade=True from create_entity()</span>
-</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>        <span class="n">resource</span><span class="o">=</span><span class="s2">"gpt-4"</span><span class="p">,</span>
-</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>        <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">"rpm"</span><span class="p">,</span> <span class="mi">100</span><span class="p">)],</span>
-</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>        <span class="n">consume</span><span class="o">=</span><span class="p">{</span><span class="s2">"rpm"</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span>
-</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>    <span class="p">):</span>
-</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>        <span class="k">pass</span>
-</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="k">except</span> <span class="n">RateLimitExceeded</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
-</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>    <span class="k">for</span> <span class="n">status</span> <span class="ow">in</span> <span class="n">e</span><span class="o">.</span><span class="n">statuses</span><span class="p">:</span>
-</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Entity: </span><span class="si">{</span><span class="n">status</span><span class="o">.</span><span class="n">entity_id</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
-</span><span id="__span-5-12"><a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a>        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"  Limit: </span><span class="si">{</span><span class="n">status</span><span class="o">.</span><span class="n">limit_name</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
-</span><span id="__span-5-13"><a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a>        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"  Available: </span><span class="si">{</span><span class="n">status</span><span class="o">.</span><span class="n">available</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
-</span><span id="__span-5-14"><a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a>        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"  Exceeded: </span><span class="si">{</span><span class="n">status</span><span class="o">.</span><span class="n">exceeded</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="k">try</span><span class="p">:</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>    <span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>        <span class="n">entity_id</span><span class="o">=</span><span class="s2">"key-abc"</span><span class="p">,</span>  <span class="c1"># Has cascade=True from create_entity()</span>
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>        <span class="n">resource</span><span class="o">=</span><span class="s2">"gpt-4"</span><span class="p">,</span>
+</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>        <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">"rpm"</span><span class="p">,</span> <span class="mi">100</span><span class="p">)],</span>
+</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>        <span class="n">consume</span><span class="o">=</span><span class="p">{</span><span class="s2">"rpm"</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span>
+</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>    <span class="p">):</span>
+</span><span id="__span-8-8"><a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>        <span class="k">pass</span>
+</span><span id="__span-8-9"><a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a><span class="k">except</span> <span class="n">RateLimitExceeded</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+</span><span id="__span-8-10"><a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>    <span class="k">for</span> <span class="n">status</span> <span class="ow">in</span> <span class="n">e</span><span class="o">.</span><span class="n">statuses</span><span class="p">:</span>
+</span><span id="__span-8-11"><a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Entity: </span><span class="si">{</span><span class="n">status</span><span class="o">.</span><span class="n">entity_id</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+</span><span id="__span-8-12"><a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a>        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"  Limit: </span><span class="si">{</span><span class="n">status</span><span class="o">.</span><span class="n">limit_name</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+</span><span id="__span-8-13"><a id="__codelineno-8-13" name="__codelineno-8-13" href="#__codelineno-8-13"></a>        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"  Available: </span><span class="si">{</span><span class="n">status</span><span class="o">.</span><span class="n">available</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+</span><span id="__span-8-14"><a id="__codelineno-8-14" name="__codelineno-8-14" href="#__codelineno-8-14"></a>        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"  Exceeded: </span><span class="si">{</span><span class="n">status</span><span class="o">.</span><span class="n">exceeded</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
 </span></code></pre></div>
 <h2 id="use-cases">Use Cases<a class="headerlink" href="#use-cases" title="Permanent link">&para;</a></h2>
 <h3 id="multi-tenant-saas">Multi-Tenant SaaS<a class="headerlink" href="#multi-tenant-saas" title="Permanent link">&para;</a></h3>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># Tenant sustains 1M tokens/day, dripping continuously.</span>
-</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="c1"># For an allowance that returns in one lump at midnight, use</span>
-</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="c1"># Limit.quota("tpd", 1_000_000, cron="0 0 * * *", tz=...) instead.</span>
-</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span>
-</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">"tenant-acme"</span><span class="p">,</span>
-</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_day</span><span class="p">(</span><span class="s2">"tpd"</span><span class="p">,</span> <span class="mi">1_000_000</span><span class="p">)],</span>
-</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="p">)</span>
-</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>
-</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a><span class="c1"># Create user under tenant with cascade enabled</span>
-</span><span id="__span-6-10"><a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">create_entity</span><span class="p">(</span><span class="n">entity_id</span><span class="o">=</span><span class="s2">"user-123"</span><span class="p">,</span> <span class="n">parent_id</span><span class="o">=</span><span class="s2">"tenant-acme"</span><span class="p">,</span> <span class="n">cascade</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
-</span><span id="__span-6-11"><a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a>
-</span><span id="__span-6-12"><a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a><span class="c1"># Each user sustains 100k tokens/day</span>
-</span><span id="__span-6-13"><a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span>
-</span><span id="__span-6-14"><a id="__codelineno-6-14" name="__codelineno-6-14" href="#__codelineno-6-14"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">"user-123"</span><span class="p">,</span>
-</span><span id="__span-6-15"><a id="__codelineno-6-15" name="__codelineno-6-15" href="#__codelineno-6-15"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_day</span><span class="p">(</span><span class="s2">"tpd"</span><span class="p">,</span> <span class="mi">100_000</span><span class="p">)],</span>
-</span><span id="__span-6-16"><a id="__codelineno-6-16" name="__codelineno-6-16" href="#__codelineno-6-16"></a><span class="p">)</span>
-</span><span id="__span-6-17"><a id="__codelineno-6-17" name="__codelineno-6-17" href="#__codelineno-6-17"></a>
-</span><span id="__span-6-18"><a id="__codelineno-6-18" name="__codelineno-6-18" href="#__codelineno-6-18"></a><span class="c1"># Rate limit user — auto-cascades to tenant</span>
-</span><span id="__span-6-19"><a id="__codelineno-6-19" name="__codelineno-6-19" href="#__codelineno-6-19"></a><span class="c1"># limits=None auto-resolves from stored config</span>
-</span><span id="__span-6-20"><a id="__codelineno-6-20" name="__codelineno-6-20" href="#__codelineno-6-20"></a><span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span>
-</span><span id="__span-6-21"><a id="__codelineno-6-21" name="__codelineno-6-21" href="#__codelineno-6-21"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">"user-123"</span><span class="p">,</span>
-</span><span id="__span-6-22"><a id="__codelineno-6-22" name="__codelineno-6-22" href="#__codelineno-6-22"></a>    <span class="n">resource</span><span class="o">=</span><span class="s2">"gpt-4"</span><span class="p">,</span>
-</span><span id="__span-6-23"><a id="__codelineno-6-23" name="__codelineno-6-23" href="#__codelineno-6-23"></a>    <span class="n">limits</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-6-24"><a id="__codelineno-6-24" name="__codelineno-6-24" href="#__codelineno-6-24"></a>    <span class="n">consume</span><span class="o">=</span><span class="p">{</span><span class="s2">"tpm"</span><span class="p">:</span> <span class="mi">500</span><span class="p">},</span>
-</span><span id="__span-6-25"><a id="__codelineno-6-25" name="__codelineno-6-25" href="#__codelineno-6-25"></a><span class="p">)</span> <span class="k">as</span> <span class="n">lease</span><span class="p">:</span>
-</span><span id="__span-6-26"><a id="__codelineno-6-26" name="__codelineno-6-26" href="#__codelineno-6-26"></a>    <span class="o">...</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="c1"># Tenant sustains 1M tokens/day, dripping continuously.</span>
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="c1"># For an allowance that returns in one lump at midnight, use</span>
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="c1"># Limit.quota("tpd", 1_000_000, cron="0 0 * * *", tz=...) instead.</span>
+</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span>
+</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">"tenant-acme"</span><span class="p">,</span>
+</span><span id="__span-9-6"><a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_day</span><span class="p">(</span><span class="s2">"tpd"</span><span class="p">,</span> <span class="mi">1_000_000</span><span class="p">)],</span>
+</span><span id="__span-9-7"><a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="p">)</span>
+</span><span id="__span-9-8"><a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a>
+</span><span id="__span-9-9"><a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a><span class="c1"># Create user under tenant with cascade enabled</span>
+</span><span id="__span-9-10"><a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">create_entity</span><span class="p">(</span><span class="n">entity_id</span><span class="o">=</span><span class="s2">"user-123"</span><span class="p">,</span> <span class="n">parent_id</span><span class="o">=</span><span class="s2">"tenant-acme"</span><span class="p">,</span> <span class="n">cascade</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+</span><span id="__span-9-11"><a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a>
+</span><span id="__span-9-12"><a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a><span class="c1"># Each user sustains 100k tokens/day</span>
+</span><span id="__span-9-13"><a id="__codelineno-9-13" name="__codelineno-9-13" href="#__codelineno-9-13"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span>
+</span><span id="__span-9-14"><a id="__codelineno-9-14" name="__codelineno-9-14" href="#__codelineno-9-14"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">"user-123"</span><span class="p">,</span>
+</span><span id="__span-9-15"><a id="__codelineno-9-15" name="__codelineno-9-15" href="#__codelineno-9-15"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_day</span><span class="p">(</span><span class="s2">"tpd"</span><span class="p">,</span> <span class="mi">100_000</span><span class="p">)],</span>
+</span><span id="__span-9-16"><a id="__codelineno-9-16" name="__codelineno-9-16" href="#__codelineno-9-16"></a><span class="p">)</span>
+</span><span id="__span-9-17"><a id="__codelineno-9-17" name="__codelineno-9-17" href="#__codelineno-9-17"></a>
+</span><span id="__span-9-18"><a id="__codelineno-9-18" name="__codelineno-9-18" href="#__codelineno-9-18"></a><span class="c1"># Rate limit user — auto-cascades to tenant</span>
+</span><span id="__span-9-19"><a id="__codelineno-9-19" name="__codelineno-9-19" href="#__codelineno-9-19"></a><span class="c1"># limits=None auto-resolves from stored config</span>
+</span><span id="__span-9-20"><a id="__codelineno-9-20" name="__codelineno-9-20" href="#__codelineno-9-20"></a><span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span>
+</span><span id="__span-9-21"><a id="__codelineno-9-21" name="__codelineno-9-21" href="#__codelineno-9-21"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">"user-123"</span><span class="p">,</span>
+</span><span id="__span-9-22"><a id="__codelineno-9-22" name="__codelineno-9-22" href="#__codelineno-9-22"></a>    <span class="n">resource</span><span class="o">=</span><span class="s2">"gpt-4"</span><span class="p">,</span>
+</span><span id="__span-9-23"><a id="__codelineno-9-23" name="__codelineno-9-23" href="#__codelineno-9-23"></a>    <span class="n">limits</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-9-24"><a id="__codelineno-9-24" name="__codelineno-9-24" href="#__codelineno-9-24"></a>    <span class="n">consume</span><span class="o">=</span><span class="p">{</span><span class="s2">"tpm"</span><span class="p">:</span> <span class="mi">500</span><span class="p">},</span>
+</span><span id="__span-9-25"><a id="__codelineno-9-25" name="__codelineno-9-25" href="#__codelineno-9-25"></a><span class="p">)</span> <span class="k">as</span> <span class="n">lease</span><span class="p">:</span>
+</span><span id="__span-9-26"><a id="__codelineno-9-26" name="__codelineno-9-26" href="#__codelineno-9-26"></a>    <span class="o">...</span>
 </span></code></pre></div>
 <h3 id="api-key-management">API Key Management<a class="headerlink" href="#api-key-management" title="Permanent link">&para;</a></h3>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># Project limit: 10k RPM</span>
-</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span>
-</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">"project-prod"</span><span class="p">,</span>
-</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">"rpm"</span><span class="p">,</span> <span class="mi">10_000</span><span class="p">)],</span>
-</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="p">)</span>
-</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>
-</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="c1"># Production key: 5k RPM (half of project)</span>
-</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span>
-</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">"key-prod"</span><span class="p">,</span>
-</span><span id="__span-7-10"><a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">"rpm"</span><span class="p">,</span> <span class="mi">5_000</span><span class="p">)],</span>
-</span><span id="__span-7-11"><a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a><span class="p">)</span>
-</span><span id="__span-7-12"><a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a>
-</span><span id="__span-7-13"><a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a><span class="c1"># Staging key: 1k RPM</span>
-</span><span id="__span-7-14"><a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span>
-</span><span id="__span-7-15"><a id="__codelineno-7-15" name="__codelineno-7-15" href="#__codelineno-7-15"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">"key-staging"</span><span class="p">,</span>
-</span><span id="__span-7-16"><a id="__codelineno-7-16" name="__codelineno-7-16" href="#__codelineno-7-16"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">"rpm"</span><span class="p">,</span> <span class="mi">1_000</span><span class="p">)],</span>
-</span><span id="__span-7-17"><a id="__codelineno-7-17" name="__codelineno-7-17" href="#__codelineno-7-17"></a><span class="p">)</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="c1"># Project limit: 10k RPM</span>
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span>
+</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">"project-prod"</span><span class="p">,</span>
+</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">"rpm"</span><span class="p">,</span> <span class="mi">10_000</span><span class="p">)],</span>
+</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="p">)</span>
+</span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a>
+</span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="c1"># Production key: 5k RPM (half of project)</span>
+</span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span>
+</span><span id="__span-10-9"><a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">"key-prod"</span><span class="p">,</span>
+</span><span id="__span-10-10"><a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">"rpm"</span><span class="p">,</span> <span class="mi">5_000</span><span class="p">)],</span>
+</span><span id="__span-10-11"><a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a><span class="p">)</span>
+</span><span id="__span-10-12"><a id="__codelineno-10-12" name="__codelineno-10-12" href="#__codelineno-10-12"></a>
+</span><span id="__span-10-13"><a id="__codelineno-10-13" name="__codelineno-10-13" href="#__codelineno-10-13"></a><span class="c1"># Staging key: 1k RPM</span>
+</span><span id="__span-10-14"><a id="__codelineno-10-14" name="__codelineno-10-14" href="#__codelineno-10-14"></a><span class="k">await</span> <span class="n">limiter</span><span class="o">.</span><span class="n">set_limits</span><span class="p">(</span>
+</span><span id="__span-10-15"><a id="__codelineno-10-15" name="__codelineno-10-15" href="#__codelineno-10-15"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">"key-staging"</span><span class="p">,</span>
+</span><span id="__span-10-16"><a id="__codelineno-10-16" name="__codelineno-10-16" href="#__codelineno-10-16"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">"rpm"</span><span class="p">,</span> <span class="mi">1_000</span><span class="p">)],</span>
+</span><span id="__span-10-17"><a id="__codelineno-10-17" name="__codelineno-10-17" href="#__codelineno-10-17"></a><span class="p">)</span>
 </span></code></pre></div>
 <h2 id="limitations">Limitations<a class="headerlink" href="#limitations" title="Permanent link">&para;</a></h2>
 <ul>
 <li><strong>Two levels only</strong>: Parent → Child (no grandparents)</li>
 <li><strong>Single parent</strong>: Each entity can have at most one parent</li>
-<li><strong>Cascade is per-entity</strong>: Set <code>cascade=True</code> on <code>create_entity()</code> to enable; it applies to all <code>acquire()</code> calls for that entity</li>
+<li><strong>Cascade defaults per entity</strong>: Set <code>cascade=True</code> on <code>create_entity()</code> to enable it for every resource; a <a href="#cascade-per-resource">cascade policy</a> can override it per resource</li>
 </ul>
 <h2 id="next-steps">Next Steps<a class="headerlink" href="#next-steps" title="Permanent link">&para;</a></h2>
 <ul>

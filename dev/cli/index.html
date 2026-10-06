@@ -2004,6 +2004,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#cascade-and-disabled" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cascade and Disabled
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#preview-changes" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -5451,6 +5462,17 @@
     <span class="md-ellipsis">
       
         YAML Manifest Format
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cascade-and-disabled" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cascade and Disabled
       
     </span>
   </a>
@@ -9932,9 +9954,66 @@ to <code>0</code>:</p>
 </span><span id="__span-130-4"><a id="__codelineno-130-4" name="__codelineno-130-4" href="#__codelineno-130-4"></a><span class="w">    </span><span class="nt">reset_after_seconds</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">18000</span><span class="w">   </span><span class="c1"># 5h from each entity's own first use</span>
 </span></code></pre></div>
 <p><code>reset_after_seconds</code> round trips through <code>Custom::ZaeLimiterLimits</code> as <code>ResetAfterSeconds</code>.</p>
+<h3 id="cascade-and-disabled">Cascade and Disabled<a class="headerlink" href="#cascade-and-disabled" title="Permanent link">&para;</a></h3>
+<p>Entries under <code>resources.&lt;name&gt;</code> and <code>entities.&lt;id&gt;.resources.&lt;name&gt;</code> may also set two flags,
+each <code>true</code>, <code>false</code>, or omitted:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Meaning</th>
+<th>See</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>disabled</code></td>
+<td>Turn the resource off (or re-admit one entity)</td>
+<td><a href="#disabling-resources-and-entities">Disabling Resources and Entities</a></td>
+</tr>
+<tr>
+<td><code>cascade</code></td>
+<td>Whether acquires on this resource also debit the parent</td>
+<td><a href="#cascade-policy-per-resource">Cascade Policy per Resource</a></td>
+</tr>
+</tbody>
+</table>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-131-1"><a id="__codelineno-131-1" name="__codelineno-131-1" href="#__codelineno-131-1"></a><span class="nt">resources</span><span class="p">:</span>
+</span><span id="__span-131-2"><a id="__codelineno-131-2" name="__codelineno-131-2" href="#__codelineno-131-2"></a><span class="w">  </span><span class="nt">gpt-4</span><span class="p">:</span>
+</span><span id="__span-131-3"><a id="__codelineno-131-3" name="__codelineno-131-3" href="#__codelineno-131-3"></a><span class="w">    </span><span class="nt">cascade</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+</span><span id="__span-131-4"><a id="__codelineno-131-4" name="__codelineno-131-4" href="#__codelineno-131-4"></a><span class="w">    </span><span class="nt">limits</span><span class="p">:</span>
+</span><span id="__span-131-5"><a id="__codelineno-131-5" name="__codelineno-131-5" href="#__codelineno-131-5"></a><span class="w">      </span><span class="nt">tpm</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt">capacity</span><span class="p">:</span><span class="w"> </span><span class="nv">10000</span><span class="p p-Indicator">}</span>
+</span><span id="__span-131-6"><a id="__codelineno-131-6" name="__codelineno-131-6" href="#__codelineno-131-6"></a><span class="w">  </span><span class="nt">llm</span><span class="p">:</span>
+</span><span id="__span-131-7"><a id="__codelineno-131-7" name="__codelineno-131-7" href="#__codelineno-131-7"></a><span class="w">    </span><span class="nt">cascade</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span>
+</span><span id="__span-131-8"><a id="__codelineno-131-8" name="__codelineno-131-8" href="#__codelineno-131-8"></a><span class="w">    </span><span class="nt">limits</span><span class="p">:</span>
+</span><span id="__span-131-9"><a id="__codelineno-131-9" name="__codelineno-131-9" href="#__codelineno-131-9"></a><span class="w">      </span><span class="nt">cost</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt">capacity</span><span class="p">:</span><span class="w"> </span><span class="nv">500</span><span class="p p-Indicator">}</span>
+</span><span id="__span-131-10"><a id="__codelineno-131-10" name="__codelineno-131-10" href="#__codelineno-131-10"></a><span class="nt">entities</span><span class="p">:</span>
+</span><span id="__span-131-11"><a id="__codelineno-131-11" name="__codelineno-131-11" href="#__codelineno-131-11"></a><span class="w">  </span><span class="nt">org-acme</span><span class="p">:</span>
+</span><span id="__span-131-12"><a id="__codelineno-131-12" name="__codelineno-131-12" href="#__codelineno-131-12"></a><span class="w">    </span><span class="nt">resources</span><span class="p">:</span>
+</span><span id="__span-131-13"><a id="__codelineno-131-13" name="__codelineno-131-13" href="#__codelineno-131-13"></a><span class="w">      </span><span class="nt">gpt-4</span><span class="p">:</span>
+</span><span id="__span-131-14"><a id="__codelineno-131-14" name="__codelineno-131-14" href="#__codelineno-131-14"></a><span class="w">        </span><span class="nt">limits</span><span class="p">:</span>
+</span><span id="__span-131-15"><a id="__codelineno-131-15" name="__codelineno-131-15" href="#__codelineno-131-15"></a><span class="w">          </span><span class="nt">tpm</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt">capacity</span><span class="p">:</span><span class="w"> </span><span class="nv">100000</span><span class="p p-Indicator">}</span>
+</span></code></pre></div>
+<ul>
+<li><strong>The manifest owns both flags</strong> for every item it declares. Omitting one clears a value set
+  earlier by <code>set-cascade</code>, <code>disable</code> or the Python API on the next <code>apply</code>.</li>
+<li><strong>Neither applies to <code>system</code>.</strong> <code>cascade</code> there is an error; <code>disabled</code> there is ignored.</li>
+<li><strong><code>cascade</code> must be a boolean</strong>; a value like <code>"yes"</code> fails the plan.</li>
+<li><strong>Bucket restamps:</strong> <code>disabled</code> restamps every declared resource and entity level on each apply. <code>cascade</code>
+  restamps only the levels whose stored policy actually changed, so a routine apply writes no
+  buckets for it.</li>
+<li><strong>CloudFormation:</strong> both round trip through <code>Custom::ZaeLimiterLimits</code> as the <code>Disabled</code> and
+  <code>Cascade</code> properties on <code>Resources</code> and <code>Entities</code> entries.</li>
+<li><strong>Version:</strong> a manifest that sets <code>cascade</code> needs a stack whose Lambdas are 0.16.0 or later,
+  and raises the stack's minimum client version to 0.16.0.</li>
+</ul>
+<p><code>limits plan</code> warns when a resource sets <code>cascade: true</code> and no entity in the manifest has its
+own limits for it, because parents would then be limited by the per-user resource defaults:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-132-1"><a id="__codelineno-132-1" name="__codelineno-132-1" href="#__codelineno-132-1"></a>Warning: resources.gpt-4 sets cascade: true, but no entity in this manifest has its own limits for 'gpt-4', so parents will be limited by the per-user resource defaults
+</span></code></pre></div>
 <h3 id="preview-changes">Preview Changes<a class="headerlink" href="#preview-changes" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-131-1"><a id="__codelineno-131-1" name="__codelineno-131-1" href="#__codelineno-131-1"></a><span class="c1"># Show what would change (like terraform plan)</span>
-</span><span id="__span-131-2"><a id="__codelineno-131-2" name="__codelineno-131-2" href="#__codelineno-131-2"></a>zae-limiter<span class="w"> </span>limits<span class="w"> </span>plan<span class="w"> </span>-n<span class="w"> </span>my-app<span class="w"> </span>-f<span class="w"> </span>limits.yaml
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-133-1"><a id="__codelineno-133-1" name="__codelineno-133-1" href="#__codelineno-133-1"></a><span class="c1"># Show what would change (like terraform plan)</span>
+</span><span id="__span-133-2"><a id="__codelineno-133-2" name="__codelineno-133-2" href="#__codelineno-133-2"></a>zae-limiter<span class="w"> </span>limits<span class="w"> </span>plan<span class="w"> </span>-n<span class="w"> </span>my-app<span class="w"> </span>-f<span class="w"> </span>limits.yaml
 </span></code></pre></div>
 <p><code>plan</code> is read-only: it never deploys the stack, registers the manifest's namespace, or updates
 the Lambdas. It needs a deployed stack, a registered namespace and <strong>up-to-date Lambdas</strong>; if
@@ -9942,44 +10021,44 @@ the Lambdas are behind this client, run <code>zae-limiter upgrade -n my-app</cod
 <a href="#read-only-commands">Read-Only Commands</a>). A manifest for a new namespace can be applied
 directly — <code>limits apply</code> registers it.</p>
 <p>Output:
-<div class="language-text highlight"><pre><span></span><code><span id="__span-132-1"><a id="__codelineno-132-1" name="__codelineno-132-1" href="#__codelineno-132-1"></a>Plan: 4 change(s)
-</span><span id="__span-132-2"><a id="__codelineno-132-2" name="__codelineno-132-2" href="#__codelineno-132-2"></a>
-</span><span id="__span-132-3"><a id="__codelineno-132-3" name="__codelineno-132-3" href="#__codelineno-132-3"></a>  + create system: (system defaults)
-</span><span id="__span-132-4"><a id="__codelineno-132-4" name="__codelineno-132-4" href="#__codelineno-132-4"></a>  + create resource: gpt-4
-</span><span id="__span-132-5"><a id="__codelineno-132-5" name="__codelineno-132-5" href="#__codelineno-132-5"></a>  + create resource: gpt-3.5-turbo
-</span><span id="__span-132-6"><a id="__codelineno-132-6" name="__codelineno-132-6" href="#__codelineno-132-6"></a>  + create entity: user-premium/gpt-4
+<div class="language-text highlight"><pre><span></span><code><span id="__span-134-1"><a id="__codelineno-134-1" name="__codelineno-134-1" href="#__codelineno-134-1"></a>Plan: 4 change(s)
+</span><span id="__span-134-2"><a id="__codelineno-134-2" name="__codelineno-134-2" href="#__codelineno-134-2"></a>
+</span><span id="__span-134-3"><a id="__codelineno-134-3" name="__codelineno-134-3" href="#__codelineno-134-3"></a>  + create system: (system defaults)
+</span><span id="__span-134-4"><a id="__codelineno-134-4" name="__codelineno-134-4" href="#__codelineno-134-4"></a>  + create resource: gpt-4
+</span><span id="__span-134-5"><a id="__codelineno-134-5" name="__codelineno-134-5" href="#__codelineno-134-5"></a>  + create resource: gpt-3.5-turbo
+</span><span id="__span-134-6"><a id="__codelineno-134-6" name="__codelineno-134-6" href="#__codelineno-134-6"></a>  + create entity: user-premium/gpt-4
 </span></code></pre></div></p>
 <h3 id="apply-changes">Apply Changes<a class="headerlink" href="#apply-changes" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-133-1"><a id="__codelineno-133-1" name="__codelineno-133-1" href="#__codelineno-133-1"></a><span class="c1"># Apply limits from YAML file</span>
-</span><span id="__span-133-2"><a id="__codelineno-133-2" name="__codelineno-133-2" href="#__codelineno-133-2"></a>zae-limiter<span class="w"> </span>limits<span class="w"> </span>apply<span class="w"> </span>-n<span class="w"> </span>my-app<span class="w"> </span>-f<span class="w"> </span>limits.yaml
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-135-1"><a id="__codelineno-135-1" name="__codelineno-135-1" href="#__codelineno-135-1"></a><span class="c1"># Apply limits from YAML file</span>
+</span><span id="__span-135-2"><a id="__codelineno-135-2" name="__codelineno-135-2" href="#__codelineno-135-2"></a>zae-limiter<span class="w"> </span>limits<span class="w"> </span>apply<span class="w"> </span>-n<span class="w"> </span>my-app<span class="w"> </span>-f<span class="w"> </span>limits.yaml
 </span></code></pre></div>
 <p>Output:
-<div class="language-text highlight"><pre><span></span><code><span id="__span-134-1"><a id="__codelineno-134-1" name="__codelineno-134-1" href="#__codelineno-134-1"></a>  + create system: (system defaults)
-</span><span id="__span-134-2"><a id="__codelineno-134-2" name="__codelineno-134-2" href="#__codelineno-134-2"></a>  + create resource: gpt-4
-</span><span id="__span-134-3"><a id="__codelineno-134-3" name="__codelineno-134-3" href="#__codelineno-134-3"></a>  + create resource: gpt-3.5-turbo
-</span><span id="__span-134-4"><a id="__codelineno-134-4" name="__codelineno-134-4" href="#__codelineno-134-4"></a>  + create entity: user-premium/gpt-4
-</span><span id="__span-134-5"><a id="__codelineno-134-5" name="__codelineno-134-5" href="#__codelineno-134-5"></a>
-</span><span id="__span-134-6"><a id="__codelineno-134-6" name="__codelineno-134-6" href="#__codelineno-134-6"></a>Applied: 4 created, 0 updated, 0 deleted.
+<div class="language-text highlight"><pre><span></span><code><span id="__span-136-1"><a id="__codelineno-136-1" name="__codelineno-136-1" href="#__codelineno-136-1"></a>  + create system: (system defaults)
+</span><span id="__span-136-2"><a id="__codelineno-136-2" name="__codelineno-136-2" href="#__codelineno-136-2"></a>  + create resource: gpt-4
+</span><span id="__span-136-3"><a id="__codelineno-136-3" name="__codelineno-136-3" href="#__codelineno-136-3"></a>  + create resource: gpt-3.5-turbo
+</span><span id="__span-136-4"><a id="__codelineno-136-4" name="__codelineno-136-4" href="#__codelineno-136-4"></a>  + create entity: user-premium/gpt-4
+</span><span id="__span-136-5"><a id="__codelineno-136-5" name="__codelineno-136-5" href="#__codelineno-136-5"></a>
+</span><span id="__span-136-6"><a id="__codelineno-136-6" name="__codelineno-136-6" href="#__codelineno-136-6"></a>Applied: 4 created, 0 updated, 0 deleted.
 </span></code></pre></div></p>
 <p>Subsequent applies with a modified YAML file will show <code>~</code> for updates and <code>-</code> for deletions (items removed from the manifest are deleted from DynamoDB).</p>
 <h3 id="detect-drift">Detect Drift<a class="headerlink" href="#detect-drift" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-135-1"><a id="__codelineno-135-1" name="__codelineno-135-1" href="#__codelineno-135-1"></a><span class="c1"># Show drift between YAML and live DynamoDB state</span>
-</span><span id="__span-135-2"><a id="__codelineno-135-2" name="__codelineno-135-2" href="#__codelineno-135-2"></a>zae-limiter<span class="w"> </span>limits<span class="w"> </span>diff<span class="w"> </span>-n<span class="w"> </span>my-app<span class="w"> </span>-f<span class="w"> </span>limits.yaml
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-137-1"><a id="__codelineno-137-1" name="__codelineno-137-1" href="#__codelineno-137-1"></a><span class="c1"># Show drift between YAML and live DynamoDB state</span>
+</span><span id="__span-137-2"><a id="__codelineno-137-2" name="__codelineno-137-2" href="#__codelineno-137-2"></a>zae-limiter<span class="w"> </span>limits<span class="w"> </span>diff<span class="w"> </span>-n<span class="w"> </span>my-app<span class="w"> </span>-f<span class="w"> </span>limits.yaml
 </span></code></pre></div>
 <p><code>diff</code> is read-only with the same requirements as <code>plan</code>.</p>
 <p>Output (when live state differs from YAML):
-<div class="language-text highlight"><pre><span></span><code><span id="__span-136-1"><a id="__codelineno-136-1" name="__codelineno-136-1" href="#__codelineno-136-1"></a>Drift detected: 1 difference(s)
-</span><span id="__span-136-2"><a id="__codelineno-136-2" name="__codelineno-136-2" href="#__codelineno-136-2"></a>
-</span><span id="__span-136-3"><a id="__codelineno-136-3" name="__codelineno-136-3" href="#__codelineno-136-3"></a>  ~ resource: gpt-4
+<div class="language-text highlight"><pre><span></span><code><span id="__span-138-1"><a id="__codelineno-138-1" name="__codelineno-138-1" href="#__codelineno-138-1"></a>Drift detected: 1 difference(s)
+</span><span id="__span-138-2"><a id="__codelineno-138-2" name="__codelineno-138-2" href="#__codelineno-138-2"></a>
+</span><span id="__span-138-3"><a id="__codelineno-138-3" name="__codelineno-138-3" href="#__codelineno-138-3"></a>  ~ resource: gpt-4
 </span></code></pre></div></p>
 <h3 id="generate-cloudformation-template">Generate CloudFormation Template<a class="headerlink" href="#generate-cloudformation-template" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-137-1"><a id="__codelineno-137-1" name="__codelineno-137-1" href="#__codelineno-137-1"></a><span class="c1"># Generate a CFN template with Custom::ZaeLimiterLimits resource</span>
-</span><span id="__span-137-2"><a id="__codelineno-137-2" name="__codelineno-137-2" href="#__codelineno-137-2"></a>zae-limiter<span class="w"> </span>limits<span class="w"> </span>cfn-template<span class="w"> </span>-n<span class="w"> </span>my-app<span class="w"> </span>-f<span class="w"> </span>limits.yaml<span class="w"> </span>&gt;<span class="w"> </span>limits-stack.yaml
-</span><span id="__span-137-3"><a id="__codelineno-137-3" name="__codelineno-137-3" href="#__codelineno-137-3"></a>
-</span><span id="__span-137-4"><a id="__codelineno-137-4" name="__codelineno-137-4" href="#__codelineno-137-4"></a><span class="c1"># Deploy with AWS CLI</span>
-</span><span id="__span-137-5"><a id="__codelineno-137-5" name="__codelineno-137-5" href="#__codelineno-137-5"></a>aws<span class="w"> </span>cloudformation<span class="w"> </span>deploy<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-137-6"><a id="__codelineno-137-6" name="__codelineno-137-6" href="#__codelineno-137-6"></a><span class="w">    </span>--template-file<span class="w"> </span>limits-stack.yaml<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-137-7"><a id="__codelineno-137-7" name="__codelineno-137-7" href="#__codelineno-137-7"></a><span class="w">    </span>--stack-name<span class="w"> </span>my-app-limits
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-139-1"><a id="__codelineno-139-1" name="__codelineno-139-1" href="#__codelineno-139-1"></a><span class="c1"># Generate a CFN template with Custom::ZaeLimiterLimits resource</span>
+</span><span id="__span-139-2"><a id="__codelineno-139-2" name="__codelineno-139-2" href="#__codelineno-139-2"></a>zae-limiter<span class="w"> </span>limits<span class="w"> </span>cfn-template<span class="w"> </span>-n<span class="w"> </span>my-app<span class="w"> </span>-f<span class="w"> </span>limits.yaml<span class="w"> </span>&gt;<span class="w"> </span>limits-stack.yaml
+</span><span id="__span-139-3"><a id="__codelineno-139-3" name="__codelineno-139-3" href="#__codelineno-139-3"></a>
+</span><span id="__span-139-4"><a id="__codelineno-139-4" name="__codelineno-139-4" href="#__codelineno-139-4"></a><span class="c1"># Deploy with AWS CLI</span>
+</span><span id="__span-139-5"><a id="__codelineno-139-5" name="__codelineno-139-5" href="#__codelineno-139-5"></a>aws<span class="w"> </span>cloudformation<span class="w"> </span>deploy<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-139-6"><a id="__codelineno-139-6" name="__codelineno-139-6" href="#__codelineno-139-6"></a><span class="w">    </span>--template-file<span class="w"> </span>limits-stack.yaml<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-139-7"><a id="__codelineno-139-7" name="__codelineno-139-7" href="#__codelineno-139-7"></a><span class="w">    </span>--stack-name<span class="w"> </span>my-app-limits
 </span></code></pre></div>
 <p>The generated template uses <code>Custom::ZaeLimiterLimits</code> backed by the provisioner Lambda. The Lambda ARN is imported from the main stack via <code>Fn::ImportValue</code>.</p>
 <h3 id="common-options">Common Options<a class="headerlink" href="#common-options" title="Permanent link">&para;</a></h3>
@@ -10023,10 +10102,10 @@ directly — <code>limits apply</code> registers it.</p>
 <p>Config writes are committed before the fan-out that carries them to live bucket items, so an
 apply can get part-way and stop. <code>limits apply</code> reports what landed, prints each failure on
 stderr, and exits 1:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-138-1"><a id="__codelineno-138-1" name="__codelineno-138-1" href="#__codelineno-138-1"></a>Applied: 2 created, 1 updated, 0 deleted.
-</span><span id="__span-138-2"><a id="__codelineno-138-2" name="__codelineno-138-2" href="#__codelineno-138-2"></a>
-</span><span id="__span-138-3"><a id="__codelineno-138-3" name="__codelineno-138-3" href="#__codelineno-138-3"></a>Errors (1):
-</span><span id="__span-138-4"><a id="__codelineno-138-4" name="__codelineno-138-4" href="#__codelineno-138-4"></a>  - bucket param sync entity user-123: &lt;reason&gt;
+<div class="language-text highlight"><pre><span></span><code><span id="__span-140-1"><a id="__codelineno-140-1" name="__codelineno-140-1" href="#__codelineno-140-1"></a>Applied: 2 created, 1 updated, 0 deleted.
+</span><span id="__span-140-2"><a id="__codelineno-140-2" name="__codelineno-140-2" href="#__codelineno-140-2"></a>
+</span><span id="__span-140-3"><a id="__codelineno-140-3" name="__codelineno-140-3" href="#__codelineno-140-3"></a>Errors (1):
+</span><span id="__span-140-4"><a id="__codelineno-140-4" name="__codelineno-140-4" href="#__codelineno-140-4"></a>  - bucket param sync entity user-123: &lt;reason&gt;
 </span></code></pre></div>
 <p>Every write is idempotent, so re-running the same manifest reconciles the remainder. The
 <code>#PROVISIONER</code> record is written either way, so it always describes the config that is actually
@@ -10039,21 +10118,21 @@ in the table.</p>
 <p><code>system get-defaults</code>, <code>resource get-defaults</code> and <code>entity get-limits</code> render a limit's
 schedule beneath it. Cron is shown canonically, with weekday and month as names, followed by
 the timezone and what the window does:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-139-1"><a id="__codelineno-139-1" name="__codelineno-139-1" href="#__codelineno-139-1"></a>Limits for entity 'user-123' on resource 'gpt-4':
-</span><span id="__span-139-2"><a id="__codelineno-139-2" name="__codelineno-139-2" href="#__codelineno-139-2"></a>  rpm: 1,000/min
-</span><span id="__span-139-3"><a id="__codelineno-139-3" name="__codelineno-139-3" href="#__codelineno-139-3"></a>    Schedule:
-</span><span id="__span-139-4"><a id="__codelineno-139-4" name="__codelineno-139-4" href="#__codelineno-139-4"></a>      "* 9-17 * * MON-FRI" America/New_York  → scale 50%
-</span><span id="__span-139-5"><a id="__codelineno-139-5" name="__codelineno-139-5" href="#__codelineno-139-5"></a>      "* 0-6 * * *" America/New_York  → capacity 2,000
+<div class="language-text highlight"><pre><span></span><code><span id="__span-141-1"><a id="__codelineno-141-1" name="__codelineno-141-1" href="#__codelineno-141-1"></a>Limits for entity 'user-123' on resource 'gpt-4':
+</span><span id="__span-141-2"><a id="__codelineno-141-2" name="__codelineno-141-2" href="#__codelineno-141-2"></a>  rpm: 1,000/min
+</span><span id="__span-141-3"><a id="__codelineno-141-3" name="__codelineno-141-3" href="#__codelineno-141-3"></a>    Schedule:
+</span><span id="__span-141-4"><a id="__codelineno-141-4" name="__codelineno-141-4" href="#__codelineno-141-4"></a>      "* 9-17 * * MON-FRI" America/New_York  → scale 50%
+</span><span id="__span-141-5"><a id="__codelineno-141-5" name="__codelineno-141-5" href="#__codelineno-141-5"></a>      "* 0-6 * * *" America/New_York  → capacity 2,000
 </span></code></pre></div>
 <p>A quota carries its whole allowance and the instant it comes back on one line:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-140-1"><a id="__codelineno-140-1" name="__codelineno-140-1" href="#__codelineno-140-1"></a>Limits for entity 'user-123' on resource 'gpt-4':
-</span><span id="__span-140-2"><a id="__codelineno-140-2" name="__codelineno-140-2" href="#__codelineno-140-2"></a>  session: 500 quota (resets "0 */5 * * *" America/New_York)
-</span><span id="__span-140-3"><a id="__codelineno-140-3" name="__codelineno-140-3" href="#__codelineno-140-3"></a>  rpmo: 1,000,000 quota (resets "0 0 1 * *" America/New_York)
+<div class="language-text highlight"><pre><span></span><code><span id="__span-142-1"><a id="__codelineno-142-1" name="__codelineno-142-1" href="#__codelineno-142-1"></a>Limits for entity 'user-123' on resource 'gpt-4':
+</span><span id="__span-142-2"><a id="__codelineno-142-2" name="__codelineno-142-2" href="#__codelineno-142-2"></a>  session: 500 quota (resets "0 */5 * * *" America/New_York)
+</span><span id="__span-142-3"><a id="__codelineno-142-3" name="__codelineno-142-3" href="#__codelineno-142-3"></a>  rpmo: 1,000,000 quota (resets "0 0 1 * *" America/New_York)
 </span></code></pre></div>
 <p>A <a href="../guide/session-quotas/">session quota</a> names its window length and says "after first use",
 so it is not mistaken for a clock-aligned period:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-141-1"><a id="__codelineno-141-1" name="__codelineno-141-1" href="#__codelineno-141-1"></a>Limits for entity 'user-123' on resource 'claude-sonnet':
-</span><span id="__span-141-2"><a id="__codelineno-141-2" name="__codelineno-141-2" href="#__codelineno-141-2"></a>  session: 10,000 quota (resets 5h after first use)
+<div class="language-text highlight"><pre><span></span><code><span id="__span-143-1"><a id="__codelineno-143-1" name="__codelineno-143-1" href="#__codelineno-143-1"></a>Limits for entity 'user-123' on resource 'claude-sonnet':
+</span><span id="__span-143-2"><a id="__codelineno-143-2" name="__codelineno-143-2" href="#__codelineno-143-2"></a>  session: 10,000 quota (resets 5h after first use)
 </span></code></pre></div>
 <p>Schedules and session windows are set through the Python API or a YAML manifest. The
 <code>-l name:rate/period</code> flag on <code>set-defaults</code> and <code>set-limits</code> takes neither a cron expression
@@ -10074,26 +10153,26 @@ subcommands for turning access off without deleting stored limits. See
 the very next request — no cache TTL or refill delay to wait out. <code>acquire()</code> raises a
 distinct <code>ResourceDisabled</code> exception (not <code>RateLimitExceeded</code>) for a disabled resource or
 entity; map it to HTTP 403, not 429, since retrying will not help.</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-142-1"><a id="__codelineno-142-1" name="__codelineno-142-1" href="#__codelineno-142-1"></a><span class="c1"># Turn off a resource for everyone without an entity-level override</span>
-</span><span id="__span-142-2"><a id="__codelineno-142-2" name="__codelineno-142-2" href="#__codelineno-142-2"></a>zae-limiter<span class="w"> </span>resource<span class="w"> </span>disable<span class="w"> </span>gpt-4
-</span><span id="__span-142-3"><a id="__codelineno-142-3" name="__codelineno-142-3" href="#__codelineno-142-3"></a>
-</span><span id="__span-142-4"><a id="__codelineno-142-4" name="__codelineno-142-4" href="#__codelineno-142-4"></a><span class="c1"># Explicitly enable a resource that is disabled by default</span>
-</span><span id="__span-142-5"><a id="__codelineno-142-5" name="__codelineno-142-5" href="#__codelineno-142-5"></a>zae-limiter<span class="w"> </span>resource<span class="w"> </span><span class="nb">enable</span><span class="w"> </span>gpt-4
-</span><span id="__span-142-6"><a id="__codelineno-142-6" name="__codelineno-142-6" href="#__codelineno-142-6"></a>
-</span><span id="__span-142-7"><a id="__codelineno-142-7" name="__codelineno-142-7" href="#__codelineno-142-7"></a><span class="c1"># Revert a resource to inheriting the disabled state</span>
-</span><span id="__span-142-8"><a id="__codelineno-142-8" name="__codelineno-142-8" href="#__codelineno-142-8"></a>zae-limiter<span class="w"> </span>resource<span class="w"> </span>clear-disabled<span class="w"> </span>gpt-4
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-144-1"><a id="__codelineno-144-1" name="__codelineno-144-1" href="#__codelineno-144-1"></a><span class="c1"># Turn off a resource for everyone without an entity-level override</span>
+</span><span id="__span-144-2"><a id="__codelineno-144-2" name="__codelineno-144-2" href="#__codelineno-144-2"></a>zae-limiter<span class="w"> </span>resource<span class="w"> </span>disable<span class="w"> </span>gpt-4
+</span><span id="__span-144-3"><a id="__codelineno-144-3" name="__codelineno-144-3" href="#__codelineno-144-3"></a>
+</span><span id="__span-144-4"><a id="__codelineno-144-4" name="__codelineno-144-4" href="#__codelineno-144-4"></a><span class="c1"># Explicitly enable a resource that is disabled by default</span>
+</span><span id="__span-144-5"><a id="__codelineno-144-5" name="__codelineno-144-5" href="#__codelineno-144-5"></a>zae-limiter<span class="w"> </span>resource<span class="w"> </span><span class="nb">enable</span><span class="w"> </span>gpt-4
+</span><span id="__span-144-6"><a id="__codelineno-144-6" name="__codelineno-144-6" href="#__codelineno-144-6"></a>
+</span><span id="__span-144-7"><a id="__codelineno-144-7" name="__codelineno-144-7" href="#__codelineno-144-7"></a><span class="c1"># Revert a resource to inheriting the disabled state</span>
+</span><span id="__span-144-8"><a id="__codelineno-144-8" name="__codelineno-144-8" href="#__codelineno-144-8"></a>zae-limiter<span class="w"> </span>resource<span class="w"> </span>clear-disabled<span class="w"> </span>gpt-4
 </span></code></pre></div>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-143-1"><a id="__codelineno-143-1" name="__codelineno-143-1" href="#__codelineno-143-1"></a><span class="c1"># Disable an entity across all resources</span>
-</span><span id="__span-143-2"><a id="__codelineno-143-2" name="__codelineno-143-2" href="#__codelineno-143-2"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span>disable<span class="w"> </span>user-123
-</span><span id="__span-143-3"><a id="__codelineno-143-3" name="__codelineno-143-3" href="#__codelineno-143-3"></a>
-</span><span id="__span-143-4"><a id="__codelineno-143-4" name="__codelineno-143-4" href="#__codelineno-143-4"></a><span class="c1"># Disable an entity for a specific resource only</span>
-</span><span id="__span-143-5"><a id="__codelineno-143-5" name="__codelineno-143-5" href="#__codelineno-143-5"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span>disable<span class="w"> </span>user-123<span class="w"> </span>--resource<span class="w"> </span>gpt-4
-</span><span id="__span-143-6"><a id="__codelineno-143-6" name="__codelineno-143-6" href="#__codelineno-143-6"></a>
-</span><span id="__span-143-7"><a id="__codelineno-143-7" name="__codelineno-143-7" href="#__codelineno-143-7"></a><span class="c1"># Re-admit an entity to a resource that is disabled for everyone else</span>
-</span><span id="__span-143-8"><a id="__codelineno-143-8" name="__codelineno-143-8" href="#__codelineno-143-8"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span><span class="nb">enable</span><span class="w"> </span>user-123<span class="w"> </span>--resource<span class="w"> </span>gpt-4
-</span><span id="__span-143-9"><a id="__codelineno-143-9" name="__codelineno-143-9" href="#__codelineno-143-9"></a>
-</span><span id="__span-143-10"><a id="__codelineno-143-10" name="__codelineno-143-10" href="#__codelineno-143-10"></a><span class="c1"># Revert an entity to inheriting the resource's disabled state</span>
-</span><span id="__span-143-11"><a id="__codelineno-143-11" name="__codelineno-143-11" href="#__codelineno-143-11"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span>clear-disabled<span class="w"> </span>user-123<span class="w"> </span>--resource<span class="w"> </span>gpt-4
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-145-1"><a id="__codelineno-145-1" name="__codelineno-145-1" href="#__codelineno-145-1"></a><span class="c1"># Disable an entity across all resources</span>
+</span><span id="__span-145-2"><a id="__codelineno-145-2" name="__codelineno-145-2" href="#__codelineno-145-2"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span>disable<span class="w"> </span>user-123
+</span><span id="__span-145-3"><a id="__codelineno-145-3" name="__codelineno-145-3" href="#__codelineno-145-3"></a>
+</span><span id="__span-145-4"><a id="__codelineno-145-4" name="__codelineno-145-4" href="#__codelineno-145-4"></a><span class="c1"># Disable an entity for a specific resource only</span>
+</span><span id="__span-145-5"><a id="__codelineno-145-5" name="__codelineno-145-5" href="#__codelineno-145-5"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span>disable<span class="w"> </span>user-123<span class="w"> </span>--resource<span class="w"> </span>gpt-4
+</span><span id="__span-145-6"><a id="__codelineno-145-6" name="__codelineno-145-6" href="#__codelineno-145-6"></a>
+</span><span id="__span-145-7"><a id="__codelineno-145-7" name="__codelineno-145-7" href="#__codelineno-145-7"></a><span class="c1"># Re-admit an entity to a resource that is disabled for everyone else</span>
+</span><span id="__span-145-8"><a id="__codelineno-145-8" name="__codelineno-145-8" href="#__codelineno-145-8"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span><span class="nb">enable</span><span class="w"> </span>user-123<span class="w"> </span>--resource<span class="w"> </span>gpt-4
+</span><span id="__span-145-9"><a id="__codelineno-145-9" name="__codelineno-145-9" href="#__codelineno-145-9"></a>
+</span><span id="__span-145-10"><a id="__codelineno-145-10" name="__codelineno-145-10" href="#__codelineno-145-10"></a><span class="c1"># Revert an entity to inheriting the resource's disabled state</span>
+</span><span id="__span-145-11"><a id="__codelineno-145-11" name="__codelineno-145-11" href="#__codelineno-145-11"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span>clear-disabled<span class="w"> </span>user-123<span class="w"> </span>--resource<span class="w"> </span>gpt-4
 </span></code></pre></div>
 <p>An entity-level <code>disabled: false</code> override always wins, even when the resource is disabled
 for everyone else — resolution walks entity (resource-specific) → entity (<code>_default_</code>) →
@@ -10105,13 +10184,13 @@ resource showing no <code>Status:</code> line can still be effectively disabled 
 some other level in the walk sets it; use <code>resolve_disabled()</code> (see
 <a href="../operations/rate-limits/#resource-or-entity-disabled">Resource or Entity Disabled</a>) to get the
 actual resolved outcome for a specific entity+resource pair.</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-144-1"><a id="__codelineno-144-1" name="__codelineno-144-1" href="#__codelineno-144-1"></a>Defaults for resource 'gpt-4':
-</span><span id="__span-144-2"><a id="__codelineno-144-2" name="__codelineno-144-2" href="#__codelineno-144-2"></a>  rpm: 500/min
-</span><span id="__span-144-3"><a id="__codelineno-144-3" name="__codelineno-144-3" href="#__codelineno-144-3"></a>Status: DISABLED
+<div class="language-text highlight"><pre><span></span><code><span id="__span-146-1"><a id="__codelineno-146-1" name="__codelineno-146-1" href="#__codelineno-146-1"></a>Defaults for resource 'gpt-4':
+</span><span id="__span-146-2"><a id="__codelineno-146-2" name="__codelineno-146-2" href="#__codelineno-146-2"></a>  rpm: 500/min
+</span><span id="__span-146-3"><a id="__codelineno-146-3" name="__codelineno-146-3" href="#__codelineno-146-3"></a>Status: DISABLED
 </span></code></pre></div>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-145-1"><a id="__codelineno-145-1" name="__codelineno-145-1" href="#__codelineno-145-1"></a>Limits for entity 'user-123' on resource 'gpt-4':
-</span><span id="__span-145-2"><a id="__codelineno-145-2" name="__codelineno-145-2" href="#__codelineno-145-2"></a>  rpm: 1000/min
-</span><span id="__span-145-3"><a id="__codelineno-145-3" name="__codelineno-145-3" href="#__codelineno-145-3"></a>Status: enabled (explicit override)
+<div class="language-text highlight"><pre><span></span><code><span id="__span-147-1"><a id="__codelineno-147-1" name="__codelineno-147-1" href="#__codelineno-147-1"></a>Limits for entity 'user-123' on resource 'gpt-4':
+</span><span id="__span-147-2"><a id="__codelineno-147-2" name="__codelineno-147-2" href="#__codelineno-147-2"></a>  rpm: 1000/min
+</span><span id="__span-147-3"><a id="__codelineno-147-3" name="__codelineno-147-3" href="#__codelineno-147-3"></a>Status: enabled (explicit override)
 </span></code></pre></div>
 <p>No <code>Status:</code> line is printed when the level has no explicit <code>disabled</code> value (i.e. it
 inherits from elsewhere in the resolution walk).</p>
@@ -10120,17 +10199,17 @@ inherits from elsewhere in the resolution walk).</p>
 whether an entity's acquires also debit its parent. Use it when one entity needs different
 answers on different resources — for example, model limits that count against the org while a
 shared budget stays per user. See <a href="../adr/146-per-resource-cascade-policy/">ADR-146</a>.</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-146-1"><a id="__codelineno-146-1" name="__codelineno-146-1" href="#__codelineno-146-1"></a><span class="c1"># Model limits cascade to the parent; the shared budget does not</span>
-</span><span id="__span-146-2"><a id="__codelineno-146-2" name="__codelineno-146-2" href="#__codelineno-146-2"></a>zae-limiter<span class="w"> </span>resource<span class="w"> </span>set-cascade<span class="w"> </span>gpt-4<span class="w"> </span>on
-</span><span id="__span-146-3"><a id="__codelineno-146-3" name="__codelineno-146-3" href="#__codelineno-146-3"></a>zae-limiter<span class="w"> </span>resource<span class="w"> </span>set-cascade<span class="w"> </span>llm<span class="w"> </span>off
-</span><span id="__span-146-4"><a id="__codelineno-146-4" name="__codelineno-146-4" href="#__codelineno-146-4"></a>
-</span><span id="__span-146-5"><a id="__codelineno-146-5" name="__codelineno-146-5" href="#__codelineno-146-5"></a><span class="c1"># One entity: on for one resource, or off for every resource without its own policy</span>
-</span><span id="__span-146-6"><a id="__codelineno-146-6" name="__codelineno-146-6" href="#__codelineno-146-6"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span>set-cascade<span class="w"> </span>user-123<span class="w"> </span>on<span class="w"> </span>--resource<span class="w"> </span>gpt-4
-</span><span id="__span-146-7"><a id="__codelineno-146-7" name="__codelineno-146-7" href="#__codelineno-146-7"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span>set-cascade<span class="w"> </span>user-123<span class="w"> </span>off
-</span><span id="__span-146-8"><a id="__codelineno-146-8" name="__codelineno-146-8" href="#__codelineno-146-8"></a>
-</span><span id="__span-146-9"><a id="__codelineno-146-9" name="__codelineno-146-9" href="#__codelineno-146-9"></a><span class="c1"># Revert to inheriting</span>
-</span><span id="__span-146-10"><a id="__codelineno-146-10" name="__codelineno-146-10" href="#__codelineno-146-10"></a>zae-limiter<span class="w"> </span>resource<span class="w"> </span>clear-cascade<span class="w"> </span>llm
-</span><span id="__span-146-11"><a id="__codelineno-146-11" name="__codelineno-146-11" href="#__codelineno-146-11"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span>clear-cascade<span class="w"> </span>user-123<span class="w"> </span>--resource<span class="w"> </span>gpt-4
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-148-1"><a id="__codelineno-148-1" name="__codelineno-148-1" href="#__codelineno-148-1"></a><span class="c1"># Model limits cascade to the parent; the shared budget does not</span>
+</span><span id="__span-148-2"><a id="__codelineno-148-2" name="__codelineno-148-2" href="#__codelineno-148-2"></a>zae-limiter<span class="w"> </span>resource<span class="w"> </span>set-cascade<span class="w"> </span>gpt-4<span class="w"> </span>on
+</span><span id="__span-148-3"><a id="__codelineno-148-3" name="__codelineno-148-3" href="#__codelineno-148-3"></a>zae-limiter<span class="w"> </span>resource<span class="w"> </span>set-cascade<span class="w"> </span>llm<span class="w"> </span>off
+</span><span id="__span-148-4"><a id="__codelineno-148-4" name="__codelineno-148-4" href="#__codelineno-148-4"></a>
+</span><span id="__span-148-5"><a id="__codelineno-148-5" name="__codelineno-148-5" href="#__codelineno-148-5"></a><span class="c1"># One entity: on for one resource, or off for every resource without its own policy</span>
+</span><span id="__span-148-6"><a id="__codelineno-148-6" name="__codelineno-148-6" href="#__codelineno-148-6"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span>set-cascade<span class="w"> </span>user-123<span class="w"> </span>on<span class="w"> </span>--resource<span class="w"> </span>gpt-4
+</span><span id="__span-148-7"><a id="__codelineno-148-7" name="__codelineno-148-7" href="#__codelineno-148-7"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span>set-cascade<span class="w"> </span>user-123<span class="w"> </span>off
+</span><span id="__span-148-8"><a id="__codelineno-148-8" name="__codelineno-148-8" href="#__codelineno-148-8"></a>
+</span><span id="__span-148-9"><a id="__codelineno-148-9" name="__codelineno-148-9" href="#__codelineno-148-9"></a><span class="c1"># Revert to inheriting</span>
+</span><span id="__span-148-10"><a id="__codelineno-148-10" name="__codelineno-148-10" href="#__codelineno-148-10"></a>zae-limiter<span class="w"> </span>resource<span class="w"> </span>clear-cascade<span class="w"> </span>llm
+</span><span id="__span-148-11"><a id="__codelineno-148-11" name="__codelineno-148-11" href="#__codelineno-148-11"></a>zae-limiter<span class="w"> </span>entity<span class="w"> </span>clear-cascade<span class="w"> </span>user-123<span class="w"> </span>--resource<span class="w"> </span>gpt-4
 </span></code></pre></div>
 <p>The policy resolves like <code>disabled</code>: entity (resource-specific) → entity (<code>_default_</code>) →
 resource, first explicit value wins. When no level sets it, the entity's own <code>cascade</code> flag
@@ -10144,26 +10223,26 @@ clearing a policy needs a stack whose Lambdas are 0.16.0 or later — otherwise 
 <code>Cascade: off (explicit)</code> when that level sets a policy, and nothing when it inherits.</p>
 <h2 id="namespace-lifecycle">Namespace Lifecycle<a class="headerlink" href="#namespace-lifecycle" title="Permanent link">&para;</a></h2>
 <p>The <code>namespace</code> command group manages the namespace registry:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-147-1"><a id="__codelineno-147-1" name="__codelineno-147-1" href="#__codelineno-147-1"></a><span class="c1"># Register namespaces</span>
-</span><span id="__span-147-2"><a id="__codelineno-147-2" name="__codelineno-147-2" href="#__codelineno-147-2"></a>zae-limiter<span class="w"> </span>namespace<span class="w"> </span>register<span class="w"> </span>tenant-alpha<span class="w"> </span>tenant-beta
-</span><span id="__span-147-3"><a id="__codelineno-147-3" name="__codelineno-147-3" href="#__codelineno-147-3"></a>
-</span><span id="__span-147-4"><a id="__codelineno-147-4" name="__codelineno-147-4" href="#__codelineno-147-4"></a><span class="c1"># List active namespaces</span>
-</span><span id="__span-147-5"><a id="__codelineno-147-5" name="__codelineno-147-5" href="#__codelineno-147-5"></a>zae-limiter<span class="w"> </span>namespace<span class="w"> </span>list
-</span><span id="__span-147-6"><a id="__codelineno-147-6" name="__codelineno-147-6" href="#__codelineno-147-6"></a>
-</span><span id="__span-147-7"><a id="__codelineno-147-7" name="__codelineno-147-7" href="#__codelineno-147-7"></a><span class="c1"># Show namespace details (including opaque ID)</span>
-</span><span id="__span-147-8"><a id="__codelineno-147-8" name="__codelineno-147-8" href="#__codelineno-147-8"></a>zae-limiter<span class="w"> </span>namespace<span class="w"> </span>show<span class="w"> </span>tenant-alpha
-</span><span id="__span-147-9"><a id="__codelineno-147-9" name="__codelineno-147-9" href="#__codelineno-147-9"></a>
-</span><span id="__span-147-10"><a id="__codelineno-147-10" name="__codelineno-147-10" href="#__codelineno-147-10"></a><span class="c1"># Soft delete (data preserved, forward lookup removed)</span>
-</span><span id="__span-147-11"><a id="__codelineno-147-11" name="__codelineno-147-11" href="#__codelineno-147-11"></a>zae-limiter<span class="w"> </span>namespace<span class="w"> </span>delete<span class="w"> </span>tenant-alpha
-</span><span id="__span-147-12"><a id="__codelineno-147-12" name="__codelineno-147-12" href="#__codelineno-147-12"></a>
-</span><span id="__span-147-13"><a id="__codelineno-147-13" name="__codelineno-147-13" href="#__codelineno-147-13"></a><span class="c1"># Recover a soft-deleted namespace</span>
-</span><span id="__span-147-14"><a id="__codelineno-147-14" name="__codelineno-147-14" href="#__codelineno-147-14"></a>zae-limiter<span class="w"> </span>namespace<span class="w"> </span>recover<span class="w"> </span>&lt;namespace-id&gt;
-</span><span id="__span-147-15"><a id="__codelineno-147-15" name="__codelineno-147-15" href="#__codelineno-147-15"></a>
-</span><span id="__span-147-16"><a id="__codelineno-147-16" name="__codelineno-147-16" href="#__codelineno-147-16"></a><span class="c1"># List deleted namespaces (candidates for purge)</span>
-</span><span id="__span-147-17"><a id="__codelineno-147-17" name="__codelineno-147-17" href="#__codelineno-147-17"></a>zae-limiter<span class="w"> </span>namespace<span class="w"> </span>orphans
-</span><span id="__span-147-18"><a id="__codelineno-147-18" name="__codelineno-147-18" href="#__codelineno-147-18"></a>
-</span><span id="__span-147-19"><a id="__codelineno-147-19" name="__codelineno-147-19" href="#__codelineno-147-19"></a><span class="c1"># Hard delete all data in a namespace (irreversible)</span>
-</span><span id="__span-147-20"><a id="__codelineno-147-20" name="__codelineno-147-20" href="#__codelineno-147-20"></a>zae-limiter<span class="w"> </span>namespace<span class="w"> </span>purge<span class="w"> </span>&lt;namespace-id&gt;<span class="w"> </span>--yes
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-149-1"><a id="__codelineno-149-1" name="__codelineno-149-1" href="#__codelineno-149-1"></a><span class="c1"># Register namespaces</span>
+</span><span id="__span-149-2"><a id="__codelineno-149-2" name="__codelineno-149-2" href="#__codelineno-149-2"></a>zae-limiter<span class="w"> </span>namespace<span class="w"> </span>register<span class="w"> </span>tenant-alpha<span class="w"> </span>tenant-beta
+</span><span id="__span-149-3"><a id="__codelineno-149-3" name="__codelineno-149-3" href="#__codelineno-149-3"></a>
+</span><span id="__span-149-4"><a id="__codelineno-149-4" name="__codelineno-149-4" href="#__codelineno-149-4"></a><span class="c1"># List active namespaces</span>
+</span><span id="__span-149-5"><a id="__codelineno-149-5" name="__codelineno-149-5" href="#__codelineno-149-5"></a>zae-limiter<span class="w"> </span>namespace<span class="w"> </span>list
+</span><span id="__span-149-6"><a id="__codelineno-149-6" name="__codelineno-149-6" href="#__codelineno-149-6"></a>
+</span><span id="__span-149-7"><a id="__codelineno-149-7" name="__codelineno-149-7" href="#__codelineno-149-7"></a><span class="c1"># Show namespace details (including opaque ID)</span>
+</span><span id="__span-149-8"><a id="__codelineno-149-8" name="__codelineno-149-8" href="#__codelineno-149-8"></a>zae-limiter<span class="w"> </span>namespace<span class="w"> </span>show<span class="w"> </span>tenant-alpha
+</span><span id="__span-149-9"><a id="__codelineno-149-9" name="__codelineno-149-9" href="#__codelineno-149-9"></a>
+</span><span id="__span-149-10"><a id="__codelineno-149-10" name="__codelineno-149-10" href="#__codelineno-149-10"></a><span class="c1"># Soft delete (data preserved, forward lookup removed)</span>
+</span><span id="__span-149-11"><a id="__codelineno-149-11" name="__codelineno-149-11" href="#__codelineno-149-11"></a>zae-limiter<span class="w"> </span>namespace<span class="w"> </span>delete<span class="w"> </span>tenant-alpha
+</span><span id="__span-149-12"><a id="__codelineno-149-12" name="__codelineno-149-12" href="#__codelineno-149-12"></a>
+</span><span id="__span-149-13"><a id="__codelineno-149-13" name="__codelineno-149-13" href="#__codelineno-149-13"></a><span class="c1"># Recover a soft-deleted namespace</span>
+</span><span id="__span-149-14"><a id="__codelineno-149-14" name="__codelineno-149-14" href="#__codelineno-149-14"></a>zae-limiter<span class="w"> </span>namespace<span class="w"> </span>recover<span class="w"> </span>&lt;namespace-id&gt;
+</span><span id="__span-149-15"><a id="__codelineno-149-15" name="__codelineno-149-15" href="#__codelineno-149-15"></a>
+</span><span id="__span-149-16"><a id="__codelineno-149-16" name="__codelineno-149-16" href="#__codelineno-149-16"></a><span class="c1"># List deleted namespaces (candidates for purge)</span>
+</span><span id="__span-149-17"><a id="__codelineno-149-17" name="__codelineno-149-17" href="#__codelineno-149-17"></a>zae-limiter<span class="w"> </span>namespace<span class="w"> </span>orphans
+</span><span id="__span-149-18"><a id="__codelineno-149-18" name="__codelineno-149-18" href="#__codelineno-149-18"></a>
+</span><span id="__span-149-19"><a id="__codelineno-149-19" name="__codelineno-149-19" href="#__codelineno-149-19"></a><span class="c1"># Hard delete all data in a namespace (irreversible)</span>
+</span><span id="__span-149-20"><a id="__codelineno-149-20" name="__codelineno-149-20" href="#__codelineno-149-20"></a>zae-limiter<span class="w"> </span>namespace<span class="w"> </span>purge<span class="w"> </span>&lt;namespace-id&gt;<span class="w"> </span>--yes
 </span></code></pre></div>
 
 

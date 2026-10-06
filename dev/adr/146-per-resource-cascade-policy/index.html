@@ -3664,9 +3664,11 @@ planning for #674. This ADR is their first written record.</p>
    resolved <strong>for that bucket's own entity and resource</strong>, so a resource-level change
    never clobbers an entity override, and a clear restamps whatever level now decides.
    A bucket that only ever takes the fast path is reached only by this fan-out, which is
-   why it is eager and not left to self-healing. The provisioner's mirror
-   (<code>zae_limiter_provisioner/fanout.py</code>) ships with the manifest support, since before
-   that the provisioner cannot write a policy.</p>
+   why it is eager and not left to self-healing. The provisioner mirrors it
+   (<code>fanout_cascade</code> in <code>zae_limiter_provisioner/fanout.py</code>). A manifest apply restamps
+   only the levels whose stored policy actually changed, read from the config write's own
+   <code>ALL_OLD</code> image at no extra read — unlike <code>disabled</code>, which fans out every declared
+   level on every apply.</p>
 </li>
 <li>
 <p><strong>Version gate</strong>, reusing the ADR-141 machinery:</p>
@@ -3692,7 +3694,10 @@ planning for #674. This ADR is their first written record.</p>
      <code>clear_entity_cascade(entity_id, resource=None)</code>; CLI
      <code>resource set-cascade|clear-cascade</code> and <code>entity set-cascade|clear-cascade</code>.</li>
 <li>Manifest <code>cascade:</code> on <code>resources.&lt;name&gt;</code> and <code>entities.&lt;id&gt;.resources.&lt;name&gt;</code>,
-     round-tripped through <code>Custom::ZaeLimiterLimits</code> as a <code>Cascade</code> property.</li>
+     round-tripped through <code>Custom::ZaeLimiterLimits</code> as a <code>Cascade</code> property. The
+     manifest owns the policy for every item it declares: omitting <code>cascade</code> clears it on
+     the next apply, as for <code>disabled</code> (owner decision). <code>cascade</code> on <code>system</code> is rejected
+     with an error rather than ignored.</li>
 <li>
 <p><code>get-defaults</code> / <code>get-limits</code> show an explicit policy, like <code>Status: DISABLED</code>.</p>
 </li>
