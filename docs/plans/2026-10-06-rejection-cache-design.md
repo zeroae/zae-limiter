@@ -164,13 +164,31 @@ something wrote since, which the lock detects.
    other case is unchanged: enough stored ⇒ the speculative write; short after refill ⇒
    phases 1–2.
 2. **The write.** The slow path's rf-locked write (`build_composite_normal`), built from
-   the cached state and the same refill arithmetic, conditioned on `rf = :cached_rf`
-   **and** `vu` equal to the cached `vu` (absent if it was absent) **and** not
-   `disabled` **and** the TTL not expired. The `vu` pin is what keeps it safe: a limit
-   change made elsewhere (`_sync_bucket_params`, the provisioner) rewrites `cp`/`ra`/`rp`
-   and stamps `vu = 0` but never moves `rf`, so an `rf` lock alone would refill at the
-   **old** limits and over-admit after a cut — the aggregator pins `vu` for the same
-   reason (#508).
+   the cached state and the same refill arithmetic, conditioned on **everything the
+   refill was computed from**, because other writers change each of these without
+   moving `rf` (phase-3 review, all four reproduced as over-admission):
+   - `rf = :cached_rf` (the lock itself);
+   - `vu` absent — a limit change made elsewhere (`_sync_bucket_params`, the
+     provisioner) rewrites `cp`/`ra`/`rp` and stamps `vu = 0`; the aggregator pins `vu`
+     for the same reason (#508). An item that carries `vu` is not used at all;
+   - each limit's `tk <=` its cached value — a refund, release, rollback or
+     compensation elsewhere `ADD`s tokens, and the clamp computed against the lower
+     cached balance would land above the ceiling;
+   - `shard_count` equal to the cached one — a doubling elsewhere shrinks the
+     per-shard ceiling and rate;
+   - `cascade` absent or false — a policy turned on elsewhere stamps it (ADR-146);
+   - not `disabled`, and the TTL not expired.
+
+   It also uses phase 3 only when the stamp names a parent or the entity's META record
+   says it has none (a pre-#684 stamp can sit on a cascading child), and only when the
+   **warm config cache** resolves the bucket's limits with no schedule, reset or window
+   and every configured limit already on the item: the slow path attaches those from
+   config, and a resource- or system-level change never reaches the item. That answer
+   also gives the write the TTL the slow path would stamp.
+
+   **Standing rule:** any new writer that changes a bucket item must change something
+   this condition checks, or phase 3 can admit against a state it cannot see. See
+   `.claude/rules/code-review.md`.
 3. **Lost condition.** Fall back to today's path (speculative write, then the slow
    path). The worst case costs one extra write, and only after something wrote between
    the state being cached and now.

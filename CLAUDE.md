@@ -1404,6 +1404,7 @@ docs/
     - **I6** Only a sibling whose grant belongs to the current period may donate or cover
     - **I7** A quota's ceiling is `C // gc`, never `C // shard_count`
     - **I8** Per period: `admitted + held + still-grantable = C` — apart from the two bounded residuals (one share, once) under Pre-Shard Buckets' **Known residuals** (a) and (d)
+11. **Every bucket writer is visible to the refill-from-cache write (ADR-147 phase 3).** `Repository.build_cached_refill` admits from a cached state under a condition on everything the refill was computed from: `rf`, `vu` absent, each limit's `tk <=` cached, `shard_count`, `cascade` off, not `disabled`, TTL unexpired. A writer that changes a bucket item without changing at least one of those — or a config change that reaches the bucket without a `vu` stamp — lets phase 3 admit against a state it cannot see. The phase-3 review found four (a cascade stamp, a credit `ADD`, a `shard_count` raise, a resource-level schedule), each reproduced as over-admission. Any new bucket write (reset or top-up, #470/#471; re-parenting, #677) must say which term it moves, in its PR, with a test from another process; see `.claude/rules/code-review.md`
 
 ## DynamoDB Pricing Reference
 

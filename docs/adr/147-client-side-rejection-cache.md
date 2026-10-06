@@ -28,8 +28,10 @@ shard) for at most `rejection_cache_ttl` seconds (default 1.0, `0` disables), an
 limiter must raise `RateLimitExceeded` without a DynamoDB call when that state, projected
 to now with the fast path's own refill arithmetic, cannot cover a limit declared in
 `consume` on every shard not known to have room; the cache must never admit a request on
-its own: an admission it leads to must be a conditional write that fails if the item's
-`rf`, `vu`, `disabled` stamp or TTL changed since the state was seen. For a child whose
+its own: an admission it leads to must be a conditional write that fails if anything
+the admission was computed from changed since the state was seen — `rf`, `vu`, any
+limit's balance rising, `shard_count`, the `cascade` and `disabled` stamps, the TTL —
+and every other writer of a bucket item must change at least one of those. For a child whose
 own bucket shows it cascades on the resource, the same rule must apply to the parent's
 shards, and the child itself may be rejected locally only while a trusted parent state
 shows the parent is not disabled.
