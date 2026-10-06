@@ -2801,7 +2801,27 @@ class SyncRepository:
             elif "Delete" in item:
                 client.delete_item(**item["Delete"])
             results.append(response.get("Attributes", {}))
+            self._forget_written_bucket(item)
         return results
+
+    def _forget_written_bucket(self, item: dict[str, Any]) -> None:
+        """Forget a bucket shard's cached state once a write to it landed (ADR-147).
+
+        Refunds, releases, rollbacks and compensation all reach DynamoDB here.
+        ``build_composite_adjust`` already forgets when the write is built; a
+        state an acquire stored between build and landing would otherwise hide
+        the returned tokens for up to the TTL.
+        """
+        op = item.get("Put") or item.get("Update") or item.get("Delete") or {}
+        key = op.get("Key") or op.get("Item") or {}
+        pk = key.get("PK", {}).get("S", "")
+        if "/BUCKET#" not in pk:
+            return
+        try:
+            namespace_id, entity_id, resource, shard_id = schema.parse_bucket_pk(pk)
+        except ValueError:
+            return
+        self._rejection_cache.forget(namespace_id, entity_id, resource, shard_id)
 
     def speculative_consume(
         self,

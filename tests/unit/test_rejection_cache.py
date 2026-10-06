@@ -830,3 +830,41 @@ class TestClearsRejectionCache:
         with pytest.raises(RuntimeError):
             await owner.change()
         assert len(owner._rejection_cache) == 0
+
+
+class TestForgetAfterTheWriteLands:
+    """Review #6: a refund forgets again once its write landed."""
+
+    def _store_short(self, repo: Repository) -> None:
+        repo._rejection_cache.store(
+            repo._namespace_id,
+            "u",
+            "r",
+            0,
+            [_state(0)],
+            shard_count=1,
+            vu_ms=None,
+            ttl_epoch=None,
+            disabled=False,
+        )
+
+    async def test_a_state_stored_between_build_and_write_is_forgotten(self, repo):
+        refund = repo.build_composite_adjust("u", "r", {"rpm": -1000}, shard_id=0)
+        self._store_short(repo)  # an acquire races in after the build
+        assert len(repo._rejection_cache) == 1
+        await repo.write_each([refund])
+        assert len(repo._rejection_cache) == 0
+
+    def test_a_non_bucket_write_forgets_nothing(self, repo):
+        self._store_short(repo)
+        repo._forget_written_bucket(
+            {"Put": {"Item": {"PK": {"S": f"{repo._namespace_id}/ENTITY#u"}}}}
+        )
+        assert len(repo._rejection_cache) == 1
+
+    def test_a_malformed_bucket_key_is_ignored(self, repo):
+        self._store_short(repo)
+        repo._forget_written_bucket(
+            {"Update": {"Key": {"PK": {"S": f"{repo._namespace_id}/BUCKET#u#r#not-a-shard"}}}}
+        )
+        assert len(repo._rejection_cache) == 1
