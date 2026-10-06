@@ -16,6 +16,7 @@ Each zae-limiter operation has specific DynamoDB capacity costs. Use this table 
 | `acquire()` speculative success + cascade (sequential) | 0 | 2 | Child then parent speculative UpdateItem |
 | `acquire()` speculative success + cascade (parallel) | 0 | 2 | Concurrent child + parent via entity cache (issue #318) |
 | `acquire()` speculative fast rejection | 0 | 1 | Exhausted bucket; the failed conditional write is charged 1 WCU, its ALL_OLD image is free |
+| `acquire()` repeat rejection inside the rejection-cache TTL | 0 | 0 | No DynamoDB call: the last state seen already shows every shard short (ADR-147, see [Rejection Cache](#rejection-cache)) |
 | `acquire()` speculative fallback (non-cascade) | 1 | 2 | Failed speculative (1 WCU) + normal path (1 RCU + 1 WCU) |
 | `acquire()` speculative cascade fallback (parent refill helps) | 0.5 | 3 | Child stays consumed; parent-only read (0.5 RCU) + single-item write (1 WCU) |
 | `acquire()` retry (contention) | 0 | 1 | ADD-based writes don't require re-read |
@@ -352,6 +353,8 @@ child windows are independent), so it pays the same +1 RCU once per parent shard
 ```python
 # Config caching reduces RCUs (60s TTL by default)
 repo = await Repository.open(config_cache_ttl=60)  # seconds (0 to disable)
+# Repeat rejections are answered locally: rejection_cache_ttl (1.0s, 0 to disable)
+# and rejection_cache_size (10,000) sit beside it (see Rejection Cache)
 limiter = RateLimiter(repository=repo)
 
 # Pass explicit limits to skip config resolution entirely
@@ -701,6 +704,10 @@ repo = await Repository.open(config_cache_ttl=0)
 limiter = RateLimiter(repository=repo)
 ```
 
+The rejection cache has its own options beside `config_cache_ttl`: `rejection_cache_ttl`
+(seconds, default `1.0`, `0` disables) and `rejection_cache_size` (default `10_000` entries).
+See [Rejection Cache](#rejection-cache).
+
 ### Cost Impact
 
 Without caching, each `acquire()` call performs 3 DynamoDB reads to resolve limits:
@@ -742,6 +749,7 @@ total = stats.hits + stats.misses
 print(f"Cache hit rate: {stats.hits / total:.1%}" if total else "No requests yet")
 print(f"Cache entries: {stats.size}")
 print(f"TTL: {stats.ttl_seconds}s")
+print(f"Local rejections: {stats.local_rejections}")  # rejection cache (ADR-147)
 ```
 
 ### TTL Selection Guidelines
@@ -830,6 +838,7 @@ The `ReturnValuesOnConditionCheckFailure=ALL_OLD` response provides the current 
 | **Normal path** (non-cascade) | 2 | 1 | 1 | $0.75 |
 | **Speculative success** (non-cascade) | 1 | 0 | 1 | $0.625 |
 | **Speculative fast rejection** (exhausted) | 1 | 0 | 1 | $0.625 |
+| **Repeat rejection** (rejection cache, inside the TTL) | 0 | 0 | 0 | $0.00 |
 | **Speculative fallback** (refill helps) | 3 | 1 | 2 | $1.375 |
 | **Speculative fallback** (schedule boundary) | 3 | 1 | 2 | $1.375 |
 | **Normal path** (cascade) | 3 | 2 | 4 | $1.75 |
@@ -859,6 +868,49 @@ about $0.05.
 | Speculative success (cascade, parallel) | 1 | 5-8ms |
 | Speculative cascade fallback (parent refill helps) | 2+ | 12-20ms |
 | Speculative cascade fast rejection (parent exhausted) | 1 | 5-8ms |
+
+### Rejection Cache
+
+A fast rejection still costs 1 WCU, because DynamoDB charges a failed conditional write. To
+avoid paying that on every repeat 429, the repository keeps the last bucket state each
+speculative response returned, per shard ([ADR-147](adr/147-client-side-rejection-cache.md)).
+Before the next speculative write, the limiter projects that state to now with the same refill
+arithmetic as a fast rejection:
+
+- **Every shard known short:** `RateLimitExceeded` is raised with no DynamoDB call (0 RCU,
+  0 WCU, no round trip).
+- **Some shards known short:** the write goes to a shard not known short.
+- **No usable state:** the write goes ahead as before.
+
+The cache only rejects; admission always needs a successful write, so it cannot over-admit. A
+state is not used once it is older than `rejection_cache_ttl`, past a schedule boundary (`vu`)
+or its bucket TTL, stamped disabled, or when `acquire()` passes `limits=`. A cascading bucket is
+never rejected locally (the parent's answer comes from the server). Refunds, releases and
+rollbacks in this process forget the shard, and every admin write through the repository, or
+`invalidate_config_cache()`, clears the cache.
+
+**Example:** a client looping on 429s at 1,000 req/s from one process drops from ~1,000 WCU/s to
+~1 WCU/s — one real write per TTL to refresh the state.
+
+**Trade-off:** for up to `rejection_cache_ttl` per process, a request can be rejected after
+tokens came back by a route this process cannot see: another process's refund, an admin change
+made elsewhere, or another process doubling the shard count. Each process pays its own real
+write per TTL.
+
+```python
+from zae_limiter import RateLimiter, Repository
+
+# Default: trust a cached state for 1 second, keep at most 10,000 shards
+repo = await Repository.open(rejection_cache_ttl=1.0, rejection_cache_size=10_000)
+
+# Disable: every rejection reaches DynamoDB (1 WCU each)
+repo = await Repository.open(rejection_cache_ttl=0)
+limiter = RateLimiter(repository=repo)
+
+print(repo.get_cache_stats().local_rejections)  # rejections answered without DynamoDB
+```
+
+The builder takes the same options: `.rejection_cache_ttl(seconds)`, `.rejection_cache_size(entries)`.
 
 ### Aggregator-Assisted Refill (Issue #317)
 

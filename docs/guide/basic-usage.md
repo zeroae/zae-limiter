@@ -426,6 +426,10 @@ repo = await Repository.open(config_cache_ttl=0)
 limiter = RateLimiter(repository=repo)
 ```
 
+`Repository.open()` also takes `rejection_cache_ttl` (seconds, default `1.0`, `0` disables) and
+`rejection_cache_size` (default `10_000`) for the rejection cache; see
+[Speculative Writes](#speculative-writes).
+
 ### Automatic Cache Eviction
 
 Config-modifying methods (`set_limits()`, `delete_limits()`) automatically evict relevant cache entries. Manual invalidation is only needed after external changes (e.g., direct DynamoDB writes).
@@ -472,6 +476,16 @@ The speculative path falls back to the normal read-write path when:
 - Token refill since last access would provide enough capacity
 - The bucket crossed a schedule boundary, so its balance was worked out under parameters no
   longer in force. One request per bucket per boundary pays this
+
+A repeat rejection usually costs nothing. The repository keeps the last bucket state each
+speculative write returned, and when that state, projected to now, shows every shard short,
+`acquire()` raises `RateLimitExceeded` with no DynamoDB call (0 RCU, 0 WCU). It only ever
+rejects, so it cannot over-admit. The trade-off is that for up to `rejection_cache_ttl` seconds
+per process (default `1.0`) a request can be rejected after tokens came back by a route this
+process cannot see, such as another process's refund or an admin change made elsewhere. Set
+`rejection_cache_ttl=0` on `Repository.open()` to send every rejection to DynamoDB, and
+`rejection_cache_size` (default `10_000`) to bound memory. `get_cache_stats().local_rejections`
+counts the rejections answered locally.
 
 See [Performance Tuning - Speculative Writes](../performance.md#8-speculative-writes) for detailed cost analysis and guidance on when to disable this feature.
 

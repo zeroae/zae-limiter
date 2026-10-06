@@ -220,7 +220,7 @@ repo = await (
 )
 ```
 
-Other builder methods: `.stack()`, `.region()`, `.endpoint_url()`, `.namespace()`, `.lambda_memory()`, `.enable_provisioner()`, `.usage_retention_days()`, `.audit_retention_days()`, `.enable_alarms()`, `.alarm_sns_topic()`, `.enable_audit_archival()`, `.audit_archive_glacier_days()`, `.enable_tracing()`, `.create_iam_roles()`, `.create_iam()`, `.aggregator_role_arn()`, `.enable_deletion_protection()`, `.tags()`.
+Other builder methods: `.stack()`, `.region()`, `.endpoint_url()`, `.namespace()`, `.lambda_memory()`, `.enable_provisioner()`, `.usage_retention_days()`, `.audit_retention_days()`, `.enable_alarms()`, `.alarm_sns_topic()`, `.enable_audit_archival()`, `.audit_archive_glacier_days()`, `.enable_tracing()`, `.create_iam_roles()`, `.create_iam()`, `.aggregator_role_arn()`, `.enable_deletion_protection()`, `.tags()`, `.rejection_cache_ttl()`, `.rejection_cache_size()`.
 
 **IAM Resource Defaults (ADR-117):**
 - **Managed policies** are **created by default** — both table-level (`acq`, `full`, `read`) and namespace-scoped (`ns-acq`, `ns-full`, `ns-read`)
@@ -444,6 +444,7 @@ src/zae_limiter/
 ├── lease.py           # Lease context manager
 ├── limiter.py         # RateLimiter (async)
 ├── config_cache.py    # Client-side config caching with TTL (CacheStats)
+├── rejection_cache.py # Last bucket state seen per shard; rejects without a DynamoDB call (ADR-147)
 ├── sync_repository_protocol.py  # Generated: SyncRepositoryProtocol
 ├── sync_repository.py           # Generated: SyncRepository
 ├── sync_repository_builder.py   # Generated: SyncRepositoryBuilder
@@ -883,6 +884,16 @@ Bucket items use per-(entity, resource, shard) partition keys: `PK={ns}/BUCKET#{
 - Fast rejection: if refill would not help, raises `RateLimitExceeded` immediately (0 RCU, 1 WCU: a failed conditional write still consumes write capacity)
 - Cascade/parent_id denormalized into bucket items to avoid entity metadata lookup on the fast path
 - **Parallel cascade writes (Issue #318):** After the first acquire populates the entity cache, subsequent cascade acquires issue child + parent speculative writes concurrently via `asyncio.gather` (async) or `SyncRepository._run_in_executor` (sync, strategy controlled by `parallel_mode` parameter), reducing cascade latency from 2 sequential round trips to 1 parallel round trip
+
+### Rejection cache (ADR-147)
+- **Store:** `Repository._rejection_cache` (`rejection_cache.RejectionCache`) keeps the last bucket state seen per (namespace, entity, resource, shard) from every speculative response (`ALL_NEW` on success, `ALL_OLD` on failure; `Repository._remember_bucket_image`), with the item's `vu`, `ttl` and `disabled` stamp. Shared across `namespace()` scopes; at most `rejection_cache_size` entries, oldest first out
+- **Rejects, never admits:** before the speculative write, `RateLimiter._known_short_shards` projects each cached shard to now with `would_refill_satisfy` (the fast rejection's own arithmetic). Every shard known short ⇒ `RateLimitExceeded` from the shard that fits soonest, **no DynamoDB call**; some short ⇒ `speculative_consume(avoid_shards=...)` draws among the rest. A shard with no entry is unknown and is written to. Admission always needs a successful conditional write, so the cache cannot over-admit
+- **Not used:** an entry older than `rejection_cache_ttl`, past its `vu`, past its bucket `ttl`, stamped `disabled`; any `acquire(limits=...)` override; a cached state missing a declared limit; a `wcu`-only shortfall; a cascading bucket (a `cascade` stamp with a `parent_id` — the server's parent answer, including a 403, outranks the child's 429). A backend without `_rejection_cache` never rejects locally (`getattr`)
+- **Invalidation:** a refund, release, rollback or compensation forgets that shard when it is built (`build_composite_adjust`) and again once it lands (`write_each` → `_forget_written_bucket`), so a state stored in between cannot hide the returned tokens. `@clears_rejection_cache` clears the whole cache **before and after** every admin write (`set_*`, `delete_*`, disable/enable, cascade policy); `invalidate_config_cache()` clears it too
+- **Options:** `rejection_cache_ttl` (seconds, default `1.0`, `0` disables) and `rejection_cache_size` (default `10_000`) on `Repository.open()` / `connect()` / the constructor and `builder().rejection_cache_ttl()` / `.rejection_cache_size()`
+- **Stat:** `get_cache_stats().local_rejections` (also in `CacheStats.as_dict()`)
+- **Trade-off:** up to `rejection_cache_ttl` of under-admission per process when tokens return by a route it cannot see — another process's refund, an admin change made elsewhere, another process doubling the shard count after every cached state was taken
+- **Sync / threads:** `SyncRepository` shares the same plain-sync class and takes no lock; every operation tolerates a key a concurrent caller removed, so a race under the thread pool only loses an entry (one extra DynamoDB call, never a wrong admit)
 
 ### Aggregator-Assisted Bucket Refill (Issue #317)
 - The Lambda aggregator proactively refills token buckets for active entities via DynamoDB Streams
@@ -1403,6 +1414,7 @@ Non-cascade `acquire()` = 1 RCU + 1 WCU = $0.125 + $0.625 = **$0.75/M** (the pro
 
 Speculative non-cascade `acquire()` (success) = 0 RCU + 1 WCU = **$0.625/M** (~17% savings).
 Speculative fast rejection (exhausted) = 0 RCU + 1 WCU = **$0.625/M**: a failed conditional write consumes 1 WCU ([AWS](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/WorkingWithItems.html#WorkingWithItems.ConditionalWrites.ReturnConsumedCapacity), measured on DynamoDB 2026-10-06, #695). What is free is the returned `ALL_OLD` image (0 RCU).
+Repeat rejection inside the rejection-cache TTL (ADR-147) = 0 RCU + 0 WCU = **$0/M**, no round trip: every shard's cached state already shows the request cannot fit.
 Speculative fallback (refill helps) = 1 RCU + 2 WCU = $0.125 + $1.25 = **$1.375/M** (worse than normal).
 Client shard create (`BUCKET_MISSING` on shard N, ADR-133, warm config cache) = 2.5 RCU + 2 WCU (1 failed conditional + disable-walk BatchGet 1.5 RCU + META/bucket BatchGet 1 RCU + single-item `PutItem`) = $0.3125 + $1.25 = **$1.56/M**, paid **once per shard** (+1 WCU when a wcu bump precedes it: **$2.19/M**); the previous broken fallback cost the same on every acquire that drew a missing shard.
 Quota shard creation or seed on a sharded entity (ADR-145): adds the sibling read (1 GSI3 KEYS_ONLY Query + 1 `BatchGetItem`, one key per existing sibling); when a sibling covers the slot the write is a **2-item transaction** (the `Put` or seed `Update` plus the donor's `Update`): **4 WCU** instead of 1, once per shard, at most 31 per entity per period. No clamp writes. A quota shard N>0 create then reads shard 0's count once (**+1 RCU**, strongly consistent) to repair a create a doubling overtook, writing only when it did. The fast path is unchanged, 0 RCU + 1 WCU, and never reads or writes `gc` (`tests/benchmark/test_capacity.py::TestQuotaGrantCapacity`).

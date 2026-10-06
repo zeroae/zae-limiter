@@ -85,7 +85,7 @@ limits, on_unavailable, config_source = await repo.resolve_limits(entity_id, res
 # config_source: "entity", "entity_default", "resource", "system", or None
 ```
 
-Cache management methods (`invalidate_config_cache()`, `get_cache_stats()`) are on `Repository`, not `RateLimiter`. The `config_cache_ttl` parameter is on the `Repository` constructor.
+Cache management methods (`invalidate_config_cache()`, `get_cache_stats()`) are on `Repository`, not `RateLimiter`. The `config_cache_ttl` parameter is on the `Repository` constructor, beside `rejection_cache_ttl` and `rejection_cache_size` for the rejection cache ([ADR-147](../adr/147-client-side-rejection-cache.md)).
 
 ### Item Structure
 
