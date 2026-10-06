@@ -83,6 +83,43 @@ async def _count_update_items(repo: Repository):
         yield calls
 
 
+_CLIENT_CALLS = (
+    "get_item",
+    "put_item",
+    "update_item",
+    "delete_item",
+    "query",
+    "scan",
+    "batch_get_item",
+    "batch_write_item",
+    "transact_get_items",
+    "transact_write_items",
+)
+
+
+@asynccontextmanager
+async def _count_client_calls(repo: Repository):
+    """Record every DynamoDB data call the repository's client makes."""
+    from contextlib import ExitStack
+
+    client = await repo._get_client()
+    calls: list[str] = []
+
+    def counting(name):
+        real = getattr(client, name)
+
+        async def call(*args, **kwargs):
+            calls.append(name)
+            return await real(*args, **kwargs)
+
+        return call
+
+    with ExitStack() as stack:
+        for name in _CLIENT_CALLS:
+            stack.enter_context(patch.object(client, name, side_effect=counting(name)))
+        yield calls
+
+
 def _cached(repo: Repository) -> bool:
     """Whether the cache holds a usable state for entity u, resource r."""
     return bool(repo._rejection_cache.views(repo._namespace_id, "u", "r", now_ms=repo._now_ms()))
@@ -759,6 +796,39 @@ class TestSyncTwin:
         assert repo.get_cache_stats().local_rejections == 1
         repo.close()
 
+    def test_the_sync_limiter_checks_the_parent_first(self, mock_dynamodb):
+        """Phase 2 on the generated sync path: a parent known short, no DynamoDB call."""
+        from contextlib import ExitStack
+
+        from zae_limiter import SyncRateLimiter
+        from zae_limiter.sync_repository import SyncRepository
+
+        repo = SyncRepository(
+            name="test-rejection-sync-cascade", region="us-east-1", _skip_deprecation_warning=True
+        )
+        repo.create_table()
+        repo._register_namespace("default")
+        repo.create_entity("org")
+        repo.create_entity("u", parent_id="org", cascade=True)
+        repo.set_limits("org", [RPM], resource="r")
+        repo.set_limits("u", [Limit.per_minute("rpm", 100)], resource="r")
+        limiter = SyncRateLimiter(repository=repo)
+        for _ in range(2):  # slow path, then the warm parallel write: org spent
+            with limiter.acquire("u", "r", consume={"rpm": 1}):
+                pass
+        client = repo._get_client()
+        with ExitStack() as stack:
+            for name in _CLIENT_CALLS:
+                stack.enter_context(
+                    patch.object(client, name, side_effect=AssertionError(f"called {name}"))
+                )
+            with pytest.raises(RateLimitExceeded) as excinfo:
+                with limiter.acquire("u", "r", consume={"rpm": 1}):
+                    pass
+        assert [s.entity_id for s in excinfo.value.statuses] == ["u", "org"]
+        assert repo.get_cache_stats().local_rejections == 1
+        repo.close()
+
 
 _ADMIN_CALLS = {
     "set_limits": lambda repo: repo.set_limits("u", [RPM], resource="r"),
@@ -1042,11 +1112,11 @@ class TestCascadeParentPrecheck:
             pass
         async with family.acquire("u", "r", consume={"rpm": 1}):  # warm: parallel, both cached
             pass
-        async with _count_update_items(repo) as calls:
+        async with _count_client_calls(repo) as calls:
             with pytest.raises(RateLimitExceeded) as excinfo:
                 async with family.acquire("u", "r", consume={"rpm": 1}):
                     pass
-        assert calls == []
+        assert calls == []  # no DynamoDB call of any kind
         # The server reports the child's statuses, then the parent's.
         assert [s.entity_id for s in excinfo.value.statuses] == ["u", "org"]
         assert excinfo.value.statuses[1].exceeded
