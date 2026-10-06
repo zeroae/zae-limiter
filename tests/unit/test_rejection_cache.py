@@ -399,6 +399,29 @@ class TestRejectionCacheStore:
         assert cache.views("ns", "b", "r", now_ms=1) == {}
         assert list(cache.views("ns", "a", "r", now_ms=1)) == [0]
 
+    def test_trusted_entry_only_for_a_fresh_enabled_shard(self):
+        clock = _Clock()
+        cache = RejectionCache(ttl_seconds=1.0, max_entries=10, clock=clock)
+        assert cache.trusted_entry("ns", "u", "r", 0, now_ms=1) is None  # nothing cached
+        cache.store(
+            "ns", "u", "r", 0, [_state(0)], shard_count=1, vu_ms=None, ttl_epoch=None, disabled=True
+        )
+        assert cache.trusted_entry("ns", "u", "r", 0, now_ms=1) is None  # disabled
+        cache.store(
+            "ns",
+            "u",
+            "r",
+            0,
+            [_state(0)],
+            shard_count=1,
+            vu_ms=None,
+            ttl_epoch=None,
+            disabled=False,
+        )
+        assert cache.trusted_entry("ns", "u", "r", 0, now_ms=1) is not None
+        clock.now += 1.5
+        assert cache.trusted_entry("ns", "u", "r", 0, now_ms=1) is None  # past the age cap
+
     def test_counts_local_rejections(self):
         cache = RejectionCache(ttl_seconds=1.0, max_entries=10, clock=_Clock())
         cache.record_local_rejection()
@@ -1473,10 +1496,26 @@ class TestRefillFromCache:
         refill.assert_not_called()
 
     @pytest.mark.parametrize(
-        "case", ["vu", "quota", "window", "wcu_drained", "missing_limit", "untrusted"]
+        "case",
+        [
+            "eligible",  # the control: reaches the write, so every other case is a real "no"
+            "vu",
+            "quota",
+            "window",
+            "wcu_drained",
+            "missing_limit",
+            "config_limit_missing",
+            "untrusted",
+        ],
     )
     async def test_not_used_for_items_only_the_slow_path_materialises(self, repo, case):
         ns = repo._namespace_id
+        configured = (
+            [RPM, Limit.per_minute("tpm", 100)] if case == "config_limit_missing" else [RPM]
+        )
+        await repo.set_limits("u", configured, resource="r")
+        await repo.resolve_limits("u", "r")  # warm config cache: peek_limits answers
+        await repo.get_entity("u")  # its META says no parent
         now = repo._now_ms()
         rpm = _state(0)
         rpm.last_refill_ms = now - 60_000  # a full minute of refill pending
@@ -1503,10 +1542,55 @@ class TestRefillFromCache:
         )
         if case == "untrusted":
             clock.now += 1.5
-        with patch.object(repo, "refill_from_cached_state") as refill:
+        with patch.object(repo, "refill_from_cached_state", return_value=None) as refill:
             async with RateLimiter(repository=repo) as limiter:
                 assert await limiter._refill_from_cache("u", "r", consume, now) is None
-        refill.assert_not_called()
+        if case == "eligible":
+            refill.assert_called_once()
+        else:
+            refill.assert_not_called()
+
+    async def test_with_ttl_off_the_write_leaves_ttl_alone(self, repo):
+        """Multiplier 0: the slow path stamps no ttl, so neither does phase 3."""
+        repo._bucket_ttl_refill_multiplier = 0
+        await repo.set_resource_defaults("r", [RPM])
+        async with RateLimiter(repository=repo) as limiter:
+            await _spent_and_cached(limiter)
+            later = repo._now_ms() + 60_000
+            with patch.object(repo, "_now_ms", return_value=later):
+                async with _count_client_calls(repo) as calls:
+                    async with limiter.acquire("u", "r", consume={"rpm": 1}):
+                        pass
+        assert calls == ["update_item"]
+        assert "ttl" not in await _bucket_item(repo, "u")
+
+    async def test_peek_is_none_when_no_level_has_limits(self, repo):
+        await repo.resolve_limits("nobody", "r")  # every level cached, none with limits
+        assert repo._config_cache.peek_limits("nobody", "r") is None
+
+    async def test_an_unexpected_error_is_raised_not_swallowed(self, limiter, repo):
+        from botocore.exceptions import ClientError
+
+        await _spent_and_cached(limiter)
+        client = await repo._get_client()
+        boom = ClientError({"Error": {"Code": "ValidationException"}}, "UpdateItem")
+        later = repo._now_ms() + 60_000
+        with (
+            patch.object(repo, "_now_ms", return_value=later),
+            patch.object(client, "update_item", side_effect=boom),
+        ):
+            with pytest.raises(ClientError):
+                await repo.refill_from_cached_state(
+                    "u",
+                    "r",
+                    0,
+                    {"rpm": 1000},
+                    {"rpm": 0},
+                    0,
+                    later,
+                    cached_tokens={"rpm": 0},
+                    cached_shard_count=1,
+                )
 
     async def test_cascade_turned_on_elsewhere_still_debits_the_parent(self, repo):
         """Phase-3 review #1: the write pins `cascade` off; a policy change refuses it."""
