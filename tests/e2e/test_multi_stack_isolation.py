@@ -371,11 +371,10 @@ class TestInProcessIsolation:
         assert {v.limit_name for v in rejected.value.violations} == {"rpm"}
 
         # A is drained, and none of it shows on B: still full, still no bucket.
-        drained = await eventually(
+        await eventually(
             lambda: limiter_a.check_availability(ENTITY, RESOURCE),
             lambda availability: availability.available == {"rpm": 0},
         )
-        assert drained.available == {"rpm": 0}
         after = await limiter_b.check_availability(ENTITY, RESOURCE)
         assert after.available == {"rpm": B_CAPACITY}
         assert after.allowed
@@ -394,11 +393,10 @@ class TestInProcessIsolation:
         )
         assert bucket_a.capacity_milli == A_CAPACITY * 1000
         assert bucket_a.tokens_milli < 1000
-        spent_on_b = await eventually(
+        await eventually(
             lambda: limiter_b.check_availability(ENTITY, RESOURCE),
             lambda availability: availability.available == {"rpm": B_CAPACITY - 1},
         )
-        assert spent_on_b.available == {"rpm": B_CAPACITY - 1}
 
     async def test_a_config_write_on_a_does_not_reach_a_warm_cache_on_b(self, repos):
         repo_a, repo_b = repos
@@ -421,11 +419,10 @@ class TestInProcessIsolation:
 
         # A's limits change; B is never told (no invalidate_config_cache() on B).
         await repo_a.set_resource_defaults(RESOURCE, _limits(A_CAPACITY + 2))
-        stored_a = await eventually(
+        await eventually(
             lambda: repo_a.get_resource_defaults(RESOURCE),
             lambda limits: [limit.capacity for limit in limits] == [A_CAPACITY + 2],
         )
-        assert [limit.capacity for limit in stored_a] == [A_CAPACITY + 2]
 
         # A resource-level write does not evict the writer's own cache either (it
         # propagates by TTL, ADR-122), so A is evicted by hand to see the change.
@@ -433,12 +430,10 @@ class TestInProcessIsolation:
             await repo_a.invalidate_config_cache()
             return await repo_a.resolve_limits(ENTITY, RESOURCE)
 
-        limits_a, _, _ = await eventually(
+        await eventually(
             resolve_a_fresh,
             lambda resolved: [limit.capacity for limit in resolved[0] or []] == [A_CAPACITY + 2],
         )
-        assert limits_a is not None
-        assert [limit.capacity for limit in limits_a] == [A_CAPACITY + 2]
 
         # B's warm entry survived both the write and A's eviction untouched: same
         # limits, no miss, no refill, served from the cache.
@@ -488,12 +483,10 @@ class TestInProcessIsolation:
         limiter_a = RateLimiter(repository=scoped_a)
         async with limiter_a.acquire(ENTITY, RESOURCE, consume={"rpm": 1}):
             pass
-        entity_a = await eventually(lambda: scoped_a.get_entity(ENTITY), lambda e: e is not None)
-        assert entity_a is not None
-        buckets_a = await eventually(
+        await eventually(lambda: scoped_a.get_entity(ENTITY), lambda e: e is not None)
+        await eventually(
             lambda: scoped_a.get_buckets(ENTITY, RESOURCE), lambda buckets: len(buckets) == 1
         )
-        assert len(buckets_a) == 1
 
         # ... none of it visible under the same name on B.
         assert await scoped_b.get_entity(ENTITY) is None
@@ -507,11 +500,10 @@ class TestInProcessIsolation:
         availability = await limiter_b.check_availability(ENTITY, RESOURCE)
         assert availability.available == {"rpm": A_CAPACITY}
         # ... and the two registries share no id.
-        listed_a = await eventually(
+        await eventually(
             repo_a.list_namespaces,
             lambda names: {n["name"] for n in names} >= {"default", "shared-name"},
         )
-        assert {n["name"] for n in listed_a} >= {"default", "shared-name"}
         assert {n["namespace_id"] for n in await repo_a.list_namespaces()}.isdisjoint(
             {n["namespace_id"] for n in await repo_b.list_namespaces()}
         )

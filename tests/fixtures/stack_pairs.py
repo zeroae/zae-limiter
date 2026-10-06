@@ -280,12 +280,17 @@ async def eventually(
     (``get_buckets``, ``check_availability``), or a default ``GetItem`` /
     ``Query``. Asserting presence through one of them straight after a write is
     a flake on AWS; asserting absence needs no poll.
+
+    This *is* the assertion: on timeout it raises ``AssertionError`` carrying
+    the last value read, so a caller does not re-assert the predicate.
     """
     deadline = time.monotonic() + timeout
     while True:
         value = await probe()
-        if predicate(value) or time.monotonic() >= deadline:
+        if predicate(value):
             return value
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"condition never held within {timeout}s; last value {value!r}")
         await asyncio.sleep(0.5)
 
 
