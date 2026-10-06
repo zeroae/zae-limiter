@@ -3728,6 +3728,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../adr/147-client-side-rejection-cache/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-147 Reject from the last bucket state seen, never admit from it
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -4157,7 +4185,7 @@
 <p class="admonition-title">Infrastructure Outlives Your Python Session</p>
 <p>This infrastructure persists beyond your Python session. Restarting your application
 reconnects to existing resources. Rate limit state is preserved across restarts.
-You only pay when the limiter is used (~$0.625/1M requests, $0 for fast rejections).</p>
+You only pay when the limiter is used (~$0.625/1M requests, rejections included).</p>
 </div>
 <h2 id="infrastructure-lifecycle">Infrastructure Lifecycle<a class="headerlink" href="#infrastructure-lifecycle" title="Permanent link">&para;</a></h2>
 <p>Both programmatic API and CLI are fully supported for managing infrastructure.</p>

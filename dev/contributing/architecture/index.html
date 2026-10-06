@@ -3788,6 +3788,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/147-client-side-rejection-cache/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-147 Reject from the last bucket state seen, never admit from it
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -4347,7 +4375,7 @@ entity and parent buckets are fetched together, reducing latency from
 </span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">limits</span><span class="p">,</span> <span class="n">on_unavailable</span><span class="p">,</span> <span class="n">config_source</span> <span class="o">=</span> <span class="k">await</span> <span class="n">repo</span><span class="o">.</span><span class="n">resolve_limits</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">)</span>
 </span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="c1"># config_source: "entity", "entity_default", "resource", "system", or None</span>
 </span></code></pre></div>
-<p>Cache management methods (<code>invalidate_config_cache()</code>, <code>get_cache_stats()</code>) are on <code>Repository</code>, not <code>RateLimiter</code>. The <code>config_cache_ttl</code> parameter is on the <code>Repository</code> constructor.</p>
+<p>Cache management methods (<code>invalidate_config_cache()</code>, <code>get_cache_stats()</code>) are on <code>Repository</code>, not <code>RateLimiter</code>. The <code>config_cache_ttl</code> parameter is on the <code>Repository</code> constructor, beside <code>rejection_cache_ttl</code> and <code>rejection_cache_size</code> for the rejection cache (<a href="../../adr/147-client-side-rejection-cache/">ADR-147</a>).</p>
 <h3 id="item-structure">Item Structure<a class="headerlink" href="#item-structure" title="Permanent link">&para;</a></h3>
 <p>All records use <strong>flat schema</strong> (v0.6.0+, top-level attributes, no nested <code>data.M</code>).
 See <a href="../../adr/111-flatten-all-records/">ADR-111</a>.</p>
@@ -4693,7 +4721,7 @@ call (1 WCU each). This is safe because:</p>
 <td>Speculative consumption</td>
 <td><code>speculative_consume()</code></td>
 <td>Conditional <code>UpdateItem</code></td>
-<td>1 WCU (success) or 0 WCU (reject)</td>
+<td>1 WCU either way (a failed condition is still charged)</td>
 <td>Single item</td>
 </tr>
 <tr>
@@ -4807,7 +4835,7 @@ speculative writes on the fast path (1 RT) instead of falling back to the slow p
 <td>Aggregator refill</td>
 <td><code>try_refill_bucket()</code></td>
 <td>Conditional <code>UpdateItem</code></td>
-<td>1 WCU (success) or 0 WCU (lock lost)</td>
+<td>1 WCU either way (a failed condition is still charged)</td>
 <td>Single item</td>
 </tr>
 </tbody>

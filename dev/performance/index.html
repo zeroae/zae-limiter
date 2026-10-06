@@ -1680,6 +1680,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#rejection-cache" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rejection Cache
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#aggregator-assisted-refill-issue-317" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -4266,6 +4277,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../adr/147-client-side-rejection-cache/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-147 Reject from the last bucket state seen, never admit from it
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -4969,6 +5008,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#rejection-cache" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rejection Cache
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#aggregator-assisted-refill-issue-317" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -5153,8 +5203,14 @@
 <tr>
 <td><code>acquire()</code> speculative fast rejection</td>
 <td>0</td>
+<td>1</td>
+<td>Exhausted bucket; the failed conditional write is charged 1 WCU, its ALL_OLD image is free</td>
+</tr>
+<tr>
+<td><code>acquire()</code> repeat rejection inside the rejection-cache TTL</td>
 <td>0</td>
-<td>Exhausted bucket; rejected from ALL_OLD without write</td>
+<td>0</td>
+<td>No DynamoDB call: the last state seen already shows every shard short (ADR-147, see <a href="#rejection-cache">Rejection Cache</a>)</td>
 </tr>
 <tr>
 <td><code>acquire()</code> speculative fallback (non-cascade)</td>
@@ -5190,7 +5246,7 @@
 <td>Aggregator bucket refill (per active bucket)</td>
 <td>0</td>
 <td>1</td>
-<td>Proactive refill via Lambda; 0 WCU if lock lost</td>
+<td>Proactive refill via Lambda; 1 WCU even if the lock is lost</td>
 </tr>
 <tr>
 <td><code>acquire(limits=None)</code> with config cache miss</td>
@@ -5641,16 +5697,18 @@ child windows are independent), so it pays the same +1 RCU once per parent shard
 <h4 id="stored-limits-optimization">Stored Limits Optimization<a class="headerlink" href="#stored-limits-optimization" title="Permanent link">&para;</a></h4>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="c1"># Config caching reduces RCUs (60s TTL by default)</span>
 </span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="n">repo</span> <span class="o">=</span> <span class="k">await</span> <span class="n">Repository</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="n">config_cache_ttl</span><span class="o">=</span><span class="mi">60</span><span class="p">)</span>  <span class="c1"># seconds (0 to disable)</span>
-</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span><span class="n">repository</span><span class="o">=</span><span class="n">repo</span><span class="p">)</span>
-</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>
-</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="c1"># Pass explicit limits to skip config resolution entirely</span>
-</span><span id="__span-9-6"><a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span>
-</span><span id="__span-9-7"><a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">"user-123"</span><span class="p">,</span>
-</span><span id="__span-9-8"><a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a>    <span class="n">resource</span><span class="o">=</span><span class="s2">"api"</span><span class="p">,</span>
-</span><span id="__span-9-9"><a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">"rpm"</span><span class="p">,</span> <span class="mi">100</span><span class="p">)],</span>  <span class="c1"># No config lookup</span>
-</span><span id="__span-9-10"><a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a>    <span class="n">consume</span><span class="o">=</span><span class="p">{</span><span class="s2">"rpm"</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span>
-</span><span id="__span-9-11"><a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a><span class="p">)</span> <span class="k">as</span> <span class="n">lease</span><span class="p">:</span>
-</span><span id="__span-9-12"><a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a>    <span class="o">...</span>
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="c1"># Repeat rejections are answered locally: rejection_cache_ttl (1.0s, 0 to disable)</span>
+</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="c1"># and rejection_cache_size (10,000) sit beside it (see Rejection Cache)</span>
+</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span><span class="n">repository</span><span class="o">=</span><span class="n">repo</span><span class="p">)</span>
+</span><span id="__span-9-6"><a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a>
+</span><span id="__span-9-7"><a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="c1"># Pass explicit limits to skip config resolution entirely</span>
+</span><span id="__span-9-8"><a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a><span class="k">async</span> <span class="k">with</span> <span class="n">limiter</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span>
+</span><span id="__span-9-9"><a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a>    <span class="n">entity_id</span><span class="o">=</span><span class="s2">"user-123"</span><span class="p">,</span>
+</span><span id="__span-9-10"><a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a>    <span class="n">resource</span><span class="o">=</span><span class="s2">"api"</span><span class="p">,</span>
+</span><span id="__span-9-11"><a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a>    <span class="n">limits</span><span class="o">=</span><span class="p">[</span><span class="n">Limit</span><span class="o">.</span><span class="n">per_minute</span><span class="p">(</span><span class="s2">"rpm"</span><span class="p">,</span> <span class="mi">100</span><span class="p">)],</span>  <span class="c1"># No config lookup</span>
+</span><span id="__span-9-12"><a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a>    <span class="n">consume</span><span class="o">=</span><span class="p">{</span><span class="s2">"rpm"</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span>
+</span><span id="__span-9-13"><a id="__codelineno-9-13" name="__codelineno-9-13" href="#__codelineno-9-13"></a><span class="p">)</span> <span class="k">as</span> <span class="n">lease</span><span class="p">:</span>
+</span><span id="__span-9-14"><a id="__codelineno-9-14" name="__codelineno-9-14" href="#__codelineno-9-14"></a>    <span class="o">...</span>
 </span></code></pre></div>
 <h3 id="bulk-operations">Bulk Operations<a class="headerlink" href="#bulk-operations" title="Permanent link">&para;</a></h3>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="c1"># Efficient bulk limit setup</span>
@@ -6049,6 +6107,9 @@ Whether you track 2 limits or 10 limits per request, DynamoDB costs are the same
 </span><span id="__span-25-12"><a id="__codelineno-25-12" name="__codelineno-25-12" href="#__codelineno-25-12"></a><span class="n">repo</span> <span class="o">=</span> <span class="k">await</span> <span class="n">Repository</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="n">config_cache_ttl</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
 </span><span id="__span-25-13"><a id="__codelineno-25-13" name="__codelineno-25-13" href="#__codelineno-25-13"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span><span class="n">repository</span><span class="o">=</span><span class="n">repo</span><span class="p">)</span>
 </span></code></pre></div>
+<p>The rejection cache has its own options beside <code>config_cache_ttl</code>: <code>rejection_cache_ttl</code>
+(seconds, default <code>1.0</code>, <code>0</code> disables) and <code>rejection_cache_size</code> (default <code>10_000</code> entries).
+See <a href="#rejection-cache">Rejection Cache</a>.</p>
 <h3 id="cost-impact">Cost Impact<a class="headerlink" href="#cost-impact" title="Permanent link">&para;</a></h3>
 <p>Without caching, each <code>acquire()</code> call performs 3 DynamoDB reads to resolve limits:</p>
 <ol>
@@ -6098,6 +6159,7 @@ Whether you track 2 limits or 10 limits per request, DynamoDB costs are the same
 </span><span id="__span-27-4"><a id="__codelineno-27-4" name="__codelineno-27-4" href="#__codelineno-27-4"></a><span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Cache hit rate: </span><span class="si">{</span><span class="n">stats</span><span class="o">.</span><span class="n">hits</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">total</span><span class="si">:</span><span class="s2">.1%</span><span class="si">}</span><span class="s2">"</span> <span class="k">if</span> <span class="n">total</span> <span class="k">else</span> <span class="s2">"No requests yet"</span><span class="p">)</span>
 </span><span id="__span-27-5"><a id="__codelineno-27-5" name="__codelineno-27-5" href="#__codelineno-27-5"></a><span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Cache entries: </span><span class="si">{</span><span class="n">stats</span><span class="o">.</span><span class="n">size</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
 </span><span id="__span-27-6"><a id="__codelineno-27-6" name="__codelineno-27-6" href="#__codelineno-27-6"></a><span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"TTL: </span><span class="si">{</span><span class="n">stats</span><span class="o">.</span><span class="n">ttl_seconds</span><span class="si">}</span><span class="s2">s"</span><span class="p">)</span>
+</span><span id="__span-27-7"><a id="__codelineno-27-7" name="__codelineno-27-7" href="#__codelineno-27-7"></a><span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Local rejections: </span><span class="si">{</span><span class="n">stats</span><span class="o">.</span><span class="n">local_rejections</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>  <span class="c1"># rejection cache (ADR-147)</span>
 </span></code></pre></div>
 <h3 id="ttl-selection-guidelines">TTL Selection Guidelines<a class="headerlink" href="#ttl-selection-guidelines" title="Permanent link">&para;</a></h3>
 <table>
@@ -6164,7 +6226,7 @@ Whether you track 2 limits or 10 limits per request, DynamoDB costs are the same
 </span><span id="__span-29-14"><a id="__codelineno-29-14" name="__codelineno-29-14" href="#__codelineno-29-14"></a>      +- Missing limit in ALL_OLD -&gt; SLOW PATH
 </span><span id="__span-29-15"><a id="__codelineno-29-15" name="__codelineno-29-15" href="#__codelineno-29-15"></a>      +- Schedule boundary crossed (vu passed) -&gt; SLOW PATH (re-materialises)
 </span><span id="__span-29-16"><a id="__codelineno-29-16" name="__codelineno-29-16" href="#__codelineno-29-16"></a>      +- Refill would help -&gt; SLOW PATH
-</span><span id="__span-29-17"><a id="__codelineno-29-17" name="__codelineno-29-17" href="#__codelineno-29-17"></a>      +- Refill won't help -&gt; RateLimitExceeded (0 RCU, 0 WCU)
+</span><span id="__span-29-17"><a id="__codelineno-29-17" name="__codelineno-29-17" href="#__codelineno-29-17"></a>      +- Refill won't help -&gt; RateLimitExceeded (0 RCU, 1 WCU)
 </span></code></pre></div>
 <p><strong>Subsequent acquires (parallel, issue #318):</strong></p>
 <p>When the entity cache contains <code>(cascade=True, parent_id)</code> from a prior acquire, child and parent speculative writes are issued concurrently:</p>
@@ -6217,6 +6279,13 @@ Whether you track 2 limits or 10 limits per request, DynamoDB costs are the same
 <td><strong>Speculative fast rejection</strong> (exhausted)</td>
 <td>1</td>
 <td>0</td>
+<td>1</td>
+<td>$0.625</td>
+</tr>
+<tr>
+<td><strong>Repeat rejection</strong> (rejection cache, inside the TTL)</td>
+<td>0</td>
+<td>0</td>
 <td>0</td>
 <td>$0.00</td>
 </tr>
@@ -6266,8 +6335,8 @@ Whether you track 2 limits or 10 limits per request, DynamoDB costs are the same
 <td><strong>Speculative cascade fast rejection</strong> (parent exhausted)</td>
 <td>1</td>
 <td>0</td>
-<td>2</td>
-<td>$1.25</td>
+<td>3</td>
+<td>$1.875</td>
 </tr>
 </tbody>
 </table>
@@ -6336,6 +6405,42 @@ about $0.05.</p>
 </tr>
 </tbody>
 </table>
+<h3 id="rejection-cache">Rejection Cache<a class="headerlink" href="#rejection-cache" title="Permanent link">&para;</a></h3>
+<p>A fast rejection still costs 1 WCU, because DynamoDB charges a failed conditional write. To
+avoid paying that on every repeat 429, the repository keeps the last bucket state each
+speculative response returned, per shard (<a href="../adr/147-client-side-rejection-cache/">ADR-147</a>).
+Before the next speculative write, the limiter projects that state to now with the same refill
+arithmetic as a fast rejection:</p>
+<ul>
+<li><strong>Every shard known short:</strong> <code>RateLimitExceeded</code> is raised with no DynamoDB call (0 RCU,
+  0 WCU, no round trip).</li>
+<li><strong>Some shards known short:</strong> the write goes to a shard not known short.</li>
+<li><strong>No usable state:</strong> the write goes ahead as before.</li>
+</ul>
+<p>The cache only rejects; admission always needs a successful write, so it cannot over-admit. A
+state is not used once it is older than <code>rejection_cache_ttl</code>, past a schedule boundary (<code>vu</code>)
+or its bucket TTL, stamped disabled, or when <code>acquire()</code> passes <code>limits=</code>. A cascading bucket is
+never rejected locally (the parent's answer comes from the server). Refunds, releases and
+rollbacks in this process forget the shard, and every admin write through the repository, or
+<code>invalidate_config_cache()</code>, clears the cache.</p>
+<p><strong>Example:</strong> a client looping on 429s at 1,000 req/s from one process drops from ~1,000 WCU/s to
+~1 WCU/s — one real write per TTL to refresh the state.</p>
+<p><strong>Trade-off:</strong> for up to <code>rejection_cache_ttl</code> per process, a request can be rejected after
+tokens came back by a route this process cannot see: another process's refund, an admin change
+made elsewhere, or another process doubling the shard count. Each process pays its own real
+write per TTL.</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-31-1"><a id="__codelineno-31-1" name="__codelineno-31-1" href="#__codelineno-31-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">zae_limiter</span><span class="w"> </span><span class="kn">import</span> <span class="n">RateLimiter</span><span class="p">,</span> <span class="n">Repository</span>
+</span><span id="__span-31-2"><a id="__codelineno-31-2" name="__codelineno-31-2" href="#__codelineno-31-2"></a>
+</span><span id="__span-31-3"><a id="__codelineno-31-3" name="__codelineno-31-3" href="#__codelineno-31-3"></a><span class="c1"># Default: trust a cached state for 1 second, keep at most 10,000 shards</span>
+</span><span id="__span-31-4"><a id="__codelineno-31-4" name="__codelineno-31-4" href="#__codelineno-31-4"></a><span class="n">repo</span> <span class="o">=</span> <span class="k">await</span> <span class="n">Repository</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="n">rejection_cache_ttl</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span> <span class="n">rejection_cache_size</span><span class="o">=</span><span class="mi">10_000</span><span class="p">)</span>
+</span><span id="__span-31-5"><a id="__codelineno-31-5" name="__codelineno-31-5" href="#__codelineno-31-5"></a>
+</span><span id="__span-31-6"><a id="__codelineno-31-6" name="__codelineno-31-6" href="#__codelineno-31-6"></a><span class="c1"># Disable: every rejection reaches DynamoDB (1 WCU each)</span>
+</span><span id="__span-31-7"><a id="__codelineno-31-7" name="__codelineno-31-7" href="#__codelineno-31-7"></a><span class="n">repo</span> <span class="o">=</span> <span class="k">await</span> <span class="n">Repository</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="n">rejection_cache_ttl</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+</span><span id="__span-31-8"><a id="__codelineno-31-8" name="__codelineno-31-8" href="#__codelineno-31-8"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span><span class="n">repository</span><span class="o">=</span><span class="n">repo</span><span class="p">)</span>
+</span><span id="__span-31-9"><a id="__codelineno-31-9" name="__codelineno-31-9" href="#__codelineno-31-9"></a>
+</span><span id="__span-31-10"><a id="__codelineno-31-10" name="__codelineno-31-10" href="#__codelineno-31-10"></a><span class="nb">print</span><span class="p">(</span><span class="n">repo</span><span class="o">.</span><span class="n">get_cache_stats</span><span class="p">()</span><span class="o">.</span><span class="n">local_rejections</span><span class="p">)</span>  <span class="c1"># rejections answered without DynamoDB</span>
+</span></code></pre></div>
+<p>The builder takes the same options: <code>.rejection_cache_ttl(seconds)</code>, <code>.rejection_cache_size(entries)</code>.</p>
 <h3 id="aggregator-assisted-refill-issue-317">Aggregator-Assisted Refill (Issue #317)<a class="headerlink" href="#aggregator-assisted-refill-issue-317" title="Permanent link">&para;</a></h3>
 <p>When the Lambda aggregator is enabled, it proactively refills token buckets for active entities between client requests. This keeps speculative writes on the fast path (1 RT, 0 RCU, 1 WCU) by ensuring buckets have sufficient tokens, reducing fallback to the slow path (3 RT, 1 RCU, 2 WCU).</p>
 <p><strong>How it works:</strong></p>
@@ -6345,7 +6450,7 @@ about $0.05.</p>
 <li>If projected tokens after natural refill are insufficient to cover the observed consumption rate, it writes a proactive refill</li>
 <li>The refill uses <code>ADD</code> (commutative with concurrent speculative writes) and an optimistic lock on <code>rf</code> to prevent double-refill</li>
 </ol>
-<p><strong>Cost:</strong> 1 WCU per refill written (0 WCU if another writer updated <code>rf</code> first). The cost is amortized across all stream records in a batch, so high-throughput workloads see fewer refills per request.</p>
+<p><strong>Cost:</strong> 1 WCU per refill attempted, including one that loses the lock because another writer updated <code>rf</code> first (a failed conditional write is still charged). The cost is amortized across all stream records in a batch, so high-throughput workloads see fewer refills per request.</p>
 <div class="admonition tip">
 <p class="admonition-title">Aggregator refill + speculative writes</p>
 <p>The combination of aggregator-assisted refill and speculative writes provides the best latency and cost profile: the aggregator keeps buckets warm so speculative writes rarely fall back, achieving ~5-8ms p50 latency at $0.625/M requests (non-cascade).</p>
@@ -6368,10 +6473,10 @@ about $0.05.</p>
 </ul>
 <h3 id="monitoring-speculative-effectiveness">Monitoring Speculative Effectiveness<a class="headerlink" href="#monitoring-speculative-effectiveness" title="Permanent link">&para;</a></h3>
 <p>Track the ratio of speculative successes to fallbacks to determine if speculative writes are beneficial for your workload:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-31-1"><a id="__codelineno-31-1" name="__codelineno-31-1" href="#__codelineno-31-1"></a><span class="c1"># Speculative writes work transparently with acquire()</span>
-</span><span id="__span-31-2"><a id="__codelineno-31-2" name="__codelineno-31-2" href="#__codelineno-31-2"></a><span class="c1"># Monitor DynamoDB ConsumedWriteCapacityUnits to observe:</span>
-</span><span id="__span-31-3"><a id="__codelineno-31-3" name="__codelineno-31-3" href="#__codelineno-31-3"></a><span class="c1"># - Lower WCU = more speculative successes</span>
-</span><span id="__span-31-4"><a id="__codelineno-31-4" name="__codelineno-31-4" href="#__codelineno-31-4"></a><span class="c1"># - Higher WCU = more fallbacks (consider disabling)</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-32-1"><a id="__codelineno-32-1" name="__codelineno-32-1" href="#__codelineno-32-1"></a><span class="c1"># Speculative writes work transparently with acquire()</span>
+</span><span id="__span-32-2"><a id="__codelineno-32-2" name="__codelineno-32-2" href="#__codelineno-32-2"></a><span class="c1"># Monitor DynamoDB ConsumedWriteCapacityUnits to observe:</span>
+</span><span id="__span-32-3"><a id="__codelineno-32-3" name="__codelineno-32-3" href="#__codelineno-32-3"></a><span class="c1"># - Lower WCU = more speculative successes</span>
+</span><span id="__span-32-4"><a id="__codelineno-32-4" name="__codelineno-32-4" href="#__codelineno-32-4"></a><span class="c1"># - Higher WCU = more fallbacks (consider disabling)</span>
 </span></code></pre></div>
 <div class="admonition tip">
 <p class="admonition-title">Disabling speculative writes</p>
@@ -6382,27 +6487,27 @@ about $0.05.</p>
 <p>For realistic, multi-user load testing against a live DynamoDB stack, zae-limiter provides a Locust integration module (<code>zae_limiter.locust</code>). It exposes <code>RateLimiterUser</code> and <code>RateLimiterSession</code>, analogous to Locust's built-in <code>HttpUser</code> and <code>HttpSession</code>, so that every <code>acquire()</code>, <code>available()</code>, and management call fires Locust request events with timing.</p>
 <h3 id="installation">Installation<a class="headerlink" href="#installation" title="Permanent link">&para;</a></h3>
 <p>Install the <code>[bench]</code> extra to pull in Locust and its dependencies:</p>
-<div class="language-python requires-external highlight"><pre><span></span><code><span id="__span-32-1"><a id="__codelineno-32-1" name="__codelineno-32-1" href="#__codelineno-32-1"></a><span class="c1"># pip install zae-limiter[bench]</span>
+<div class="language-python requires-external highlight"><pre><span></span><code><span id="__span-33-1"><a id="__codelineno-33-1" name="__codelineno-33-1" href="#__codelineno-33-1"></a><span class="c1"># pip install zae-limiter[bench]</span>
 </span></code></pre></div>
 <h3 id="quick-start">Quick Start<a class="headerlink" href="#quick-start" title="Permanent link">&para;</a></h3>
-<div class="language-python requires-external highlight"><pre><span></span><code><span id="__span-33-1"><a id="__codelineno-33-1" name="__codelineno-33-1" href="#__codelineno-33-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">locust</span><span class="w"> </span><span class="kn">import</span> <span class="n">task</span>
-</span><span id="__span-33-2"><a id="__codelineno-33-2" name="__codelineno-33-2" href="#__codelineno-33-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">zae_limiter.locust</span><span class="w"> </span><span class="kn">import</span> <span class="n">RateLimiterUser</span>
-</span><span id="__span-33-3"><a id="__codelineno-33-3" name="__codelineno-33-3" href="#__codelineno-33-3"></a>
-</span><span id="__span-33-4"><a id="__codelineno-33-4" name="__codelineno-33-4" href="#__codelineno-33-4"></a><span class="k">class</span><span class="w"> </span><span class="nc">MyUser</span><span class="p">(</span><span class="n">RateLimiterUser</span><span class="p">):</span>
-</span><span id="__span-33-5"><a id="__codelineno-33-5" name="__codelineno-33-5" href="#__codelineno-33-5"></a>    <span class="n">stack_name</span> <span class="o">=</span> <span class="s2">"my-limiter"</span>
-</span><span id="__span-33-6"><a id="__codelineno-33-6" name="__codelineno-33-6" href="#__codelineno-33-6"></a>
-</span><span id="__span-33-7"><a id="__codelineno-33-7" name="__codelineno-33-7" href="#__codelineno-33-7"></a>    <span class="nd">@task</span>
-</span><span id="__span-33-8"><a id="__codelineno-33-8" name="__codelineno-33-8" href="#__codelineno-33-8"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">do_acquire</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-</span><span id="__span-33-9"><a id="__codelineno-33-9" name="__codelineno-33-9" href="#__codelineno-33-9"></a>        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span>
-</span><span id="__span-33-10"><a id="__codelineno-33-10" name="__codelineno-33-10" href="#__codelineno-33-10"></a>            <span class="n">entity_id</span><span class="o">=</span><span class="s2">"user-123"</span><span class="p">,</span>
-</span><span id="__span-33-11"><a id="__codelineno-33-11" name="__codelineno-33-11" href="#__codelineno-33-11"></a>            <span class="n">resource</span><span class="o">=</span><span class="s2">"gpt-4"</span><span class="p">,</span>
-</span><span id="__span-33-12"><a id="__codelineno-33-12" name="__codelineno-33-12" href="#__codelineno-33-12"></a>            <span class="n">consume</span><span class="o">=</span><span class="p">{</span><span class="s2">"rpm"</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="s2">"tpm"</span><span class="p">:</span> <span class="mi">500</span><span class="p">},</span>
-</span><span id="__span-33-13"><a id="__codelineno-33-13" name="__codelineno-33-13" href="#__codelineno-33-13"></a>            <span class="n">name</span><span class="o">=</span><span class="s2">"gpt-4/baseline"</span><span class="p">,</span>
-</span><span id="__span-33-14"><a id="__codelineno-33-14" name="__codelineno-33-14" href="#__codelineno-33-14"></a>        <span class="p">):</span>
-</span><span id="__span-33-15"><a id="__codelineno-33-15" name="__codelineno-33-15" href="#__codelineno-33-15"></a>            <span class="k">pass</span>  <span class="c1"># simulate work</span>
+<div class="language-python requires-external highlight"><pre><span></span><code><span id="__span-34-1"><a id="__codelineno-34-1" name="__codelineno-34-1" href="#__codelineno-34-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">locust</span><span class="w"> </span><span class="kn">import</span> <span class="n">task</span>
+</span><span id="__span-34-2"><a id="__codelineno-34-2" name="__codelineno-34-2" href="#__codelineno-34-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">zae_limiter.locust</span><span class="w"> </span><span class="kn">import</span> <span class="n">RateLimiterUser</span>
+</span><span id="__span-34-3"><a id="__codelineno-34-3" name="__codelineno-34-3" href="#__codelineno-34-3"></a>
+</span><span id="__span-34-4"><a id="__codelineno-34-4" name="__codelineno-34-4" href="#__codelineno-34-4"></a><span class="k">class</span><span class="w"> </span><span class="nc">MyUser</span><span class="p">(</span><span class="n">RateLimiterUser</span><span class="p">):</span>
+</span><span id="__span-34-5"><a id="__codelineno-34-5" name="__codelineno-34-5" href="#__codelineno-34-5"></a>    <span class="n">stack_name</span> <span class="o">=</span> <span class="s2">"my-limiter"</span>
+</span><span id="__span-34-6"><a id="__codelineno-34-6" name="__codelineno-34-6" href="#__codelineno-34-6"></a>
+</span><span id="__span-34-7"><a id="__codelineno-34-7" name="__codelineno-34-7" href="#__codelineno-34-7"></a>    <span class="nd">@task</span>
+</span><span id="__span-34-8"><a id="__codelineno-34-8" name="__codelineno-34-8" href="#__codelineno-34-8"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">do_acquire</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+</span><span id="__span-34-9"><a id="__codelineno-34-9" name="__codelineno-34-9" href="#__codelineno-34-9"></a>        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span>
+</span><span id="__span-34-10"><a id="__codelineno-34-10" name="__codelineno-34-10" href="#__codelineno-34-10"></a>            <span class="n">entity_id</span><span class="o">=</span><span class="s2">"user-123"</span><span class="p">,</span>
+</span><span id="__span-34-11"><a id="__codelineno-34-11" name="__codelineno-34-11" href="#__codelineno-34-11"></a>            <span class="n">resource</span><span class="o">=</span><span class="s2">"gpt-4"</span><span class="p">,</span>
+</span><span id="__span-34-12"><a id="__codelineno-34-12" name="__codelineno-34-12" href="#__codelineno-34-12"></a>            <span class="n">consume</span><span class="o">=</span><span class="p">{</span><span class="s2">"rpm"</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="s2">"tpm"</span><span class="p">:</span> <span class="mi">500</span><span class="p">},</span>
+</span><span id="__span-34-13"><a id="__codelineno-34-13" name="__codelineno-34-13" href="#__codelineno-34-13"></a>            <span class="n">name</span><span class="o">=</span><span class="s2">"gpt-4/baseline"</span><span class="p">,</span>
+</span><span id="__span-34-14"><a id="__codelineno-34-14" name="__codelineno-34-14" href="#__codelineno-34-14"></a>        <span class="p">):</span>
+</span><span id="__span-34-15"><a id="__codelineno-34-15" name="__codelineno-34-15" href="#__codelineno-34-15"></a>            <span class="k">pass</span>  <span class="c1"># simulate work</span>
 </span></code></pre></div>
 <p>Run with:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-34-1"><a id="__codelineno-34-1" name="__codelineno-34-1" href="#__codelineno-34-1"></a>locust<span class="w"> </span>-f<span class="w"> </span>locustfile.py<span class="w"> </span>--host<span class="w"> </span>&lt;stack-name&gt;
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-35-1"><a id="__codelineno-35-1" name="__codelineno-35-1" href="#__codelineno-35-1"></a>locust<span class="w"> </span>-f<span class="w"> </span>locustfile.py<span class="w"> </span>--host<span class="w"> </span>&lt;stack-name&gt;
 </span></code></pre></div>
 <h3 id="key-design-points">Key Design Points<a class="headerlink" href="#key-design-points" title="Permanent link">&para;</a></h3>
 <ul>
@@ -6495,7 +6600,7 @@ about $0.05.</p>
 </tbody>
 </table>
 <p>For detailed benchmark data, run:
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-35-1"><a id="__codelineno-35-1" name="__codelineno-35-1" href="#__codelineno-35-1"></a>python<span class="w"> </span>scripts/run_benchmarks.py<span class="w"> </span>--run-aws
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-36-1"><a id="__codelineno-36-1" name="__codelineno-36-1" href="#__codelineno-36-1"></a>python<span class="w"> </span>scripts/run_benchmarks.py<span class="w"> </span>--run-aws
 </span></code></pre></div></p>
 
 

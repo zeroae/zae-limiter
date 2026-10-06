@@ -3605,6 +3605,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/147-client-side-rejection-cache/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-147 Reject from the last bucket state seen, never admit from it
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -3935,7 +3963,7 @@ creating a new shard (or adding the quota to one) and moving tokens onto it from
 still writes that move, with nothing consumed, so the tokens are not lost; if that request had
 opened a window, the window opens with it. It can happen at most once per new shard.</p>
 <p>A caller hammering an exhausted quota does not keep restarting its own five hours. Inside a
-window, an exhausted quota's rejection writes nothing — on the fast path it is a free rejection,
+window, an exhausted quota's rejection writes nothing — on the fast path it is a rejection that changes nothing on the item,
 and on the slow path <code>RateLimitExceeded</code> is raised before any write — so the anchor never moves
 until the window it already opened has ended.</p>
 <h2 id="cascade">Cascade<a class="headerlink" href="#cascade" title="Permanent link">&para;</a></h2>

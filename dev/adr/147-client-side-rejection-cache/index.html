@@ -12,25 +12,29 @@
         <meta name="author" content="ZeroAE">
       
       
+        <link rel="canonical" href="https://zeroae.github.io/zae-limiter/dev/adr/147-client-side-rejection-cache/">
+      
+      
+        <link rel="prev" href="../145-sharded-quota-conserves-allowance/">
       
       
       
         
       
       
-      <link rel="icon" href="/zae-limiter/dev/assets/zae-limiter.ico">
+      <link rel="icon" href="../../assets/zae-limiter.ico">
       <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
     
     
       
-        <title>zae-limiter</title>
+        <title>ADR-147 Reject from the last bucket state seen, never admit from it - zae-limiter</title>
       
     
     
-      <link rel="stylesheet" href="/zae-limiter/dev/assets/stylesheets/main.ec1eaa64.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
       
         
-        <link rel="stylesheet" href="/zae-limiter/dev/assets/stylesheets/palette.ab4e12ef.min.css">
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
       
       
 
@@ -49,11 +53,11 @@
       
     
     
-      <link rel="stylesheet" href="/zae-limiter/dev/assets/_mkdocstrings.css">
+      <link rel="stylesheet" href="../../assets/_mkdocstrings.css">
     
-      <link rel="stylesheet" href="/zae-limiter/dev/stylesheets/extra.css">
+      <link rel="stylesheet" href="../../stylesheets/extra.css">
     
-    <script>__md_scope=new URL("/zae-limiter/dev",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
     
       
 
@@ -77,6 +81,11 @@
     <label class="md-overlay" for="__drawer"></label>
     <div data-md-component="skip">
       
+        
+        <a href="#adr-147-reject-from-the-last-bucket-state-seen-never-admit-from-it" class="md-skip">
+          Skip to content
+        </a>
+      
     </div>
     <div data-md-component="announce">
       
@@ -93,9 +102,9 @@
 
 <header class="md-header md-header--shadow" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href="/zae-limiter/dev/." title="zae-limiter" class="md-header__button md-logo" aria-label="zae-limiter" data-md-component="logo">
+    <a href="../.." title="zae-limiter" class="md-header__button md-logo" aria-label="zae-limiter" data-md-component="logo">
       
-  <img src="/zae-limiter/dev/assets/zae-limiter-icon-white.svg" alt="logo">
+  <img src="../../assets/zae-limiter-icon-white.svg" alt="logo">
 
     </a>
     <label class="md-header__button md-icon" for="__drawer">
@@ -112,7 +121,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              
+              ADR-147 Reject from the last bucket state seen, never admit from it
             
           </span>
         </div>
@@ -230,9 +239,9 @@
 
 <nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href="/zae-limiter/dev/." title="zae-limiter" class="md-nav__button md-logo" aria-label="zae-limiter" data-md-component="logo">
+    <a href="../.." title="zae-limiter" class="md-nav__button md-logo" aria-label="zae-limiter" data-md-component="logo">
       
-  <img src="/zae-limiter/dev/assets/zae-limiter-icon-white.svg" alt="logo">
+  <img src="../../assets/zae-limiter-icon-white.svg" alt="logo">
 
     </a>
     zae-limiter
@@ -259,7 +268,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/." class="md-nav__link">
+      <a href="../.." class="md-nav__link">
         
   
   
@@ -333,7 +342,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/getting-started/" class="md-nav__link">
+      <a href="../../getting-started/" class="md-nav__link">
         
   
   
@@ -361,7 +370,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/guide/token-bucket/" class="md-nav__link">
+      <a href="../../guide/token-bucket/" class="md-nav__link">
         
   
   
@@ -389,7 +398,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/guide/basic-usage/" class="md-nav__link">
+      <a href="../../guide/basic-usage/" class="md-nav__link">
         
   
   
@@ -417,7 +426,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/guide/config-hierarchy/" class="md-nav__link">
+      <a href="../../guide/config-hierarchy/" class="md-nav__link">
         
   
   
@@ -445,7 +454,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/guide/scheduled-limits/" class="md-nav__link">
+      <a href="../../guide/scheduled-limits/" class="md-nav__link">
         
   
   
@@ -473,7 +482,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/guide/session-quotas/" class="md-nav__link">
+      <a href="../../guide/session-quotas/" class="md-nav__link">
         
   
   
@@ -501,7 +510,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/guide/hierarchical/" class="md-nav__link">
+      <a href="../../guide/hierarchical/" class="md-nav__link">
         
   
   
@@ -529,7 +538,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/guide/llm-integration/" class="md-nav__link">
+      <a href="../../guide/llm-integration/" class="md-nav__link">
         
   
   
@@ -557,7 +566,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/guide/usage-snapshots/" class="md-nav__link">
+      <a href="../../guide/usage-snapshots/" class="md-nav__link">
         
   
   
@@ -585,7 +594,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/guide/unavailability/" class="md-nav__link">
+      <a href="../../guide/unavailability/" class="md-nav__link">
         
   
   
@@ -667,7 +676,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/infra/deployment/" class="md-nav__link">
+      <a href="../../infra/deployment/" class="md-nav__link">
         
   
   
@@ -695,7 +704,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/infra/production/" class="md-nav__link">
+      <a href="../../infra/production/" class="md-nav__link">
         
   
   
@@ -723,7 +732,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/infra/cloudformation/" class="md-nav__link">
+      <a href="../../infra/cloudformation/" class="md-nav__link">
         
   
   
@@ -798,7 +807,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/migrations/" class="md-nav__link">
+      <a href="../../migrations/" class="md-nav__link">
         
   
   
@@ -826,7 +835,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/migrations/namespace-keys/" class="md-nav__link">
+      <a href="../../migrations/namespace-keys/" class="md-nav__link">
         
   
   
@@ -862,7 +871,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/operations/" class="md-nav__link">
+      <a href="../../operations/" class="md-nav__link">
         
   
   
@@ -890,7 +899,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/monitoring/" class="md-nav__link">
+      <a href="../../monitoring/" class="md-nav__link">
         
   
   
@@ -918,7 +927,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/infra/auditing/" class="md-nav__link">
+      <a href="../../infra/auditing/" class="md-nav__link">
         
   
   
@@ -946,7 +955,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/performance/" class="md-nav__link">
+      <a href="../../performance/" class="md-nav__link">
         
   
   
@@ -1028,7 +1037,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/cli/" class="md-nav__link">
+      <a href="../../cli/" class="md-nav__link">
         
   
   
@@ -1103,7 +1112,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/api/" class="md-nav__link">
+      <a href="../../api/" class="md-nav__link">
         
   
   
@@ -1131,7 +1140,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/api/limiter/" class="md-nav__link">
+      <a href="../../api/limiter/" class="md-nav__link">
         
   
   
@@ -1159,7 +1168,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/api/repository/" class="md-nav__link">
+      <a href="../../api/repository/" class="md-nav__link">
         
   
   
@@ -1187,7 +1196,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/api/models/" class="md-nav__link">
+      <a href="../../api/models/" class="md-nav__link">
         
   
   
@@ -1215,7 +1224,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/api/exceptions/" class="md-nav__link">
+      <a href="../../api/exceptions/" class="md-nav__link">
         
   
   
@@ -1251,7 +1260,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/benchmarks/" class="md-nav__link">
+      <a href="../../benchmarks/" class="md-nav__link">
         
   
   
@@ -1333,7 +1342,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/contributing/" class="md-nav__link">
+      <a href="../../contributing/" class="md-nav__link">
         
   
   
@@ -1361,7 +1370,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/contributing/development/" class="md-nav__link">
+      <a href="../../contributing/development/" class="md-nav__link">
         
   
   
@@ -1389,7 +1398,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/contributing/localstack/" class="md-nav__link">
+      <a href="../../contributing/localstack/" class="md-nav__link">
         
   
   
@@ -1417,7 +1426,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/contributing/testing/" class="md-nav__link">
+      <a href="../../contributing/testing/" class="md-nav__link">
         
   
   
@@ -1445,7 +1454,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/contributing/architecture/" class="md-nav__link">
+      <a href="../../contributing/architecture/" class="md-nav__link">
         
   
   
@@ -1477,18 +1486,20 @@
       
   
   
+    
   
   
+  
     
     
     
     
     
-    <li class="md-nav__item md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" checked>
         
           
           <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
@@ -1509,7 +1520,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_6">
             <span class="md-nav__icon md-icon"></span>
             
@@ -1527,7 +1538,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/000-adr-format-standard/" class="md-nav__link">
+      <a href="../000-adr-format-standard/" class="md-nav__link">
         
   
   
@@ -1602,7 +1613,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/001-single-table-dynamodb/" class="md-nav__link">
+      <a href="../001-single-table-dynamodb/" class="md-nav__link">
         
   
   
@@ -1630,7 +1641,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/002-integer-arithmetic-millitokens/" class="md-nav__link">
+      <a href="../002-integer-arithmetic-millitokens/" class="md-nav__link">
         
   
   
@@ -1658,7 +1669,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/003-cloudformation-infrastructure/" class="md-nav__link">
+      <a href="../003-cloudformation-infrastructure/" class="md-nav__link">
         
   
   
@@ -1686,7 +1697,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/004-declarative-stack-options/" class="md-nav__link">
+      <a href="../004-declarative-stack-options/" class="md-nav__link">
         
   
   
@@ -1714,7 +1725,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/005-exception-hierarchy/" class="md-nav__link">
+      <a href="../005-exception-hierarchy/" class="md-nav__link">
         
   
   
@@ -1742,7 +1753,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/006-flat-schema-snapshots/" class="md-nav__link">
+      <a href="../006-flat-schema-snapshots/" class="md-nav__link">
         
   
   
@@ -1770,7 +1781,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/007-input-validation/" class="md-nav__link">
+      <a href="../007-input-validation/" class="md-nav__link">
         
   
   
@@ -1798,7 +1809,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/008-security-audit-logging/" class="md-nav__link">
+      <a href="../008-security-audit-logging/" class="md-nav__link">
         
   
   
@@ -1826,7 +1837,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/009-version-migration-system/" class="md-nav__link">
+      <a href="../009-version-migration-system/" class="md-nav__link">
         
   
   
@@ -1854,7 +1865,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/010-total-consumed-counter/" class="md-nav__link">
+      <a href="../010-total-consumed-counter/" class="md-nav__link">
         
   
   
@@ -1882,7 +1893,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/011-api-cli-parity/" class="md-nav__link">
+      <a href="../011-api-cli-parity/" class="md-nav__link">
         
   
   
@@ -1910,7 +1921,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/012-cloudformation-docs-parity/" class="md-nav__link">
+      <a href="../012-cloudformation-docs-parity/" class="md-nav__link">
         
   
   
@@ -1938,7 +1949,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/013-module-documentation-parity/" class="md-nav__link">
+      <a href="../013-module-documentation-parity/" class="md-nav__link">
         
   
   
@@ -2021,7 +2032,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/100-centralized-config/" class="md-nav__link">
+      <a href="../100-centralized-config/" class="md-nav__link">
         
   
   
@@ -2049,7 +2060,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/101-flat-schema-config/" class="md-nav__link">
+      <a href="../101-flat-schema-config/" class="md-nav__link">
         
   
   
@@ -2077,7 +2088,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/102-config-hierarchy/" class="md-nav__link">
+      <a href="../102-config-hierarchy/" class="md-nav__link">
         
   
   
@@ -2105,7 +2116,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/103-config-caching/" class="md-nav__link">
+      <a href="../103-config-caching/" class="md-nav__link">
         
   
   
@@ -2133,7 +2144,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/104-stored-limits-default/" class="md-nav__link">
+      <a href="../104-stored-limits-default/" class="md-nav__link">
         
   
   
@@ -2161,7 +2172,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/105-eventual-consistency/" class="md-nav__link">
+      <a href="../105-eventual-consistency/" class="md-nav__link">
         
   
   
@@ -2189,7 +2200,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/106-audit-entity-ids-for-config/" class="md-nav__link">
+      <a href="../106-audit-entity-ids-for-config/" class="md-nav__link">
         
   
   
@@ -2217,7 +2228,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/107-iam-roles-for-application-access/" class="md-nav__link">
+      <a href="../107-iam-roles-for-application-access/" class="md-nav__link">
         
   
   
@@ -2300,7 +2311,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/108-repository-protocol/" class="md-nav__link">
+      <a href="../108-repository-protocol/" class="md-nav__link">
         
   
   
@@ -2328,7 +2339,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/109-backend-capability-matrix/" class="md-nav__link">
+      <a href="../109-backend-capability-matrix/" class="md-nav__link">
         
   
   
@@ -2356,7 +2367,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/110-deprecation-constructor/" class="md-nav__link">
+      <a href="../110-deprecation-constructor/" class="md-nav__link">
         
   
   
@@ -2439,7 +2450,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/111-flatten-all-records/" class="md-nav__link">
+      <a href="../111-flatten-all-records/" class="md-nav__link">
         
   
   
@@ -2467,7 +2478,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/112-cascade-per-entity/" class="md-nav__link">
+      <a href="../112-cascade-per-entity/" class="md-nav__link">
         
   
   
@@ -2495,7 +2506,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/113-lambda-packaging/" class="md-nav__link">
+      <a href="../113-lambda-packaging/" class="md-nav__link">
         
   
   
@@ -2578,7 +2589,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/114-composite-bucket-items/" class="md-nav__link">
+      <a href="../114-composite-bucket-items/" class="md-nav__link">
         
   
   
@@ -2606,7 +2617,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/115-add-based-writes-lazy-refill/" class="md-nav__link">
+      <a href="../115-add-based-writes-lazy-refill/" class="md-nav__link">
         
   
   
@@ -2689,7 +2700,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/116-iam-role-naming/" class="md-nav__link">
+      <a href="../116-iam-role-naming/" class="md-nav__link">
         
   
   
@@ -2717,7 +2728,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/117-managed-policies-by-default/" class="md-nav__link">
+      <a href="../117-managed-policies-by-default/" class="md-nav__link">
         
   
   
@@ -2745,7 +2756,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/124-policy-rename-clarity/" class="md-nav__link">
+      <a href="../124-policy-rename-clarity/" class="md-nav__link">
         
   
   
@@ -2828,7 +2839,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/118-four-level-config-hierarchy/" class="md-nav__link">
+      <a href="../118-four-level-config-hierarchy/" class="md-nav__link">
         
   
   
@@ -2856,7 +2867,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/119-bucket-ttl-strategy/" class="md-nav__link">
+      <a href="../119-bucket-ttl-strategy/" class="md-nav__link">
         
   
   
@@ -2884,7 +2895,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/120-bucket-param-sync/" class="md-nav__link">
+      <a href="../120-bucket-param-sync/" class="md-nav__link">
         
   
   
@@ -2967,7 +2978,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/121-native-sync-unasync/" class="md-nav__link">
+      <a href="../121-native-sync-unasync/" class="md-nav__link">
         
   
   
@@ -2995,7 +3006,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/122-resolve-limits-on-repository/" class="md-nav__link">
+      <a href="../122-resolve-limits-on-repository/" class="md-nav__link">
         
   
   
@@ -3028,18 +3039,20 @@
                 
   
   
+    
   
   
+  
     
     
     
     
     
-    <li class="md-nav__item md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_10" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_10" checked>
         
           
           <label class="md-nav__link" for="__nav_6_10" id="__nav_6_10_label" tabindex="0">
@@ -3060,7 +3073,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_10_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_10_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_6_10">
             <span class="md-nav__icon md-icon"></span>
             
@@ -3078,7 +3091,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/123-local-secondary-indexes/" class="md-nav__link">
+      <a href="../123-local-secondary-indexes/" class="md-nav__link">
         
   
   
@@ -3106,7 +3119,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/125-resource-disable/" class="md-nav__link">
+      <a href="../125-resource-disable/" class="md-nav__link">
         
   
   
@@ -3134,7 +3147,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/133-client-shard-creation/" class="md-nav__link">
+      <a href="../133-client-shard-creation/" class="md-nav__link">
         
   
   
@@ -3162,7 +3175,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/134-random-shard-selection/" class="md-nav__link">
+      <a href="../134-random-shard-selection/" class="md-nav__link">
         
   
   
@@ -3190,7 +3203,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/135-scheduled-limits/" class="md-nav__link">
+      <a href="../135-scheduled-limits/" class="md-nav__link">
         
   
   
@@ -3218,7 +3231,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/136-entity-config-bucket-ttl/" class="md-nav__link">
+      <a href="../136-entity-config-bucket-ttl/" class="md-nav__link">
         
   
   
@@ -3246,7 +3259,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/137-reset-replaces-drip/" class="md-nav__link">
+      <a href="../137-reset-replaces-drip/" class="md-nav__link">
         
   
   
@@ -3274,7 +3287,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/138-fixed-reset-windows-only/" class="md-nav__link">
+      <a href="../138-fixed-reset-windows-only/" class="md-nav__link">
         
   
   
@@ -3302,7 +3315,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/139-duration-reset-windows/" class="md-nav__link">
+      <a href="../139-duration-reset-windows/" class="md-nav__link">
         
   
   
@@ -3330,7 +3343,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/140-duration-window-shard-coherence/" class="md-nav__link">
+      <a href="../140-duration-window-shard-coherence/" class="md-nav__link">
         
   
   
@@ -3358,7 +3371,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/141-reset-after-version-gate/" class="md-nav__link">
+      <a href="../141-reset-after-version-gate/" class="md-nav__link">
         
   
   
@@ -3386,7 +3399,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/142-hide-reset-after-config/" class="md-nav__link">
+      <a href="../142-hide-reset-after-config/" class="md-nav__link">
         
   
   
@@ -3414,7 +3427,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/145-sharded-quota-conserves-allowance/" class="md-nav__link">
+      <a href="../145-sharded-quota-conserves-allowance/" class="md-nav__link">
         
   
   
@@ -3439,10 +3452,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="/zae-limiter/dev/adr/147-client-side-rejection-cache/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-147 Reject from the last bucket state seen, never admit from it
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -3458,6 +3498,131 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#context" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Context
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#decision" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Decision
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#consequences" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Consequences
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#alternatives-considered" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Alternatives Considered
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Alternatives Considered">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#exhausted-until-t-flags" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        "Exhausted until T" flags
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#trust-the-projection-with-no-age-cap" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Trust the projection with no age cap
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#reject-when-the-drawn-shard-is-known-short" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reject when the drawn shard is known short
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#read-before-writing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Read before writing
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#a-shared-cross-process-cache" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A shared cross-process cache
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -3495,6 +3660,121 @@
   
   
   
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#context" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Context
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#decision" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Decision
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#consequences" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Consequences
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#alternatives-considered" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Alternatives Considered
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Alternatives Considered">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#exhausted-until-t-flags" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        "Exhausted until T" flags
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#trust-the-projection-with-no-age-cap" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Trust the projection with no age cap
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#reject-when-the-drawn-shard-is-known-short" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reject when the drawn shard is known short
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#read-before-writing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Read before writing
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#a-shared-cross-process-cache" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A shared cross-process cache
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
   
 </nav>
                   </div>
@@ -3507,7 +3787,87 @@
               
               <article class="md-content__inner md-typeset">
                 
-  <h1>404 - Not found</h1>
+  
+  
+                  
+
+
+  
+    <a href="https://github.com/zeroae/zae-limiter/edit/main/docs/adr/147-client-side-rejection-cache.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="adr-147-reject-from-the-last-bucket-state-seen-never-admit-from-it">ADR-147: Reject from the last bucket state seen, never admit from it<a class="headerlink" href="#adr-147-reject-from-the-last-bucket-state-seen-never-admit-from-it" title="Permanent link">&para;</a></h1>
+<p><strong>Status:</strong> Proposed
+<strong>Date:</strong> 2026-10-06
+<strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/695">#695</a>
+<strong>Related:</strong> <a href="../134-random-shard-selection/">ADR-134</a>, <a href="../146-per-resource-cascade-policy/">ADR-146</a>, <a href="https://github.com/zeroae/zae-limiter/issues/315">#315</a>
+<strong>Design:</strong> <code>docs/plans/2026-10-06-rejection-cache-design.md</code></p>
+<h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
+<p>Since #315 the project has documented a speculative fast rejection as costing 0 RCU and
+0 WCU. It costs 1 WCU: "If a <code>ConditionExpression</code> evaluates to false during a
+conditional write, DynamoDB still consumes write capacity from the table … (or a minimum
+of 1)" (<a href="https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/WorkingWithItems.html#WorkingWithItems.ConditionalWrites.ReturnConsumedCapacity">AWS</a>).
+A measurement on real DynamoDB on 2026-10-06 confirmed it: 1,000 failed conditional
+writes consumed 1,000 WCU, exactly as many as 1,000 successful ones.</p>
+<p>So every 429 costs a write, a cascade rejection costs three, and a client looping on
+429s consumes the partition's physical write throughput without debiting the reserved
+<code>wcu</code> limit that drives write sharding. Meanwhile every speculative response already
+returns the full bucket state at no read cost (<code>ALL_NEW</code> on success, <code>ALL_OLD</code> on
+failure), and the client discards it after one decision.</p>
+<h2 id="decision">Decision<a class="headerlink" href="#decision" title="Permanent link">&para;</a></h2>
+<p><code>Repository</code> must keep the last bucket state seen per (namespace, entity, resource,
+shard) for at most <code>rejection_cache_ttl</code> seconds (default 1.0, <code>0</code> disables), and the
+limiter must raise <code>RateLimitExceeded</code> without a DynamoDB call when that state, projected
+to now with the fast path's own refill arithmetic, cannot cover a limit declared in
+<code>consume</code> on every shard not known to have room; the cache must never admit a request.</p>
+<p>The projection, its exceptions (a passed <code>vu</code>, a <code>wcu</code>-only shortfall, a differing
+<code>limits=</code> override, a degraded limiter, a <code>disabled</code> stamp), shard selection around
+known-short shards, invalidation, memory bound and sync behaviour are specified in the
+design document.</p>
+<h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>
+<p><strong>Positive:</strong>
+- Repeat rejections inside the TTL cost 0 WCU and no round trip, and stop consuming
+  partition throughput.
+- Known-short shards are no longer probed, removing up to two failed writes per acquire.
+- The cached state is the input the cascade pre-check and the refill-from-cached-state
+  write (#695 follow-ups) and the multi-resource fast path (#675) build on.</p>
+<p><strong>Negative:</strong>
+- Admission can lag by up to <code>rejection_cache_ttl</code> per process when tokens return by a
+  route the projection cannot see: another process's refund, an admin raising a limit or
+  resetting a quota, an entity re-enabled, or another process doubling the shard count
+  after every cached state was taken.
+- The cache is per process; N processes each pay one real write per TTL.
+- A local rejection reports a projected state, not a fresh image.</p>
+<h2 id="alternatives-considered">Alternatives Considered<a class="headerlink" href="#alternatives-considered" title="Permanent link">&para;</a></h2>
+<h3 id="exhausted-until-t-flags">"Exhausted until T" flags<a class="headerlink" href="#exhausted-until-t-flags" title="Permanent link">&para;</a></h3>
+<p>Rejected: they carry no balance, so they cannot predict a rejection from a success or
+drive the refill-from-cached-state write.</p>
+<h3 id="trust-the-projection-with-no-age-cap">Trust the projection with no age cap<a class="headerlink" href="#trust-the-projection-with-no-age-cap" title="Permanent link">&para;</a></h3>
+<p>Rejected: a missed refund would under-admit for as long as a quota's period.</p>
+<h3 id="reject-when-the-drawn-shard-is-known-short">Reject when the drawn shard is known short<a class="headerlink" href="#reject-when-the-drawn-shard-is-known-short" title="Permanent link">&para;</a></h3>
+<p>Rejected: it rejects while sibling shards may hold tokens, worse than today's probing.</p>
+<h3 id="read-before-writing">Read before writing<a class="headerlink" href="#read-before-writing" title="Permanent link">&para;</a></h3>
+<p>Rejected: a 429 would cost 0.5 RCU instead of 1 WCU, but every admit would pay the read.</p>
+<h3 id="a-shared-cross-process-cache">A shared cross-process cache<a class="headerlink" href="#a-shared-cross-process-cache" title="Permanent link">&para;</a></h3>
+<p>Rejected: new infrastructure and a network hop to save one write.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
 
               </article>
             </div>
@@ -3526,6 +3886,28 @@
       
         <footer class="md-footer">
   
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../145-sharded-quota-conserves-allowance/" class="md-footer__link md-footer__link--prev" aria-label="Previous: ADR-145 A sharded quota conserves its allowance">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                ADR-145 A sharded quota conserves its allowance
+              </div>
+            </div>
+          </a>
+        
+        
+      </nav>
     
   
   <div class="md-footer-meta md-typeset">
@@ -3580,10 +3962,10 @@
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": "/zae-limiter/dev", "features": ["navigation.top", "navigation.footer", "content.code.copy", "content.code.annotate", "content.action.edit", "search.suggest", "search.highlight"], "search": "/zae-limiter/dev/assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.top", "navigation.footer", "content.code.copy", "content.code.annotate", "content.action.edit", "search.suggest", "search.highlight"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
     
     
-      <script src="/zae-limiter/dev/assets/javascripts/bundle.d7400e89.min.js"></script>
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
       
         <script src="https://unpkg.com/mermaid@10/dist/mermaid.min.js"></script>
       

@@ -4577,6 +4577,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/147-client-side-rejection-cache/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-147 Reject from the last bucket state seen, never admit from it
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -7440,7 +7468,7 @@ parameter.</p>
 <p>Consumes nothing and writes nothing. This is a read; it is not a
 pre-flight check for :meth:<code>acquire</code>. Deciding with it and then calling
 <code>acquire()</code> is TOCTOU and costs an extra read — <code>acquire()</code> already
-answers "may I proceed, and if not when" in 1 WCU, or 0 RCU + 0 WCU on
+answers "may I proceed, and if not when" in 1 WCU, with no read even on
 a fast rejection, via <code>RateLimitExceeded.retry_after_seconds</code>. Use
 this when the answer is <em>displayed</em> rather than acted on.</p>
 <p><strong>Sharding.</strong> A sharded entity's balance is spread across its shards
@@ -10722,7 +10750,7 @@ parameter.</p>
 <p>Consumes nothing and writes nothing. This is a read; it is not a
 pre-flight check for :meth:<code>acquire</code>. Deciding with it and then calling
 <code>acquire()</code> is TOCTOU and costs an extra read — <code>acquire()</code> already
-answers "may I proceed, and if not when" in 1 WCU, or 0 RCU + 0 WCU on
+answers "may I proceed, and if not when" in 1 WCU, with no read even on
 a fast rejection, via <code>RateLimitExceeded.retry_after_seconds</code>. Use
 this when the answer is <em>displayed</em> rather than acted on.</p>
 <p><strong>Sharding.</strong> A sharded entity's balance is spread across its shards

@@ -3542,6 +3542,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="adr/147-client-side-rejection-cache/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-147 Reject from the last bucket state seen, never admit from it
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -3688,7 +3716,7 @@
 <li><strong>Multiple limits</strong> are tracked per call (requests per minute, tokens per minute)</li>
 <li><strong>Consumption is unknown upfront</strong> — adjust limits after the operation completes</li>
 <li><strong>Hierarchical limits</strong> exist (API key → project, tenant → user)</li>
-<li><strong>Cost matters</strong> — ~$0.625/1M requests, $0 for fast rejections (<a href="performance/#6-cost-optimization-strategies">details</a>)</li>
+<li><strong>Cost matters</strong> — ~$0.625/1M requests, rejections included (<a href="performance/#6-cost-optimization-strategies">details</a>)</li>
 </ul>
 <h2 id="features">Features<a class="headerlink" href="#features" title="Permanent link">&para;</a></h2>
 <ul>

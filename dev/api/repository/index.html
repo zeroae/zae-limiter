@@ -5573,6 +5573,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/147-client-side-rejection-cache/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-147 Reject from the last bucket state seen, never admit from it
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -7819,7 +7847,7 @@ counterpart is available with the same signature.</p>
 
 
 <a href="#zae_limiter.repository.Repository" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">Repository</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stack_options</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">config_cache_ttl</span><span class="o">=</span><span class="mi">60</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">_skip_deprecation_warning</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">Repository</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">stack_options</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">config_cache_ttl</span><span class="o">=</span><span class="mi">60</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">rejection_cache_ttl</span><span class="o">=</span><span class="n"><span title="zae_limiter.rejection_cache.DEFAULT_REJECTION_CACHE_TTL">DEFAULT_REJECTION_CACHE_TTL</span></span><span class="p">,</span> <span class="n">rejection_cache_size</span><span class="o">=</span><span class="n"><span title="zae_limiter.rejection_cache.DEFAULT_REJECTION_CACHE_SIZE">DEFAULT_REJECTION_CACHE_SIZE</span></span><span class="p">,</span> <span class="n">_skip_deprecation_warning</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents first">
@@ -7934,6 +7962,39 @@ Controls caching of resolved limit configs in resolve_limits().</p>
             </td>
             <td>
                   <code>60</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>rejection_cache_ttl</code>
+            </td>
+            <td>
+                  <code><span title="float">float</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Seconds a cached bucket state may be used to reject a
+request without a DynamoDB call (default: 1.0, 0 to disable). ADR-147.</p>
+              </div>
+            </td>
+            <td>
+                  <code><span title="zae_limiter.rejection_cache.DEFAULT_REJECTION_CACHE_TTL">DEFAULT_REJECTION_CACHE_TTL</span></code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>rejection_cache_size</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Maximum cached bucket states (default: 10,000).</p>
+              </div>
+            </td>
+            <td>
+                  <code><span title="zae_limiter.rejection_cache.DEFAULT_REJECTION_CACHE_SIZE">DEFAULT_REJECTION_CACHE_SIZE</span></code>
             </td>
           </tr>
       </tbody>
@@ -8091,7 +8152,7 @@ or <code>"zae-limiter"</code>, namespace <code>"default"</code>.</p>
   </span>
 
 <a href="#zae_limiter.repository.Repository.open" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">open</span><span class="p">(</span><span class="n">namespace</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">stack</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">config_cache_ttl</span><span class="o">=</span><span class="mi">60</span><span class="p">,</span> <span class="n">auto_update</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">open</span><span class="p">(</span><span class="n">namespace</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">stack</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">config_cache_ttl</span><span class="o">=</span><span class="mi">60</span><span class="p">,</span> <span class="n">auto_update</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">rejection_cache_ttl</span><span class="o">=</span><span class="n"><span title="zae_limiter.rejection_cache.DEFAULT_REJECTION_CACHE_TTL">DEFAULT_REJECTION_CACHE_TTL</span></span><span class="p">,</span> <span class="n">rejection_cache_size</span><span class="o">=</span><span class="n"><span title="zae_limiter.rejection_cache.DEFAULT_REJECTION_CACHE_SIZE">DEFAULT_REJECTION_CACHE_SIZE</span></span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -8227,6 +8288,41 @@ or <code>"zae-limiter"</code>.</p>
                   <code>True</code>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>rejection_cache_ttl</code>
+            </td>
+            <td>
+                  <code><span title="float">float</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Seconds a cached bucket state may be used to
+reject a request without a DynamoDB call (default: 1.0, 0 to
+disable). See ADR-147.</p>
+              </div>
+            </td>
+            <td>
+                  <code><span title="zae_limiter.rejection_cache.DEFAULT_REJECTION_CACHE_TTL">DEFAULT_REJECTION_CACHE_TTL</span></code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>rejection_cache_size</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Maximum cached bucket states (default:
+10,000).</p>
+              </div>
+            </td>
+            <td>
+                  <code><span title="zae_limiter.rejection_cache.DEFAULT_REJECTION_CACHE_SIZE">DEFAULT_REJECTION_CACHE_SIZE</span></code>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -8317,7 +8413,7 @@ repo = await Repository.open()
   </span>
 
 <a href="#zae_limiter.repository.Repository.connect" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">connect</span><span class="p">(</span><span class="n">namespace</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">stack</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">config_cache_ttl</span><span class="o">=</span><span class="mi">60</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">connect</span><span class="p">(</span><span class="n">namespace</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">stack</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">endpoint_url</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">config_cache_ttl</span><span class="o">=</span><span class="mi">60</span><span class="p">,</span> <span class="n">rejection_cache_ttl</span><span class="o">=</span><span class="n"><span title="zae_limiter.rejection_cache.DEFAULT_REJECTION_CACHE_TTL">DEFAULT_REJECTION_CACHE_TTL</span></span><span class="p">,</span> <span class="n">rejection_cache_size</span><span class="o">=</span><span class="n"><span title="zae_limiter.rejection_cache.DEFAULT_REJECTION_CACHE_SIZE">DEFAULT_REJECTION_CACHE_SIZE</span></span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -8435,6 +8531,41 @@ or <code>"zae-limiter"</code>.</p>
             </td>
             <td>
                   <code>60</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>rejection_cache_ttl</code>
+            </td>
+            <td>
+                  <code><span title="float">float</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Seconds a cached bucket state may be used to
+reject a request without a DynamoDB call (default: 1.0, 0 to
+disable). See ADR-147.</p>
+              </div>
+            </td>
+            <td>
+                  <code><span title="zae_limiter.rejection_cache.DEFAULT_REJECTION_CACHE_TTL">DEFAULT_REJECTION_CACHE_TTL</span></code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>rejection_cache_size</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Maximum cached bucket states (default:
+10,000).</p>
+              </div>
+            </td>
+            <td>
+                  <code><span title="zae_limiter.rejection_cache.DEFAULT_REJECTION_CACHE_SIZE">DEFAULT_REJECTION_CACHE_SIZE</span></code>
             </td>
           </tr>
       </tbody>
@@ -11378,6 +11509,9 @@ therefore debited, never re-seeded.</p>
 <p>Unconditional ADD for post-hoc correction. Can go negative by design.
 Positive delta = consumed more (subtract tokens, add to counter).
 Negative delta = consumed less (add tokens, subtract from counter).</p>
+<p>Every refund, release, rollback and speculative compensation is built
+here, so the shard's cached state is forgotten here (ADR-147): tokens
+this process gives back must not be hidden by its own cache.</p>
 
 
     </div>
@@ -11474,7 +11608,7 @@ success is acceptable.</p>
   </span>
 
 <a href="#zae_limiter.repository.Repository.speculative_consume" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">speculative_consume</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consume</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">now_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">speculative_consume</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consume</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">now_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">avoid_shards</span><span class="o">=</span><span class="n"><span title="frozenset">frozenset</span></span><span class="p">())</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -11599,6 +11733,23 @@ reads the clock once here, for callers outside an acquire.</p>
                   <code>None</code>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>avoid_shards</code>
+            </td>
+            <td>
+                  <code><span title="frozenset">frozenset</span>[<span title="int">int</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Child shards the rejection cache knows are short
+(ADR-147); the child shard is drawn among the others.</p>
+              </div>
+            </td>
+            <td>
+                  <code><span title="frozenset">frozenset</span>()</code>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -11694,7 +11845,7 @@ reads the clock once here, for callers outside an acquire.</p>
 
 
 <a href="#zae_limiter.repository.Repository.select_shard" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">select_shard</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_count</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">select_shard</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_count</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">avoid</span><span class="o">=</span><span class="n"><span title="frozenset">frozenset</span></span><span class="p">())</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -11785,6 +11936,25 @@ the entity cache.</p>
             </td>
             <td>
                   <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>avoid</code>
+            </td>
+            <td>
+                  <code><span title="frozenset">frozenset</span>[<span title="int">int</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Shards the rejection cache knows cannot fit this request
+(ADR-147). The draw is uniform over the others; when every
+shard is in it the caller has already rejected, so it is
+ignored rather than leaving nothing to draw from.</p>
+              </div>
+            </td>
+            <td>
+                  <code><span title="frozenset">frozenset</span>()</code>
             </td>
           </tr>
       </tbody>
@@ -17434,7 +17604,7 @@ buckets</p>
 
 
 <a href="#zae_limiter.repository_protocol.RepositoryProtocol.select_shard" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">select_shard</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_count</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">select_shard</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_count</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">avoid</span><span class="o">=</span><span class="n"><span title="frozenset">frozenset</span></span><span class="p">())</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -17517,6 +17687,23 @@ image), or None to read the entity cache</p>
             </td>
             <td>
                   <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>avoid</code>
+            </td>
+            <td>
+                  <code><span title="frozenset">frozenset</span>[<span title="int">int</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Shards known not to fit the request (ADR-147); the draw
+is uniform over the others. Passed only when non-empty.</p>
+              </div>
+            </td>
+            <td>
+                  <code><span title="frozenset">frozenset</span>()</code>
             </td>
           </tr>
       </tbody>
@@ -18666,7 +18853,7 @@ where partial success is acceptable.</p>
   </span>
 
 <a href="#zae_limiter.repository_protocol.RepositoryProtocol.speculative_consume" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">speculative_consume</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consume</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">now_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">speculative_consume</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consume</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">now_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">avoid_shards</span><span class="o">=</span><span class="n"><span title="frozenset">frozenset</span></span><span class="p">())</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -18786,6 +18973,25 @@ cascade logic). None means auto-select from entity cache.</p>
             </td>
             <td>
                   <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>avoid_shards</code>
+            </td>
+            <td>
+                  <code><span title="frozenset">frozenset</span>[<span title="int">int</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Shards the caller knows cannot fit the request
+(ADR-147); the shard is drawn among the others. Passed only
+when non-empty, and only by a limiter whose repository keeps a
+rejection cache, so a backend without one never receives it.</p>
+              </div>
+            </td>
+            <td>
+                  <code><span title="frozenset">frozenset</span>()</code>
             </td>
           </tr>
       </tbody>

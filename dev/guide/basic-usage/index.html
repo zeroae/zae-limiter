@@ -3772,6 +3772,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/147-client-side-rejection-cache/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-147 Reject from the last bucket state seen, never admit from it
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -4283,7 +4311,7 @@ availability, or pass <code>{"tpm": 1}</code> for "when may I spend one more tok
 <p class="admonition-title">This is for display, not for gating</p>
 <p>Checking here and then calling <code>acquire()</code> is a time-of-check/time-of-use
 race, and it costs an extra read. <code>acquire()</code> already answers "may I
-proceed, and if not when" — in 1 WCU, or 0 RCU + 0 WCU on a fast rejection —
+proceed, and if not when" — in 1 WCU either way, with no read —
 via <code>RateLimitExceeded.retry_after_seconds</code>. Use <code>check_availability()</code> when
 the answer is shown to a user, and <code>acquire()</code> when it is acted on.</p>
 </div>
@@ -4475,6 +4503,9 @@ access to one.</p>
 </span><span id="__span-17-8"><a id="__codelineno-17-8" name="__codelineno-17-8" href="#__codelineno-17-8"></a><span class="n">repo</span> <span class="o">=</span> <span class="k">await</span> <span class="n">Repository</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="n">config_cache_ttl</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
 </span><span id="__span-17-9"><a id="__codelineno-17-9" name="__codelineno-17-9" href="#__codelineno-17-9"></a><span class="n">limiter</span> <span class="o">=</span> <span class="n">RateLimiter</span><span class="p">(</span><span class="n">repository</span><span class="o">=</span><span class="n">repo</span><span class="p">)</span>
 </span></code></pre></div>
+<p><code>Repository.open()</code> also takes <code>rejection_cache_ttl</code> (seconds, default <code>1.0</code>, <code>0</code> disables) and
+<code>rejection_cache_size</code> (default <code>10_000</code>) for the rejection cache; see
+<a href="#speculative-writes">Speculative Writes</a>.</p>
 <h3 id="automatic-cache-eviction">Automatic Cache Eviction<a class="headerlink" href="#automatic-cache-eviction" title="Permanent link">&para;</a></h3>
 <p>Config-modifying methods (<code>set_limits()</code>, <code>delete_limits()</code>) automatically evict relevant cache entries. Manual invalidation is only needed after external changes (e.g., direct DynamoDB writes).</p>
 <h3 id="manual-cache-invalidation">Manual Cache Invalidation<a class="headerlink" href="#manual-cache-invalidation" title="Permanent link">&para;</a></h3>
@@ -4495,7 +4526,7 @@ access to one.</p>
 </span><span id="__span-20-4"><a id="__codelineno-20-4" name="__codelineno-20-4" href="#__codelineno-20-4"></a>    <span class="n">speculative_writes</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>  <span class="c1"># Disable speculative writes</span>
 </span><span id="__span-20-5"><a id="__codelineno-20-5" name="__codelineno-20-5" href="#__codelineno-20-5"></a><span class="p">)</span>
 </span></code></pre></div>
-<p>With speculative writes, <code>acquire()</code> attempts a conditional UpdateItem directly instead of reading bucket state first. On success, this saves one DynamoDB round trip (0 RCU, 1 WCU instead of 1 RCU + 1 WCU). When the bucket is exhausted and refill would not help, it rejects immediately without any writes (0 RCU, 0 WCU).</p>
+<p>With speculative writes, <code>acquire()</code> attempts a conditional UpdateItem directly instead of reading bucket state first. On success, this saves one DynamoDB round trip (0 RCU, 1 WCU instead of 1 RCU + 1 WCU). When the bucket is exhausted and refill would not help, it rejects immediately without a read (0 RCU, 1 WCU: the failed conditional write is charged).</p>
 <p>The speculative path falls back to the normal read-write path when:</p>
 <ul>
 <li>The bucket does not exist yet (first acquire for an entity)</li>
@@ -4507,6 +4538,15 @@ access to one.</p>
 <li>The bucket crossed a schedule boundary, so its balance was worked out under parameters no
   longer in force. One request per bucket per boundary pays this</li>
 </ul>
+<p>A repeat rejection usually costs nothing. The repository keeps the last bucket state each
+speculative write returned, and when that state, projected to now, shows every shard short,
+<code>acquire()</code> raises <code>RateLimitExceeded</code> with no DynamoDB call (0 RCU, 0 WCU). It only ever
+rejects, so it cannot over-admit. The trade-off is that for up to <code>rejection_cache_ttl</code> seconds
+per process (default <code>1.0</code>) a request can be rejected after tokens came back by a route this
+process cannot see, such as another process's refund or an admin change made elsewhere. Set
+<code>rejection_cache_ttl=0</code> on <code>Repository.open()</code> to send every rejection to DynamoDB, and
+<code>rejection_cache_size</code> (default <code>10_000</code>) to bound memory. <code>get_cache_stats().local_rejections</code>
+counts the rejections answered locally.</p>
 <p>See <a href="../../performance/#8-speculative-writes">Performance Tuning - Speculative Writes</a> for detailed cost analysis and guidance on when to disable this feature.</p>
 <h2 id="next-steps">Next Steps<a class="headerlink" href="#next-steps" title="Permanent link">&para;</a></h2>
 <ul>

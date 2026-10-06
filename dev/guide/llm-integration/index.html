@@ -3633,6 +3633,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/147-client-side-rejection-cache/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR-147 Reject from the last bucket state seen, never admit from it
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -4035,7 +4063,7 @@
 <p>The check above and the <code>acquire()</code> below it are two separate moments, so
 the decision can be stale by the time it is used, and the check costs a read
 that <code>acquire()</code> does not need. <code>acquire()</code> raises <code>RateLimitExceeded</code> with
-the same <code>retry_after_seconds</code> — in 1 WCU, or 0 RCU + 0 WCU when it can
+the same <code>retry_after_seconds</code> — in 1 WCU either way, with no read when it can
 reject from the failure image — so catching that is both cheaper and
 race-free. Reach for <code>check_availability()</code> when the number is <em>shown</em> to
 someone, not when it gates the call.</p>
