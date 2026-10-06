@@ -41,7 +41,8 @@ To run on LocalStack::
            AWS_SECRET_ACCESS_KEY=test AWS_DEFAULT_REGION=us-east-1
     uv run pytest tests/e2e/test_multi_stack_isolation.py -m integration -v
 
-To run on real AWS (``AWS_ENDPOINT_URL`` must be unset)::
+To run on real AWS (``AWS_ENDPOINT_URL`` and every ``AWS_ENDPOINT_URL_*`` must
+be unset, and the profile must set no ``endpoint_url``)::
 
     AWS_PROFILE=zeroae-code/AWSPowerUserAccess \\
       uv run pytest tests/e2e/test_multi_stack_isolation.py -m aws --run-aws -v
@@ -51,9 +52,12 @@ alarms) and deletes them.
 """
 
 import os
+import re
 from datetime import timedelta
 from unittest.mock import patch
+from urllib.parse import urlparse
 
+import boto3
 import pytest
 from click.testing import CliRunner
 
@@ -67,12 +71,19 @@ from tests.fixtures.stack_pairs import (
     function_config,
     localstack_backend,
     set_stamp,
+    settled,
     snapshot,
     version_item,
     wait_until_visible,
     where,
 )
-from zae_limiter import Limit, RateLimiter, RateLimitExceeded, Repository
+from zae_limiter import (
+    Limit,
+    RateLimiter,
+    RateLimitExceeded,
+    Repository,
+    SyncRateLimiter,
+)
 from zae_limiter.cli import cli
 from zae_limiter.exceptions import VersionMismatchError
 from zae_limiter.sync_repository import SyncRepository
@@ -109,10 +120,31 @@ def backend(request) -> Backend:
     """Where this class deploys its pair: LocalStack, or real AWS under ``--run-aws``."""
     if request.param == "localstack":
         return localstack_backend(request.getfixturevalue("localstack_endpoint"))
-    if os.getenv("AWS_ENDPOINT_URL"):
-        # boto3 honours the variable, so "real AWS" would silently be LocalStack.
-        pytest.skip("AWS_ENDPOINT_URL is set; unset it to run against real AWS")
+    _require_real_aws()
     return aws_backend()
+
+
+def _require_real_aws() -> None:
+    """Skip unless every client these tests build resolves to real AWS.
+
+    boto3 honours ``AWS_ENDPOINT_URL``, the per-service ``AWS_ENDPOINT_URL_<SERVICE>``
+    variables and a profile's ``endpoint_url``, any of which would silently turn
+    "real AWS" into LocalStack for some services and not others. The clients'
+    resolved endpoints cover all three; the account id is the last check, since
+    LocalStack answers ``get_caller_identity`` with ``000000000000``.
+    """
+    overrides = sorted(name for name in os.environ if name.startswith("AWS_ENDPOINT_URL"))
+    if overrides:
+        pytest.skip(f"{', '.join(overrides)} set; unset to run against real AWS")
+    for service in ("dynamodb", "lambda", "cloudformation", "sts"):
+        url = boto3.client(service, region_name=REGION).meta.endpoint_url
+        host = urlparse(url).hostname or ""
+        if not host.endswith(".amazonaws.com"):
+            pytest.skip(f"{service} resolves to {url}, not AWS (a profile endpoint_url?)")
+    account = boto3.client("sts", region_name=REGION).get_caller_identity()["Account"]
+    assert re.fullmatch(r"\d{12}", account) and account != "000000000000", (
+        f"get_caller_identity returned {account!r}, not a real AWS account"
+    )
 
 
 def _client_min(stack: str, endpoint: str | None) -> str | None:
@@ -144,7 +176,41 @@ class TestUpgradeIsolation:
 
     Both stacks are deployed as ``OLD``, so B is genuinely behind the client
     that upgrades A: a leak would have something to change.
+
+    A repository on B stays open in this process for the whole upgrade, so a
+    process-global cache keyed by region or endpoint alone (a ``StackManager``
+    or Lambda client remembering the last stack it served) would see B first
+    and could carry it into A's upgrade.
     """
+
+    @pytest.fixture
+    def live_b(self, upgrade_pair):
+        """An open handle on B, already served once; call it to acquire again.
+
+        Opened as ``OLD`` with ``auto_update=False``: B's stamp matches, so the
+        open is a plain read and the handle can never push code to B itself.
+        """
+        with patch("zae_limiter.__version__", OLD):
+            repo = SyncRepository.open(
+                stack=upgrade_pair.b,
+                region=REGION,
+                endpoint_url=upgrade_pair.endpoint_url,
+                auto_update=False,
+            )
+        limiter = SyncRateLimiter(repository=repo)
+
+        def serve() -> None:
+            # A request-time override: B has no stored limits in this class.
+            with limiter.acquire(
+                ENTITY, RESOURCE, consume={"rpm": 1}, limits=[Limit.per_minute("rpm", 100)]
+            ) as lease:
+                assert lease.consumed == {"rpm": 1}
+
+        try:
+            serve()
+            yield serve
+        finally:
+            repo.close()
 
     def _assert_b_untouched(self, upgrade_pair: StackPair, before: dict) -> None:
         after = snapshot(upgrade_pair.b, upgrade_pair.endpoint_url)
@@ -155,7 +221,7 @@ class TestUpgradeIsolation:
         assert after["provisioner"]["LastModified"] == before["provisioner"]["LastModified"]
         assert after == before
 
-    def test_the_cli_upgrade_of_a_leaves_b_alone(self, upgrade_pair):
+    def test_the_cli_upgrade_of_a_leaves_b_alone(self, upgrade_pair, live_b):
         endpoint = upgrade_pair.endpoint_url
         before = snapshot(upgrade_pair.b, endpoint)
         assert before["version_item"]["lambda_version"]["S"] == OLD
@@ -178,8 +244,10 @@ class TestUpgradeIsolation:
         # because nothing moved anywhere.
         assert function_config(upgrade_pair.a, endpoint)["LastModified"] != a_before["LastModified"]
         self._assert_b_untouched(upgrade_pair, before)
+        # The handle opened before the upgrade still serves B.
+        live_b()
 
-    def test_open_with_auto_update_of_a_leaves_b_alone(self, upgrade_pair):
+    def test_open_with_auto_update_of_a_leaves_b_alone(self, upgrade_pair, live_b):
         endpoint = upgrade_pair.endpoint_url
         before = snapshot(upgrade_pair.b, endpoint)
 
@@ -193,6 +261,7 @@ class TestUpgradeIsolation:
         assert _lambda_version(upgrade_pair.a, endpoint) == CLIENT
         assert function_config(upgrade_pair.a, endpoint)["LastModified"] != a_before["LastModified"]
         self._assert_b_untouched(upgrade_pair, before)
+        live_b()
 
 
 # ---------------------------------------------------------------------------
@@ -281,6 +350,11 @@ class TestClientMinVersionRatchetIsolation:
             )
             try:
                 for repo in (connected, opened):
+                    # B's limit was written by the ``ratcheted`` fixture; a fresh
+                    # repository's first config read can still miss it on AWS.
+                    await settled(
+                        repo, lambda: repo.get_resource_defaults(RESOURCE), _capacities(100)
+                    )
                     limiter = RateLimiter(repository=repo)
                     async with limiter.acquire(ENTITY, RESOURCE, consume={"rpm": 1}) as lease:
                         assert lease.consumed == {"rpm": 1}
@@ -303,6 +377,11 @@ ONE_HOUR = 3600
 def _limits(capacity: int) -> list[Limit]:
     """Slow refill (one token per hour): a slow LocalStack call cannot refill a drained bucket."""
     return [Limit.custom("rpm", capacity, 1, ONE_HOUR)]
+
+
+def _capacities(capacity: int):
+    """A ``settled`` predicate: the stored limits are exactly one ``rpm`` of ``capacity``."""
+    return lambda limits: [limit.capacity for limit in limits] == [capacity]
 
 
 @pytest.fixture(scope="class")
@@ -339,6 +418,12 @@ class TestInProcessIsolation:
         # Same entity id and resource, different stored limits: A is tiny, B is not.
         await repo_a.set_resource_defaults(RESOURCE, _limits(A_CAPACITY))
         await repo_b.set_resource_defaults(RESOURCE, _limits(B_CAPACITY))
+        await settled(
+            repo_a, lambda: repo_a.get_resource_defaults(RESOURCE), _capacities(A_CAPACITY)
+        )
+        await settled(
+            repo_b, lambda: repo_b.get_resource_defaults(RESOURCE), _capacities(B_CAPACITY)
+        )
         limiter_a, limiter_b = RateLimiter(repository=repo_a), RateLimiter(repository=repo_b)
 
         # B has never been touched: full capacity, and no bucket for the entity.
@@ -354,11 +439,10 @@ class TestInProcessIsolation:
         assert {v.limit_name for v in rejected.value.violations} == {"rpm"}
 
         # A is drained, and none of it shows on B: still full, still no bucket.
-        drained = await eventually(
+        await eventually(
             lambda: limiter_a.check_availability(ENTITY, RESOURCE),
             lambda availability: availability.available == {"rpm": 0},
         )
-        assert drained.available == {"rpm": 0}
         after = await limiter_b.check_availability(ENTITY, RESOURCE)
         assert after.available == {"rpm": B_CAPACITY}
         assert after.allowed
@@ -377,16 +461,21 @@ class TestInProcessIsolation:
         )
         assert bucket_a.capacity_milli == A_CAPACITY * 1000
         assert bucket_a.tokens_milli < 1000
-        spent_on_b = await eventually(
+        await eventually(
             lambda: limiter_b.check_availability(ENTITY, RESOURCE),
             lambda availability: availability.available == {"rpm": B_CAPACITY - 1},
         )
-        assert spent_on_b.available == {"rpm": B_CAPACITY - 1}
 
     async def test_a_config_write_on_a_does_not_reach_a_warm_cache_on_b(self, repos):
         repo_a, repo_b = repos
         await repo_a.set_resource_defaults(RESOURCE, _limits(A_CAPACITY))
         await repo_b.set_resource_defaults(RESOURCE, _limits(B_CAPACITY))
+        await settled(
+            repo_a, lambda: repo_a.get_resource_defaults(RESOURCE), _capacities(A_CAPACITY)
+        )
+        await settled(
+            repo_b, lambda: repo_b.get_resource_defaults(RESOURCE), _capacities(B_CAPACITY)
+        )
 
         # Warm both caches, then confirm each is serving from itself.
         for repo in (repo_a, repo_b):
@@ -398,11 +487,10 @@ class TestInProcessIsolation:
 
         # A's limits change; B is never told (no invalidate_config_cache() on B).
         await repo_a.set_resource_defaults(RESOURCE, _limits(A_CAPACITY + 2))
-        stored_a = await eventually(
+        await eventually(
             lambda: repo_a.get_resource_defaults(RESOURCE),
             lambda limits: [limit.capacity for limit in limits] == [A_CAPACITY + 2],
         )
-        assert [limit.capacity for limit in stored_a] == [A_CAPACITY + 2]
 
         # A resource-level write does not evict the writer's own cache either (it
         # propagates by TTL, ADR-122), so A is evicted by hand to see the change.
@@ -410,12 +498,10 @@ class TestInProcessIsolation:
             await repo_a.invalidate_config_cache()
             return await repo_a.resolve_limits(ENTITY, RESOURCE)
 
-        limits_a, _, _ = await eventually(
+        await eventually(
             resolve_a_fresh,
             lambda resolved: [limit.capacity for limit in resolved[0] or []] == [A_CAPACITY + 2],
         )
-        assert limits_a is not None
-        assert [limit.capacity for limit in limits_a] == [A_CAPACITY + 2]
 
         # B's warm entry survived both the write and A's eviction untouched: same
         # limits, no miss, no refill, served from the cache.
@@ -459,30 +545,33 @@ class TestInProcessIsolation:
         # Data written under A's namespace: an entity, stored limits, a bucket.
         await scoped_a.create_entity(ENTITY, name="only on A")
         await scoped_a.set_limits(ENTITY, _limits(A_CAPACITY), resource=RESOURCE)
+        await settled(
+            scoped_a, lambda: scoped_a.get_limits(ENTITY, RESOURCE), _capacities(A_CAPACITY)
+        )
         limiter_a = RateLimiter(repository=scoped_a)
         async with limiter_a.acquire(ENTITY, RESOURCE, consume={"rpm": 1}):
             pass
-        entity_a = await eventually(lambda: scoped_a.get_entity(ENTITY), lambda e: e is not None)
-        assert entity_a is not None
-        buckets_a = await eventually(
+        await eventually(lambda: scoped_a.get_entity(ENTITY), lambda e: e is not None)
+        await eventually(
             lambda: scoped_a.get_buckets(ENTITY, RESOURCE), lambda buckets: len(buckets) == 1
         )
-        assert len(buckets_a) == 1
 
         # ... none of it visible under the same name on B.
         assert await scoped_b.get_entity(ENTITY) is None
         assert await scoped_b.get_limits(ENTITY, RESOURCE) == []
         assert await scoped_b.get_buckets(ENTITY) == []
         await scoped_b.set_resource_defaults(RESOURCE, _limits(A_CAPACITY))
+        await settled(
+            scoped_b, lambda: scoped_b.get_resource_defaults(RESOURCE), _capacities(A_CAPACITY)
+        )
         limiter_b = RateLimiter(repository=scoped_b)
         availability = await limiter_b.check_availability(ENTITY, RESOURCE)
         assert availability.available == {"rpm": A_CAPACITY}
         # ... and the two registries share no id.
-        listed_a = await eventually(
+        await eventually(
             repo_a.list_namespaces,
             lambda names: {n["name"] for n in names} >= {"default", "shared-name"},
         )
-        assert {n["name"] for n in listed_a} >= {"default", "shared-name"}
         assert {n["namespace_id"] for n in await repo_a.list_namespaces()}.isdisjoint(
             {n["namespace_id"] for n in await repo_b.list_namespaces()}
         )

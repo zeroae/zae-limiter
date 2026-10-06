@@ -13,14 +13,17 @@ endpoint URL, the PowerUser IAM flags from ``.claude/rules/aws-testing.md``).
 
 Real AWS reads are eventually consistent unless asked otherwise, and GSIs are
 always eventually consistent. :func:`set_stamp` therefore waits until a plain
-read sees what it wrote, and :func:`eventually` polls an assertion that a GSI
-or a default read backs. On LocalStack both succeed on the first try.
+read sees what it wrote, :func:`settled` does the same for a limit-config write
+before anything resolves limits from it, and :func:`eventually` polls an
+assertion that a GSI or a default read backs. On LocalStack all three succeed
+on the first try.
 """
 
 from __future__ import annotations
 
 import asyncio
 import time
+import warnings
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -30,7 +33,7 @@ from unittest.mock import patch
 import boto3
 from click.testing import CliRunner
 
-from zae_limiter import schema
+from zae_limiter import Repository, schema
 from zae_limiter.cli import cli
 from zae_limiter.sync_repository import SyncRepository
 from zae_limiter.version import get_schema_version
@@ -102,10 +105,17 @@ def deployed_pair(
 
     Every stack is deployed ``--no-aggregator --no-alarms`` plus the backend's
     own flags (the PowerUser IAM flags on real AWS).
+
+    A delete that fails is never ignored: on real AWS it is a leaked stack that
+    keeps costing money. When the body completed, teardown fails naming each
+    stack and the CLI's output. When the body (or a deploy) is already raising,
+    the leak is reported as a warning instead, so the original failure is the
+    one pytest shows.
     """
     endpoint_url = backend.endpoint_url
     pair = StackPair(f"{base_name}-a", f"{base_name}-b", endpoint_url)
     runner = CliRunner()
+    body_raised = True
     try:
         for stack in (pair.a, pair.b):
             with patch("zae_limiter.__version__", version):
@@ -122,9 +132,22 @@ def deployed_pair(
                 )
             assert result.exit_code == 0, f"Deploy of {stack} failed: {result.output}"
         yield pair
+        body_raised = False
     finally:
+        leaked = []
         for stack in (pair.a, pair.b):
-            runner.invoke(cli, ["delete", *where(stack, endpoint_url), "--yes", "--wait"])
+            result = runner.invoke(cli, ["delete", *where(stack, endpoint_url), "--yes", "--wait"])
+            if result.exit_code != 0:
+                leaked.append(
+                    f"{stack} (exit {result.exit_code}): {result.output.strip()}"
+                    + (f" [{result.exception!r}]" if result.exception else "")
+                )
+        if leaked:
+            message = "Stack delete failed; delete by hand:\n" + "\n".join(leaked)
+            if body_raised:
+                warnings.warn(message, stacklevel=2)
+            else:
+                raise AssertionError(message)
 
 
 def sync_repo(stack: str, endpoint_url: str | None) -> SyncRepository:
@@ -257,10 +280,52 @@ async def eventually(
     (``get_buckets``, ``check_availability``), or a default ``GetItem`` /
     ``Query``. Asserting presence through one of them straight after a write is
     a flake on AWS; asserting absence needs no poll.
+
+    This *is* the assertion: on timeout it raises ``AssertionError`` carrying
+    the last value read, so a caller does not re-assert the predicate.
     """
     deadline = time.monotonic() + timeout
     while True:
         value = await probe()
-        if predicate(value) or time.monotonic() >= deadline:
+        if predicate(value):
             return value
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"condition never held within {timeout}s; last value {value!r}")
         await asyncio.sleep(0.5)
+
+
+async def settled(
+    repo: Repository,
+    read: Callable[[], Awaitable[T]],
+    predicate: Callable[[T], bool],
+    *,
+    reads: int = 3,
+    timeout: float = 30.0,
+) -> T:
+    """Wait until a limit-config write is visible, then drop ``repo``'s config cache.
+
+    The limiter resolves limits with an eventually consistent ``BatchGetItem``
+    (ADR-105). Straight after ``set_resource_defaults`` / ``set_limits`` on
+    real AWS, that read can miss the item: the acquire then fails with
+    ``ValidationError("No limits configured…")``, and the miss is cached for the
+    repository's ``config_cache_ttl``. ``read`` is the matching plain getter
+    (``get_resource_defaults``, ``get_limits``, ``get_system_defaults``); once
+    ``reads`` consecutive calls satisfy ``predicate``, the write has reached the
+    replicas, and the cache is invalidated so no miss taken meanwhile survives.
+
+    Several reads in a row, because a single read only proves one replica caught
+    up. Returns the last value read.
+    """
+    deadline = time.monotonic() + timeout
+    seen = 0
+    while True:
+        value = await read()
+        if predicate(value):
+            seen += 1
+            if seen >= reads:
+                await repo.invalidate_config_cache()
+                return value
+            continue
+        seen = 0
+        assert time.monotonic() < deadline, f"config write never settled; last read {value!r}"
+        await asyncio.sleep(0.2)
