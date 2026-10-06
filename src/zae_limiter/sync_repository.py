@@ -3168,6 +3168,7 @@ class SyncRepository:
         *,
         cached_tokens: dict[str, int],
         cached_shard_count: int,
+        ttl_seconds: int | None = None,
     ) -> dict[str, Any]:
         """The UpdateItem ``refill_from_cached_state`` sends (ADR-147 phase 3).
 
@@ -3191,6 +3192,7 @@ class SyncRepository:
             refill_amounts=refill_amounts,
             now_ms=now_ms,
             expected_rf=expected_rf,
+            ttl_seconds=ttl_seconds,
             shard_id=shard_id,
             rf_ms=max(now_ms, expected_rf),
         )
@@ -3232,6 +3234,7 @@ class SyncRepository:
         *,
         cached_tokens: dict[str, int],
         cached_shard_count: int,
+        ttl_seconds: int | None = None,
     ) -> SpeculativeResult | None:
         """The slow path's rf-locked write, built from a cached state (ADR-147 phase 3).
 
@@ -3257,6 +3260,7 @@ class SyncRepository:
             now_ms,
             cached_tokens=cached_tokens,
             cached_shard_count=cached_shard_count,
+            ttl_seconds=ttl_seconds,
         )["Update"]
         client = self._get_client()
         try:

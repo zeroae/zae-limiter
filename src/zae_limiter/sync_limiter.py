@@ -54,7 +54,7 @@ from .models import (
     validate_resource,
 )
 from .schedule import effective_params, next_boundary, prev_reset_edge, retry_after_with_schedule
-from .schema import DEFAULT_RESOURCE, WCU_LIMIT_NAME
+from .schema import DEFAULT_RESOURCE, WCU_LIMIT_NAME, calculate_bucket_ttl_seconds
 from .sync_config_cache import ConfigSource
 from .sync_lease import LeaseEntry, QuotaMoveLostError, SyncLease
 from .sync_repository import SyncRepository
@@ -1187,6 +1187,25 @@ class SyncRateLimiter:
             return None
         if cache.cascades(namespace_id, entity_id, resource):
             return None
+        config_cache = getattr(self._repository, "_config_cache", None)
+        peek = getattr(config_cache, "peek_limits", None)
+        resolved = peek(entity_id, resource) if peek is not None else None
+        if resolved is None:
+            return None
+        config_limits, config_source = resolved
+        if any(
+            limit.schedule or limit.reset_schedule or limit.reset_after is not None
+            for limit in config_limits
+        ):
+            return None
+        multiplier = getattr(self._repository, "_bucket_ttl_refill_multiplier", 0)
+        ttl_seconds: int | None
+        if _is_custom_config(config_source):
+            ttl_seconds = 0
+        elif multiplier <= 0:
+            ttl_seconds = None
+        else:
+            ttl_seconds = calculate_bucket_ttl_seconds(config_limits, multiplier)
         record_parents = getattr(self._repository, "_record_parents", None) or {}
         key = (namespace_id, entity_id)
         has_no_parent = key in record_parents and record_parents[key] is None
@@ -1202,6 +1221,8 @@ class SyncRateLimiter:
                 continue
             by_name = {b.limit_name: b for b in buckets}
             if not all(name in by_name for name in consume):
+                continue
+            if not all(limit.name in by_name for limit in config_limits):
                 continue
             if any(
                 b.refill_amount_milli <= 0
@@ -1239,6 +1260,7 @@ class SyncRateLimiter:
             now_ms,
             cached_tokens={state.limit_name: state.tokens_milli for state in views[shard]},
             cached_shard_count=entries[shard].shard_count,
+            ttl_seconds=ttl_seconds,
         )
         if result is None:
             return None

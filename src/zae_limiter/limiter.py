@@ -58,7 +58,7 @@ from .schedule import (
     prev_reset_edge,
     retry_after_with_schedule,
 )
-from .schema import DEFAULT_RESOURCE, WCU_LIMIT_NAME
+from .schema import DEFAULT_RESOURCE, WCU_LIMIT_NAME, calculate_bucket_ttl_seconds
 
 _UNSET: Any = object()  # sentinel for detecting explicitly-passed deprecated params
 
@@ -1523,6 +1523,31 @@ class RateLimiter:
             return None
         if cache.cascades(namespace_id, entity_id, resource):
             return None
+        # The slow path attaches schedules, resets and windows from CONFIG, not
+        # from the item, and a resource- or system-level one never fans out to
+        # buckets (#271/#296): an item can carry no `vu` while its limits are
+        # scheduled. Only a warm config cache can say they are not, at no read
+        # cost; a cold or partial one sends the request down today's path.
+        config_cache = getattr(self._repository, "_config_cache", None)
+        peek = getattr(config_cache, "peek_limits", None)
+        resolved = peek(entity_id, resource) if peek is not None else None
+        if resolved is None:
+            return None
+        config_limits, config_source = resolved
+        if any(
+            limit.schedule or limit.reset_schedule or limit.reset_after is not None
+            for limit in config_limits
+        ):
+            return None
+        # The TTL the slow path would stamp (#271, ADR-136).
+        multiplier = getattr(self._repository, "_bucket_ttl_refill_multiplier", 0)
+        ttl_seconds: int | None
+        if _is_custom_config(config_source):
+            ttl_seconds = 0
+        elif multiplier <= 0:
+            ttl_seconds = None
+        else:
+            ttl_seconds = calculate_bucket_ttl_seconds(config_limits, multiplier)
         # Known not to cascade: either the stamp names a parent (so its
         # `cascade=False` is a policy, ADR-146), or the entity's own META
         # record says it has no parent. A stamp with neither is a pre-#684 one
@@ -1543,6 +1568,9 @@ class RateLimiter:
                 continue
             by_name = {b.limit_name: b for b in buckets}
             if not all(name in by_name for name in consume):
+                continue
+            # A configured limit the item lacks is seeded only by the slow path (#633).
+            if not all(limit.name in by_name for limit in config_limits):
                 continue
             if any(
                 b.refill_amount_milli <= 0
@@ -1580,6 +1608,7 @@ class RateLimiter:
             now_ms,
             cached_tokens={state.limit_name: state.tokens_milli for state in views[shard]},
             cached_shard_count=entries[shard].shard_count,
+            ttl_seconds=ttl_seconds,
         )
         if result is None:
             return None

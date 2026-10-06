@@ -1327,6 +1327,19 @@ class TestParentShardSteering:
         assert firsts and all(shard == 1 for shard in firsts)
 
 
+async def _bucket_item(repo: Repository, entity_id: str) -> dict:
+    """Entity's r shard-0 bucket item, read straight from the table."""
+    client = await repo._get_client()
+    response = await client.get_item(
+        TableName=repo.table_name,
+        Key={
+            "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, "r", 0)},
+            "SK": {"S": schema.sk_state()},
+        },
+    )
+    return response["Item"]
+
+
 async def _consumed(repo: Repository, entity_id: str) -> int:
     """`b_rpm_tc` (millitokens) on entity's r shard 0, read straight from the table."""
     client = await repo._get_client()
@@ -1615,6 +1628,81 @@ class TestRefillFromCache:
         assert results == [None]  # the pinned write refused
         # The slow path refilled toward the new per-shard ceiling (50) and debited 50.
         assert int(item[schema.bucket_attr("rpm", schema.BUCKET_FIELD_TK)]["N"]) == 0
+
+    async def test_a_resource_schedule_is_honoured(self, repo):
+        """Phase-3 review #4: a resource-level schedule never reaches the item (no vu)."""
+        from zae_limiter import ScheduleEntry
+
+        four = Limit.per_minute("rpm", 4)
+        await repo.set_resource_defaults("r", [four])
+        repo._rejection_cache._clock = _Clock()
+        async with RateLimiter(repository=repo) as limiter:
+            for _ in range(4):  # spend the 4; the last fast-path image caches tk = 0
+                async with limiter.acquire("u", "r", consume={"rpm": 1}):
+                    pass
+            halved = four.with_schedule((ScheduleEntry(cron="* * * * *", scale=0.5),))
+            await repo.set_resource_defaults("r", [halved])  # clears the rejection cache...
+            # ...but not this level of the config cache, which lags by its own TTL
+            # on both paths alike; let it expire.
+            await repo.invalidate_config_cache()
+            # A read warms the config cache with the schedule and writes no bucket,
+            # so u's item still has no `vu`: only the gate can see the schedule.
+            await limiter.check_availability("u", "r")
+            with pytest.raises(RateLimitExceeded):  # a fast rejection re-fills the cache
+                async with limiter.acquire("u", "r", consume={"rpm": 1}):
+                    pass
+            item = await _bucket_item(repo, "u")
+            assert "vu" not in item and _cached(repo)
+            admitted = 0
+            later = repo._now_ms() + 60_000
+            with patch.object(repo, "_now_ms", return_value=later):
+                for _ in range(5):
+                    try:
+                        async with limiter.acquire("u", "r", consume={"rpm": 1}):
+                            admitted += 1
+                    except RateLimitExceeded:
+                        break
+        assert admitted == 2  # the scheduled capacity, not the base 4
+
+    async def test_a_cold_config_cache_takes_todays_path(self, repo):
+        repo._config_cache._enabled = False
+        await repo.set_limits("u", [RPM], resource="r")
+        repo._rejection_cache._clock = _Clock()
+        async with RateLimiter(repository=repo) as limiter:
+            await _spent_and_cached(limiter)
+            later = repo._now_ms() + 60_000
+            with (
+                patch.object(repo, "_now_ms", return_value=later),
+                patch.object(repo, "refill_from_cached_state") as refill,
+            ):
+                async with limiter.acquire("u", "r", consume={"rpm": 1}):
+                    pass
+        refill.assert_not_called()
+
+    async def test_the_ttl_is_refreshed_as_the_slow_path_would(self, repo):
+        """Phase-3 review #5: a resource-level bucket's ttl moves forward."""
+        await repo.set_resource_defaults("r", [RPM])
+        repo._rejection_cache._clock = _Clock()
+        async with RateLimiter(repository=repo) as limiter:
+            await _spent_and_cached(limiter)
+            client = await repo._get_client()
+            key = {
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, "u", "r", 0)},
+                "SK": {"S": schema.sk_state()},
+            }
+            before = int(
+                (await client.get_item(TableName=repo.table_name, Key=key))["Item"]["ttl"]["N"]
+            )
+            later = repo._now_ms() + 60_000
+            with patch.object(repo, "_now_ms", return_value=later):
+                async with _count_client_calls(repo) as calls:
+                    async with limiter.acquire("u", "r", consume={"rpm": 1}):
+                        pass
+            after = int(
+                (await client.get_item(TableName=repo.table_name, Key=key))["Item"]["ttl"]["N"]
+            )
+        assert calls == ["update_item"]  # phase 3 took it
+        assert after == before + 60  # stamped from the write's instant
 
     def test_the_sync_limiter_refills_from_the_cache(self, mock_dynamodb):
         from contextlib import ExitStack
