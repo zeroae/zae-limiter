@@ -611,6 +611,28 @@ limits:
 Both are emitted into the generated CloudFormation template as `Schedule` and `ResetSchedule`
 properties. See [Declarative Limits](../cli.md#declarative-limits) for the full field reference.
 
+A resource or entity-resource entry may also set `disabled` and `cascade` (`true` or `false`;
+omit to inherit). `cascade` chooses, per resource, whether acquires also debit the parent
+([ADR-146](../adr/146-per-resource-cascade-policy.md)):
+
+```yaml
+resources:
+  gpt-4:
+    cascade: true     # model limits count against the org
+    limits:
+      tpm: {capacity: 10000}
+  llm:
+    cascade: false    # the shared budget stays per user
+    limits:
+      cost: {capacity: 500}
+```
+
+The manifest owns both flags for the items it declares: leaving one out clears it on the next
+apply. Neither is supported on `system` (`cascade` there is an error). An apply restamps
+existing buckets only for levels whose stored `cascade` changed, and `limits plan` warns when a
+resource cascades but no entity in the manifest has its own limits for it. See
+[Cascade and Disabled](../cli.md#cascade-and-disabled).
+
 ### Reusing Limits with YAML Anchors
 
 Each level's `limits` **replaces** the levels below it — it does not merge with them (see
@@ -754,10 +776,15 @@ Resources:
             Capacity: 1000
       Resources:
         gpt-4:
+          Cascade: true
           Limits:
             rpm:
               Capacity: 500
 ```
+
+`disabled` and `cascade` appear as `Disabled` and `Cascade` properties on `Resources` and
+`Entities` entries; omitting one clears it, as in the manifest. A `Cascade` under `System` fails
+the stack operation.
 
 This approach lets you manage limits alongside other infrastructure in CloudFormation, with full lifecycle support (Create, Update, Delete).
 

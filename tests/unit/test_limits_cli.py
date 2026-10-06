@@ -71,6 +71,55 @@ class TestLimitsPlan:
                 assert result.exit_code == 0
                 assert "up-to-date" in result.output.lower()
 
+    def _plan(self, manifest: dict):
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            yaml.dump(manifest, f)
+            f.flush()
+            with patch("zae_limiter.limits_cli._invoke_provisioner") as mock_invoke:
+                mock_invoke.return_value = {"status": "planned", "changes": []}
+                return CliRunner().invoke(cli, ["limits", "plan", "--name", "app", "-f", f.name])
+
+    def test_plan_warns_when_a_cascading_resource_has_no_entity_limits(self):
+        """ADR-146: the parent would be limited by the per-user resource defaults."""
+        result = self._plan(
+            {
+                "namespace": "x",
+                "resources": {"gpt-4": {"cascade": True, "limits": {"rpm": {"capacity": 5}}}},
+            }
+        )
+        assert result.exit_code == 0
+        assert "Warning: resources.gpt-4 sets cascade: true" in result.output
+        assert "per-user resource defaults" in result.output
+
+    @pytest.mark.parametrize(
+        "manifest",
+        [
+            {  # the parent has its own limits for the resource
+                "namespace": "x",
+                "resources": {"gpt-4": {"cascade": True, "limits": {"rpm": {"capacity": 5}}}},
+                "entities": {
+                    "org": {"resources": {"gpt-4": {"limits": {"rpm": {"capacity": 500}}}}}
+                },
+            },
+            {  # an entity-wide `_default_` entry outranks the resource level
+                "namespace": "x",
+                "resources": {"gpt-4": {"cascade": True, "limits": {"rpm": {"capacity": 5}}}},
+                "entities": {
+                    "org": {"resources": {"_default_": {"limits": {"tpm": {"capacity": 9}}}}}
+                },
+            },
+            {  # not cascading
+                "namespace": "x",
+                "resources": {"llm": {"cascade": False, "limits": {"rpm": {"capacity": 5}}}},
+            },
+            {"namespace": "x", "resources": {"llm": {"limits": {"rpm": {"capacity": 5}}}}},
+        ],
+    )
+    def test_plan_is_quiet_otherwise(self, manifest):
+        result = self._plan(manifest)
+        assert result.exit_code == 0
+        assert "Warning" not in result.output
+
 
 class TestLimitsApply:
     """Tests for `zae-limiter limits apply -f <file>`."""
@@ -411,6 +460,61 @@ class TestLimitsCfnTemplateDisabled:
         assert round_tripped["resources"]["gpt-4"]["disabled"] is True
         assert "disabled" not in round_tripped["resources"]["claude-3"]
         assert round_tripped["entities"]["vip-1"]["resources"]["gpt-4"]["disabled"] is False
+
+
+class TestLimitsCfnTemplateCascade:
+    """The `cascade` policy (ADR-146) rides the same tri-state wire format as `disabled`."""
+
+    _run_cfn_template = TestLimitsCfnTemplateDisabled._run_cfn_template
+
+    MANIFEST = {
+        "namespace": "test-ns",
+        "resources": {
+            "llm": {"cascade": False, "limits": {"rpm": {"capacity": 1000}}},
+            "gpt-4": {"limits": {"rpm": {"capacity": 500}}},
+        },
+        "entities": {
+            "vip-1": {"resources": {"llm": {"cascade": True, "limits": {"rpm": {"capacity": 9}}}}}
+        },
+    }
+
+    def test_emitted_only_when_declared(self):
+        props = self._run_cfn_template(self.MANIFEST)
+        assert props["Resources"]["llm"]["Cascade"] is False
+        assert "Cascade" not in props["Resources"]["gpt-4"]
+        assert props["Entities"]["vip-1"]["Resources"]["llm"]["Cascade"] is True
+
+    def test_round_trips_through_the_provisioner(self):
+        from zae_limiter_provisioner.handler import _cfn_properties_to_manifest
+
+        round_tripped = _cfn_properties_to_manifest(self._run_cfn_template(self.MANIFEST))
+
+        assert round_tripped["resources"]["llm"]["cascade"] is False
+        assert "cascade" not in round_tripped["resources"]["gpt-4"]
+        assert round_tripped["entities"]["vip-1"]["resources"]["llm"]["cascade"] is True
+
+    @pytest.mark.parametrize(("raw", "value"), [("true", True), ("False", False)])
+    def test_cloudformation_strings_are_coerced(self, raw, value):
+        from zae_limiter_provisioner.handler import _cfn_properties_to_manifest
+
+        manifest = _cfn_properties_to_manifest(
+            {
+                "Resources": {"llm": {"Cascade": raw}},
+                "Entities": {"u": {"Resources": {"llm": {"Cascade": raw}}}},
+            }
+        )
+        assert manifest["resources"]["llm"]["cascade"] is value
+        assert manifest["entities"]["u"]["resources"]["llm"]["cascade"] is value
+
+    def test_a_system_cascade_is_carried_through_to_be_rejected(self):
+        from zae_limiter_provisioner.handler import _cfn_properties_to_manifest
+        from zae_limiter_provisioner.manifest import LimitsManifest
+
+        props = self._run_cfn_template({"namespace": "x", "system": {"cascade": False}})
+        assert props["System"]["Cascade"] is False
+        manifest = _cfn_properties_to_manifest(props)
+        with pytest.raises(ValueError, match="not supported at the system level"):
+            LimitsManifest.from_dict(manifest)
 
 
 class TestLoadYaml:

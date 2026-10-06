@@ -50,6 +50,9 @@ def limits_plan(
     manifest_data = _load_yaml(file_path)
     result = _invoke_provisioner(name, region, endpoint_url, "plan", manifest_data, preview="plan")
 
+    for warning in _cascade_warnings(manifest_data):
+        click.echo(f"Warning: {warning}", err=True)
+
     changes = result.get("changes", [])
     if not changes:
         click.echo("No changes. Infrastructure is up-to-date.")
@@ -178,6 +181,10 @@ def limits_cfn_template(name: str, file_path: str) -> None:
             system_props["OnUnavailable"] = sys_data["on_unavailable"]
         if "limits" in sys_data:
             system_props["Limits"] = _limits_to_cfn(sys_data["limits"])
+        if "cascade" in sys_data:
+            # Passed through so the provisioner rejects it with its reason
+            # (ADR-146: no system-level policy), not dropped here unseen.
+            system_props["Cascade"] = sys_data["cascade"]
         properties["System"] = system_props
 
     if "resources" in manifest_data:
@@ -190,6 +197,9 @@ def limits_cfn_template(name: str, file_path: str) -> None:
             # dropped or coerced.
             if "disabled" in res_data:
                 res_props["Disabled"] = res_data["disabled"]
+            # The cascade policy (ADR-146), tri-state by the same rule.
+            if "cascade" in res_data:
+                res_props["Cascade"] = res_data["cascade"]
             resources_props[res_name] = res_props
         properties["Resources"] = resources_props
 
@@ -203,6 +213,8 @@ def limits_cfn_template(name: str, file_path: str) -> None:
                 }
                 if "disabled" in res_data:
                     ent_res_props["Disabled"] = res_data["disabled"]
+                if "cascade" in res_data:
+                    ent_res_props["Cascade"] = res_data["cascade"]
                 ent_resources[res_name] = ent_res_props
             entities_props[ent_id] = {"Resources": ent_resources}
         properties["Entities"] = entities_props
@@ -302,6 +314,30 @@ def _limits_to_cfn(limits: dict[str, Any]) -> dict[str, Any]:
                     cfn_limit[prop] = converted
         result[name] = cfn_limit
     return result
+
+
+def _cascade_warnings(manifest_data: dict[str, Any]) -> list[str]:
+    """Warn about a resource that cascades with no entity-level limits for it (ADR-146).
+
+    A parent debited through cascade is limited by its own config for the
+    resource; with none, it falls through to the resource defaults — the
+    numbers written for one user — which is almost always a mistake.
+    """
+    covered = {
+        resource
+        for entity in (manifest_data.get("entities") or {}).values()
+        for resource in ((entity or {}).get("resources") or {})
+    }
+    if "_default_" in covered:
+        # An entity-wide `_default_` entry outranks the resource level for
+        # every resource, so it covers them all.
+        return []
+    return [
+        f"resources.{name} sets cascade: true, but no entity in this manifest has its own "
+        f"limits for '{name}', so parents will be limited by the per-user resource defaults"
+        for name, resource in (manifest_data.get("resources") or {}).items()
+        if (resource or {}).get("cascade") is True and name not in covered
+    ]
 
 
 def _load_yaml(file_path: str) -> dict[str, Any]:

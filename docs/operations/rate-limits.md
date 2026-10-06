@@ -165,7 +165,20 @@ aws dynamodb get-item --table-name <name> \
 # Check the "parent_id" attribute in response
 ```
 
-**Step 3: Ensure entity was created with `cascade=True`:**
+**Step 3: Check whether a cascade policy decides it for this resource.** Cascade is decided
+per resource ([ADR-146](../adr/146-per-resource-cascade-policy.md)): a policy on the entity's
+config for the resource, then on its entity-wide (`_default_`) config, then on the resource
+wins over the entity's own flag. `get-limits` / `get-defaults` print a `Cascade:` line for a
+level that sets one:
+
+```bash
+zae-limiter entity get-limits <child_id> --resource <resource>
+zae-limiter entity get-limits <child_id> --resource _default_
+zae-limiter resource get-defaults <resource>
+# "Cascade: off (explicit)" on any of these turns cascade off for this resource
+```
+
+**Step 4: With no policy anywhere, the entity's own flag applies:**
 
 ```bash
 # Check the entity's cascade setting in its metadata
@@ -174,15 +187,16 @@ aws dynamodb get-item --table-name <name> \
 # Check the "cascade" attribute in response — should be true
 ```
 
-If cascade is not enabled, recreate the entity with cascade:
+To turn cascade on without recreating the entity, set a policy — for one resource, or for
+every resource of the entity — which restamps its existing buckets immediately:
 
-```python
-await limiter.create_entity(
-    entity_id="child-id",
-    parent_id="parent-id",
-    cascade=True,  # Entity property — applies to all acquire() calls
-)
+```bash
+zae-limiter entity set-cascade <child_id> on --resource <resource>
+zae-limiter entity set-cascade <child_id> on
 ```
+
+If the stack was deployed before 0.16.0, run `zae-limiter upgrade` first; on such a stack the
+only option is to recreate the entity with `create_entity(..., cascade=True)`.
 
 ### Verification
 

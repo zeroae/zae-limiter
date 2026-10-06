@@ -331,6 +331,26 @@ the Python API's `Limit.reset_after: timedelta`.
 Not supported on `system`. Round-trips through the generated CloudFormation
 `Custom::ZaeLimiterLimits` resource as a `Disabled` property.
 
+**`cascade` (ADR-146):** Optional tri-state boolean on the same two entries as `disabled`
+(`manifest._parse_cascade` rejects anything but `true`/`false`). On `system` it is an **error**
+(`SystemDecl.from_dict`), not silently dropped. The manifest **owns** the policy for every item
+it declares: config items are full-replace `PutItem`s, so omitting `cascade` clears a stored
+policy on the next apply, exactly as for `disabled` (`applier._add_flags`). Unlike `disabled`,
+the bucket restamp is **change-only**: each config `PutItem`/`DeleteItem` asks for `ALL_OLD`,
+`applier._note_cascade_change` compares the old image's policy with the new one, and only
+levels that actually changed land in `ApplyResult.cascade_changed`, which
+`handler._fanout_cascade_changes` fans out — a routine apply writes no buckets and costs no
+extra read. Round-trips through `Custom::ZaeLimiterLimits` as a `Cascade` property on
+`Resources` and `Entities`; `System.Cascade` is passed through and rejected by the manifest
+parser. `limits plan` warns (stderr, `limits_cli._cascade_warnings`) when a resource sets
+`cascade: true` and no entity in the manifest has its own limits for it — parents would be
+limited by the per-user resource defaults. Version gate: `applier.require_cascade_policy_readers`
+runs before any write and refuses unless the Lambdas are `>= 0.16.0` (or this build), then
+ratchets `client_min_version` — free when no change declares `cascade`. A cascade fan-out that
+fails is recorded in the `#PROVISIONER` record's `cascade_pending` and retried by the next apply
+(with that apply's own changes): being change-only, a re-run would otherwise see no change and
+never reconcile.
+
 **Provisioner Lambda:**
 - Function name: `{stack}-limits-provisioner`
 - Deployed by default; disable with `--no-provisioner` (CLI) or `.enable_provisioner(False)` (builder). `--no-iam` also disables it (it needs an IAM role, and unlike the aggregator it has no external-role escape hatch)
@@ -1756,6 +1776,11 @@ supported on system config. Proposed until v0.16.0 ships.
   passes), stamping each bucket with the policy resolved for its own entity and resource plus
   the owner's `parent_id` (`_stamp_bucket_cascade`). `delete_limits` / `delete_resource_defaults`
   fan out when the deleted item carried a policy. `FanoutIncomplete` on a partial failure.
+- **Provisioner mirror:** `zae_limiter_provisioner/fanout.py` `fanout_cascade` (same discovery
+  and per-bucket resolution), driven by `handler._fanout_cascade_changes` for only the levels
+  whose stored policy a manifest apply changed (`ApplyResult.cascade_changed`, from the write's
+  `ALL_OLD` image). Failures go to the apply's `errors`, like the disable fan-out. See
+  [Declarative Limits Management](#declarative-limits-management-issue-405).
 - **Version gate** (ADR-141 machinery, `_require_readers`): setting or clearing a policy needs
   `lambda_version >= 0.16.0` (`version.MIN_READER_VERSION_FOR_CASCADE_POLICY`) or this build, and
   ratchets `client_min_version` to 0.16.0. A pre-0.16 provisioner would erase the policy on its

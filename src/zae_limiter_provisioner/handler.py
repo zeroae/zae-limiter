@@ -27,10 +27,15 @@ from zae_limiter.schema import (
     sk_provisioner,
 )
 
-from .applier import ApplyResult, apply_changes, require_reset_after_readers
+from .applier import (
+    ApplyResult,
+    apply_changes,
+    require_cascade_policy_readers,
+    require_reset_after_readers,
+)
 from .bucket_sync import DEFAULT_TTL_MULTIPLIER, resolve_effective_limits, sync_bucket_params
 from .differ import Change, compute_diff
-from .fanout import fanout_entity, fanout_resource, resolve_disabled
+from .fanout import fanout_cascade, fanout_entity, fanout_resource, resolve_disabled
 from .manifest import LimitsManifest
 
 logger = logging.getLogger(__name__)
@@ -95,7 +100,9 @@ def _handle_cli(event: dict[str, Any], context: Any) -> dict[str, Any]:
         return {"status": "planned", "changes": change_dicts}
 
     # Apply
-    result = _apply_and_record(manifest, changes, table_name, namespace_id)
+    result = _apply_and_record(
+        manifest, changes, table_name, namespace_id, previous.get("cascade_pending", [])
+    )
 
     return {
         "status": "applied",
@@ -131,7 +138,9 @@ def _handle_cfn(event: dict[str, Any], context: Any) -> dict[str, Any]:
     previous = _read_provisioner_state(table_name, namespace_id)
     changes = compute_diff(manifest, previous)
 
-    result = _apply_and_record(manifest, changes, table_name, namespace_id)
+    result = _apply_and_record(
+        manifest, changes, table_name, namespace_id, previous.get("cascade_pending", [])
+    )
 
     return {
         "physical_resource_id": physical_resource_id,
@@ -149,8 +158,15 @@ def _apply_and_record(
     changes: list[Change],
     table_name: str,
     namespace_id: str,
+    cascade_pending: list[tuple[str, str]] | None = None,
 ) -> ApplyResult:
     """Commit the config writes, fan out, then record the managed state (#563).
+
+    ``cascade_pending`` are the levels whose cascade fan-out failed on an
+    earlier apply (ADR-146): the cascade fan-out is change-only, so without
+    them re-running the same apply would restamp nothing and never reconcile.
+    They are retried here with this apply's own changes, and whatever still
+    fails is recorded for the next one.
 
     The single place both entry points run an apply, so the ordering contract
     below cannot drift between the CFN and CLI paths again — which is exactly
@@ -186,8 +202,16 @@ def _apply_and_record(
     # Before anything is written (#638): a refusal raises, which is a clean
     # CloudFormation FAILED / CLI error because the table is untouched.
     require_reset_after_readers(changes, table_name)
+    require_cascade_policy_readers(changes, table_name)
     result = apply_changes(changes, table_name, namespace_id)
     result.errors.extend(_fanout_disabled_changes(table_name, namespace_id, changes))
+    cascade_targets: list[tuple[str, str]] = list(
+        dict.fromkeys([*(cascade_pending or []), *result.cascade_changed])
+    )
+    cascade_errors, cascade_failed = _fanout_cascade_changes(
+        table_name, namespace_id, cascade_targets
+    )
+    result.errors.extend(cascade_errors)
     result.errors.extend(_sync_bucket_param_changes(table_name, namespace_id, changes))
 
     manifest_hash = hashlib.sha256(
@@ -197,6 +221,7 @@ def _apply_and_record(
     new_state = manifest.managed_set()
     new_state["last_applied"] = datetime.now(UTC).isoformat()
     new_state["applied_hash"] = f"sha256:{manifest_hash}"
+    new_state["cascade_pending"] = cascade_failed
     _write_provisioner_state(table_name, namespace_id, new_state)
 
     return result
@@ -298,6 +323,45 @@ def _fanout_disabled_changes(
             logger.warning("disable fan-out failed for %s %s: %s", change.level, change.target, e)
             errors.append(f"disable fan-out {change.level} {change.target}: {e}")
     return errors
+
+
+def _fanout_cascade_changes(
+    table_name: str,
+    namespace_id: str,
+    changed: list[tuple[str, str]],
+) -> tuple[list[str], list[tuple[str, str]]]:
+    """Restamp buckets for every level whose cascade policy changed (ADR-146).
+
+    Unlike `disabled`, only the levels `apply_changes` saw change — from each
+    write's own ALL_OLD image — plus any an earlier apply failed to restamp are
+    fanned out, so a routine apply that re-asserts an unchanged policy writes
+    no bucket. Every bucket reached is stamped from its own resolution
+    (`fanout.fanout_cascade`), so an entity override survives a resource-level
+    change, and the order of the changes does not matter.
+
+    Returns ``(errors, failed)``: failures are reported, not raised, as for
+    `disabled` (#563), and ``failed`` is recorded so the next apply retries
+    them — every write is idempotent, so re-running reconciles the rest.
+    """
+    if not changed:
+        return [], []
+    errors: list[str] = []
+    failed: list[tuple[str, str]] = []
+    client = boto3.client("dynamodb")
+    for level, target in changed:
+        try:
+            if level == "resource":
+                fanout_cascade(client, table_name, namespace_id, resource=target)
+            else:
+                entity_id, resource = target.split("/", 1)
+                fanout_cascade(
+                    client, table_name, namespace_id, entity_id=entity_id, resource=resource
+                )
+        except Exception as e:
+            logger.warning("cascade fan-out failed for %s %s: %s", level, target, e)
+            errors.append(f"cascade fan-out {level} {target}: {e} (retried on the next apply)")
+            failed.append((level, target))
+    return errors, failed
 
 
 def _sync_bucket_param_changes(
@@ -420,15 +484,16 @@ _ABSENT: Any = object()
 
 
 def _coerce_bool(value: Any, where: str) -> bool:
-    """Coerce a CloudFormation-delivered `Disabled` value to a real ``bool``.
+    """Coerce a CloudFormation-delivered `Disabled` or `Cascade` value to a real ``bool``.
 
     A case-insensitive allowlist that **raises** on anything else, rather than
     falling through to ``bool(value)``. Case matters concretely: an author
     writing ``Disabled: "True"`` (quoted, so YAML keeps it a string) would
     otherwise arrive as ``'True'`` and be truthy by accident rather than by
     the allowlist. ``'1'``, ``'yes'``, ``''`` and every other spelling are
-    rejected: this is the ADR-125 kill switch, and guessing wrong either
-    disables a tenant or re-admits one that was meant to stay out.
+    rejected: both properties are tri-state switches (ADR-125, ADR-146), and
+    guessing wrong silently disables or re-admits a tenant, or turns its
+    cascade to a parent on or off.
     """
     if isinstance(value, bool):
         return value
@@ -438,8 +503,8 @@ def _coerce_bool(value: Any, where: str) -> bool:
         f"{where} must be true or false, got {value!r}. CloudFormation delivers "
         f"every property as a string, so this boundary accepts only 'true'/'false' "
         f"(any case) or a real boolean — anything else is rejected rather than "
-        f"guessed, because `disabled` is tri-state and a wrong guess silently "
-        f"disables or re-admits a tenant (ADR-125)."
+        f"guessed, because the property is tri-state and a wrong guess silently "
+        f"changes who is admitted or charged."
     )
 
 
@@ -535,6 +600,10 @@ def _cfn_properties_to_manifest(properties: dict[str, Any]) -> dict[str, Any]:
             )
         if "Limits" in cfn_system:
             system["limits"] = _cfn_limits_to_manifest(cfn_system["Limits"], where="System.Limits")
+        if "Cascade" in cfn_system:
+            # Carried through so the manifest rejects it with its reason
+            # (ADR-146: no system-level policy) rather than dropping it here.
+            system["cascade"] = _coerce_bool(cfn_system["Cascade"], "System.Cascade")
         manifest["system"] = system
 
     if "Resources" in properties:
@@ -556,6 +625,11 @@ def _cfn_properties_to_manifest(properties: dict[str, Any]) -> dict[str, Any]:
                 resource_entry["disabled"] = _coerce_bool(
                     cfn_resource["Disabled"], f"Resources.{resource_name}.Disabled"
                 )
+            # The cascade policy (ADR-146), tri-state by the same rule.
+            if "Cascade" in cfn_resource:
+                resource_entry["cascade"] = _coerce_bool(
+                    cfn_resource["Cascade"], f"Resources.{resource_name}.Cascade"
+                )
             resources[resource_name] = resource_entry
         manifest["resources"] = resources
 
@@ -573,6 +647,10 @@ def _cfn_properties_to_manifest(properties: dict[str, Any]) -> dict[str, Any]:
                 if "Disabled" in cfn_res:
                     entity_resource_entry["disabled"] = _coerce_bool(
                         cfn_res["Disabled"], f"{prefix}.Disabled"
+                    )
+                if "Cascade" in cfn_res:
+                    entity_resource_entry["cascade"] = _coerce_bool(
+                        cfn_res["Cascade"], f"{prefix}.Cascade"
                     )
                 entity_resources[resource_name] = entity_resource_entry
             entities[entity_id] = {"resources": entity_resources}
@@ -723,6 +801,7 @@ def _read_provisioner_state(table_name: str, namespace_id: str) -> dict[str, Any
             "managed_system": False,
             "managed_resources": [],
             "managed_entities": {},
+            "cascade_pending": [],
         }
 
     managed_entities: dict[str, list[str]] = {}
@@ -734,6 +813,10 @@ def _read_provisioner_state(table_name: str, namespace_id: str) -> dict[str, Any
         "managed_system": item.get("managed_system", {}).get("BOOL", False),
         "managed_resources": [r["S"] for r in item.get("managed_resources", {}).get("L", [])],
         "managed_entities": managed_entities,
+        "cascade_pending": [
+            (entry["M"]["level"]["S"], entry["M"]["target"]["S"])
+            for entry in item.get("cascade_pending", {}).get("L", [])
+        ],
     }
 
 
@@ -758,6 +841,14 @@ def _write_provisioner_state(
         },
         "last_applied": {"S": state.get("last_applied", "")},
         "applied_hash": {"S": state.get("applied_hash", "")},
+        # Levels whose cascade fan-out failed (ADR-146): retried by the next
+        # apply, which would otherwise see no change and restamp nothing.
+        "cascade_pending": {
+            "L": [
+                {"M": {"level": {"S": level}, "target": {"S": target}}}
+                for level, target in state.get("cascade_pending", [])
+            ]
+        },
     }
     client.put_item(TableName=table_name, Item=item)
 

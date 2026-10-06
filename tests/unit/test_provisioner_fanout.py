@@ -8,12 +8,25 @@ does against a real boto3 client.
 
 from unittest.mock import MagicMock
 
-from zae_limiter.schema import DEFAULT_RESOURCE, pk_entity, pk_resource, sk_config
+import pytest
+
+from zae_limiter.models import Limit
+from zae_limiter.schema import (
+    DEFAULT_RESOURCE,
+    pk_bucket,
+    pk_entity,
+    pk_resource,
+    sk_config,
+    sk_state,
+)
 from zae_limiter_provisioner.fanout import (
+    fanout_cascade,
     fanout_entity,
     fanout_resource,
+    resolve_cascade,
     resolve_disabled,
     stamp_bucket,
+    stamp_bucket_cascade,
 )
 
 # Use type() to create a class with the AWS name (avoids N818 lint rule),
@@ -507,3 +520,91 @@ class TestResolveDisabled:
             "PK": {"S": pk_resource(self.NS, DEFAULT_RESOURCE)},
             "SK": {"S": sk_config()},
         }
+
+
+class TestFanoutCascade:
+    """The provisioner's cascade fan-out against real items (ADR-146), on moto."""
+
+    TABLE = "prov-cascade"
+    RPM = Limit.per_minute("rpm", 100)
+
+    @pytest.fixture
+    def setup(self, mock_dynamodb):
+        import boto3
+
+        from zae_limiter.sync_limiter import SyncRateLimiter
+        from zae_limiter.sync_repository import SyncRepository
+
+        repo = SyncRepository(name=self.TABLE, region="us-east-1", _skip_deprecation_warning=True)
+        repo.create_table()
+        repo._register_namespace("default")
+        for resource in ("gpt-4", "llm"):
+            repo.set_resource_defaults(resource, [self.RPM])
+        repo.create_entity("team")
+        repo.create_entity("user", parent_id="team", cascade=True)
+        repo.create_entity("solo")
+        limiter = SyncRateLimiter(repository=repo)
+        for entity in ("user", "solo"):
+            for resource in ("gpt-4", "llm"):
+                with limiter.acquire(entity, resource, consume={"rpm": 1}):
+                    pass
+        with limiter.acquire("ghost", "llm", consume={"rpm": 1}):
+            pass  # never create_entity()'d: no META
+        yield boto3.client("dynamodb", region_name="us-east-1"), repo._namespace_id
+        repo.close()
+
+    def _set_policy(self, client, pk, sk, value):
+        client.update_item(
+            TableName=self.TABLE,
+            Key={"PK": {"S": pk}, "SK": {"S": sk}},
+            UpdateExpression="SET #c = :c",
+            ExpressionAttributeNames={"#c": "cascade"},
+            ExpressionAttributeValues={":c": {"BOOL": value}},
+        )
+
+    def _bucket(self, client, ns, entity, resource):
+        return client.get_item(
+            TableName=self.TABLE,
+            Key={"PK": {"S": pk_bucket(ns, entity, resource, 0)}, "SK": {"S": sk_state()}},
+        )["Item"]
+
+    def test_a_resource_policy_restamps_with_each_entitys_own_resolution(self, setup):
+        client, ns = setup
+        self._set_policy(client, pk_resource(ns, "llm"), sk_config(), False)
+
+        stamped = fanout_cascade(client, self.TABLE, ns, resource="llm")
+
+        assert stamped == 3  # user, solo and team (the user's cascade made it); not the ghost
+        assert self._bucket(client, ns, "user", "llm")["cascade"] == {"BOOL": False}
+        assert self._bucket(client, ns, "user", "llm")["parent_id"] == {"S": "team"}
+        assert self._bucket(client, ns, "user", "gpt-4")["cascade"] == {"BOOL": True}
+
+    def test_an_entity_wide_change_resolves_each_resource(self, setup):
+        client, ns = setup
+        self._set_policy(client, pk_resource(ns, "llm"), sk_config(), False)
+        self._set_policy(client, pk_entity(ns, "user"), sk_config("gpt-4"), True)
+
+        fanout_cascade(client, self.TABLE, ns, entity_id="user", resource=DEFAULT_RESOURCE)
+
+        assert self._bucket(client, ns, "user", "llm")["cascade"] == {"BOOL": False}
+        assert self._bucket(client, ns, "user", "gpt-4")["cascade"] == {"BOOL": True}
+
+    def test_an_entity_without_a_parent_never_cascades(self, setup):
+        client, ns = setup
+        self._set_policy(client, pk_resource(ns, "llm"), sk_config(), True)
+
+        fanout_cascade(client, self.TABLE, ns, entity_id="solo", resource="llm")
+
+        item = self._bucket(client, ns, "solo", "llm")
+        assert item["cascade"] == {"BOOL": False}
+        assert "parent_id" not in item
+
+    def test_resolve_cascade_walk(self, setup):
+        client, ns = setup
+        assert resolve_cascade(client, self.TABLE, ns, "user", "llm") is None
+        self._set_policy(client, pk_resource(ns, "llm"), sk_config(), False)
+        assert resolve_cascade(client, self.TABLE, ns, "user", "llm") is False
+
+    def test_a_vanished_bucket_is_not_an_error(self, setup):
+        client, ns = setup
+        stamp_bucket_cascade(client, self.TABLE, pk_bucket(ns, "nobody", "llm", 0), True, "t")
