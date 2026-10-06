@@ -769,6 +769,13 @@ class RateLimiter:
                     shard_count=slow_path_shard_count,
                     parent_shard_id=slow_path_parent_shard,
                 )
+                # The slow path just re-read this bucket's disabled flag and
+                # cascade policy from config: phase 3 may trust the stamps
+                # for the next config-cache window (ADR-147, finding B).
+                rejection_cache = getattr(self._repository, "_rejection_cache", None)
+                namespace_id = getattr(self._repository, "_namespace_id", None)
+                if rejection_cache is not None and namespace_id is not None and limits is None:
+                    rejection_cache.note_slow_pass(namespace_id, entity_id, resource)
 
             # Write initial consumption to DynamoDB before yielding (Issue
             # #309). No-op for speculative leases (already committed by
@@ -1522,6 +1529,14 @@ class RateLimiter:
         if cache is None or not cache.enabled or namespace_id is None or refill is None:
             return None
         if cache.cascades(namespace_id, entity_id, resource):
+            return None
+        # The slow path re-reads `disabled` and the cascade policy from config;
+        # phase 3 trusts the bucket's stamps, which a fan-out can miss (ADR-125's
+        # race, FanoutIncomplete, a pending provisioner retry). Chain on them for
+        # at most one config-cache window after a real slow pass, so a missed
+        # stamp is re-checked as often as the config itself (finding B).
+        window = getattr(self._repository, "_config_cache_ttl", 0)
+        if not cache.slow_pass_within(namespace_id, entity_id, resource, window):
             return None
         # The slow path attaches schedules, resets and windows from CONFIG, not
         # from the item, and a resource- or system-level one never fans out to

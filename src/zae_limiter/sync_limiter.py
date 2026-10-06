@@ -656,6 +656,10 @@ class SyncRateLimiter:
                     shard_count=slow_path_shard_count,
                     parent_shard_id=slow_path_parent_shard,
                 )
+                rejection_cache = getattr(self._repository, "_rejection_cache", None)
+                namespace_id = getattr(self._repository, "_namespace_id", None)
+                if rejection_cache is not None and namespace_id is not None and (limits is None):
+                    rejection_cache.note_slow_pass(namespace_id, entity_id, resource)
             lease._commit_initial()
         except (
             RateLimitExceeded,
@@ -1186,6 +1190,9 @@ class SyncRateLimiter:
         if cache is None or not cache.enabled or namespace_id is None or (refill is None):
             return None
         if cache.cascades(namespace_id, entity_id, resource):
+            return None
+        window = getattr(self._repository, "_config_cache_ttl", 0)
+        if not cache.slow_pass_within(namespace_id, entity_id, resource, window):
             return None
         config_cache = getattr(self._repository, "_config_cache", None)
         peek = getattr(config_cache, "peek_limits", None)

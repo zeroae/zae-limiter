@@ -104,6 +104,8 @@ class RejectionCache:
         # every key, least recently stored first, for the size cap.
         self._buckets: dict[_BucketKey, dict[int, _Entry]] = {}
         self._order: dict[_Key, None] = {}
+        # When a slow-path acquire last re-read each bucket's config (phase 3).
+        self._slow_passes: dict[_BucketKey, float] = {}
         self.local_rejections = 0
 
     @property
@@ -239,6 +241,32 @@ class RejectionCache:
                 return entry.parent_id
         return None
 
+    def note_slow_pass(self, namespace_id: str, entity_id: str, resource: str) -> None:
+        """A slow-path acquire just re-read this bucket's config (ADR-147 phase 3).
+
+        The slow path resolves ``disabled`` and the cascade policy from config,
+        uncached; phase 3 trusts the bucket's stamps instead. Remembering when
+        the slow path last ran bounds how long a stamp a fan-out missed can be
+        trusted (verification finding B).
+        """
+        if not self.enabled:
+            return
+        key = (namespace_id, entity_id, resource)
+        self._slow_passes.pop(key, None)
+        self._slow_passes[key] = self._clock()
+        while len(self._slow_passes) > self.max_entries:
+            try:
+                del self._slow_passes[next(iter(self._slow_passes))]
+            except (KeyError, StopIteration, RuntimeError):  # pragma: no cover - thread race
+                break
+
+    def slow_pass_within(
+        self, namespace_id: str, entity_id: str, resource: str, seconds: float
+    ) -> bool:
+        """Whether a slow pass re-read this bucket's config in the last ``seconds``."""
+        at = self._slow_passes.get((namespace_id, entity_id, resource))
+        return at is not None and self._clock() - at <= seconds
+
     def forget(self, namespace_id: str, entity_id: str, resource: str, shard_id: int) -> None:
         """Drop one shard's entry: tokens came back by a route we caused."""
         self._drop((namespace_id, entity_id, resource, shard_id))
@@ -247,6 +275,7 @@ class RejectionCache:
         """Drop every entry: an admin change may have moved any limit."""
         self._buckets.clear()
         self._order.clear()
+        self._slow_passes.clear()
 
     def _drop(self, key: _Key) -> None:
         """Remove one entry from both structures; a missing key is fine."""

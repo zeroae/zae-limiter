@@ -1507,6 +1507,7 @@ class TestRefillFromCache:
             "missing_limit",
             "config_limit_missing",
             "untrusted",
+            "no_recent_slow_pass",
         ],
     )
     async def test_not_used_for_items_only_the_slow_path_materialises(self, repo, case):
@@ -1541,6 +1542,8 @@ class TestRefillFromCache:
         repo._rejection_cache.store(
             ns, "u", "r", 0, states, shard_count=1, vu_ms=vu_ms, ttl_epoch=None, disabled=False
         )
+        if case != "no_recent_slow_pass":  # a slow pass re-read u's config just now
+            repo._rejection_cache.note_slow_pass(ns, "u", "r")
         if case == "untrusted":
             clock.now += 1.5
         with patch.object(repo, "refill_from_cached_state", return_value=None) as refill:
@@ -1623,6 +1626,37 @@ class TestRefillFromCache:
                     async with limiter.acquire("u", "r", consume={"rpm": 4}):
                         pass
         refill.assert_not_called()
+
+    async def test_a_missed_disable_stamp_is_re_checked_within_a_window(self, limiter, repo):
+        """Verification finding B: phase 3 chains on stamps at most one config window."""
+        clock = _Clock()
+        repo._rejection_cache._clock = clock
+        async with limiter.acquire("u", "r", consume={"rpm": 1}):  # slow path: noted at t0
+            pass
+        clock.now += repo._config_cache_ttl + 1  # the slow pass is now a window old...
+        async with limiter.acquire("u", "r", consume={"rpm": 1}):  # ...this state is fresh
+            pass
+        other = Repository(
+            name="test-rejection", region="us-east-1", _skip_deprecation_warning=True
+        )
+        other._namespace_id = repo._namespace_id
+        await other.disable_resource("r")  # another process; its fan-out...
+        await other.close()
+        client = await repo._get_client()
+        await client.update_item(  # ...misses u's bucket (ADR-125's documented race)
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, "u", "r", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="REMOVE #d",
+            ExpressionAttributeNames={"#d": schema.BUCKET_FIELD_DISABLED},
+        )
+        later = repo._now_ms() + 60_000
+        with patch.object(repo, "_now_ms", return_value=later):
+            with pytest.raises(ResourceDisabled):  # the slow path re-read config
+                async with limiter.acquire("u", "r", consume={"rpm": 1}):
+                    pass
 
     async def test_create_entity_in_this_process_records_the_parent(self, repo):
         await repo.create_entity("org")
