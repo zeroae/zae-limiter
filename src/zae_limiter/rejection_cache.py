@@ -80,6 +80,7 @@ class _Entry:
     disabled: bool
     stored_at: float
     cascades: bool = False
+    parent_id: str | None = None
 
 
 class RejectionCache:
@@ -125,6 +126,7 @@ class RejectionCache:
         ttl_epoch: int | None,
         disabled: bool,
         cascades: bool = False,
+        parent_id: str | None = None,
     ) -> None:
         """Remember the state a real DynamoDB response just showed.
 
@@ -144,6 +146,7 @@ class RejectionCache:
             disabled=disabled,
             stored_at=self._clock(),
             cascades=cascades,
+            parent_id=parent_id,
         )
         # Re-insert so `_order` stays "least recently stored first".
         self._order.pop(key, None)
@@ -189,6 +192,19 @@ class RejectionCache:
         """Whether any cached shard of this bucket says it cascades to a parent."""
         shards = self._buckets.get((namespace_id, entity_id, resource)) or {}
         return any(entry.cascades for entry in list(shards.values()))
+
+    def parent_of(self, namespace_id: str, entity_id: str, resource: str) -> str | None:
+        """The parent a cached shard of this bucket says it cascades to, if any.
+
+        Only a stamp carrying a ``parent_id`` counts (ADR-146, #684). Phase 2
+        of #695 trusts it, rather than the entity-wide guess, to decide that a
+        parent check applies at all.
+        """
+        shards = self._buckets.get((namespace_id, entity_id, resource)) or {}
+        for entry in list(shards.values()):
+            if entry.cascades and entry.parent_id:
+                return entry.parent_id
+        return None
 
     def forget(self, namespace_id: str, entity_id: str, resource: str, shard_id: int) -> None:
         """Drop one shard's entry: tokens came back by a route we caused."""

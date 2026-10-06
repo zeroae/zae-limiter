@@ -968,3 +968,163 @@ class TestOptions:
                 assert limiter._known_short_shards("u", "r", {"rpm": 1}, 1) == (set(), 1)
             finally:
                 repo._namespace_id = saved
+
+
+def _store(
+    repo: Repository,
+    entity: str,
+    shard: int,
+    tokens: int,
+    *,
+    shard_count: int = 1,
+    cascades: bool = False,
+    parent_id: str | None = None,
+    disabled: bool = False,
+) -> None:
+    state = _state(tokens, entity=entity)
+    state.shard_count = shard_count
+    repo._rejection_cache.store(
+        repo._namespace_id,
+        entity,
+        "r",
+        shard,
+        [state],
+        shard_count=shard_count,
+        vu_ms=None,
+        ttl_epoch=None,
+        disabled=disabled,
+        cascades=cascades,
+        parent_id=parent_id,
+    )
+
+
+@pytest.fixture
+async def family(repo):
+    """org -> u, u cascades on r; org allows 2 rpm, u allows 100."""
+    await repo.create_entity("org")
+    await repo.create_entity("u", parent_id="org", cascade=True)
+    await repo.set_limits("org", [RPM], resource="r")
+    await repo.set_limits("u", [Limit.per_minute("rpm", 100)], resource="r")
+    async with RateLimiter(repository=repo) as limiter:
+        yield limiter
+
+
+class TestCascadeParentPrecheck:
+    """ADR-147 phase 2: the parent's cached state, checked before any write."""
+
+    async def test_a_parent_known_short_rejects_with_no_write(self, family, repo):
+        async with family.acquire("u", "r", consume={"rpm": 1}):  # slow path, cold cache
+            pass
+        async with family.acquire("u", "r", consume={"rpm": 1}):  # warm: parallel, both cached
+            pass
+        async with _count_update_items(repo) as calls:
+            with pytest.raises(RateLimitExceeded) as excinfo:
+                async with family.acquire("u", "r", consume={"rpm": 1}):
+                    pass
+        assert calls == []
+        # The server reports the child's statuses, then the parent's.
+        assert [s.entity_id for s in excinfo.value.statuses] == ["u", "org"]
+        assert excinfo.value.statuses[1].exceeded
+        assert excinfo.value.retry_after_seconds > 0
+        assert repo.get_cache_stats().local_rejections == 1
+
+    async def test_the_entity_wide_guess_alone_never_triggers_it(self, repo):
+        """Decision 1: only a policy learned from the child's own bucket counts."""
+        _store(repo, "org", 0, 0)
+        repo._entity_cache[(repo._namespace_id, "u")] = (True, "org", {})
+        async with RateLimiter(repository=repo) as limiter:
+            assert limiter._known_short_shards("u", "r", {"rpm": 1}, repo._now_ms()) == (set(), 1)
+
+    async def test_a_learned_cascade_cache_entry_is_enough(self, repo):
+        _store(repo, "org", 0, 0)
+        repo._learn_shard_count("u", "r", 1, meta=(True, "org"))
+        async with RateLimiter(repository=repo) as limiter:
+            with pytest.raises(RateLimitExceeded) as excinfo:
+                limiter._known_short_shards("u", "r", {"rpm": 1}, repo._now_ms())
+        # No cached child state: only the parent's statuses.
+        assert [s.entity_id for s in excinfo.value.statuses] == ["org"]
+
+    async def test_a_parent_with_room_on_one_shard_is_written_to(self, repo):
+        _store(repo, "org", 0, 0, shard_count=2)
+        _store(repo, "u", 0, 2, cascades=True, parent_id="org")
+        async with RateLimiter(repository=repo) as limiter:
+            assert limiter._known_short_shards("u", "r", {"rpm": 1}, repo._now_ms()) == (set(), 1)
+            assert limiter._known_short_parent_shards("u", "r", {"rpm": 1}, repo._now_ms()) == {0}
+
+    async def test_the_parents_own_cascade_flag_is_ignored(self, repo):
+        """A child's lease never reaches the grandparent (#686)."""
+        _store(repo, "org", 0, 0, cascades=True, parent_id="grandparent")
+        _store(repo, "u", 0, 2, cascades=True, parent_id="org")
+        async with RateLimiter(repository=repo) as limiter:
+            with pytest.raises(RateLimitExceeded):
+                limiter._known_short_shards("u", "r", {"rpm": 1}, repo._now_ms())
+
+    async def test_a_disabled_parent_state_is_unknown(self, repo):
+        """A disabled parent must still reach DynamoDB and its 403."""
+        _store(repo, "org", 0, 0, disabled=True)
+        _store(repo, "u", 0, 2, cascades=True, parent_id="org")
+        async with RateLimiter(repository=repo) as limiter:
+            assert limiter._known_short_shards("u", "r", {"rpm": 1}, repo._now_ms()) == (set(), 1)
+
+
+class TestCascadingChildKnownShort:
+    """Decision 3: rejected locally only while the parent is known not disabled."""
+
+    async def test_rejected_locally_with_a_trusted_enabled_parent(self, repo):
+        _store(repo, "u", 0, 0, cascades=True, parent_id="org")
+        _store(repo, "org", 0, 2)
+        async with RateLimiter(repository=repo) as limiter:
+            with pytest.raises(RateLimitExceeded) as excinfo:
+                limiter._known_short_shards("u", "r", {"rpm": 1}, repo._now_ms())
+        # The server answers from the child's image alone.
+        assert [s.entity_id for s in excinfo.value.statuses] == ["u"]
+
+    async def test_not_rejected_without_a_parent_state(self, repo):
+        _store(repo, "u", 0, 0, cascades=True, parent_id="org")
+        async with RateLimiter(repository=repo) as limiter:
+            assert limiter._known_short_shards("u", "r", {"rpm": 1}, repo._now_ms()) == ({0}, 1)
+
+    async def test_not_rejected_when_the_parent_state_is_disabled(self, repo):
+        _store(repo, "u", 0, 0, cascades=True, parent_id="org")
+        _store(repo, "org", 0, 2, disabled=True)
+        async with RateLimiter(repository=repo) as limiter:
+            assert limiter._known_short_shards("u", "r", {"rpm": 1}, repo._now_ms()) == ({0}, 1)
+
+
+class TestParentShardSteering:
+    """Decision 4: the parallel write draws the parent's shard around short ones."""
+
+    async def test_never_draws_a_known_short_parent_shard(self, family, repo):
+        async with family.acquire("u", "r", consume={"rpm": 1}):  # slow path creates
+            pass
+        # The fast path now shows the child's own cascade stamp; until it has,
+        # decision 1 rightly skips the parent check.
+        async with family.acquire("u", "r", consume={"rpm": 1}):
+            pass
+        assert repo._rejection_cache.parent_of(repo._namespace_id, "u", "r") == "org"
+        repo._learn_shard_count("org", "r", 2, meta=(False, None))
+        ns = repo._namespace_id
+        parent_targets: list[int] = []
+        real = repo._speculative_consume_single
+
+        async def spy(entity_id, resource, consume, ttl_seconds=None, shard_id=0, now_ms=None):
+            if entity_id == "org":
+                parent_targets.append(shard_id)
+            return await real(
+                entity_id, resource, consume, ttl_seconds, shard_id=shard_id, now_ms=now_ms
+            )
+
+        firsts: list[int] = []
+        with patch.object(repo, "_speculative_consume_single", side_effect=spy):
+            for _ in range(20):
+                _store(repo, "org", 0, 0, shard_count=2)
+                repo._rejection_cache.forget(ns, "org", "r", 1)
+                before = len(parent_targets)
+                try:
+                    async with family.acquire("u", "r", consume={"rpm": 1}):
+                        pass
+                except RateLimitExceeded:
+                    pass
+                if len(parent_targets) > before:
+                    firsts.append(parent_targets[before])
+        assert firsts and all(shard == 1 for shard in firsts)
