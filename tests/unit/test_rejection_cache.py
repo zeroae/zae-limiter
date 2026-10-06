@@ -921,3 +921,50 @@ class TestCascadingChild:
             assert _cached(repo)
             assert repo._rejection_cache.cascades(repo._namespace_id, "u", "r")
         assert repo.get_cache_stats().local_rejections == 0
+
+
+class TestOptions:
+    def test_a_negative_ttl_is_refused(self):
+        with pytest.raises(ValueError, match="rejection_cache_ttl"):
+            RejectionCache(ttl_seconds=-1)
+
+    def test_a_size_below_one_is_refused(self):
+        with pytest.raises(ValueError, match="rejection_cache_size"):
+            RejectionCache(max_entries=0)
+
+    def test_the_constructor_passes_both_options(self, mock_dynamodb):
+        repo = Repository(
+            name="test-rejection-opts",
+            region="us-east-1",
+            rejection_cache_ttl=2.5,
+            rejection_cache_size=42,
+            _skip_deprecation_warning=True,
+        )
+        assert repo._rejection_cache.ttl_seconds == 2.5
+        assert repo._rejection_cache.max_entries == 42
+
+    def test_the_builder_records_both_options(self):
+        builder = Repository.builder().rejection_cache_ttl(0).rejection_cache_size(7)
+        assert builder._rejection_cache_ttl == 0
+        assert builder._rejection_cache_size == 7
+
+    async def test_a_backend_without_a_namespace_never_rejects_locally(self, repo):
+        """`getattr` keeps a third-party backend working (ADR-147 decision 6)."""
+        repo._rejection_cache.store(
+            repo._namespace_id,
+            "u",
+            "r",
+            0,
+            [_state(0)],
+            shard_count=1,
+            vu_ms=None,
+            ttl_epoch=None,
+            disabled=False,
+        )
+        async with RateLimiter(repository=repo) as limiter:
+            saved = repo._namespace_id
+            repo._namespace_id = None
+            try:
+                assert limiter._known_short_shards("u", "r", {"rpm": 1}, 1) == (set(), 1)
+            finally:
+                repo._namespace_id = saved
