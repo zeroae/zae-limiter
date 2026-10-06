@@ -864,6 +864,13 @@ class RateLimiter:
                 self._known_short_parent_shards(entity_id, resource, consume, now_ms)
             )
 
+        # Refill from the cached state: one locked write where today's path
+        # would fail a write, read, and write again (ADR-147 phase 3).
+        if use_rejection_cache:
+            cached_lease = await self._refill_from_cache(entity_id, resource, consume, now_ms)
+            if cached_lease is not None:
+                return cached_lease, 0, None, None
+
         # Repository handles cache check and parallel writes (issue #318).
         # The steering arguments go only to a repository whose cache produced
         # them, so a backend without a rejection cache never receives them.
@@ -1487,6 +1494,82 @@ class RateLimiter:
             cache, namespace_id, parent_id, resource, consume, now_ms
         )
         return set(parent_short)
+
+    async def _refill_from_cache(
+        self,
+        entity_id: str,
+        resource: str,
+        consume: dict[str, int],
+        now_ms: int,
+    ) -> Lease | None:
+        """Admit through one locked write built from a cached state (ADR-147 phase 3).
+
+        Used only when a trusted cached shard's **stored** balance cannot cover
+        the request (the speculative write would fail) but its projection to
+        now can, so the alternative is a failed write, a read and a write. The
+        write is the slow path's, conditioned on everything the state was
+        judged on; a lost condition returns None and today's path runs.
+
+        Not used for a cascading bucket (child and parent commit together), a
+        bucket whose item carries ``vu`` (a schedule, a quota's reset or a
+        session window: their materialisation lives on the slow path), a quota
+        or session state, a state missing a declared limit (#633), or a drained
+        ``wcu`` (the speculative write's failure is what drives sharding).
+        """
+        cache = getattr(self._repository, "_rejection_cache", None)
+        namespace_id = getattr(self._repository, "_namespace_id", None)
+        refill = getattr(self._repository, "refill_from_cached_state", None)
+        if cache is None or not cache.enabled or namespace_id is None or refill is None:
+            return None
+        if cache.cascades(namespace_id, entity_id, resource):
+            return None
+        views = cache.views(namespace_id, entity_id, resource, now_ms)
+        candidates: list[int] = []
+        for shard, buckets in views.items():
+            entry = cache.trusted_entry(namespace_id, entity_id, resource, shard, now_ms)
+            if entry is None or entry.vu_ms is not None:
+                continue
+            by_name = {b.limit_name: b for b in buckets}
+            if not all(name in by_name for name in consume):
+                continue
+            if any(
+                b.refill_amount_milli <= 0
+                or b.reset_after_seconds is not None
+                or b.window_start_ms is not None
+                for b in buckets
+            ):
+                continue
+            wcu = by_name.get(WCU_LIMIT_NAME)
+            if wcu is not None and wcu.tokens_milli < 1000:
+                continue
+            if all(by_name[name].tokens_milli >= amount * 1000 for name, amount in consume.items()):
+                continue  # the speculative write will succeed as it is
+            if would_refill_satisfy(buckets, consume, now_ms)[0]:
+                candidates.append(shard)
+        if not candidates:
+            return None
+        shard = random.choice(candidates)
+        consumed: dict[str, int] = {}
+        refill_amounts: dict[str, int] = {}
+        for state in views[shard]:
+            # Every limit on the item rides the write, as on the slow path:
+            # `rf` moves for all of them, so each must be credited its refill.
+            amount = consume.get(state.limit_name, 0) if state.limit_name != WCU_LIMIT_NAME else 0
+            new_tokens, _ = force_consume(state, amount, now_ms)
+            consumed[state.limit_name] = amount * 1000
+            refill_amounts[state.limit_name] = new_tokens - state.tokens_milli + amount * 1000
+        result = await refill(
+            entity_id,
+            resource,
+            shard,
+            consumed,
+            refill_amounts,
+            views[shard][0].last_refill_ms,
+            now_ms,
+        )
+        if result is None:
+            return None
+        return self._build_lease_from_speculative(entity_id, resource, consume, result)
 
     async def _compensate_speculative(
         self,

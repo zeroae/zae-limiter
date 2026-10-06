@@ -192,6 +192,20 @@ class RejectionCache:
             or (entry.ttl_epoch is not None and entry.ttl_epoch <= now_ms // 1000)
         )
 
+    def trusted_entry(
+        self, namespace_id: str, entity_id: str, resource: str, shard_id: int, now_ms: int
+    ) -> _Entry | None:
+        """One shard's entry, if it passes the trust test and is not disabled.
+
+        Phase 3 needs the item's ``vu`` and ``ttl`` beside its states, to pin
+        them on the write it builds from the state.
+        """
+        shards = self._buckets.get((namespace_id, entity_id, resource)) or {}
+        entry = shards.get(shard_id)
+        if entry is None or entry.disabled or not self._trusted(entry, now_ms):
+            return None
+        return entry
+
     def cascades(self, namespace_id: str, entity_id: str, resource: str) -> bool:
         """Whether any cached shard of this bucket says it cascades to a parent."""
         shards = self._buckets.get((namespace_id, entity_id, resource)) or {}

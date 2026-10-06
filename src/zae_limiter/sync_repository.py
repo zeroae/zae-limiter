@@ -3151,6 +3151,91 @@ class SyncRepository:
             self._cascade_cache[self._namespace_id, entity_id, resource] = meta[0]
         return count
 
+    def build_cached_refill(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int,
+        consumed: dict[str, int],
+        refill_amounts: dict[str, int],
+        expected_rf: int,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        """The UpdateItem ``refill_from_cached_state`` sends (ADR-147 phase 3).
+
+        ``build_composite_normal``'s rf-locked refill-and-debit, with ``vu``
+        pinned absent, ``disabled`` absent and the TTL unexpired added to its
+        condition, returning ``ALL_NEW``.
+        """
+        item = self.build_composite_normal(
+            entity_id=entity_id,
+            resource=resource,
+            consumed=consumed,
+            refill_amounts=refill_amounts,
+            now_ms=now_ms,
+            expected_rf=expected_rf,
+            shard_id=shard_id,
+            rf_ms=max(now_ms, expected_rf),
+        )
+        update = item["Update"]
+        update["ExpressionAttributeNames"].update(
+            {"#cvu": schema.BUCKET_FIELD_VU, "#cdis": schema.BUCKET_FIELD_DISABLED, "#cttl": "ttl"}
+        )
+        update["ExpressionAttributeValues"][":cnow"] = {"N": str(now_ms // 1000)}
+        update["ConditionExpression"] = (
+            f"{update['ConditionExpression']} AND attribute_not_exists(#cvu) AND attribute_not_exists(#cdis) AND (attribute_not_exists(#cttl) OR #cttl > :cnow)"
+        )
+        update["ReturnValues"] = "ALL_NEW"
+        return item
+
+    def refill_from_cached_state(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int,
+        consumed: dict[str, int],
+        refill_amounts: dict[str, int],
+        expected_rf: int,
+        now_ms: int,
+    ) -> SpeculativeResult | None:
+        """The slow path's rf-locked write, built from a cached state (ADR-147 phase 3).
+
+        Refills and debits in one write with no read: the cached state is what
+        the read would have returned, unless something wrote since — which the
+        condition detects. Beside the ``rf`` lock it pins ``vu`` absent (a limit
+        change made elsewhere stamps ``vu = 0`` and rewrites ``cp``/``ra``/``rp``
+        without moving ``rf``, so an ``rf`` lock alone would refill at the old
+        limits, #508), the bucket not disabled, and its TTL not expired.
+
+        Returns the success as a ``SpeculativeResult`` built from ``ALL_NEW``,
+        or None when the condition failed; the caller then takes today's path.
+        Only for an unscheduled, non-quota, non-cascading item: the caller
+        checks, and ``vu`` absent is part of the condition.
+        """
+        update = self.build_cached_refill(
+            entity_id, resource, shard_id, consumed, refill_amounts, expected_rf, now_ms
+        )["Update"]
+        client = self._get_client()
+        try:
+            response = client.update_item(**update)
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+                self._rejection_cache.forget(self._namespace_id, entity_id, resource, shard_id)
+                return None
+            raise
+        new_item = response["Attributes"]
+        buckets = self._deserialize_composite_bucket(new_item)
+        shard_count = int(new_item.get("shard_count", {}).get("N", "1"))
+        self._remember_bucket_image(entity_id, resource, shard_id, new_item, buckets, shard_count)
+        return SpeculativeResult(
+            success=True,
+            buckets=buckets,
+            cascade=new_item.get("cascade", {}).get("BOOL", False),
+            parent_id=new_item.get("parent_id", {}).get("S"),
+            shard_id=shard_id,
+            shard_count=shard_count,
+        )
+
     def _remember_bucket_image(
         self,
         entity_id: str,

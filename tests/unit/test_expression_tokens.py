@@ -135,6 +135,23 @@ class TestCompositeBuilders:
             bucket_attr(HYPHENATED, BUCKET_FIELD_TK),
         }
 
+    def test_cached_refill(self) -> None:
+        """ADR-147 phase 3: the normal write plus the vu / disabled / ttl pins."""
+        update = _repo().build_cached_refill(
+            "user-1",
+            "api",
+            shard_id=1,
+            consumed={DOTTED: 1000, HYPHENATED: 2000},
+            refill_amounts={DOTTED: 500, HYPHENATED: 500},
+            expected_rf=1_000,
+            now_ms=2_000,
+        )["Update"]
+        assert_expression_safe(update)
+        condition = update["ConditionExpression"]
+        assert "attribute_not_exists(#cvu)" in condition
+        assert "attribute_not_exists(#cdis)" in condition
+        assert update["ReturnValues"] == "ALL_NEW"
+
     def test_normal_with_every_optional_clause(self) -> None:
         """Windows, window lengths, ttl and vu share the expression without
         colliding with the per-limit tokens."""

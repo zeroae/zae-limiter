@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-from zae_limiter import RateLimiter, RateLimitExceeded
+from zae_limiter import RateLimiter, RateLimitExceeded, schema
 from zae_limiter.exceptions import ResourceDisabled
 from zae_limiter.models import BucketState, Limit
 from zae_limiter.rejection_cache import RejectionCache
@@ -1325,3 +1325,189 @@ class TestParentShardSteering:
                 if len(parent_targets) > before:
                     firsts.append(parent_targets[before])
         assert firsts and all(shard == 1 for shard in firsts)
+
+
+async def _spent_and_cached(limiter: RateLimiter) -> None:
+    """Spend u/r's 2 rpm so that a fast-path success image (tk = 0) is cached."""
+    async with limiter.acquire("u", "r", consume={"rpm": 1}):  # slow path creates
+        pass
+    async with limiter.acquire("u", "r", consume={"rpm": 1}):  # fast path: cached, tk = 0
+        pass
+
+
+class TestRefillFromCache:
+    """ADR-147 phase 3: refill would help ⇒ one locked write, no read."""
+
+    async def test_one_write_and_no_read_when_refill_covers_it(self, limiter, repo):
+        await _spent_and_cached(limiter)
+        later = repo._now_ms() + 60_000  # a full minute: both tokens back
+        with patch.object(repo, "_now_ms", return_value=later):
+            async with _count_client_calls(repo) as calls:
+                async with limiter.acquire("u", "r", consume={"rpm": 1}) as lease:
+                    pass
+        assert calls == ["update_item"]  # today: a failed write, a read, a write
+        assert lease.consumed == {"rpm": 1}
+        bucket = (await repo.get_buckets("u", "r"))[0]
+        assert bucket.tokens_milli == 1000  # refilled to 2, debited 1
+
+    async def test_a_write_since_the_state_was_cached_falls_back(self, limiter, repo):
+        """The rf lock: another writer moved rf, so the state is stale."""
+        await _spent_and_cached(limiter)
+        client = await repo._get_client()
+        await client.update_item(  # another process's refill
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, "u", "r", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="SET rf = rf + :one",
+            ExpressionAttributeValues={":one": {"N": "1"}},
+        )
+        later = repo._now_ms() + 60_000
+        with patch.object(repo, "_now_ms", return_value=later):
+            async with _count_client_calls(repo) as calls:
+                async with limiter.acquire("u", "r", consume={"rpm": 1}) as lease:
+                    pass
+        assert lease.consumed == {"rpm": 1}
+        assert calls[0] == "update_item" and len(calls) > 1  # lost lock, today's path
+
+    async def test_a_limit_change_elsewhere_is_not_refilled_at_the_old_limit(self, limiter, repo):
+        """The vu pin: another process cut the limit and stamped vu = 0, rf unmoved."""
+        await _spent_and_cached(limiter)
+        client = await repo._get_client()
+        await client.update_item(  # what _sync_bucket_params writes elsewhere
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, "u", "r", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="SET #cp = :cp, #ra = :ra, vu = :zero",
+            ExpressionAttributeNames={
+                "#cp": schema.bucket_attr("rpm", schema.BUCKET_FIELD_CP),
+                "#ra": schema.bucket_attr("rpm", schema.BUCKET_FIELD_RA),
+            },
+            ExpressionAttributeValues={
+                ":cp": {"N": "1000"},
+                ":ra": {"N": "1000"},
+                ":zero": {"N": "0"},
+            },
+        )
+        refills: list[object] = []
+        real = repo.refill_from_cached_state
+
+        async def spy(*args, **kwargs):
+            result = await real(*args, **kwargs)
+            refills.append(result)
+            return result
+
+        later = repo._now_ms() + 60_000
+        with (
+            patch.object(repo, "_now_ms", return_value=later),
+            patch.object(repo, "refill_from_cached_state", side_effect=spy),
+        ):
+            async with limiter.acquire("u", "r", consume={"rpm": 1}):
+                pass
+        assert refills == [None]  # the pinned write refused; the slow path re-read
+        bucket = (await repo.get_buckets("u", "r"))[0]
+        assert bucket.capacity_milli == 1000
+        assert bucket.tokens_milli <= 0  # refilled to the NEW capacity (1), then debited
+
+    async def test_not_used_when_the_stored_balance_is_enough(self, limiter, repo):
+        async with limiter.acquire("u", "r", consume={"rpm": 1}):  # creates: tk = 1 left
+            pass
+        async with limiter.acquire("u", "r", consume={"rpm": 0}):  # fast path: cached
+            pass
+        with patch.object(repo, "refill_from_cached_state") as refill:
+            async with limiter.acquire("u", "r", consume={"rpm": 1}):
+                pass
+        refill.assert_not_called()
+
+    async def test_not_used_for_a_cascading_bucket(self, family, repo):
+        await repo.set_limits("org", [Limit.per_minute("rpm", 1000)], resource="r")
+        async with family.acquire("u", "r", consume={"rpm": 50}):
+            pass
+        async with family.acquire("u", "r", consume={"rpm": 50}):  # cached: u at 0, cascades
+            pass
+        later = repo._now_ms() + 60_000
+        with (
+            patch.object(repo, "_now_ms", return_value=later),
+            patch.object(repo, "refill_from_cached_state") as refill,
+        ):
+            async with family.acquire("u", "r", consume={"rpm": 1}):
+                pass
+        refill.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "case", ["vu", "quota", "window", "wcu_drained", "missing_limit", "untrusted"]
+    )
+    async def test_not_used_for_items_only_the_slow_path_materialises(self, repo, case):
+        ns = repo._namespace_id
+        now = repo._now_ms()
+        rpm = _state(0)
+        rpm.last_refill_ms = now - 60_000  # a full minute of refill pending
+        states = [rpm]
+        vu_ms = None
+        consume = {"rpm": 1}
+        if case == "vu":
+            vu_ms = now + 3_600_000
+        elif case == "quota":
+            rpm.refill_amount_milli = 0
+        elif case == "window":
+            rpm.window_start_ms = now - 1000
+            rpm.reset_after_seconds = 3600
+        elif case == "wcu_drained":
+            wcu = _state(0, name="wcu")
+            wcu.last_refill_ms = now
+            states.append(wcu)
+        elif case == "missing_limit":
+            consume = {"rpm": 1, "tpm": 1}
+        clock = _Clock()
+        repo._rejection_cache._clock = clock
+        repo._rejection_cache.store(
+            ns, "u", "r", 0, states, shard_count=1, vu_ms=vu_ms, ttl_epoch=None, disabled=False
+        )
+        if case == "untrusted":
+            clock.now += 1.5
+        with patch.object(repo, "refill_from_cached_state") as refill:
+            async with RateLimiter(repository=repo) as limiter:
+                assert await limiter._refill_from_cache("u", "r", consume, now) is None
+        refill.assert_not_called()
+
+    def test_the_sync_limiter_refills_from_the_cache(self, mock_dynamodb):
+        from contextlib import ExitStack
+
+        from zae_limiter import SyncRateLimiter
+        from zae_limiter.sync_repository import SyncRepository
+
+        repo = SyncRepository(
+            name="test-rejection-sync-refill", region="us-east-1", _skip_deprecation_warning=True
+        )
+        repo.create_table()
+        repo._register_namespace("default")
+        repo.set_limits("u", [RPM], resource="r")
+        limiter = SyncRateLimiter(repository=repo)
+        for _ in range(2):
+            with limiter.acquire("u", "r", consume={"rpm": 1}):
+                pass
+        client = repo._get_client()
+        calls: list[str] = []
+
+        def counting(name):
+            real = getattr(client, name)
+
+            def call(*args, **kwargs):
+                calls.append(name)
+                return real(*args, **kwargs)
+
+            return call
+
+        later = repo._now_ms() + 60_000
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(repo, "_now_ms", return_value=later))
+            for name in _CLIENT_CALLS:
+                stack.enter_context(patch.object(client, name, side_effect=counting(name)))
+            with limiter.acquire("u", "r", consume={"rpm": 1}) as lease:
+                pass
+        assert calls == ["update_item"]
+        assert lease.consumed == {"rpm": 1}
+        repo.close()
