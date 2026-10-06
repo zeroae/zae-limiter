@@ -1748,9 +1748,9 @@ zae-limiter entity disable|enable|clear-disabled ENTITY_ID [--resource R]
 `Status: enabled (explicit override)` when the level has an explicit value.
 
 **Declarative limits (Issue #405):** `disabled` is supported on `resources.<name>` and
-`entities.<id>.resources.<name>` in the YAML manifest (on `system` it fails the parse, #693), and carried through
-the CloudFormation `Custom::ZaeLimiterLimits` round trip in both directions via a `Disabled`
-property. The Lambda-side provisioner fan-out (`src/zae_limiter_provisioner/fanout.py`) mirrors
+`entities.<id>.resources.<name>` in the YAML manifest (on `system` it fails the parse, #693),
+and carried through the CloudFormation `Custom::ZaeLimiterLimits` round trip in both directions
+via a `Disabled` property. The Lambda-side provisioner fan-out (`src/zae_limiter_provisioner/fanout.py`) mirrors
 the async `Repository` fan-out and consults per-entity overrides the same way, so a manifest
 apply that merely re-asserts an unchanged resource-level `disabled` (as every apply does —
 `differ.py` emits a change for every manifest resource regardless of whether anything changed)
