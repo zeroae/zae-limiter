@@ -83,6 +83,43 @@ async def _count_update_items(repo: Repository):
         yield calls
 
 
+_CLIENT_CALLS = (
+    "get_item",
+    "put_item",
+    "update_item",
+    "delete_item",
+    "query",
+    "scan",
+    "batch_get_item",
+    "batch_write_item",
+    "transact_get_items",
+    "transact_write_items",
+)
+
+
+@asynccontextmanager
+async def _count_client_calls(repo: Repository):
+    """Record every DynamoDB data call the repository's client makes."""
+    from contextlib import ExitStack
+
+    client = await repo._get_client()
+    calls: list[str] = []
+
+    def counting(name):
+        real = getattr(client, name)
+
+        async def call(*args, **kwargs):
+            calls.append(name)
+            return await real(*args, **kwargs)
+
+        return call
+
+    with ExitStack() as stack:
+        for name in _CLIENT_CALLS:
+            stack.enter_context(patch.object(client, name, side_effect=counting(name)))
+        yield calls
+
+
 def _cached(repo: Repository) -> bool:
     """Whether the cache holds a usable state for entity u, resource r."""
     return bool(repo._rejection_cache.views(repo._namespace_id, "u", "r", now_ms=repo._now_ms()))
@@ -546,6 +583,31 @@ class TestShards:
                 firsts.append(targets[before])
         assert firsts == [1] * 20
 
+    async def test_a_phase_1_repository_still_works(self, limiter, repo):
+        """Phase-2 review #5: `avoid_parent_shards` is passed only when non-empty."""
+        await _drain(limiter)
+        repo._learn_shard_count("u", "r", 2, meta=(False, None))
+        _store(repo, "u", 0, 0, shard_count=2)
+        real = repo.speculative_consume
+
+        async def phase_1(
+            entity_id,
+            resource,
+            consume,
+            ttl_seconds=None,
+            shard_id=None,
+            now_ms=None,
+            avoid_shards=frozenset(),
+        ):
+            return await real(
+                entity_id, resource, consume, ttl_seconds, shard_id, now_ms, avoid_shards
+            )
+
+        with patch.object(repo, "speculative_consume", side_effect=phase_1) as spy:
+            async with limiter.acquire("u", "r", consume={"rpm": 1}):
+                pass  # shard 1: created by the slow path
+        assert spy.call_args.kwargs["avoid_shards"] == frozenset({0})
+
     async def test_rejects_locally_only_when_every_shard_is_short(self, repo):
         ns = repo._namespace_id
         now = repo._now_ms()
@@ -731,6 +793,39 @@ class TestSyncTwin:
             with pytest.raises(RateLimitExceeded):
                 with limiter.acquire("u", "r", consume={"rpm": 1}):
                     pass
+        assert repo.get_cache_stats().local_rejections == 1
+        repo.close()
+
+    def test_the_sync_limiter_checks_the_parent_first(self, mock_dynamodb):
+        """Phase 2 on the generated sync path: a parent known short, no DynamoDB call."""
+        from contextlib import ExitStack
+
+        from zae_limiter import SyncRateLimiter
+        from zae_limiter.sync_repository import SyncRepository
+
+        repo = SyncRepository(
+            name="test-rejection-sync-cascade", region="us-east-1", _skip_deprecation_warning=True
+        )
+        repo.create_table()
+        repo._register_namespace("default")
+        repo.create_entity("org")
+        repo.create_entity("u", parent_id="org", cascade=True)
+        repo.set_limits("org", [RPM], resource="r")
+        repo.set_limits("u", [Limit.per_minute("rpm", 100)], resource="r")
+        limiter = SyncRateLimiter(repository=repo)
+        for _ in range(2):  # slow path, then the warm parallel write: org spent
+            with limiter.acquire("u", "r", consume={"rpm": 1}):
+                pass
+        client = repo._get_client()
+        with ExitStack() as stack:
+            for name in _CLIENT_CALLS:
+                stack.enter_context(
+                    patch.object(client, name, side_effect=AssertionError(f"called {name}"))
+                )
+            with pytest.raises(RateLimitExceeded) as excinfo:
+                with limiter.acquire("u", "r", consume={"rpm": 1}):
+                    pass
+        assert [s.entity_id for s in excinfo.value.statuses] == ["u", "org"]
         assert repo.get_cache_stats().local_rejections == 1
         repo.close()
 
@@ -968,3 +1063,265 @@ class TestOptions:
                 assert limiter._known_short_shards("u", "r", {"rpm": 1}, 1) == (set(), 1)
             finally:
                 repo._namespace_id = saved
+
+
+def _store(
+    repo: Repository,
+    entity: str,
+    shard: int,
+    tokens: int,
+    *,
+    shard_count: int = 1,
+    cascades: bool = False,
+    parent_id: str | None = None,
+    disabled: bool = False,
+) -> None:
+    state = _state(tokens, entity=entity)
+    state.shard_count = shard_count
+    repo._rejection_cache.store(
+        repo._namespace_id,
+        entity,
+        "r",
+        shard,
+        [state],
+        shard_count=shard_count,
+        vu_ms=None,
+        ttl_epoch=None,
+        disabled=disabled,
+        cascades=cascades,
+        parent_id=parent_id,
+    )
+
+
+@pytest.fixture
+async def family(repo):
+    """org -> u, u cascades on r; org allows 2 rpm, u allows 100."""
+    await repo.create_entity("org")
+    await repo.create_entity("u", parent_id="org", cascade=True)
+    await repo.set_limits("org", [RPM], resource="r")
+    await repo.set_limits("u", [Limit.per_minute("rpm", 100)], resource="r")
+    async with RateLimiter(repository=repo) as limiter:
+        yield limiter
+
+
+class TestCascadeParentPrecheck:
+    """ADR-147 phase 2: the parent's cached state, checked before any write."""
+
+    async def test_a_parent_known_short_rejects_with_no_write(self, family, repo):
+        async with family.acquire("u", "r", consume={"rpm": 1}):  # slow path, cold cache
+            pass
+        async with family.acquire("u", "r", consume={"rpm": 1}):  # warm: parallel, both cached
+            pass
+        async with _count_client_calls(repo) as calls:
+            with pytest.raises(RateLimitExceeded) as excinfo:
+                async with family.acquire("u", "r", consume={"rpm": 1}):
+                    pass
+        assert calls == []  # no DynamoDB call of any kind
+        # The server reports the child's statuses, then the parent's.
+        assert [s.entity_id for s in excinfo.value.statuses] == ["u", "org"]
+        assert excinfo.value.statuses[1].exceeded
+        assert excinfo.value.retry_after_seconds > 0
+        assert repo.get_cache_stats().local_rejections == 1
+
+    async def test_the_entity_wide_guess_alone_never_triggers_it(self, repo):
+        """Decision 1: only a policy learned from the child's own bucket counts."""
+        _store(repo, "org", 0, 0)
+        repo._entity_cache[(repo._namespace_id, "u")] = (True, "org", {})
+        async with RateLimiter(repository=repo) as limiter:
+            assert limiter._known_short_shards("u", "r", {"rpm": 1}, repo._now_ms()) == (set(), 1)
+
+    async def test_a_learned_cascade_cache_entry_alone_is_not_enough(self, repo):
+        """Phase-2 review #2: `_cascade_cache` is never expired, so it cannot decide."""
+        _store(repo, "org", 0, 0)
+        repo._learn_shard_count("u", "r", 1, meta=(True, "org"))
+        async with RateLimiter(repository=repo) as limiter:
+            assert limiter._known_short_shards("u", "r", {"rpm": 1}, repo._now_ms()) == (set(), 1)
+
+    async def test_an_aged_child_stamp_does_not_name_the_parent(self, repo):
+        clock = _Clock()
+        repo._rejection_cache._clock = clock
+        _store(repo, "u", 0, 2, cascades=True, parent_id="org")
+        clock.now += 1.5  # the child's stamp is now past the age cap
+        _store(repo, "org", 0, 0)  # a sibling keeps the parent's state fresh
+        async with RateLimiter(repository=repo) as limiter:
+            assert limiter._known_short_shards("u", "r", {"rpm": 1}, repo._now_ms()) == (set(), 1)
+
+    async def test_a_policy_turned_off_elsewhere_is_not_believed_past_the_ttl(self, repo):
+        """Review #2, end to end: u stops cascading in another process; v keeps org short."""
+        await repo.create_entity("org")
+        await repo.create_entity("u", parent_id="org", cascade=True)
+        await repo.create_entity("v", parent_id="org", cascade=True)
+        await repo.set_limits("org", [RPM], resource="r")
+        await repo.set_limits("u", [Limit.per_minute("rpm", 100)], resource="r")
+        await repo.set_limits("v", [Limit.per_minute("rpm", 100)], resource="r")
+        clock = _Clock()
+        repo._rejection_cache._clock = clock
+        async with RateLimiter(repository=repo) as limiter:
+            async with limiter.acquire("u", "r", consume={"rpm": 1}):  # slow path
+                pass
+            async with limiter.acquire("u", "r", consume={"rpm": 1}):  # fast: org now spent
+                pass
+            # Another process turns u's cascade off; this process's caches are
+            # not told (the rejection cache and `_cascade_cache` keep their view).
+            cache = repo._rejection_cache
+            saved = dict(repo._cascade_cache)
+            saved_buckets = {key: dict(shards) for key, shards in cache._buckets.items()}
+            saved_order = dict(cache._order)
+            await _stamp_current_lambdas(repo)
+            await repo.set_entity_cascade("u", False, resource="r")  # clears this process's cache
+            repo._cascade_cache.update(saved)
+            cache._buckets.update(saved_buckets)  # ...which another process could not have done
+            cache._order.update(saved_order)
+            assert cache.cascades(repo._namespace_id, "u", "r")  # the stale stamp is still here
+            clock.now += 3600  # u's own stamp is long past the age cap
+            for _ in range(2):  # v keeps org's cached state fresh and short
+                with pytest.raises(RateLimitExceeded):
+                    async with limiter.acquire("v", "r", consume={"rpm": 1}):
+                        pass
+            # The server admits u: it no longer cascades.
+            async with limiter.acquire("u", "r", consume={"rpm": 1}) as lease:
+                pass
+        assert lease.consumed == {"rpm": 1}
+
+    async def test_a_parent_with_room_on_one_shard_is_written_to(self, repo):
+        _store(repo, "org", 0, 0, shard_count=2)
+        _store(repo, "u", 0, 2, cascades=True, parent_id="org")
+        async with RateLimiter(repository=repo) as limiter:
+            assert limiter._known_short_shards("u", "r", {"rpm": 1}, repo._now_ms()) == (set(), 1)
+            assert limiter._known_short_parent_shards("u", "r", {"rpm": 1}, repo._now_ms()) == {0}
+
+    async def test_the_parents_own_cascade_flag_is_ignored(self, repo):
+        """A child's lease never reaches the grandparent (#686)."""
+        _store(repo, "org", 0, 0, cascades=True, parent_id="grandparent")
+        _store(repo, "u", 0, 2, cascades=True, parent_id="org")
+        async with RateLimiter(repository=repo) as limiter:
+            with pytest.raises(RateLimitExceeded):
+                limiter._known_short_shards("u", "r", {"rpm": 1}, repo._now_ms())
+
+    async def test_a_disabled_parent_state_is_unknown(self, repo):
+        """A disabled parent must still reach DynamoDB and its 403."""
+        _store(repo, "org", 0, 0, disabled=True)
+        _store(repo, "u", 0, 2, cascades=True, parent_id="org")
+        async with RateLimiter(repository=repo) as limiter:
+            assert limiter._known_short_shards("u", "r", {"rpm": 1}, repo._now_ms()) == (set(), 1)
+
+    async def test_a_disabled_child_gets_403_every_time(self, family, repo):
+        """Phase-2 review #1: a disabled child with a parent known short is 403, not 429."""
+        async with family.acquire("u", "r", consume={"rpm": 2}):  # slow path; drains org
+            pass
+        async with family.acquire("u", "r", consume={"rpm": 0}):  # fast path: stamps cached
+            pass
+        await repo.disable_entity("u", resource="r")  # through this process: clears the cache
+        for _ in range(4):
+            with pytest.raises(ResourceDisabled) as excinfo:
+                async with family.acquire("u", "r", consume={"rpm": 1}):
+                    pass
+            assert excinfo.value.entity_id == "u"
+        assert repo.get_cache_stats().local_rejections == 0
+
+    def test_parent_of_is_none_for_a_disabled_child(self):
+        cache = RejectionCache(ttl_seconds=1.0, max_entries=10, clock=_Clock())
+        cache.store(
+            "ns",
+            "u",
+            "r",
+            0,
+            [_state(0)],
+            shard_count=2,
+            vu_ms=None,
+            ttl_epoch=None,
+            disabled=False,
+            cascades=True,
+            parent_id="org",
+        )
+        assert cache.parent_of("ns", "u", "r", now_ms=1) == "org"
+        cache.store(
+            "ns",
+            "u",
+            "r",
+            1,
+            [_state(0)],
+            shard_count=2,
+            vu_ms=None,
+            ttl_epoch=None,
+            disabled=True,
+            cascades=True,
+            parent_id="org",
+        )
+        assert cache.parent_of("ns", "u", "r", now_ms=1) is None
+
+
+class TestCascadingChildKnownShort:
+    """Decision 3: rejected locally only while the parent is known not disabled."""
+
+    async def test_rejected_locally_with_a_trusted_enabled_parent(self, repo):
+        _store(repo, "u", 0, 0, cascades=True, parent_id="org")
+        _store(repo, "org", 0, 2)
+        async with RateLimiter(repository=repo) as limiter:
+            with pytest.raises(RateLimitExceeded) as excinfo:
+                limiter._known_short_shards("u", "r", {"rpm": 1}, repo._now_ms())
+        # The server answers from the child's image alone.
+        assert [s.entity_id for s in excinfo.value.statuses] == ["u"]
+
+    async def test_not_rejected_without_a_parent_state(self, repo):
+        _store(repo, "u", 0, 0, cascades=True, parent_id="org")
+        async with RateLimiter(repository=repo) as limiter:
+            assert limiter._known_short_shards("u", "r", {"rpm": 1}, repo._now_ms()) == ({0}, 1)
+
+    async def test_not_rejected_when_the_parent_state_is_disabled(self, repo):
+        _store(repo, "u", 0, 0, cascades=True, parent_id="org")
+        _store(repo, "org", 0, 2, disabled=True)
+        async with RateLimiter(repository=repo) as limiter:
+            assert limiter._known_short_shards("u", "r", {"rpm": 1}, repo._now_ms()) == ({0}, 1)
+
+    async def test_not_rejected_when_any_parent_shard_is_disabled(self, repo):
+        """Phase-2 review #3: a disable that stopped part-way still means 403."""
+        _store(repo, "u", 0, 0, cascades=True, parent_id="org")
+        _store(repo, "org", 0, 2, shard_count=2)  # trusted, enabled
+        _store(repo, "org", 1, 2, shard_count=2, disabled=True)
+        async with RateLimiter(repository=repo) as limiter:
+            assert limiter._known_short_shards("u", "r", {"rpm": 1}, repo._now_ms()) == ({0}, 1)
+
+
+class TestParentShardSteering:
+    """Decision 4: the parallel write draws the parent's shard around short ones."""
+
+    async def test_never_draws_a_known_short_parent_shard(self, family, repo):
+        async with family.acquire("u", "r", consume={"rpm": 1}):  # slow path creates
+            pass
+        # The fast path now shows the child's own cascade stamp; until it has,
+        # decision 1 rightly skips the parent check.
+        async with family.acquire("u", "r", consume={"rpm": 1}):
+            pass
+        assert (
+            repo._rejection_cache.parent_of(repo._namespace_id, "u", "r", repo._now_ms()) == "org"
+        )
+        repo._learn_shard_count("org", "r", 2, meta=(False, None))
+        ns = repo._namespace_id
+        parent_targets: list[int] = []
+        real = repo._speculative_consume_single
+
+        async def spy(entity_id, resource, consume, ttl_seconds=None, shard_id=0, now_ms=None):
+            if entity_id == "org":
+                parent_targets.append(shard_id)
+            return await real(
+                entity_id, resource, consume, ttl_seconds, shard_id=shard_id, now_ms=now_ms
+            )
+
+        firsts: list[int] = []
+        with patch.object(repo, "_speculative_consume_single", side_effect=spy):
+            for _ in range(20):
+                # Each round starts from a trusted child stamp: a refund
+                # forgets it, and decision 1 then rightly skips the parent.
+                _store(repo, "u", 0, 100, cascades=True, parent_id="org")
+                _store(repo, "org", 0, 0, shard_count=2)
+                repo._rejection_cache.forget(ns, "org", "r", 1)
+                before = len(parent_targets)
+                try:
+                    async with family.acquire("u", "r", consume={"rpm": 1}):
+                        pass
+                except RateLimitExceeded:
+                    pass
+                if len(parent_targets) > before:
+                    firsts.append(parent_targets[before])
+        assert firsts and all(shard == 1 for shard in firsts)

@@ -3367,6 +3367,7 @@ class Repository:
         shard_id: int | None = None,
         now_ms: int | None = None,
         avoid_shards: frozenset[int] = frozenset(),
+        avoid_parent_shards: frozenset[int] = frozenset(),
     ) -> SpeculativeResult:
         """Attempt speculative UpdateItem with condition check.
 
@@ -3391,6 +3392,8 @@ class Repository:
                 reads the clock once here, for callers outside an acquire.
             avoid_shards: Child shards the rejection cache knows are short
                 (ADR-147); the child shard is drawn among the others.
+            avoid_parent_shards: The same for the parent's shards on the
+                parallel cascade write (ADR-147 phase 2, decision 4).
 
         Returns:
             SpeculativeResult with:
@@ -3437,7 +3440,12 @@ class Repository:
                 # parent shard 0 — the unmitigated hot partition write
                 # sharding exists to protect (GHSA-76rv, issue #116) — and
                 # disagreed with the slow path, which draws from that count.
-                parent_shard_id, _parent_count = self.select_shard(parent_id_cached, resource)
+                if avoid_parent_shards:
+                    parent_shard_id, _parent_count = self.select_shard(
+                        parent_id_cached, resource, avoid=avoid_parent_shards
+                    )
+                else:
+                    parent_shard_id, _parent_count = self.select_shard(parent_id_cached, resource)
                 child_result, parent_result = await asyncio.gather(
                     self._speculative_consume_single(
                         entity_id,
@@ -3813,6 +3821,7 @@ class Repository:
             cascades=bool(
                 item.get("cascade", {}).get("BOOL", False) and item.get("parent_id", {}).get("S")
             ),
+            parent_id=item.get("parent_id", {}).get("S"),
         )
 
     def select_shard(

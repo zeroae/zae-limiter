@@ -683,6 +683,7 @@ class SyncRepositoryProtocol(Protocol):
         shard_id: int | None = None,
         now_ms: int | None = None,
         avoid_shards: frozenset[int] = frozenset(),
+        avoid_parent_shards: frozenset[int] = frozenset(),
     ) -> SpeculativeResult:
         """Attempt speculative UpdateItem with condition check.
 
@@ -705,6 +706,8 @@ class SyncRepositoryProtocol(Protocol):
                 (ADR-147); the shard is drawn among the others. Passed only
                 when non-empty, and only by a limiter whose repository keeps a
                 rejection cache, so a backend without one never receives it.
+            avoid_parent_shards: The same for the parent's shards on a
+                parallel cascade write (ADR-147 phase 2), on the same terms.
 
         Returns:
             SpeculativeResult with success flag and either:

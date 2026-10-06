@@ -857,11 +857,28 @@ class RateLimiter:
         # Shards the last state seen says cannot fit this request (ADR-147).
         # Raises here, with no write, when that is every shard.
         avoid: frozenset[int] = frozenset()
+        avoid_parent: frozenset[int] = frozenset()
         if use_rejection_cache:
             avoid = frozenset(self._known_short_shards(entity_id, resource, consume, now_ms)[0])
+            avoid_parent = frozenset(
+                self._known_short_parent_shards(entity_id, resource, consume, now_ms)
+            )
 
-        # Repository handles cache check and parallel writes (issue #318)
-        if avoid:
+        # Repository handles cache check and parallel writes (issue #318).
+        # The steering arguments go only to a repository whose cache produced
+        # them, so a backend without a rejection cache never receives them.
+        # Each set is passed only when non-empty, so a repository that predates
+        # one of them (a subclass, a test double) keeps working.
+        if avoid_parent:
+            result = await self._repository.speculative_consume(
+                entity_id=entity_id,
+                resource=resource,
+                consume=consume,
+                now_ms=now_ms,
+                avoid_shards=avoid,
+                avoid_parent_shards=avoid_parent,
+            )
+        elif avoid:
             result = await self._repository.speculative_consume(
                 entity_id=entity_id,
                 resource=resource,
@@ -1318,6 +1335,75 @@ class RateLimiter:
         """Compensate a speculatively consumed child by adding tokens back."""
         await self._compensate_speculative(entity_id, resource, consume, shard_id)
 
+    def _shortfall(
+        self,
+        cache: Any,
+        namespace_id: str,
+        entity_id: str,
+        resource: str,
+        consume: dict[str, int],
+        now_ms: int,
+    ) -> tuple[dict[int, list[LimitStatus]], dict[int, list[LimitStatus]], int]:
+        """Project one bucket's cached shards to now (ADR-147).
+
+        Each cached state is projected by ``would_refill_satisfy``, the same
+        arithmetic a speculative failure's fast rejection uses, so a shard
+        counts as short exactly when a write to it would come back as a fast
+        rejection had nothing else touched it since. A state that lacks a
+        declared limit is unknown (the slow path seeds it, #633), and only
+        declared limits count, so a ``wcu``-only shortfall is never one.
+
+        Returns:
+            ``(short, statuses, shard_count)``: the statuses of each short
+            shard, the statuses of every shard that could be judged, and the
+            shard count — the larger of the entity cache's and the counts the
+            cached states carry, so a cold or stale entity cache never makes
+            the shards we know about look like all of them (decision 4).
+        """
+        views = cache.views(namespace_id, entity_id, resource, now_ms)
+        if not views:
+            return {}, {}, 1
+        _, shard_count = self._repository.select_shard(entity_id, resource)
+        shard_count = max(
+            [shard_count] + [b.shard_count for buckets in views.values() for b in buckets]
+        )
+        short: dict[int, list[LimitStatus]] = {}
+        judged: dict[int, list[LimitStatus]] = {}
+        for shard, buckets in views.items():
+            if shard >= shard_count:
+                continue
+            names = {b.limit_name for b in buckets}
+            if not all(name in names for name in consume):
+                continue
+            fits, statuses = would_refill_satisfy(buckets, consume, now_ms)
+            judged[shard] = statuses
+            if not fits:
+                short[shard] = statuses
+        return short, judged, shard_count
+
+    @staticmethod
+    def _soonest(by_shard: dict[int, list[LimitStatus]]) -> list[LimitStatus]:
+        """The statuses of the shard that fits soonest."""
+        return min(
+            by_shard.values(),
+            key=lambda st: max((s.retry_after_seconds for s in st), default=0.0),
+        )
+
+    def _cached_parent(
+        self, cache: Any, namespace_id: str, entity_id: str, resource: str, now_ms: int
+    ) -> str | None:
+        """The parent this child's **own trusted** cached state cascades to (ADR-147 phase 2).
+
+        Only a cached state inside the age cap counts. Neither the entity-wide
+        flag in ``_entity_cache`` (another resource's policy can supply it,
+        ADR-146) nor ``_cascade_cache`` (never expired or cleared) may decide
+        it: a policy changed elsewhere would then be believed with no bound,
+        and since a local rejection writes nothing, nothing would relearn it
+        (phase-2 review). A child known disabled has no parent here.
+        """
+        parent_id = cache.parent_of(namespace_id, entity_id, resource, now_ms)
+        return str(parent_id) if parent_id else None
+
     def _known_short_shards(
         self,
         entity_id: str,
@@ -1327,20 +1413,21 @@ class RateLimiter:
     ) -> tuple[set[int], int]:
         """Shards the last state seen says cannot fit ``consume`` now (ADR-147).
 
-        Each cached state is projected to ``now_ms`` by ``would_refill_satisfy``,
-        the same arithmetic a speculative failure's fast rejection uses, so a
-        shard counts as short exactly when a write to it would come back as a
-        fast rejection had nothing else touched it since. A state that lacks a
-        declared limit is unknown (the slow path seeds it, #633), and only
-        declared limits count, so a ``wcu``-only shortfall is never one.
+        Raises ``RateLimitExceeded`` with no DynamoDB call when the server's
+        answer is already known to be a rejection:
 
-        Raises ``RateLimitExceeded`` with no DynamoDB call when every shard is
-        known short, reporting the shard that fits soonest — unless the bucket
-        cascades, whose parent's answer only the server knows. The cache only ever
-        rejects: a shard not known short is written to as before.
+        - every shard of the bucket is known short, and the bucket does not
+          cascade — or it does and a trusted parent state shows the parent is
+          not disabled, since a disabled parent's 403 outranks the child's 429
+          (phase 2, decision 3). Reports the child shard that fits soonest;
+        - the bucket cascades (learned from its own stamp) and every shard of
+          the parent is known short (decision 2). Reports the child's statuses,
+          when it has a cached state, then the parent shard that fits soonest.
+
+        The cache only ever rejects: a shard not known short is written to.
 
         Returns:
-            ``(short_shards, shard_count)``.
+            ``(short_shards, shard_count)`` for the child.
         """
         cache = getattr(self._repository, "_rejection_cache", None)
         if cache is None or not cache.enabled:
@@ -1348,42 +1435,58 @@ class RateLimiter:
         namespace_id = getattr(self._repository, "_namespace_id", None)
         if namespace_id is None:
             return set(), 1
-        views = cache.views(namespace_id, entity_id, resource, now_ms)
-        if not views:
-            return set(), 1
-        # The larger of the entity cache's count and the count each cached
-        # state carries: a cold or stale entity cache must never make the
-        # shards we know about look like all of them (ADR-147 decision 4).
-        _, shard_count = self._repository.select_shard(entity_id, resource)
-        shard_count = max(
-            [shard_count] + [b.shard_count for buckets in views.values() for b in buckets]
+        short, judged, shard_count = self._shortfall(
+            cache, namespace_id, entity_id, resource, consume, now_ms
         )
-        short: dict[int, list[LimitStatus]] = {}
-        for shard, buckets in views.items():
-            if shard >= shard_count:
-                continue
-            names = {b.limit_name for b in buckets}
-            if not all(name in names for name in consume):
-                continue
-            fits, statuses = would_refill_satisfy(buckets, consume, now_ms)
-            if not fits:
-                short[shard] = statuses
-        # A cascading child is never rejected here: the server writes child and
-        # parent together, and a disabled parent's ResourceDisabled (403)
-        # outranks the child's shortfall (429). Steering around short shards is
-        # still safe — every shard's write reaches the parent.
+        parent_id = self._cached_parent(cache, namespace_id, entity_id, resource, now_ms)
         if (
             short
             and len(short) == shard_count
-            and not cache.cascades(namespace_id, entity_id, resource)
+            and (
+                parent_id is None
+                # Known not disabled: a trusted enabled state, and no cached
+                # shard of any age stamped disabled — a disable that stopped
+                # part-way leaves shards the server would answer with 403.
+                or (
+                    cache.views(namespace_id, parent_id, resource, now_ms)
+                    and not cache.known_disabled(namespace_id, parent_id, resource)
+                )
+            )
         ):
             cache.record_local_rejection()
-            soonest = min(
-                short.values(),
-                key=lambda st: max((s.retry_after_seconds for s in st), default=0.0),
+            raise RateLimitExceeded(self._soonest(short))
+        if parent_id is not None:
+            parent_short, _, parent_count = self._shortfall(
+                cache, namespace_id, parent_id, resource, consume, now_ms
             )
-            raise RateLimitExceeded(soonest)
+            if parent_short and len(parent_short) == parent_count:
+                cache.record_local_rejection()
+                child = self._soonest(judged) if judged else []
+                raise RateLimitExceeded(child + self._soonest(parent_short))
         return set(short), shard_count
+
+    def _known_short_parent_shards(
+        self,
+        entity_id: str,
+        resource: str,
+        consume: dict[str, int],
+        now_ms: int,
+    ) -> set[int]:
+        """Parent shards known short, for steering the parallel parent write.
+
+        Empty unless this child's own bucket says it cascades (decision 1).
+        """
+        cache = getattr(self._repository, "_rejection_cache", None)
+        namespace_id = getattr(self._repository, "_namespace_id", None)
+        if cache is None or not cache.enabled or namespace_id is None:
+            return set()
+        parent_id = self._cached_parent(cache, namespace_id, entity_id, resource, now_ms)
+        if parent_id is None:
+            return set()
+        parent_short, _, _ = self._shortfall(
+            cache, namespace_id, parent_id, resource, consume, now_ms
+        )
+        return set(parent_short)
 
     async def _compensate_speculative(
         self,
