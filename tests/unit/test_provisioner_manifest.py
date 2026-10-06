@@ -22,6 +22,46 @@ class TestLimitDeclValidation:
             LimitDecl.from_dict({"capacity": 100, "burst": 0})
 
 
+class TestManifestCascade:
+    """The tri-state cascade policy on resource and entity decls (ADR-146)."""
+
+    @staticmethod
+    def _parse(resource=None, entity=None, system=None):
+        data: dict = {"namespace": "default"}
+        if system is not None:
+            data["system"] = system
+        if resource is not None:
+            data["resources"] = {"llm": {"limits": {"rpm": {"capacity": 10}}, **resource}}
+        if entity is not None:
+            data["entities"] = {
+                "user-1": {"resources": {"gpt-4": {"limits": {"rpm": {"capacity": 5}}, **entity}}}
+            }
+        return LimitsManifest.from_dict(data)
+
+    @pytest.mark.parametrize("value", [True, False])
+    def test_parsed_and_round_tripped_at_both_levels(self, value):
+        m = self._parse(resource={"cascade": value}, entity={"cascade": value})
+        assert m.resources["llm"].cascade is value
+        assert m.entities["user-1"].resources["gpt-4"].cascade is value
+        assert m.to_dict()["resources"]["llm"]["cascade"] is value
+        assert m.to_dict()["entities"]["user-1"]["resources"]["gpt-4"]["cascade"] is value
+
+    def test_absent_means_inherit_and_is_not_serialized(self):
+        m = self._parse(resource={}, entity={})
+        assert m.resources["llm"].cascade is None
+        assert "cascade" not in m.to_dict()["resources"]["llm"]
+        assert "cascade" not in m.to_dict()["entities"]["user-1"]["resources"]["gpt-4"]
+
+    @pytest.mark.parametrize("bad", ["yes", "true", 1, 0])
+    def test_a_non_boolean_is_rejected(self, bad):
+        with pytest.raises(ValueError, match="cascade: must be true or false"):
+            self._parse(resource={"cascade": bad})
+
+    def test_rejected_at_the_system_level(self):
+        with pytest.raises(ValueError, match="not supported at the system level"):
+            self._parse(system={"cascade": False, "limits": {"rpm": {"capacity": 1}}})
+
+
 class TestManifestDisabled:
     """Tests for the tri-state `disabled` field on resource/entity decls."""
 

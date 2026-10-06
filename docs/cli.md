@@ -38,7 +38,7 @@ The CLI respects standard AWS environment variables:
 Most data-access commands accept `--namespace` / `-N` to scope operations to a specific namespace. When omitted, operations default to the `"default"` namespace.
 
 !!! note "Namespace registration"
-    Commands that **write** (`set-*`, `delete-*`, `entity create`, `disable` / `enable` / `clear-disabled`, `limits apply`) register the namespace if it does not exist yet. Commands that only **read** never do: they exit 1 and name the register command (see [Read-Only Commands](#read-only-commands)).
+    Commands that **write** (`set-*`, `delete-*`, `entity create`, `disable` / `enable` / `clear-disabled`, `set-cascade` / `clear-cascade`, `limits apply`) register the namespace if it does not exist yet. Commands that only **read** never do: they exit 1 and name the register command (see [Read-Only Commands](#read-only-commands)).
 
 ```bash
 # Entity operations in a specific namespace
@@ -181,6 +181,53 @@ limits:
 ```
 
 `reset_after_seconds` round trips through `Custom::ZaeLimiterLimits` as `ResetAfterSeconds`.
+
+### Cascade and Disabled
+
+Entries under `resources.<name>` and `entities.<id>.resources.<name>` may also set two flags,
+each `true`, `false`, or omitted:
+
+| Field | Meaning | See |
+|-------|---------|-----|
+| `disabled` | Turn the resource off (or re-admit one entity) | [Disabling Resources and Entities](#disabling-resources-and-entities) |
+| `cascade` | Whether acquires on this resource also debit the parent | [Cascade Policy per Resource](#cascade-policy-per-resource) |
+
+```yaml
+resources:
+  gpt-4:
+    cascade: true
+    limits:
+      tpm: {capacity: 10000}
+  llm:
+    cascade: false
+    limits:
+      cost: {capacity: 500}
+entities:
+  org-acme:
+    resources:
+      gpt-4:
+        limits:
+          tpm: {capacity: 100000}
+```
+
+- **The manifest owns both flags** for every item it declares. Omitting one clears a value set
+  earlier by `set-cascade`, `disable` or the Python API on the next `apply`.
+- **Neither applies to `system`.** `cascade` there is an error; `disabled` there is ignored.
+- **`cascade` must be a boolean**; a value like `"yes"` fails the plan.
+- **Bucket restamps:** `disabled` restamps every declared resource and entity level on each apply. `cascade`
+  restamps only the levels whose stored policy actually changed, so a routine apply writes no
+  buckets for it.
+- **CloudFormation:** both round trip through `Custom::ZaeLimiterLimits` as the `Disabled` and
+  `Cascade` properties on `Resources` and `Entities` entries.
+- **Version:** a manifest that sets `cascade` needs a stack whose Lambdas are 0.16.0 or later,
+  and raises the stack's minimum client version to 0.16.0.
+
+`limits plan` warns when a resource sets `cascade: true` and no entity in the manifest has its
+own limits for it, because parents would then be limited by the per-user resource defaults:
+
+```
+Warning: resources.gpt-4 sets cascade: true, but no entity in this manifest has its own limits for 'gpt-4', so parents will be limited by the per-user resource defaults
+```
 
 ### Preview Changes
 
@@ -387,6 +434,40 @@ Status: enabled (explicit override)
 
 No `Status:` line is printed when the level has no explicit `disabled` value (i.e. it
 inherits from elsewhere in the resolution walk).
+
+## Cascade Policy per Resource
+
+`set-cascade` and `clear-cascade` on the `resource` and `entity` groups decide, per resource,
+whether an entity's acquires also debit its parent. Use it when one entity needs different
+answers on different resources — for example, model limits that count against the org while a
+shared budget stays per user. See [ADR-146](adr/146-per-resource-cascade-policy.md).
+
+```bash
+# Model limits cascade to the parent; the shared budget does not
+zae-limiter resource set-cascade gpt-4 on
+zae-limiter resource set-cascade llm off
+
+# One entity: on for one resource, or off for every resource without its own policy
+zae-limiter entity set-cascade user-123 on --resource gpt-4
+zae-limiter entity set-cascade user-123 off
+
+# Revert to inheriting
+zae-limiter resource clear-cascade llm
+zae-limiter entity clear-cascade user-123 --resource gpt-4
+```
+
+The policy resolves like `disabled`: entity (resource-specific) → entity (`_default_`) →
+resource, first explicit value wins. When no level sets it, the entity's own `cascade` flag
+from `entity create --cascade` applies, so stacks that never set a policy behave as before. An
+entity with no parent never cascades.
+
+Like disabling, a change is eager: existing buckets are restamped immediately. Setting or
+clearing a policy needs a stack whose Lambdas are 0.16.0 or later — otherwise the command exits
+1 and names `zae-limiter upgrade` (or `zae-limiter deploy`, when the stack has no version record)
+— and raises the stack's minimum client version to 0.16.0.
+
+`resource get-defaults` and `entity get-limits` print `Cascade: on (explicit)` or
+`Cascade: off (explicit)` when that level sets a policy, and nothing when it inherits.
 
 ## Namespace Lifecycle
 
