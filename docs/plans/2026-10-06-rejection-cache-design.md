@@ -119,11 +119,14 @@ parent's. The parent's state is already cached under the parent's own key, becau
 parallel parent write goes through `_speculative_consume_single`; the pre-check adds no
 storage.
 
-1. **When it runs.** Only when this child's **own** bucket has shown that it cascades on
-   this resource: its cached state's stamp (`cascade` with a `parent_id`) or
-   `_cascade_cache`, both learned from the item. Never on the entity-wide guess in
-   `_entity_cache`, which can be another resource's policy (ADR-146): a wrong guess
-   today costs one compensation, but here it would reject wrongly.
+1. **When it runs.** Only when this child's **own trusted** cached state shows that it
+   cascades on this resource: its stamp (`cascade` with a `parent_id`), from an entry that
+   passes the same age, `vu` and TTL test as every other read, and no cached shard of the
+   child stamped `disabled` (its answer is the server's 403). Never the entity-wide guess
+   in `_entity_cache`, which can be another resource's policy (ADR-146), and never
+   `_cascade_cache`, which is never expired or cleared: a policy changed elsewhere would
+   then be believed with no bound, and a local rejection writes nothing, so nothing would
+   relearn it (phase-2 review). So a rejection always has the child's statuses too.
 2. **Parent rule.** The phase-1 rule on the parent's own shards: every parent shard
    known short for a limit in `consume` ⇒ `RateLimitExceeded` with no DynamoDB call. The
    parent's shard count is the larger of its entity-cache count and the counts its cached
@@ -135,9 +138,11 @@ storage.
 3. **Cascading child known short.** Phase 1 never rejects it locally, because a disabled
    parent's 403 outranks the child's 429. It may now, reporting the child's statuses as the
    server does, **only when the parent is known not to be disabled**: at least one of the
-   parent's cached states for this resource is trusted and not stamped `disabled`. A
-   disable stamps every shard in one fan-out, and one made through this process clears
-   the cache. Each cached state records its item's `parent_id` beside `cascades`.
+   parent's cached states for this resource is trusted and not stamped `disabled`, **and
+   no** cached parent shard of any age is stamped `disabled` — a disable fan-out that
+   stopped part-way, or ran in another process, leaves shards the server would answer with
+   403 (phase-2 review). A disable made through this process clears the cache. Each cached
+   state records its item's `parent_id` beside `cascades`.
 4. **Parent shard steering.** The parallel write draws the parent's shard among those not
    known short (`select_shard(..., avoid=...)`), as phase 1 does for the child. `wcu`
    doubling stays on real responses; an uncached shard stays drawable.

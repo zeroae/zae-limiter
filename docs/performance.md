@@ -846,6 +846,7 @@ The `ReturnValuesOnConditionCheckFailure=ALL_OLD` response provides the current 
 | **Speculative success** (cascade, parallel) | 1 | 0 | 2 | $1.25 |
 | **Speculative cascade fallback** (parent refill helps) | 2+ | 0.5 | 3 | $2.00 |
 | **Speculative cascade fast rejection** (parent exhausted) | 1 | 0 | 3 | $1.875 |
+| **Repeat cascade rejection** (parent known short, rejection cache) | 0 | 0 | 0 | $0.00 |
 
 A scheduled limit pays the boundary fallback once per bucket per boundary — every request in
 flight at that instant fails the condition together, then serialises on the refill lock — so
