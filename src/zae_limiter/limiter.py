@@ -1380,29 +1380,19 @@ class RateLimiter:
         )
 
     def _cached_parent(
-        self, cache: Any, namespace_id: str, entity_id: str, resource: str
+        self, cache: Any, namespace_id: str, entity_id: str, resource: str, now_ms: int
     ) -> str | None:
-        """The parent this child's **own** bucket says it cascades to (ADR-147 phase 2).
+        """The parent this child's **own trusted** cached state cascades to (ADR-147 phase 2).
 
-        Either a cached state's stamp, or ``_cascade_cache``, which is learned
-        from the same stamp. Never the entity-wide flag in ``_entity_cache``:
-        that is a guess another resource's policy can supply (ADR-146), and a
-        wrong guess here would reject a request the server admits.
+        Only a cached state inside the age cap counts. Neither the entity-wide
+        flag in ``_entity_cache`` (another resource's policy can supply it,
+        ADR-146) nor ``_cascade_cache`` (never expired or cleared) may decide
+        it: a policy changed elsewhere would then be believed with no bound,
+        and since a local rejection writes nothing, nothing would relearn it
+        (phase-2 review). A child known disabled has no parent here.
         """
-        # A child known disabled gets the server's 403 whichever route would
-        # name its parent: no parent check, no parent steering.
-        if cache.known_disabled(namespace_id, entity_id, resource):
-            return None
-        parent_id = cache.parent_of(namespace_id, entity_id, resource)
-        if parent_id:
-            return str(parent_id)
-        cascade_cache = getattr(self._repository, "_cascade_cache", None) or {}
-        if cascade_cache.get((namespace_id, entity_id, resource)):
-            entity_cache = getattr(self._repository, "_entity_cache", None) or {}
-            entry = entity_cache.get((namespace_id, entity_id))
-            if entry is not None and entry[1]:
-                return str(entry[1])
-        return None
+        parent_id = cache.parent_of(namespace_id, entity_id, resource, now_ms)
+        return str(parent_id) if parent_id else None
 
     def _known_short_shards(
         self,
@@ -1438,7 +1428,7 @@ class RateLimiter:
         short, judged, shard_count = self._shortfall(
             cache, namespace_id, entity_id, resource, consume, now_ms
         )
-        parent_id = self._cached_parent(cache, namespace_id, entity_id, resource)
+        parent_id = self._cached_parent(cache, namespace_id, entity_id, resource, now_ms)
         if (
             short
             and len(short) == shard_count
@@ -1471,7 +1461,7 @@ class RateLimiter:
         namespace_id = getattr(self._repository, "_namespace_id", None)
         if cache is None or not cache.enabled or namespace_id is None:
             return set()
-        parent_id = self._cached_parent(cache, namespace_id, entity_id, resource)
+        parent_id = self._cached_parent(cache, namespace_id, entity_id, resource, now_ms)
         if parent_id is None:
             return set()
         parent_short, _, _ = self._shortfall(

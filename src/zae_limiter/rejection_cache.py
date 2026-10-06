@@ -174,19 +174,23 @@ class RejectionCache:
         shards = self._buckets.get((namespace_id, entity_id, resource))
         if not shards:
             return {}
-        cutoff = self._clock() - self.ttl_seconds
-        now_epoch = now_ms // 1000
         found: dict[int, list[BucketState]] = {}
         for shard_id, entry in list(shards.items()):
-            if (
-                entry.stored_at <= cutoff
-                or entry.disabled
-                or (entry.vu_ms is not None and entry.vu_ms <= now_ms)
-                or (entry.ttl_epoch is not None and entry.ttl_epoch <= now_epoch)
-            ):
-                continue
-            found[shard_id] = list(entry.buckets)
+            if self._trusted(entry, now_ms) and not entry.disabled:
+                found[shard_id] = list(entry.buckets)
         return found
+
+    def _trusted(self, entry: _Entry, now_ms: int) -> bool:
+        """Inside the age cap, before its ``vu`` and before its bucket TTL.
+
+        The one test every read that leads to a local rejection applies, so
+        each such decision is bounded by ``ttl_seconds``.
+        """
+        return not (
+            entry.stored_at <= self._clock() - self.ttl_seconds
+            or (entry.vu_ms is not None and entry.vu_ms <= now_ms)
+            or (entry.ttl_epoch is not None and entry.ttl_epoch <= now_ms // 1000)
+        )
 
     def cascades(self, namespace_id: str, entity_id: str, resource: str) -> bool:
         """Whether any cached shard of this bucket says it cascades to a parent."""
@@ -202,18 +206,22 @@ class RejectionCache:
         shards = self._buckets.get((namespace_id, entity_id, resource)) or {}
         return any(entry.disabled for entry in list(shards.values()))
 
-    def parent_of(self, namespace_id: str, entity_id: str, resource: str) -> str | None:
-        """The parent a cached shard of this bucket says it cascades to, if any.
+    def parent_of(
+        self, namespace_id: str, entity_id: str, resource: str, now_ms: int
+    ) -> str | None:
+        """The parent a **trusted** cached shard of this bucket cascades to, if any.
 
-        Only a stamp carrying a ``parent_id`` counts (ADR-146, #684). Phase 2
-        of #695 trusts it, rather than the entity-wide guess, to decide that a
-        parent check applies at all.
+        Only a stamp carrying a ``parent_id`` counts (ADR-146, #684), and only
+        from an entry that passes the same trust test as ``views``: a policy
+        changed elsewhere is then believed for at most ``ttl_seconds``, the
+        bound every other local rejection has (phase-2 review). None for a
+        bucket known disabled, whose answer is the server's 403.
         """
-        if self.known_disabled(namespace_id, entity_id, resource):
+        if not self.enabled or self.known_disabled(namespace_id, entity_id, resource):
             return None
         shards = self._buckets.get((namespace_id, entity_id, resource)) or {}
         for entry in list(shards.values()):
-            if entry.cascades and entry.parent_id:
+            if entry.cascades and entry.parent_id and self._trusted(entry, now_ms):
                 return entry.parent_id
         return None
 

@@ -1035,14 +1035,58 @@ class TestCascadeParentPrecheck:
         async with RateLimiter(repository=repo) as limiter:
             assert limiter._known_short_shards("u", "r", {"rpm": 1}, repo._now_ms()) == (set(), 1)
 
-    async def test_a_learned_cascade_cache_entry_is_enough(self, repo):
+    async def test_a_learned_cascade_cache_entry_alone_is_not_enough(self, repo):
+        """Phase-2 review #2: `_cascade_cache` is never expired, so it cannot decide."""
         _store(repo, "org", 0, 0)
         repo._learn_shard_count("u", "r", 1, meta=(True, "org"))
         async with RateLimiter(repository=repo) as limiter:
-            with pytest.raises(RateLimitExceeded) as excinfo:
-                limiter._known_short_shards("u", "r", {"rpm": 1}, repo._now_ms())
-        # No cached child state: only the parent's statuses.
-        assert [s.entity_id for s in excinfo.value.statuses] == ["org"]
+            assert limiter._known_short_shards("u", "r", {"rpm": 1}, repo._now_ms()) == (set(), 1)
+
+    async def test_an_aged_child_stamp_does_not_name_the_parent(self, repo):
+        clock = _Clock()
+        repo._rejection_cache._clock = clock
+        _store(repo, "u", 0, 2, cascades=True, parent_id="org")
+        clock.now += 1.5  # the child's stamp is now past the age cap
+        _store(repo, "org", 0, 0)  # a sibling keeps the parent's state fresh
+        async with RateLimiter(repository=repo) as limiter:
+            assert limiter._known_short_shards("u", "r", {"rpm": 1}, repo._now_ms()) == (set(), 1)
+
+    async def test_a_policy_turned_off_elsewhere_is_not_believed_past_the_ttl(self, repo):
+        """Review #2, end to end: u stops cascading in another process; v keeps org short."""
+        await repo.create_entity("org")
+        await repo.create_entity("u", parent_id="org", cascade=True)
+        await repo.create_entity("v", parent_id="org", cascade=True)
+        await repo.set_limits("org", [RPM], resource="r")
+        await repo.set_limits("u", [Limit.per_minute("rpm", 100)], resource="r")
+        await repo.set_limits("v", [Limit.per_minute("rpm", 100)], resource="r")
+        clock = _Clock()
+        repo._rejection_cache._clock = clock
+        async with RateLimiter(repository=repo) as limiter:
+            async with limiter.acquire("u", "r", consume={"rpm": 1}):  # slow path
+                pass
+            async with limiter.acquire("u", "r", consume={"rpm": 1}):  # fast: org now spent
+                pass
+            # Another process turns u's cascade off; this process's caches are
+            # not told (the rejection cache and `_cascade_cache` keep their view).
+            cache = repo._rejection_cache
+            saved = dict(repo._cascade_cache)
+            saved_buckets = {key: dict(shards) for key, shards in cache._buckets.items()}
+            saved_order = dict(cache._order)
+            await _stamp_current_lambdas(repo)
+            await repo.set_entity_cascade("u", False, resource="r")  # clears this process's cache
+            repo._cascade_cache.update(saved)
+            cache._buckets.update(saved_buckets)  # ...which another process could not have done
+            cache._order.update(saved_order)
+            assert cache.cascades(repo._namespace_id, "u", "r")  # the stale stamp is still here
+            clock.now += 3600  # u's own stamp is long past the age cap
+            for _ in range(2):  # v keeps org's cached state fresh and short
+                with pytest.raises(RateLimitExceeded):
+                    async with limiter.acquire("v", "r", consume={"rpm": 1}):
+                        pass
+            # The server admits u: it no longer cascades.
+            async with limiter.acquire("u", "r", consume={"rpm": 1}) as lease:
+                pass
+        assert lease.consumed == {"rpm": 1}
 
     async def test_a_parent_with_room_on_one_shard_is_written_to(self, repo):
         _store(repo, "org", 0, 0, shard_count=2)
@@ -1095,7 +1139,7 @@ class TestCascadeParentPrecheck:
             cascades=True,
             parent_id="org",
         )
-        assert cache.parent_of("ns", "u", "r") == "org"
+        assert cache.parent_of("ns", "u", "r", now_ms=1) == "org"
         cache.store(
             "ns",
             "u",
@@ -1109,7 +1153,7 @@ class TestCascadeParentPrecheck:
             cascades=True,
             parent_id="org",
         )
-        assert cache.parent_of("ns", "u", "r") is None
+        assert cache.parent_of("ns", "u", "r", now_ms=1) is None
 
 
 class TestCascadingChildKnownShort:
@@ -1146,7 +1190,9 @@ class TestParentShardSteering:
         # decision 1 rightly skips the parent check.
         async with family.acquire("u", "r", consume={"rpm": 1}):
             pass
-        assert repo._rejection_cache.parent_of(repo._namespace_id, "u", "r") == "org"
+        assert (
+            repo._rejection_cache.parent_of(repo._namespace_id, "u", "r", repo._now_ms()) == "org"
+        )
         repo._learn_shard_count("org", "r", 2, meta=(False, None))
         ns = repo._namespace_id
         parent_targets: list[int] = []
@@ -1162,6 +1208,9 @@ class TestParentShardSteering:
         firsts: list[int] = []
         with patch.object(repo, "_speculative_consume_single", side_effect=spy):
             for _ in range(20):
+                # Each round starts from a trusted child stamp: a refund
+                # forgets it, and decision 1 then rightly skips the parent.
+                _store(repo, "u", 0, 100, cascades=True, parent_id="org")
                 _store(repo, "org", 0, 0, shard_count=2)
                 repo._rejection_cache.forget(ns, "org", "r", 1)
                 before = len(parent_targets)
