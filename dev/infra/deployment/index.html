@@ -5487,7 +5487,7 @@ omit to inherit). <code>cascade</code> chooses, per resource, whether acquires a
 </span><span id="__span-27-9"><a id="__codelineno-27-9" name="__codelineno-27-9" href="#__codelineno-27-9"></a><span class="w">      </span><span class="nt">cost</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt">capacity</span><span class="p">:</span><span class="w"> </span><span class="nv">500</span><span class="p p-Indicator">}</span>
 </span></code></pre></div>
 <p>The manifest owns both flags for the items it declares: leaving one out clears it on the next
-apply. Neither is supported on <code>system</code> (<code>cascade</code> there is an error). An apply restamps
+apply. Neither is supported on <code>system</code>: either one there is an error. An apply restamps
 existing buckets only for levels whose stored <code>cascade</code> changed, and <code>limits plan</code> warns when a
 resource cascades but no entity in the manifest has its own limits for it. See
 <a href="../../cli/#cascade-and-disabled">Cascade and Disabled</a>.</p>
@@ -5642,8 +5642,8 @@ registers a new namespace itself (see <a href="../../cli/#read-only-commands">Re
 </span><span id="__span-32-18"><a id="__codelineno-32-18" name="__codelineno-32-18" href="#__codelineno-32-18"></a><span class="w">              </span><span class="nt">Capacity</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">500</span>
 </span></code></pre></div>
 <p><code>disabled</code> and <code>cascade</code> appear as <code>Disabled</code> and <code>Cascade</code> properties on <code>Resources</code> and
-<code>Entities</code> entries; omitting one clears it, as in the manifest. A <code>Cascade</code> under <code>System</code> fails
-the stack operation.</p>
+<code>Entities</code> entries; omitting one clears it, as in the manifest. A <code>Cascade</code> or <code>Disabled</code> under
+<code>System</code> fails the stack operation.</p>
 <p>This approach lets you manage limits alongside other infrastructure in CloudFormation, with full lifecycle support (Create, Update, Delete).</p>
 <div class="admonition warning">
 <p class="admonition-title">A partial apply succeeds; it does not roll the stack back</p>

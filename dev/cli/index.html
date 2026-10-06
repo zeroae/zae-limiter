@@ -10025,13 +10025,16 @@ each <code>true</code>, <code>false</code>, or omitted:</p>
 <ul>
 <li><strong>The manifest owns both flags</strong> for every item it declares. Omitting one clears a value set
   earlier by <code>set-cascade</code>, <code>disable</code> or the Python API on the next <code>apply</code>.</li>
-<li><strong>Neither applies to <code>system</code>.</strong> <code>cascade</code> there is an error; <code>disabled</code> there is ignored.</li>
+<li><strong>Neither applies to <code>system</code>.</strong> Either one there is an error, so <code>plan</code>, <code>apply</code> and <code>diff</code>
+  fail before anything is written. Set them on <code>resources.&lt;name&gt;</code> or
+  <code>entities.&lt;id&gt;.resources.&lt;name&gt;</code> instead.</li>
 <li><strong><code>cascade</code> must be a boolean</strong>; a value like <code>"yes"</code> fails the plan.</li>
 <li><strong>Bucket restamps:</strong> <code>disabled</code> restamps every declared resource and entity level on each apply. <code>cascade</code>
   restamps only the levels whose stored policy actually changed, so a routine apply writes no
   buckets for it.</li>
 <li><strong>CloudFormation:</strong> both round trip through <code>Custom::ZaeLimiterLimits</code> as the <code>Disabled</code> and
-  <code>Cascade</code> properties on <code>Resources</code> and <code>Entities</code> entries.</li>
+  <code>Cascade</code> properties on <code>Resources</code> and <code>Entities</code> entries. Either one under <code>System</code> fails
+  the stack operation.</li>
 <li><strong>Version:</strong> a manifest that sets <code>cascade</code> needs a stack whose Lambdas are 0.16.0 or later,
   and raises the stack's minimum client version to 0.16.0.</li>
 </ul>
