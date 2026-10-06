@@ -1432,7 +1432,16 @@ class RateLimiter:
         if (
             short
             and len(short) == shard_count
-            and (parent_id is None or cache.views(namespace_id, parent_id, resource, now_ms))
+            and (
+                parent_id is None
+                # Known not disabled: a trusted enabled state, and no cached
+                # shard of any age stamped disabled — a disable that stopped
+                # part-way leaves shards the server would answer with 403.
+                or (
+                    cache.views(namespace_id, parent_id, resource, now_ms)
+                    and not cache.known_disabled(namespace_id, parent_id, resource)
+                )
+            )
         ):
             cache.record_local_rejection()
             raise RateLimitExceeded(self._soonest(short))

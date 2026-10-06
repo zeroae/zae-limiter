@@ -1179,6 +1179,14 @@ class TestCascadingChildKnownShort:
         async with RateLimiter(repository=repo) as limiter:
             assert limiter._known_short_shards("u", "r", {"rpm": 1}, repo._now_ms()) == ({0}, 1)
 
+    async def test_not_rejected_when_any_parent_shard_is_disabled(self, repo):
+        """Phase-2 review #3: a disable that stopped part-way still means 403."""
+        _store(repo, "u", 0, 0, cascades=True, parent_id="org")
+        _store(repo, "org", 0, 2, shard_count=2)  # trusted, enabled
+        _store(repo, "org", 1, 2, shard_count=2, disabled=True)
+        async with RateLimiter(repository=repo) as limiter:
+            assert limiter._known_short_shards("u", "r", {"rpm": 1}, repo._now_ms()) == ({0}, 1)
+
 
 class TestParentShardSteering:
     """Decision 4: the parallel write draws the parent's shard around short ones."""
