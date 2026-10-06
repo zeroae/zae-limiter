@@ -517,10 +517,33 @@ class TestShards:
                 entity_id, resource, consume, ttl_seconds, shard_id=shard_id, now_ms=now_ms
             )
 
+        # 20 acquires, each starting from "shard 0 known short, shard 1 unknown".
+        # Only the first shard each one writes to matters; with the steering
+        # broken, every first draw landing on shard 1 has odds of 1 in 2**20.
+        ns = repo._namespace_id
+        firsts: list[int] = []
         with patch.object(repo, "_speculative_consume_single", side_effect=spy):
-            async with limiter.acquire("u", "r", consume={"rpm": 1}):
-                pass  # shard 1 does not exist yet: the slow path creates it
-        assert targets[0] == 1
+            for _ in range(20):
+                repo._rejection_cache.store(
+                    ns,
+                    "u",
+                    "r",
+                    0,
+                    [_state(0)],
+                    shard_count=2,
+                    vu_ms=None,
+                    ttl_epoch=None,
+                    disabled=False,
+                )
+                repo._rejection_cache.forget(ns, "u", "r", 1)
+                before = len(targets)
+                try:
+                    async with limiter.acquire("u", "r", consume={"rpm": 1}):
+                        pass
+                except RateLimitExceeded:
+                    pass  # shard 1 drained too: fine, only the first draw is checked
+                firsts.append(targets[before])
+        assert firsts == [1] * 20
 
     async def test_rejects_locally_only_when_every_shard_is_short(self, repo):
         ns = repo._namespace_id
