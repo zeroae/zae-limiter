@@ -156,7 +156,7 @@ class TestCfnPropertiesToManifestDisabled:
         assert "disabled" not in manifest["entities"]["vip-1"]["resources"]["gpt-4"]
 
     def test_system_disabled_never_carried_through(self):
-        """System-level disable is out of scope (ADR-125) — no such CFN property exists to carry."""
+        """An absent `System.Disabled` is not invented (a present one is rejected, #693)."""
         manifest = _cfn_properties_to_manifest(
             {
                 "Namespace": "test-ns",
@@ -2069,3 +2069,70 @@ class TestCascadePendingState:
         from zae_limiter_provisioner.handler import _read_provisioner_state
 
         assert _read_provisioner_state(self.TABLE, "ns")["cascade_pending"] == []
+
+
+class TestSystemDisabledThroughTheHandler:
+    """#693: `disabled` on `system` fails both entry points before any write.
+
+    ADR-125 has no system-level disable, so the value used to be dropped and the
+    apply reported success while nothing was disabled.
+    """
+
+    TABLE = "prov-system-disabled"
+
+    @pytest.fixture
+    def client(self, mock_dynamodb):
+        import boto3
+
+        from zae_limiter.sync_repository import SyncRepository
+
+        setup = SyncRepository(name=self.TABLE, region="us-east-1", _skip_deprecation_warning=True)
+        setup.create_table()
+        setup.close()
+        return boto3.client("dynamodb", region_name="us-east-1")
+
+    def _keys(self, client):
+        return sorted(
+            (i["PK"]["S"], i["SK"]["S"]) for i in client.scan(TableName=self.TABLE)["Items"]
+        )
+
+    @patch("zae_limiter_provisioner.handler.urllib.request.urlopen")
+    def test_cfn_hears_failed_and_nothing_is_written(self, mock_urlopen, client):
+        before = self._keys(client)
+        event = {
+            "RequestType": "Create",
+            "ResourceProperties": {
+                "ServiceToken": "arn:aws:lambda:us-east-1:123:function:test",
+                "TableName": self.TABLE,
+                "Namespace": "test-ns",
+                "NamespaceId": "ns123",
+                "System": {"Disabled": "true", "Limits": {"rpm": {"Capacity": "10"}}},
+            },
+            "ResponseURL": "https://cfn-response.example.com",
+            "StackId": "arn:aws:cloudformation:us-east-1:123:stack/test/guid",
+            "RequestId": "test-request-id",
+            "LogicalResourceId": "TenantLimits",
+        }
+        with pytest.raises(ValueError):
+            on_event(event, MagicMock())
+
+        body = json.loads(mock_urlopen.call_args.args[0].data)
+        assert body["Status"] == "FAILED"
+        assert "'disabled' is not supported at the system level" in body["Reason"]
+        assert self._keys(client) == before
+
+    @pytest.mark.parametrize("action", ["plan", "apply", "diff"])
+    def test_cli_raises_and_nothing_is_written(self, client, action):
+        before = self._keys(client)
+        event = {
+            "action": action,
+            "table_name": self.TABLE,
+            "namespace_id": "ns123",
+            "manifest": {
+                "namespace": "test-ns",
+                "system": {"disabled": False, "limits": {"rpm": {"capacity": 10}}},
+            },
+        }
+        with pytest.raises(ValueError, match="'disabled' is not supported at the system level"):
+            on_event(event, MagicMock())
+        assert self._keys(client) == before

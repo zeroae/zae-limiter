@@ -74,6 +74,25 @@ class TestManifestDisabled:
         )
         assert m.resources["gpt-4"].disabled is True
 
+    @pytest.mark.parametrize("value", [True, False])
+    def test_rejected_at_the_system_level(self, value):
+        """#693: a system-level `disabled` fails instead of being silently dropped."""
+        with pytest.raises(ValueError, match="'disabled' is not supported at the system level"):
+            LimitsManifest.from_dict(
+                {
+                    "namespace": "default",
+                    "system": {"disabled": value, "limits": {"rpm": {"capacity": 1}}},
+                }
+            )
+
+    def test_cloudformation_system_disabled_is_carried_through_to_be_rejected(self):
+        from zae_limiter_provisioner.handler import _cfn_properties_to_manifest
+
+        manifest = _cfn_properties_to_manifest({"System": {"Disabled": "false"}})
+        assert manifest["system"]["disabled"] is False
+        with pytest.raises(ValueError, match="'disabled' is not supported at the system level"):
+            LimitsManifest.from_dict(manifest)
+
     def test_resource_disabled_defaults_to_none(self):
         m = LimitsManifest.from_dict(
             {

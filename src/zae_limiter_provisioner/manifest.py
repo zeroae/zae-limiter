@@ -272,6 +272,13 @@ class SystemDecl:
                 "system: 'cascade' is not supported at the system level; set it on "
                 "resources.<name> or entities.<id>.resources.<name>"
             )
+        if "disabled" in d:
+            # Not silently dropped either (#693): ADR-125 scopes disabling out at
+            # the system level, so a value here would look applied and do nothing.
+            raise ValueError(
+                "system: 'disabled' is not supported at the system level; set it on "
+                "resources.<name> or entities.<id>.resources.<name>"
+            )
         limits = {name: LimitDecl.from_dict(val) for name, val in d.get("limits", {}).items()}
         return cls(limits=limits, on_unavailable=d.get("on_unavailable"))
 
