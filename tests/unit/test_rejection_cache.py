@@ -1356,7 +1356,14 @@ async def _consumed(repo: Repository, entity_id: str) -> int:
 
 
 async def _spent_and_cached(limiter: RateLimiter) -> None:
-    """Spend u/r's 2 rpm so that a fast-path success image (tk = 0) is cached."""
+    """Spend u/r's 2 rpm so that a fast-path success image (tk = 0) is cached.
+
+    Pins the cache's own clock unless a test already did: on a slow machine
+    the real monotonic clock can pass the 1 s age cap mid-test (phase-3 review).
+    """
+    cache = limiter._repository._rejection_cache
+    if not isinstance(cache._clock, _Clock):
+        cache._clock = _Clock()
     async with limiter.acquire("u", "r", consume={"rpm": 1}):  # slow path creates
         pass
     async with limiter.acquire("u", "r", consume={"rpm": 1}):  # fast path: cached, tk = 0
@@ -1716,6 +1723,7 @@ class TestRefillFromCache:
         repo.create_table()
         repo._register_namespace("default")
         repo.set_limits("u", [RPM], resource="r")
+        repo._rejection_cache._clock = _Clock()
         limiter = SyncRateLimiter(repository=repo)
         for _ in range(2):
             with limiter.acquire("u", "r", consume={"rpm": 1}):
