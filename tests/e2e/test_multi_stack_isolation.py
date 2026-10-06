@@ -67,6 +67,7 @@ from tests.fixtures.stack_pairs import (
     function_config,
     localstack_backend,
     set_stamp,
+    settled,
     snapshot,
     version_item,
     wait_until_visible,
@@ -281,6 +282,11 @@ class TestClientMinVersionRatchetIsolation:
             )
             try:
                 for repo in (connected, opened):
+                    # B's limit was written by the ``ratcheted`` fixture; a fresh
+                    # repository's first config read can still miss it on AWS.
+                    await settled(
+                        repo, lambda: repo.get_resource_defaults(RESOURCE), _capacities(100)
+                    )
                     limiter = RateLimiter(repository=repo)
                     async with limiter.acquire(ENTITY, RESOURCE, consume={"rpm": 1}) as lease:
                         assert lease.consumed == {"rpm": 1}
@@ -303,6 +309,11 @@ ONE_HOUR = 3600
 def _limits(capacity: int) -> list[Limit]:
     """Slow refill (one token per hour): a slow LocalStack call cannot refill a drained bucket."""
     return [Limit.custom("rpm", capacity, 1, ONE_HOUR)]
+
+
+def _capacities(capacity: int):
+    """A ``settled`` predicate: the stored limits are exactly one ``rpm`` of ``capacity``."""
+    return lambda limits: [limit.capacity for limit in limits] == [capacity]
 
 
 @pytest.fixture(scope="class")
@@ -339,6 +350,12 @@ class TestInProcessIsolation:
         # Same entity id and resource, different stored limits: A is tiny, B is not.
         await repo_a.set_resource_defaults(RESOURCE, _limits(A_CAPACITY))
         await repo_b.set_resource_defaults(RESOURCE, _limits(B_CAPACITY))
+        await settled(
+            repo_a, lambda: repo_a.get_resource_defaults(RESOURCE), _capacities(A_CAPACITY)
+        )
+        await settled(
+            repo_b, lambda: repo_b.get_resource_defaults(RESOURCE), _capacities(B_CAPACITY)
+        )
         limiter_a, limiter_b = RateLimiter(repository=repo_a), RateLimiter(repository=repo_b)
 
         # B has never been touched: full capacity, and no bucket for the entity.
@@ -387,6 +404,12 @@ class TestInProcessIsolation:
         repo_a, repo_b = repos
         await repo_a.set_resource_defaults(RESOURCE, _limits(A_CAPACITY))
         await repo_b.set_resource_defaults(RESOURCE, _limits(B_CAPACITY))
+        await settled(
+            repo_a, lambda: repo_a.get_resource_defaults(RESOURCE), _capacities(A_CAPACITY)
+        )
+        await settled(
+            repo_b, lambda: repo_b.get_resource_defaults(RESOURCE), _capacities(B_CAPACITY)
+        )
 
         # Warm both caches, then confirm each is serving from itself.
         for repo in (repo_a, repo_b):
@@ -459,6 +482,9 @@ class TestInProcessIsolation:
         # Data written under A's namespace: an entity, stored limits, a bucket.
         await scoped_a.create_entity(ENTITY, name="only on A")
         await scoped_a.set_limits(ENTITY, _limits(A_CAPACITY), resource=RESOURCE)
+        await settled(
+            scoped_a, lambda: scoped_a.get_limits(ENTITY, RESOURCE), _capacities(A_CAPACITY)
+        )
         limiter_a = RateLimiter(repository=scoped_a)
         async with limiter_a.acquire(ENTITY, RESOURCE, consume={"rpm": 1}):
             pass
@@ -474,6 +500,9 @@ class TestInProcessIsolation:
         assert await scoped_b.get_limits(ENTITY, RESOURCE) == []
         assert await scoped_b.get_buckets(ENTITY) == []
         await scoped_b.set_resource_defaults(RESOURCE, _limits(A_CAPACITY))
+        await settled(
+            scoped_b, lambda: scoped_b.get_resource_defaults(RESOURCE), _capacities(A_CAPACITY)
+        )
         limiter_b = RateLimiter(repository=scoped_b)
         availability = await limiter_b.check_availability(ENTITY, RESOURCE)
         assert availability.available == {"rpm": A_CAPACITY}

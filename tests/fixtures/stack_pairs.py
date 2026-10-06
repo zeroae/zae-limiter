@@ -13,8 +13,10 @@ endpoint URL, the PowerUser IAM flags from ``.claude/rules/aws-testing.md``).
 
 Real AWS reads are eventually consistent unless asked otherwise, and GSIs are
 always eventually consistent. :func:`set_stamp` therefore waits until a plain
-read sees what it wrote, and :func:`eventually` polls an assertion that a GSI
-or a default read backs. On LocalStack both succeed on the first try.
+read sees what it wrote, :func:`settled` does the same for a limit-config write
+before anything resolves limits from it, and :func:`eventually` polls an
+assertion that a GSI or a default read backs. On LocalStack all three succeed
+on the first try.
 """
 
 from __future__ import annotations
@@ -30,7 +32,7 @@ from unittest.mock import patch
 import boto3
 from click.testing import CliRunner
 
-from zae_limiter import schema
+from zae_limiter import Repository, schema
 from zae_limiter.cli import cli
 from zae_limiter.sync_repository import SyncRepository
 from zae_limiter.version import get_schema_version
@@ -264,3 +266,40 @@ async def eventually(
         if predicate(value) or time.monotonic() >= deadline:
             return value
         await asyncio.sleep(0.5)
+
+
+async def settled(
+    repo: Repository,
+    read: Callable[[], Awaitable[T]],
+    predicate: Callable[[T], bool],
+    *,
+    reads: int = 3,
+    timeout: float = 30.0,
+) -> T:
+    """Wait until a limit-config write is visible, then drop ``repo``'s config cache.
+
+    The limiter resolves limits with an eventually consistent ``BatchGetItem``
+    (ADR-105). Straight after ``set_resource_defaults`` / ``set_limits`` on
+    real AWS, that read can miss the item: the acquire then fails with
+    ``ValidationError("No limits configured…")``, and the miss is cached for the
+    repository's ``config_cache_ttl``. ``read`` is the matching plain getter
+    (``get_resource_defaults``, ``get_limits``, ``get_system_defaults``); once
+    ``reads`` consecutive calls satisfy ``predicate``, the write has reached the
+    replicas, and the cache is invalidated so no miss taken meanwhile survives.
+
+    Several reads in a row, because a single read only proves one replica caught
+    up. Returns the last value read.
+    """
+    deadline = time.monotonic() + timeout
+    seen = 0
+    while True:
+        value = await read()
+        if predicate(value):
+            seen += 1
+            if seen >= reads:
+                await repo.invalidate_config_cache()
+                return value
+            continue
+        seen = 0
+        assert time.monotonic() < deadline, f"config write never settled; last read {value!r}"
+        await asyncio.sleep(0.2)
