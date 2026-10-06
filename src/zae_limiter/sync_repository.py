@@ -3171,6 +3171,9 @@ class SyncRepository:
             vu_ms=int(vu_raw) if vu_raw is not None else None,
             ttl_epoch=int(ttl_raw) if ttl_raw is not None else None,
             disabled=item.get(schema.BUCKET_FIELD_DISABLED, {}).get("BOOL", False),
+            cascades=bool(
+                item.get("cascade", {}).get("BOOL", False) and item.get("parent_id", {}).get("S")
+            ),
         )
 
     def select_shard(

@@ -1335,7 +1335,8 @@ class RateLimiter:
         declared limits count, so a ``wcu``-only shortfall is never one.
 
         Raises ``RateLimitExceeded`` with no DynamoDB call when every shard is
-        known short, reporting the shard that fits soonest. The cache only ever
+        known short, reporting the shard that fits soonest — unless the bucket
+        cascades, whose parent's answer only the server knows. The cache only ever
         rejects: a shard not known short is written to as before.
 
         Returns:
@@ -1367,7 +1368,15 @@ class RateLimiter:
             fits, statuses = would_refill_satisfy(buckets, consume, now_ms)
             if not fits:
                 short[shard] = statuses
-        if short and len(short) == shard_count:
+        # A cascading child is never rejected here: the server writes child and
+        # parent together, and a disabled parent's ResourceDisabled (403)
+        # outranks the child's shortfall (429). Steering around short shards is
+        # still safe — every shard's write reaches the parent.
+        if (
+            short
+            and len(short) == shard_count
+            and not cache.cascades(namespace_id, entity_id, resource)
+        ):
             cache.record_local_rejection()
             soonest = min(
                 short.values(),

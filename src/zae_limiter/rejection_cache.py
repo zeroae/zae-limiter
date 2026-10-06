@@ -79,6 +79,7 @@ class _Entry:
     ttl_epoch: int | None
     disabled: bool
     stored_at: float
+    cascades: bool = False
 
 
 class RejectionCache:
@@ -123,8 +124,14 @@ class RejectionCache:
         vu_ms: int | None,
         ttl_epoch: int | None,
         disabled: bool,
+        cascades: bool = False,
     ) -> None:
-        """Remember the state a real DynamoDB response just showed."""
+        """Remember the state a real DynamoDB response just showed.
+
+        ``cascades`` is the item's own stamp (``cascade`` with a ``parent_id``):
+        such a bucket must not be rejected locally, because the parent the
+        server would also write can outrank the child's shortfall.
+        """
         if not self.enabled:
             return
         bucket_key = (namespace_id, entity_id, resource)
@@ -136,6 +143,7 @@ class RejectionCache:
             ttl_epoch=ttl_epoch,
             disabled=disabled,
             stored_at=self._clock(),
+            cascades=cascades,
         )
         # Re-insert so `_order` stays "least recently stored first".
         self._order.pop(key, None)
@@ -176,6 +184,11 @@ class RejectionCache:
                 continue
             found[shard_id] = list(entry.buckets)
         return found
+
+    def cascades(self, namespace_id: str, entity_id: str, resource: str) -> bool:
+        """Whether any cached shard of this bucket says it cascades to a parent."""
+        shards = self._buckets.get((namespace_id, entity_id, resource)) or {}
+        return any(entry.cascades for entry in list(shards.values()))
 
     def forget(self, namespace_id: str, entity_id: str, resource: str, shard_id: int) -> None:
         """Drop one shard's entry: tokens came back by a route we caused."""

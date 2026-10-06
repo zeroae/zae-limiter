@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pytest
 
 from zae_limiter import RateLimiter, RateLimitExceeded
+from zae_limiter.exceptions import ResourceDisabled
 from zae_limiter.models import BucketState, Limit
 from zae_limiter.rejection_cache import RejectionCache
 from zae_limiter.repository import Repository
@@ -868,3 +869,55 @@ class TestForgetAfterTheWriteLands:
             {"Update": {"Key": {"PK": {"S": f"{repo._namespace_id}/BUCKET#u#r#not-a-shard"}}}}
         )
         assert len(repo._rejection_cache) == 1
+
+
+class TestCascadingChild:
+    """Review #8: a cascading child is never rejected locally."""
+
+    def test_the_cache_remembers_a_cascading_bucket(self):
+        cache = RejectionCache(ttl_seconds=1.0, max_entries=10, clock=_Clock())
+        cache.store(
+            "ns",
+            "u",
+            "r",
+            0,
+            [_state(0)],
+            shard_count=1,
+            vu_ms=None,
+            ttl_epoch=None,
+            disabled=False,
+        )
+        assert not cache.cascades("ns", "u", "r")
+        cache.store(
+            "ns",
+            "u",
+            "r",
+            1,
+            [_state(0)],
+            shard_count=2,
+            vu_ms=None,
+            ttl_epoch=None,
+            disabled=False,
+            cascades=True,
+        )
+        assert cache.cascades("ns", "u", "r")
+        assert not cache.cascades("ns", "other", "r")
+
+    async def test_a_disabled_parent_answers_403_every_time(self, repo):
+        """With the child cached short, a local 429 would hide the parent's 403."""
+        await repo.create_entity("org")
+        await repo.create_entity("u", parent_id="org", cascade=True)
+        await repo.set_limits("u", [RPM], resource="r")
+        await repo.set_limits("org", [Limit.per_minute("rpm", 100)], resource="r")
+        async with RateLimiter(repository=repo) as limiter:
+            await _drain(limiter)  # creates child and parent, warms the entity cache
+            await repo.disable_entity("org", resource="r")
+            for _ in range(3):
+                with pytest.raises(ResourceDisabled) as excinfo:
+                    async with limiter.acquire("u", "r", consume={"rpm": 1}):
+                        pass
+                assert excinfo.value.entity_id == "org"
+            # The child's short state is cached, and it was still not used.
+            assert _cached(repo)
+            assert repo._rejection_cache.cascades(repo._namespace_id, "u", "r")
+        assert repo.get_cache_stats().local_rejections == 0
