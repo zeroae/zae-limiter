@@ -3824,18 +3824,22 @@ failure), and the client discards it after one decision.</p>
 shard) for at most <code>rejection_cache_ttl</code> seconds (default 1.0, <code>0</code> disables), and the
 limiter must raise <code>RateLimitExceeded</code> without a DynamoDB call when that state, projected
 to now with the fast path's own refill arithmetic, cannot cover a limit declared in
-<code>consume</code> on every shard not known to have room; the cache must never admit a request.</p>
+<code>consume</code> on every shard not known to have room; the cache must never admit a request.
+For a child whose own bucket shows it cascades on the resource, the same rule must apply
+to the parent's shards, and the child itself may be rejected locally only while a
+trusted parent state shows the parent is not disabled.</p>
 <p>The projection, its exceptions (a passed <code>vu</code>, a <code>wcu</code>-only shortfall, a differing
 <code>limits=</code> override, a degraded limiter, a <code>disabled</code> stamp), shard selection around
-known-short shards, invalidation, memory bound and sync behaviour are specified in the
-design document.</p>
+known-short shards, the cascade rules, invalidation, memory bound and sync behaviour
+are specified in the design document.</p>
 <h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>
 <p><strong>Positive:</strong>
 - Repeat rejections inside the TTL cost 0 WCU and no round trip, and stop consuming
   partition throughput.
 - Known-short shards are no longer probed, removing up to two failed writes per acquire.
-- The cached state is the input the cascade pre-check and the refill-from-cached-state
-  write (#695 follow-ups) and the multi-resource fast path (#675) build on.</p>
+- A repeat cascade rejection, parent known short, costs 0 WCU instead of 3.
+- The cached state is the input the refill-from-cached-state write (#695) and the
+  multi-resource fast path (#675) build on.</p>
 <p><strong>Negative:</strong>
 - Admission can lag by up to <code>rejection_cache_ttl</code> per process when tokens return by a
   route the projection cannot see: another process's refund, an admin raising a limit or

@@ -11608,7 +11608,7 @@ success is acceptable.</p>
   </span>
 
 <a href="#zae_limiter.repository.Repository.speculative_consume" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">speculative_consume</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consume</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">now_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">avoid_shards</span><span class="o">=</span><span class="n"><span title="frozenset">frozenset</span></span><span class="p">())</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">speculative_consume</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consume</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">now_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">avoid_shards</span><span class="o">=</span><span class="n"><span title="frozenset">frozenset</span></span><span class="p">(),</span> <span class="n">avoid_parent_shards</span><span class="o">=</span><span class="n"><span title="frozenset">frozenset</span></span><span class="p">())</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -11744,6 +11744,23 @@ reads the clock once here, for callers outside an acquire.</p>
               <div class="doc-md-description">
                 <p>Child shards the rejection cache knows are short
 (ADR-147); the child shard is drawn among the others.</p>
+              </div>
+            </td>
+            <td>
+                  <code><span title="frozenset">frozenset</span>()</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>avoid_parent_shards</code>
+            </td>
+            <td>
+                  <code><span title="frozenset">frozenset</span>[<span title="int">int</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The same for the parent's shards on the
+parallel cascade write (ADR-147 phase 2, decision 4).</p>
               </div>
             </td>
             <td>
@@ -18853,7 +18870,7 @@ where partial success is acceptable.</p>
   </span>
 
 <a href="#zae_limiter.repository_protocol.RepositoryProtocol.speculative_consume" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">speculative_consume</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consume</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">now_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">avoid_shards</span><span class="o">=</span><span class="n"><span title="frozenset">frozenset</span></span><span class="p">())</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">speculative_consume</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">consume</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">shard_id</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">now_ms</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">avoid_shards</span><span class="o">=</span><span class="n"><span title="frozenset">frozenset</span></span><span class="p">(),</span> <span class="n">avoid_parent_shards</span><span class="o">=</span><span class="n"><span title="frozenset">frozenset</span></span><span class="p">())</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -18988,6 +19005,23 @@ cascade logic). None means auto-select from entity cache.</p>
 (ADR-147); the shard is drawn among the others. Passed only
 when non-empty, and only by a limiter whose repository keeps a
 rejection cache, so a backend without one never receives it.</p>
+              </div>
+            </td>
+            <td>
+                  <code><span title="frozenset">frozenset</span>()</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>avoid_parent_shards</code>
+            </td>
+            <td>
+                  <code><span title="frozenset">frozenset</span>[<span title="int">int</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The same for the parent's shards on a
+parallel cascade write (ADR-147 phase 2), on the same terms.</p>
               </div>
             </td>
             <td>
