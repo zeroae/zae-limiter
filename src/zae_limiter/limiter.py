@@ -867,7 +867,9 @@ class RateLimiter:
         # Repository handles cache check and parallel writes (issue #318).
         # The steering arguments go only to a repository whose cache produced
         # them, so a backend without a rejection cache never receives them.
-        if avoid or avoid_parent:
+        # Each set is passed only when non-empty, so a repository that predates
+        # one of them (a subclass, a test double) keeps working.
+        if avoid_parent:
             result = await self._repository.speculative_consume(
                 entity_id=entity_id,
                 resource=resource,
@@ -875,6 +877,14 @@ class RateLimiter:
                 now_ms=now_ms,
                 avoid_shards=avoid,
                 avoid_parent_shards=avoid_parent,
+            )
+        elif avoid:
+            result = await self._repository.speculative_consume(
+                entity_id=entity_id,
+                resource=resource,
+                consume=consume,
+                now_ms=now_ms,
+                avoid_shards=avoid,
             )
         else:
             result = await self._repository.speculative_consume(

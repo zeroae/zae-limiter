@@ -546,6 +546,31 @@ class TestShards:
                 firsts.append(targets[before])
         assert firsts == [1] * 20
 
+    async def test_a_phase_1_repository_still_works(self, limiter, repo):
+        """Phase-2 review #5: `avoid_parent_shards` is passed only when non-empty."""
+        await _drain(limiter)
+        repo._learn_shard_count("u", "r", 2, meta=(False, None))
+        _store(repo, "u", 0, 0, shard_count=2)
+        real = repo.speculative_consume
+
+        async def phase_1(
+            entity_id,
+            resource,
+            consume,
+            ttl_seconds=None,
+            shard_id=None,
+            now_ms=None,
+            avoid_shards=frozenset(),
+        ):
+            return await real(
+                entity_id, resource, consume, ttl_seconds, shard_id, now_ms, avoid_shards
+            )
+
+        with patch.object(repo, "speculative_consume", side_effect=phase_1) as spy:
+            async with limiter.acquire("u", "r", consume={"rpm": 1}):
+                pass  # shard 1: created by the slow path
+        assert spy.call_args.kwargs["avoid_shards"] == frozenset({0})
+
     async def test_rejects_locally_only_when_every_shard_is_short(self, repo):
         ns = repo._namespace_id
         now = repo._now_ms()

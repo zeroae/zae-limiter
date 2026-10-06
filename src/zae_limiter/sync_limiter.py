@@ -725,7 +725,7 @@ class SyncRateLimiter:
             avoid_parent = frozenset(
                 self._known_short_parent_shards(entity_id, resource, consume, now_ms)
             )
-        if avoid or avoid_parent:
+        if avoid_parent:
             result = self._repository.speculative_consume(
                 entity_id=entity_id,
                 resource=resource,
@@ -733,6 +733,14 @@ class SyncRateLimiter:
                 now_ms=now_ms,
                 avoid_shards=avoid,
                 avoid_parent_shards=avoid_parent,
+            )
+        elif avoid:
+            result = self._repository.speculative_consume(
+                entity_id=entity_id,
+                resource=resource,
+                consume=consume,
+                now_ms=now_ms,
+                avoid_shards=avoid,
             )
         else:
             result = self._repository.speculative_consume(
