@@ -506,6 +506,16 @@ class TestLimitsCfnTemplateCascade:
         assert manifest["resources"]["llm"]["cascade"] is value
         assert manifest["entities"]["u"]["resources"]["llm"]["cascade"] is value
 
+    def test_a_system_disabled_is_carried_through_to_be_rejected(self):
+        from zae_limiter_provisioner.handler import _cfn_properties_to_manifest
+        from zae_limiter_provisioner.manifest import LimitsManifest
+
+        props = self._run_cfn_template({"namespace": "x", "system": {"disabled": True}})
+        assert props["System"]["Disabled"] is True
+        manifest = _cfn_properties_to_manifest(props)
+        with pytest.raises(ValueError, match="'disabled' is not supported at the system level"):
+            LimitsManifest.from_dict(manifest)
+
     def test_a_system_cascade_is_carried_through_to_be_rejected(self):
         from zae_limiter_provisioner.handler import _cfn_properties_to_manifest
         from zae_limiter_provisioner.manifest import LimitsManifest

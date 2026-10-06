@@ -185,6 +185,9 @@ def limits_cfn_template(name: str, file_path: str) -> None:
             # Passed through so the provisioner rejects it with its reason
             # (ADR-146: no system-level policy), not dropped here unseen.
             system_props["Cascade"] = sys_data["cascade"]
+        if "disabled" in sys_data:
+            # Likewise (#693): ADR-125 has no system-level disable.
+            system_props["Disabled"] = sys_data["disabled"]
         properties["System"] = system_props
 
     if "resources" in manifest_data:

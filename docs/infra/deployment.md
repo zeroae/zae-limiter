@@ -628,7 +628,7 @@ resources:
 ```
 
 The manifest owns both flags for the items it declares: leaving one out clears it on the next
-apply. Neither is supported on `system` (`cascade` there is an error). An apply restamps
+apply. Neither is supported on `system`: either one there is an error. An apply restamps
 existing buckets only for levels whose stored `cascade` changed, and `limits plan` warns when a
 resource cascades but no entity in the manifest has its own limits for it. See
 [Cascade and Disabled](../cli.md#cascade-and-disabled).
@@ -783,8 +783,8 @@ Resources:
 ```
 
 `disabled` and `cascade` appear as `Disabled` and `Cascade` properties on `Resources` and
-`Entities` entries; omitting one clears it, as in the manifest. A `Cascade` under `System` fails
-the stack operation.
+`Entities` entries; omitting one clears it, as in the manifest. A `Cascade` or `Disabled` under
+`System` fails the stack operation.
 
 This approach lets you manage limits alongside other infrastructure in CloudFormation, with full lifecycle support (Create, Update, Delete).
 

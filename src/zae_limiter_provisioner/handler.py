@@ -604,6 +604,9 @@ def _cfn_properties_to_manifest(properties: dict[str, Any]) -> dict[str, Any]:
             # Carried through so the manifest rejects it with its reason
             # (ADR-146: no system-level policy) rather than dropping it here.
             system["cascade"] = _coerce_bool(cfn_system["Cascade"], "System.Cascade")
+        if "Disabled" in cfn_system:
+            # Same for `Disabled` (#693): ADR-125 has no system-level disable.
+            system["disabled"] = _coerce_bool(cfn_system["Disabled"], "System.Disabled")
         manifest["system"] = system
 
     if "Resources" in properties:

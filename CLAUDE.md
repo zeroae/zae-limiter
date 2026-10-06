@@ -328,8 +328,10 @@ the Python API's `Limit.reset_after: timedelta`.
 
 **`disabled` (ADR-125):** Optional tri-state boolean on `resources.<name>` and
 `entities.<id>.resources.<name>` entries (omit to inherit; `true`/`false` to set explicitly).
-Not supported on `system`. Round-trips through the generated CloudFormation
-`Custom::ZaeLimiterLimits` resource as a `Disabled` property.
+On `system` it is an **error** (`SystemDecl.from_dict`, #693), not silently dropped, exactly
+like `cascade`. Round-trips through the generated CloudFormation `Custom::ZaeLimiterLimits`
+resource as a `Disabled` property; `System.Disabled` is passed through and rejected by the
+manifest parser.
 
 **`cascade` (ADR-146):** Optional tri-state boolean on the same two entries as `disabled`
 (`manifest._parse_cascade` rejects anything but `true`/`false`). On `system` it is an **error**
@@ -1747,9 +1749,9 @@ zae-limiter entity disable|enable|clear-disabled ENTITY_ID [--resource R]
 `Status: enabled (explicit override)` when the level has an explicit value.
 
 **Declarative limits (Issue #405):** `disabled` is supported on `resources.<name>` and
-`entities.<id>.resources.<name>` in the YAML manifest (not on `system`), and carried through
-the CloudFormation `Custom::ZaeLimiterLimits` round trip in both directions via a `Disabled`
-property. The Lambda-side provisioner fan-out (`src/zae_limiter_provisioner/fanout.py`) mirrors
+`entities.<id>.resources.<name>` in the YAML manifest (on `system` it fails the parse, #693),
+and carried through the CloudFormation `Custom::ZaeLimiterLimits` round trip in both directions
+via a `Disabled` property. The Lambda-side provisioner fan-out (`src/zae_limiter_provisioner/fanout.py`) mirrors
 the async `Repository` fan-out and consults per-entity overrides the same way, so a manifest
 apply that merely re-asserts an unchanged resource-level `disabled` (as every apply does —
 `differ.py` emits a change for every manifest resource regardless of whether anything changed)
