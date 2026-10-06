@@ -86,8 +86,11 @@ The six decisions below were agreed with the owner on 2026-10-06.
    speaks for one shard only. Shard selection draws uniformly among shards **not**
    known short (ADR-134's randomness, minus known-dry shards); only when every shard is
    known short does the acquire reject locally, reporting the shard that fits soonest.
-   A shard with no entry is unknown and is written to, so a stale `shard_count` never
-   hides a new shard. `wcu` doubling is decided only on real responses.
+   A shard with no entry is unknown and is written to, so a stale count in the **entity
+   cache** never hides a new shard. A doubling made by **another process** after every
+   cached state was taken can: this process may reject locally for up to
+   `rejection_cache_ttl` before its next real write learns the new count. `wcu`
+   doubling is decided only on real responses.
 
 5. **Invalidation.**
 

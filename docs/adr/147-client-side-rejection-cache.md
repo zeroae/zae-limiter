@@ -46,7 +46,8 @@ design document.
 **Negative:**
 - Admission can lag by up to `rejection_cache_ttl` per process when tokens return by a
   route the projection cannot see: another process's refund, an admin raising a limit or
-  resetting a quota, an entity re-enabled.
+  resetting a quota, an entity re-enabled, or another process doubling the shard count
+  after every cached state was taken.
 - The cache is per process; N processes each pay one real write per TTL.
 - A local rejection reports a projected state, not a fresh image.
 
