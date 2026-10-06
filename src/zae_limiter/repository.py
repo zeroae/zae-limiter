@@ -49,6 +49,7 @@ from .rejection_cache import (
     DEFAULT_REJECTION_CACHE_SIZE,
     DEFAULT_REJECTION_CACHE_TTL,
     RejectionCache,
+    clears_rejection_cache,
 )
 from .repository_protocol import (
     PRESERVE_CASCADE as _PRESERVE_CASCADE,
@@ -1879,6 +1880,7 @@ class Repository:
         self._entity_cache[cache_key] = (entity.cascade, entity.parent_id, existing_shards)
         return entity
 
+    @clears_rejection_cache
     async def delete_entity(
         self,
         entity_id: str,
@@ -1891,9 +1893,6 @@ class Repository:
             entity_id: ID of the entity to delete
             principal: Caller identity for audit logging
         """
-        # An admin change can move any limit; drop every cached bucket
-        # state rather than reason about which ones (ADR-147).
-        self._rejection_cache.clear()
         client = await self._get_client()
 
         # Query entity items (metadata, config, usage, audit)
@@ -4156,6 +4155,7 @@ class Repository:
     # Limit config operations
     # -------------------------------------------------------------------------
 
+    @clears_rejection_cache
     async def set_limits(
         self,
         entity_id: str,
@@ -4193,9 +4193,6 @@ class Repository:
                 ``cascade`` and they predate the cascade policy. Nothing is
                 written.
         """
-        # An admin change can move any limit; drop every cached bucket
-        # state rather than reason about which ones (ADR-147).
-        self._rejection_cache.clear()
         client = await self._get_client()
         await self._require_reset_after_readers(limits)
         cascade_explicit = cascade is not _PRESERVE_CASCADE
@@ -4863,6 +4860,7 @@ class Repository:
             return None, None
         return schema.decode_disabled(item), schema.decode_cascade(item)
 
+    @clears_rejection_cache
     async def delete_limits(
         self,
         entity_id: str,
@@ -4879,9 +4877,6 @@ class Repository:
             resource: Resource name (defaults to "_default_")
             principal: Caller identity for audit logging
         """
-        # An admin change can move any limit; drop every cached bucket
-        # state rather than reason about which ones (ADR-147).
-        self._rejection_cache.clear()
         client = await self._get_client()
 
         # Does this config actually decide `disabled`? If not, deleting it
@@ -5084,6 +5079,7 @@ class Repository:
     # Resource-level limit config operations (composite format, ADR-114)
     # -------------------------------------------------------------------------
 
+    @clears_rejection_cache
     async def set_resource_defaults(
         self,
         resource: str,
@@ -5118,9 +5114,6 @@ class Repository:
                 ``cascade`` and they predate the cascade policy. Nothing is
                 written.
         """
-        # An admin change can move any limit; drop every cached bucket
-        # state rather than reason about which ones (ADR-147).
-        self._rejection_cache.clear()
         validate_resource(resource)
         client = await self._get_client()
         await self._require_reset_after_readers(limits)
@@ -5254,6 +5247,7 @@ class Repository:
             schema.pk_resource(self._namespace_id, resource), schema.sk_config()
         )
 
+    @clears_rejection_cache
     async def delete_resource_defaults(
         self,
         resource: str,
@@ -5268,9 +5262,6 @@ class Repository:
             resource: Resource name
             principal: Caller identity for audit logging
         """
-        # An admin change can move any limit; drop every cached bucket
-        # state rather than reason about which ones (ADR-147).
-        self._rejection_cache.clear()
         validate_resource(resource)
         client = await self._get_client()
 
@@ -5351,6 +5342,7 @@ class Repository:
     # System-level default config operations (composite format, ADR-114)
     # -------------------------------------------------------------------------
 
+    @clears_rejection_cache
     async def set_system_defaults(
         self,
         limits: list[Limit],
@@ -5372,9 +5364,6 @@ class Repository:
             VersionMismatchError: ``limits`` carries a ``reset_after`` limit
                 and the stack's Lambdas predate it (#638). Nothing is written.
         """
-        # An admin change can move any limit; drop every cached bucket
-        # state rather than reason about which ones (ADR-147).
-        self._rejection_cache.clear()
         client = await self._get_client()
         await self._require_reset_after_readers(limits)
 
@@ -5449,6 +5438,7 @@ class Repository:
 
         return limits, on_unavailable
 
+    @clears_rejection_cache
     async def delete_system_defaults(
         self,
         principal: str | None = None,
@@ -5461,9 +5451,6 @@ class Repository:
         Args:
             principal: Caller identity for audit logging
         """
-        # An admin change can move any limit; drop every cached bucket
-        # state rather than reason about which ones (ADR-147).
-        self._rejection_cache.clear()
         client = await self._get_client()
 
         # Get existing limits for audit logging before deleting
@@ -7973,6 +7960,7 @@ class Repository:
         )
         return count
 
+    @clears_rejection_cache
     async def _write_resource_config_flag(
         self, resource: str, field: str, value: bool | None
     ) -> None:
@@ -7987,9 +7975,6 @@ class Repository:
         `attribute_exists(PK)` guard and treats a missing item as a no-op rather
         than fabricating a stub with a bare REMOVE.
         """
-        # An admin change can move any limit; drop every cached bucket
-        # state rather than reason about which ones (ADR-147).
-        self._rejection_cache.clear()
         client = await self._get_client()
         alias = f"#{field}"
         key = {
@@ -8188,13 +8173,11 @@ class Repository:
         )
         return count
 
+    @clears_rejection_cache
     async def _write_entity_config_flag(
         self, entity_id: str, target_resource: str, field: str, value: bool | None
     ) -> None:
         """Set or clear one tri-state flag on an entity config item (ADR-125, ADR-146)."""
-        # An admin change can move any limit; drop every cached bucket
-        # state rather than reason about which ones (ADR-147).
-        self._rejection_cache.clear()
         client = await self._get_client()
         alias = f"#{field}"
         key = {
@@ -8364,11 +8347,9 @@ class Repository:
         )
         return count
 
+    @clears_rejection_cache
     async def invalidate_config_cache(self) -> None:
         """Invalidate all cached config entries (ADR-122)."""
-        # An admin change can move any limit; drop every cached bucket
-        # state rather than reason about which ones (ADR-147).
-        self._rejection_cache.clear()
         await self._config_cache.invalidate_async()
         self._on_unavailable_cache = None
 

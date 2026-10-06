@@ -55,6 +55,7 @@ from .rejection_cache import (
     DEFAULT_REJECTION_CACHE_SIZE,
     DEFAULT_REJECTION_CACHE_TTL,
     RejectionCache,
+    clears_rejection_cache,
 )
 from .sync_config_cache import ConfigSource, SyncConfigCache
 from .sync_repository_protocol import PRESERVE_CASCADE as _PRESERVE_CASCADE
@@ -1592,6 +1593,7 @@ class SyncRepository:
         self._entity_cache[cache_key] = (entity.cascade, entity.parent_id, existing_shards)
         return entity
 
+    @clears_rejection_cache
     def delete_entity(self, entity_id: str, principal: str | None = None) -> None:
         """
         Delete an entity and all its related records.
@@ -1600,7 +1602,6 @@ class SyncRepository:
             entity_id: ID of the entity to delete
             principal: Caller identity for audit logging
         """
-        self._rejection_cache.clear()
         client = self._get_client()
         response = client.query(
             TableName=self.table_name,
@@ -3475,6 +3476,7 @@ class SyncRepository:
         results = self._run_in_executor(*[lambda t=t: stamp(*t) for t in targets])
         return sum(results)
 
+    @clears_rejection_cache
     def set_limits(
         self,
         entity_id: str,
@@ -3512,7 +3514,6 @@ class SyncRepository:
                 ``cascade`` and they predate the cascade policy. Nothing is
                 written.
         """
-        self._rejection_cache.clear()
         client = self._get_client()
         self._require_reset_after_readers(limits)
         cascade_explicit = cascade is not _PRESERVE_CASCADE
@@ -4027,6 +4028,7 @@ class SyncRepository:
             return (None, None)
         return (schema.decode_disabled(item), schema.decode_cascade(item))
 
+    @clears_rejection_cache
     def delete_limits(
         self, entity_id: str, resource: str = schema.DEFAULT_RESOURCE, principal: str | None = None
     ) -> None:
@@ -4040,7 +4042,6 @@ class SyncRepository:
             resource: Resource name (defaults to "_default_")
             principal: Caller identity for audit logging
         """
-        self._rejection_cache.clear()
         client = self._get_client()
         existing = client.get_item(
             TableName=self.table_name,
@@ -4185,6 +4186,7 @@ class SyncRepository:
                 resources.append(attr_name)
         return sorted(resources)
 
+    @clears_rejection_cache
     def set_resource_defaults(
         self,
         resource: str,
@@ -4219,7 +4221,6 @@ class SyncRepository:
                 ``cascade`` and they predate the cascade policy. Nothing is
                 written.
         """
-        self._rejection_cache.clear()
         validate_resource(resource)
         client = self._get_client()
         self._require_reset_after_readers(limits)
@@ -4321,6 +4322,7 @@ class SyncRepository:
             schema.pk_resource(self._namespace_id, resource), schema.sk_config()
         )
 
+    @clears_rejection_cache
     def delete_resource_defaults(self, resource: str, principal: str | None = None) -> None:
         """
         Delete stored default limit configs for a resource (composite format, ADR-114).
@@ -4331,7 +4333,6 @@ class SyncRepository:
             resource: Resource name
             principal: Caller identity for audit logging
         """
-        self._rejection_cache.clear()
         validate_resource(resource)
         client = self._get_client()
         deleted = client.delete_item(
@@ -4379,6 +4380,7 @@ class SyncRepository:
         resources_set = item.get("resources", {}).get("SS", [])
         return sorted(resources_set)
 
+    @clears_rejection_cache
     def set_system_defaults(
         self,
         limits: list[Limit],
@@ -4400,7 +4402,6 @@ class SyncRepository:
             VersionMismatchError: ``limits`` carries a ``reset_after`` limit
                 and the stack's Lambdas predate it (#638). Nothing is written.
         """
-        self._rejection_cache.clear()
         client = self._get_client()
         self._require_reset_after_readers(limits)
         item: dict[str, Any] = {
@@ -4455,6 +4456,7 @@ class SyncRepository:
         )
         return (limits, on_unavailable)
 
+    @clears_rejection_cache
     def delete_system_defaults(self, principal: str | None = None) -> None:
         """
         Delete all system-wide default limits and config (composite format, ADR-114).
@@ -4464,7 +4466,6 @@ class SyncRepository:
         Args:
             principal: Caller identity for audit logging
         """
-        self._rejection_cache.clear()
         client = self._get_client()
         limits, on_unavailable = self.get_system_defaults()
         client.delete_item(
@@ -6597,6 +6598,7 @@ class SyncRepository:
         )
         return count
 
+    @clears_rejection_cache
     def _write_resource_config_flag(self, resource: str, field: str, value: bool | None) -> None:
         """Set or clear one tri-state flag on a resource config item (ADR-125, ADR-146).
 
@@ -6609,7 +6611,6 @@ class SyncRepository:
         `attribute_exists(PK)` guard and treats a missing item as a no-op rather
         than fabricating a stub with a bare REMOVE.
         """
-        self._rejection_cache.clear()
         client = self._get_client()
         alias = f"#{field}"
         key = {
@@ -6765,11 +6766,11 @@ class SyncRepository:
         )
         return count
 
+    @clears_rejection_cache
     def _write_entity_config_flag(
         self, entity_id: str, target_resource: str, field: str, value: bool | None
     ) -> None:
         """Set or clear one tri-state flag on an entity config item (ADR-125, ADR-146)."""
-        self._rejection_cache.clear()
         client = self._get_client()
         alias = f"#{field}"
         key = {
@@ -6900,9 +6901,9 @@ class SyncRepository:
         )
         return count
 
+    @clears_rejection_cache
     def invalidate_config_cache(self) -> None:
         """Invalidate all cached config entries (ADR-122)."""
-        self._rejection_cache.clear()
         self._config_cache.invalidate_async()
         self._on_unavailable_cache = None
 

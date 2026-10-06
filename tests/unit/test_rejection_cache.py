@@ -765,3 +765,68 @@ class TestAdminWritesClear:
         )
         await _ADMIN_CALLS[call](repo)
         assert len(repo._rejection_cache) == 0
+
+
+class _Admin:
+    """A stand-in owner whose admin call stores a state mid-flight."""
+
+    def __init__(self) -> None:
+        self._rejection_cache = RejectionCache(ttl_seconds=1.0, max_entries=10, clock=_Clock())
+
+    def _store_mid_flight(self) -> None:
+        self._rejection_cache.store(
+            "ns",
+            "u",
+            "r",
+            0,
+            [_state(0)],
+            shard_count=1,
+            vu_ms=None,
+            ttl_epoch=None,
+            disabled=False,
+        )
+
+
+class TestClearsRejectionCache:
+    """Review #5: an acquire racing an admin write must not leave a stale state."""
+
+    async def test_async_clears_a_state_stored_during_the_call(self):
+        from zae_limiter.rejection_cache import clears_rejection_cache
+
+        class Owner(_Admin):
+            @clears_rejection_cache
+            async def change(self) -> str:
+                self._store_mid_flight()
+                return "done"
+
+        owner = Owner()
+        owner._store_mid_flight()
+        assert await owner.change() == "done"
+        assert len(owner._rejection_cache) == 0
+
+    def test_sync_clears_a_state_stored_during_the_call(self):
+        from zae_limiter.rejection_cache import clears_rejection_cache
+
+        class Owner(_Admin):
+            @clears_rejection_cache
+            def change(self) -> str:
+                self._store_mid_flight()
+                return "done"
+
+        owner = Owner()
+        assert owner.change() == "done"
+        assert len(owner._rejection_cache) == 0
+
+    async def test_clears_even_when_the_call_raises(self):
+        from zae_limiter.rejection_cache import clears_rejection_cache
+
+        class Owner(_Admin):
+            @clears_rejection_cache
+            async def change(self) -> None:
+                self._store_mid_flight()
+                raise RuntimeError("write failed")
+
+        owner = Owner()
+        with pytest.raises(RuntimeError):
+            await owner.change()
+        assert len(owner._rejection_cache) == 0

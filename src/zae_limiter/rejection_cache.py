@@ -17,11 +17,49 @@ a key that a concurrent caller (the sync thread pool) removed, so a race can
 only lose an entry — one more DynamoDB call, never a wrong admit.
 """
 
+import functools
+import inspect
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any, TypeVar, cast
 
 from .models import BucketState
+
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+
+def clears_rejection_cache(method: _F) -> _F:
+    """Clear the owner's rejection cache before **and after** an admin write.
+
+    Before, so the write itself is never judged by a stale state; after (in a
+    ``finally``), so a state an acquire stored while the write was in flight —
+    one taken under the old parameters — does not outlive the call by up to
+    the TTL. Works on both ``async def`` (``Repository``) and plain ``def``
+    (the generated ``SyncRepository``) methods.
+    """
+    if inspect.iscoroutinefunction(method):
+
+        @functools.wraps(method)
+        async def async_wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
+            self._rejection_cache.clear()
+            try:
+                return await method(self, *args, **kwargs)
+            finally:
+                self._rejection_cache.clear()
+
+        return cast(_F, async_wrapper)
+
+    @functools.wraps(method)
+    def sync_wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
+        self._rejection_cache.clear()
+        try:
+            return method(self, *args, **kwargs)
+        finally:
+            self._rejection_cache.clear()
+
+    return cast(_F, sync_wrapper)
+
 
 #: Default trust window for an entry, in seconds (ADR-147 decision 3).
 DEFAULT_REJECTION_CACHE_TTL = 1.0
