@@ -1576,6 +1576,7 @@ class RateLimiter:
             refill_amounts,
             views[shard][0].last_refill_ms,
             now_ms,
+            cached_tokens={state.limit_name: state.tokens_milli for state in views[shard]},
         )
         if result is None:
             return None

@@ -145,9 +145,11 @@ class TestCompositeBuilders:
             refill_amounts={DOTTED: 500, HYPHENATED: 500},
             expected_rf=1_000,
             now_ms=2_000,
+            cached_tokens={DOTTED: 0, HYPHENATED: 0},
         )["Update"]
         assert_expression_safe(update)
         condition = update["ConditionExpression"]
+        assert "#ct0 <= :ct0" in condition and "#ct1 <= :ct1" in condition
         assert "attribute_not_exists(#cvu)" in condition
         assert "attribute_not_exists(#cdis)" in condition
         assert update["ReturnValues"] == "ALL_NEW"

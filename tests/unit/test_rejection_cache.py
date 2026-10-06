@@ -1549,6 +1549,32 @@ class TestRefillFromCache:
         refill.assert_not_called()
         assert await _consumed(repo, "org") - before == 1000  # the slow path cascaded
 
+    async def test_a_refund_elsewhere_never_lifts_the_bucket_past_capacity(self, limiter, repo):
+        """Phase-3 review #2: a credit ADDs tokens without moving rf; tk is pinned."""
+        repo._rejection_cache._clock = _Clock()
+        await _spent_and_cached(limiter)  # cached tk = 0
+        client = await repo._get_client()
+        await client.update_item(  # another process's lease releases 1 (rf untouched)
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, "u", "r", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="ADD #t :d",
+            ExpressionAttributeNames={"#t": schema.bucket_attr("rpm", schema.BUCKET_FIELD_TK)},
+            ExpressionAttributeValues={":d": {"N": "1000"}},
+        )
+        admitted = 0
+        later = repo._now_ms() + 60_000
+        with patch.object(repo, "_now_ms", return_value=later):
+            for amount in (2, 1, 1):  # all at one instant: capacity 2 bounds the total
+                try:
+                    async with limiter.acquire("u", "r", consume={"rpm": amount}):
+                        admitted += amount
+                except RateLimitExceeded:
+                    pass
+        assert admitted == 2
+
     def test_the_sync_limiter_refills_from_the_cache(self, mock_dynamodb):
         from contextlib import ExitStack
 

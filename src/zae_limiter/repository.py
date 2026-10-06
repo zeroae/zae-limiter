@@ -3808,12 +3808,21 @@ class Repository:
         refill_amounts: dict[str, int],
         expected_rf: int,
         now_ms: int,
+        *,
+        cached_tokens: dict[str, int],
     ) -> dict[str, Any]:
         """The UpdateItem ``refill_from_cached_state`` sends (ADR-147 phase 3).
 
         ``build_composite_normal``'s rf-locked refill-and-debit, with ``vu``
         pinned absent, ``disabled`` absent and the TTL unexpired added to its
         condition, returning ``ALL_NEW``.
+
+        Every input the refill was computed from is pinned, because other
+        writers change them without moving ``rf``: ``cached_tokens`` caps each
+        limit's stored balance at the cached one (a refund elsewhere ADDs
+        tokens, and the clamp computed against the lower cached balance would
+        then land above the ceiling; a debit elsewhere only lowers it, which is
+        safe).
         """
         item = self.build_composite_normal(
             entity_id=entity_id,
@@ -3844,6 +3853,13 @@ class Repository:
             " AND (attribute_not_exists(#cttl) OR #cttl > :cnow)"
             " AND (attribute_not_exists(#ccs) OR #ccs = :cfalse)"
         )
+        # Positional tokens, never the limit name (#634).
+        for i, (name, tokens) in enumerate(cached_tokens.items()):
+            update["ExpressionAttributeNames"][f"#ct{i}"] = schema.bucket_attr(
+                name, schema.BUCKET_FIELD_TK
+            )
+            update["ExpressionAttributeValues"][f":ct{i}"] = {"N": str(tokens)}
+            update["ConditionExpression"] += f" AND #ct{i} <= :ct{i}"
         update["ReturnValues"] = "ALL_NEW"
         return item
 
@@ -3856,6 +3872,8 @@ class Repository:
         refill_amounts: dict[str, int],
         expected_rf: int,
         now_ms: int,
+        *,
+        cached_tokens: dict[str, int],
     ) -> SpeculativeResult | None:
         """The slow path's rf-locked write, built from a cached state (ADR-147 phase 3).
 
@@ -3872,7 +3890,14 @@ class Repository:
         checks, and ``vu`` absent is part of the condition.
         """
         update = self.build_cached_refill(
-            entity_id, resource, shard_id, consumed, refill_amounts, expected_rf, now_ms
+            entity_id,
+            resource,
+            shard_id,
+            consumed,
+            refill_amounts,
+            expected_rf,
+            now_ms,
+            cached_tokens=cached_tokens,
         )["Update"]
         client = await self._get_client()
         try:
