@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import warnings
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -104,10 +105,17 @@ def deployed_pair(
 
     Every stack is deployed ``--no-aggregator --no-alarms`` plus the backend's
     own flags (the PowerUser IAM flags on real AWS).
+
+    A delete that fails is never ignored: on real AWS it is a leaked stack that
+    keeps costing money. When the body completed, teardown fails naming each
+    stack and the CLI's output. When the body (or a deploy) is already raising,
+    the leak is reported as a warning instead, so the original failure is the
+    one pytest shows.
     """
     endpoint_url = backend.endpoint_url
     pair = StackPair(f"{base_name}-a", f"{base_name}-b", endpoint_url)
     runner = CliRunner()
+    body_raised = True
     try:
         for stack in (pair.a, pair.b):
             with patch("zae_limiter.__version__", version):
@@ -124,9 +132,22 @@ def deployed_pair(
                 )
             assert result.exit_code == 0, f"Deploy of {stack} failed: {result.output}"
         yield pair
+        body_raised = False
     finally:
+        leaked = []
         for stack in (pair.a, pair.b):
-            runner.invoke(cli, ["delete", *where(stack, endpoint_url), "--yes", "--wait"])
+            result = runner.invoke(cli, ["delete", *where(stack, endpoint_url), "--yes", "--wait"])
+            if result.exit_code != 0:
+                leaked.append(
+                    f"{stack} (exit {result.exit_code}): {result.output.strip()}"
+                    + (f" [{result.exception!r}]" if result.exception else "")
+                )
+        if leaked:
+            message = "Stack delete failed; delete by hand:\n" + "\n".join(leaked)
+            if body_raised:
+                warnings.warn(message, stacklevel=2)
+            else:
+                raise AssertionError(message)
 
 
 def sync_repo(stack: str, endpoint_url: str | None) -> SyncRepository:
