@@ -242,6 +242,112 @@ class TestRejectionCacheStore:
         assert cache.views("ns", "a", "r", now_ms=1) == {}
         assert list(cache.views("ns", "c", "r", now_ms=1)) == [0]
 
+    def test_a_lookup_reads_only_its_own_bucket(self):
+        """`views` runs on every acquire, so it must not scan the cache (review #1).
+
+        A scan over 10,000 entries measured 2.9 ms per call; 1,000 indexed
+        lookups fit comfortably in half a second.
+        """
+        import timeit
+
+        cache = RejectionCache(ttl_seconds=1e9, max_entries=10_000, clock=_Clock())
+        for i in range(10_000):
+            cache.store(
+                "ns",
+                f"e{i}",
+                "r",
+                0,
+                [_state(0)],
+                shard_count=1,
+                vu_ms=None,
+                ttl_epoch=None,
+                disabled=False,
+            )
+        assert list(cache.views("ns", "e5", "r", now_ms=1)) == [0]
+        assert timeit.timeit(lambda: cache.views("ns", "e5", "r", now_ms=1), number=1000) < 0.5
+
+    def test_eviction_keeps_the_index_in_step(self):
+        cache = RejectionCache(ttl_seconds=1.0, max_entries=3, clock=_Clock())
+        for shard in range(3):
+            cache.store(
+                "ns",
+                "a",
+                "r",
+                shard,
+                [_state(0)],
+                shard_count=3,
+                vu_ms=None,
+                ttl_epoch=None,
+                disabled=False,
+            )
+        cache.store(
+            "ns",
+            "b",
+            "r",
+            0,
+            [_state(0)],
+            shard_count=1,
+            vu_ms=None,
+            ttl_epoch=None,
+            disabled=False,
+        )
+        assert len(cache) == 3
+        assert list(cache.views("ns", "a", "r", now_ms=1)) == [1, 2]
+        cache.forget("ns", "b", "r", 0)
+        cache.forget("ns", "a", "r", 1)
+        cache.forget("ns", "a", "r", 2)
+        assert len(cache) == 0
+        assert cache._buckets == {}
+
+    def test_restoring_a_key_moves_it_to_the_back(self):
+        cache = RejectionCache(ttl_seconds=1.0, max_entries=2, clock=_Clock())
+        cache.store(
+            "ns",
+            "a",
+            "r",
+            0,
+            [_state(0)],
+            shard_count=1,
+            vu_ms=None,
+            ttl_epoch=None,
+            disabled=False,
+        )
+        cache.store(
+            "ns",
+            "b",
+            "r",
+            0,
+            [_state(0)],
+            shard_count=1,
+            vu_ms=None,
+            ttl_epoch=None,
+            disabled=False,
+        )
+        cache.store(
+            "ns",
+            "a",
+            "r",
+            0,
+            [_state(0)],
+            shard_count=1,
+            vu_ms=None,
+            ttl_epoch=None,
+            disabled=False,
+        )
+        cache.store(
+            "ns",
+            "c",
+            "r",
+            0,
+            [_state(0)],
+            shard_count=1,
+            vu_ms=None,
+            ttl_epoch=None,
+            disabled=False,
+        )
+        assert cache.views("ns", "b", "r", now_ms=1) == {}
+        assert list(cache.views("ns", "a", "r", now_ms=1)) == [0]
+
     def test_counts_local_rejections(self):
         cache = RejectionCache(ttl_seconds=1.0, max_entries=10, clock=_Clock())
         cache.record_local_rejection()

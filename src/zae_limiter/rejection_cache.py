@@ -30,6 +30,7 @@ DEFAULT_REJECTION_CACHE_TTL = 1.0
 DEFAULT_REJECTION_CACHE_SIZE = 10_000
 
 _Key = tuple[str, str, str, int]
+_BucketKey = tuple[str, str, str]
 
 
 @dataclass(frozen=True)
@@ -58,12 +59,19 @@ class RejectionCache:
         self.ttl_seconds = ttl_seconds
         self.max_entries = max_entries
         self._clock = clock
-        self._entries: dict[_Key, _Entry] = {}
+        # Indexed by bucket so a lookup reads one small dict (its shards),
+        # never the whole cache: `views` runs on every acquire. `_order` holds
+        # every key, least recently stored first, for the size cap.
+        self._buckets: dict[_BucketKey, dict[int, _Entry]] = {}
+        self._order: dict[_Key, None] = {}
         self.local_rejections = 0
 
     @property
     def enabled(self) -> bool:
         return self.ttl_seconds > 0
+
+    def __len__(self) -> int:
+        return len(self._order)
 
     def store(
         self,
@@ -81,10 +89,9 @@ class RejectionCache:
         """Remember the state a real DynamoDB response just showed."""
         if not self.enabled:
             return
+        bucket_key = (namespace_id, entity_id, resource)
         key = (namespace_id, entity_id, resource, shard_id)
-        # Re-insert so dict order is "least recently stored first".
-        self._entries.pop(key, None)
-        self._entries[key] = _Entry(
+        self._buckets.setdefault(bucket_key, {})[shard_id] = _Entry(
             buckets=tuple(buckets),
             shard_count=shard_count,
             vu_ms=vu_ms,
@@ -92,11 +99,15 @@ class RejectionCache:
             disabled=disabled,
             stored_at=self._clock(),
         )
-        while len(self._entries) > self.max_entries:
+        # Re-insert so `_order` stays "least recently stored first".
+        self._order.pop(key, None)
+        self._order[key] = None
+        while len(self._order) > self.max_entries:
             try:
-                del self._entries[next(iter(self._entries))]
-            except (KeyError, StopIteration, RuntimeError):  # pragma: no cover - thread race
+                oldest = next(iter(self._order))
+            except (StopIteration, RuntimeError):  # pragma: no cover - thread race
                 break
+            self._drop(oldest)
 
     def views(
         self, namespace_id: str, entity_id: str, resource: str, now_ms: int
@@ -107,15 +118,17 @@ class RejectionCache:
         rejected now?": older than the TTL, past its ``vu`` (the parameters may
         have changed), past its bucket TTL (the slow path recreates it full),
         or stamped disabled (``ResourceDisabled`` stays the server's answer).
+        Reads only this bucket's shards, whatever the cache holds.
         """
         if not self.enabled:
+            return {}
+        shards = self._buckets.get((namespace_id, entity_id, resource))
+        if not shards:
             return {}
         cutoff = self._clock() - self.ttl_seconds
         now_epoch = now_ms // 1000
         found: dict[int, list[BucketState]] = {}
-        for key, entry in list(self._entries.items()):
-            if key[:3] != (namespace_id, entity_id, resource):
-                continue
+        for shard_id, entry in list(shards.items()):
             if (
                 entry.stored_at <= cutoff
                 or entry.disabled
@@ -123,16 +136,26 @@ class RejectionCache:
                 or (entry.ttl_epoch is not None and entry.ttl_epoch <= now_epoch)
             ):
                 continue
-            found[key[3]] = list(entry.buckets)
+            found[shard_id] = list(entry.buckets)
         return found
 
     def forget(self, namespace_id: str, entity_id: str, resource: str, shard_id: int) -> None:
         """Drop one shard's entry: tokens came back by a route we caused."""
-        self._entries.pop((namespace_id, entity_id, resource, shard_id), None)
+        self._drop((namespace_id, entity_id, resource, shard_id))
 
     def clear(self) -> None:
         """Drop every entry: an admin change may have moved any limit."""
-        self._entries.clear()
+        self._buckets.clear()
+        self._order.clear()
+
+    def _drop(self, key: _Key) -> None:
+        """Remove one entry from both structures; a missing key is fine."""
+        self._order.pop(key, None)
+        shards = self._buckets.get(key[:3])
+        if shards is not None:
+            shards.pop(key[3], None)
+            if not shards:
+                self._buckets.pop(key[:3], None)
 
     def record_local_rejection(self) -> None:
         self.local_rejections += 1
