@@ -111,11 +111,42 @@ The six decisions below were agreed with the owner on 2026-10-06.
    thread pool can only lose an entry — one extra DynamoDB call, never a wrong admit.
    `get_cache_stats()` counts local rejections.
 
+## Phase 2: the cascade parent pre-check
+
+Agreed with the owner on 2026-10-06. A cascade rejection costs 3 WCU today (child write,
+failed parent write, child compensation) and reports the child's statuses followed by the
+parent's. The parent's state is already cached under the parent's own key, because the
+parallel parent write goes through `_speculative_consume_single`; the pre-check adds no
+storage.
+
+1. **When it runs.** Only when this child's **own** bucket has shown that it cascades on
+   this resource: its cached state's stamp (`cascade` with a `parent_id`) or
+   `_cascade_cache`, both learned from the item. Never on the entity-wide guess in
+   `_entity_cache`, which can be another resource's policy (ADR-146): a wrong guess
+   today costs one compensation, but here it would reject wrongly.
+2. **Parent rule.** The phase-1 rule on the parent's own shards: every parent shard
+   known short for a limit in `consume` ⇒ `RateLimitExceeded` with no DynamoDB call. The
+   parent's shard count is the larger of its entity-cache count and the counts its cached
+   states carry. The parent's own `cascades` flag is ignored (a child's lease never
+   reaches the grandparent, #686). A disabled parent state is unknown, so a disabled
+   parent still reaches DynamoDB and its 403. The rejection reports the child's statuses
+   (projected from its cached state, when there is one) followed by the parent's, as the
+   server does; `retry_after_seconds` is the largest.
+3. **Cascading child known short.** Phase 1 never rejects it locally, because a disabled
+   parent's 403 outranks the child's 429. It may now, reporting the child's statuses as the
+   server does, **only when the parent is known not to be disabled**: at least one of the
+   parent's cached states for this resource is trusted and not stamped `disabled`. A
+   disable stamps every shard in one fan-out, and one made through this process clears
+   the cache. Each cached state records its item's `parent_id` beside `cascades`.
+4. **Parent shard steering.** The parallel write draws the parent's shard among those not
+   known short (`select_shard(..., avoid=...)`), as phase 1 does for the child. `wcu`
+   doubling stays on real responses; an uncached shard stays drawable.
+5. **Cold cache.** Unchanged. The first cascade acquire per (process, entity) writes the
+   child before it learns the parent, and decision 1 needs that child's own stamp anyway.
+6. **Delivery.** A second PR stacked on #696, with its own fresh-context review.
+
 ## Building on this (designed in, delivered separately under #695)
 
-- **Cascade pre-check.** The parent's cached state is projected by the same rule
-  before the child is written, so a parent known short rejects without the child write,
-  the failed parent write and the compensation: **3 WCU → 0** on a repeat cascade 429.
 - **Refill from the cached state.** When the projection says refill would cover the
   request, issue the slow path's rf-locked write directly from the cached state
   (`rf = :cached_rf`, refill credited), skipping the failed write and the read:
