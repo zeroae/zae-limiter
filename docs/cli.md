@@ -212,13 +212,16 @@ entities:
 
 - **The manifest owns both flags** for every item it declares. Omitting one clears a value set
   earlier by `set-cascade`, `disable` or the Python API on the next `apply`.
-- **Neither applies to `system`.** `cascade` there is an error; `disabled` there is ignored.
+- **Neither applies to `system`.** Either one there is an error, so `plan`, `apply` and `diff`
+  fail before anything is written. Set them on `resources.<name>` or
+  `entities.<id>.resources.<name>` instead.
 - **`cascade` must be a boolean**; a value like `"yes"` fails the plan.
 - **Bucket restamps:** `disabled` restamps every declared resource and entity level on each apply. `cascade`
   restamps only the levels whose stored policy actually changed, so a routine apply writes no
   buckets for it.
 - **CloudFormation:** both round trip through `Custom::ZaeLimiterLimits` as the `Disabled` and
-  `Cascade` properties on `Resources` and `Entities` entries.
+  `Cascade` properties on `Resources` and `Entities` entries. Either one under `System` fails
+  the stack operation.
 - **Version:** a manifest that sets `cascade` needs a stack whose Lambdas are 0.16.0 or later,
   and raises the stack's minimum client version to 0.16.0.
 
