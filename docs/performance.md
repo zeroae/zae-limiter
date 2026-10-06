@@ -15,7 +15,7 @@ Each zae-limiter operation has specific DynamoDB capacity costs. Use this table 
 | `acquire()` speculative success | 0 | 1 | Skips read; conditional UpdateItem (issue #315) |
 | `acquire()` speculative success + cascade (sequential) | 0 | 2 | Child then parent speculative UpdateItem |
 | `acquire()` speculative success + cascade (parallel) | 0 | 2 | Concurrent child + parent via entity cache (issue #318) |
-| `acquire()` speculative fast rejection | 0 | 0 | Exhausted bucket; rejected from ALL_OLD without write |
+| `acquire()` speculative fast rejection | 0 | 1 | Exhausted bucket; the failed conditional write is charged 1 WCU, its ALL_OLD image is free |
 | `acquire()` speculative fallback (non-cascade) | 1 | 2 | Failed speculative (1 WCU) + normal path (1 RCU + 1 WCU) |
 | `acquire()` speculative cascade fallback (parent refill helps) | 0.5 | 3 | Child stays consumed; parent-only read (0.5 RCU) + single-item write (1 WCU) |
 | `acquire()` retry (contention) | 0 | 1 | ADD-based writes don't require re-read |
@@ -829,14 +829,14 @@ The `ReturnValuesOnConditionCheckFailure=ALL_OLD` response provides the current 
 |----------|-------------|-----|-----|-------------|
 | **Normal path** (non-cascade) | 2 | 1 | 1 | $0.75 |
 | **Speculative success** (non-cascade) | 1 | 0 | 1 | $0.625 |
-| **Speculative fast rejection** (exhausted) | 1 | 0 | 0 | $0.00 |
+| **Speculative fast rejection** (exhausted) | 1 | 0 | 1 | $0.625 |
 | **Speculative fallback** (refill helps) | 3 | 1 | 2 | $1.375 |
 | **Speculative fallback** (schedule boundary) | 3 | 1 | 2 | $1.375 |
 | **Normal path** (cascade) | 3 | 2 | 4 | $1.75 |
 | **Speculative success** (cascade, sequential) | 2 | 0 | 2 | $1.25 |
 | **Speculative success** (cascade, parallel) | 1 | 0 | 2 | $1.25 |
 | **Speculative cascade fallback** (parent refill helps) | 2+ | 0.5 | 3 | $2.00 |
-| **Speculative cascade fast rejection** (parent exhausted) | 1 | 0 | 2 | $1.25 |
+| **Speculative cascade fast rejection** (parent exhausted) | 1 | 0 | 3 | $1.875 |
 
 A scheduled limit pays the boundary fallback once per bucket per boundary — every request in
 flight at that instant fails the condition together, then serialises on the refill lock — so
