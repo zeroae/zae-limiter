@@ -9024,6 +9024,10 @@ class TestCascadeParentSharding:
         await repo._speculative_consume_single(
             "user-1", "gpt-4", {"rpm": self.CAPACITY}, shard_id=0
         )
+        # As if another process drained it: this process has not seen the
+        # drain, so it writes child and parent (ADR-147 would otherwise reject
+        # locally from the drain's image and write neither).
+        repo._rejection_cache.clear()
         share = self.CAPACITY * 1000 // 4
 
         with patch("zae_limiter.repository.random.randrange", side_effect=[2]):

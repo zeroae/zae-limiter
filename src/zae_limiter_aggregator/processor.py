@@ -1027,11 +1027,12 @@ def try_refill_bucket(
         #
         # It applies a window the CLIENT anchored; it never anchors one. The
         # aggregator acts only on stream records, and an exhausted quota
-        # produces none (a fast rejection is 0 WCU), so it could not anchor for
-        # an idle entity even if it tried — which is correct, since the window
-        # must be anchored to a *use*. And it does not fan out: it processes
-        # one shard per record and would issue S² writes per batch rather than
-        # S. The client's fan-out plus `ws > wa` already converges every shard.
+        # produces none (a fast rejection changes nothing, so it emits no
+        # stream record), so it could not anchor for an idle entity even if it
+        # tried — which is correct, since the window must be anchored to a
+        # *use*. And it does not fan out: it processes one shard per record and
+        # would issue S² writes per batch rather than S. The client's fan-out
+        # plus `ws > wa` already converges every shard.
         #
         # Positional aliases, never the limit name: `NAME_PATTERN` allows `-`
         # and `.`, neither legal in an expression token or an inline path.

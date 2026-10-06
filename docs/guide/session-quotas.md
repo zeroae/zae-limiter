@@ -161,7 +161,7 @@ still writes that move, with nothing consumed, so the tokens are not lost; if th
 opened a window, the window opens with it. It can happen at most once per new shard.
 
 A caller hammering an exhausted quota does not keep restarting its own five hours. Inside a
-window, an exhausted quota's rejection writes nothing — on the fast path it is a free rejection,
+window, an exhausted quota's rejection writes nothing — on the fast path it is a rejection that changes nothing on the item,
 and on the slow path `RateLimitExceeded` is raised before any write — so the anchor never moves
 until the window it already opened has ended.
 

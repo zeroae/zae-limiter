@@ -85,7 +85,7 @@ limits, on_unavailable, config_source = await repo.resolve_limits(entity_id, res
 # config_source: "entity", "entity_default", "resource", "system", or None
 ```
 
-Cache management methods (`invalidate_config_cache()`, `get_cache_stats()`) are on `Repository`, not `RateLimiter`. The `config_cache_ttl` parameter is on the `Repository` constructor.
+Cache management methods (`invalidate_config_cache()`, `get_cache_stats()`) are on `Repository`, not `RateLimiter`. The `config_cache_ttl` parameter is on the `Repository` constructor, beside `rejection_cache_ttl` and `rejection_cache_size` for the rejection cache ([ADR-147](../adr/147-client-side-rejection-cache.md)).
 
 ### Item Structure
 
@@ -407,7 +407,7 @@ When `speculative_writes=True`, `acquire()` adds a fast path before the normal r
 
 | Write Path | Method | API Used | WCU Cost | Atomicity |
 |------------|--------|----------|----------|-----------|
-| Speculative consumption | `speculative_consume()` | Conditional `UpdateItem` | 1 WCU (success) or 0 WCU (reject) | Single item |
+| Speculative consumption | `speculative_consume()` | Conditional `UpdateItem` | 1 WCU either way (a failed condition is still charged) | Single item |
 | Speculative compensation | `_compensate_speculative()` via `write_each()` | `UpdateItem` | 1 WCU | Single item |
 | Parallel speculative (issue #318) | `speculative_consume()` via `asyncio.gather` | 2x `UpdateItem` | 2 WCU | Independent items |
 | Parent-only slow path | `_try_parent_only_acquire()` via `_commit_initial()` | `UpdateItem` | 1 WCU | Single item |
@@ -496,7 +496,7 @@ speculative writes on the fast path (1 RT) instead of falling back to the slow p
 
 | Write Path | Method | API Used | WCU Cost | Atomicity |
 |------------|--------|----------|----------|-----------|
-| Aggregator refill | `try_refill_bucket()` | Conditional `UpdateItem` | 1 WCU (success) or 0 WCU (lock lost) | Single item |
+| Aggregator refill | `try_refill_bucket()` | Conditional `UpdateItem` | 1 WCU either way (a failed condition is still charged) | Single item |
 
 The aggregator processes DynamoDB Stream records in each batch to:
 

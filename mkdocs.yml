@@ -208,3 +208,4 @@ nav:
           - ADR-141 Storing a reset_after limit is gated on reader versions: adr/141-reset-after-version-gate.md
           - ADR-142 A reset_after limit's config is hidden from pre-v0.15 readers: adr/142-hide-reset-after-config.md
           - ADR-145 A sharded quota conserves its allowance: adr/145-sharded-quota-conserves-allowance.md
+          - ADR-147 Reject from the last bucket state seen, never admit from it: adr/147-client-side-rejection-cache.md

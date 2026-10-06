@@ -7092,6 +7092,7 @@ class TestCascadeParentSharding:
         limit = Limit.custom("rpm", self.CAPACITY, refill_amount=1, refill_period_seconds=3600)
         repo = self._seed(sync_limiter, limit, parent_shard_count=4, parent_shards=range(4))
         repo._speculative_consume_single("user-1", "gpt-4", {"rpm": self.CAPACITY}, shard_id=0)
+        repo._rejection_cache.clear()
         share = self.CAPACITY * 1000 // 4
         with patch("zae_limiter.sync_repository.random.randrange", side_effect=[2]):
             with pytest.raises(RateLimitExceeded):

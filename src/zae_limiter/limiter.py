@@ -755,6 +755,7 @@ class RateLimiter:
                     entity_id=entity_id,
                     resource=resource,
                     consume=consume,
+                    use_rejection_cache=limits is None,
                 )
 
             # Fall back to slow path if speculative didn't succeed
@@ -823,6 +824,7 @@ class RateLimiter:
         entity_id: str,
         resource: str,
         consume: dict[str, int],
+        use_rejection_cache: bool = True,
     ) -> tuple[Lease | None, int, int | None, int | None]:
         """Try the speculative fast path for acquire (issue #315).
 
@@ -841,19 +843,39 @@ class RateLimiter:
             speculative write never updates the entity cache (issue #439).
             Both are meaningless when ``lease`` is not None.
 
+        ``use_rejection_cache`` is False when the caller passed ``limits=``:
+        the cached states describe the stored parameters, not an override.
+
         Raises:
             RateLimitExceeded: If the bucket is truly exhausted (refill
-                wouldn't help). Saves 1 RCU vs the slow path.
+                wouldn't help). Saves 1 RCU vs the slow path; raised with no
+                DynamoDB call at all when the rejection cache already shows
+                every shard short (ADR-147).
         """
         now_ms = self._repository._now_ms()
 
+        # Shards the last state seen says cannot fit this request (ADR-147).
+        # Raises here, with no write, when that is every shard.
+        avoid: frozenset[int] = frozenset()
+        if use_rejection_cache:
+            avoid = frozenset(self._known_short_shards(entity_id, resource, consume, now_ms)[0])
+
         # Repository handles cache check and parallel writes (issue #318)
-        result = await self._repository.speculative_consume(
-            entity_id=entity_id,
-            resource=resource,
-            consume=consume,
-            now_ms=now_ms,
-        )
+        if avoid:
+            result = await self._repository.speculative_consume(
+                entity_id=entity_id,
+                resource=resource,
+                consume=consume,
+                now_ms=now_ms,
+                avoid_shards=avoid,
+            )
+        else:
+            result = await self._repository.speculative_consume(
+                entity_id=entity_id,
+                resource=resource,
+                consume=consume,
+                now_ms=now_ms,
+            )
 
         if not result.success:
             # Only a parent shard the fast path found MISSING pins the slow
@@ -939,9 +961,16 @@ class RateLimiter:
                     # slow path, which commits child + parent in one transaction.
                     self._check_speculative_failure(result, consume, now_ms)
                     untried = [s for s in range(result.shard_count) if s != result.shard_id]
-                    return None, random.choice(untried), result.shard_count, parent_hint
+                    roomy = [s for s in untried if s not in avoid]
+                    return None, random.choice(roomy or untried), result.shard_count, parent_hint
                 retry_result, slow_path_shard = await self._retry_on_other_shard(
-                    entity_id, resource, consume, ttl_seconds=None, result=result, now_ms=now_ms
+                    entity_id,
+                    resource,
+                    consume,
+                    ttl_seconds=None,
+                    result=result,
+                    now_ms=now_ms,
+                    avoid=avoid,
                 )
                 if retry_result is not None:
                     return retry_result, result.shard_id, result.shard_count, parent_hint
@@ -1289,6 +1318,73 @@ class RateLimiter:
         """Compensate a speculatively consumed child by adding tokens back."""
         await self._compensate_speculative(entity_id, resource, consume, shard_id)
 
+    def _known_short_shards(
+        self,
+        entity_id: str,
+        resource: str,
+        consume: dict[str, int],
+        now_ms: int,
+    ) -> tuple[set[int], int]:
+        """Shards the last state seen says cannot fit ``consume`` now (ADR-147).
+
+        Each cached state is projected to ``now_ms`` by ``would_refill_satisfy``,
+        the same arithmetic a speculative failure's fast rejection uses, so a
+        shard counts as short exactly when a write to it would come back as a
+        fast rejection had nothing else touched it since. A state that lacks a
+        declared limit is unknown (the slow path seeds it, #633), and only
+        declared limits count, so a ``wcu``-only shortfall is never one.
+
+        Raises ``RateLimitExceeded`` with no DynamoDB call when every shard is
+        known short, reporting the shard that fits soonest — unless the bucket
+        cascades, whose parent's answer only the server knows. The cache only ever
+        rejects: a shard not known short is written to as before.
+
+        Returns:
+            ``(short_shards, shard_count)``.
+        """
+        cache = getattr(self._repository, "_rejection_cache", None)
+        if cache is None or not cache.enabled:
+            return set(), 1
+        namespace_id = getattr(self._repository, "_namespace_id", None)
+        if namespace_id is None:
+            return set(), 1
+        views = cache.views(namespace_id, entity_id, resource, now_ms)
+        if not views:
+            return set(), 1
+        # The larger of the entity cache's count and the count each cached
+        # state carries: a cold or stale entity cache must never make the
+        # shards we know about look like all of them (ADR-147 decision 4).
+        _, shard_count = self._repository.select_shard(entity_id, resource)
+        shard_count = max(
+            [shard_count] + [b.shard_count for buckets in views.values() for b in buckets]
+        )
+        short: dict[int, list[LimitStatus]] = {}
+        for shard, buckets in views.items():
+            if shard >= shard_count:
+                continue
+            names = {b.limit_name for b in buckets}
+            if not all(name in names for name in consume):
+                continue
+            fits, statuses = would_refill_satisfy(buckets, consume, now_ms)
+            if not fits:
+                short[shard] = statuses
+        # A cascading child is never rejected here: the server writes child and
+        # parent together, and a disabled parent's ResourceDisabled (403)
+        # outranks the child's shortfall (429). Steering around short shards is
+        # still safe — every shard's write reaches the parent.
+        if (
+            short
+            and len(short) == shard_count
+            and not cache.cascades(namespace_id, entity_id, resource)
+        ):
+            cache.record_local_rejection()
+            soonest = min(
+                short.values(),
+                key=lambda st: max((s.retry_after_seconds for s in st), default=0.0),
+            )
+            raise RateLimitExceeded(soonest)
+        return set(short), shard_count
+
     async def _compensate_speculative(
         self,
         entity_id: str,
@@ -1351,6 +1447,7 @@ class RateLimiter:
         ttl_seconds: int | None,
         result: "SpeculativeResult",
         now_ms: int,
+        avoid: frozenset[int] = frozenset(),
     ) -> "tuple[Lease | None, int | None]":
         """Retry speculative consume on untried shards (GHSA-76rv shard retry).
 
@@ -1367,6 +1464,9 @@ class RateLimiter:
             now_ms: The acquire's single clock reading (issue #430), carried
                 on so a retry does not observe a different instant than the
                 attempt that sent it here
+            avoid: Shards the rejection cache knows are short (ADR-147).
+                Probing one costs a failed write (1 WCU) to learn what the
+                cache already says, so they count as tried.
 
         Returns:
             ``(lease, slow_path_shard)``. ``lease`` is set if a retry on
@@ -1381,7 +1481,7 @@ class RateLimiter:
             the first shard's stamp says the resource cascades; a retried
             shard whose own stamp says so is handed to the slow path too.
         """
-        tried_shards = {result.shard_id}
+        tried_shards = {result.shard_id} | avoid
         shard_count = result.shard_count
         slow_path_shard: int | None = None
 
@@ -2916,7 +3016,7 @@ class RateLimiter:
         Consumes nothing and writes nothing. This is a read; it is not a
         pre-flight check for :meth:`acquire`. Deciding with it and then calling
         ``acquire()`` is TOCTOU and costs an extra read — ``acquire()`` already
-        answers "may I proceed, and if not when" in 1 WCU, or 0 RCU + 0 WCU on
+        answers "may I proceed, and if not when" in 1 WCU, with no read even on
         a fast rejection, via ``RateLimitExceeded.retry_after_seconds``. Use
         this when the answer is *displayed* rather than acted on.
 

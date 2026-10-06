@@ -620,7 +620,7 @@ class TestSpeculativeCapacity:
 
     Speculative acquire skips the BatchGetItem read round trip by attempting
     a conditional UpdateItem directly. On success, saves 1 RCU (0 reads).
-    On failure with exhausted bucket, raises immediately (0 RCU, 0 WCU).
+    On failure with exhausted bucket, raises immediately (0 RCU, 1 WCU: the failed conditional).
     """
 
     def test_speculative_success_non_cascade(self, sync_limiter, capacity_counter):

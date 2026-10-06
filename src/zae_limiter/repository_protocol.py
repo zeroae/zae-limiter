@@ -507,6 +507,7 @@ class RepositoryProtocol(Protocol):
         resource: str,
         shard_id: int | None = None,
         shard_count: int | None = None,
+        avoid: frozenset[int] = frozenset(),
     ) -> tuple[int, int]:
         """
         Pick the bucket shard an acquire should target (GHSA-76rv, issue #439).
@@ -518,6 +519,8 @@ class RepositoryProtocol(Protocol):
                 at random from the shard_count
             shard_count: Count the caller observed (a speculative failure
                 image), or None to read the entity cache
+            avoid: Shards known not to fit the request (ADR-147); the draw
+                is uniform over the others. Passed only when non-empty.
 
         Returns:
             Tuple of (shard_id, shard_count) where shard_count is the given
@@ -745,6 +748,7 @@ class RepositoryProtocol(Protocol):
         ttl_seconds: int | None = None,
         shard_id: int | None = None,
         now_ms: int | None = None,
+        avoid_shards: frozenset[int] = frozenset(),
     ) -> SpeculativeResult:
         """Attempt speculative UpdateItem with condition check.
 
@@ -763,6 +767,10 @@ class RepositoryProtocol(Protocol):
             now_ms: The caller's "now" (issue #430), so one logical
                 ``acquire()`` observes one instant. None reads the clock via
                 ``_now_ms()`` once inside.
+            avoid_shards: Shards the caller knows cannot fit the request
+                (ADR-147); the shard is drawn among the others. Passed only
+                when non-empty, and only by a limiter whose repository keeps a
+                rejection cache, so a backend without one never receives it.
 
         Returns:
             SpeculativeResult with success flag and either:
