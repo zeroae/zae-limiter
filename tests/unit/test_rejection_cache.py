@@ -617,3 +617,151 @@ class TestScopesShareTheCache:
         await repo._register_namespace("other")
         scoped = await repo.namespace("other")
         assert scoped._rejection_cache is repo._rejection_cache
+
+
+def _clock_ms(repo: Repository, start_ms: int) -> list[int]:
+    """Pin the token-bucket clock to a mutable instant; returns the cell."""
+    cell = [start_ms]
+    repo._now_ms = lambda: cell[0]
+    return cell
+
+
+async def _stamp_current_lambdas(repo: Repository) -> None:
+    """Satisfy the reader-version gates (ADR-141, ADR-146) for this build."""
+    from zae_limiter import __version__
+    from zae_limiter.version import get_schema_version
+
+    await repo.set_version_record(schema_version=get_schema_version(), lambda_version=__version__)
+
+
+class TestQuotasAndWindows:
+    """The projection must honour a reset the server would apply."""
+
+    async def test_a_calendar_quota_is_not_rejected_past_its_reset(self, repo):
+        from datetime import UTC, datetime
+
+        quota = Limit.quota("rpd", 2, cron="0 0 * * *")
+        await repo.set_limits("u", [quota], resource="r")
+        before_midnight = int(datetime(2026, 10, 6, 23, 59, 30, tzinfo=UTC).timestamp() * 1000)
+        clock = _clock_ms(repo, before_midnight)
+        async with RateLimiter(repository=repo) as limiter:
+            async with limiter.acquire("u", "r", consume={"rpd": 1}):  # slow path creates
+                pass
+            async with limiter.acquire("u", "r", consume={"rpd": 1}):  # fast path: cached
+                pass
+            async with _count_update_items(repo) as calls:
+                with pytest.raises(RateLimitExceeded):
+                    async with limiter.acquire("u", "r", consume={"rpd": 1}):
+                        pass
+            assert calls == []  # before midnight: rejected locally
+
+            clock[0] = before_midnight + 60_000  # 00:00:30 the next day
+            async with limiter.acquire("u", "r", consume={"rpd": 1}) as lease:
+                pass
+        assert lease.consumed == {"rpd": 1}
+
+    async def test_a_session_quota_is_not_rejected_once_its_window_ends(self, repo):
+        from datetime import timedelta
+
+        await _stamp_current_lambdas(repo)
+        session = Limit.quota("session", 2, reset_after=timedelta(seconds=60))
+        await repo.set_limits("u", [session], resource="r")
+        clock = _clock_ms(repo, repo._now_ms())
+        async with RateLimiter(repository=repo) as limiter:
+            async with limiter.acquire("u", "r", consume={"session": 1}):  # opens the window
+                pass
+            async with limiter.acquire("u", "r", consume={"session": 1}):  # fast path: cached
+                pass
+            async with _count_update_items(repo) as calls:
+                with pytest.raises(RateLimitExceeded):
+                    async with limiter.acquire("u", "r", consume={"session": 1}):
+                        pass
+            assert calls == []  # inside the window: rejected locally
+
+            clock[0] += 61_000
+            async with limiter.acquire("u", "r", consume={"session": 1}) as lease:
+                pass
+        assert lease.consumed == {"session": 1}
+
+
+class TestShardCountBound:
+    async def test_a_shard_past_the_count_is_ignored(self, repo):
+        ns = repo._namespace_id
+        for shard in (0, 5):
+            repo._rejection_cache.store(
+                ns,
+                "u",
+                "r",
+                shard,
+                [_state(0)],
+                shard_count=1,
+                vu_ms=None,
+                ttl_epoch=None,
+                disabled=False,
+            )
+        async with RateLimiter(repository=repo) as limiter:
+            with pytest.raises(RateLimitExceeded):  # shard 0 is the only real shard
+                limiter._known_short_shards("u", "r", {"rpm": 1}, repo._now_ms())
+        repo._rejection_cache.forget(ns, "u", "r", 0)
+        async with RateLimiter(repository=repo) as limiter:
+            short, count = limiter._known_short_shards("u", "r", {"rpm": 1}, repo._now_ms())
+        assert (short, count) == (set(), 1)
+
+
+class TestSyncTwin:
+    def test_the_sync_limiter_rejects_locally(self, mock_dynamodb):
+        from zae_limiter import SyncRateLimiter
+        from zae_limiter.sync_repository import SyncRepository
+
+        repo = SyncRepository(
+            name="test-rejection-sync", region="us-east-1", _skip_deprecation_warning=True
+        )
+        repo.create_table()
+        repo._register_namespace("default")
+        repo.set_limits("u", [RPM], resource="r")
+        limiter = SyncRateLimiter(repository=repo)
+        with limiter.acquire("u", "r", consume={"rpm": 2}):
+            pass
+        with pytest.raises(RateLimitExceeded):
+            with limiter.acquire("u", "r", consume={"rpm": 2}):  # a real failed write
+                pass
+        client = repo._get_client()
+        with patch.object(client, "update_item", side_effect=AssertionError("wrote")):
+            with pytest.raises(RateLimitExceeded):
+                with limiter.acquire("u", "r", consume={"rpm": 1}):
+                    pass
+        assert repo.get_cache_stats().local_rejections == 1
+        repo.close()
+
+
+_ADMIN_CALLS = {
+    "set_limits": lambda repo: repo.set_limits("u", [RPM], resource="r"),
+    "delete_limits": lambda repo: repo.delete_limits("u", resource="r"),
+    "set_resource_defaults": lambda repo: repo.set_resource_defaults("r", [RPM]),
+    "delete_resource_defaults": lambda repo: repo.delete_resource_defaults("r"),
+    "set_system_defaults": lambda repo: repo.set_system_defaults([RPM]),
+    "delete_system_defaults": lambda repo: repo.delete_system_defaults(),
+    "disable_resource": lambda repo: repo.disable_resource("r"),
+    "enable_resource": lambda repo: repo.enable_resource("r"),
+    "set_resource_cascade": lambda repo: repo.set_resource_cascade("r", True),
+    "delete_entity": lambda repo: repo.delete_entity("u"),
+}
+
+
+class TestAdminWritesClear:
+    @pytest.mark.parametrize("call", sorted(_ADMIN_CALLS))
+    async def test_every_admin_write_clears_the_cache(self, repo, call):
+        await _stamp_current_lambdas(repo)
+        repo._rejection_cache.store(
+            repo._namespace_id,
+            "u",
+            "r",
+            0,
+            [_state(0)],
+            shard_count=1,
+            vu_ms=None,
+            ttl_epoch=None,
+            disabled=False,
+        )
+        await _ADMIN_CALLS[call](repo)
+        assert len(repo._rejection_cache) == 0
