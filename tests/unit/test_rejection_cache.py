@@ -1658,6 +1658,63 @@ class TestRefillFromCache:
                 async with limiter.acquire("u", "r", consume={"rpm": 1}):
                     pass
 
+    async def _refills(self, repo, limiter, *, consume=1):
+        """Acquire a minute later through a spy; return what phase 3's write returned."""
+        results: list[object] = []
+        real = repo.refill_from_cached_state
+
+        async def spy(*args, **kwargs):
+            result = await real(*args, **kwargs)
+            results.append(result)
+            return result
+
+        later = repo._now_ms() + 60_000
+        with (
+            patch.object(repo, "_now_ms", return_value=later),
+            patch.object(repo, "refill_from_cached_state", side_effect=spy),
+        ):
+            try:
+                async with limiter.acquire("u", "r", consume={"rpm": consume}):
+                    pass
+            except (RateLimitExceeded, ResourceDisabled) as exc:
+                results.append(type(exc).__name__)
+        return results
+
+    async def _raw_update(self, repo, expression, names=None, values=None):
+        client = await repo._get_client()
+        kwargs = {
+            "TableName": repo.table_name,
+            "Key": {
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, "u", "r", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+            "UpdateExpression": expression,
+        }
+        if names:
+            kwargs["ExpressionAttributeNames"] = names
+        if values:
+            kwargs["ExpressionAttributeValues"] = values
+        await client.update_item(**kwargs)
+
+    async def test_a_disable_stamped_elsewhere_refuses_the_write(self, limiter, repo):
+        """Verification finding C: the `disabled` pin, from another process."""
+        await _spent_and_cached(limiter)
+        await self._raw_update(
+            repo,
+            "SET #d = :t",
+            {"#d": schema.BUCKET_FIELD_DISABLED},
+            {":t": {"BOOL": True}},
+        )
+        results = await self._refills(repo, limiter)
+        assert results == [None, "ResourceDisabled"]  # pinned write refused; 403 after
+
+    async def test_an_expired_ttl_refuses_the_write(self, limiter, repo):
+        """Verification finding C: the TTL pin, an item expired but not yet swept."""
+        await _spent_and_cached(limiter)
+        await self._raw_update(repo, "SET #t = :past", {"#t": "ttl"}, {":past": {"N": "1"}})
+        results = await self._refills(repo, limiter)
+        assert results[0] is None  # the pinned write refused; today's path took it
+
     async def test_create_entity_in_this_process_records_the_parent(self, repo):
         await repo.create_entity("org")
         await repo.create_entity("u", parent_id="org", cascade=True)
