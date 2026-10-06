@@ -222,11 +222,14 @@ class Repository:
         # Consulted only while the entity has an entry, so dropping that entry
         # still means "start cold".
         self._cascade_cache: dict[tuple[str, str, str], bool] = {}
-        # Each entity's parent as its own META record says (None: no parent,
-        # or no record). `_entity_cache` cannot answer that: a fast-path
+        # Each entity's parent as its own **existing** META record says (None:
+        # the record names no parent). An entity with no record has no entry:
+        # a parent can still be added by a later create_entity, here or in
+        # another process. `_entity_cache` cannot answer either: a fast-path
         # success re-learns parent_id from the bucket's stamp, and a pre-#684
         # stamp carries none on a child that has a parent. ADR-147 phase 3
-        # trusts "no parent" only from here. META's parent_id never changes.
+        # trusts "no parent" only from here. An existing record's parent_id
+        # never changes.
         self._record_parents: dict[tuple[str, str], str | None] = {}
         # The last bucket state seen per (namespace, entity, resource, shard),
         # used only to reject a request that cannot fit without a DynamoDB
@@ -1841,6 +1844,8 @@ class Repository:
             if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
                 raise EntityExistsError(entity_id)
             raise
+        # The record now exists: what it says is what phase 3 may trust.
+        self._record_parents[(self._namespace_id, entity_id)] = parent_id
 
         # Log audit event
         await self._log_audit_event(
@@ -1881,7 +1886,8 @@ class Repository:
         existing_shards = self._entity_cache.get(cache_key, (False, None, {}))[2]
         if not item:
             self._entity_cache[cache_key] = (False, None, existing_shards)
-            self._record_parents[cache_key] = None
+            # No record yet says nothing about a parent: one can be created later.
+            self._record_parents.pop(cache_key, None)
             return None
 
         entity = self._deserialize_entity(item)
@@ -2274,7 +2280,12 @@ class Repository:
             self._entity_cache[cache_key] = (entity.cascade, entity.parent_id, existing_shards)
         else:
             self._entity_cache[cache_key] = (False, None, existing_shards)
-        self._record_parents[cache_key] = entity.parent_id if entity is not None else None
+        # Only an existing record speaks for the parent: with none, a parent
+        # can still be added by a later create_entity (phase-3 verification).
+        if entity is not None:
+            self._record_parents[cache_key] = entity.parent_id
+        else:
+            self._record_parents.pop(cache_key, None)
 
         return entity, buckets
 

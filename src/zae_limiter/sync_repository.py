@@ -1555,6 +1555,7 @@ class SyncRepository:
             if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
                 raise EntityExistsError(entity_id)
             raise
+        self._record_parents[self._namespace_id, entity_id] = parent_id
         self._log_audit_event(
             action=AuditAction.ENTITY_CREATED,
             entity_id=entity_id,
@@ -1590,7 +1591,7 @@ class SyncRepository:
         existing_shards = self._entity_cache.get(cache_key, (False, None, {}))[2]
         if not item:
             self._entity_cache[cache_key] = (False, None, existing_shards)
-            self._record_parents[cache_key] = None
+            self._record_parents.pop(cache_key, None)
             return None
         entity = self._deserialize_entity(item)
         self._entity_cache[cache_key] = (entity.cascade, entity.parent_id, existing_shards)
@@ -1912,7 +1913,10 @@ class SyncRepository:
             self._entity_cache[cache_key] = (entity.cascade, entity.parent_id, existing_shards)
         else:
             self._entity_cache[cache_key] = (False, None, existing_shards)
-        self._record_parents[cache_key] = entity.parent_id if entity is not None else None
+        if entity is not None:
+            self._record_parents[cache_key] = entity.parent_id
+        else:
+            self._record_parents.pop(cache_key, None)
         return (entity, buckets)
 
     def batch_get_configs(

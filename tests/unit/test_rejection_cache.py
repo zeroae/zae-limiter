@@ -63,6 +63,7 @@ async def repo(mock_dynamodb):
 
 @pytest.fixture
 async def limiter(repo):
+    await repo.create_entity("u")  # a record with no parent: phase 3 may trust it
     await repo.set_limits("u", [RPM], resource="r")
     async with RateLimiter(repository=repo) as limiter:
         yield limiter
@@ -1513,9 +1514,9 @@ class TestRefillFromCache:
         configured = (
             [RPM, Limit.per_minute("tpm", 100)] if case == "config_limit_missing" else [RPM]
         )
+        await repo.create_entity("u")  # a record with no parent
         await repo.set_limits("u", configured, resource="r")
         await repo.resolve_limits("u", "r")  # warm config cache: peek_limits answers
-        await repo.get_entity("u")  # its META says no parent
         now = repo._now_ms()
         rpm = _state(0)
         rpm.last_refill_ms = now - 60_000  # a full minute of refill pending
@@ -1553,6 +1554,7 @@ class TestRefillFromCache:
     async def test_with_ttl_off_the_write_leaves_ttl_alone(self, repo):
         """Multiplier 0: the slow path stamps no ttl, so neither does phase 3."""
         repo._bucket_ttl_refill_multiplier = 0
+        await repo.create_entity("u")  # a record with no parent
         await repo.set_resource_defaults("r", [RPM])
         async with RateLimiter(repository=repo) as limiter:
             await _spent_and_cached(limiter)
@@ -1591,6 +1593,42 @@ class TestRefillFromCache:
                     cached_tokens={"rpm": 0},
                     cached_shard_count=1,
                 )
+
+    async def test_an_entity_created_later_with_a_parent_is_not_trusted(self, repo):
+        """Verification finding A: no record is not "no parent"; one can arrive later."""
+        await repo.set_limits("u", [Limit.per_minute("rpm", 10)], resource="r")
+        await repo.set_limits("org", [RPM], resource="r")  # the parent allows 2
+        await repo.create_entity("org")
+        repo._rejection_cache._clock = _Clock()
+        async with RateLimiter(repository=repo) as limiter:
+            async with limiter.acquire("org", "r", consume={"rpm": 1}):  # org: 1 left
+                pass
+            async with limiter.acquire("u", "r", consume={"rpm": 1}):  # u has no record yet
+                pass
+            async with limiter.acquire("u", "r", consume={"rpm": 6}):  # fast path: tk 3 cached
+                pass
+            assert (repo._namespace_id, "u") not in repo._record_parents
+            other = Repository(
+                name="test-rejection", region="us-east-1", _skip_deprecation_warning=True
+            )
+            other._namespace_id = repo._namespace_id
+            await other.create_entity("u", parent_id="org", cascade=True)  # another process
+            await other.close()
+            later = repo._now_ms() + 12_000
+            with (
+                patch.object(repo, "_now_ms", return_value=later),
+                patch.object(repo, "refill_from_cached_state") as refill,
+            ):
+                with pytest.raises(RateLimitExceeded):  # org cannot cover 4
+                    async with limiter.acquire("u", "r", consume={"rpm": 4}):
+                        pass
+        refill.assert_not_called()
+
+    async def test_create_entity_in_this_process_records_the_parent(self, repo):
+        await repo.create_entity("org")
+        await repo.create_entity("u", parent_id="org", cascade=True)
+        assert repo._record_parents[(repo._namespace_id, "u")] == "org"
+        assert repo._record_parents[(repo._namespace_id, "org")] is None
 
     async def test_cascade_turned_on_elsewhere_still_debits_the_parent(self, repo):
         """Phase-3 review #1: the write pins `cascade` off; a policy change refuses it."""
@@ -1681,6 +1719,7 @@ class TestRefillFromCache:
 
     async def test_a_doubling_elsewhere_refuses_the_write(self, repo):
         """Phase-3 review #3: shard_count moves without rf; it is pinned."""
+        await repo.create_entity("u")  # a record with no parent
         await repo.set_limits("u", [Limit.per_minute("rpm", 100)], resource="r")
         repo._rejection_cache._clock = _Clock()
         async with RateLimiter(repository=repo) as limiter:
@@ -1772,6 +1811,7 @@ class TestRefillFromCache:
 
     async def test_the_ttl_is_refreshed_as_the_slow_path_would(self, repo):
         """Phase-3 review #5: a resource-level bucket's ttl moves forward."""
+        await repo.create_entity("u")  # a record with no parent
         await repo.set_resource_defaults("r", [RPM])
         repo._rejection_cache._clock = _Clock()
         async with RateLimiter(repository=repo) as limiter:
@@ -1806,6 +1846,7 @@ class TestRefillFromCache:
         )
         repo.create_table()
         repo._register_namespace("default")
+        repo.create_entity("u")  # a record with no parent: phase 3 may trust it
         repo.set_limits("u", [RPM], resource="r")
         repo._rejection_cache._clock = _Clock()
         limiter = SyncRateLimiter(repository=repo)
