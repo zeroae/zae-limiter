@@ -82,6 +82,19 @@ async def _count_update_items(repo: Repository):
         yield calls
 
 
+def _cached(repo: Repository) -> bool:
+    """Whether the cache holds a usable state for entity u, resource r."""
+    return bool(repo._rejection_cache.views(repo._namespace_id, "u", "r", now_ms=repo._now_ms()))
+
+
+async def _teach(limiter: RateLimiter, repo: Repository) -> None:
+    """Drain u/r, then let one real failed write fill the cache."""
+    await _drain(limiter)
+    with pytest.raises(RateLimitExceeded):
+        await _drain(limiter)
+    assert _cached(repo)
+
+
 async def _drain(limiter: RateLimiter) -> None:
     """Spend the whole rpm allowance on entity u, resource r."""
     async with limiter.acquire("u", "r", consume={"rpm": 2}):
@@ -386,24 +399,30 @@ class TestLocalRejection:
 
     async def test_a_request_the_projection_fits_still_writes(self, limiter, repo):
         """The cache never admits: a fitting request goes to DynamoDB."""
-        await _drain(limiter)
+        await _teach(limiter, repo)
         later = repo._now_ms() + 60_000
         with patch.object(repo, "_now_ms", return_value=later):
+            assert _cached(repo)  # the entry is still trusted, and it projects a fit
             async with _count_update_items(repo) as calls:
                 async with limiter.acquire("u", "r", consume={"rpm": 1}) as lease:
                     pass
         assert calls  # it went to DynamoDB, and DynamoDB admitted it
         assert lease.consumed == {"rpm": 1}
+        assert repo.get_cache_stats().local_rejections == 0
 
     async def test_an_entry_past_the_ttl_goes_to_dynamodb(self, limiter, repo):
         clock = _Clock()
         repo._rejection_cache._clock = clock
-        await _drain(limiter)
+        await _teach(limiter, repo)
+        async with _count_update_items(repo) as calls:
+            with pytest.raises(RateLimitExceeded):
+                await _drain(limiter)
+        assert calls == []  # inside the TTL: rejected locally
         clock.now += 1.5
         async with _count_update_items(repo) as calls:
             with pytest.raises(RateLimitExceeded):
                 await _drain(limiter)
-        assert len(calls) == 1
+        assert len(calls) == 1  # past it: a real write
 
     async def test_ttl_zero_writes_every_rejection(self, repo):
         repo._rejection_cache = RejectionCache(ttl_seconds=0, max_entries=10)
@@ -411,35 +430,44 @@ class TestLocalRejection:
         async with RateLimiter(repository=repo) as limiter:
             await _drain(limiter)
             async with _count_update_items(repo) as calls:
-                with pytest.raises(RateLimitExceeded):
-                    await _drain(limiter)
-        assert len(calls) == 1
+                for _ in range(2):
+                    with pytest.raises(RateLimitExceeded):
+                        await _drain(limiter)
+        assert len(calls) == 2
+        assert repo.get_cache_stats().local_rejections == 0
+        assert not _cached(repo)
 
     async def test_a_limits_override_is_not_rejected_locally(self, limiter, repo):
-        await _drain(limiter)
+        await _teach(limiter, repo)
         async with _count_update_items(repo) as calls:
             with pytest.raises(RateLimitExceeded):
                 async with limiter.acquire(
                     "u", "r", consume={"rpm": 1}, limits=[Limit.per_minute("rpm", 2)]
                 ):
                     pass
-        assert len(calls) >= 1
+        assert calls
+        assert repo.get_cache_stats().local_rejections == 0
 
     async def test_a_rollback_forgets_the_entry(self, limiter, repo):
         """Tokens we give back must not be hidden by our own cache."""
+        async with limiter.acquire("u", "r", consume={"rpm": 1}):  # slow path creates
+            pass
         with pytest.raises(RuntimeError):
-            async with limiter.acquire("u", "r", consume={"rpm": 2}):
-                with pytest.raises(RateLimitExceeded):
-                    await _drain(limiter)
+            async with limiter.acquire("u", "r", consume={"rpm": 1}):  # fast path: cached
+                assert _cached(repo)
                 raise RuntimeError("work failed")  # rollback credits rpm back
-
-        async with limiter.acquire("u", "r", consume={"rpm": 2}):
+        assert not _cached(repo)
+        async with limiter.acquire("u", "r", consume={"rpm": 1}):
             pass
 
     async def test_a_release_forgets_the_entry(self, limiter, repo):
-        async with limiter.acquire("u", "r", consume={"rpm": 2}) as lease:
-            await lease.release(rpm=2)
-        async with limiter.acquire("u", "r", consume={"rpm": 2}):
+        async with limiter.acquire("u", "r", consume={"rpm": 1}):  # slow path creates
+            pass
+        async with limiter.acquire("u", "r", consume={"rpm": 1}) as lease:  # fast path: cached
+            assert _cached(repo)
+            await lease.release(rpm=1)
+        assert not _cached(repo)
+        async with limiter.acquire("u", "r", consume={"rpm": 1}):
             pass
 
     async def test_an_admin_change_clears_the_cache(self, limiter, repo):
