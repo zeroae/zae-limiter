@@ -41,7 +41,8 @@ To run on LocalStack::
            AWS_SECRET_ACCESS_KEY=test AWS_DEFAULT_REGION=us-east-1
     uv run pytest tests/e2e/test_multi_stack_isolation.py -m integration -v
 
-To run on real AWS (``AWS_ENDPOINT_URL`` must be unset)::
+To run on real AWS (``AWS_ENDPOINT_URL`` and every ``AWS_ENDPOINT_URL_*`` must
+be unset, and the profile must set no ``endpoint_url``)::
 
     AWS_PROFILE=zeroae-code/AWSPowerUserAccess \\
       uv run pytest tests/e2e/test_multi_stack_isolation.py -m aws --run-aws -v
@@ -51,9 +52,12 @@ alarms) and deletes them.
 """
 
 import os
+import re
 from datetime import timedelta
 from unittest.mock import patch
+from urllib.parse import urlparse
 
+import boto3
 import pytest
 from click.testing import CliRunner
 
@@ -116,10 +120,31 @@ def backend(request) -> Backend:
     """Where this class deploys its pair: LocalStack, or real AWS under ``--run-aws``."""
     if request.param == "localstack":
         return localstack_backend(request.getfixturevalue("localstack_endpoint"))
-    if os.getenv("AWS_ENDPOINT_URL"):
-        # boto3 honours the variable, so "real AWS" would silently be LocalStack.
-        pytest.skip("AWS_ENDPOINT_URL is set; unset it to run against real AWS")
+    _require_real_aws()
     return aws_backend()
+
+
+def _require_real_aws() -> None:
+    """Skip unless every client these tests build resolves to real AWS.
+
+    boto3 honours ``AWS_ENDPOINT_URL``, the per-service ``AWS_ENDPOINT_URL_<SERVICE>``
+    variables and a profile's ``endpoint_url``, any of which would silently turn
+    "real AWS" into LocalStack for some services and not others. The clients'
+    resolved endpoints cover all three; the account id is the last check, since
+    LocalStack answers ``get_caller_identity`` with ``000000000000``.
+    """
+    overrides = sorted(name for name in os.environ if name.startswith("AWS_ENDPOINT_URL"))
+    if overrides:
+        pytest.skip(f"{', '.join(overrides)} set; unset to run against real AWS")
+    for service in ("dynamodb", "lambda", "cloudformation", "sts"):
+        url = boto3.client(service, region_name=REGION).meta.endpoint_url
+        host = urlparse(url).hostname or ""
+        if not host.endswith(".amazonaws.com"):
+            pytest.skip(f"{service} resolves to {url}, not AWS (a profile endpoint_url?)")
+    account = boto3.client("sts", region_name=REGION).get_caller_identity()["Account"]
+    assert re.fullmatch(r"\d{12}", account) and account != "000000000000", (
+        f"get_caller_identity returned {account!r}, not a real AWS account"
+    )
 
 
 def _client_min(stack: str, endpoint: str | None) -> str | None:
