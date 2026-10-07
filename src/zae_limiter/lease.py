@@ -202,6 +202,11 @@ class Lease:
     # `adjust()`, or a RateLimitExceeded status — CLAUDE.md requires it to be
     # filtered from every user-facing surface. Only _commit_initial() reads it.
     _carriers: list[LeaseEntry] = field(default_factory=list)
+    # The rejection cache's mark taken before the slow path read these buckets
+    # (ADR-147). `_record_written_states` records a written state only when no
+    # shard of its bucket was forgotten since — a refund landed in between is
+    # on the item but not in the state. None: never recorded, only forgotten.
+    _cache_mark: int | None = None
     # Names of the declared limits, computed once at construction so the hot
     # path (adjust/consume/release on every request) allocates nothing to
     # answer "is this key declared?". Entries are never appended after the
@@ -996,6 +1001,14 @@ class Lease:
         namespace_id = getattr(self.repository, "_namespace_id", None)
         if cache is None or namespace_id is None:
             return
+        # A bucket forgotten since the read (a refund that landed in between,
+        # or an admin clear) is on the item but not in these states.
+        mark = self._cache_mark
+        written_images = [
+            image
+            for image in written_images
+            if mark is not None and not cache.forgotten_since(namespace_id, *image[0][:2], mark)
+        ]
         recorded = {key for key, *_rest in written_images}
         for key in groups:
             if condition_failed or key not in recorded:

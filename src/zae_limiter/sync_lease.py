@@ -112,6 +112,7 @@ class SyncLease:
     "Whether this is the no-op lease yielded under ``on_unavailable=ALLOW``.\n\n    ``True`` only when the backend was unreachable and the limiter degraded\n    to allowing the request (Issue #455). Such a lease has no entries, and\n    ``adjust()``, ``consume()`` and ``release()`` are silent no-ops on it —\n    the declared-scope check that normally reports keys outside ``consume``\n    is skipped, so an outage never turns into a warning storm. Set\n    explicitly where that lease is built, never inferred from an empty\n    ``entries``: a real lease with nothing declared is not degraded.\n    "
     _unknown_keys: frozenset[str] = frozenset()
     _carriers: list[LeaseEntry] = field(default_factory=list)
+    _cache_mark: int | None = None
     _declared_names: frozenset[str] = field(init=False, default=frozenset())
 
     def __post_init__(self) -> None:
@@ -681,6 +682,12 @@ class SyncLease:
         namespace_id = getattr(self.repository, "_namespace_id", None)
         if cache is None or namespace_id is None:
             return
+        mark = self._cache_mark
+        written_images = [
+            image
+            for image in written_images
+            if mark is not None and (not cache.forgotten_since(namespace_id, *image[0][:2], mark))
+        ]
         recorded = {key for key, *_rest in written_images}
         for key in groups:
             if condition_failed or key not in recorded:

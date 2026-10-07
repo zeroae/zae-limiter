@@ -109,6 +109,14 @@ class RejectionCache:
         self._order: dict[_Key, None] = {}
         # When a slow-path acquire last re-read each bucket's config (phase 3).
         self._slow_passes: dict[_BucketKey, float] = {}
+        # A running count of forgets and clears, and each bucket's latest, so
+        # the slow path can tell whether a refund landed between its read and
+        # its write (#700 review). Bounded like the entries; an evicted bucket
+        # answers with the newest evicted count, which only skips a record.
+        self._seq = 0
+        self._forgotten: dict[_BucketKey, int] = {}
+        self._evicted_seq = 0
+        self._cleared_seq = 0
         self.local_rejections = 0
 
     @property
@@ -290,12 +298,39 @@ class RejectionCache:
     def forget(self, namespace_id: str, entity_id: str, resource: str, shard_id: int) -> None:
         """Drop one shard's entry: tokens came back by a route we caused."""
         self._drop((namespace_id, entity_id, resource, shard_id))
+        self._seq += 1
+        key = (namespace_id, entity_id, resource)
+        self._forgotten.pop(key, None)
+        self._forgotten[key] = self._seq
+        while len(self._forgotten) > self.max_entries:
+            try:
+                oldest = next(iter(self._forgotten))
+                self._evicted_seq = max(self._evicted_seq, self._forgotten.pop(oldest))
+            except (KeyError, StopIteration, RuntimeError):  # pragma: no cover - thread race
+                break
+
+    def mark(self) -> int:
+        """A point to ask :meth:`forgotten_since` about, taken before a slow-path read."""
+        return self._seq
+
+    def forgotten_since(self, namespace_id: str, entity_id: str, resource: str, mark: int) -> bool:
+        """Whether any shard of this bucket was forgotten (or the cache cleared) after ``mark``.
+
+        The slow path records the state its write left only when nothing was
+        forgotten between its read and that write: a refund that landed in
+        between is in the item but not in the state the write computed. A
+        record evicted from the bounded history answers yes.
+        """
+        last = self._forgotten.get((namespace_id, entity_id, resource), self._evicted_seq)
+        return max(last, self._cleared_seq) > mark
 
     def clear(self) -> None:
         """Drop every entry: an admin change may have moved any limit."""
         self._buckets.clear()
         self._order.clear()
         self._slow_passes.clear()
+        self._seq += 1
+        self._cleared_seq = self._seq
 
     def _drop(self, key: _Key) -> None:
         """Remove one entry from both structures; a missing key is fine."""

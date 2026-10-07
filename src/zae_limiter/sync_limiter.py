@@ -1951,6 +1951,8 @@ class SyncRateLimiter:
         """
         validate_identifier(entity_id, "entity_id")
         validate_resource(resource)
+        rejection_cache = getattr(self._repository, "_rejection_cache", None)
+        cache_mark = rejection_cache.mark() if rejection_cache is not None else None
         now_ms = self._repository._now_ms()
         child_shard, child_shard_count = self._repository.select_shard(
             entity_id, resource, shard_id, shard_count
@@ -2192,6 +2194,7 @@ class SyncRateLimiter:
             entries=entries,
             _carriers=carriers,
             _unknown_keys=unknown_keys,
+            _cache_mark=cache_mark,
         )
 
     def _fetch_entity_and_buckets(

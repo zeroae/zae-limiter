@@ -1879,6 +1879,49 @@ class TestRefillFromCache:
                     async with limiter.acquire("u", "r", consume={"rpm": 400}):
                         pass
 
+    async def test_a_refund_during_the_slow_pass_is_not_hidden(self, repo):
+        """Review of #700: a refund between read and write must not be recorded away."""
+        await repo.create_entity("u")
+        await repo.set_limits("u", [Limit.per_minute("rpm", 100)], resource="r")
+        async with RateLimiter(repository=repo) as limiter:
+            t0 = repo._now_ms()
+            with patch.object(repo, "_now_ms", return_value=t0):
+                async with limiter.acquire("u", "r", consume={"rpm": 90}):  # tk 10
+                    pass
+            real_write = repo.transact_write
+            fired = []
+
+            async def refund_lands_first(items):
+                if not fired:  # another lease in this process releases 50
+                    fired.append(True)
+                    await repo.write_each([repo.build_composite_adjust("u", "r", {"rpm": -50_000})])
+                return await real_write(items)
+
+            with (
+                patch.object(repo, "_now_ms", return_value=t0 + 6_000),
+                patch.object(repo, "transact_write", side_effect=refund_lands_first),
+                patch.object(limiter, "_refill_from_cache", return_value=None),
+            ):
+                async with limiter.acquire("u", "r", consume={"rpm": 15}):  # the slow pass
+                    pass
+            assert fired
+            with patch.object(repo, "_now_ms", return_value=t0 + 6_001):
+                async with limiter.acquire("u", "r", consume={"rpm": 40}):  # 55 are there
+                    pass
+
+    def test_forgotten_since_tracks_forgets_clears_and_evictions(self):
+        cache = RejectionCache(ttl_seconds=1.0, max_entries=1)
+        mark = cache.mark()
+        assert not cache.forgotten_since("ns", "u", "r", mark)
+        cache.forget("ns", "u", "r", 0)
+        assert cache.forgotten_since("ns", "u", "r", mark)
+        assert not cache.forgotten_since("ns", "v", "r", mark)
+        cache.forget("ns", "v", "r", 0)  # evicts u's record: the answer stays yes
+        assert cache.forgotten_since("ns", "u", "r", mark)
+        mark = cache.mark()
+        cache.clear()
+        assert cache.forgotten_since("ns", "w", "r", mark)
+
     async def test_get_entity_on_no_record_forgets_the_parent(self, repo):
         repo._record_parents[(repo._namespace_id, "ghost")] = None  # a stale answer
         assert await repo.get_entity("ghost") is None

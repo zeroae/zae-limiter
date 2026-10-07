@@ -2459,6 +2459,11 @@ class RateLimiter:
         validate_identifier(entity_id, "entity_id")
         validate_resource(resource)
 
+        # Before any read: the lease records what its write leaves only if no
+        # shard of the bucket was forgotten since (ADR-147, #700 review).
+        rejection_cache = getattr(self._repository, "_rejection_cache", None)
+        cache_mark = rejection_cache.mark() if rejection_cache is not None else None
+
         now_ms = self._repository._now_ms()
 
         # The shard is part of a bucket's identity (GHSA-76rv). Resolve it
@@ -2911,6 +2916,7 @@ class RateLimiter:
             entries=entries,
             _carriers=carriers,
             _unknown_keys=unknown_keys,
+            _cache_mark=cache_mark,
         )
 
     async def _fetch_entity_and_buckets(
