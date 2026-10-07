@@ -946,10 +946,13 @@ class TestE2EAWSSpeculativeConsume:
         )
         yield repo
 
+        # The builder created a whole CloudFormation stack, so delete the stack:
+        # `delete_table()` dropped only the table and leaked the stack and its
+        # IAM resources on every AWS run.
         try:
-            await repo.delete_table()
+            await repo.delete_stack()
         except Exception as e:
-            warnings.warn(f"Table cleanup failed: {e}", ResourceWarning, stacklevel=2)
+            warnings.warn(f"Stack cleanup failed: {e}", ResourceWarning, stacklevel=2)
         await repo.close()
 
     @pytest.mark.asyncio(loop_scope="class")
