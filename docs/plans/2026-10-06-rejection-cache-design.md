@@ -254,6 +254,14 @@ Memory: one `BucketState` per entry, a few hundred bytes; ~a few MB at the defau
   return by a route the projection cannot see. Operators who need exact admission at
   the cost of a write per 429 set it to `0`.
 - Rejections are per process: N processes each pay one real write per TTL.
+- **Phase 3 can credit less refill than the slow path near capacity.** The refill is
+  clamped against the cached balance. If another process debited the bucket since,
+  the real balance had more room below the ceiling than the cached one, so the slow
+  path would have credited more. Example: capacity 1000, cached 900, 500 of refill
+  due, a request for 950, and 40 debited elsewhere. Phase 3 credits 100 and leaves
+  10; the slow path would credit 140 and leave 50. At most the concurrent debit is
+  lost, once, because `rf` moves past it. It never over-admits: the floor still
+  checks the real balance. Accepted rather than narrowed (#700 review).
 - A local rejection's statuses come from a projected state, not a fresh image. They
   are what the server would report if nothing else wrote meanwhile.
 
