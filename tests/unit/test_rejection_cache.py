@@ -1992,6 +1992,18 @@ class TestRefillFromCache:
         repo.close()
 
 
+def test_recording_written_states_skips_a_backend_without_the_cache():
+    """A third-party backend has no `_rejection_cache`: nothing to record."""
+    from types import SimpleNamespace
+    from typing import cast
+
+    from zae_limiter.lease import Lease
+    from zae_limiter.repository_protocol import RepositoryProtocol
+
+    lease = Lease(repository=cast(RepositoryProtocol, SimpleNamespace()))
+    lease._record_written_states({("u", "r", 0): []}, [], condition_failed=True)
+
+
 class TestSteadyLoad:
     """A minute of steady over-demand, with the cache on and off (ADR-147, #695).
 
