@@ -1188,6 +1188,13 @@ class BucketState:
     # grant was sized at. `None` for a rate limit and for a quota item written
     # before ADR-145 (read as `shard_count`, see `grant_shard_count`).
     grant_count: int | None = None
+    # The item's `vu` as this state was read, epoch ms; `None` when the item
+    # carries none (or the state was not read off an item). The slow path's
+    # rf-locked write pins it whenever it sets or removes `vu`, so a `vu = 0` a
+    # limit-change fan-out stamped after the read is never erased.
+    stored_vu_ms: int | None = None
+    # True only for a state read off an item, where `stored_vu_ms` is known.
+    stored_vu_read: bool = False
 
     @property
     def tokens(self) -> int:

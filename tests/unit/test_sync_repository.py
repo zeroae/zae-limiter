@@ -4739,6 +4739,34 @@ class TestSlowPathWritesVu:
         assert "#vu = :vu" in expr
         assert " REMOVE " not in expr or "#vu" not in expr.split(" REMOVE ")[1]
 
+    def _pinned(self, repo, **kwargs):
+        return repo.build_composite_normal(
+            "user-1",
+            "gpt-4",
+            consumed={"rpm": 1000},
+            refill_amounts={"rpm": 0},
+            now_ms=self.NOW,
+            expected_rf=self.NOW - 1000,
+            pin_vu=True,
+            **kwargs,
+        )["Update"]
+
+    def test_clearing_vu_pins_the_vu_it_read(self, repo):
+        """#701: a fan-out's `vu = 0` stamped after the read must not be erased."""
+        upd = self._pinned(repo, clear_vu=True, expected_vu=0)
+        assert "#vu = :evu" in upd["ConditionExpression"]
+        assert upd["ExpressionAttributeValues"][":evu"] == {"N": "0"}
+
+    def test_restamping_vu_pins_an_absent_one(self, repo):
+        upd = self._pinned(repo, vu=self.HORIZON, expected_vu=None)
+        assert "attribute_not_exists(#vu)" in upd["ConditionExpression"]
+        assert ":evu" not in upd["ExpressionAttributeValues"]
+
+    def test_a_write_that_leaves_vu_alone_pins_nothing(self, repo):
+        upd = self._pinned(repo, expected_vu=0)
+        assert "#vu" not in upd["ConditionExpression"]
+        assert ":evu" not in upd["ExpressionAttributeValues"]
+
     def test_clear_vu_rides_beside_a_ttl_remove(self, repo):
         """Both REMOVEs in one clause, which is the shape the unscheduled
         entity-config bucket actually takes (ADR-136 REMOVEs `ttl`)."""

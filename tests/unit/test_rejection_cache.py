@@ -1871,8 +1871,11 @@ class TestRefillFromCache:
                 patch.object(limiter, "_refill_from_cache", return_value=None),
                 patch.object(repo, "transact_write", side_effect=racing_write),
             ):
-                async with limiter.acquire("u", "r", consume={"rpm": 100}):  # the slow pass
-                    pass
+                try:  # the slow pass; its write loses the `vu` pin to the cut (#701)
+                    async with limiter.acquire("u", "r", consume={"rpm": 100}):
+                        pass
+                except RateLimitExceeded:
+                    pass  # the consumption-only retry: 50 cannot cover 100
             assert fired
             with patch.object(repo, "_now_ms", return_value=t0 + 36_000):
                 with pytest.raises(RateLimitExceeded):  # 10/min cannot cover 400

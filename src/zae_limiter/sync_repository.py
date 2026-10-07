@@ -2372,6 +2372,8 @@ class SyncRepository:
         applied_windows: dict[str, int] | None = None,
         grant_counts: dict[str, int] | None = None,
         owner: tuple[bool, str | None] | None = None,
+        pin_vu: bool = False,
+        expected_vu: int | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -2400,6 +2402,11 @@ class SyncRepository:
                 group covers every limit sharing the item. This is the half of
                 the #468 fan-out's `vu = 0` that makes it self-clearing rather
                 than a permanent fast-path demotion.
+            pin_vu: When this write sets or removes `vu`, require the item's
+                `vu` to still be ``expected_vu`` (absent when None): the value
+                the caller read. A fan-out's `vu = 0` stamped after the read
+                is then never erased (#701).
+            expected_vu: The `vu` the caller read off the item.
             windows: Limit name -> ``(window_start_ms, reset_after_seconds)``
                 to stamp as ``b_{name}_ws`` and ``b_{name}_rsa`` (ADR-139).
                 Only limits whose window rolled on **this** pass appear; an
@@ -2570,6 +2577,12 @@ class SyncRepository:
             attr_names["#pinsc"] = "shard_count"
             attr_values[":pinsc"] = {"N": str(pin_shard_count)}
             condition_parts.append("(attribute_not_exists(#pinsc) OR #pinsc <= :pinsc)")
+        if pin_vu and (vu is not None or clear_vu):
+            if expected_vu is None:
+                condition_parts.append("attribute_not_exists(#vu)")
+            else:
+                attr_values[":evu"] = {"N": str(expected_vu)}
+                condition_parts.append("#vu = :evu")
         if seeded_tz is not None:
             set_parts.append("#stz = :stz")
             attr_names["#stz"] = schema.BUCKET_FIELD_SCHED_TZ
@@ -5456,6 +5469,8 @@ class SyncRepository:
         resource = item.get("resource", {}).get("S", "")
         rf = int(item.get(schema.BUCKET_FIELD_RF, {}).get("N", "0"))
         shard_count = int(item.get("shard_count", {}).get("N", "1"))
+        vu_raw = item.get(schema.BUCKET_FIELD_VU, {}).get("N")
+        stored_vu = int(vu_raw) if vu_raw is not None else None
         sched_tz = item.get(schema.BUCKET_FIELD_SCHED_TZ, {}).get("S") or "UTC"
         item_sched = item.get(schema.BUCKET_FIELD_SCHED, {}).get("S")
         item_rsched = item.get(schema.BUCKET_FIELD_RSCHED, {}).get("S")
@@ -5552,6 +5567,8 @@ class SyncRepository:
                     window_applied_ms=window_applied_ms,
                     window_consumed_mark_milli=window_consumed_mark,
                     grant_count=grant_count,
+                    stored_vu_ms=stored_vu,
+                    stored_vu_read=True,
                 )
             )
         return buckets

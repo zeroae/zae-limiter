@@ -208,6 +208,22 @@ class TestCompositeBuilders:
         )["Update"]
         assert_expression_safe(update)
 
+    @pytest.mark.parametrize("expected_vu", [None, 0])
+    def test_normal_pinning_the_vu_it_read(self, expected_vu) -> None:
+        """#701: the pin's `:evu` is declared exactly when it is used."""
+        update = _repo().build_composite_normal(
+            "user-1",
+            "api",
+            consumed={DOTTED: 1, HYPHENATED: 1},
+            refill_amounts={},
+            now_ms=2_000,
+            expected_rf=1_000,
+            clear_vu=True,
+            pin_vu=True,
+            expected_vu=expected_vu,
+        )["Update"]
+        assert_expression_safe(update)
+
     def test_retry(self) -> None:
         update = _repo().build_composite_retry(
             "user-1", "api", consumed={DOTTED: 1000, HYPHENATED: 2000}

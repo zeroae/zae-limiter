@@ -456,6 +456,9 @@ class SyncLease:
                 pin = [e.state.shard_count for e in group_entries if e._seed and e.limit.is_quota]
                 pin += list(grant_counts.values())
                 written_rf = _monotonic_rf(now_ms, expected_rf, group_entries)
+                read_state = next(
+                    (e.state for e in group_entries if not e._seed and e.state.stored_vu_read), None
+                )
                 if (
                     not seeds
                     and (not windows)
@@ -501,6 +504,8 @@ class SyncLease:
                         pin_shard_count=min(pin, default=None),
                         rf_ms=written_rf,
                         clear_vu=not boundaries,
+                        pin_vu=read_state is not None,
+                        expected_vu=read_state.stored_vu_ms if read_state is not None else None,
                         owner=(owner_entry._cascade, owner_entry._parent_id)
                         if owner_entry is not None
                         else None,

@@ -553,12 +553,18 @@ class SyncRepositoryProtocol(Protocol):
         applied_windows: dict[str, int] | None = None,
         grant_counts: dict[str, int] | None = None,
         owner: tuple[bool, str | None] | None = None,
+        pin_vu: bool = False,
+        expected_vu: int | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
         ``owner`` is ``(cascade, parent_id)`` from the item owner's META, read
         this pass: when given, both stamps are rewritten so the fast path's
         denormalised copy is repaired (#684). ``None`` leaves them as stored.
+
+        ``pin_vu``: when the write sets or removes ``vu``, require it to still be
+        ``expected_vu`` (absent when None), the value the caller read, so a
+        limit-change fan-out's ``vu = 0`` stamped after the read survives (#701).
 
         Args:
             entity_id: Entity owning the bucket

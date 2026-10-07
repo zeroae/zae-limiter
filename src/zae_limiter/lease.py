@@ -687,6 +687,12 @@ class Lease:
                 # Computed after the loop above, which can anchor a window at
                 # this reading; the lock still compares the stored `expected_rf`.
                 written_rf = _monotonic_rf(now_ms, expected_rf, group_entries)
+                # The `vu` this pass read, to pin when the write sets or
+                # removes it (#701): only from a state read off the item.
+                read_state = next(
+                    (e.state for e in group_entries if not e._seed and e.state.stored_vu_read),
+                    None,
+                )
                 # What this write leaves on the item, for the rejection cache
                 # (ADR-147): only the shape phase 3 can refill from, where the
                 # in-memory state is exactly what the write computed.
@@ -747,6 +753,8 @@ class Lease:
                         # or not, to force exactly this pass), and the fast
                         # path would fail its `vu > now` guard forever.
                         clear_vu=not boundaries,
+                        pin_vu=read_state is not None,
+                        expected_vu=read_state.stored_vu_ms if read_state is not None else None,
                         owner=(
                             (owner_entry._cascade, owner_entry._parent_id)
                             if owner_entry is not None

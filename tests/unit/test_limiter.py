@@ -32,7 +32,9 @@ from zae_limiter.models import BucketState
 from zae_limiter.repository_protocol import SpeculativeResult
 from zae_limiter.schedule import ScheduleEntry, retry_after_with_schedule
 from zae_limiter.schema import (
+    BUCKET_FIELD_CP,
     BUCKET_FIELD_GC,
+    BUCKET_FIELD_RA,
     BUCKET_FIELD_RF,
     BUCKET_FIELD_RSA,
     BUCKET_FIELD_TK,
@@ -9888,6 +9890,62 @@ class TestFanOutVuSelfClears:
             pass
 
         assert BUCKET_FIELD_VU not in await self._raw(repo, "vu-clear")
+
+    async def test_a_cut_landing_during_a_slow_pass_keeps_its_vu(self, limiter):
+        """#701: the rf lock cannot see a fan-out, so the write pins the `vu` it read.
+
+        The slow pass reads the item with no `vu`; a limit cut elsewhere then
+        rewrites `cp`/`ra` and stamps `vu = 0` without moving `rf`. Erasing that
+        stamp let the fast path spend a balance above the new limit.
+        """
+        repo = limiter._repository
+        await repo.create_entity("vu-race")
+        await repo.set_limits("vu-race", [Limit.per_minute("rpm", 1000)], resource="gpt-4")
+        t0 = repo._now_ms()
+        with patch.object(repo, "_now_ms", return_value=t0):
+            async with limiter.acquire("vu-race", "gpt-4", consume={"rpm": 1}):  # creates
+                pass
+            async with limiter.acquire("vu-race", "gpt-4", consume={"rpm": 999}):  # tk 0
+                pass
+        client = await repo._get_client()
+        real_write = repo.transact_write
+        fired = []
+
+        async def racing_write(items):
+            if not fired:  # what _sync_bucket_params writes, from another process
+                fired.append(True)
+                await client.update_item(
+                    TableName=repo.table_name,
+                    Key={
+                        "PK": {"S": pk_bucket(repo._namespace_id, "vu-race", "gpt-4", 0)},
+                        "SK": {"S": sk_state()},
+                    },
+                    UpdateExpression="SET #cp = :cp, #ra = :ra, #vu = :zero",
+                    ExpressionAttributeNames={
+                        "#cp": bucket_attr("rpm", BUCKET_FIELD_CP),
+                        "#ra": bucket_attr("rpm", BUCKET_FIELD_RA),
+                        "#vu": BUCKET_FIELD_VU,
+                    },
+                    ExpressionAttributeValues={
+                        ":cp": {"N": "10000"},
+                        ":ra": {"N": "10000"},
+                        ":zero": {"N": "0"},
+                    },
+                )
+            return await real_write(items)
+
+        with (
+            patch.object(repo, "_now_ms", return_value=t0 + 6_000),  # 100 of refill due
+            patch.object(repo, "transact_write", side_effect=racing_write),
+            patch.object(limiter, "_refill_from_cache", return_value=None),  # the slow pass
+        ):
+            try:  # a slow pass: tk 0 cannot cover 50, refill can
+                async with limiter.acquire("vu-race", "gpt-4", consume={"rpm": 50}):
+                    pass
+            except RateLimitExceeded:
+                pass  # the consumption-only retry finds tk 0
+        assert fired
+        assert (await self._raw(repo, "vu-race"))[BUCKET_FIELD_VU]["N"] == "0"
 
     async def test_the_forced_pass_trims_the_surplus_it_exists_for(self, limiter):
         """#469's scenario end to end: shrink 1000 -> 10 on a full bucket."""

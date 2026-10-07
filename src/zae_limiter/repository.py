@@ -2823,6 +2823,8 @@ class Repository:
         applied_windows: dict[str, int] | None = None,
         grant_counts: dict[str, int] | None = None,
         owner: tuple[bool, str | None] | None = None,
+        pin_vu: bool = False,
+        expected_vu: int | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -2851,6 +2853,11 @@ class Repository:
                 group covers every limit sharing the item. This is the half of
                 the #468 fan-out's `vu = 0` that makes it self-clearing rather
                 than a permanent fast-path demotion.
+            pin_vu: When this write sets or removes `vu`, require the item's
+                `vu` to still be ``expected_vu`` (absent when None): the value
+                the caller read. A fan-out's `vu = 0` stamped after the read
+                is then never erased (#701).
+            expected_vu: The `vu` the caller read off the item.
             windows: Limit name -> ``(window_start_ms, reset_after_seconds)``
                 to stamp as ``b_{name}_ws`` and ``b_{name}_rsa`` (ADR-139).
                 Only limits whose window rolled on **this** pass appear; an
@@ -3080,6 +3087,17 @@ class Repository:
             attr_names["#pinsc"] = "shard_count"
             attr_values[":pinsc"] = {"N": str(pin_shard_count)}
             condition_parts.append("(attribute_not_exists(#pinsc) OR #pinsc <= :pinsc)")
+        if pin_vu and (vu is not None or clear_vu):
+            # `vu` as it was read. A limit-change fan-out rewrites `cp`/`ra`/`rp`
+            # and stamps `vu = 0` without moving `rf`, so the `rf` lock alone
+            # let this write erase a stamp that landed after the read, and the
+            # fast path spent a balance above the new limit (#701). A lost pin
+            # falls to the consumption-only retry, which leaves `vu` alone.
+            if expected_vu is None:
+                condition_parts.append("attribute_not_exists(#vu)")
+            else:
+                attr_values[":evu"] = {"N": str(expected_vu)}
+                condition_parts.append("#vu = :evu")
         if seeded_tz is not None:
             # One zone per item (§4.1). Every limit written by this pass was
             # resolved from one config level, which `set_limits()` holds to a
@@ -6619,6 +6637,8 @@ class Repository:
         # Carried so refill math uses this shard's effective share (ADR-133).
         # The reserved wcu limit is per-partition and stays undivided.
         shard_count = int(item.get("shard_count", {}).get("N", "1"))
+        vu_raw = item.get(schema.BUCKET_FIELD_VU, {}).get("N")
+        stored_vu = int(vu_raw) if vu_raw is not None else None
 
         # One hoisted zone for the whole item, covering both tuples (#222
         # §4.1). Absent on every item written before scheduling existed, where
@@ -6766,6 +6786,8 @@ class Repository:
                     window_applied_ms=window_applied_ms,
                     window_consumed_mark_milli=window_consumed_mark,
                     grant_count=grant_count,
+                    stored_vu_ms=stored_vu,
+                    stored_vu_read=True,
                 )
             )
 
