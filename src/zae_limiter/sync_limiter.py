@@ -1269,6 +1269,14 @@ class SyncRateLimiter:
             cached_tokens={state.limit_name: state.tokens_milli for state in views[shard]},
             cached_shard_count=entries[shard].shard_count,
             ttl_seconds=ttl_seconds,
+            cached_params={
+                state.limit_name: (
+                    state.capacity_milli,
+                    state.refill_amount_milli,
+                    state.refill_period_ms,
+                )
+                for state in views[shard]
+            },
         )
         if result is None:
             return None

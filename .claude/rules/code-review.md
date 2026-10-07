@@ -61,7 +61,8 @@ Path 1 / Path 2 / refill:
 ## Bucket writes and the refill-from-cache write (ADR-147 phase 3)
 The client can admit from a cached bucket state with one locked write
 (`Repository.build_cached_refill`). It is safe only while every other write to a bucket item is
-visible to its condition: `rf`, `vu` absent, each limit's `tk <=` the cached value,
+visible to its condition: `rf`, `vu` absent, each limit's `tk <=` the cached value, each
+limit's stored `cp`/`ra`/`rp` equal to the cached ones,
 `shard_count`, `cascade` off, not `disabled`, TTL unexpired, and the floor
 `tk >= consumed − refill` on every debited limit at any sign. The phase-3 review found four
 writers that changed a bucket without touching any of those — a cascade stamp, a credit `ADD`,

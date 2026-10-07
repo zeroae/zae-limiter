@@ -1804,6 +1804,81 @@ class TestRefillFromCache:
                 await limiter._refill_from_cache("u", "r", {"rpm": 1}, now)
         refill.assert_called_once()
 
+    async def _drained_to_50(self, repo, limiter, t0):
+        """1000/min, drained to a cached 50 by a fast-path acquire at `t0`."""
+        with patch.object(repo, "_now_ms", return_value=t0):
+            async with limiter.acquire("u", "r", consume={"rpm": 900}):  # slow path: creates
+                pass
+            async with limiter.acquire("u", "r", consume={"rpm": 50}):  # fast path: 50 cached
+                pass
+
+    async def test_a_limit_cut_elsewhere_is_not_refilled_at_the_old_rate(self, repo):
+        """Review of #700: a slow pass behind the stored `rf` clears the sync's `vu = 0`."""
+        await repo.create_entity("u")
+        await repo.set_limits("u", [Limit.per_minute("rpm", 1000)], resource="r")
+        other = Repository(
+            name="test-rejection", region="us-east-1", _skip_deprecation_warning=True
+        )
+        other._namespace_id = repo._namespace_id
+        async with RateLimiter(repository=repo) as limiter, RateLimiter(repository=other) as l2:
+            t0 = repo._now_ms()
+            await self._drained_to_50(repo, limiter, t0)
+            await other.set_limits("u", [Limit.per_minute("rpm", 10)], resource="r")  # vu = 0
+            with patch.object(other, "_now_ms", return_value=t0):  # clock at the stored rf
+                async with l2.acquire("u", "r", consume={"rpm": 1}):  # clears vu, rf unmoved
+                    pass
+            with patch.object(repo, "_now_ms", return_value=t0 + 30_000):
+                with pytest.raises(RateLimitExceeded):  # 10/min cannot cover 400
+                    async with limiter.acquire("u", "r", consume={"rpm": 400}):
+                        pass
+        await other.close()
+
+    async def test_a_limit_cut_during_the_slow_pass_is_not_recorded_as_the_old(self, repo):
+        """Review of #700: the recorded state carries what the slow path read."""
+        await repo.create_entity("u")
+        await repo.set_limits("u", [Limit.per_minute("rpm", 1000)], resource="r")
+        async with RateLimiter(repository=repo) as limiter:
+            t0 = repo._now_ms()
+            await self._drained_to_50(repo, limiter, t0)
+            client = await repo._get_client()
+            real_write = repo.transact_write
+            fired = []
+
+            async def racing_write(items):
+                if not fired:  # another process's param sync lands between read and write
+                    fired.append(True)
+                    await client.update_item(
+                        TableName=repo.table_name,
+                        Key={
+                            "PK": {"S": schema.pk_bucket(repo._namespace_id, "u", "r", 0)},
+                            "SK": {"S": schema.sk_state()},
+                        },
+                        UpdateExpression="SET #cp = :cp, #ra = :ra, vu = :zero",
+                        ExpressionAttributeNames={
+                            "#cp": schema.bucket_attr("rpm", schema.BUCKET_FIELD_CP),
+                            "#ra": schema.bucket_attr("rpm", schema.BUCKET_FIELD_RA),
+                        },
+                        ExpressionAttributeValues={
+                            ":cp": {"N": "10000"},
+                            ":ra": {"N": "10000"},
+                            ":zero": {"N": "0"},
+                        },
+                    )
+                return await real_write(items)
+
+            with (
+                patch.object(repo, "_now_ms", return_value=t0 + 6_000),
+                patch.object(limiter, "_refill_from_cache", return_value=None),
+                patch.object(repo, "transact_write", side_effect=racing_write),
+            ):
+                async with limiter.acquire("u", "r", consume={"rpm": 100}):  # the slow pass
+                    pass
+            assert fired
+            with patch.object(repo, "_now_ms", return_value=t0 + 36_000):
+                with pytest.raises(RateLimitExceeded):  # 10/min cannot cover 400
+                    async with limiter.acquire("u", "r", consume={"rpm": 400}):
+                        pass
+
     async def test_get_entity_on_no_record_forgets_the_parent(self, repo):
         repo._record_parents[(repo._namespace_id, "ghost")] = None  # a stale answer
         assert await repo.get_entity("ghost") is None

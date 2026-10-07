@@ -3173,6 +3173,7 @@ class SyncRepository:
         cached_tokens: dict[str, int],
         cached_shard_count: int,
         ttl_seconds: int | None = None,
+        cached_params: dict[str, tuple[int, int, int]] | None = None,
     ) -> dict[str, Any]:
         """The UpdateItem ``refill_from_cached_state`` sends (ADR-147 phase 3).
 
@@ -3188,7 +3189,9 @@ class SyncRepository:
         the floor ``tk >= consumed - refill`` refuses — added here for every
         limit debited **at any sign**, since ``build_composite_normal`` emits
         it only when the debit exceeds the refill), and
-        ``cached_shard_count`` pins ``shard_count`` (a doubling
+        ``cached_params`` pins each limit's stored ``cp``/``ra``/``rp`` (a limit
+        change elsewhere stamps ``vu = 0``, which a slow pass that does not move
+        ``rf`` then clears), and ``cached_shard_count`` pins ``shard_count`` (a doubling
         elsewhere — client bump, propagation, aggregator Path 1 — shrinks the
         per-shard ceiling and rate the refill was computed against).
         """
@@ -3233,6 +3236,14 @@ class SyncRepository:
                 "N": str(c - refill_amounts.get(name, 0))
             }
             update["ConditionExpression"] += f" AND #cf{j} >= :cf{j}"
+        fields = (schema.BUCKET_FIELD_CP, schema.BUCKET_FIELD_RA, schema.BUCKET_FIELD_RP)
+        for k, (name, values) in enumerate((cached_params or {}).items()):
+            for code, field, value in zip("cap", fields, values, strict=True):
+                update["ExpressionAttributeNames"][f"#cp{code}{k}"] = schema.bucket_attr(
+                    name, field
+                )
+                update["ExpressionAttributeValues"][f":cp{code}{k}"] = {"N": str(value)}
+                update["ConditionExpression"] += f" AND #cp{code}{k} = :cp{code}{k}"
         update["ExpressionAttributeNames"]["#csc"] = "shard_count"
         update["ExpressionAttributeValues"][":csc"] = {"N": str(cached_shard_count)}
         update["ConditionExpression"] += " AND (attribute_not_exists(#csc) OR #csc = :csc)"
@@ -3252,6 +3263,7 @@ class SyncRepository:
         cached_tokens: dict[str, int],
         cached_shard_count: int,
         ttl_seconds: int | None = None,
+        cached_params: dict[str, tuple[int, int, int]] | None = None,
     ) -> SpeculativeResult | None:
         """The slow path's rf-locked write, built from a cached state (ADR-147 phase 3).
 
@@ -3278,6 +3290,7 @@ class SyncRepository:
             cached_tokens=cached_tokens,
             cached_shard_count=cached_shard_count,
             ttl_seconds=ttl_seconds,
+            cached_params=cached_params,
         )["Update"]
         client = self._get_client()
         try:

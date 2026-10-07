@@ -180,6 +180,10 @@ something wrote since, which the lock detects.
    - each limit's `tk <=` its cached value — a refund, release, rollback or
      compensation elsewhere `ADD`s tokens, and the clamp computed against the lower
      cached balance would land above the ceiling;
+   - each limit's stored `cp`/`ra`/`rp` equal to the cached ones — a limit change
+     elsewhere rewrites them and stamps `vu = 0`, but a slow pass that does not move
+     `rf` (a writer whose clock is behind the stored `rf`) then clears that `vu`, and
+     the refill would run at the old rate (#700 review: 400 admitted against 10/min);
    - `shard_count` equal to the cached one — a doubling elsewhere shrinks the
      per-shard ceiling and rate;
    - `cascade` absent or false — a policy turned on elsewhere stamps it (ADR-146);
