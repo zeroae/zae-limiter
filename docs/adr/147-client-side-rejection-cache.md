@@ -30,8 +30,11 @@ to now with the fast path's own refill arithmetic, cannot cover a limit declared
 `consume` on every shard not known to have room; the cache must never admit a request on
 its own: an admission it leads to must be a conditional write that fails if anything
 the admission was computed from changed since the state was seen — `rf`, `vu`, any
-limit's balance rising, `shard_count`, the `cascade` and `disabled` stamps, the TTL —
-and every other writer of a bucket item must change at least one of those. For a child whose
+limit's balance rising, the balance left going negative, `shard_count`, the `cascade`
+and `disabled` stamps, the TTL — and every other writer of a bucket item must change at
+least one of those. Because that write re-checks everything, it may start from a state
+up to one config-cache window old; only a local rejection is bounded by
+`rejection_cache_ttl`. For a child whose
 own bucket shows it cascades on the resource, the same rule must apply to the parent's
 shards, and the child itself may be rejected locally only while a trusted parent state
 shows the parent is not disabled.

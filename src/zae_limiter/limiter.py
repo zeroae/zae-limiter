@@ -1571,11 +1571,14 @@ class RateLimiter:
         record_parents = getattr(self._repository, "_record_parents", None) or {}
         key = (namespace_id, entity_id)
         has_no_parent = key in record_parents and record_parents[key] is None
-        views = cache.views(namespace_id, entity_id, resource, now_ms)
+        # A state up to one slow-pass window old (option A): the write
+        # re-checks it on the server, and the slow pass bounds the stamps.
+        max_age = max(window, cache.ttl_seconds)
+        views = cache.views(namespace_id, entity_id, resource, now_ms, max_age)
         candidates: list[int] = []
         entries: dict[int, Any] = {}
         for shard, buckets in views.items():
-            entry = cache.trusted_entry(namespace_id, entity_id, resource, shard, now_ms)
+            entry = cache.trusted_entry(namespace_id, entity_id, resource, shard, now_ms, max_age)
             if entry is None or entry.vu_ms is not None:
                 continue
             entries[shard] = entry

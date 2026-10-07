@@ -164,7 +164,12 @@ class RejectionCache:
             self._drop(oldest)
 
     def views(
-        self, namespace_id: str, entity_id: str, resource: str, now_ms: int
+        self,
+        namespace_id: str,
+        entity_id: str,
+        resource: str,
+        now_ms: int,
+        max_age_seconds: float | None = None,
     ) -> dict[int, list[BucketState]]:
         """Bucket states that may be used to reject, keyed by shard.
 
@@ -181,24 +186,35 @@ class RejectionCache:
             return {}
         found: dict[int, list[BucketState]] = {}
         for shard_id, entry in list(shards.items()):
-            if self._trusted(entry, now_ms) and not entry.disabled:
+            if self._trusted(entry, now_ms, max_age_seconds) and not entry.disabled:
                 found[shard_id] = list(entry.buckets)
         return found
 
-    def _trusted(self, entry: _Entry, now_ms: int) -> bool:
+    def _trusted(self, entry: _Entry, now_ms: int, max_age_seconds: float | None = None) -> bool:
         """Inside the age cap, before its ``vu`` and before its bucket TTL.
 
         The one test every read that leads to a local rejection applies, so
-        each such decision is bounded by ``ttl_seconds``.
+        each such decision is bounded by ``ttl_seconds``. Phase 3 passes a
+        longer ``max_age_seconds``: its write re-checks the state on the server
+        and a stale one is refused for the 1 WCU today's failed speculative
+        write already costs, so the age cap that bounds a wrong local
+        rejection does not apply to it.
         """
+        max_age = self.ttl_seconds if max_age_seconds is None else max_age_seconds
         return not (
-            entry.stored_at <= self._clock() - self.ttl_seconds
+            entry.stored_at <= self._clock() - max_age
             or (entry.vu_ms is not None and entry.vu_ms <= now_ms)
             or (entry.ttl_epoch is not None and entry.ttl_epoch <= now_ms // 1000)
         )
 
     def trusted_entry(
-        self, namespace_id: str, entity_id: str, resource: str, shard_id: int, now_ms: int
+        self,
+        namespace_id: str,
+        entity_id: str,
+        resource: str,
+        shard_id: int,
+        now_ms: int,
+        max_age_seconds: float | None = None,
     ) -> _Entry | None:
         """One shard's entry, if it passes the trust test and is not disabled.
 
@@ -208,7 +224,7 @@ class RejectionCache:
         """
         shards = self._buckets.get((namespace_id, entity_id, resource)) or {}
         entry = shards.get(shard_id)
-        if entry is None or entry.disabled or not self._trusted(entry, now_ms):
+        if entry is None or entry.disabled or not self._trusted(entry, now_ms, max_age_seconds):
             return None
         return entry
 

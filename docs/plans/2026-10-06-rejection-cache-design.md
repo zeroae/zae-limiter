@@ -158,8 +158,14 @@ materialisation covers the request, today's path pays a failed speculative write
 cached state the read is redundant — the state is what the read would return, unless
 something wrote since, which the lock detects.
 
-1. **When.** Only from a **trusted** cached state (decision 3's age cap, before `vu` and
-   the bucket TTL, not disabled), and only when its **stored** balance cannot cover the
+1. **When.** Only from a cached state that is before `vu` and the bucket TTL, not
+   disabled, and at most **one slow-pass window** old (`config_cache_ttl`, 60 s by
+   default) — not decision 3's 1 s cap. That cap bounds a *wrong local rejection*,
+   which nothing re-checks; this write re-checks the state on the server, and a stale
+   one is refused for the 1 WCU today's failed speculative write already costs. With
+   the 1 s cap the write almost never ran: a request needing a second of refill always
+   outlived the state it would refill from (simulated, 5 minutes of steady over-demand:
+   3 writes out of ~290 admissions; with the window, ~290). And only when its **stored** balance cannot cover the
    request (the speculative write would fail) but its projection to now can. Every
    other case is unchanged: enough stored ⇒ the speculative write; short after refill ⇒
    phases 1–2.

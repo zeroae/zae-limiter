@@ -6,6 +6,7 @@ cache may only reject, never admit.
 """
 
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from unittest.mock import patch
 
 import pytest
@@ -1558,7 +1559,9 @@ class TestRefillFromCache:
         if case != "no_recent_slow_pass":  # a slow pass re-read u's config just now
             repo._rejection_cache.note_slow_pass(ns, "u", "r")
         if case == "untrusted":
-            clock.now += 1.5
+            # Older than one slow-pass window (option A), though a slow pass is recent.
+            clock.now += repo._config_cache_ttl + 1
+            repo._rejection_cache.note_slow_pass(ns, "u", "r")
         with patch.object(repo, "refill_from_cached_state", return_value=None) as refill:
             async with RateLimiter(repository=repo) as limiter:
                 assert await limiter._refill_from_cache("u", "r", consume, now) is None
@@ -1779,6 +1782,27 @@ class TestRefillFromCache:
                     async with limiter.acquire("u", "r", consume={"rpm": 1}):
                         pass
         assert results == [None]  # phase 3 tried it; the floor refused it
+
+    async def test_uses_a_state_older_than_the_rejection_age_cap(self, repo):
+        """Option A: phase 3 takes a state past `ttl_seconds`; local rejection does not."""
+        ns = repo._namespace_id
+        await repo.create_entity("u")
+        await repo.set_limits("u", [RPM], resource="r")
+        await repo.resolve_limits("u", "r")  # warm the config cache
+        now = repo._now_ms()
+        state = replace(_state(0), last_refill_ms=now - 60_000)  # a minute of refill due
+        clock = _Clock()
+        repo._rejection_cache._clock = clock
+        repo._rejection_cache.store(
+            ns, "u", "r", 0, [state], shard_count=1, vu_ms=None, ttl_epoch=None, disabled=False
+        )
+        clock.now += 30  # past the 1 s cap, inside the 60 s window
+        repo._rejection_cache.note_slow_pass(ns, "u", "r")
+        assert not repo._rejection_cache.views(ns, "u", "r", now)  # never rejects from it
+        with patch.object(repo, "refill_from_cached_state", return_value=None) as refill:
+            async with RateLimiter(repository=repo) as limiter:
+                await limiter._refill_from_cache("u", "r", {"rpm": 1}, now)
+        refill.assert_called_once()
 
     async def test_get_entity_on_no_record_forgets_the_parent(self, repo):
         repo._record_parents[(repo._namespace_id, "ghost")] = None  # a stale answer
@@ -2059,6 +2083,47 @@ class TestSteadyLoad:
     stale (the slow path records what its rf-locked write left).
     """
 
+    async def test_a_state_spent_elsewhere_in_the_longer_window_is_refused(self, repo):
+        """Option A: a 30 s old state is used, and the server refuses it when stale."""
+        now = [1_800_000_000_000]
+        await repo.create_entity("u")
+        await repo.set_limits("u", [Limit.per_minute("rpm", 600)], resource="r")  # 10/s
+        repo._rejection_cache._clock = lambda: now[0] / 1000
+        results = []
+        real_refill = repo.refill_from_cached_state
+
+        async def refill_spy(*args, **kwargs):
+            result = await real_refill(*args, **kwargs)
+            results.append(result)
+            return result
+
+        with (
+            patch("zae_limiter.config_cache.time.time", side_effect=lambda: now[0] / 1000),
+            patch.object(repo, "_now_ms", side_effect=lambda: now[0]),
+            patch.object(repo, "refill_from_cached_state", side_effect=refill_spy),
+        ):
+            async with RateLimiter(repository=repo) as limiter:
+                async with limiter.acquire("u", "r", consume={"rpm": 1}):  # slow pass: creates
+                    pass
+                async with limiter.acquire("u", "r", consume={"rpm": 599}):  # fast path: tk 0
+                    pass
+                now[0] += 30_000  # 300 tokens of refill; the 1 s age cap is long past
+                client = await repo._get_client()
+                await client.update_item(  # another process spends 1000
+                    TableName=repo.table_name,
+                    Key={
+                        "PK": {"S": schema.pk_bucket(repo._namespace_id, "u", "r", 0)},
+                        "SK": {"S": schema.sk_state()},
+                    },
+                    UpdateExpression="ADD #t :d",
+                    ExpressionAttributeNames={"#t": "b_rpm_tk"},
+                    ExpressionAttributeValues={":d": {"N": "-1000000"}},
+                )
+                with pytest.raises(RateLimitExceeded):  # today's path reads the debt
+                    async with limiter.acquire("u", "r", consume={"rpm": 10}):
+                        pass
+        assert results == [None]  # phase 3 tried the 30 s old state; the floor refused it
+
     @pytest.mark.parametrize("ttl", [0.0, 1.0, 2.0], ids=["cache-off", "ttl-1s", "ttl-2s"])
     async def test_admits_the_same_and_writes_less(self, repo, ttl):
         now = [1_800_000_000_000]
@@ -2096,6 +2161,6 @@ class TestSteadyLoad:
             assert writes >= 300  # every request reaches DynamoDB
         else:
             assert writes < 200
-        if ttl == 2.0:  # a request's refill fits inside the age cap
+        if ttl > 0:  # phase 3 trusts a state up to one slow-pass window old (option A)
             assert len(refused) >= 40
             assert calls.count("batch_get_item") <= 10
