@@ -3185,8 +3185,9 @@ class SyncRepository:
         limit's stored balance at the cached one (a refund elsewhere ADDs
         tokens, and the clamp computed against the lower cached balance would
         then land above the ceiling; a debit elsewhere only lowers it, which
-        ``build_composite_normal``'s own floor ``tk >= consumed - refill``
-        refuses — that floor is a pin too, and must not be relaxed), and
+        the floor ``tk >= consumed - refill`` refuses — added here for every
+        limit debited **at any sign**, since ``build_composite_normal`` emits
+        it only when the debit exceeds the refill), and
         ``cached_shard_count`` pins ``shard_count`` (a doubling
         elsewhere — client bump, propagation, aggregator Path 1 — shrinks the
         per-shard ceiling and rate the refill was computed against).
@@ -3222,6 +3223,16 @@ class SyncRepository:
             )
             update["ExpressionAttributeValues"][f":ct{i}"] = {"N": str(tokens)}
             update["ConditionExpression"] += f" AND #ct{i} <= :ct{i}"
+        for j, (name, c) in enumerate(consumed.items()):
+            if c <= 0:
+                continue
+            update["ExpressionAttributeNames"][f"#cf{j}"] = schema.bucket_attr(
+                name, schema.BUCKET_FIELD_TK
+            )
+            update["ExpressionAttributeValues"][f":cf{j}"] = {
+                "N": str(c - refill_amounts.get(name, 0))
+            }
+            update["ConditionExpression"] += f" AND #cf{j} >= :cf{j}"
         update["ExpressionAttributeNames"]["#csc"] = "shard_count"
         update["ExpressionAttributeValues"][":csc"] = {"N": str(cached_shard_count)}
         update["ConditionExpression"] += " AND (attribute_not_exists(#csc) OR #csc = :csc)"

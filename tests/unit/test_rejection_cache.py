@@ -1734,6 +1734,52 @@ class TestRefillFromCache:
         results = await self._refills(repo, limiter)
         assert results[0] is None  # the pinned write refused; today's path took it
 
+    async def test_a_debit_elsewhere_smaller_than_the_refill_is_still_refused(self, repo):
+        """The floor rides at any sign: refill above the debit must not hide a debt.
+
+        Inside the 1 s age cap: the bucket is drained, another process spends
+        1000 more, and 0.9 s later a request for 1 projects as fitting (9 of
+        refill). Without the floor the write admitted it at -992.
+        """
+        now = [1_800_000_000_000]
+        await repo.create_entity("u")
+        await repo.set_limits("u", [Limit.per_minute("rpm", 600)], resource="r")  # 10/s
+        repo._rejection_cache._clock = lambda: now[0] / 1000
+        results = []
+        real_refill = repo.refill_from_cached_state
+
+        async def refill_spy(*args, **kwargs):
+            result = await real_refill(*args, **kwargs)
+            results.append(result)
+            return result
+
+        with (
+            patch("zae_limiter.config_cache.time.time", side_effect=lambda: now[0] / 1000),
+            patch.object(repo, "_now_ms", side_effect=lambda: now[0]),
+            patch.object(repo, "refill_from_cached_state", side_effect=refill_spy),
+        ):
+            async with RateLimiter(repository=repo) as limiter:
+                async with limiter.acquire("u", "r", consume={"rpm": 1}):  # slow pass: creates
+                    pass
+                async with limiter.acquire("u", "r", consume={"rpm": 599}):  # fast path: tk 0
+                    pass
+                now[0] += 900
+                client = await repo._get_client()
+                await client.update_item(  # another process spends 1000
+                    TableName=repo.table_name,
+                    Key={
+                        "PK": {"S": schema.pk_bucket(repo._namespace_id, "u", "r", 0)},
+                        "SK": {"S": schema.sk_state()},
+                    },
+                    UpdateExpression="ADD #t :d",
+                    ExpressionAttributeNames={"#t": "b_rpm_tk"},
+                    ExpressionAttributeValues={":d": {"N": "-1000000"}},
+                )
+                with pytest.raises(RateLimitExceeded):  # today's path reads the debt
+                    async with limiter.acquire("u", "r", consume={"rpm": 1}):
+                        pass
+        assert results == [None]  # phase 3 tried it; the floor refused it
+
     async def test_get_entity_on_no_record_forgets_the_parent(self, repo):
         repo._record_parents[(repo._namespace_id, "ghost")] = None  # a stale answer
         assert await repo.get_entity("ghost") is None

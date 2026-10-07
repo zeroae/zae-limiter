@@ -62,12 +62,14 @@ Path 1 / Path 2 / refill:
 The client can admit from a cached bucket state with one locked write
 (`Repository.build_cached_refill`). It is safe only while every other write to a bucket item is
 visible to its condition: `rf`, `vu` absent, each limit's `tk <=` the cached value,
-`shard_count`, `cascade` off, not `disabled`, TTL unexpired. The phase-3 review found four
+`shard_count`, `cascade` off, not `disabled`, TTL unexpired, and the floor
+`tk >= consumed − refill` on every debited limit at any sign. The phase-3 review found four
 writers that changed a bucket without touching any of those — a cascade stamp, a credit `ADD`,
 a `shard_count` raise, a resource-level schedule — and each let extra requests through. For any
 change that writes a bucket item (new writers especially: reset or top-up #470/#471, moving an
 entity to a new parent #677) or changes what config the slow path attaches:
-- Name the condition term the write moves. A pure credit `ADD` is caught by the `tk <=` pin; a
+- Name the condition term the write moves. A pure credit `ADD` is caught by the `tk <=` pin,
+  a pure debit `ADD` by the floor; a
   `SET` of anything else must move `rf`, stamp `vu`, or change a pinned attribute. If none
   applies, add a pin to `build_cached_refill` (and a regression test showing over-admission
   without it), or have the writer forget the shard's rejection-cache entry and say why that is

@@ -178,9 +178,14 @@ something wrote since, which the lock detects.
      per-shard ceiling and rate;
    - `cascade` absent or false — a policy turned on elsewhere stamps it (ADR-146);
    - not `disabled`, and the TTL not expired;
-   - and `build_composite_normal`'s own floor `tk >= consumed − refill`, which is what
-     refuses a debit made elsewhere (it lowers `tk` without moving `rf`). It predates
-     phase 3, but it is a pin all the same and must not be relaxed.
+   - and the floor `tk >= consumed − refill` on every limit the write debits, **at any
+     sign**: the balance left must not be negative. That is what refuses a debit made
+     elsewhere (it lowers `tk` without moving `rf`, and passes `tk <=`).
+     `build_composite_normal` emits the floor only when the debit exceeds the refill,
+     enough for a read one round trip old; a cached state is older, and with the floor
+     omitted the write admitted 1 against a balance of −1000. With `rf` pinned the refill
+     is the one a fresh read would compute, so the write admits exactly when the slow path
+     would. It must not be relaxed.
 
    It also uses phase 3 only when the stamp names a parent or the entity's **existing**
    META record says it has none (a pre-#684 stamp can sit on a cascading child; an
