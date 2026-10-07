@@ -36,7 +36,9 @@ from zae_limiter.infra.sync_discovery import SyncInfrastructureDiscovery
 from zae_limiter.models import BucketState
 from zae_limiter.schedule import ScheduleEntry, retry_after_with_schedule
 from zae_limiter.schema import (
+    BUCKET_FIELD_CP,
     BUCKET_FIELD_GC,
+    BUCKET_FIELD_RA,
     BUCKET_FIELD_RF,
     BUCKET_FIELD_RSA,
     BUCKET_FIELD_TK,
@@ -7836,6 +7838,62 @@ class TestFanOutVuSelfClears:
         with sync_limiter.acquire("vu-clear", "gpt-4", consume={"rpm": 1}):
             pass
         assert BUCKET_FIELD_VU not in self._raw(repo, "vu-clear")
+
+    def test_a_cut_landing_during_a_slow_pass_keeps_its_vu(self, sync_limiter):
+        """#701: the rf lock cannot see a fan-out, so the write pins the `vu` it read.
+
+        The slow pass reads the item with no `vu`; a limit cut elsewhere then
+        rewrites `cp`/`ra` and stamps `vu = 0` without moving `rf`. Erasing that
+        stamp let the fast path spend a balance above the new limit.
+        """
+        repo = sync_limiter._repository
+        repo.create_entity("vu-race")
+        repo.set_limits("vu-race", [Limit.per_minute("rpm", 1000)], resource="gpt-4")
+        t0 = repo._now_ms()
+        with patch.object(repo, "_now_ms", return_value=t0):
+            with sync_limiter.acquire("vu-race", "gpt-4", consume={"rpm": 1}):
+                pass
+            with sync_limiter.acquire("vu-race", "gpt-4", consume={"rpm": 999}):
+                pass
+        client = repo._get_client()
+        real_write = repo.transact_write
+        fired = []
+
+        def racing_write(items):
+            if not fired:
+                fired.append(True)
+                client.update_item(
+                    TableName=repo.table_name,
+                    Key={
+                        "PK": {"S": pk_bucket(repo._namespace_id, "vu-race", "gpt-4", 0)},
+                        "SK": {"S": sk_state()},
+                    },
+                    UpdateExpression="SET #cp = :cp, #ra = :ra, #vu = :zero",
+                    ExpressionAttributeNames={
+                        "#cp": bucket_attr("rpm", BUCKET_FIELD_CP),
+                        "#ra": bucket_attr("rpm", BUCKET_FIELD_RA),
+                        "#vu": BUCKET_FIELD_VU,
+                    },
+                    ExpressionAttributeValues={
+                        ":cp": {"N": "10000"},
+                        ":ra": {"N": "10000"},
+                        ":zero": {"N": "0"},
+                    },
+                )
+            return real_write(items)
+
+        with (
+            patch.object(repo, "_now_ms", return_value=t0 + 6000),
+            patch.object(repo, "transact_write", side_effect=racing_write),
+            patch.object(sync_limiter, "_refill_from_cache", return_value=None),
+        ):
+            try:
+                with sync_limiter.acquire("vu-race", "gpt-4", consume={"rpm": 50}):
+                    pass
+            except RateLimitExceeded:
+                pass
+        assert fired
+        assert self._raw(repo, "vu-race")[BUCKET_FIELD_VU]["N"] == "0"
 
     def test_the_forced_pass_trims_the_surplus_it_exists_for(self, sync_limiter):
         """#469's scenario end to end: shrink 1000 -> 10 on a full bucket."""

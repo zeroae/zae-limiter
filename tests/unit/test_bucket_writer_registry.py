@@ -54,6 +54,11 @@ REPOSITORY = {
     "_build_bucket_param_update": (False, False),  # param sync: cp/ra/rp/sched, vu = 0
     # Direct bucket writes.
     "_speculative_consume_single": (True, False),  # the fast path ADD; never gc
+    # ADR-147 phase 3: build_composite_normal from a cached state, plain dripping
+    # limits only (the caller skips ra = 0; the condition pins vu absent, which
+    # every quota and window item carries), so never a quota's tk or gc.
+    "refill_from_cached_state": (False, False),
+    "build_cached_refill": (False, False),  # the item refill_from_cached_state sends
     "bump_shard_count": (False, False),  # shard_count on shard 0
     "_propagate_shard_count": (False, False),  # shard_count on siblings (R6 residual)
     "_freeze_and_raise_shard_counts": (False, True),  # the planner's raise, with the freeze

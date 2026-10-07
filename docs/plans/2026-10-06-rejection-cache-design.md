@@ -150,13 +150,82 @@ storage.
    child before it learns the parent, and decision 1 needs that child's own stamp anyway.
 6. **Delivery.** A second PR stacked on #696, with its own fresh-context review.
 
+## Phase 3: refill from the cached state
+
+Agreed with the owner on 2026-10-06. When a bucket is low but refill since its last
+materialisation covers the request, today's path pays a failed speculative write
+(1 WCU), the slow path's read (1 RCU) and its locked write: **$1.375/M**. With a trusted
+cached state the read is redundant — the state is what the read would return, unless
+something wrote since, which the lock detects.
+
+1. **When.** Only from a cached state that is before `vu` and the bucket TTL, not
+   disabled, and at most **one slow-pass window** old (`config_cache_ttl`, 60 s by
+   default) — not decision 3's 1 s cap. That cap bounds a *wrong local rejection*,
+   which nothing re-checks; this write re-checks the state on the server, and a stale
+   one is refused for the 1 WCU today's failed speculative write already costs. With
+   the 1 s cap the write almost never ran: a request needing a second of refill always
+   outlived the state it would refill from (simulated, 5 minutes of steady over-demand:
+   3 writes out of ~290 admissions; with the window, ~290). And only when its **stored** balance cannot cover the
+   request (the speculative write would fail) but its projection to now can. Every
+   other case is unchanged: enough stored ⇒ the speculative write; short after refill ⇒
+   phases 1–2.
+2. **The write.** The slow path's rf-locked write (`build_composite_normal`), built from
+   the cached state and the same refill arithmetic, conditioned on **everything the
+   refill was computed from**, because other writers change each of these without
+   moving `rf` (phase-3 review, all four reproduced as over-admission):
+   - `rf = :cached_rf` (the lock itself);
+   - `vu` absent — a limit change made elsewhere (`_sync_bucket_params`, the
+     provisioner) rewrites `cp`/`ra`/`rp` and stamps `vu = 0`; the aggregator pins `vu`
+     for the same reason (#508). An item that carries `vu` is not used at all;
+   - each limit's `tk <=` its cached value — a refund, release, rollback or
+     compensation elsewhere `ADD`s tokens, and the clamp computed against the lower
+     cached balance would land above the ceiling;
+   - each limit's stored `cp`/`ra`/`rp` equal to the cached ones — a limit change
+     elsewhere rewrites them and stamps `vu = 0`, but a slow pass that does not move
+     `rf` (a writer whose clock is behind the stored `rf`) then clears that `vu`, and
+     the refill would run at the old rate (#700 review: 400 admitted against 10/min);
+   - `shard_count` equal to the cached one — a doubling elsewhere shrinks the
+     per-shard ceiling and rate;
+   - `cascade` absent or false — a policy turned on elsewhere stamps it (ADR-146);
+   - not `disabled`, and the TTL not expired;
+   - and the floor `tk >= consumed − refill` on every limit the write debits, **at any
+     sign**: the balance left must not be negative. That is what refuses a debit made
+     elsewhere (it lowers `tk` without moving `rf`, and passes `tk <=`).
+     `build_composite_normal` emits the floor only when the debit exceeds the refill,
+     enough for a read one round trip old; a cached state is older, and with the floor
+     omitted the write admitted 1 against a balance of −1000. With `rf` pinned the refill
+     is the one a fresh read would compute, so the write admits exactly when the slow path
+     would. It must not be relaxed.
+
+   It also uses phase 3 only when the stamp names a parent or the entity's **existing**
+   META record says it has none (a pre-#684 stamp can sit on a cascading child; an
+   entity with no record yet may be created later under a parent — verification
+   finding A); only within one config-cache window (`config_cache_ttl`, 60 s by
+   default) of the bucket's last real slow pass, which re-reads `disabled` and the
+   cascade policy from config (a stamp a fan-out missed is then re-checked as often as
+   config itself — verification finding B); and only when the **warm config cache**
+   resolves the bucket's limits with no schedule, reset or window and every configured
+   limit already on the item: the slow path attaches those from config, and a
+   resource- or system-level change never reaches the item. That answer also gives the
+   write the TTL the slow path would stamp.
+
+   **Standing rule:** any new writer that changes a bucket item must change something
+   this condition checks, or phase 3 can admit against a state it cannot see. See
+   `.claude/rules/code-review.md`.
+3. **Lost condition.** Fall back to today's path (speculative write, then the slow
+   path). The worst case costs one extra write, and only after something wrote between
+   the state being cached and now.
+4. **Cascade.** Not used for a bucket whose trusted state cascades: child and parent
+   must commit in one transaction, which stays on today's path.
+5. **Quotas, windows, schedules, seeds.** Not used when any limit on the cached item is
+   a quota (calendar or session), carries a schedule, or is missing from the item:
+   resets, window rolls, ADR-145 grants and #633 seeds live only on the full slow path.
+   Plain dripping limits only.
+6. **Delivery.** A fourth PR, base `main`, merged after the phase-2 PR, with its own
+   fresh-context review.
+
 ## Building on this (designed in, delivered separately under #695)
 
-- **Refill from the cached state.** When the projection says refill would cover the
-  request, issue the slow path's rf-locked write directly from the cached state
-  (`rf = :cached_rf`, refill credited), skipping the failed write and the read:
-  **1 failed + 1 RCU + 1 write → 1 write** when the cached state is fresh. A lost lock
-  falls back to today's path.
 - **Multi-resource acquire (#675, ADR-148).** The N-record fast path consults the same
   cache per (entity, resource) before writing anything.
 
@@ -185,6 +254,14 @@ Memory: one `BucketState` per entry, a few hundred bytes; ~a few MB at the defau
   return by a route the projection cannot see. Operators who need exact admission at
   the cost of a write per 429 set it to `0`.
 - Rejections are per process: N processes each pay one real write per TTL.
+- **Phase 3 can credit less refill than the slow path near capacity.** The refill is
+  clamped against the cached balance. If another process debited the bucket since,
+  the real balance had more room below the ceiling than the cached one, so the slow
+  path would have credited more. Example: capacity 1000, cached 900, 500 of refill
+  due, a request for 950, and 40 debited elsewhere. Phase 3 credits 100 and leaves
+  10; the slow path would credit 140 and leave 50. At most the concurrent debit is
+  lost, once, because `rf` moves past it. It never over-admits: the floor still
+  checks the real balance. Accepted rather than narrowed (#700 review).
 - A local rejection's statuses come from a projected state, not a fresh image. They
   are what the server would report if nothing else wrote meanwhile.
 

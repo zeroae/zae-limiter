@@ -54,7 +54,7 @@ from .models import (
     validate_resource,
 )
 from .schedule import effective_params, next_boundary, prev_reset_edge, retry_after_with_schedule
-from .schema import DEFAULT_RESOURCE, WCU_LIMIT_NAME
+from .schema import DEFAULT_RESOURCE, WCU_LIMIT_NAME, calculate_bucket_ttl_seconds
 from .sync_config_cache import ConfigSource
 from .sync_lease import LeaseEntry, QuotaMoveLostError, SyncLease
 from .sync_repository import SyncRepository
@@ -656,6 +656,10 @@ class SyncRateLimiter:
                     shard_count=slow_path_shard_count,
                     parent_shard_id=slow_path_parent_shard,
                 )
+                rejection_cache = getattr(self._repository, "_rejection_cache", None)
+                namespace_id = getattr(self._repository, "_namespace_id", None)
+                if rejection_cache is not None and namespace_id is not None and (limits is None):
+                    rejection_cache.note_slow_pass(namespace_id, entity_id, resource)
             lease._commit_initial()
         except (
             RateLimitExceeded,
@@ -725,6 +729,10 @@ class SyncRateLimiter:
             avoid_parent = frozenset(
                 self._known_short_parent_shards(entity_id, resource, consume, now_ms)
             )
+        if use_rejection_cache:
+            cached_lease = self._refill_from_cache(entity_id, resource, consume, now_ms)
+            if cached_lease is not None:
+                return (cached_lease, 0, None, None)
         if avoid_parent:
             result = self._repository.speculative_consume(
                 entity_id=entity_id,
@@ -1158,6 +1166,121 @@ class SyncRateLimiter:
             cache, namespace_id, parent_id, resource, consume, now_ms
         )
         return set(parent_short)
+
+    def _refill_from_cache(
+        self, entity_id: str, resource: str, consume: dict[str, int], now_ms: int
+    ) -> SyncLease | None:
+        """Admit through one locked write built from a cached state (ADR-147 phase 3).
+
+        Used only when a trusted cached shard's **stored** balance cannot cover
+        the request (the speculative write would fail) but its projection to
+        now can, so the alternative is a failed write, a read and a write. The
+        write is the slow path's, conditioned on everything the state was
+        judged on; a lost condition returns None and today's path runs.
+
+        Not used for a cascading bucket (child and parent commit together), a
+        bucket whose item carries ``vu`` (a schedule, a quota's reset or a
+        session window: their materialisation lives on the slow path), a quota
+        or session state, a state missing a declared limit (#633), or a drained
+        ``wcu`` (the speculative write's failure is what drives sharding).
+        """
+        cache = getattr(self._repository, "_rejection_cache", None)
+        namespace_id = getattr(self._repository, "_namespace_id", None)
+        refill = getattr(self._repository, "refill_from_cached_state", None)
+        if cache is None or not cache.enabled or namespace_id is None or (refill is None):
+            return None
+        if cache.cascades(namespace_id, entity_id, resource):
+            return None
+        window = getattr(self._repository, "_config_cache_ttl", 0)
+        if not cache.slow_pass_within(namespace_id, entity_id, resource, window):
+            return None
+        config_cache = getattr(self._repository, "_config_cache", None)
+        peek = getattr(config_cache, "peek_limits", None)
+        resolved = peek(entity_id, resource) if peek is not None else None
+        if resolved is None:
+            return None
+        config_limits, config_source = resolved
+        if any(
+            limit.schedule or limit.reset_schedule or limit.reset_after is not None
+            for limit in config_limits
+        ):
+            return None
+        multiplier = getattr(self._repository, "_bucket_ttl_refill_multiplier", 0)
+        ttl_seconds: int | None
+        if _is_custom_config(config_source):
+            ttl_seconds = 0
+        elif multiplier <= 0:
+            ttl_seconds = None
+        else:
+            ttl_seconds = calculate_bucket_ttl_seconds(config_limits, multiplier)
+        record_parents = getattr(self._repository, "_record_parents", None) or {}
+        key = (namespace_id, entity_id)
+        has_no_parent = key in record_parents and record_parents[key] is None
+        max_age = max(window, cache.ttl_seconds)
+        views = cache.views(namespace_id, entity_id, resource, now_ms, max_age)
+        candidates: list[int] = []
+        entries: dict[int, Any] = {}
+        for shard, buckets in views.items():
+            entry = cache.trusted_entry(namespace_id, entity_id, resource, shard, now_ms, max_age)
+            if entry is None or entry.vu_ms is not None:
+                continue
+            entries[shard] = entry
+            if not (entry.parent_id or has_no_parent):
+                continue
+            by_name = {b.limit_name: b for b in buckets}
+            if not all(name in by_name for name in consume):
+                continue
+            if not all(limit.name in by_name for limit in config_limits):
+                continue
+            if any(
+                b.refill_amount_milli <= 0
+                or b.reset_after_seconds is not None
+                or b.window_start_ms is not None
+                for b in buckets
+            ):
+                continue
+            wcu = by_name.get(WCU_LIMIT_NAME)
+            if wcu is not None and wcu.tokens_milli < 1000:
+                continue
+            if all(
+                (by_name[name].tokens_milli >= amount * 1000 for name, amount in consume.items())
+            ):
+                continue
+            if would_refill_satisfy(buckets, consume, now_ms)[0]:
+                candidates.append(shard)
+        if not candidates:
+            return None
+        shard = random.choice(candidates)
+        consumed: dict[str, int] = {}
+        refill_amounts: dict[str, int] = {}
+        for state in views[shard]:
+            amount = consume.get(state.limit_name, 0) if state.limit_name != WCU_LIMIT_NAME else 0
+            new_tokens, _ = force_consume(state, amount, now_ms)
+            consumed[state.limit_name] = amount * 1000
+            refill_amounts[state.limit_name] = new_tokens - state.tokens_milli + amount * 1000
+        result = refill(
+            entity_id,
+            resource,
+            shard,
+            consumed,
+            refill_amounts,
+            views[shard][0].last_refill_ms,
+            now_ms,
+            cached_tokens={state.limit_name: state.tokens_milli for state in views[shard]},
+            cached_shard_count=entries[shard].shard_count,
+            ttl_seconds=ttl_seconds,
+            cached_params={
+                state.limit_name: (
+                    state.capacity_milli,
+                    state.refill_amount_milli,
+                    state.refill_period_ms,
+                )
+                for state in views[shard]
+            },
+        )
+        if result is None:
+            return None
+        return self._build_lease_from_speculative(entity_id, resource, consume, result)
 
     def _compensate_speculative(
         self, entity_id: str, resource: str, consume: dict[str, int], shard_id: int
@@ -1828,6 +1951,8 @@ class SyncRateLimiter:
         """
         validate_identifier(entity_id, "entity_id")
         validate_resource(resource)
+        rejection_cache = getattr(self._repository, "_rejection_cache", None)
+        cache_mark = rejection_cache.mark() if rejection_cache is not None else None
         now_ms = self._repository._now_ms()
         child_shard, child_shard_count = self._repository.select_shard(
             entity_id, resource, shard_id, shard_count
@@ -2069,6 +2194,7 @@ class SyncRateLimiter:
             entries=entries,
             _carriers=carriers,
             _unknown_keys=unknown_keys,
+            _cache_mark=cache_mark,
         )
 
     def _fetch_entity_and_buckets(

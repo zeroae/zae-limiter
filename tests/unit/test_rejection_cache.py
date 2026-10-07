@@ -6,11 +6,12 @@ cache may only reject, never admit.
 """
 
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from unittest.mock import patch
 
 import pytest
 
-from zae_limiter import RateLimiter, RateLimitExceeded
+from zae_limiter import RateLimiter, RateLimitExceeded, schema
 from zae_limiter.exceptions import ResourceDisabled
 from zae_limiter.models import BucketState, Limit
 from zae_limiter.rejection_cache import RejectionCache
@@ -63,6 +64,7 @@ async def repo(mock_dynamodb):
 
 @pytest.fixture
 async def limiter(repo):
+    await repo.create_entity("u")  # a record with no parent: phase 3 may trust it
     await repo.set_limits("u", [RPM], resource="r")
     async with RateLimiter(repository=repo) as limiter:
         yield limiter
@@ -398,6 +400,42 @@ class TestRejectionCacheStore:
         )
         assert cache.views("ns", "b", "r", now_ms=1) == {}
         assert list(cache.views("ns", "a", "r", now_ms=1)) == [0]
+
+    def test_trusted_entry_only_for_a_fresh_enabled_shard(self):
+        clock = _Clock()
+        cache = RejectionCache(ttl_seconds=1.0, max_entries=10, clock=clock)
+        assert cache.trusted_entry("ns", "u", "r", 0, now_ms=1) is None  # nothing cached
+        cache.store(
+            "ns", "u", "r", 0, [_state(0)], shard_count=1, vu_ms=None, ttl_epoch=None, disabled=True
+        )
+        assert cache.trusted_entry("ns", "u", "r", 0, now_ms=1) is None  # disabled
+        cache.store(
+            "ns",
+            "u",
+            "r",
+            0,
+            [_state(0)],
+            shard_count=1,
+            vu_ms=None,
+            ttl_epoch=None,
+            disabled=False,
+        )
+        assert cache.trusted_entry("ns", "u", "r", 0, now_ms=1) is not None
+        clock.now += 1.5
+        assert cache.trusted_entry("ns", "u", "r", 0, now_ms=1) is None  # past the age cap
+
+    def test_slow_pass_records_are_capped(self):
+        clock = _Clock()
+        cache = RejectionCache(ttl_seconds=1.0, max_entries=2, clock=clock)
+        for entity in ("a", "b", "c"):
+            cache.note_slow_pass("ns", entity, "r")
+        assert not cache.slow_pass_within("ns", "a", "r", 60)  # the oldest went
+        assert cache.slow_pass_within("ns", "c", "r", 60)
+        clock.now += 61
+        assert not cache.slow_pass_within("ns", "c", "r", 60)  # past the window
+        disabled = RejectionCache(ttl_seconds=0)
+        disabled.note_slow_pass("ns", "a", "r")
+        assert not disabled.slow_pass_within("ns", "a", "r", 60)
 
     def test_counts_local_rejections(self):
         cache = RejectionCache(ttl_seconds=1.0, max_entries=10, clock=_Clock())
@@ -1325,3 +1363,925 @@ class TestParentShardSteering:
                 if len(parent_targets) > before:
                     firsts.append(parent_targets[before])
         assert firsts and all(shard == 1 for shard in firsts)
+
+
+async def _bucket_item(repo: Repository, entity_id: str) -> dict:
+    """Entity's r shard-0 bucket item, read straight from the table."""
+    client = await repo._get_client()
+    response = await client.get_item(
+        TableName=repo.table_name,
+        Key={
+            "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, "r", 0)},
+            "SK": {"S": schema.sk_state()},
+        },
+    )
+    return response["Item"]
+
+
+async def _consumed(repo: Repository, entity_id: str) -> int:
+    """`b_rpm_tc` (millitokens) on entity's r shard 0, read straight from the table."""
+    client = await repo._get_client()
+    item = (
+        await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, "r", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+        )
+    ).get("Item")
+    return 0 if item is None else int(item[schema.bucket_attr("rpm", "tc")]["N"])
+
+
+async def _spent_and_cached(limiter: RateLimiter) -> None:
+    """Spend u/r's 2 rpm so that a fast-path success image (tk = 0) is cached.
+
+    Pins the cache's own clock unless a test already did: on a slow machine
+    the real monotonic clock can pass the 1 s age cap mid-test (phase-3 review).
+    """
+    cache = limiter._repository._rejection_cache
+    if not isinstance(cache._clock, _Clock):
+        cache._clock = _Clock()
+    async with limiter.acquire("u", "r", consume={"rpm": 1}):  # slow path creates
+        pass
+    async with limiter.acquire("u", "r", consume={"rpm": 1}):  # fast path: cached, tk = 0
+        pass
+
+
+class TestRefillFromCache:
+    """ADR-147 phase 3: refill would help ⇒ one locked write, no read."""
+
+    async def test_one_write_and_no_read_when_refill_covers_it(self, limiter, repo):
+        await _spent_and_cached(limiter)
+        later = repo._now_ms() + 60_000  # a full minute: both tokens back
+        with patch.object(repo, "_now_ms", return_value=later):
+            async with _count_client_calls(repo) as calls:
+                async with limiter.acquire("u", "r", consume={"rpm": 1}) as lease:
+                    pass
+        assert calls == ["update_item"]  # today: a failed write, a read, a write
+        assert lease.consumed == {"rpm": 1}
+        bucket = (await repo.get_buckets("u", "r"))[0]
+        assert bucket.tokens_milli == 1000  # refilled to 2, debited 1
+
+    async def test_a_write_since_the_state_was_cached_falls_back(self, limiter, repo):
+        """The rf lock: another writer moved rf, so the state is stale."""
+        await _spent_and_cached(limiter)
+        client = await repo._get_client()
+        await client.update_item(  # another process's refill
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, "u", "r", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="SET rf = rf + :one",
+            ExpressionAttributeValues={":one": {"N": "1"}},
+        )
+        later = repo._now_ms() + 60_000
+        with patch.object(repo, "_now_ms", return_value=later):
+            async with _count_client_calls(repo) as calls:
+                async with limiter.acquire("u", "r", consume={"rpm": 1}) as lease:
+                    pass
+        assert lease.consumed == {"rpm": 1}
+        assert calls[0] == "update_item" and len(calls) > 1  # lost lock, today's path
+
+    async def test_a_limit_change_elsewhere_is_not_refilled_at_the_old_limit(self, limiter, repo):
+        """The vu pin: another process cut the limit and stamped vu = 0, rf unmoved."""
+        await _spent_and_cached(limiter)
+        client = await repo._get_client()
+        await client.update_item(  # what _sync_bucket_params writes elsewhere
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, "u", "r", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="SET #cp = :cp, #ra = :ra, vu = :zero",
+            ExpressionAttributeNames={
+                "#cp": schema.bucket_attr("rpm", schema.BUCKET_FIELD_CP),
+                "#ra": schema.bucket_attr("rpm", schema.BUCKET_FIELD_RA),
+            },
+            ExpressionAttributeValues={
+                ":cp": {"N": "1000"},
+                ":ra": {"N": "1000"},
+                ":zero": {"N": "0"},
+            },
+        )
+        refills: list[object] = []
+        real = repo.refill_from_cached_state
+
+        async def spy(*args, **kwargs):
+            result = await real(*args, **kwargs)
+            refills.append(result)
+            return result
+
+        later = repo._now_ms() + 60_000
+        with (
+            patch.object(repo, "_now_ms", return_value=later),
+            patch.object(repo, "refill_from_cached_state", side_effect=spy),
+        ):
+            async with limiter.acquire("u", "r", consume={"rpm": 1}):
+                pass
+        assert refills == [None]  # the pinned write refused; the slow path re-read
+        bucket = (await repo.get_buckets("u", "r"))[0]
+        assert bucket.capacity_milli == 1000
+        assert bucket.tokens_milli <= 0  # refilled to the NEW capacity (1), then debited
+
+    async def test_not_used_when_the_stored_balance_is_enough(self, limiter, repo):
+        async with limiter.acquire("u", "r", consume={"rpm": 1}):  # creates: tk = 1 left
+            pass
+        async with limiter.acquire("u", "r", consume={"rpm": 0}):  # fast path: cached
+            pass
+        with patch.object(repo, "refill_from_cached_state") as refill:
+            async with limiter.acquire("u", "r", consume={"rpm": 1}):
+                pass
+        refill.assert_not_called()
+
+    async def test_not_used_for_a_cascading_bucket(self, family, repo):
+        await repo.set_limits("org", [Limit.per_minute("rpm", 1000)], resource="r")
+        async with family.acquire("u", "r", consume={"rpm": 50}):
+            pass
+        async with family.acquire("u", "r", consume={"rpm": 50}):  # cached: u at 0, cascades
+            pass
+        later = repo._now_ms() + 60_000
+        with (
+            patch.object(repo, "_now_ms", return_value=later),
+            patch.object(repo, "refill_from_cached_state") as refill,
+        ):
+            async with family.acquire("u", "r", consume={"rpm": 1}):
+                pass
+        refill.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "case",
+        [
+            "eligible",  # the control: reaches the write, so every other case is a real "no"
+            "vu",
+            "quota",
+            "window",
+            "wcu_drained",
+            "missing_limit",
+            "config_limit_missing",
+            "untrusted",
+            "no_recent_slow_pass",
+        ],
+    )
+    async def test_not_used_for_items_only_the_slow_path_materialises(self, repo, case):
+        ns = repo._namespace_id
+        configured = (
+            [RPM, Limit.per_minute("tpm", 100)] if case == "config_limit_missing" else [RPM]
+        )
+        await repo.create_entity("u")  # a record with no parent
+        await repo.set_limits("u", configured, resource="r")
+        await repo.resolve_limits("u", "r")  # warm config cache: peek_limits answers
+        now = repo._now_ms()
+        rpm = _state(0)
+        rpm.last_refill_ms = now - 60_000  # a full minute of refill pending
+        states = [rpm]
+        vu_ms = None
+        consume = {"rpm": 1}
+        if case == "vu":
+            vu_ms = now + 3_600_000
+        elif case == "quota":
+            rpm.refill_amount_milli = 0
+        elif case == "window":
+            rpm.window_start_ms = now - 1000
+            rpm.reset_after_seconds = 3600
+        elif case == "wcu_drained":
+            wcu = _state(0, name="wcu")
+            wcu.last_refill_ms = now
+            states.append(wcu)
+        elif case == "missing_limit":
+            consume = {"rpm": 1, "tpm": 1}
+        clock = _Clock()
+        repo._rejection_cache._clock = clock
+        repo._rejection_cache.store(
+            ns, "u", "r", 0, states, shard_count=1, vu_ms=vu_ms, ttl_epoch=None, disabled=False
+        )
+        if case != "no_recent_slow_pass":  # a slow pass re-read u's config just now
+            repo._rejection_cache.note_slow_pass(ns, "u", "r")
+        if case == "untrusted":
+            # Older than one slow-pass window (option A), though a slow pass is recent.
+            clock.now += repo._config_cache_ttl + 1
+            repo._rejection_cache.note_slow_pass(ns, "u", "r")
+        with patch.object(repo, "refill_from_cached_state", return_value=None) as refill:
+            async with RateLimiter(repository=repo) as limiter:
+                assert await limiter._refill_from_cache("u", "r", consume, now) is None
+        if case == "eligible":
+            refill.assert_called_once()
+        else:
+            refill.assert_not_called()
+
+    async def test_with_ttl_off_the_write_leaves_ttl_alone(self, repo):
+        """Multiplier 0: the slow path stamps no ttl, so neither does phase 3."""
+        repo._bucket_ttl_refill_multiplier = 0
+        await repo.create_entity("u")  # a record with no parent
+        await repo.set_resource_defaults("r", [RPM])
+        async with RateLimiter(repository=repo) as limiter:
+            await _spent_and_cached(limiter)
+            later = repo._now_ms() + 60_000
+            with patch.object(repo, "_now_ms", return_value=later):
+                async with _count_client_calls(repo) as calls:
+                    async with limiter.acquire("u", "r", consume={"rpm": 1}):
+                        pass
+        assert calls == ["update_item"]
+        assert "ttl" not in await _bucket_item(repo, "u")
+
+    async def test_peek_is_none_while_any_level_is_uncached(self, repo):
+        await repo.set_limits("u", [RPM], resource="r")
+        assert repo._config_cache.peek_limits("u", "r") is None  # nothing resolved yet
+        await repo.resolve_limits("u", "r")
+        assert repo._config_cache.peek_limits("u", "r") is not None
+
+    async def test_peek_is_none_when_no_level_has_limits(self, repo):
+        await repo.resolve_limits("nobody", "r")  # every level cached, none with limits
+        assert repo._config_cache.peek_limits("nobody", "r") is None
+
+    async def test_an_unexpected_error_is_raised_not_swallowed(self, limiter, repo):
+        from botocore.exceptions import ClientError
+
+        await _spent_and_cached(limiter)
+        client = await repo._get_client()
+        boom = ClientError({"Error": {"Code": "ValidationException"}}, "UpdateItem")
+        later = repo._now_ms() + 60_000
+        with (
+            patch.object(repo, "_now_ms", return_value=later),
+            patch.object(client, "update_item", side_effect=boom),
+        ):
+            with pytest.raises(ClientError):
+                await repo.refill_from_cached_state(
+                    "u",
+                    "r",
+                    0,
+                    {"rpm": 1000},
+                    {"rpm": 0},
+                    0,
+                    later,
+                    cached_tokens={"rpm": 0},
+                    cached_shard_count=1,
+                )
+
+    async def test_an_entity_created_later_with_a_parent_is_not_trusted(self, repo):
+        """Verification finding A: no record is not "no parent"; one can arrive later."""
+        await repo.set_limits("u", [Limit.per_minute("rpm", 10)], resource="r")
+        await repo.set_limits("org", [RPM], resource="r")  # the parent allows 2
+        await repo.create_entity("org")
+        repo._rejection_cache._clock = _Clock()
+        async with RateLimiter(repository=repo) as limiter:
+            async with limiter.acquire("org", "r", consume={"rpm": 1}):  # org: 1 left
+                pass
+            async with limiter.acquire("u", "r", consume={"rpm": 1}):  # u has no record yet
+                pass
+            async with limiter.acquire("u", "r", consume={"rpm": 6}):  # fast path: tk 3 cached
+                pass
+            assert (repo._namespace_id, "u") not in repo._record_parents
+            other = Repository(
+                name="test-rejection", region="us-east-1", _skip_deprecation_warning=True
+            )
+            other._namespace_id = repo._namespace_id
+            await other.create_entity("u", parent_id="org", cascade=True)  # another process
+            await other.close()
+            later = repo._now_ms() + 12_000
+            with (
+                patch.object(repo, "_now_ms", return_value=later),
+                patch.object(repo, "refill_from_cached_state") as refill,
+            ):
+                with pytest.raises(RateLimitExceeded):  # org cannot cover 4
+                    async with limiter.acquire("u", "r", consume={"rpm": 4}):
+                        pass
+        refill.assert_not_called()
+
+    async def test_a_missed_disable_stamp_is_re_checked_within_a_window(self, limiter, repo):
+        """Verification finding B: phase 3 chains on stamps at most one config window."""
+        clock = _Clock()
+        repo._rejection_cache._clock = clock
+        async with limiter.acquire("u", "r", consume={"rpm": 1}):  # slow path: noted at t0
+            pass
+        clock.now += repo._config_cache_ttl + 1  # the slow pass is now a window old...
+        async with limiter.acquire("u", "r", consume={"rpm": 1}):  # ...this state is fresh
+            pass
+        other = Repository(
+            name="test-rejection", region="us-east-1", _skip_deprecation_warning=True
+        )
+        other._namespace_id = repo._namespace_id
+        await other.disable_resource("r")  # another process; its fan-out...
+        await other.close()
+        client = await repo._get_client()
+        await client.update_item(  # ...misses u's bucket (ADR-125's documented race)
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, "u", "r", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="REMOVE #d",
+            ExpressionAttributeNames={"#d": schema.BUCKET_FIELD_DISABLED},
+        )
+        later = repo._now_ms() + 60_000
+        with patch.object(repo, "_now_ms", return_value=later):
+            with pytest.raises(ResourceDisabled):  # the slow path re-read config
+                async with limiter.acquire("u", "r", consume={"rpm": 1}):
+                    pass
+
+    async def _refills(self, repo, limiter, *, consume=1):
+        """Acquire a minute later through a spy; return what phase 3's write returned."""
+        results: list[object] = []
+        real = repo.refill_from_cached_state
+
+        async def spy(*args, **kwargs):
+            result = await real(*args, **kwargs)
+            results.append(result)
+            return result
+
+        later = repo._now_ms() + 60_000
+        with (
+            patch.object(repo, "_now_ms", return_value=later),
+            patch.object(repo, "refill_from_cached_state", side_effect=spy),
+        ):
+            try:
+                async with limiter.acquire("u", "r", consume={"rpm": consume}):
+                    pass
+            except (RateLimitExceeded, ResourceDisabled) as exc:
+                results.append(type(exc).__name__)
+        return results
+
+    async def _raw_update(self, repo, expression, names=None, values=None):
+        client = await repo._get_client()
+        kwargs = {
+            "TableName": repo.table_name,
+            "Key": {
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, "u", "r", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+            "UpdateExpression": expression,
+        }
+        if names:
+            kwargs["ExpressionAttributeNames"] = names
+        if values:
+            kwargs["ExpressionAttributeValues"] = values
+        await client.update_item(**kwargs)
+
+    async def test_a_disable_stamped_elsewhere_refuses_the_write(self, limiter, repo):
+        """Verification finding C: the `disabled` pin, from another process."""
+        await _spent_and_cached(limiter)
+        await self._raw_update(
+            repo,
+            "SET #d = :t",
+            {"#d": schema.BUCKET_FIELD_DISABLED},
+            {":t": {"BOOL": True}},
+        )
+        results = await self._refills(repo, limiter)
+        assert results == [None, "ResourceDisabled"]  # pinned write refused; 403 after
+
+    async def test_an_expired_ttl_refuses_the_write(self, limiter, repo):
+        """Verification finding C: the TTL pin, an item expired but not yet swept."""
+        await _spent_and_cached(limiter)
+        await self._raw_update(repo, "SET #t = :past", {"#t": "ttl"}, {":past": {"N": "1"}})
+        results = await self._refills(repo, limiter)
+        assert results[0] is None  # the pinned write refused; today's path took it
+
+    async def test_a_debit_elsewhere_smaller_than_the_refill_is_still_refused(self, repo):
+        """The floor rides at any sign: refill above the debit must not hide a debt.
+
+        Inside the 1 s age cap: the bucket is drained, another process spends
+        1000 more, and 0.9 s later a request for 1 projects as fitting (9 of
+        refill). Without the floor the write admitted it at -992.
+        """
+        now = [1_800_000_000_000]
+        await repo.create_entity("u")
+        await repo.set_limits("u", [Limit.per_minute("rpm", 600)], resource="r")  # 10/s
+        repo._rejection_cache._clock = lambda: now[0] / 1000
+        results = []
+        real_refill = repo.refill_from_cached_state
+
+        async def refill_spy(*args, **kwargs):
+            result = await real_refill(*args, **kwargs)
+            results.append(result)
+            return result
+
+        with (
+            patch("zae_limiter.config_cache.time.time", side_effect=lambda: now[0] / 1000),
+            patch.object(repo, "_now_ms", side_effect=lambda: now[0]),
+            patch.object(repo, "refill_from_cached_state", side_effect=refill_spy),
+        ):
+            async with RateLimiter(repository=repo) as limiter:
+                async with limiter.acquire("u", "r", consume={"rpm": 1}):  # slow pass: creates
+                    pass
+                async with limiter.acquire("u", "r", consume={"rpm": 599}):  # fast path: tk 0
+                    pass
+                now[0] += 900
+                client = await repo._get_client()
+                await client.update_item(  # another process spends 1000
+                    TableName=repo.table_name,
+                    Key={
+                        "PK": {"S": schema.pk_bucket(repo._namespace_id, "u", "r", 0)},
+                        "SK": {"S": schema.sk_state()},
+                    },
+                    UpdateExpression="ADD #t :d",
+                    ExpressionAttributeNames={"#t": "b_rpm_tk"},
+                    ExpressionAttributeValues={":d": {"N": "-1000000"}},
+                )
+                with pytest.raises(RateLimitExceeded):  # today's path reads the debt
+                    async with limiter.acquire("u", "r", consume={"rpm": 1}):
+                        pass
+        assert results == [None]  # phase 3 tried it; the floor refused it
+
+    async def test_uses_a_state_older_than_the_rejection_age_cap(self, repo):
+        """Option A: phase 3 takes a state past `ttl_seconds`; local rejection does not."""
+        ns = repo._namespace_id
+        await repo.create_entity("u")
+        await repo.set_limits("u", [RPM], resource="r")
+        await repo.resolve_limits("u", "r")  # warm the config cache
+        now = repo._now_ms()
+        state = replace(_state(0), last_refill_ms=now - 60_000)  # a minute of refill due
+        clock = _Clock()
+        repo._rejection_cache._clock = clock
+        repo._rejection_cache.store(
+            ns, "u", "r", 0, [state], shard_count=1, vu_ms=None, ttl_epoch=None, disabled=False
+        )
+        clock.now += 30  # past the 1 s cap, inside the 60 s window
+        repo._rejection_cache.note_slow_pass(ns, "u", "r")
+        assert not repo._rejection_cache.views(ns, "u", "r", now)  # never rejects from it
+        with patch.object(repo, "refill_from_cached_state", return_value=None) as refill:
+            async with RateLimiter(repository=repo) as limiter:
+                await limiter._refill_from_cache("u", "r", {"rpm": 1}, now)
+        refill.assert_called_once()
+
+    async def _drained_to_50(self, repo, limiter, t0):
+        """1000/min, drained to a cached 50 by a fast-path acquire at `t0`."""
+        with patch.object(repo, "_now_ms", return_value=t0):
+            async with limiter.acquire("u", "r", consume={"rpm": 900}):  # slow path: creates
+                pass
+            async with limiter.acquire("u", "r", consume={"rpm": 50}):  # fast path: 50 cached
+                pass
+
+    async def test_a_limit_cut_elsewhere_is_not_refilled_at_the_old_rate(self, repo):
+        """Review of #700: a slow pass behind the stored `rf` clears the sync's `vu = 0`."""
+        await repo.create_entity("u")
+        await repo.set_limits("u", [Limit.per_minute("rpm", 1000)], resource="r")
+        other = Repository(
+            name="test-rejection", region="us-east-1", _skip_deprecation_warning=True
+        )
+        other._namespace_id = repo._namespace_id
+        async with RateLimiter(repository=repo) as limiter, RateLimiter(repository=other) as l2:
+            t0 = repo._now_ms()
+            await self._drained_to_50(repo, limiter, t0)
+            await other.set_limits("u", [Limit.per_minute("rpm", 10)], resource="r")  # vu = 0
+            with patch.object(other, "_now_ms", return_value=t0):  # clock at the stored rf
+                async with l2.acquire("u", "r", consume={"rpm": 1}):  # clears vu, rf unmoved
+                    pass
+            with patch.object(repo, "_now_ms", return_value=t0 + 30_000):
+                with pytest.raises(RateLimitExceeded):  # 10/min cannot cover 400
+                    async with limiter.acquire("u", "r", consume={"rpm": 400}):
+                        pass
+        await other.close()
+
+    async def test_a_limit_cut_during_the_slow_pass_is_not_recorded_as_the_old(self, repo):
+        """Review of #700: the recorded state carries what the slow path read."""
+        await repo.create_entity("u")
+        await repo.set_limits("u", [Limit.per_minute("rpm", 1000)], resource="r")
+        async with RateLimiter(repository=repo) as limiter:
+            t0 = repo._now_ms()
+            await self._drained_to_50(repo, limiter, t0)
+            client = await repo._get_client()
+            real_write = repo.transact_write
+            fired = []
+
+            async def racing_write(items):
+                if not fired:  # another process's param sync lands between read and write
+                    fired.append(True)
+                    await client.update_item(
+                        TableName=repo.table_name,
+                        Key={
+                            "PK": {"S": schema.pk_bucket(repo._namespace_id, "u", "r", 0)},
+                            "SK": {"S": schema.sk_state()},
+                        },
+                        UpdateExpression="SET #cp = :cp, #ra = :ra, vu = :zero",
+                        ExpressionAttributeNames={
+                            "#cp": schema.bucket_attr("rpm", schema.BUCKET_FIELD_CP),
+                            "#ra": schema.bucket_attr("rpm", schema.BUCKET_FIELD_RA),
+                        },
+                        ExpressionAttributeValues={
+                            ":cp": {"N": "10000"},
+                            ":ra": {"N": "10000"},
+                            ":zero": {"N": "0"},
+                        },
+                    )
+                return await real_write(items)
+
+            with (
+                patch.object(repo, "_now_ms", return_value=t0 + 6_000),
+                patch.object(limiter, "_refill_from_cache", return_value=None),
+                patch.object(repo, "transact_write", side_effect=racing_write),
+            ):
+                try:  # the slow pass; its write loses the `vu` pin to the cut (#701)
+                    async with limiter.acquire("u", "r", consume={"rpm": 100}):
+                        pass
+                except RateLimitExceeded:
+                    pass  # the consumption-only retry: 50 cannot cover 100
+            assert fired
+            with patch.object(repo, "_now_ms", return_value=t0 + 36_000):
+                with pytest.raises(RateLimitExceeded):  # 10/min cannot cover 400
+                    async with limiter.acquire("u", "r", consume={"rpm": 400}):
+                        pass
+
+    async def test_a_refund_during_the_slow_pass_is_not_hidden(self, repo):
+        """Review of #700: a refund between read and write must not be recorded away."""
+        await repo.create_entity("u")
+        await repo.set_limits("u", [Limit.per_minute("rpm", 100)], resource="r")
+        async with RateLimiter(repository=repo) as limiter:
+            t0 = repo._now_ms()
+            with patch.object(repo, "_now_ms", return_value=t0):
+                async with limiter.acquire("u", "r", consume={"rpm": 90}):  # tk 10
+                    pass
+            real_write = repo.transact_write
+            fired = []
+
+            async def refund_lands_first(items):
+                if not fired:  # another lease in this process releases 50
+                    fired.append(True)
+                    await repo.write_each([repo.build_composite_adjust("u", "r", {"rpm": -50_000})])
+                return await real_write(items)
+
+            with (
+                patch.object(repo, "_now_ms", return_value=t0 + 6_000),
+                patch.object(repo, "transact_write", side_effect=refund_lands_first),
+                patch.object(limiter, "_refill_from_cache", return_value=None),
+            ):
+                async with limiter.acquire("u", "r", consume={"rpm": 15}):  # the slow pass
+                    pass
+            assert fired
+            with patch.object(repo, "_now_ms", return_value=t0 + 6_001):
+                async with limiter.acquire("u", "r", consume={"rpm": 40}):  # 55 are there
+                    pass
+
+    def test_forgotten_since_tracks_forgets_clears_and_evictions(self):
+        cache = RejectionCache(ttl_seconds=1.0, max_entries=1)
+        mark = cache.mark()
+        assert not cache.forgotten_since("ns", "u", "r", mark)
+        cache.forget("ns", "u", "r", 0)
+        assert cache.forgotten_since("ns", "u", "r", mark)
+        assert not cache.forgotten_since("ns", "v", "r", mark)
+        cache.forget("ns", "v", "r", 0)  # evicts u's record: the answer stays yes
+        assert cache.forgotten_since("ns", "u", "r", mark)
+        mark = cache.mark()
+        cache.clear()
+        assert cache.forgotten_since("ns", "w", "r", mark)
+
+    async def test_get_entity_on_no_record_forgets_the_parent(self, repo):
+        repo._record_parents[(repo._namespace_id, "ghost")] = None  # a stale answer
+        assert await repo.get_entity("ghost") is None
+        assert (repo._namespace_id, "ghost") not in repo._record_parents
+
+    async def test_create_entity_in_this_process_records_the_parent(self, repo):
+        await repo.create_entity("org")
+        await repo.create_entity("u", parent_id="org", cascade=True)
+        assert repo._record_parents[(repo._namespace_id, "u")] == "org"
+        assert repo._record_parents[(repo._namespace_id, "org")] is None
+
+    async def test_cascade_turned_on_elsewhere_still_debits_the_parent(self, repo):
+        """Phase-3 review #1: the write pins `cascade` off; a policy change refuses it."""
+        await repo.create_entity("org")
+        await repo.create_entity("u", parent_id="org", cascade=False)
+        await repo.set_limits("org", [Limit.per_minute("rpm", 100)], resource="r")
+        await repo.set_limits("u", [RPM], resource="r")
+        repo._rejection_cache._clock = _Clock()
+        async with RateLimiter(repository=repo) as limiter:
+            await _spent_and_cached(limiter)
+            async with limiter.acquire("org", "r", consume={"rpm": 1}):  # org's bucket exists
+                pass
+            before = await _consumed(repo, "org")
+            # Another process turns u's cascade on: its fan-out stamps `cascade`
+            # without moving rf or vu, and this process's cache does not hear of it.
+            other = Repository(
+                name="test-rejection", region="us-east-1", _skip_deprecation_warning=True
+            )
+            other._namespace_id = repo._namespace_id
+            await _stamp_current_lambdas(other)
+            await other.set_entity_cascade("u", True, resource="r")
+            await other.close()
+            later = repo._now_ms() + 60_000
+            with patch.object(repo, "_now_ms", return_value=later):
+                async with limiter.acquire("u", "r", consume={"rpm": 1}):
+                    pass
+        assert await _consumed(repo, "org") - before == 1000  # the parent was debited
+
+    async def test_a_pre_684_stamp_on_a_cascading_child_is_not_trusted(self, repo):
+        """Phase-3 review #1b: `cascade=False` with no `parent_id` on a child that has one."""
+        await repo.create_entity("org")
+        await repo.create_entity("u", parent_id="org", cascade=True)
+        await repo.set_limits("org", [Limit.per_minute("rpm", 100)], resource="r")
+        await repo.set_limits("u", [RPM], resource="r")
+        repo._rejection_cache._clock = _Clock()
+        async with RateLimiter(repository=repo) as limiter:
+            async with limiter.acquire("u", "r", consume={"rpm": 1}):  # slow path
+                pass
+            client = await repo._get_client()
+            await client.update_item(  # the stamp an older version left on u's item
+                TableName=repo.table_name,
+                Key={
+                    "PK": {"S": schema.pk_bucket(repo._namespace_id, "u", "r", 0)},
+                    "SK": {"S": schema.sk_state()},
+                },
+                UpdateExpression="SET #c = :f REMOVE parent_id",
+                ExpressionAttributeNames={"#c": "cascade"},
+                ExpressionAttributeValues={":f": {"BOOL": False}},
+            )
+            async with limiter.acquire("u", "r", consume={"rpm": 1}):  # fast path caches it
+                pass
+            before = await _consumed(repo, "org")
+            later = repo._now_ms() + 60_000
+            with (
+                patch.object(repo, "_now_ms", return_value=later),
+                patch.object(repo, "refill_from_cached_state") as refill,
+            ):
+                async with limiter.acquire("u", "r", consume={"rpm": 1}):
+                    pass
+        refill.assert_not_called()
+        assert await _consumed(repo, "org") - before == 1000  # the slow path cascaded
+
+    async def test_a_refund_elsewhere_never_lifts_the_bucket_past_capacity(self, limiter, repo):
+        """Phase-3 review #2: a credit ADDs tokens without moving rf; tk is pinned."""
+        repo._rejection_cache._clock = _Clock()
+        await _spent_and_cached(limiter)  # cached tk = 0
+        client = await repo._get_client()
+        await client.update_item(  # another process's lease releases 1 (rf untouched)
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, "u", "r", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="ADD #t :d",
+            ExpressionAttributeNames={"#t": schema.bucket_attr("rpm", schema.BUCKET_FIELD_TK)},
+            ExpressionAttributeValues={":d": {"N": "1000"}},
+        )
+        admitted = 0
+        later = repo._now_ms() + 60_000
+        with patch.object(repo, "_now_ms", return_value=later):
+            for amount in (2, 1, 1):  # all at one instant: capacity 2 bounds the total
+                try:
+                    async with limiter.acquire("u", "r", consume={"rpm": amount}):
+                        admitted += amount
+                except RateLimitExceeded:
+                    pass
+        assert admitted == 2
+
+    async def test_a_doubling_elsewhere_refuses_the_write(self, repo):
+        """Phase-3 review #3: shard_count moves without rf; it is pinned."""
+        await repo.create_entity("u")  # a record with no parent
+        await repo.set_limits("u", [Limit.per_minute("rpm", 100)], resource="r")
+        repo._rejection_cache._clock = _Clock()
+        async with RateLimiter(repository=repo) as limiter:
+            async with limiter.acquire("u", "r", consume={"rpm": 50}):  # slow path
+                pass
+            async with limiter.acquire("u", "r", consume={"rpm": 50}):  # cached tk 0, count 1
+                pass
+            client = await repo._get_client()
+            key = {
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, "u", "r", 0)},
+                "SK": {"S": schema.sk_state()},
+            }
+            await client.update_item(  # another process's bump_shard_count on shard 0
+                TableName=repo.table_name,
+                Key=key,
+                UpdateExpression="SET shard_count = :n",
+                ExpressionAttributeValues={":n": {"N": "2"}},
+            )
+            results: list[object] = []
+            real = repo.refill_from_cached_state
+
+            async def spy(*args, **kwargs):
+                result = await real(*args, **kwargs)
+                results.append(result)
+                return result
+
+            later = repo._now_ms() + 60_000
+            with (
+                patch.object(repo, "_now_ms", return_value=later),
+                patch.object(repo, "refill_from_cached_state", side_effect=spy),
+                patch("zae_limiter.repository.random.randrange", return_value=0),
+            ):
+                async with limiter.acquire("u", "r", consume={"rpm": 50}):
+                    pass
+            item = (await client.get_item(TableName=repo.table_name, Key=key))["Item"]
+        assert results == [None]  # the pinned write refused
+        # The slow path refilled toward the new per-shard ceiling (50) and debited 50.
+        assert int(item[schema.bucket_attr("rpm", schema.BUCKET_FIELD_TK)]["N"]) == 0
+
+    async def test_a_resource_schedule_is_honoured(self, repo):
+        """Phase-3 review #4: a resource-level schedule never reaches the item (no vu)."""
+        from zae_limiter import ScheduleEntry
+
+        four = Limit.per_minute("rpm", 4)
+        await repo.set_resource_defaults("r", [four])
+        repo._rejection_cache._clock = _Clock()
+        async with RateLimiter(repository=repo) as limiter:
+            for _ in range(4):  # spend the 4; the last fast-path image caches tk = 0
+                async with limiter.acquire("u", "r", consume={"rpm": 1}):
+                    pass
+            halved = four.with_schedule((ScheduleEntry(cron="* * * * *", scale=0.5),))
+            await repo.set_resource_defaults("r", [halved])  # clears the rejection cache...
+            # ...but not this level of the config cache, which lags by its own TTL
+            # on both paths alike; let it expire.
+            await repo.invalidate_config_cache()
+            # A read warms the config cache with the schedule and writes no bucket,
+            # so u's item still has no `vu`: only the gate can see the schedule.
+            await limiter.check_availability("u", "r")
+            with pytest.raises(RateLimitExceeded):  # a fast rejection re-fills the cache
+                async with limiter.acquire("u", "r", consume={"rpm": 1}):
+                    pass
+            item = await _bucket_item(repo, "u")
+            assert "vu" not in item and _cached(repo)
+            admitted = 0
+            later = repo._now_ms() + 60_000
+            with patch.object(repo, "_now_ms", return_value=later):
+                for _ in range(5):
+                    try:
+                        async with limiter.acquire("u", "r", consume={"rpm": 1}):
+                            admitted += 1
+                    except RateLimitExceeded:
+                        break
+        assert admitted == 2  # the scheduled capacity, not the base 4
+
+    async def test_a_cold_config_cache_takes_todays_path(self, repo):
+        repo._config_cache._enabled = False
+        await repo.set_limits("u", [RPM], resource="r")
+        repo._rejection_cache._clock = _Clock()
+        async with RateLimiter(repository=repo) as limiter:
+            await _spent_and_cached(limiter)
+            later = repo._now_ms() + 60_000
+            with (
+                patch.object(repo, "_now_ms", return_value=later),
+                patch.object(repo, "refill_from_cached_state") as refill,
+            ):
+                async with limiter.acquire("u", "r", consume={"rpm": 1}):
+                    pass
+        refill.assert_not_called()
+
+    async def test_the_ttl_is_refreshed_as_the_slow_path_would(self, repo):
+        """Phase-3 review #5: a resource-level bucket's ttl moves forward."""
+        await repo.create_entity("u")  # a record with no parent
+        await repo.set_resource_defaults("r", [RPM])
+        repo._rejection_cache._clock = _Clock()
+        async with RateLimiter(repository=repo) as limiter:
+            await _spent_and_cached(limiter)
+            client = await repo._get_client()
+            key = {
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, "u", "r", 0)},
+                "SK": {"S": schema.sk_state()},
+            }
+            before = int(
+                (await client.get_item(TableName=repo.table_name, Key=key))["Item"]["ttl"]["N"]
+            )
+            later = repo._now_ms() + 60_000
+            with patch.object(repo, "_now_ms", return_value=later):
+                async with _count_client_calls(repo) as calls:
+                    async with limiter.acquire("u", "r", consume={"rpm": 1}):
+                        pass
+            after = int(
+                (await client.get_item(TableName=repo.table_name, Key=key))["Item"]["ttl"]["N"]
+            )
+        assert calls == ["update_item"]  # phase 3 took it
+        assert after == before + 60  # stamped from the write's instant
+
+    def test_the_sync_limiter_refills_from_the_cache(self, mock_dynamodb):
+        from contextlib import ExitStack
+
+        from zae_limiter import SyncRateLimiter
+        from zae_limiter.sync_repository import SyncRepository
+
+        repo = SyncRepository(
+            name="test-rejection-sync-refill", region="us-east-1", _skip_deprecation_warning=True
+        )
+        repo.create_table()
+        repo._register_namespace("default")
+        repo.create_entity("u")  # a record with no parent: phase 3 may trust it
+        repo.set_limits("u", [RPM], resource="r")
+        repo._rejection_cache._clock = _Clock()
+        limiter = SyncRateLimiter(repository=repo)
+        for _ in range(2):
+            with limiter.acquire("u", "r", consume={"rpm": 1}):
+                pass
+        client = repo._get_client()
+        calls: list[str] = []
+
+        def counting(name):
+            real = getattr(client, name)
+
+            def call(*args, **kwargs):
+                calls.append(name)
+                return real(*args, **kwargs)
+
+            return call
+
+        later = repo._now_ms() + 60_000
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(repo, "_now_ms", return_value=later))
+            for name in _CLIENT_CALLS:
+                stack.enter_context(patch.object(client, name, side_effect=counting(name)))
+            with limiter.acquire("u", "r", consume={"rpm": 1}) as lease:
+                pass
+        assert calls == ["update_item"]
+        assert lease.consumed == {"rpm": 1}
+        repo.close()
+
+
+def test_recording_written_states_skips_a_backend_without_the_cache():
+    """A third-party backend has no `_rejection_cache`: nothing to record."""
+    from types import SimpleNamespace
+    from typing import cast
+
+    from zae_limiter.lease import Lease
+    from zae_limiter.repository_protocol import RepositoryProtocol
+
+    lease = Lease(repository=cast(RepositoryProtocol, SimpleNamespace()))
+    lease._record_written_states({("u", "r", 0): []}, [], condition_failed=True)
+
+
+class TestSteadyLoad:
+    """A minute of steady over-demand, with the cache on and off (ADR-147, #695).
+
+    One request every 0.2 s, each needing a whole second of refill. The cache
+    must admit exactly what DynamoDB alone admits, write far less, and never
+    have a refill-from-cache write refused for a state its own slow pass made
+    stale (the slow path records what its rf-locked write left).
+    """
+
+    async def test_a_state_spent_elsewhere_in_the_longer_window_is_refused(self, repo):
+        """Option A: a 30 s old state is used, and the server refuses it when stale."""
+        now = [1_800_000_000_000]
+        await repo.create_entity("u")
+        await repo.set_limits("u", [Limit.per_minute("rpm", 600)], resource="r")  # 10/s
+        repo._rejection_cache._clock = lambda: now[0] / 1000
+        results = []
+        real_refill = repo.refill_from_cached_state
+
+        async def refill_spy(*args, **kwargs):
+            result = await real_refill(*args, **kwargs)
+            results.append(result)
+            return result
+
+        with (
+            patch("zae_limiter.config_cache.time.time", side_effect=lambda: now[0] / 1000),
+            patch.object(repo, "_now_ms", side_effect=lambda: now[0]),
+            patch.object(repo, "refill_from_cached_state", side_effect=refill_spy),
+        ):
+            async with RateLimiter(repository=repo) as limiter:
+                async with limiter.acquire("u", "r", consume={"rpm": 1}):  # slow pass: creates
+                    pass
+                async with limiter.acquire("u", "r", consume={"rpm": 599}):  # fast path: tk 0
+                    pass
+                now[0] += 30_000  # 300 tokens of refill; the 1 s age cap is long past
+                client = await repo._get_client()
+                await client.update_item(  # another process spends 1000
+                    TableName=repo.table_name,
+                    Key={
+                        "PK": {"S": schema.pk_bucket(repo._namespace_id, "u", "r", 0)},
+                        "SK": {"S": schema.sk_state()},
+                    },
+                    UpdateExpression="ADD #t :d",
+                    ExpressionAttributeNames={"#t": "b_rpm_tk"},
+                    ExpressionAttributeValues={":d": {"N": "-1000000"}},
+                )
+                with pytest.raises(RateLimitExceeded):  # today's path reads the debt
+                    async with limiter.acquire("u", "r", consume={"rpm": 10}):
+                        pass
+        assert results == [None]  # phase 3 tried the 30 s old state; the floor refused it
+
+    @pytest.mark.parametrize("ttl", [0.0, 1.0, 2.0], ids=["cache-off", "ttl-1s", "ttl-2s"])
+    async def test_admits_the_same_and_writes_less(self, repo, ttl):
+        now = [1_800_000_000_000]
+        await repo.create_entity("u")
+        await repo.set_limits("u", [Limit.per_minute("rpm", 600)], resource="r")  # 10/s
+        repo._rejection_cache.ttl_seconds = ttl
+        repo._rejection_cache._clock = lambda: now[0] / 1000
+        refused = []
+        real_refill = repo.refill_from_cached_state
+
+        async def refill_spy(*args, **kwargs):
+            result = await real_refill(*args, **kwargs)
+            refused.append(result is None)
+            return result
+
+        admitted = 0
+        with (
+            patch("zae_limiter.config_cache.time.time", side_effect=lambda: now[0] / 1000),
+            patch.object(repo, "_now_ms", side_effect=lambda: now[0]),
+            patch.object(repo, "refill_from_cached_state", side_effect=refill_spy),
+        ):
+            async with RateLimiter(repository=repo) as limiter:
+                async with _count_client_calls(repo) as calls:
+                    for _ in range(300):
+                        try:
+                            async with limiter.acquire("u", "r", consume={"rpm": 10}):
+                                admitted += 1
+                        except RateLimitExceeded:
+                            pass
+                        now[0] += 200
+        writes = calls.count("update_item") + calls.count("transact_write_items")
+        assert admitted == 119  # 60 from the full bucket, then one a second
+        assert not any(refused)
+        if ttl == 0.0:
+            assert writes >= 300  # every request reaches DynamoDB
+        else:
+            assert writes < 200
+        if ttl > 0:  # phase 3 trusts a state up to one slow-pass window old (option A)
+            assert len(refused) >= 40
+            assert calls.count("batch_get_item") <= 10

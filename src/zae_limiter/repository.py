@@ -222,6 +222,15 @@ class Repository:
         # Consulted only while the entity has an entry, so dropping that entry
         # still means "start cold".
         self._cascade_cache: dict[tuple[str, str, str], bool] = {}
+        # Each entity's parent as its own **existing** META record says (None:
+        # the record names no parent). An entity with no record has no entry:
+        # a parent can still be added by a later create_entity, here or in
+        # another process. `_entity_cache` cannot answer either: a fast-path
+        # success re-learns parent_id from the bucket's stamp, and a pre-#684
+        # stamp carries none on a child that has a parent. ADR-147 phase 3
+        # trusts "no parent" only from here. An existing record's parent_id
+        # never changes.
+        self._record_parents: dict[tuple[str, str], str | None] = {}
         # The last bucket state seen per (namespace, entity, resource, shard),
         # used only to reject a request that cannot fit without a DynamoDB
         # call (ADR-147, #695). Shared with every namespace() scope.
@@ -581,6 +590,7 @@ class Repository:
         scoped._entity_cache = self._entity_cache
         scoped._cascade_cache = self._cascade_cache
         scoped._rejection_cache = self._rejection_cache
+        scoped._record_parents = self._record_parents
         scoped._namespace_cache = self._namespace_cache
         # Scoped repos start with no on_unavailable cache (each namespace
         # has its own system config)
@@ -1834,6 +1844,8 @@ class Repository:
             if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
                 raise EntityExistsError(entity_id)
             raise
+        # The record now exists: what it says is what phase 3 may trust.
+        self._record_parents[(self._namespace_id, entity_id)] = parent_id
 
         # Log audit event
         await self._log_audit_event(
@@ -1874,10 +1886,13 @@ class Repository:
         existing_shards = self._entity_cache.get(cache_key, (False, None, {}))[2]
         if not item:
             self._entity_cache[cache_key] = (False, None, existing_shards)
+            # No record yet says nothing about a parent: one can be created later.
+            self._record_parents.pop(cache_key, None)
             return None
 
         entity = self._deserialize_entity(item)
         self._entity_cache[cache_key] = (entity.cascade, entity.parent_id, existing_shards)
+        self._record_parents[cache_key] = entity.parent_id
         return entity
 
     @clears_rejection_cache
@@ -2265,6 +2280,12 @@ class Repository:
             self._entity_cache[cache_key] = (entity.cascade, entity.parent_id, existing_shards)
         else:
             self._entity_cache[cache_key] = (False, None, existing_shards)
+        # Only an existing record speaks for the parent: with none, a parent
+        # can still be added by a later create_entity (phase-3 verification).
+        if entity is not None:
+            self._record_parents[cache_key] = entity.parent_id
+        else:
+            self._record_parents.pop(cache_key, None)
 
         return entity, buckets
 
@@ -2802,6 +2823,8 @@ class Repository:
         applied_windows: dict[str, int] | None = None,
         grant_counts: dict[str, int] | None = None,
         owner: tuple[bool, str | None] | None = None,
+        pin_vu: bool = False,
+        expected_vu: int | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -2830,6 +2853,11 @@ class Repository:
                 group covers every limit sharing the item. This is the half of
                 the #468 fan-out's `vu = 0` that makes it self-clearing rather
                 than a permanent fast-path demotion.
+            pin_vu: When this write sets or removes `vu`, require the item's
+                `vu` to still be ``expected_vu`` (absent when None): the value
+                the caller read. A fan-out's `vu = 0` stamped after the read
+                is then never erased (#701).
+            expected_vu: The `vu` the caller read off the item.
             windows: Limit name -> ``(window_start_ms, reset_after_seconds)``
                 to stamp as ``b_{name}_ws`` and ``b_{name}_rsa`` (ADR-139).
                 Only limits whose window rolled on **this** pass appear; an
@@ -3059,6 +3087,17 @@ class Repository:
             attr_names["#pinsc"] = "shard_count"
             attr_values[":pinsc"] = {"N": str(pin_shard_count)}
             condition_parts.append("(attribute_not_exists(#pinsc) OR #pinsc <= :pinsc)")
+        if pin_vu and (vu is not None or clear_vu):
+            # `vu` as it was read. A limit-change fan-out rewrites `cp`/`ra`/`rp`
+            # and stamps `vu = 0` without moving `rf`, so the `rf` lock alone
+            # let this write erase a stamp that landed after the read, and the
+            # fast path spent a balance above the new limit (#701). A lost pin
+            # falls to the consumption-only retry, which leaves `vu` alone.
+            if expected_vu is None:
+                condition_parts.append("attribute_not_exists(#vu)")
+            else:
+                attr_values[":evu"] = {"N": str(expected_vu)}
+                condition_parts.append("#vu = :evu")
         if seeded_tz is not None:
             # One zone per item (§4.1). Every limit written by this pass was
             # resolved from one config level, which `set_limits()` holds to a
@@ -3788,6 +3827,180 @@ class Repository:
             # for a parent from its child's view (#684), so it teaches nothing.
             self._cascade_cache[(self._namespace_id, entity_id, resource)] = meta[0]
         return count
+
+    def build_cached_refill(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int,
+        consumed: dict[str, int],
+        refill_amounts: dict[str, int],
+        expected_rf: int,
+        now_ms: int,
+        *,
+        cached_tokens: dict[str, int],
+        cached_shard_count: int,
+        ttl_seconds: int | None = None,
+        cached_params: dict[str, tuple[int, int, int]] | None = None,
+    ) -> dict[str, Any]:
+        """The UpdateItem ``refill_from_cached_state`` sends (ADR-147 phase 3).
+
+        ``build_composite_normal``'s rf-locked refill-and-debit, with ``vu``
+        pinned absent, ``disabled`` absent and the TTL unexpired added to its
+        condition, returning ``ALL_NEW``.
+
+        Every input the refill was computed from is pinned, because other
+        writers change them without moving ``rf``: ``cached_tokens`` caps each
+        limit's stored balance at the cached one (a refund elsewhere ADDs
+        tokens, and the clamp computed against the lower cached balance would
+        then land above the ceiling; a debit elsewhere only lowers it, which
+        the floor ``tk >= consumed - refill`` refuses — added here for every
+        limit debited **at any sign**, since ``build_composite_normal`` emits
+        it only when the debit exceeds the refill), and
+        ``cached_params`` pins each limit's stored ``cp``/``ra``/``rp`` (a limit
+        change elsewhere stamps ``vu = 0``, which a slow pass that does not move
+        ``rf`` then clears), and ``cached_shard_count`` pins ``shard_count`` (a doubling
+        elsewhere — client bump, propagation, aggregator Path 1 — shrinks the
+        per-shard ceiling and rate the refill was computed against).
+        """
+        item = self.build_composite_normal(
+            entity_id=entity_id,
+            resource=resource,
+            consumed=consumed,
+            refill_amounts=refill_amounts,
+            now_ms=now_ms,
+            expected_rf=expected_rf,
+            ttl_seconds=ttl_seconds,
+            shard_id=shard_id,
+            rf_ms=max(now_ms, expected_rf),
+        )
+        update = item["Update"]
+        update["ExpressionAttributeNames"].update(
+            {
+                "#cvu": schema.BUCKET_FIELD_VU,
+                "#cdis": schema.BUCKET_FIELD_DISABLED,
+                "#cttl": "ttl",
+                "#ccs": "cascade",
+            }
+        )
+        update["ExpressionAttributeValues"][":cnow"] = {"N": str(now_ms // 1000)}
+        update["ExpressionAttributeValues"][":cfalse"] = {"BOOL": False}
+        # `cascade` is pinned off: a policy turned on elsewhere stamps it
+        # (ADR-146) without moving `rf` or `vu`, and this write debits no parent.
+        update["ConditionExpression"] = (
+            f"{update['ConditionExpression']} AND attribute_not_exists(#cvu)"
+            " AND attribute_not_exists(#cdis)"
+            " AND (attribute_not_exists(#cttl) OR #cttl > :cnow)"
+            " AND (attribute_not_exists(#ccs) OR #ccs = :cfalse)"
+        )
+        # Positional tokens, never the limit name (#634).
+        for i, (name, tokens) in enumerate(cached_tokens.items()):
+            update["ExpressionAttributeNames"][f"#ct{i}"] = schema.bucket_attr(
+                name, schema.BUCKET_FIELD_TK
+            )
+            update["ExpressionAttributeValues"][f":ct{i}"] = {"N": str(tokens)}
+            update["ConditionExpression"] += f" AND #ct{i} <= :ct{i}"
+        # The floor on every limit this write debits, at any sign: the balance
+        # left must not be negative (`tk + refill - consumed >= 0`). The normal
+        # write emits it only when the debit exceeds the refill, because its
+        # read is a round trip old; a cached state can be much older, and a
+        # debit elsewhere since lowers `tk` without moving `rf` or failing the
+        # `tk <=` pin (verification of option A: 1 admitted against -1000).
+        # With `rf` pinned the refill is the one a fresh read would compute, so
+        # this admits exactly when the slow path would.
+        for j, (name, c) in enumerate(consumed.items()):
+            if c <= 0:
+                continue
+            update["ExpressionAttributeNames"][f"#cf{j}"] = schema.bucket_attr(
+                name, schema.BUCKET_FIELD_TK
+            )
+            update["ExpressionAttributeValues"][f":cf{j}"] = {
+                "N": str(c - refill_amounts.get(name, 0))
+            }
+            update["ConditionExpression"] += f" AND #cf{j} >= :cf{j}"
+        # Each limit's stored settings, equal to the cached ones. A limit change
+        # elsewhere rewrites `cp`/`ra`/`rp` and stamps `vu = 0`, but a slow pass
+        # that does not move `rf` (a writer whose clock is behind the stored
+        # `rf`) then clears that `vu`, and every other pin still holds: the
+        # refill would run at the old rate (review of #700: 400 admitted
+        # against 10/min). Positional tokens (#634).
+        fields = (schema.BUCKET_FIELD_CP, schema.BUCKET_FIELD_RA, schema.BUCKET_FIELD_RP)
+        for k, (name, values) in enumerate((cached_params or {}).items()):
+            for code, field, value in zip("cap", fields, values, strict=True):
+                update["ExpressionAttributeNames"][f"#cp{code}{k}"] = schema.bucket_attr(
+                    name, field
+                )
+                update["ExpressionAttributeValues"][f":cp{code}{k}"] = {"N": str(value)}
+                update["ConditionExpression"] += f" AND #cp{code}{k} = :cp{code}{k}"
+        update["ExpressionAttributeNames"]["#csc"] = "shard_count"
+        update["ExpressionAttributeValues"][":csc"] = {"N": str(cached_shard_count)}
+        update["ConditionExpression"] += " AND (attribute_not_exists(#csc) OR #csc = :csc)"
+        update["ReturnValues"] = "ALL_NEW"
+        return item
+
+    async def refill_from_cached_state(
+        self,
+        entity_id: str,
+        resource: str,
+        shard_id: int,
+        consumed: dict[str, int],
+        refill_amounts: dict[str, int],
+        expected_rf: int,
+        now_ms: int,
+        *,
+        cached_tokens: dict[str, int],
+        cached_shard_count: int,
+        ttl_seconds: int | None = None,
+        cached_params: dict[str, tuple[int, int, int]] | None = None,
+    ) -> SpeculativeResult | None:
+        """The slow path's rf-locked write, built from a cached state (ADR-147 phase 3).
+
+        Refills and debits in one write with no read: the cached state is what
+        the read would have returned, unless something wrote since — which the
+        condition detects. Beside the ``rf`` lock it pins ``vu`` absent (a limit
+        change made elsewhere stamps ``vu = 0`` and rewrites ``cp``/``ra``/``rp``
+        without moving ``rf``, so an ``rf`` lock alone would refill at the old
+        limits, #508), the bucket not disabled, and its TTL not expired.
+
+        Returns the success as a ``SpeculativeResult`` built from ``ALL_NEW``,
+        or None when the condition failed; the caller then takes today's path.
+        Only for an unscheduled, non-quota, non-cascading item: the caller
+        checks, and ``vu`` absent is part of the condition.
+        """
+        update = self.build_cached_refill(
+            entity_id,
+            resource,
+            shard_id,
+            consumed,
+            refill_amounts,
+            expected_rf,
+            now_ms,
+            cached_tokens=cached_tokens,
+            cached_shard_count=cached_shard_count,
+            ttl_seconds=ttl_seconds,
+            cached_params=cached_params,
+        )["Update"]
+        client = await self._get_client()
+        try:
+            response = await client.update_item(**update)
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+                # Something wrote since the state was cached: it is stale.
+                self._rejection_cache.forget(self._namespace_id, entity_id, resource, shard_id)
+                return None
+            raise
+        new_item = response["Attributes"]
+        buckets = self._deserialize_composite_bucket(new_item)
+        shard_count = int(new_item.get("shard_count", {}).get("N", "1"))
+        self._remember_bucket_image(entity_id, resource, shard_id, new_item, buckets, shard_count)
+        return SpeculativeResult(
+            success=True,
+            buckets=buckets,
+            cascade=new_item.get("cascade", {}).get("BOOL", False),
+            parent_id=new_item.get("parent_id", {}).get("S"),
+            shard_id=shard_id,
+            shard_count=shard_count,
+        )
 
     def _remember_bucket_image(
         self,
@@ -6424,6 +6637,8 @@ class Repository:
         # Carried so refill math uses this shard's effective share (ADR-133).
         # The reserved wcu limit is per-partition and stays undivided.
         shard_count = int(item.get("shard_count", {}).get("N", "1"))
+        vu_raw = item.get(schema.BUCKET_FIELD_VU, {}).get("N")
+        stored_vu = int(vu_raw) if vu_raw is not None else None
 
         # One hoisted zone for the whole item, covering both tuples (#222
         # §4.1). Absent on every item written before scheduling existed, where
@@ -6571,6 +6786,8 @@ class Repository:
                     window_applied_ms=window_applied_ms,
                     window_consumed_mark_milli=window_consumed_mark,
                     grant_count=grant_count,
+                    stored_vu_ms=stored_vu,
+                    stored_vu_read=True,
                 )
             )
 

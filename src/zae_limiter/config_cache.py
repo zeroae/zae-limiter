@@ -633,6 +633,47 @@ class ConfigCache:
     # Cache management
     # -------------------------------------------------------------------------
 
+    def peek_limits(
+        self, entity_id: str, resource: str
+    ) -> "tuple[list[Limit], ConfigSource] | None":
+        """The resolved limits, only if every level is already cached (ADR-147 phase 3).
+
+        Never reads and never counts as a hit or a miss: a caller that wants
+        to avoid a read asks whether the answer is already in hand. None when
+        the cache is off, any level is missing or expired, or no level has
+        limits. Takes no lock: it only reads slots that a writer replaces whole.
+        """
+        if not self._enabled:
+            return None
+        from . import schema
+
+        ns = self.namespace_id
+        levels: list[tuple[ConfigSource, str, str]] = [
+            ("entity", schema.pk_entity(ns, entity_id), schema.sk_config(resource))
+        ]
+        if resource != "_default_":
+            levels.append(
+                ("entity_default", schema.pk_entity(ns, entity_id), schema.sk_config("_default_"))
+            )
+        levels.extend(
+            [
+                ("resource", schema.pk_resource(ns, resource), schema.sk_config()),
+                ("system", schema.pk_system(ns), schema.sk_config()),
+            ]
+        )
+        cached: dict[str, Any] = {}
+        for slot_type, _, _ in levels:
+            is_cached, value = self._check_cache_slot(
+                slot_type, entity_id=entity_id, resource=resource
+            )
+            if not is_cached:
+                return None
+            cached[slot_type] = value
+        limits, _, source = self._evaluate_hierarchy(levels, cached, {}, None)
+        if not limits or source is None:
+            return None
+        return limits, source
+
     def invalidate(self) -> None:
         """
         Invalidate all cached entries.
