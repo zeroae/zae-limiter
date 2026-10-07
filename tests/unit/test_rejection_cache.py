@@ -1990,3 +1990,54 @@ class TestRefillFromCache:
         assert calls == ["update_item"]
         assert lease.consumed == {"rpm": 1}
         repo.close()
+
+
+class TestSteadyLoad:
+    """A minute of steady over-demand, with the cache on and off (ADR-147, #695).
+
+    One request every 0.2 s, each needing a whole second of refill. The cache
+    must admit exactly what DynamoDB alone admits, write far less, and never
+    have a refill-from-cache write refused for a state its own slow pass made
+    stale (the slow path records what its rf-locked write left).
+    """
+
+    @pytest.mark.parametrize("ttl", [0.0, 1.0, 2.0], ids=["cache-off", "ttl-1s", "ttl-2s"])
+    async def test_admits_the_same_and_writes_less(self, repo, ttl):
+        now = [1_800_000_000_000]
+        await repo.create_entity("u")
+        await repo.set_limits("u", [Limit.per_minute("rpm", 600)], resource="r")  # 10/s
+        repo._rejection_cache.ttl_seconds = ttl
+        repo._rejection_cache._clock = lambda: now[0] / 1000
+        refused = []
+        real_refill = repo.refill_from_cached_state
+
+        async def refill_spy(*args, **kwargs):
+            result = await real_refill(*args, **kwargs)
+            refused.append(result is None)
+            return result
+
+        admitted = 0
+        with (
+            patch("zae_limiter.config_cache.time.time", side_effect=lambda: now[0] / 1000),
+            patch.object(repo, "_now_ms", side_effect=lambda: now[0]),
+            patch.object(repo, "refill_from_cached_state", side_effect=refill_spy),
+        ):
+            async with RateLimiter(repository=repo) as limiter:
+                async with _count_client_calls(repo) as calls:
+                    for _ in range(300):
+                        try:
+                            async with limiter.acquire("u", "r", consume={"rpm": 10}):
+                                admitted += 1
+                        except RateLimitExceeded:
+                            pass
+                        now[0] += 200
+        writes = calls.count("update_item") + calls.count("transact_write_items")
+        assert admitted == 119  # 60 from the full bucket, then one a second
+        assert not any(refused)
+        if ttl == 0.0:
+            assert writes >= 300  # every request reaches DynamoDB
+        else:
+            assert writes < 200
+        if ttl == 2.0:  # a request's refill fits inside the age cap
+            assert len(refused) >= 40
+            assert calls.count("batch_get_item") <= 10

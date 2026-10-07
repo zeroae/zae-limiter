@@ -22,7 +22,13 @@ from .bucket import (
 )
 from .exceptions import LeaseExpiredError, RateLimitExceeded
 from .models import BucketState, Limit, LimitStatus, QuotaDonorDebit
-from .schema import BUCKET_FIELD_RF, BUCKET_FIELD_TK, bucket_attr, calculate_bucket_ttl_seconds
+from .schema import (
+    BUCKET_FIELD_RF,
+    BUCKET_FIELD_TK,
+    bucket_attr,
+    calculate_bucket_ttl_seconds,
+    calculate_ttl,
+)
 
 _CONFLICT_MAX_RETRIES = 3
 _CONFLICT_BASE_DELAY_S = 0.025
@@ -328,6 +334,9 @@ class SyncLease:
         items: list[dict[str, Any]] = []
         window_fanouts: dict[tuple[str, str, int, int], dict[str, tuple[int, int]]] = {}
         quota_creates: list[tuple[str, str, int, int, list[str]]] = []
+        written_images: list[
+            tuple[tuple[str, str, int], list[BucketState], int, int | None, tuple[bool, str | None]]
+        ] = []
         for (entity_id, resource, shard_id), group_entries in groups.items():
             is_new = group_entries[0]._is_new
             has_custom_config = group_entries[0]._has_custom_config
@@ -445,6 +454,33 @@ class SyncLease:
                 }
                 pin = [e.state.shard_count for e in group_entries if e._seed and e.limit.is_quota]
                 pin += list(grant_counts.values())
+                written_rf = _monotonic_rf(now_ms, expected_rf, group_entries)
+                if (
+                    not seeds
+                    and (not windows)
+                    and (not window_lengths)
+                    and (not seed_windows)
+                    and (not grant_counts)
+                    and (not boundaries)
+                    and (owner_entry is not None)
+                    and (ttl_seconds is not None)
+                    and all(
+                        not e.limit.is_quota
+                        and e._reset_edge_ms is None
+                        and (e._window_end_ms is None)
+                        and (not e.state.sched)
+                        for e in group_entries
+                    )
+                ):
+                    written_images.append(
+                        (
+                            (entity_id, resource, shard_id),
+                            [replace(e.state, last_refill_ms=written_rf) for e in group_entries],
+                            group_entries[0].state.shard_count,
+                            calculate_ttl(now_ms, ttl_seconds) if ttl_seconds else None,
+                            (owner_entry._cascade, owner_entry._parent_id),
+                        )
+                    )
                 items.append(
                     repo.build_composite_normal(
                         entity_id=entity_id,
@@ -462,7 +498,7 @@ class SyncLease:
                         seeds=seeds,
                         grant_counts=grant_counts,
                         pin_shard_count=min(pin, default=None),
-                        rf_ms=_monotonic_rf(now_ms, expected_rf, group_entries),
+                        rf_ms=written_rf,
                         clear_vu=not boundaries,
                         owner=(owner_entry._cascade, owner_entry._parent_id)
                         if owner_entry is not None
@@ -609,12 +645,60 @@ class SyncLease:
         self._initial_committed = True
         for entry in self.entries:
             entry._initial_consumed = entry.consumed
+        self._record_written_states(
+            groups, [] if condition_failed else written_images, condition_failed
+        )
         if not condition_failed:
             self._repair_created_quota_shards(quota_creates)
             self._fan_out_windows(window_fanouts)
         elif reissued_creates:
             self._repair_created_quota_shards(
                 [c for c in quota_creates if (c[0], c[1], c[2]) in reissued_creates]
+            )
+
+    def _record_written_states(
+        self,
+        groups: dict[tuple[str, str, int], list[LeaseEntry]],
+        written_images: list[
+            tuple[tuple[str, str, int], list[BucketState], int, int | None, tuple[bool, str | None]]
+        ],
+        condition_failed: bool,
+    ) -> None:
+        """Replace each written bucket's cached state with what the write left (ADR-147).
+
+        Before this the cache kept the image of the failed speculative write
+        that sent the acquire here, with the pre-write ``rf``; the next phase-3
+        refill pinned that ``rf``, was refused (1 WCU) and fell to another slow
+        pass — about half of all phase-3 writes under steady load. The recorded
+        state is what the rf-locked write computed: a debit or credit made
+        elsewhere in between makes the item differ from it, and phase 3's
+        ``tk <=`` pin and floor refuse on exactly that, while a local rejection
+        from an overstated balance only rejects less. Every other written
+        bucket — a create, a seed, a window, a quota, a schedule, the
+        consumption-only retry, which moves no ``rf`` — is forgotten instead.
+        """
+        cache = getattr(self.repository, "_rejection_cache", None)
+        namespace_id = getattr(self.repository, "_namespace_id", None)
+        if cache is None or namespace_id is None:
+            return
+        recorded = {key for key, *_rest in written_images}
+        for key in groups:
+            if condition_failed or key not in recorded:
+                cache.forget(namespace_id, *key)
+        for (entity_id, resource, shard_id), states, shard_count, ttl, owner in written_images:
+            cascade, parent_id = owner
+            cache.store(
+                namespace_id,
+                entity_id,
+                resource,
+                shard_id,
+                states,
+                shard_count=shard_count,
+                vu_ms=None,
+                ttl_epoch=ttl,
+                disabled=False,
+                cascades=bool(cascade and parent_id),
+                parent_id=parent_id,
             )
 
     def _repair_created_quota_shards(

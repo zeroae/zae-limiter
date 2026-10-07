@@ -16,7 +16,13 @@ from .bucket import (
 )
 from .exceptions import LeaseExpiredError, RateLimitExceeded
 from .models import BucketState, Limit, LimitStatus, QuotaDonorDebit
-from .schema import BUCKET_FIELD_RF, BUCKET_FIELD_TK, bucket_attr, calculate_bucket_ttl_seconds
+from .schema import (
+    BUCKET_FIELD_RF,
+    BUCKET_FIELD_TK,
+    bucket_attr,
+    calculate_bucket_ttl_seconds,
+    calculate_ttl,
+)
 
 # TransactionConflict retry constants (Issue #332)
 _CONFLICT_MAX_RETRIES = 3
@@ -461,6 +467,12 @@ class Lease:
         # Quota shards N>0 this commit creates: (entity, resource, shard,
         # created count, quota names), repaired after the write (ADR-145).
         quota_creates: list[tuple[str, str, int, int, list[str]]] = []
+        # Bucket items the rf-locked write leaves in a state the rejection
+        # cache can record once it lands: (key, states, shard count, ttl
+        # epoch, owner stamps). See `_record_written_states`.
+        written_images: list[
+            tuple[tuple[str, str, int], list[BucketState], int, int | None, tuple[bool, str | None]]
+        ] = []
         for (entity_id, resource, shard_id), group_entries in groups.items():
             is_new = group_entries[0]._is_new
 
@@ -667,6 +679,38 @@ class Lease:
                 }
                 pin = [e.state.shard_count for e in group_entries if e._seed and e.limit.is_quota]
                 pin += list(grant_counts.values())
+                # Computed after the loop above, which can anchor a window at
+                # this reading; the lock still compares the stored `expected_rf`.
+                written_rf = _monotonic_rf(now_ms, expected_rf, group_entries)
+                # What this write leaves on the item, for the rejection cache
+                # (ADR-147): only the shape phase 3 can refill from, where the
+                # in-memory state is exactly what the write computed.
+                if (
+                    not seeds
+                    and not windows
+                    and not window_lengths
+                    and not seed_windows
+                    and not grant_counts
+                    and not boundaries
+                    and owner_entry is not None
+                    and ttl_seconds is not None
+                    and all(
+                        not e.limit.is_quota
+                        and e._reset_edge_ms is None
+                        and e._window_end_ms is None
+                        and not e.state.sched
+                        for e in group_entries
+                    )
+                ):
+                    written_images.append(
+                        (
+                            (entity_id, resource, shard_id),
+                            [replace(e.state, last_refill_ms=written_rf) for e in group_entries],
+                            group_entries[0].state.shard_count,
+                            (calculate_ttl(now_ms, ttl_seconds) if ttl_seconds else None),
+                            (owner_entry._cascade, owner_entry._parent_id),
+                        )
+                    )
                 items.append(
                     repo.build_composite_normal(
                         entity_id=entity_id,
@@ -689,10 +733,7 @@ class Lease:
                         # doubling. A lost pin falls to the consumption-only
                         # retry, which grants nothing (R5).
                         pin_shard_count=min(pin, default=None),
-                        # Computed after the loop above, which can anchor a
-                        # window at this reading; the lock still compares the
-                        # stored `expected_rf`.
-                        rf_ms=_monotonic_rf(now_ms, expected_rf, group_entries),
+                        rf_ms=written_rf,
                         # No boundary anywhere in the group means nothing on
                         # this item is scheduled — the group covers every
                         # limit sharing it, declared or not. Leaving `vu`
@@ -919,12 +960,60 @@ class Lease:
         # fan-out runs only when the rf-locked write itself landed -- the
         # retry path stamps no `ws`, so a rollover that fell back to it was
         # never persisted.
+        self._record_written_states(
+            groups, [] if condition_failed else written_images, condition_failed
+        )
         if not condition_failed:
             await self._repair_created_quota_shards(quota_creates)
             await self._fan_out_windows(window_fanouts)
         elif reissued_creates:
             await self._repair_created_quota_shards(
                 [c for c in quota_creates if (c[0], c[1], c[2]) in reissued_creates]
+            )
+
+    def _record_written_states(
+        self,
+        groups: dict[tuple[str, str, int], list[LeaseEntry]],
+        written_images: list[
+            tuple[tuple[str, str, int], list[BucketState], int, int | None, tuple[bool, str | None]]
+        ],
+        condition_failed: bool,
+    ) -> None:
+        """Replace each written bucket's cached state with what the write left (ADR-147).
+
+        Before this the cache kept the image of the failed speculative write
+        that sent the acquire here, with the pre-write ``rf``; the next phase-3
+        refill pinned that ``rf``, was refused (1 WCU) and fell to another slow
+        pass — about half of all phase-3 writes under steady load. The recorded
+        state is what the rf-locked write computed: a debit or credit made
+        elsewhere in between makes the item differ from it, and phase 3's
+        ``tk <=`` pin and floor refuse on exactly that, while a local rejection
+        from an overstated balance only rejects less. Every other written
+        bucket — a create, a seed, a window, a quota, a schedule, the
+        consumption-only retry, which moves no ``rf`` — is forgotten instead.
+        """
+        cache = getattr(self.repository, "_rejection_cache", None)
+        namespace_id = getattr(self.repository, "_namespace_id", None)
+        if cache is None or namespace_id is None:
+            return
+        recorded = {key for key, *_rest in written_images}
+        for key in groups:
+            if condition_failed or key not in recorded:
+                cache.forget(namespace_id, *key)
+        for (entity_id, resource, shard_id), states, shard_count, ttl, owner in written_images:
+            cascade, parent_id = owner
+            cache.store(
+                namespace_id,
+                entity_id,
+                resource,
+                shard_id,
+                states,
+                shard_count=shard_count,
+                vu_ms=None,
+                ttl_epoch=ttl,
+                disabled=False,  # the slow path resolved access before admitting
+                cascades=bool(cascade and parent_id),
+                parent_id=parent_id,
             )
 
     async def _repair_created_quota_shards(
