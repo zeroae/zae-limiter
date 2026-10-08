@@ -3571,6 +3571,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#admit-through-one-write-built-from-the-cached-state-phase-3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Admit through one write built from the cached state ("phase 3")
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#trust-the-projection-with-no-age-cap" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3726,6 +3737,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#admit-through-one-write-built-from-the-cached-state-phase-3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Admit through one write built from the cached state ("phase 3")
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#trust-the-projection-with-no-age-cap" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3824,15 +3846,9 @@ failure), and the client discards it after one decision.</p>
 shard) for at most <code>rejection_cache_ttl</code> seconds (default 1.0, <code>0</code> disables), and the
 limiter must raise <code>RateLimitExceeded</code> without a DynamoDB call when that state, projected
 to now with the fast path's own refill arithmetic, cannot cover a limit declared in
-<code>consume</code> on every shard not known to have room; the cache must never admit a request on
-its own: an admission it leads to must be a conditional write that fails if anything
-the admission was computed from changed since the state was seen — <code>rf</code>, <code>vu</code>, any
-limit's balance rising, the balance left going negative, any limit's stored
-capacity or refill rate, <code>shard_count</code>, the <code>cascade</code>
-and <code>disabled</code> stamps, the TTL — and every other writer of a bucket item must change at
-least one of those. Because that write re-checks everything, it may start from a state
-up to one config-cache window old; only a local rejection is bounded by
-<code>rejection_cache_ttl</code>. For a child whose
+<code>consume</code> on every shard not known to have room. The cache must never be the basis of an
+admission: it may only reject, or steer which shard a conditional write targets; every
+admission is decided by DynamoDB exactly as without the cache. For a child whose
 own bucket shows it cascades on the resource, the same rule must apply to the parent's
 shards, and the child itself may be rejected locally only while a trusted parent state
 shows the parent is not disabled.</p>
@@ -3846,20 +3862,32 @@ are specified in the design document.</p>
   partition throughput.
 - Known-short shards are no longer probed, removing up to two failed writes per acquire.
 - A repeat cascade rejection, parent known short, costs 0 WCU instead of 3.
-- A request that refill would cover costs one locked write instead of a failed write, a
-  read and a write.
 - The cached state is the input the multi-resource fast path (#675) builds on.</p>
 <p><strong>Negative:</strong>
 - Admission can lag by up to <code>rejection_cache_ttl</code> per process when tokens return by a
   route the projection cannot see: another process's refund, an admin raising a limit or
   resetting a quota, an entity re-enabled, or another process doubling the shard count
   after every cached state was taken.
-- The cache is per process; N processes each pay one real write per TTL.
-- A local rejection reports a projected state, not a fresh image.</p>
+- The cache is per process; N processes each pay one real write per TTL. When each
+  process sees a hot entity less often than once per TTL, it saves nothing.
+- A local rejection reports a projected state, not a fresh image.
+- A client that retries a 429 immediately is no longer slowed by a DynamoDB round trip
+  per retry, so it can spin on CPU (measured: 509 requests in 3 s on v0.15.1, ~47,000
+  with the cache; same admissions, far fewer writes). Callers should honour
+  <code>retry_after_seconds</code>.</p>
 <h2 id="alternatives-considered">Alternatives Considered<a class="headerlink" href="#alternatives-considered" title="Permanent link">&para;</a></h2>
 <h3 id="exhausted-until-t-flags">"Exhausted until T" flags<a class="headerlink" href="#exhausted-until-t-flags" title="Permanent link">&para;</a></h3>
-<p>Rejected: they carry no balance, so they cannot predict a rejection from a success or
-drive the refill-from-cached-state write.</p>
+<p>Rejected: they carry no balance, so they cannot predict a rejection from a success.</p>
+<h3 id="admit-through-one-write-built-from-the-cached-state-phase-3">Admit through one write built from the cached state ("phase 3")<a class="headerlink" href="#admit-through-one-write-built-from-the-cached-state-phase-3" title="Permanent link">&para;</a></h3>
+<p>Merged in #700 and withdrawn before release. When the cached state showed refill would
+cover a request, the client sent the slow path's rf-locked write computed from that state,
+with condition terms meant to catch any change since. Ten over-admissions were reproduced,
+each from a writer or input the condition did not pin (a cascade stamp, a credit, a shard
+doubling, a resource-level schedule, an entity created later under a parent, a missed
+disable stamp, a debit smaller than the refill, a limit cut, a declared limit consumed at
+0, a pre-#684 stamp); its saving over local rejection alone was narrow (~2x over-demand,
+sharded entities), and it cost 9% more than v0.15.1 with 50 processes. The record, and
+what a new proposal must show, is <code>docs/plans/2026-10-07-adr147-phase3-withdrawn.md</code>.</p>
 <h3 id="trust-the-projection-with-no-age-cap">Trust the projection with no age cap<a class="headerlink" href="#trust-the-projection-with-no-age-cap" title="Permanent link">&para;</a></h3>
 <p>Rejected: a missed refund would under-admit for as long as a quota's period.</p>
 <h3 id="reject-when-the-drawn-shard-is-known-short">Reject when the drawn shard is known short<a class="headerlink" href="#reject-when-the-drawn-shard-is-known-short" title="Permanent link">&para;</a></h3>

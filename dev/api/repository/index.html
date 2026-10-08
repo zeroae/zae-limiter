@@ -1759,28 +1759,6 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#zae_limiter.repository.Repository.build_cached_refill" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;build_cached_refill
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#zae_limiter.repository.Repository.refill_from_cached_state" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;refill_from_cached_state
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
   <a href="#zae_limiter.repository.Repository.select_shard" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -6183,28 +6161,6 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;speculative_consume
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#zae_limiter.repository.Repository.build_cached_refill" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;build_cached_refill
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#zae_limiter.repository.Repository.refill_from_cached_state" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;refill_from_cached_state
       
     </span>
   </a>
@@ -11927,76 +11883,6 @@ parallel cascade write (ADR-147 phase 2, decision 4).</p>
           </tr>
       </tbody>
     </table>
-
-
-    </div>
-
-</div>
-
-<div class="doc doc-object doc-function">
-
-
-<h4 id="zae_limiter.repository.Repository.build_cached_refill" class="doc doc-heading">
-<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">build_cached_refill</span>
-
-
-<a href="#zae_limiter.repository.Repository.build_cached_refill" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_cached_refill</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">shard_id</span><span class="p">,</span> <span class="n">consumed</span><span class="p">,</span> <span class="n">refill_amounts</span><span class="p">,</span> <span class="n">expected_rf</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">cached_tokens</span><span class="p">,</span> <span class="n">cached_shard_count</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">cached_params</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
-</span></code></pre></div>
-
-    <div class="doc doc-contents ">
-
-        <p>The UpdateItem <code>refill_from_cached_state</code> sends (ADR-147 phase 3).</p>
-<p><code>build_composite_normal</code>'s rf-locked refill-and-debit, with <code>vu</code>
-pinned absent, <code>disabled</code> absent and the TTL unexpired added to its
-condition, returning <code>ALL_NEW</code>.</p>
-<p>Every input the refill was computed from is pinned, because other
-writers change them without moving <code>rf</code>: <code>cached_tokens</code> caps each
-limit's stored balance at the cached one (a refund elsewhere ADDs
-tokens, and the clamp computed against the lower cached balance would
-then land above the ceiling; a debit elsewhere only lowers it, which
-the floor <code>tk &gt;= consumed - refill</code> refuses — added here for every
-limit debited <strong>at any sign</strong>, since <code>build_composite_normal</code> emits
-it only when the debit exceeds the refill), and
-<code>cached_params</code> pins each limit's stored <code>cp</code>/<code>ra</code>/<code>rp</code> (a limit
-change elsewhere stamps <code>vu = 0</code>, which a slow pass that does not move
-<code>rf</code> then clears), and <code>cached_shard_count</code> pins <code>shard_count</code> (a doubling
-elsewhere — client bump, propagation, aggregator Path 1 — shrinks the
-per-shard ceiling and rate the refill was computed against).</p>
-
-
-    </div>
-
-</div>
-
-<div class="doc doc-object doc-function">
-
-
-<h4 id="zae_limiter.repository.Repository.refill_from_cached_state" class="doc doc-heading">
-<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">refill_from_cached_state</span>
-
-
-  <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-async"><code>async</code></small>
-  </span>
-
-<a href="#zae_limiter.repository.Repository.refill_from_cached_state" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">refill_from_cached_state</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="n">shard_id</span><span class="p">,</span> <span class="n">consumed</span><span class="p">,</span> <span class="n">refill_amounts</span><span class="p">,</span> <span class="n">expected_rf</span><span class="p">,</span> <span class="n">now_ms</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">cached_tokens</span><span class="p">,</span> <span class="n">cached_shard_count</span><span class="p">,</span> <span class="n">ttl_seconds</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">cached_params</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
-</span></code></pre></div>
-
-    <div class="doc doc-contents ">
-
-        <p>The slow path's rf-locked write, built from a cached state (ADR-147 phase 3).</p>
-<p>Refills and debits in one write with no read: the cached state is what
-the read would have returned, unless something wrote since — which the
-condition detects. Beside the <code>rf</code> lock it pins <code>vu</code> absent (a limit
-change made elsewhere stamps <code>vu = 0</code> and rewrites <code>cp</code>/<code>ra</code>/<code>rp</code>
-without moving <code>rf</code>, so an <code>rf</code> lock alone would refill at the old
-limits, #508), the bucket not disabled, and its TTL not expired.</p>
-<p>Returns the success as a <code>SpeculativeResult</code> built from <code>ALL_NEW</code>,
-or None when the condition failed; the caller then takes today's path.
-Only for an unscheduled, non-quota, non-cascading item: the caller
-checks, and <code>vu</code> absent is part of the condition.</p>
 
 
     </div>
