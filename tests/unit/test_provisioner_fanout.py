@@ -6,7 +6,7 @@ exception classes so `except client.exceptions.X` matches in tests the same way 
 does against a real boto3 client.
 """
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -588,6 +588,27 @@ class TestFanoutCascade:
 
         assert self._bucket(client, ns, "user", "llm")["cascade"] == {"BOOL": False}
         assert self._bucket(client, ns, "user", "gpt-4")["cascade"] == {"BOOL": True}
+
+    def test_reads_the_policy_it_was_just_given_consistently(self, setup):
+        """Pre-release review: an eventually consistent read could return the
+        old policy right after the apply wrote it, and every bucket would be
+        stamped with it. Every config and META read the fan-out makes is
+        strongly consistent."""
+        client, ns = setup
+        self._set_policy(client, pk_resource(ns, "llm"), sk_config(), False)
+        reads: list[dict] = []
+        real_get = client.get_item
+
+        def spy(**kwargs):
+            reads.append(kwargs)
+            return real_get(**kwargs)
+
+        with patch.object(client, "get_item", side_effect=spy):
+            fanout_cascade(client, self.TABLE, ns, resource="llm")
+
+        config_or_meta = [r for r in reads if r["Key"]["SK"]["S"].startswith(("#CONFIG", "#META"))]
+        assert config_or_meta
+        assert all(r.get("ConsistentRead") is True for r in config_or_meta)
 
     def test_an_entity_without_a_parent_never_cascades(self, setup):
         client, ns = setup

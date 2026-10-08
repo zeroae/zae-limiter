@@ -6,7 +6,7 @@ import pytest
 
 from zae_limiter import RateLimiter, schema
 from zae_limiter.exceptions import VersionMismatchError
-from zae_limiter.models import Entity, Limit, effective_cascade
+from zae_limiter.models import ConfigAccess, Entity, Limit, effective_cascade
 from zae_limiter.repository import Repository
 
 RPM = Limit.per_minute("rpm", 100)
@@ -568,6 +568,44 @@ class TestFanout:
         assert repo._cascade_cache[(ns, "user-1", "llm")] is False  # taught, not forgotten
         assert repo._cascade_cache[(ns, "user-2", "llm")] is True
         assert (await _bucket(repo, "user-1", "llm"))["parent_id"] == {"S": "team"}
+
+    async def test_a_stale_replica_cannot_stamp_the_old_policy(self, cascade_limiter):
+        """Pre-release review: the fan-out re-read the level it had just written
+        with an eventually consistent read. A replica that had not seen the write
+        answered "no policy", every bucket kept `cascade=False`, the fast path
+        trusted the stamp, and 30 requests were admitted against a parent
+        allowing 5. Here a replica is stale for eventually consistent reads only.
+        """
+        repo = cascade_limiter._repository
+        ns = repo._namespace_id
+        await repo.set_resource_defaults("llm", [RPM])
+        await repo.create_entity("team")
+        await repo.create_entity("user-1", parent_id="team", cascade=False)
+        async with cascade_limiter.acquire("user-1", "llm", consume={"rpm": 1}):
+            pass
+        assert await self._cascade_of(repo, "user-1", "llm") is False
+        await _stamp_config_cascade(repo, schema.pk_resource(ns, "llm"), schema.sk_config(), True)
+        real_access = repo.resolve_access
+        real_entity = repo.get_entity
+
+        async def stale_access(entity_id, resource, *, consistent_read=False):
+            access = await real_access(entity_id, resource, consistent_read=consistent_read)
+            if consistent_read:
+                return access
+            return ConfigAccess(access.disabled, access.disabled_level, None, None)
+
+        async def stale_entity(entity_id, *, consistent_read=False):
+            if consistent_read:
+                return await real_entity(entity_id, consistent_read=True)
+            return None  # a replica that has not seen the META write
+
+        with (
+            patch.object(repo, "resolve_access", side_effect=stale_access),
+            patch.object(repo, "get_entity", side_effect=stale_entity),
+        ):
+            await repo._fanout_cascade(resource="llm")
+
+        assert await self._cascade_of(repo, "user-1", "llm") is True
 
     async def test_an_entity_wide_change_resolves_each_resource(self, cascade_limiter):
         repo = cascade_limiter._repository

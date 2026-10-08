@@ -1856,8 +1856,12 @@ class Repository:
             created_at=now,
         )
 
-    async def get_entity(self, entity_id: str) -> Entity | None:
-        """Get an entity by ID."""
+    async def get_entity(self, entity_id: str, *, consistent_read: bool = False) -> Entity | None:
+        """Get an entity by ID.
+
+        ``consistent_read`` asks for a strongly consistent read (1 RCU instead
+        of 0.5): for a caller that must see a write it just made.
+        """
         client = await self._get_client()
 
         response = await client.get_item(
@@ -1866,6 +1870,7 @@ class Repository:
                 "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
                 "SK": {"S": schema.sk_meta()},
             },
+            ConsistentRead=consistent_read,
         )
 
         item = response.get("Item")
@@ -7054,13 +7059,18 @@ class Repository:
         access = await self.resolve_access(entity_id, resource)
         return access.disabled, access.disabled_level
 
-    async def resolve_access(self, entity_id: str, resource: str) -> ConfigAccess:
+    async def resolve_access(
+        self, entity_id: str, resource: str, *, consistent_read: bool = False
+    ) -> ConfigAccess:
         """Resolve `disabled` and the cascade policy from one uncached read.
 
         Both walks cover the same three config items (ADR-125, ADR-146), so a
         slow path that needs both — the parent of a cascade, or any level the
         config cache served — pays for one BatchGetItem, as it did for
         `disabled` alone. Never cached, for the reasons `resolve_disabled` gives.
+        ``consistent_read`` is for a caller resolving a level it just wrote:
+        the cascade fan-out (pre-release review: an eventually consistent read
+        returned the old policy and the fan-out stamped every bucket with it).
         """
         disabled_fetched: dict[tuple[str, str], bool | None] = {}
         cascade_fetched: dict[tuple[str, str], bool | None] = {}
@@ -7077,6 +7087,7 @@ class Repository:
             context=f"disabled state for {entity_id!r}/{resource!r}",
             entity_id=entity_id,
             resource=resource,
+            consistent_read=consistent_read,
         )
         for _level, key in levels:
             disabled_fetched[key] = None
@@ -7921,10 +7932,15 @@ class Repository:
                 _ns, eid, bucket_resource, _shard = schema.parse_bucket_pk(pk)
                 key = (eid, bucket_resource)
                 if key not in targets:
+                    # Strongly consistent: the caller has just written the
+                    # policy this resolves, and an eventually consistent read
+                    # can return the old one. Every bucket would then be
+                    # stamped with it, the fast path would trust the stamp,
+                    # and nothing re-runs the fan-out (pre-release review).
                     if eid not in entities:
-                        entities[eid] = await self.get_entity(eid)
+                        entities[eid] = await self.get_entity(eid, consistent_read=True)
                     owner = entities[eid]
-                    access = await self.resolve_access(eid, bucket_resource)
+                    access = await self.resolve_access(eid, bucket_resource, consistent_read=True)
                     targets[key] = (
                         None
                         if owner is None
