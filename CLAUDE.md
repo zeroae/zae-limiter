@@ -1791,7 +1791,11 @@ supported on system config. Proposed until v0.16.0 ships.
   a policy — `cascade=False` with no `parent_id` is a pre-#684 parent bucket and is ignored.
 - **A change fans out** (`_fanout_cascade`: GSI2 for a resource, GSI3 for an entity, two
   passes), stamping each bucket with the policy resolved for its own entity and resource plus
-  the owner's `parent_id` (`_stamp_bucket_cascade`). `delete_limits` / `delete_resource_defaults`
+  the owner's `parent_id` (`_stamp_bucket_cascade`). Its config and META reads are **strongly
+  consistent** (`resolve_access(consistent_read=True)`, `get_entity(consistent_read=True)`, and
+  `ConsistentRead=True` in the provisioner's `resolve_cascade` / `_owner`): it resolves the level
+  it was just handed, and a stale replica answering "no policy" stamped every bucket with the old
+  one, which the fast path then trusted (pre-release review). `delete_limits` / `delete_resource_defaults`
   fan out when the deleted item carried a policy. `FanoutIncomplete` on a partial failure.
 - **Provisioner mirror:** `zae_limiter_provisioner/fanout.py` `fanout_cascade` (same discovery
   and per-bucket resolution), driven by `handler._fanout_cascade_changes` for only the levels

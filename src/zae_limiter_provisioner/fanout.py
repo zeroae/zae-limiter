@@ -278,12 +278,17 @@ def resolve_cascade(
     """The cascade policy the ADR-125 walk resolves, or None when no level sets one.
 
     Sync mirror of ``Repository.resolve_access``'s cascade half (ADR-146).
-    None means the entity's own META ``cascade`` decides.
+    None means the entity's own META ``cascade`` decides. Strongly consistent:
+    the fan-out calls it right after the apply wrote the policy, and an
+    eventually consistent read can return the old one, which would then be
+    stamped on every bucket (pre-release review).
     """
     for pk, sk in _walk_keys(namespace_id, entity_id, resource):
-        item = client.get_item(TableName=table_name, Key={"PK": {"S": pk}, "SK": {"S": sk}}).get(
-            "Item"
-        )
+        item = client.get_item(
+            TableName=table_name,
+            Key={"PK": {"S": pk}, "SK": {"S": sk}},
+            ConsistentRead=True,
+        ).get("Item")
         if item is not None:
             value = decode_cascade(item)
             if value is not None:
@@ -303,10 +308,14 @@ def _walk_keys(namespace_id: str, entity_id: str, resource: str) -> list[tuple[s
 def _owner(
     client: Any, table_name: str, namespace_id: str, entity_id: str
 ) -> tuple[bool, str | None] | None:
-    """An entity's META ``(cascade, parent_id)``, or None when it has no META."""
+    """An entity's META ``(cascade, parent_id)``, or None when it has no META.
+
+    Strongly consistent, like ``resolve_cascade``.
+    """
     item = client.get_item(
         TableName=table_name,
         Key={"PK": {"S": pk_entity(namespace_id, entity_id)}, "SK": {"S": sk_meta()}},
+        ConsistentRead=True,
     ).get("Item")
     if item is None:
         return None

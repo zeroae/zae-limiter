@@ -323,12 +323,14 @@ class SyncRepositoryProtocol(Protocol):
         """
         ...
 
-    def get_entity(self, entity_id: str) -> "Entity | None":
+    def get_entity(self, entity_id: str, *, consistent_read: bool = False) -> "Entity | None":
         """
         Get an entity by ID.
 
         Args:
             entity_id: Entity identifier
+            consistent_read: Read strongly consistently, for a caller that must
+                see a write it just made
 
         Returns:
             Entity if found, None otherwise
@@ -1206,11 +1208,14 @@ class SyncRepositoryProtocol(Protocol):
         """Resolve the effective disabled state for an entity+resource (ADR-125)."""
         ...
 
-    def resolve_access(self, entity_id: str, resource: str) -> "ConfigAccess":
+    def resolve_access(
+        self, entity_id: str, resource: str, *, consistent_read: bool = False
+    ) -> "ConfigAccess":
         """Resolve ``disabled`` and the cascade policy from one uncached read (ADR-146).
 
         Both walks cover the same config items, so a backend answers them from
         one read. Never from cache, for the reasons ``resolve_disabled`` gives.
+        ``consistent_read`` is for a caller resolving a level it just wrote.
         """
         ...
 
