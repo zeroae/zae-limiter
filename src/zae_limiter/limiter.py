@@ -58,7 +58,7 @@ from .schedule import (
     prev_reset_edge,
     retry_after_with_schedule,
 )
-from .schema import DEFAULT_RESOURCE, WCU_LIMIT_NAME, calculate_bucket_ttl_seconds
+from .schema import DEFAULT_RESOURCE, WCU_LIMIT_NAME
 
 _UNSET: Any = object()  # sentinel for detecting explicitly-passed deprecated params
 
@@ -769,13 +769,6 @@ class RateLimiter:
                     shard_count=slow_path_shard_count,
                     parent_shard_id=slow_path_parent_shard,
                 )
-                # The slow path just re-read this bucket's disabled flag and
-                # cascade policy from config: phase 3 may trust the stamps
-                # for the next config-cache window (ADR-147, finding B).
-                rejection_cache = getattr(self._repository, "_rejection_cache", None)
-                namespace_id = getattr(self._repository, "_namespace_id", None)
-                if rejection_cache is not None and namespace_id is not None and limits is None:
-                    rejection_cache.note_slow_pass(namespace_id, entity_id, resource)
 
             # Write initial consumption to DynamoDB before yielding (Issue
             # #309). No-op for speculative leases (already committed by
@@ -870,13 +863,6 @@ class RateLimiter:
             avoid_parent = frozenset(
                 self._known_short_parent_shards(entity_id, resource, consume, now_ms)
             )
-
-        # Refill from the cached state: one locked write where today's path
-        # would fail a write, read, and write again (ADR-147 phase 3).
-        if use_rejection_cache:
-            cached_lease = await self._refill_from_cache(entity_id, resource, consume, now_ms)
-            if cached_lease is not None:
-                return cached_lease, 0, None, None
 
         # Repository handles cache check and parallel writes (issue #318).
         # The steering arguments go only to a repository whose cache produced
@@ -1501,144 +1487,6 @@ class RateLimiter:
             cache, namespace_id, parent_id, resource, consume, now_ms
         )
         return set(parent_short)
-
-    async def _refill_from_cache(
-        self,
-        entity_id: str,
-        resource: str,
-        consume: dict[str, int],
-        now_ms: int,
-    ) -> Lease | None:
-        """Admit through one locked write built from a cached state (ADR-147 phase 3).
-
-        Used only when a trusted cached shard's **stored** balance cannot cover
-        the request (the speculative write would fail) but its projection to
-        now can, so the alternative is a failed write, a read and a write. The
-        write is the slow path's, conditioned on everything the state was
-        judged on; a lost condition returns None and today's path runs.
-
-        Not used for a cascading bucket (child and parent commit together), a
-        bucket whose item carries ``vu`` (a schedule, a quota's reset or a
-        session window: their materialisation lives on the slow path), a quota
-        or session state, a state missing a declared limit (#633), or a drained
-        ``wcu`` (the speculative write's failure is what drives sharding).
-        """
-        cache = getattr(self._repository, "_rejection_cache", None)
-        namespace_id = getattr(self._repository, "_namespace_id", None)
-        refill = getattr(self._repository, "refill_from_cached_state", None)
-        if cache is None or not cache.enabled or namespace_id is None or refill is None:
-            return None
-        if cache.cascades(namespace_id, entity_id, resource):
-            return None
-        # The slow path re-reads `disabled` and the cascade policy from config;
-        # phase 3 trusts the bucket's stamps, which a fan-out can miss (ADR-125's
-        # race, FanoutIncomplete, a pending provisioner retry). Chain on them for
-        # at most one config-cache window after a real slow pass, so a missed
-        # stamp is re-checked as often as the config itself (finding B).
-        window = getattr(self._repository, "_config_cache_ttl", 0)
-        if not cache.slow_pass_within(namespace_id, entity_id, resource, window):
-            return None
-        # The slow path attaches schedules, resets and windows from CONFIG, not
-        # from the item, and a resource- or system-level one never fans out to
-        # buckets (#271/#296): an item can carry no `vu` while its limits are
-        # scheduled. Only a warm config cache can say they are not, at no read
-        # cost; a cold or partial one sends the request down today's path.
-        config_cache = getattr(self._repository, "_config_cache", None)
-        peek = getattr(config_cache, "peek_limits", None)
-        resolved = peek(entity_id, resource) if peek is not None else None
-        if resolved is None:
-            return None
-        config_limits, config_source = resolved
-        if any(
-            limit.schedule or limit.reset_schedule or limit.reset_after is not None
-            for limit in config_limits
-        ):
-            return None
-        # The TTL the slow path would stamp (#271, ADR-136).
-        multiplier = getattr(self._repository, "_bucket_ttl_refill_multiplier", 0)
-        ttl_seconds: int | None
-        if _is_custom_config(config_source):
-            ttl_seconds = 0
-        elif multiplier <= 0:
-            ttl_seconds = None
-        else:
-            ttl_seconds = calculate_bucket_ttl_seconds(config_limits, multiplier)
-        # Known not to cascade: either the stamp names a parent (so its
-        # `cascade=False` is a policy, ADR-146), or the entity's own META
-        # record says it has no parent. A stamp with neither is a pre-#684 one
-        # that can sit on a cascading child; only the slow path's owner stamp
-        # repairs it. `_entity_cache` cannot say "no parent": a stamp teaches it.
-        record_parents = getattr(self._repository, "_record_parents", None) or {}
-        key = (namespace_id, entity_id)
-        has_no_parent = key in record_parents and record_parents[key] is None
-        # A state up to one slow-pass window old (option A): the write
-        # re-checks it on the server, and the slow pass bounds the stamps.
-        max_age = max(window, cache.ttl_seconds)
-        views = cache.views(namespace_id, entity_id, resource, now_ms, max_age)
-        candidates: list[int] = []
-        entries: dict[int, Any] = {}
-        for shard, buckets in views.items():
-            entry = cache.trusted_entry(namespace_id, entity_id, resource, shard, now_ms, max_age)
-            if entry is None or entry.vu_ms is not None:
-                continue
-            entries[shard] = entry
-            if not (entry.parent_id or has_no_parent):
-                continue
-            by_name = {b.limit_name: b for b in buckets}
-            if not all(name in by_name for name in consume):
-                continue
-            # A configured limit the item lacks is seeded only by the slow path (#633).
-            if not all(limit.name in by_name for limit in config_limits):
-                continue
-            if any(
-                b.refill_amount_milli <= 0
-                or b.reset_after_seconds is not None
-                or b.window_start_ms is not None
-                for b in buckets
-            ):
-                continue
-            wcu = by_name.get(WCU_LIMIT_NAME)
-            if wcu is not None and wcu.tokens_milli < 1000:
-                continue
-            if all(by_name[name].tokens_milli >= amount * 1000 for name, amount in consume.items()):
-                continue  # the speculative write will succeed as it is
-            if would_refill_satisfy(buckets, consume, now_ms)[0]:
-                candidates.append(shard)
-        if not candidates:
-            return None
-        shard = random.choice(candidates)
-        consumed: dict[str, int] = {}
-        refill_amounts: dict[str, int] = {}
-        for state in views[shard]:
-            # Every limit on the item rides the write, as on the slow path:
-            # `rf` moves for all of them, so each must be credited its refill.
-            amount = consume.get(state.limit_name, 0) if state.limit_name != WCU_LIMIT_NAME else 0
-            new_tokens, _ = force_consume(state, amount, now_ms)
-            consumed[state.limit_name] = amount * 1000
-            refill_amounts[state.limit_name] = new_tokens - state.tokens_milli + amount * 1000
-        result = await refill(
-            entity_id,
-            resource,
-            shard,
-            consumed,
-            refill_amounts,
-            views[shard][0].last_refill_ms,
-            now_ms,
-            cached_tokens={state.limit_name: state.tokens_milli for state in views[shard]},
-            cached_shard_count=entries[shard].shard_count,
-            ttl_seconds=ttl_seconds,
-            cached_params={
-                state.limit_name: (
-                    state.capacity_milli,
-                    state.refill_amount_milli,
-                    state.refill_period_ms,
-                )
-                for state in views[shard]
-            },
-        )
-        if result is None:
-            return None
-        return self._build_lease_from_speculative(entity_id, resource, consume, result)
 
     async def _compensate_speculative(
         self,

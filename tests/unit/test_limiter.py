@@ -9937,7 +9937,6 @@ class TestFanOutVuSelfClears:
         with (
             patch.object(repo, "_now_ms", return_value=t0 + 6_000),  # 100 of refill due
             patch.object(repo, "transact_write", side_effect=racing_write),
-            patch.object(limiter, "_refill_from_cache", return_value=None),  # the slow pass
         ):
             try:  # a slow pass: tk 0 cannot cover 50, refill can
                 async with limiter.acquire("vu-race", "gpt-4", consume={"rpm": 50}):

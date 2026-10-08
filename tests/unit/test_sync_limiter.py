@@ -7885,7 +7885,6 @@ class TestFanOutVuSelfClears:
         with (
             patch.object(repo, "_now_ms", return_value=t0 + 6000),
             patch.object(repo, "transact_write", side_effect=racing_write),
-            patch.object(sync_limiter, "_refill_from_cache", return_value=None),
         ):
             try:
                 with sync_limiter.acquire("vu-race", "gpt-4", consume={"rpm": 50}):

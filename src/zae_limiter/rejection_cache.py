@@ -6,13 +6,13 @@ bucket state at no read cost (``ALL_NEW`` on success, ``ALL_OLD`` on failure).
 This cache keeps it per (namespace, entity, resource, shard) so the limiter can
 project it to "now" and reject a request that cannot fit without a DynamoDB call.
 
-It never admits **on its own**. A rejection from it is local; an admission it
-leads to (phase 3, ``Repository.build_cached_refill``) is a conditional write that
-fails if anything the admission was computed from changed since the state was
-seen — and only within one config-cache window of a real slow pass for the
-bucket (``note_slow_pass``). Its rejections err only toward a bounded
-under-admission (at most ``ttl_seconds``) when tokens return by a route the
-projection cannot see — another process's refund, an admin raising a limit.
+It may only ever be used to **reject** (and to steer a write away from a
+shard known to be short). Admission always needs a successful conditional write
+that the cache does not build, so the cache cannot over-admit; its only error is
+a bounded under-admission (at most ``ttl_seconds``) when tokens return by a
+route the projection cannot see — another process's refund, an admin raising a
+limit. Phase 3, which admitted through a write built from a cached state, was
+withdrawn before release: see ``docs/plans/2026-10-07-adr147-phase3-withdrawn.md``.
 
 Plain synchronous code shared by ``Repository`` and ``SyncRepository``, and by
 every ``namespace()`` scope of either. It takes no lock: each operation tolerates
@@ -107,8 +107,6 @@ class RejectionCache:
         # every key, least recently stored first, for the size cap.
         self._buckets: dict[_BucketKey, dict[int, _Entry]] = {}
         self._order: dict[_Key, None] = {}
-        # When a slow-path acquire last re-read each bucket's config (phase 3).
-        self._slow_passes: dict[_BucketKey, float] = {}
         # A running count of forgets and clears, and each bucket's latest, so
         # the slow path can tell whether a refund landed between its read and
         # its write (#700 review). Bounded like the entries; an evicted bucket
@@ -177,7 +175,6 @@ class RejectionCache:
         entity_id: str,
         resource: str,
         now_ms: int,
-        max_age_seconds: float | None = None,
     ) -> dict[int, list[BucketState]]:
         """Bucket states that may be used to reject, keyed by shard.
 
@@ -194,47 +191,21 @@ class RejectionCache:
             return {}
         found: dict[int, list[BucketState]] = {}
         for shard_id, entry in list(shards.items()):
-            if self._trusted(entry, now_ms, max_age_seconds) and not entry.disabled:
+            if self._trusted(entry, now_ms) and not entry.disabled:
                 found[shard_id] = list(entry.buckets)
         return found
 
-    def _trusted(self, entry: _Entry, now_ms: int, max_age_seconds: float | None = None) -> bool:
+    def _trusted(self, entry: _Entry, now_ms: int) -> bool:
         """Inside the age cap, before its ``vu`` and before its bucket TTL.
 
         The one test every read that leads to a local rejection applies, so
-        each such decision is bounded by ``ttl_seconds``. Phase 3 passes a
-        longer ``max_age_seconds``: its write re-checks the state on the server
-        and a stale one is refused for the 1 WCU today's failed speculative
-        write already costs, so the age cap that bounds a wrong local
-        rejection does not apply to it.
+        each such decision is bounded by ``ttl_seconds``.
         """
-        max_age = self.ttl_seconds if max_age_seconds is None else max_age_seconds
         return not (
-            entry.stored_at <= self._clock() - max_age
+            entry.stored_at <= self._clock() - self.ttl_seconds
             or (entry.vu_ms is not None and entry.vu_ms <= now_ms)
             or (entry.ttl_epoch is not None and entry.ttl_epoch <= now_ms // 1000)
         )
-
-    def trusted_entry(
-        self,
-        namespace_id: str,
-        entity_id: str,
-        resource: str,
-        shard_id: int,
-        now_ms: int,
-        max_age_seconds: float | None = None,
-    ) -> _Entry | None:
-        """One shard's entry, if it passes the trust test and is not disabled.
-
-        Phase 3 needs the entry's ``vu`` (it uses only an entry with none, and
-        pins ``vu`` absent), its shard count (pinned equal) and its stamps,
-        beside its states.
-        """
-        shards = self._buckets.get((namespace_id, entity_id, resource)) or {}
-        entry = shards.get(shard_id)
-        if entry is None or entry.disabled or not self._trusted(entry, now_ms, max_age_seconds):
-            return None
-        return entry
 
     def cascades(self, namespace_id: str, entity_id: str, resource: str) -> bool:
         """Whether any cached shard of this bucket says it cascades to a parent."""
@@ -269,32 +240,6 @@ class RejectionCache:
                 return entry.parent_id
         return None
 
-    def note_slow_pass(self, namespace_id: str, entity_id: str, resource: str) -> None:
-        """A slow-path acquire just re-read this bucket's config (ADR-147 phase 3).
-
-        The slow path resolves ``disabled`` and the cascade policy from config,
-        uncached; phase 3 trusts the bucket's stamps instead. Remembering when
-        the slow path last ran bounds how long a stamp a fan-out missed can be
-        trusted (verification finding B).
-        """
-        if not self.enabled:
-            return
-        key = (namespace_id, entity_id, resource)
-        self._slow_passes.pop(key, None)
-        self._slow_passes[key] = self._clock()
-        while len(self._slow_passes) > self.max_entries:
-            try:
-                del self._slow_passes[next(iter(self._slow_passes))]
-            except (KeyError, StopIteration, RuntimeError):  # pragma: no cover - thread race
-                break
-
-    def slow_pass_within(
-        self, namespace_id: str, entity_id: str, resource: str, seconds: float
-    ) -> bool:
-        """Whether a slow pass re-read this bucket's config in the last ``seconds``."""
-        at = self._slow_passes.get((namespace_id, entity_id, resource))
-        return at is not None and self._clock() - at <= seconds
-
     def forget(self, namespace_id: str, entity_id: str, resource: str, shard_id: int) -> None:
         """Drop one shard's entry: tokens came back by a route we caused."""
         self._drop((namespace_id, entity_id, resource, shard_id))
@@ -328,7 +273,6 @@ class RejectionCache:
         """Drop every entry: an admin change may have moved any limit."""
         self._buckets.clear()
         self._order.clear()
-        self._slow_passes.clear()
         self._seq += 1
         self._cleared_seq = self._seq
 

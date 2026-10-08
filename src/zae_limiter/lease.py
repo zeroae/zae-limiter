@@ -694,8 +694,8 @@ class Lease:
                     None,
                 )
                 # What this write leaves on the item, for the rejection cache
-                # (ADR-147): only the shape phase 3 can refill from, where the
-                # in-memory state is exactly what the write computed.
+                # (ADR-147): only the plain shape, where the in-memory state is
+                # exactly what the write computed.
                 if (
                     not seeds
                     and not windows
@@ -995,15 +995,17 @@ class Lease:
         """Replace each written bucket's cached state with what the write left (ADR-147).
 
         Before this the cache kept the image of the failed speculative write
-        that sent the acquire here, with the pre-write ``rf``; the next phase-3
-        refill pinned that ``rf``, was refused (1 WCU) and fell to another slow
-        pass — about half of all phase-3 writes under steady load. The recorded
-        state is what the rf-locked write computed: a debit or credit made
-        elsewhere in between makes the item differ from it, and phase 3's
-        ``tk <=`` pin and floor refuse on exactly that, while a local rejection
-        from an overstated balance only rejects less. Every other written
-        bucket — a create, a seed, a window, a quota, a schedule, the
-        consumption-only retry, which moves no ``rf`` — is forgotten instead.
+        that sent the acquire here, with the pre-write ``rf``, stamped fresh:
+        projected from that stale ``rf`` it could not see the debit this write
+        made, and under steady over-demand local rejection then caught almost
+        nothing between admissions (#700 review; the cost review measured
+        phase 1 saving nothing at 2x without it). The recorded state is what
+        the rf-locked write computed. A debit made elsewhere in between leaves
+        the item lower than recorded, which only makes local rejection reject
+        less; a credit elsewhere is the documented bounded under-admission.
+        Every other written bucket — a create, a seed, a window, a quota, a
+        schedule, the consumption-only retry, which moves no ``rf`` — is
+        forgotten instead.
         """
         cache = getattr(self.repository, "_rejection_cache", None)
         namespace_id = getattr(self.repository, "_namespace_id", None)
