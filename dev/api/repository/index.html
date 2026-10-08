@@ -10008,12 +10008,14 @@ is stored as config, so no older client is made to misread a level.</p>
   </span>
 
 <a href="#zae_limiter.repository.Repository.get_entity" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">get_entity</span><span class="p">(</span><span class="n">entity_id</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">get_entity</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">consistent_read</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
 
         <p>Get an entity by ID.</p>
+<p><code>consistent_read</code> asks for a strongly consistent read (1 RCU instead
+of 0.5): for a caller that must see a write it just made.</p>
 
 
     </div>
@@ -14730,7 +14732,7 @@ the eager fan-out, never on the speculative fast path.</p>
   </span>
 
 <a href="#zae_limiter.repository.Repository.resolve_access" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">resolve_access</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">resolve_access</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">consistent_read</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -14739,7 +14741,10 @@ the eager fan-out, never on the speculative fast path.</p>
 <p>Both walks cover the same three config items (ADR-125, ADR-146), so a
 slow path that needs both — the parent of a cascade, or any level the
 config cache served — pays for one BatchGetItem, as it did for
-<code>disabled</code> alone. Never cached, for the reasons <code>resolve_disabled</code> gives.</p>
+<code>disabled</code> alone. Never cached, for the reasons <code>resolve_disabled</code> gives.
+<code>consistent_read</code> is for a caller resolving a level it just wrote:
+the cascade fan-out (pre-release review: an eventually consistent read
+returned the old policy and the fan-out stamped every bucket with it).</p>
 
 
     </div>
@@ -16877,7 +16882,7 @@ For other backends: May create required resources or be a no-op.</p>
   </span>
 
 <a href="#zae_limiter.repository_protocol.RepositoryProtocol.get_entity" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">get_entity</span><span class="p">(</span><span class="n">entity_id</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">get_entity</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">consistent_read</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -16910,6 +16915,23 @@ For other backends: May create required resources or be a no-op.</p>
             </td>
             <td>
                 <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>consistent_read</code>
+            </td>
+            <td>
+                  <code><span title="bool">bool</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Read strongly consistently, for a caller that must
+see a write it just made</p>
+              </div>
+            </td>
+            <td>
+                  <code>False</code>
             </td>
           </tr>
       </tbody>
@@ -21657,14 +21679,15 @@ or None if no config found</li>
   </span>
 
 <a href="#zae_limiter.repository_protocol.RepositoryProtocol.resolve_access" class="headerlink" title="Permanent link">&para;</a></h4>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">resolve_access</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">)</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">resolve_access</span><span class="p">(</span><span class="n">entity_id</span><span class="p">,</span> <span class="n">resource</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">consistent_read</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
 
         <p>Resolve <code>disabled</code> and the cascade policy from one uncached read (ADR-146).</p>
 <p>Both walks cover the same config items, so a backend answers them from
-one read. Never from cache, for the reasons <code>resolve_disabled</code> gives.</p>
+one read. Never from cache, for the reasons <code>resolve_disabled</code> gives.
+<code>consistent_read</code> is for a caller resolving a level it just wrote.</p>
 
 
     </div>
