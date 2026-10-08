@@ -859,7 +859,15 @@ class RateLimiter:
         avoid: frozenset[int] = frozenset()
         avoid_parent: frozenset[int] = frozenset()
         if use_rejection_cache:
-            avoid = frozenset(self._known_short_shards(entity_id, resource, consume, now_ms)[0])
+            try:
+                avoid = frozenset(self._known_short_shards(entity_id, resource, consume, now_ms)[0])
+            except RateLimitExceeded:
+                # A local rejection does no I/O, so without this a caller that
+                # retries a 429 at once never hands control back: every other
+                # task on the event loop (or thread, or greenlet) stalls until
+                # the cached state expires (#704: 2 of ~200 ticks, 1 s gaps).
+                await asyncio.sleep(0)
+                raise
             avoid_parent = frozenset(
                 self._known_short_parent_shards(entity_id, resource, consume, now_ms)
             )

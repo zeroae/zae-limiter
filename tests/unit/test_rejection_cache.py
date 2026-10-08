@@ -450,6 +450,48 @@ class TestLocalRejection:
         assert lease.consumed == {"rpm": 1}
         assert repo.get_cache_stats().local_rejections == 0
 
+    async def test_a_no_wait_retry_loop_does_not_stall_other_tasks(self, limiter, repo):
+        """#704: a local rejection does no I/O, so it must still hand control back.
+
+        Measured before the fix, with a 5 ms simulated round trip: over 2 s of
+        no-wait retries a 10 ms ticker got 2 ticks (of ~200), its longest gap
+        1 s — the whole event loop stalled until the cached state expired.
+        """
+        import asyncio
+        import time
+
+        client = await repo._get_client()
+        real_call = client._make_api_call
+
+        async def networked(*args, **kwargs):
+            await asyncio.sleep(0.005)  # a real round trip yields; moto alone does not
+            return await real_call(*args, **kwargs)
+
+        await _teach(limiter, repo)
+        ticks: list[float] = []
+        stop = asyncio.Event()
+
+        async def ticker():
+            while not stop.is_set():
+                ticks.append(time.perf_counter())
+                await asyncio.sleep(0.01)
+
+        with patch.object(client, "_make_api_call", side_effect=networked):
+            task = asyncio.create_task(ticker())
+            await asyncio.sleep(0.03)
+            before = len(ticks)
+            end = time.perf_counter() + 0.5
+            while time.perf_counter() < end:  # retries a 429 at once, never waits
+                try:
+                    await _drain(limiter)
+                except RateLimitExceeded:
+                    continue
+            during = len(ticks) - before
+            stop.set()
+            await task
+        assert repo.get_cache_stats().local_rejections > 0  # the local path ran
+        assert during >= 20  # ~50 expected; before the fix, 0 or 1
+
     async def test_an_entry_past_the_ttl_goes_to_dynamodb(self, limiter, repo):
         clock = _Clock()
         repo._rejection_cache._clock = clock

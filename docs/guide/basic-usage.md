@@ -487,6 +487,14 @@ process cannot see, such as another process's refund or an admin change made els
 `rejection_cache_size` (default `10_000`) to bound memory. `get_cache_stats().local_rejections`
 counts the rejections answered locally.
 
+!!! warning "Honour `retry_after_seconds`"
+    A local rejection returns in microseconds, so it no longer slows a caller that retries a
+    429 at once. Such a loop now spins on CPU: measured at about 10,000 retries per second per
+    looping client, against about 100 when every rejection went to DynamoDB, with the same
+    number admitted. Other tasks keep running (a local rejection hands control back to the
+    event loop, or to other threads and greenlets in the sync API), but the looping client
+    pins a core. Wait `retry_after_seconds` before retrying, or back off.
+
 See [Performance Tuning - Speculative Writes](../performance.md#8-speculative-writes) for detailed cost analysis and guidance on when to disable this feature.
 
 ## Next Steps
