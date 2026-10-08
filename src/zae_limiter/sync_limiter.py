@@ -8,6 +8,7 @@ Changes should be made to the source file, then regenerated.
 
 import logging
 import random
+import time
 import warnings
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -721,7 +722,11 @@ class SyncRateLimiter:
         avoid: frozenset[int] = frozenset()
         avoid_parent: frozenset[int] = frozenset()
         if use_rejection_cache:
-            avoid = frozenset(self._known_short_shards(entity_id, resource, consume, now_ms)[0])
+            try:
+                avoid = frozenset(self._known_short_shards(entity_id, resource, consume, now_ms)[0])
+            except RateLimitExceeded:
+                time.sleep(0)
+                raise
             avoid_parent = frozenset(
                 self._known_short_parent_shards(entity_id, resource, consume, now_ms)
             )
