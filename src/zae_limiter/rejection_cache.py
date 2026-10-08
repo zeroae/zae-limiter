@@ -64,6 +64,30 @@ def clears_rejection_cache(method: _F) -> _F:
     return cast(_F, sync_wrapper)
 
 
+def vu_only_trims(
+    vu_ms: int | None, buckets: "list[BucketState] | tuple[BucketState, ...]"
+) -> bool:
+    """Whether a passed ``vu`` on this item can only lower its balances.
+
+    ``vu = 0`` on an item with no schedule, reset or session window is the
+    stamp of a credit above the ceiling (#680) or of a limit change (the param
+    sync, which has already written the new settings onto the item). The
+    re-materialising pass it forces only trims a balance to its ceiling, so a
+    request that cannot fit before that pass cannot fit after it: such an item
+    may be judged like any other, rather than forcing a slow pass for every
+    rejection. A real timestamp, or any schedule, reset or window, can raise a
+    balance (a new window, a reset edge, a scheduled capacity) and still needs
+    the slow pass.
+    """
+    return vu_ms == 0 and all(
+        not b.sched
+        and not b.reset_sched
+        and b.reset_after_seconds is None
+        and b.window_start_ms is None
+        for b in buckets
+    )
+
+
 #: Default trust window for an entry, in seconds (ADR-147 decision 3).
 DEFAULT_REJECTION_CACHE_TTL = 1.0
 
@@ -203,7 +227,11 @@ class RejectionCache:
         """
         return not (
             entry.stored_at <= self._clock() - self.ttl_seconds
-            or (entry.vu_ms is not None and entry.vu_ms <= now_ms)
+            or (
+                entry.vu_ms is not None
+                and entry.vu_ms <= now_ms
+                and not vu_only_trims(entry.vu_ms, entry.buckets)
+            )
             or (entry.ttl_epoch is not None and entry.ttl_epoch <= now_ms // 1000)
         )
 

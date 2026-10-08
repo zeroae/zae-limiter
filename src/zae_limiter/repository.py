@@ -50,6 +50,7 @@ from .rejection_cache import (
     DEFAULT_REJECTION_CACHE_TTL,
     RejectionCache,
     clears_rejection_cache,
+    vu_only_trims,
 )
 from .repository_protocol import (
     PRESERVE_CASCADE as _PRESERVE_CASCADE,
@@ -3722,9 +3723,19 @@ class Repository:
                     # sees RateLimitExceeded against limits no longer in force
                     # — and a stale `wcu` reading would double shard_count at
                     # every boundary. Mirrors the condition exactly (`vu > now`
-                    # passes), against the same bound `now_ms`.
+                    # passes), against the same bound `now_ms`. Except a
+                    # `vu = 0` on a plain item, which only trims (#680's credit
+                    # clamp, the param sync): it is judged as exhausted like any
+                    # failure, so a rejection stays one failed write, and only
+                    # a request refill would cover takes the slow pass that
+                    # clears the stamp (pre-release review: every rejection
+                    # cost +2 reads until something was admitted).
                     vu_raw = old_item.get(schema.BUCKET_FIELD_VU, {}).get("N")
-                    if vu_raw is not None and int(vu_raw) <= now_ms:
+                    if (
+                        vu_raw is not None
+                        and int(vu_raw) <= now_ms
+                        and not vu_only_trims(int(vu_raw), old_buckets)
+                    ):
                         return SpeculativeResult(
                             success=False,
                             old_buckets=old_buckets,

@@ -6,6 +6,7 @@ cache may only reject, never admit.
 """
 
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from unittest.mock import patch
 
 import pytest
@@ -696,6 +697,70 @@ async def _stamp_current_lambdas(repo: Repository) -> None:
     from zae_limiter.version import get_schema_version
 
     await repo.set_version_record(schema_version=get_schema_version(), lambda_version=__version__)
+
+
+class TestVuThatOnlyTrims:
+    """`vu = 0` on a plain item only trims: rejections stay one failed write.
+
+    #680 stamps `vu = 0` after a credit lands above the ceiling, so the next
+    pass trims it. A rejection writes nothing and so never clears the stamp;
+    before this, every rejection on the item then took the slow path (+2
+    reads, pre-release review) and the cache would not reject from it either.
+    """
+
+    async def _credited_above_the_ceiling(self, repo, limiter, now):
+        await repo.set_system_defaults([Limit.per_minute("rpm", 1), Limit.per_minute("tpm", 1000)])
+        with patch.object(repo, "_now_ms", side_effect=lambda: now[0]):
+            async with limiter.acquire("e", "r", consume={"rpm": 1, "tpm": 500}) as lease:
+                now[0] += 30_000  # tpm refills to full during the call
+                await lease.adjust(tpm=-900)  # the release lands above the ceiling
+        item = await _bucket_item(repo, "e")
+        assert item[schema.BUCKET_FIELD_VU] == {"N": "0"}  # the #680 stamp
+
+    @pytest.mark.parametrize("ttl", [0.0, 1.0], ids=["cache-off", "cache-on"])
+    async def test_rejections_cost_no_reads(self, repo, ttl):
+        repo._rejection_cache.ttl_seconds = ttl
+        now = [1_800_000_000_000]
+        repo._rejection_cache._clock = lambda: now[0] / 1000
+        async with RateLimiter(repository=repo) as limiter:
+            await self._credited_above_the_ceiling(repo, limiter, now)
+            with patch.object(repo, "_now_ms", side_effect=lambda: now[0]):
+                async with _count_client_calls(repo) as calls:
+                    for _ in range(20):
+                        now[0] += 500  # rpm refills one token a minute
+                        with pytest.raises(RateLimitExceeded):
+                            async with limiter.acquire("e", "r", consume={"rpm": 1, "tpm": 10}):
+                                pass
+        assert "batch_get_item" not in calls
+        assert calls.count("update_item") <= 20
+
+    async def test_an_admission_still_trims_and_clears_the_stamp(self, repo):
+        now = [1_800_000_000_000]
+        async with RateLimiter(repository=repo) as limiter:
+            await self._credited_above_the_ceiling(repo, limiter, now)
+            now[0] += 60_000  # rpm back
+            with patch.object(repo, "_now_ms", side_effect=lambda: now[0]):
+                async with limiter.acquire("e", "r", consume={"rpm": 1, "tpm": 10}):
+                    pass
+        item = await _bucket_item(repo, "e")
+        assert schema.BUCKET_FIELD_VU not in item
+        assert int(item[schema.bucket_attr("tpm", schema.BUCKET_FIELD_TK)]["N"]) <= 1_000_000
+
+    def test_anything_that_can_raise_a_balance_still_needs_the_slow_pass(self):
+        from zae_limiter.rejection_cache import vu_only_trims
+        from zae_limiter.schedule import ScheduleEntry
+
+        plain = _state(5)
+        assert vu_only_trims(0, [plain])
+        assert not vu_only_trims(1, [plain])  # a real boundary
+        assert not vu_only_trims(None, [plain])
+        entry = ScheduleEntry(cron="0 9-17 * * 1-5", scale=0.5)
+        assert not vu_only_trims(0, [replace(plain, sched=(entry,))])
+        reset = Limit.quota("daily", 10, cron="0 0 * * *").reset_schedule
+        assert not vu_only_trims(0, [replace(plain, reset_sched=reset)])
+        assert not vu_only_trims(0, [replace(plain, reset_after_seconds=3600)])
+        assert not vu_only_trims(0, [replace(plain, window_start_ms=1)])  # a pending roll
+        assert not vu_only_trims(0, [plain, replace(plain, reset_after_seconds=60)])
 
 
 class TestQuotasAndWindows:
