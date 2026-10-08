@@ -58,25 +58,14 @@ Path 1 / Path 2 / refill:
 - Run the `design-validator` agent on any change to grant logic: "who funds this slot, and can two
   writers both fund it?" is a derivation question of the #179 kind
 
-## Bucket writes and the refill-from-cache write (ADR-147 phase 3)
-The client can admit from a cached bucket state with one locked write
-(`Repository.build_cached_refill`). It is safe only while every other write to a bucket item is
-visible to its condition: `rf`, `vu` absent, each limit's `tk <=` the cached value, each
-limit's stored `cp`/`ra`/`rp` equal to the cached ones,
-`shard_count`, `cascade` off, not `disabled`, TTL unexpired, and the floor
-`tk >= consumed − refill` on every debited limit at any sign. The phase-3 review found four
-writers that changed a bucket without touching any of those — a cascade stamp, a credit `ADD`,
-a `shard_count` raise, a resource-level schedule — and each let extra requests through. For any
-change that writes a bucket item (new writers especially: reset or top-up #470/#471, moving an
-entity to a new parent #677) or changes what config the slow path attaches:
-- Name the condition term the write moves. A pure credit `ADD` is caught by the `tk <=` pin,
-  a pure debit `ADD` by the floor; a
-  `SET` of anything else must move `rf`, stamp `vu`, or change a pinned attribute. If none
-  applies, add a pin to `build_cached_refill` (and a regression test showing over-admission
-  without it), or have the writer forget the shard's rejection-cache entry and say why that is
-  enough (it only covers this process)
-- A config change the slow path reads but that never reaches the bucket (resource/system
-  levels) must keep phase 3 off through `ConfigCache.peek_limits` / `_refill_from_cache`
-- Add a test in `tests/unit/test_rejection_cache.py::TestRefillFromCache` that makes the change
-  from another process (a second `Repository`, or a raw `update_item`) and asserts the next
-  acquire admits no more than the slow path would
+## The rejection cache only rejects (ADR-147)
+The client-side rejection cache may reject a request locally or steer a write away from a
+shard known to be short. It must never be the basis of an admission. Phase 3, which admitted
+through one write built from a cached state, was merged and withdrawn before release after ten
+reproduced over-admissions (`docs/plans/2026-10-07-adr147-phase3-withdrawn.md`). For any change
+touching `rejection_cache.py` or the limiter's local-rejection path:
+- No code path may admit, debit or skip a write because of what the cache holds. Reintroducing
+  that needs a new ADR that clears the bar in the withdrawal record
+- A new bucket writer, or a config change the slow path reads, must keep
+  `tests/unit/test_rejection_cache.py::TestChangesElsewhere` passing; add a case there when the
+  change is made from another process (a second `Repository`, or a raw `update_item`)

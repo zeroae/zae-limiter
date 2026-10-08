@@ -27,15 +27,9 @@ failure), and the client discards it after one decision.
 shard) for at most `rejection_cache_ttl` seconds (default 1.0, `0` disables), and the
 limiter must raise `RateLimitExceeded` without a DynamoDB call when that state, projected
 to now with the fast path's own refill arithmetic, cannot cover a limit declared in
-`consume` on every shard not known to have room; the cache must never admit a request on
-its own: an admission it leads to must be a conditional write that fails if anything
-the admission was computed from changed since the state was seen — `rf`, `vu`, any
-limit's balance rising, the balance left going negative, any limit's stored
-capacity or refill rate, `shard_count`, the `cascade`
-and `disabled` stamps, the TTL — and every other writer of a bucket item must change at
-least one of those. Because that write re-checks everything, it may start from a state
-up to one config-cache window old; only a local rejection is bounded by
-`rejection_cache_ttl`. For a child whose
+`consume` on every shard not known to have room. The cache must never be the basis of an
+admission: it may only reject, or steer which shard a conditional write targets; every
+admission is decided by DynamoDB exactly as without the cache. For a child whose
 own bucket shows it cascades on the resource, the same rule must apply to the parent's
 shards, and the child itself may be rejected locally only while a trusted parent state
 shows the parent is not disabled.
@@ -52,8 +46,6 @@ are specified in the design document.
   partition throughput.
 - Known-short shards are no longer probed, removing up to two failed writes per acquire.
 - A repeat cascade rejection, parent known short, costs 0 WCU instead of 3.
-- A request that refill would cover costs one locked write instead of a failed write, a
-  read and a write.
 - The cached state is the input the multi-resource fast path (#675) builds on.
 
 **Negative:**
@@ -61,14 +53,29 @@ are specified in the design document.
   route the projection cannot see: another process's refund, an admin raising a limit or
   resetting a quota, an entity re-enabled, or another process doubling the shard count
   after every cached state was taken.
-- The cache is per process; N processes each pay one real write per TTL.
+- The cache is per process; N processes each pay one real write per TTL. When each
+  process sees a hot entity less often than once per TTL, it saves nothing.
 - A local rejection reports a projected state, not a fresh image.
+- A client that retries a 429 immediately is no longer slowed by a DynamoDB round trip
+  per retry, so it can spin on CPU (measured: 509 requests in 3 s on v0.15.1, ~47,000
+  with the cache; same admissions, far fewer writes). Callers should honour
+  `retry_after_seconds`.
 
 ## Alternatives Considered
 
 ### "Exhausted until T" flags
-Rejected: they carry no balance, so they cannot predict a rejection from a success or
-drive the refill-from-cached-state write.
+Rejected: they carry no balance, so they cannot predict a rejection from a success.
+
+### Admit through one write built from the cached state ("phase 3")
+Merged in #700 and withdrawn before release. When the cached state showed refill would
+cover a request, the client sent the slow path's rf-locked write computed from that state,
+with condition terms meant to catch any change since. Ten over-admissions were reproduced,
+each from a writer or input the condition did not pin (a cascade stamp, a credit, a shard
+doubling, a resource-level schedule, an entity created later under a parent, a missed
+disable stamp, a debit smaller than the refill, a limit cut, a declared limit consumed at
+0, a pre-#684 stamp); its saving over local rejection alone was narrow (~2x over-demand,
+sharded entities), and it cost 9% more than v0.15.1 with 50 processes. The record, and
+what a new proposal must show, is `docs/plans/2026-10-07-adr147-phase3-withdrawn.md`.
 
 ### Trust the projection with no age cap
 Rejected: a missed refund would under-admit for as long as a quota's period.

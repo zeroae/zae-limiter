@@ -171,7 +171,6 @@ class SyncRepository:
         self._shard_cap_warned: set[tuple[str, str]] = set()
         self._entity_cache: dict[tuple[str, str], tuple[bool, str | None, dict[str, int]]] = {}
         self._cascade_cache: dict[tuple[str, str, str], bool] = {}
-        self._record_parents: dict[tuple[str, str], str | None] = {}
         self._rejection_cache = RejectionCache(
             ttl_seconds=rejection_cache_ttl, max_entries=rejection_cache_size
         )
@@ -502,7 +501,6 @@ class SyncRepository:
         scoped._entity_cache = self._entity_cache
         scoped._cascade_cache = self._cascade_cache
         scoped._rejection_cache = self._rejection_cache
-        scoped._record_parents = self._record_parents
         scoped._namespace_cache = self._namespace_cache
         scoped._on_unavailable_cache = None
         scoped._lambda_version_read = self._lambda_version_read
@@ -1555,7 +1553,6 @@ class SyncRepository:
             if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
                 raise EntityExistsError(entity_id)
             raise
-        self._record_parents[self._namespace_id, entity_id] = parent_id
         self._log_audit_event(
             action=AuditAction.ENTITY_CREATED,
             entity_id=entity_id,
@@ -1591,11 +1588,9 @@ class SyncRepository:
         existing_shards = self._entity_cache.get(cache_key, (False, None, {}))[2]
         if not item:
             self._entity_cache[cache_key] = (False, None, existing_shards)
-            self._record_parents.pop(cache_key, None)
             return None
         entity = self._deserialize_entity(item)
         self._entity_cache[cache_key] = (entity.cascade, entity.parent_id, existing_shards)
-        self._record_parents[cache_key] = entity.parent_id
         return entity
 
     @clears_rejection_cache
@@ -1913,10 +1908,6 @@ class SyncRepository:
             self._entity_cache[cache_key] = (entity.cascade, entity.parent_id, existing_shards)
         else:
             self._entity_cache[cache_key] = (False, None, existing_shards)
-        if entity is not None:
-            self._record_parents[cache_key] = entity.parent_id
-        else:
-            self._record_parents.pop(cache_key, None)
         return (entity, buckets)
 
     def batch_get_configs(
@@ -3172,159 +3163,6 @@ class SyncRepository:
         if meta is not None and meta[1] is not None:
             self._cascade_cache[self._namespace_id, entity_id, resource] = meta[0]
         return count
-
-    def build_cached_refill(
-        self,
-        entity_id: str,
-        resource: str,
-        shard_id: int,
-        consumed: dict[str, int],
-        refill_amounts: dict[str, int],
-        expected_rf: int,
-        now_ms: int,
-        *,
-        cached_tokens: dict[str, int],
-        cached_shard_count: int,
-        ttl_seconds: int | None = None,
-        cached_params: dict[str, tuple[int, int, int]] | None = None,
-    ) -> dict[str, Any]:
-        """The UpdateItem ``refill_from_cached_state`` sends (ADR-147 phase 3).
-
-        ``build_composite_normal``'s rf-locked refill-and-debit, with ``vu``
-        pinned absent, ``disabled`` absent and the TTL unexpired added to its
-        condition, returning ``ALL_NEW``.
-
-        Every input the refill was computed from is pinned, because other
-        writers change them without moving ``rf``: ``cached_tokens`` caps each
-        limit's stored balance at the cached one (a refund elsewhere ADDs
-        tokens, and the clamp computed against the lower cached balance would
-        then land above the ceiling; a debit elsewhere only lowers it, which
-        the floor ``tk >= consumed - refill`` refuses — added here for every
-        limit debited **at any sign**, since ``build_composite_normal`` emits
-        it only when the debit exceeds the refill), and
-        ``cached_params`` pins each limit's stored ``cp``/``ra``/``rp`` (a limit
-        change elsewhere stamps ``vu = 0``, which a slow pass that does not move
-        ``rf`` then clears), and ``cached_shard_count`` pins ``shard_count`` (a doubling
-        elsewhere — client bump, propagation, aggregator Path 1 — shrinks the
-        per-shard ceiling and rate the refill was computed against).
-        """
-        item = self.build_composite_normal(
-            entity_id=entity_id,
-            resource=resource,
-            consumed=consumed,
-            refill_amounts=refill_amounts,
-            now_ms=now_ms,
-            expected_rf=expected_rf,
-            ttl_seconds=ttl_seconds,
-            shard_id=shard_id,
-            rf_ms=max(now_ms, expected_rf),
-        )
-        update = item["Update"]
-        update["ExpressionAttributeNames"].update(
-            {
-                "#cvu": schema.BUCKET_FIELD_VU,
-                "#cdis": schema.BUCKET_FIELD_DISABLED,
-                "#cttl": "ttl",
-                "#ccs": "cascade",
-            }
-        )
-        update["ExpressionAttributeValues"][":cnow"] = {"N": str(now_ms // 1000)}
-        update["ExpressionAttributeValues"][":cfalse"] = {"BOOL": False}
-        update["ConditionExpression"] = (
-            f"{update['ConditionExpression']} AND attribute_not_exists(#cvu) AND attribute_not_exists(#cdis) AND (attribute_not_exists(#cttl) OR #cttl > :cnow) AND (attribute_not_exists(#ccs) OR #ccs = :cfalse)"
-        )
-        for i, (name, tokens) in enumerate(cached_tokens.items()):
-            update["ExpressionAttributeNames"][f"#ct{i}"] = schema.bucket_attr(
-                name, schema.BUCKET_FIELD_TK
-            )
-            update["ExpressionAttributeValues"][f":ct{i}"] = {"N": str(tokens)}
-            update["ConditionExpression"] += f" AND #ct{i} <= :ct{i}"
-        for j, (name, c) in enumerate(consumed.items()):
-            if c <= 0:
-                continue
-            update["ExpressionAttributeNames"][f"#cf{j}"] = schema.bucket_attr(
-                name, schema.BUCKET_FIELD_TK
-            )
-            update["ExpressionAttributeValues"][f":cf{j}"] = {
-                "N": str(c - refill_amounts.get(name, 0))
-            }
-            update["ConditionExpression"] += f" AND #cf{j} >= :cf{j}"
-        fields = (schema.BUCKET_FIELD_CP, schema.BUCKET_FIELD_RA, schema.BUCKET_FIELD_RP)
-        for k, (name, values) in enumerate((cached_params or {}).items()):
-            for code, field, value in zip("cap", fields, values, strict=True):
-                update["ExpressionAttributeNames"][f"#cp{code}{k}"] = schema.bucket_attr(
-                    name, field
-                )
-                update["ExpressionAttributeValues"][f":cp{code}{k}"] = {"N": str(value)}
-                update["ConditionExpression"] += f" AND #cp{code}{k} = :cp{code}{k}"
-        update["ExpressionAttributeNames"]["#csc"] = "shard_count"
-        update["ExpressionAttributeValues"][":csc"] = {"N": str(cached_shard_count)}
-        update["ConditionExpression"] += " AND (attribute_not_exists(#csc) OR #csc = :csc)"
-        update["ReturnValues"] = "ALL_NEW"
-        return item
-
-    def refill_from_cached_state(
-        self,
-        entity_id: str,
-        resource: str,
-        shard_id: int,
-        consumed: dict[str, int],
-        refill_amounts: dict[str, int],
-        expected_rf: int,
-        now_ms: int,
-        *,
-        cached_tokens: dict[str, int],
-        cached_shard_count: int,
-        ttl_seconds: int | None = None,
-        cached_params: dict[str, tuple[int, int, int]] | None = None,
-    ) -> SpeculativeResult | None:
-        """The slow path's rf-locked write, built from a cached state (ADR-147 phase 3).
-
-        Refills and debits in one write with no read: the cached state is what
-        the read would have returned, unless something wrote since — which the
-        condition detects. Beside the ``rf`` lock it pins ``vu`` absent (a limit
-        change made elsewhere stamps ``vu = 0`` and rewrites ``cp``/``ra``/``rp``
-        without moving ``rf``, so an ``rf`` lock alone would refill at the old
-        limits, #508), the bucket not disabled, and its TTL not expired.
-
-        Returns the success as a ``SpeculativeResult`` built from ``ALL_NEW``,
-        or None when the condition failed; the caller then takes today's path.
-        Only for an unscheduled, non-quota, non-cascading item: the caller
-        checks, and ``vu`` absent is part of the condition.
-        """
-        update = self.build_cached_refill(
-            entity_id,
-            resource,
-            shard_id,
-            consumed,
-            refill_amounts,
-            expected_rf,
-            now_ms,
-            cached_tokens=cached_tokens,
-            cached_shard_count=cached_shard_count,
-            ttl_seconds=ttl_seconds,
-            cached_params=cached_params,
-        )["Update"]
-        client = self._get_client()
-        try:
-            response = client.update_item(**update)
-        except ClientError as e:
-            if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-                self._rejection_cache.forget(self._namespace_id, entity_id, resource, shard_id)
-                return None
-            raise
-        new_item = response["Attributes"]
-        buckets = self._deserialize_composite_bucket(new_item)
-        shard_count = int(new_item.get("shard_count", {}).get("N", "1"))
-        self._remember_bucket_image(entity_id, resource, shard_id, new_item, buckets, shard_count)
-        return SpeculativeResult(
-            success=True,
-            buckets=buckets,
-            cascade=new_item.get("cascade", {}).get("BOOL", False),
-            parent_id=new_item.get("parent_id", {}).get("S"),
-            shard_id=shard_id,
-            shard_count=shard_count,
-        )
 
     def _remember_bucket_image(
         self,
