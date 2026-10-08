@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791415342584,
+  "lastUpdate": 1791426941534,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -31998,6 +31998,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.003433977770358442",
             "extra": "mean: 1.0759921796000014 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b58c323a13b40b1268d15ecc0f0f6659b2776d9d",
+          "message": "🔥 remove(limiter): withdraw refill-from-cache, ADR-147 phase 3 (#703)\n\n## Summary\n\nWithdraws ADR-147 **phase 3** (refill from the cached state in one\nlocked write, merged in #700) before v0.16.0 ships. Phases 1 and 2\n(local rejection, cascade parent pre-check) stay.\n\n- `145ef321a` removes the phase-3 code\n(`Repository.build_cached_refill`, the `_refill_from_cache` path and its\ngates) and its 24 mechanics tests.\n- `ef643830e` adds `docs/plans/2026-10-07-adr147-phase3-withdrawn.md`\nand updates ADR-147, the design doc, CLAUDE.md (invariant 11) and\n`.claude/rules/code-review.md`.\n\nThe findings below are copied from that file so they never have to be\nrederived.\n\n## TLDR: why withdrawn\n\nPhase 3 admitted a request through **one conditional write built from a\ncached bucket state**, instead of today's failed speculative write, read\nand locked write. It was removed before release because:\n\n1. **Ten over-admissions** were found in it across four reviews; nine\nwere fixed, the tenth was found by the pre-release review. Each came\nfrom a different writer or input the condition did not pin. There is no\nargument that the list is complete.\n2. **Its saving is small and narrow.** Phase 1 (local rejection)\ndelivers 88–99% of ADR-147's saving at 20x over-demand and above. Phase\n3 matters mainly at ~2x over-demand and on sharded entities, and it\n**costs 9% more** than v0.15.1 with 50 processes on one hot entity.\n3. It imposed a standing rule on every future bucket writer (CLAUDE.md\ninvariant 11): change a pinned attribute, or phase 3 admits against a\nstate it cannot see.\n\nPhases 1 and 2 stay. They can only reject (or steer a write to another\nshard); no review found an over-admission in either.\n\n## The over-admissions\n\nAll reproduced on moto with a second `Repository` (or a raw\n`update_item`) standing in for another process, comparing phase 3 on\nagainst the same scenario with the cache off.\n\n| # | Writer or input the condition could not see | Reproduction |\nResult with phase 3 | Fixed by |\n|---|---|---|---|---|\n| 1 | Another process turns the child's **cascade policy** on (ADR-146):\nstamps `cascade` without moving `rf` or `vu` | Child cached;\n`set_entity_cascade` elsewhere; child acquires | Child admitted,\n**parent never debited** | `148b5a11c` (pin `cascade` off) |\n| 2 | A **pre-#684 stamp** (`cascade=False`, no `parent_id`) on a\ncascading child | Child created by an older client; warm acquires |\nPhase 3 kept pre-empting the slow pass that repairs the stamp; parent\nnever debited | `148b5a11c` (trust \"no parent\" only from META) |\n| 3 | A **refund / release / rollback / compensation** in another\nprocess: `ADD` tokens, `rf` unchanged | Cached at tk 0; refund\nelsewhere; refill clamped against the lower cached balance | **3\nadmitted against capacity 2**, item above its ceiling | `7fa70d1e5` (pin\n`tk <= cached`) |\n| 4 | A **shard doubling** elsewhere (client bump, propagation,\naggregator Path 1): `shard_count` set, `rf`/`vu` unchanged | Cached at\ncount 1; doubled to 2 elsewhere | Shard 0 refilled to its full **new**\nshare instead of empty | `9922e5d37` (pin `shard_count`) |\n| 5 | A **resource- or system-level schedule**: never fans out to\nbuckets (#271/#296), so the item carries no `vu` | Resource schedule\nhalves capacity; entity bucket unscheduled | **4 admitted against a\nscheduled capacity of 2** | `1dd694621` (ask the warm config cache,\n`peek_limits`) |\n| 6 | An entity **created later under a parent** (here or elsewhere)\nafter its bucket existed | Acquire before `create_entity`; then\n`create_entity(parent_id=...)` elsewhere | **4 admitted where the parent\nallowed 2**, parent never debited | `d9bb0f79a` (trust \"no parent\" only\nfrom an existing record) |\n| 7 | A **disable stamp the fan-out missed** (ADR-125 race,\n`FanoutIncomplete`, pending provisioner retry) | Resource disabled\nelsewhere; one bucket's stamp removed | **Admitted on a disabled\nresource, indefinitely** (phase 3 replaced every slow pass) |\n`7f230e529` (only within one config window of a real slow pass) |\n| 8 | A **debit elsewhere smaller than the refill**: the normal write's\nfloor is emitted only when the debit exceeds the refill | Drained;\nanother process `ADD -1000`; 0.9 s later request 1 (refill 9) | **1\nadmitted with the item at −1000** (−992 after) | `7cd4cdc6c` (floor at\nany sign) |\n| 9 | A **limit cut** (param sync: `cp`/`ra`/`rp` + `vu = 0`, no `rf`),\nthen a slow pass whose clock is behind the stored `rf` clears `vu`; or\nthe cut lands inside a slow pass and the recorded state keeps the old\nsettings | 1000/min cut to 10/min; skewed slow pass; request 400 | **400\nadmitted against 10/min** | `e26f74512` (pin `cp`/`ra`/`rp`) |\n| 10 | A **declared limit consumed at 0**: the floor loop skipped `c <=\n0`, so another process's debt on it was invisible. This is the\nzero-estimate LLM pattern (`consume={\"rpm\": 1, \"tpm\": 0}`,\n`adjust(tpm=...)` later) | rpm 600/min, tpm 600k/min; slow pass; fast\npath drains rpm; +900 ms; other process `ADD b_tpm_tk -10e9`; acquire\n`{\"rpm\":1,\"tpm\":0}` | **Admitted with tpm at −9.4e9**; cache off rejects\n| **Not fixed** — found by the pre-release review and by its randomized\nfuzzer (seed 19) |\n\nRelated, not over-admissions: the slow path's own write erasing a\nconcurrent `vu = 0` (#701, a bug on `main` before ADR-147, **kept\nfixed**); phase 3's lost writes under the aggregator (119 of 597 at 2x,\nnet saving still positive); and under-crediting near capacity after a\nconcurrent debit (accepted, never over-admits).\n\n## The cost case\n\nFrom the pre-release cost review (moto, request units converted at\non-demand prices; admissions equal across configurations unless noted):\n\n| Scenario ($ per million requests) | v0.15.1 | Phase 1 only | Phases\n1–3 |\n|---|---|---|---|\n| Steady under the limit | .719 | .719 | .628 (capacity-10 artefact;\n~0.1% at capacity 1,000) |\n| Over-demand 2x | 1.093 | .783 | .316 |\n| Over-demand 20x | .672 | .079 | .033 |\n| Over-demand 200x | .630 | .037 | .033 |\n| Sharded 8, 1.2x | 2.307 (547 admitted) | 1.255 (924 admitted) | .515 |\n| 50 processes, 20x | .674 | .674 | **.733 (+9%)** |\n| Entities that never call `create_entity`, 2x | 1.093 | 1.093 | 1.093 |\n\nPhase 3's marginal saving was about $0.94 per million phase-3\nadmissions. Its lost writes with many processes come from the same cause\nas finding 9's guard: each process's cached state, up to 60 s old,\ncarries a stale `rf` (112 of 112 lost at 50 processes; 0 of 59 at 10).\n\n## What is kept, and why\n\n\"Phase 1 only\" in the cost table **includes** fixes that shipped inside\nthe phase-3 PR and are kept, because phase 1 depends on them or because\nthey fix a bug that predates ADR-147:\n\n- `866f72cd3` — the slow path records the state its rf-locked write\nleft. Without it the cache held the failed write's image with the\npre-write `rf`, and phase 1 saved **nothing** at 2x.\n- `868f2c34c` — it does not record a state a refund in this process\novertook (a mark taken before the read; under-admission otherwise).\n- `b2ac15471` — the #701 fix: the slow path's own write no longer erases\na concurrent `vu = 0`. A bug on `main` before ADR-147.\n\n## What a phase 3 would need to come back\n\nWrite a new ADR. At minimum:\n\n1. **An argument that the condition is complete**, not a list grown by\nreview: every input to the slow path's admission decision (each limit's\nbalance, settings, schedule, reset, window, the entity's parent and\ncascade policy, `disabled`, TTL, shard count, every declared limit\nincluding those consumed at 0) mapped to a condition term or to a gate\nwith a stated bound — and every bucket writer in the CLAUDE.md writer\ntable checked against it.\n2. **A randomized differential fuzzer in CI** comparing admissions with\nthe feature on and off across several `Repository` objects on one table,\nwith raw \"other process\" credits, debits, admin changes and clock skew.\nThe pre-release review's fuzzer found finding 10 independently; findings\n1–9 were all found by hand.\n3. **An answer to the many-processes cost regression** (stop after a\nlost write, or bound the state's age by more than the slow-pass window).\n4. A measured saving that justifies it against phase 1 alone.\n\n## Test evidence\n\n- Full unit suite: **6373 passed** locally.\n- The 24 phase-3 mechanics tests were removed; the outcome tests\n(another process changes the bucket, the next acquire admits no more\nthan the slow path would) are kept as `TestChangesElsewhere`.\n- Pre-push diff coverage: **100%**.\n\n## Not in this PR (tracked separately)\n\n- A stale line at `docs/performance.md:889`.\n- The hot-loop CPU concern.\n\n## Test plan\n\n- [x] `uv run pytest tests/unit/ -q` — 6373 passed\n- [x] Pre-push diff-coverage hook at 100%\n- [ ] CI green (lint, build, CodeQL, unit, integration, e2e)\n\nRefs #695\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01ASEDQdfdZZeqM2KMM1WTMo",
+          "timestamp": "2026-10-07T22:28:58-04:00",
+          "tree_id": "bb4f1cde9b0b14c2843f67e4a343b1f1289e7ee0",
+          "url": "https://github.com/zeroae/zae-limiter/commit/b58c323a13b40b1268d15ecc0f0f6659b2776d9d"
+        },
+        "date": 1791426940458,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 25.87214295348556,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007458056112544205",
+            "extra": "mean: 38.65161079999666 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 17.76715867605875,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010610185448835102",
+            "extra": "mean: 56.28361958333272 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 40.4503980778563,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004838819768506598",
+            "extra": "mean: 24.721635571429108 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 39.47431173088761,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0035580770817085845",
+            "extra": "mean: 25.332930611112502 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 22.345849642217413,
+            "unit": "iter/sec",
+            "range": "stddev: 0.010300520551644522",
+            "extra": "mean: 44.75103950000303 msec\nrounds: 16"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 81.78736840757192,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0018959427765716248",
+            "extra": "mean: 12.226826947367822 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 26.459971763083857,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005893102364731378",
+            "extra": "mean: 37.79293526666454 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 25.834488906221473,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007793453894994167",
+            "extra": "mean: 38.707945941178636 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 25.56593386222025,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005838081145873869",
+            "extra": "mean: 39.11455006451917 msec\nrounds: 31"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 29.57791989906011,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004257998507460131",
+            "extra": "mean: 33.80900358824005 msec\nrounds: 17"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 26.898053103898814,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007030207103855508",
+            "extra": "mean: 37.1774119166659 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 25.33125089025012,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00827514729160188",
+            "extra": "mean: 39.476929281249795 msec\nrounds: 32"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 30.014255561440507,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004913848732381178",
+            "extra": "mean: 33.317501343751665 msec\nrounds: 32"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9335870694566797,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0016397737211639527",
+            "extra": "mean: 517.1735039999987 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9368685325335362,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0011314268400733928",
+            "extra": "mean: 516.2973031999968 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9399144945911095,
+            "unit": "iter/sec",
+            "range": "stddev: 0.019041833368630582",
+            "extra": "mean: 1.063926565400004 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9291940543880883,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00887308726132526",
+            "extra": "mean: 1.0762014621999925 sec\nrounds: 5"
           }
         ]
       }
