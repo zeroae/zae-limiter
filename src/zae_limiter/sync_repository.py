@@ -56,6 +56,7 @@ from .rejection_cache import (
     DEFAULT_REJECTION_CACHE_TTL,
     RejectionCache,
     clears_rejection_cache,
+    vu_only_trims,
 )
 from .sync_config_cache import ConfigSource, SyncConfigCache
 from .sync_repository_protocol import PRESERVE_CASCADE as _PRESERVE_CASCADE
@@ -3090,7 +3091,11 @@ class SyncRepository:
                             failure_reason=SpeculativeFailureReason.DISABLED,
                         )
                     vu_raw = old_item.get(schema.BUCKET_FIELD_VU, {}).get("N")
-                    if vu_raw is not None and int(vu_raw) <= now_ms:
+                    if (
+                        vu_raw is not None
+                        and int(vu_raw) <= now_ms
+                        and (not vu_only_trims(int(vu_raw), old_buckets))
+                    ):
                         return SpeculativeResult(
                             success=False,
                             old_buckets=old_buckets,
