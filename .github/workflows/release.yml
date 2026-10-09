@@ -6,7 +6,28 @@ on:
       - "v*"
 
 jobs:
+  verify-tag:
+    # Release tags are annotated (they record who tagged, when and why, and
+    # plain `git describe` sees only annotated tags). v0.16.0 went out as a
+    # lightweight tag because nothing checked; refuse before building.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Require an annotated tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          git fetch --force origin "refs/tags/${TAG}:refs/tags/${TAG}"
+          type="$(git cat-file -t "refs/tags/${TAG}")"
+          if [ "${type}" != "tag" ]; then
+            echo "::error::${TAG} is a ${type}, not an annotated tag. Delete it and re-tag with:"
+            echo "::error::git tag -a ${TAG} <release-prep-commit> -m \"${TAG}: <theme>\""
+            exit 1
+          fi
+          echo "${TAG} is an annotated tag."
+
   build:
+    needs: verify-tag
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

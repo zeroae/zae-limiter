@@ -112,12 +112,15 @@ new_way()
 After this PR is merged:
 
 1. Close the narrative epic: `gh issue close <epic-number>`
-2. Create the release tag:
+2. Create the release tag — **annotated**, on the **release-prep commit** (this PR's head,
+   whose tree the AWS e2e run covered), not on the merge commit:
    ```bash
-   git checkout main && git pull
-   git tag v<version>
+   git fetch origin main --tags
+   git tag -a v<version> <release-prep-commit> -m "v<version>: <milestone theme>"
    git push origin v<version>
    ```
+   `release.yml` refuses a lightweight tag before building anything; if it does, delete the
+   tag (`git push --delete origin v<version>`, `git tag -d v<version>`) and re-tag.
 3. Verify GitHub Actions creates the release
 
 ---

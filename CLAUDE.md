@@ -1933,7 +1933,7 @@ limiter = RateLimiter(
 
 Releases are fully automated via GitHub Actions (`release.yml`). No manual build or publish steps required.
 
-**Process:** Tag a version on main (`git tag v0.1.0 && git push origin v0.1.0`), and GitHub Actions builds, generates changelog (git-cliff), creates a GitHub Release, and publishes to PyPI via OIDC.
+**Process:** Tag the release-prep commit — the release PR's head, whose tree the AWS e2e run covered, not the merge commit — with an **annotated** tag (`git tag -a v0.1.0 <release-prep-commit> -m "v0.1.0: <theme>" && git push origin v0.1.0`), and GitHub Actions builds, generates changelog (git-cliff), creates a GitHub Release, and publishes to PyPI via OIDC. `release.yml`'s first job refuses a lightweight tag before building anything (v0.16.0 shipped lightweight because nothing checked; v0.14.0–v0.15.1 are annotated).
 
 **Version management:** Versions are automatically generated from git tags using `hatch-vcs`. No manual version updates needed. Tag format: `v{major}.{minor}.{patch}`.
 
