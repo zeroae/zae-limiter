@@ -5214,15 +5214,15 @@
 </tr>
 <tr>
 <td><code>acquire()</code> speculative fallback (non-cascade)</td>
-<td>1</td>
+<td>2.5</td>
 <td>2</td>
-<td>Failed speculative (1 WCU) + normal path (1 RCU + 1 WCU)</td>
+<td>Failed speculative (1 WCU) + normal path: META and bucket read (1 RCU), the uncached disabled walk over up to 3 config items (1.5 RCU), the write (1 WCU)</td>
 </tr>
 <tr>
 <td><code>acquire()</code> speculative cascade fallback (parent refill helps)</td>
-<td>0.5</td>
+<td>1</td>
 <td>3</td>
-<td>Child stays consumed; parent-only read (0.5 RCU) + single-item write (1 WCU)</td>
+<td>Child stays consumed; parent-only read of the parent's bucket and META (1 RCU, #684) + single-item write (1 WCU)</td>
 </tr>
 <tr>
 <td><code>acquire()</code> retry (contention)</td>
@@ -6292,16 +6292,16 @@ See <a href="#rejection-cache">Rejection Cache</a>.</p>
 <tr>
 <td><strong>Speculative fallback</strong> (refill helps)</td>
 <td>3</td>
-<td>1</td>
+<td>2.5</td>
 <td>2</td>
-<td>$1.375</td>
+<td>$1.5625</td>
 </tr>
 <tr>
 <td><strong>Speculative fallback</strong> (schedule boundary)</td>
 <td>3</td>
-<td>1</td>
+<td>2.5</td>
 <td>2</td>
-<td>$1.375</td>
+<td>$1.5625</td>
 </tr>
 <tr>
 <td><strong>Normal path</strong> (cascade)</td>
@@ -6327,7 +6327,7 @@ See <a href="#rejection-cache">Rejection Cache</a>.</p>
 <tr>
 <td><strong>Speculative cascade fallback</strong> (parent refill helps)</td>
 <td>2+</td>
-<td>0.5</td>
+<td>1</td>
 <td>3</td>
 <td>$2.00</td>
 </tr>
@@ -6426,16 +6426,35 @@ arithmetic as a fast rejection:</p>
 </ul>
 <p>The cache only rejects; admission always needs a successful write, so it cannot over-admit. A
 state is not used once it is older than <code>rejection_cache_ttl</code>, past a schedule boundary (<code>vu</code>)
-or its bucket TTL, stamped disabled, or when <code>acquire()</code> passes <code>limits=</code>. A cascading bucket is
-never rejected locally (the parent's answer comes from the server). Refunds, releases and
+or its bucket TTL, stamped disabled, or when <code>acquire()</code> passes <code>limits=</code>. A cascading child is
+rejected locally only when its own cached state says it cascades and the parent's cached shards
+are all short too, or on its own shortfall while a trusted parent state shows the parent is not
+disabled. Refunds, releases and
 rollbacks in this process forget the shard, and every admin write through the repository, or
 <code>invalidate_config_cache()</code>, clears the cache.</p>
-<p><strong>Example:</strong> a client looping on 429s at 1,000 req/s from one process drops from ~1,000 WCU/s to
-~1 WCU/s — one real write per TTL to refresh the state.</p>
+<p><strong>Example:</strong> a client looping on 429s at 1,000 req/s from one process drops from ~1,000 WCU/s of
+rejections to ~1 WCU/s — one real write per TTL to refresh the state. That is per process and
+counts rejections only: admissions still cost a write each, and N processes on the same hot entity
+pay N real writes per TTL. A process that sees an entity less often than once per TTL saves
+nothing, because its state has expired by the next request.</p>
 <p><strong>Trade-off:</strong> for up to <code>rejection_cache_ttl</code> per process, a request can be rejected after
 tokens came back by a route this process cannot see: another process's refund, an admin change
 made elsewhere, or another process doubling the shard count. Each process pays its own real
 write per TTL.</p>
+<p><strong>Known behaviour, each bounded by <code>rejection_cache_ttl</code> in one process:</strong></p>
+<ul>
+<li>A resource or parent <strong>disabled by another process</strong> can get a 429 here instead of
+  <code>ResourceDisabled</code> (403), until the cached state expires.</li>
+<li>An entity <strong>deleted by another process</strong> can be rejected instead of admitted to a fresh bucket.</li>
+<li>During a <strong>DynamoDB outage</strong>, a bucket seen exhausted in the last TTL raises
+  <code>RateLimitExceeded</code> rather than taking the <code>on_unavailable</code> path (stricter, not looser).</li>
+<li>A client that <strong>retries a 429 without waiting</strong> spins on CPU: about 10,000 retries per second
+  against about 100 when every rejection went to DynamoDB. Other tasks keep running (#704); honour
+  <code>retry_after_seconds</code>.</li>
+</ul>
+<p>The cache is bounded at <code>rejection_cache_size</code> entries. Two per-process maps beside it are not
+bounded by it: the cascade-policy cache (one entry per entity and resource seen) and the entity
+cache (one per entity, as in earlier releases).</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-31-1"><a id="__codelineno-31-1" name="__codelineno-31-1" href="#__codelineno-31-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">zae_limiter</span><span class="w"> </span><span class="kn">import</span> <span class="n">RateLimiter</span><span class="p">,</span> <span class="n">Repository</span>
 </span><span id="__span-31-2"><a id="__codelineno-31-2" name="__codelineno-31-2" href="#__codelineno-31-2"></a>
 </span><span id="__span-31-3"><a id="__codelineno-31-3" name="__codelineno-31-3" href="#__codelineno-31-3"></a><span class="c1"># Default: trust a cached state for 1 second, keep at most 10,000 shards</span>

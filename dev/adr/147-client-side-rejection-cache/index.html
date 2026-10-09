@@ -3861,7 +3861,10 @@ are specified in the design document.</p>
 - Repeat rejections inside the TTL cost 0 WCU and no round trip, and stop consuming
   partition throughput.
 - Known-short shards are no longer probed, removing up to two failed writes per acquire.
-- A repeat cascade rejection, parent known short, costs 0 WCU instead of 3.
+- A repeat cascade rejection, parent known short, costs 0 WCU instead of 3 — when the child's
+  own cached state shows it cascades and every cached parent shard is short. Measured, that is
+  rare at mild over-demand (none of ~600 rejections at 2x) and common at heavy (177 of 1,140
+  at 20x).
 - The cached state is the input the multi-resource fast path (#675) builds on.</p>
 <p><strong>Negative:</strong>
 - Admission can lag by up to <code>rejection_cache_ttl</code> per process when tokens return by a
