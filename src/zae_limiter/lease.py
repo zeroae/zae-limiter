@@ -73,6 +73,9 @@ class LeaseEntry:
     # True when `_cascade` / `_parent_id` are this entry's OWNER's values, read
     # from its META this pass; the write then stamps them on the item (#684).
     _stamp_owner: bool = False
+    # The owner's parent generation read with them (ADR-150), stamped beside
+    # them and pinned so a pass that read META before a move cannot undo it.
+    _parent_generation: int | None = None
     # Whether the caller named this limit in acquire(consume=...) (Issue #455).
     # `consume` is the declared scope of a lease: only declared entries are
     # visible through `consumed` and adjustable through adjust()/consume()/
@@ -521,6 +524,7 @@ class Lease:
                         shard_count=first_entry._shard_count,
                         vu=vu,
                         rf_ms=_monotonic_rf(now_ms, None, group_entries),
+                        pgen=(owner_entry._parent_generation if owner_entry is not None else None),
                     )
                 )
                 # A create fans out only when it anchored the entity's next
@@ -759,6 +763,9 @@ class Lease:
                             (owner_entry._cascade, owner_entry._parent_id)
                             if owner_entry is not None
                             else None
+                        ),
+                        owner_pgen=(
+                            owner_entry._parent_generation if owner_entry is not None else None
                         ),
                     )
                 )

@@ -492,6 +492,42 @@ class RateLimiter:
         await self._ensure_initialized()
         return await self._repository.get_children(parent_id)
 
+    async def set_parent(
+        self,
+        entity_id: str,
+        parent_id: str | None,
+        *,
+        principal: str | None = None,
+    ) -> int:
+        """
+        Move an entity to a new parent, or to no parent (ADR-150).
+
+        Takes effect on the next acquire in every process: the entity's bucket
+        items are restamped, and a process whose cache still names the old
+        parent learns the new one from the item on its next call, refunding
+        the old parent. Consumption already charged to the old parent, including
+        by leases open across the move, stays there. Whether the entity debits
+        the new parent follows its cascade policy (ADR-146) or its own
+        ``cascade`` flag, which a move does not change.
+
+        Args:
+            entity_id: Entity to move.
+            parent_id: The new parent, which must exist, or None for no parent.
+            principal: Caller identity for audit logging (optional).
+
+        Returns:
+            Number of bucket items restamped.
+
+        Raises:
+            ValidationError: The move would make the entity its own ancestor.
+            EntityNotFoundError: The entity or the new parent does not exist.
+            VersionMismatchError: The stack's Lambdas predate parent moves.
+            FanoutIncomplete: The move landed but restamping stopped part-way;
+                repeating the call finishes it.
+        """
+        await self._ensure_initialized()
+        return await self._repository.set_parent(entity_id, parent_id, principal=principal)
+
     async def get_audit_events(
         self,
         entity_id: str,
@@ -2182,6 +2218,7 @@ class RateLimiter:
                     ),
                     _parent_id=parent_entity.parent_id if parent_entity else None,
                     _stamp_owner=parent_entity is not None and parent_policy is not None,
+                    _parent_generation=(parent_entity.parent_generation if parent_entity else None),
                     _boundary_ms=parent_boundary_ms,
                     _reset_edge_ms=parent_reset_edge_ms,
                     _window_start_ms=parent_new_ws,
@@ -2735,6 +2772,7 @@ class RateLimiter:
                         _cascade=cascades.get(eid, False),
                         _parent_id=owner.parent_id if owner else None,
                         _stamp_owner=owner is not None,
+                        _parent_generation=owner.parent_generation if owner else None,
                         _declared=status is not None,
                         _boundary_ms=boundary_ms,
                         _reset_edge_ms=reset_edge_ms,

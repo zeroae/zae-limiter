@@ -965,6 +965,13 @@ class Entity:
     cascade: bool = False
     metadata: dict[str, str] = field(default_factory=dict)
     created_at: str | None = None
+    parent_generation: int = 0
+    """How many times the entity has been moved to a new parent (ADR-150).
+
+    0 for an entity never moved. Every bucket write of the entity's
+    ``parent_id`` carries it, so a writer that read an older generation can
+    never put a previous parent back.
+    """
 
     @property
     def is_parent(self) -> bool:
@@ -2071,6 +2078,7 @@ class AuditAction:
     ENTITY_DELETED = "entity_deleted"
     LIMITS_SET = "limits_set"
     LIMITS_DELETED = "limits_deleted"
+    ENTITY_PARENT_CHANGED = "entity_parent_changed"
 
 
 @dataclass

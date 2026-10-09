@@ -57,6 +57,7 @@ class LeaseEntry:
     _cascade: bool = False
     _parent_id: str | None = None
     _stamp_owner: bool = False
+    _parent_generation: int | None = None
     _declared: bool = True
     _boundary_ms: int | None = None
     _reset_edge_ms: int | None = None
@@ -367,6 +368,7 @@ class SyncLease:
                         shard_count=first_entry._shard_count,
                         vu=vu,
                         rf_ms=_monotonic_rf(now_ms, None, group_entries),
+                        pgen=owner_entry._parent_generation if owner_entry is not None else None,
                     )
                 )
                 created = {
@@ -507,6 +509,9 @@ class SyncLease:
                         pin_vu=read_state is not None,
                         expected_vu=read_state.stored_vu_ms if read_state is not None else None,
                         owner=(owner_entry._cascade, owner_entry._parent_id)
+                        if owner_entry is not None
+                        else None,
+                        owner_pgen=owner_entry._parent_generation
                         if owner_entry is not None
                         else None,
                     )
