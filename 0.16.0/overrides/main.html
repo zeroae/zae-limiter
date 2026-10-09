@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+
+{% block content %}
+  {% if page.is_homepage %}
+    <style>
+      .md-content__inner > h1 { display: none; }
+    </style>
+  {% endif %}
+  {{ super() }}
+{% endblock %}
