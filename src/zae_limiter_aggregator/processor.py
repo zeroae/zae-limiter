@@ -37,6 +37,7 @@ from zae_limiter.schema import (
     BUCKET_FIELD_RSCHED,
     BUCKET_FIELD_SCHED,
     BUCKET_FIELD_SCHED_TZ,
+    BUCKET_FIELD_SOFT,
     BUCKET_FIELD_TC,
     BUCKET_FIELD_TK,
     BUCKET_FIELD_VU,
@@ -45,6 +46,7 @@ from zae_limiter.schema import (
     BUCKET_FIELD_WTC,
     BUCKET_PREFIX,
     BUCKET_SCHED_NONE,
+    OVERDRAWN_COUNTER_SUFFIX,
     SK_BUCKET,
     WCU_LIMIT_NAME,
     WCU_SHARD_WARN_THRESHOLD,
@@ -119,6 +121,9 @@ class ConsumptionDelta:
     limit_name: str
     tokens_delta: int  # positive = consumed, negative = refilled/returned
     timestamp_ms: int
+    # A soft limit debited by this record that left its shard in debt (#467):
+    # counted as `{limit}#od` in the same snapshot update.
+    overdrawn: bool = False
 
 
 @dataclass
@@ -365,6 +370,7 @@ class ParsedBucketLimit:
     tc_milli: int | None = None  # b_{name}_tc from NewImage, absolute (#640)
     window_consumed_mark_milli: int | None = None  # b_{name}_wtc (#640)
     grant_count: int | None = None  # b_{name}_gc, shard's grant sizing (ADR-145)
+    soft: bool = False  # b_{name}_soft, metered but never enforced (#467)
 
 
 @dataclass
@@ -593,6 +599,7 @@ def _parse_bucket_record(record: dict[str, Any]) -> ParsedBucketRecord | None:
             tc_milli=int(new_tc_raw),
             window_consumed_mark_milli=int(wtc_raw) if wtc_raw is not None else None,
             grant_count=int(gc_raw) if gc_raw is not None else None,
+            soft=bool(new_image.get(bucket_attr(limit_name, BUCKET_FIELD_SOFT), {}).get("BOOL")),
         )
 
     if not limits:
@@ -656,6 +663,9 @@ def extract_deltas(record: dict[str, Any]) -> list[ConsumptionDelta]:
                 limit_name=limit_name,
                 tokens_delta=info.tc_delta,
                 timestamp_ms=parsed.rf_ms,
+                # The NewImage balance this record left, so the signal costs
+                # no read: a soft limit debited into debt (#467).
+                overdrawn=info.soft and info.tc_delta > 0 and info.tk_milli < 0,
             )
         )
 
@@ -2316,12 +2326,26 @@ def update_snapshot(
     # - Atomically increments counters (ADD for limit consumption and event count)
     #
     # See: https://github.com/zeroae/zae-limiter/issues/168
+    expr_names = {
+        "#resource": "resource",
+        "#window": "window",
+        "#window_start": "window_start",
+        "#limit_name": delta.limit_name,
+        "#total_events": "total_events",
+        "#ttl": "ttl",
+    }
+    add_clause = "#limit_name :delta, #total_events :one"
+    if delta.overdrawn:
+        # The overdraw signal (#467, ADR-151 section 9): one more ADD term in
+        # the same update, so it costs no extra write.
+        expr_names["#overdrawn"] = f"{delta.limit_name}{OVERDRAWN_COUNTER_SUFFIX}"
+        add_clause += ", #overdrawn :one"
     table.update_item(
         Key={
             "PK": pk_entity(delta.namespace_id, delta.entity_id),
             "SK": sk_usage(delta.resource, window_key),
         },
-        UpdateExpression="""
+        UpdateExpression=f"""
             SET entity_id = :entity_id,
                 #resource = if_not_exists(#resource, :resource),
                 #window = if_not_exists(#window, :window),
@@ -2331,17 +2355,9 @@ def update_snapshot(
                 GSI4PK = if_not_exists(GSI4PK, :gsi4pk),
                 GSI4SK = if_not_exists(GSI4SK, :gsi4sk),
                 #ttl = if_not_exists(#ttl, :ttl)
-            ADD #limit_name :delta,
-                #total_events :one
+            ADD {add_clause}
         """,
-        ExpressionAttributeNames={
-            "#resource": "resource",
-            "#window": "window",
-            "#window_start": "window_start",
-            "#limit_name": delta.limit_name,
-            "#total_events": "total_events",
-            "#ttl": "ttl",
-        },
+        ExpressionAttributeNames=expr_names,
         ExpressionAttributeValues={
             ":entity_id": delta.entity_id,
             ":resource": delta.resource,
