@@ -24,6 +24,12 @@ The operations and how each is driven — every one through the real path:
   already exist (the #633 case); only for seeds that start without it.
 - **next period** — the frozen clock advanced past the next reset: midnight
   for the calendar quota, the window's end for the session quota.
+- **mixed lease** (ADR-148) — about a third of the spends also debit a second,
+  rate-limited resource in the same ``acquire(..., also=...)``, and a tenth of
+  those ask that resource for more than it holds, so the quota's part is
+  refunded (fast path) or its planned move committed with nothing consumed
+  (slow path) because *another* resource rejected. Drawn from a second RNG so
+  the original sequences are unchanged.
 
 Not covered here: the aggregator (its Path 2 clone and refill have their own
 tests in the processor suite), concurrent writers (stepped race tests in
@@ -61,6 +67,9 @@ DAY_MS = 86_400_000
 SESSION = timedelta(hours=5)
 SESSION_MS = 5 * 3_600_000
 RPM = Limit.per_minute("rpm", 10_000_000)
+# The second resource of a mixed lease (ADR-148): rate-limited, unsharded.
+OTHER = "other"
+OTHER_RPM = Limit.per_minute("rpm", 1_000)
 
 QUOTAS = {
     "calendar": (Limit.quota("q", C, cron="0 0 * * *"), DAY_MS),
@@ -169,8 +178,11 @@ async def run_fuzz(limiter, seed: int, kind: str) -> None:
     model = QuotaModel(C, rule="NEW")
     eid = f"fuzz-{kind}-{seed}"
 
+    mix = random.Random(seed + 1_000_000)  # the mixed-lease draws, apart from `rng`
+
     quota_on = rng.random() < 0.5
     await limiter.set_limits(eid, [RPM, quota] if quota_on else [RPM], resource=RESOURCE)
+    await limiter.set_limits(eid, [OTHER_RPM], resource=OTHER)
     # Shard 0 must exist before anything can double it.
     async with slow.acquire(eid, RESOURCE, {"rpm": 1}):
         pass
@@ -199,17 +211,21 @@ async def run_fuzz(limiter, seed: int, kind: str) -> None:
             amount = rng.choice([1, 3, 10, 40, 100, 300])
             lim = fast if rng.random() < 0.5 else slow
             consume = {quota.name: amount} if quota_on else {"rpm": 1}
+            also = None
+            if mix.random() < 0.35:
+                also = {OTHER: {"rpm": 5_000 if mix.random() < 0.1 else 1}}
             ok = True
             with drawn(shard, rng):
                 try:
-                    async with lim.acquire(eid, RESOURCE, consume):
+                    async with lim.acquire(eid, RESOURCE, consume, also=also):
                         pass
                 except RateLimitExceeded:
                     ok = False
             if quota_on:
                 admitted += amount if ok else 0
                 model.spend(shard, amount)
-            trace.append(f"spend({shard},{amount},{'fast' if lim is fast else 'slow'})={ok}")
+            path = "fast" if lim is fast else "slow"
+            trace.append(f"spend({shard},{amount},{path},also={also})={ok}")
         now[0] += 1  # every op at its own instant; never across a boundary
 
         assert model.accounted() == C, (seed, trace)
