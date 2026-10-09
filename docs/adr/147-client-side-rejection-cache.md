@@ -1,6 +1,6 @@
 # ADR-147: Reject from the last bucket state seen, never admit from it
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-10-06
 **Issue:** [#695](https://github.com/zeroae/zae-limiter/issues/695)
 **Related:** [ADR-134](134-random-shard-selection.md), [ADR-146](146-per-resource-cascade-policy.md), [#315](https://github.com/zeroae/zae-limiter/issues/315)
@@ -29,7 +29,11 @@ limiter must raise `RateLimitExceeded` without a DynamoDB call when that state, 
 to now with the fast path's own refill arithmetic, cannot cover a limit declared in
 `consume` on every shard not known to have room. The cache must never be the basis of an
 admission: it may only reject, or steer which shard a conditional write targets; every
-admission is decided by DynamoDB exactly as without the cache. For a child whose
+admission is decided by DynamoDB exactly as without the cache. A steered draw is still a
+uniform random draw, inside `select_shard()`, over the shards not known short (ADR-134), and
+the slow path is still handed the shard actually written (ADR-133). The cache is an optional
+part of a backend: the limiter looks for it by attribute (`_rejection_cache`), and a backend
+without one never rejects locally. For a child whose
 own bucket shows it cascades on the resource, the same rule must apply to the parent's
 shards, and the child itself may be rejected locally only while a trusted parent state
 shows the parent is not disabled.
@@ -59,6 +63,9 @@ are specified in the design document.
 - The cache is per process; N processes each pay one real write per TTL. When each
   process sees a hot entity less often than once per TTL, it saves nothing.
 - A local rejection reports a projected state, not a fresh image.
+- A resource or parent disabled by another process can surface here as a 429
+  (`RateLimitExceeded`) instead of ADR-125's 403 (`ResourceDisabled`) for up to
+  `rejection_cache_ttl`. It is never an admission, so the kill switch holds.
 - A client that retries a 429 immediately is no longer slowed by a DynamoDB round trip
   per retry, so it can spin on CPU (measured: 509 requests in 3 s on v0.15.1, ~47,000
   with the cache; same admissions, far fewer writes). Callers should honour

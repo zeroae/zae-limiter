@@ -1775,7 +1775,7 @@ See [ADR-125](docs/adr/125-resource-disable.md) for the full design and alternat
 **ADR-125 walk** — entity(resource) → entity(`_default_`) → resource — and, when no level sets
 it, falls back to the entity's META `cascade` (`models.effective_cascade`), so a deployment that
 never sets a policy behaves exactly as before. An entity with no `parent_id` never cascades. Not
-supported on system config. Proposed until v0.16.0 ships.
+supported on system config.
 
 - **No extra reads.** The slow path records the policy from the config fetch it already makes
   (`resolve_limits(cascade_out=...)` → `resolve_cascade_from_fetched`), or answers it with
