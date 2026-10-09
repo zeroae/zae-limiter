@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791550526453,
+  "lastUpdate": 1791563930900,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -32999,6 +32999,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.076019547580167",
             "extra": "mean: 1.114088208000004 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f5d2ee230fedabfeecc91dff14529a11472c79aa",
+          "message": "👷 ci(release): refuse a lightweight release tag, and document annotated tags (#711)\n\n## Why\n\nv0.14.0 through v0.15.1 were tagged with annotated tags, by hand. But\nevery written instruction said `git tag vX.Y.Z`, which makes a\n**lightweight** tag:\n\n- `.claude/skills/pr/release-template.md`\n- `.claude/skills/release-prep/SKILL.md`\n- `CLAUDE.md`\n\nThe template also said to tag the **merge commit**, not the release-prep\ncommit the AWS e2e run covered. Following those instructions, v0.16.0\nshipped as a lightweight tag, and nothing caught it.\n\n## Changes\n\n| Where | Change |\n|-------|--------|\n| `.github/workflows/release.yml` | New `verify-tag` job, and `build`\nnow `needs: verify-tag`. It fetches the pushed tag and fails unless `git\ncat-file -t` says `tag` (an annotated tag object). This runs **before**\nanything is built or published. |\n| `.claude/skills/pr/release-template.md` | Now says `git tag -a vX.Y.Z\n<release-prep-commit> -m ...`, and explains why the tag goes on the\nrelease-prep commit |\n| `.claude/skills/release-prep/SKILL.md` | Same instruction |\n| `CLAUDE.md` (Releasing) | Same instruction |\n\n**v0.16.0 stays as it is.** Its GitHub release and PyPI upload already\npoint at that tag.\n\n## Verification\n\n- [x] The guard's test (`git cat-file -t`) returns `commit` for\n`v0.16.0` (refused) and `tag` for `v0.15.1` (accepted)\n- [x] The workflow YAML parses, and `build` depends on `verify-tag`\n- [ ] The guard first runs for real on the next release tag\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01ASEDQdfdZZeqM2KMM1WTMo",
+          "timestamp": "2026-10-09T12:33:50-04:00",
+          "tree_id": "837689c7dc3abafba6bdb0ab3c7c6cf8fb60c3f0",
+          "url": "https://github.com/zeroae/zae-limiter/commit/f5d2ee230fedabfeecc91dff14529a11472c79aa"
+        },
+        "date": 1791563929796,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 24.399518456953803,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00703877508629558",
+            "extra": "mean: 40.984415400009766 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 17.476992522427548,
+            "unit": "iter/sec",
+            "range": "stddev: 0.012205577224382421",
+            "extra": "mean: 57.21808249999185 msec\nrounds: 10"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 39.643419423399735,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0036248785397871523",
+            "extra": "mean: 25.224867444450183 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 38.24359695054412,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0054351650452539365",
+            "extra": "mean: 26.14816805263325 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 21.803580871856223,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007840670640131376",
+            "extra": "mean: 45.86402600000383 msec\nrounds: 14"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 77.76082251040602,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0023189116659665695",
+            "extra": "mean: 12.859946277782482 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 25.85238197398945,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004896417030191225",
+            "extra": "mean: 38.68115522221968 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 25.153627772954568,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00965989509707178",
+            "extra": "mean: 39.755696833329544 msec\nrounds: 18"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 26.306180979555716,
+            "unit": "iter/sec",
+            "range": "stddev: 0.005105381481778101",
+            "extra": "mean: 38.013879733328324 msec\nrounds: 30"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 27.196318350982892,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004264691850461824",
+            "extra": "mean: 36.769682833333185 msec\nrounds: 12"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 27.29136414296886,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004843030528171761",
+            "extra": "mean: 36.64162754054316 msec\nrounds: 37"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 24.61911932821316,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00872785469128527",
+            "extra": "mean: 40.618837199997415 msec\nrounds: 25"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 28.31727720590453,
+            "unit": "iter/sec",
+            "range": "stddev: 0.004692735012418927",
+            "extra": "mean: 35.31412969999413 msec\nrounds: 30"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.9304432181956621,
+            "unit": "iter/sec",
+            "range": "stddev: 0.001541141137166666",
+            "extra": "mean: 518.0157544000053 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.934769964317768,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0010520192640211792",
+            "extra": "mean: 516.8573104000075 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9396075583693907,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007201032370147854",
+            "extra": "mean: 1.0642741122000074 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.9193973836842171,
+            "unit": "iter/sec",
+            "range": "stddev: 0.012227645398191182",
+            "extra": "mean: 1.0876689641999975 sec\nrounds: 5"
           }
         ]
       }
