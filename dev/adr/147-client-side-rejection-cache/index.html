@@ -3824,7 +3824,7 @@
 
 
 <h1 id="adr-147-reject-from-the-last-bucket-state-seen-never-admit-from-it">ADR-147: Reject from the last bucket state seen, never admit from it<a class="headerlink" href="#adr-147-reject-from-the-last-bucket-state-seen-never-admit-from-it" title="Permanent link">&para;</a></h1>
-<p><strong>Status:</strong> Proposed
+<p><strong>Status:</strong> Accepted
 <strong>Date:</strong> 2026-10-06
 <strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/695">#695</a>
 <strong>Related:</strong> <a href="../134-random-shard-selection/">ADR-134</a>, <a href="../146-per-resource-cascade-policy/">ADR-146</a>, <a href="https://github.com/zeroae/zae-limiter/issues/315">#315</a>
@@ -3848,7 +3848,11 @@ limiter must raise <code>RateLimitExceeded</code> without a DynamoDB call when t
 to now with the fast path's own refill arithmetic, cannot cover a limit declared in
 <code>consume</code> on every shard not known to have room. The cache must never be the basis of an
 admission: it may only reject, or steer which shard a conditional write targets; every
-admission is decided by DynamoDB exactly as without the cache. For a child whose
+admission is decided by DynamoDB exactly as without the cache. A steered draw is still a
+uniform random draw, inside <code>select_shard()</code>, over the shards not known short (ADR-134), and
+the slow path is still handed the shard actually written (ADR-133). The cache is an optional
+part of a backend: the limiter looks for it by attribute (<code>_rejection_cache</code>), and a backend
+without one never rejects locally. For a child whose
 own bucket shows it cascades on the resource, the same rule must apply to the parent's
 shards, and the child itself may be rejected locally only while a trusted parent state
 shows the parent is not disabled.</p>
@@ -3874,6 +3878,9 @@ are specified in the design document.</p>
 - The cache is per process; N processes each pay one real write per TTL. When each
   process sees a hot entity less often than once per TTL, it saves nothing.
 - A local rejection reports a projected state, not a fresh image.
+- A resource or parent disabled by another process can surface here as a 429
+  (<code>RateLimitExceeded</code>) instead of ADR-125's 403 (<code>ResourceDisabled</code>) for up to
+  <code>rejection_cache_ttl</code>. It is never an admission, so the kill switch holds.
 - A client that retries a 429 immediately is no longer slowed by a DynamoDB round trip
   per retry, so it can spin on CPU (measured: 509 requests in 3 s on v0.15.1, ~47,000
   with the cache; same admissions, far fewer writes). Callers should honour

@@ -3760,8 +3760,15 @@
 
 
 <h1 id="adr-112-move-cascade-from-per-call-to-per-entity-configuration">ADR-112: Move Cascade from Per-Call to Per-Entity Configuration<a class="headerlink" href="#adr-112-move-cascade-from-per-call-to-per-entity-configuration" title="Permanent link">&para;</a></h1>
-<p><strong>Status:</strong> Accepted
+<p><strong>Status:</strong> Accepted (cascade-source clause partially superseded by <a href="../146-per-resource-cascade-policy/">ADR-146</a>)
 <strong>Date:</strong> 2026-01-25</p>
+<blockquote>
+<p><strong>Partially superseded by <a href="../146-per-resource-cascade-policy/">ADR-146</a>:</strong> whether
+<code>_do_acquire()</code> includes the parent is decided per (entity, resource) by a resolved
+policy; the entity's META <code>cascade</code> below is the default when no level sets one. The
+rest of this record (no per-call parameter, the child decides, the reserved-word alias)
+stands.</p>
+</blockquote>
 <h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
 <p>Cascade mode controls whether <code>acquire()</code> consumes tokens from both a child entity and its parent. Currently cascade is a per-call boolean parameter on <code>acquire(cascade=True)</code>, requiring callers to remember to pass it on every call. This is error-prone: forgetting <code>cascade=True</code> silently skips parent enforcement, and different call sites for the same entity may pass inconsistent values.</p>
 <p>Cascade is a property of the entity's relationship to its parent — it describes <em>how</em> the child participates in the hierarchy, not a per-request decision. Storing it on the entity makes the behavior consistent and eliminates a class of caller errors.</p>

@@ -3534,17 +3534,6 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#cost" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Cost
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#consequences" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3594,10 +3583,11 @@
 
 
 <h1 id="adr-146-per-resource-cascade-policy-resolved-like-disabled">ADR-146: Per-resource cascade policy, resolved like <code>disabled</code><a class="headerlink" href="#adr-146-per-resource-cascade-policy-resolved-like-disabled" title="Permanent link">&para;</a></h1>
-<p><strong>Status:</strong> Proposed
+<p><strong>Status:</strong> Accepted
 <strong>Date:</strong> 2026-10-05
 <strong>Issue:</strong> <a href="https://github.com/zeroae/zae-limiter/issues/676">#676</a>
-<strong>Related:</strong> <a href="../125-resource-disable/">ADR-125</a>, <a href="../141-reset-after-version-gate/">ADR-141</a>, <a href="https://github.com/zeroae/zae-limiter/issues/674">#674</a>, <a href="https://github.com/zeroae/zae-limiter/issues/675">#675</a>, <a href="https://github.com/zeroae/zae-limiter/issues/677">#677</a>, <a href="https://github.com/zeroae/zae-limiter/issues/684">#684</a>, <a href="https://github.com/zeroae/zae-limiter/issues/686">#686</a></p>
+<strong>Supersedes:</strong> <a href="../112-cascade-per-entity/">ADR-112</a> in part (where the cascade decision comes from)
+<strong>Related:</strong> <a href="../112-cascade-per-entity/">ADR-112</a>, <a href="../125-resource-disable/">ADR-125</a>, <a href="../141-reset-after-version-gate/">ADR-141</a>, <a href="https://github.com/zeroae/zae-limiter/issues/674">#674</a>, <a href="https://github.com/zeroae/zae-limiter/issues/675">#675</a>, <a href="https://github.com/zeroae/zae-limiter/issues/677">#677</a>, <a href="https://github.com/zeroae/zae-limiter/issues/684">#684</a>, <a href="https://github.com/zeroae/zae-limiter/issues/686">#686</a></p>
 <h2 id="context">Context<a class="headerlink" href="#context" title="Permanent link">&para;</a></h2>
 <p><code>cascade</code> is set once per entity at <code>create_entity()</code>, stored on the entity's META record,
 copied onto every bucket item the entity owns, and cached per entity in
@@ -3638,141 +3628,24 @@ decides with no config read, and stamped eagerly by a fan-out when it changes.</
 <li>The aggregator never reads <code>cascade</code>; its Path 2 clone copies the item verbatim.</li>
 </ul>
 <h2 id="decision">Decision<a class="headerlink" href="#decision" title="Permanent link">&para;</a></h2>
-<p>The decisions below were agreed with the owner on 2026-10-04 during the v0.16.0
-planning for #674. This ADR is their first written record.</p>
-<ol>
-<li>
-<p><strong>Store a tri-state <code>cascade</code> on config items</strong>, beside <code>disabled</code>: on resource config
-   (<code>{ns}/RESOURCE#{r}</code>, <code>#CONFIG</code>) and entity config (<code>{ns}/ENTITY#{id}</code>,
-   <code>#CONFIG#{resource}</code> and <code>#CONFIG#_default_</code>). Absent means inherit; <code>true</code> / <code>false</code>
-   are explicit. Not supported on system config, matching ADR-125.</p>
-</li>
-<li>
-<p><strong>Resolve it by the ADR-125 walk</strong>: entity(resource) → entity(<code>_default_</code>) → resource,
-   first explicit value wins, independent of which level supplies the limits. <strong>Absent
-   everywhere ⇒ the entity's META <code>cascade</code></strong>, so every existing deployment behaves
-   exactly as before. An entity with no <code>parent_id</code> never cascades, whatever the policy.
-   The slow path resolves it from the items <code>resolve_disabled()</code> already reads: <strong>0 extra
-   RCU</strong>.</p>
-</li>
-<li>
-<p><strong>The bucket item's <code>cascade</code> becomes the effective policy for (entity, resource).</strong>
-   The fast path keeps reading it from the item and stays <strong>0 RCU</strong>.</p>
-</li>
-<li>
-<p><strong>The cache holds cascade per (entity, resource), and the item overrules it</strong>
-   (owner's "Option A"). The per-entity entry keeps <code>parent_id</code>, the shard counts and
-   the entity-wide flag; a separate map per (entity, resource), learned from the entity's
-   own item stamp, decides the warm path, with the entity-wide flag as the guess for a
-   resource not yet seen. On the warm path:</p>
-</li>
-<li>cache says cascade, the child's returned item says not → refund the parent's debit
-     (1 WCU) and correct the cache;</li>
-<li>
-<p>cache says no cascade, the item says cascade → issue the parent write after the child
-     (exactly the cold path today) and correct the cache.
-   A mismatch happens only after a policy change, at most once per (process, entity,
-   resource). <strong>Only a stamp carrying <code>parent_id</code> is a policy</strong>: the owner stamp always
-   writes both, so <code>cascade=False</code> with no <code>parent_id</code> is a bucket an older version
-   created for a parent from its child's view (#684). For that one the cache's answer
-   stands, and the stamp teaches the cache nothing.</p>
-</li>
-<li>
-<p><strong>Stamps self-heal.</strong> Every slow-path write — the create <code>Put</code> and the rf-locked normal
-   write (the #684 owner stamp, <code>build_composite_normal(owner=...)</code>) — stamps the
-   <strong>resolved</strong> policy and the owner's <code>parent_id</code>. A bucket the fan-out missed is
-   corrected on its next slow pass. The one exception is the parent-only fallback
-   (<code>_try_parent_only_acquire</code>), which never ran the disable walk: it stamps the
-   parent's policy only when its config fetch read fresh, and otherwise leaves the stamp
-   alone rather than pay a read for it.</p>
-</li>
-<li>
-<p><strong>A change fans out eagerly</strong>, through the ADR-125 discovery (GSI2 for a resource,
-   GSI3 for an entity, two passes). Each discovered bucket is stamped with the policy
-   resolved <strong>for that bucket's own entity and resource</strong>, so a resource-level change
-   never clobbers an entity override, and a clear restamps whatever level now decides.
-   A bucket that only ever takes the fast path is reached only by this fan-out, which is
-   why it is eager and not left to self-healing. The provisioner mirrors it
-   (<code>fanout_cascade</code> in <code>zae_limiter_provisioner/fanout.py</code>). A manifest apply restamps
-   only the levels whose stored policy actually changed, read from the config write's own
-   <code>ALL_OLD</code> image at no extra read — unlike <code>disabled</code>, which fans out every declared
-   level on every apply.</p>
-</li>
-<li>
-<p><strong>Version gate</strong>, reusing the ADR-141 machinery:</p>
-</li>
-<li><strong>Writer gate:</strong> writing any cascade policy (setter keyword, dedicated method, or the
-     provisioner) is refused unless the version record's <code>lambda_version</code> is
-     <code>&gt;= 0.16.0</code> or equals the writer's own version. A pre-0.16 provisioner rebuilds config
-     items from the manifest without <code>cascade</code>, so its next apply would erase the policy
-     silently.</li>
-<li>
-<p><strong>Ratchet:</strong> an admitted write raises <code>client_min_version</code> to <code>0.16.0</code>. A v0.15
-     client decides cascade from META and stamps it on create, which would undo the
-     policy; v0.15 already refuses to open a stack whose minimum it is below.</p>
-</li>
-<li>
-<p><strong>Surfaces — both a setter keyword and dedicated methods:</strong></p>
-</li>
-<li><code>set_resource_defaults(..., cascade=)</code> and <code>set_limits(..., cascade=)</code>, with the
-     ADR-125 "preserve stored value" sentinel; passing it explicitly fans out.</li>
-<li>Dedicated methods and CLI commands mirroring disable/enable/clear:
-     <code>set_resource_cascade(resource, bool)</code> / <code>clear_resource_cascade(resource)</code> and
-     <code>set_entity_cascade(entity_id, bool, resource=None)</code> /
-     <code>clear_entity_cascade(entity_id, resource=None)</code>; CLI
-     <code>resource set-cascade|clear-cascade</code> and <code>entity set-cascade|clear-cascade</code>.</li>
-<li>Manifest <code>cascade:</code> on <code>resources.&lt;name&gt;</code> and <code>entities.&lt;id&gt;.resources.&lt;name&gt;</code>,
-     round-tripped through <code>Custom::ZaeLimiterLimits</code> as a <code>Cascade</code> property. The
-     manifest owns the policy for every item it declares: omitting <code>cascade</code> clears it on
-     the next apply, as for <code>disabled</code> (owner decision). <code>cascade</code> on <code>system</code> is rejected
-     with an error rather than ignored.</li>
-<li>
-<p><code>get-defaults</code> / <code>get-limits</code> show an explicit policy, like <code>Status: DISABLED</code>.</p>
-</li>
-<li>
-<p><strong><code>limits plan</code> warns</strong> when a manifest sets <code>cascade: true</code> on a resource that has
-   <strong>no entity entries</strong> for it: the parent would then be limited by the per-user
-   resource defaults, which is almost always a mistake.</p>
-</li>
-<li>
-<p><strong>#677 (move an entity to a new parent) reuses the owner-stamp writer</strong> from item 5
-    to restamp <code>parent_id</code>, so one write path owns both attributes on bucket items.</p>
-</li>
-</ol>
-<p>With #675 (<code>acquire(..., also=...)</code>), each resource in the lease cascades per its own
-resolved policy. A child's lease still covers child and parent only; the grandparent is
-the parent's own acquires' business (#686).</p>
-<h2 id="cost">Cost<a class="headerlink" href="#cost" title="Permanent link">&para;</a></h2>
-<table>
-<thead>
-<tr>
-<th>Path</th>
-<th>Change</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Fast path</td>
-<td>None: 0 RCU, reads the item stamp</td>
-</tr>
-<tr>
-<td>Slow path</td>
-<td>None: resolved from the config items <code>resolve_disabled()</code> already reads</td>
-</tr>
-<tr>
-<td>Warm path after a policy change</td>
-<td>+1 WCU refund or one extra parent write, once per (process, entity, resource)</td>
-</tr>
-<tr>
-<td>Setting a policy</td>
-<td>O(buckets in scope) writes, admin path, same as <code>disable_resource()</code>; +1 consistent RCU for the gate read</td>
-</tr>
-<tr>
-<td>LLM case (#674)</td>
-<td>The <code>llm</code> budget stops cascading: <strong>one parent write saved per call</strong></td>
-</tr>
-</tbody>
-</table>
+<p><code>cascade</code> must be decided per (entity, resource): a tri-state policy on resource and entity
+config items (absent inherits; not on system config) resolved by the ADR-125 walk, falling
+back to the entity's META <code>cascade</code> when no level sets one, and never cascading for an entity
+without a parent. The effective policy must be stamped on every bucket item by every
+slow-path write and by an eager fan-out on each change (resolving each bucket's own entity
+and resource from strongly consistent reads), and the fast path must decide from that stamp
+with no config read. Writing a policy must pass the ADR-141 version gate at 0.16.0 and raise
+<code>client_min_version</code> to at least 0.16.0, capped at a development writer's own build and never
+lowering it. The repository methods it adds are required members of <code>RepositoryProtocol</code>, not
+a capability-gated option (ADR-109).</p>
+<p><strong>Partially supersedes ADR-112.</strong> Whether the parent is included is decided per
+(entity, resource) by the resolved policy; ADR-112's META <code>cascade</code> remains the default when
+no level sets one. ADR-112's other decisions stand: no per-call parameter, the child decides,
+and <code>cascade</code> is aliased as a reserved word.</p>
+<p>The decisions in detail — cache, self-healing stamps, fan-out, gate, surfaces, the
+<code>limits plan</code> warning, #677 — and the cost table are in
+<code>docs/plans/2026-10-05-cascade-policy-design.md</code>. They were agreed with the owner on
+2026-10-04 during the v0.16.0 planning for #674.</p>
 <h2 id="consequences">Consequences<a class="headerlink" href="#consequences" title="Permanent link">&para;</a></h2>
 <p><strong>Positive</strong>
 - Cascade can differ per resource for one entity, with no new mechanism: the same
