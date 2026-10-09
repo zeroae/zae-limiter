@@ -17,8 +17,8 @@ Each zae-limiter operation has specific DynamoDB capacity costs. Use this table 
 | `acquire()` speculative success + cascade (parallel) | 0 | 2 | Concurrent child + parent via entity cache (issue #318) |
 | `acquire()` speculative fast rejection | 0 | 1 | Exhausted bucket; the failed conditional write is charged 1 WCU, its ALL_OLD image is free |
 | `acquire()` repeat rejection inside the rejection-cache TTL | 0 | 0 | No DynamoDB call: the last state seen already shows every shard short (ADR-147, see [Rejection Cache](#rejection-cache)) |
-| `acquire()` speculative fallback (non-cascade) | 1 | 2 | Failed speculative (1 WCU) + normal path (1 RCU + 1 WCU) |
-| `acquire()` speculative cascade fallback (parent refill helps) | 0.5 | 3 | Child stays consumed; parent-only read (0.5 RCU) + single-item write (1 WCU) |
+| `acquire()` speculative fallback (non-cascade) | 2.5 | 2 | Failed speculative (1 WCU) + normal path: META and bucket read (1 RCU), the uncached disabled walk over up to 3 config items (1.5 RCU), the write (1 WCU) |
+| `acquire()` speculative cascade fallback (parent refill helps) | 1 | 3 | Child stays consumed; parent-only read of the parent's bucket and META (1 RCU, #684) + single-item write (1 WCU) |
 | `acquire()` retry (contention) | 0 | 1 | ADD-based writes don't require re-read |
 | `acquire()` with adjustments | 0 | +1 per entity | Independent writes via `write_each()` (1 WCU each) |
 | `acquire()` rollback (on exception) | 0 | +1 per entity | Independent compensating writes (1 WCU each) |
@@ -839,12 +839,12 @@ The `ReturnValuesOnConditionCheckFailure=ALL_OLD` response provides the current 
 | **Speculative success** (non-cascade) | 1 | 0 | 1 | $0.625 |
 | **Speculative fast rejection** (exhausted) | 1 | 0 | 1 | $0.625 |
 | **Repeat rejection** (rejection cache, inside the TTL) | 0 | 0 | 0 | $0.00 |
-| **Speculative fallback** (refill helps) | 3 | 1 | 2 | $1.375 |
-| **Speculative fallback** (schedule boundary) | 3 | 1 | 2 | $1.375 |
+| **Speculative fallback** (refill helps) | 3 | 2.5 | 2 | $1.5625 |
+| **Speculative fallback** (schedule boundary) | 3 | 2.5 | 2 | $1.5625 |
 | **Normal path** (cascade) | 3 | 2 | 4 | $1.75 |
 | **Speculative success** (cascade, sequential) | 2 | 0 | 2 | $1.25 |
 | **Speculative success** (cascade, parallel) | 1 | 0 | 2 | $1.25 |
-| **Speculative cascade fallback** (parent refill helps) | 2+ | 0.5 | 3 | $2.00 |
+| **Speculative cascade fallback** (parent refill helps) | 2+ | 1 | 3 | $2.00 |
 | **Speculative cascade fast rejection** (parent exhausted) | 1 | 0 | 3 | $1.875 |
 | **Repeat cascade rejection** (parent known short, rejection cache) | 0 | 0 | 0 | $0.00 |
 
@@ -885,18 +885,38 @@ arithmetic as a fast rejection:
 
 The cache only rejects; admission always needs a successful write, so it cannot over-admit. A
 state is not used once it is older than `rejection_cache_ttl`, past a schedule boundary (`vu`)
-or its bucket TTL, stamped disabled, or when `acquire()` passes `limits=`. A cascading bucket is
-never rejected locally (the parent's answer comes from the server). Refunds, releases and
+or its bucket TTL, stamped disabled, or when `acquire()` passes `limits=`. A cascading child is
+rejected locally only when its own cached state says it cascades and the parent's cached shards
+are all short too, or on its own shortfall while a trusted parent state shows the parent is not
+disabled. Refunds, releases and
 rollbacks in this process forget the shard, and every admin write through the repository, or
 `invalidate_config_cache()`, clears the cache.
 
-**Example:** a client looping on 429s at 1,000 req/s from one process drops from ~1,000 WCU/s to
-~1 WCU/s — one real write per TTL to refresh the state.
+**Example:** a client looping on 429s at 1,000 req/s from one process drops from ~1,000 WCU/s of
+rejections to ~1 WCU/s — one real write per TTL to refresh the state. That is per process and
+counts rejections only: admissions still cost a write each, and N processes on the same hot entity
+pay N real writes per TTL. A process that sees an entity less often than once per TTL saves
+nothing, because its state has expired by the next request.
 
 **Trade-off:** for up to `rejection_cache_ttl` per process, a request can be rejected after
 tokens came back by a route this process cannot see: another process's refund, an admin change
 made elsewhere, or another process doubling the shard count. Each process pays its own real
 write per TTL.
+
+**Known behaviour, each bounded by `rejection_cache_ttl` in one process:**
+
+- A resource or parent **disabled by another process** can get a 429 here instead of
+  `ResourceDisabled` (403), until the cached state expires.
+- An entity **deleted by another process** can be rejected instead of admitted to a fresh bucket.
+- During a **DynamoDB outage**, a bucket seen exhausted in the last TTL raises
+  `RateLimitExceeded` rather than taking the `on_unavailable` path (stricter, not looser).
+- A client that **retries a 429 without waiting** spins on CPU: about 10,000 retries per second
+  against about 100 when every rejection went to DynamoDB. Other tasks keep running (#704); honour
+  `retry_after_seconds`.
+
+The cache is bounded at `rejection_cache_size` entries. Two per-process maps beside it are not
+bounded by it: the cascade-policy cache (one entry per entity and resource seen) and the entity
+cache (one per entity, as in earlier releases).
 
 ```python
 from zae_limiter import RateLimiter, Repository
