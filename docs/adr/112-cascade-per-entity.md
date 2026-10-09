@@ -1,7 +1,13 @@
 # ADR-112: Move Cascade from Per-Call to Per-Entity Configuration
 
-**Status:** Accepted
+**Status:** Accepted (cascade-source clause partially superseded by [ADR-146](146-per-resource-cascade-policy.md))
 **Date:** 2026-01-25
+
+> **Partially superseded by [ADR-146](146-per-resource-cascade-policy.md):** whether
+> `_do_acquire()` includes the parent is decided per (entity, resource) by a resolved
+> policy; the entity's META `cascade` below is the default when no level sets one. The
+> rest of this record (no per-call parameter, the child decides, the reserved-word alias)
+> stands.
 
 ## Context
 
