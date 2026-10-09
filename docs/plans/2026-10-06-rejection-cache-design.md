@@ -179,6 +179,9 @@ that record when a refund in this process landed between its read and its write
 | Admit | 0 RCU + 1 WCU | unchanged |
 | Client looping on 429s at 1,000 req/s, one process | ~1,000 WCU/s | **~1 WCU/s** (one real write per TTL) |
 
+The looping row is per process and counts rejections only: admissions still cost a write
+each, and N processes on one hot entity pay N real writes per TTL.
+
 Memory: one `BucketState` per entry, a few hundred bytes; ~a few MB at the default cap.
 
 ## Consequences
