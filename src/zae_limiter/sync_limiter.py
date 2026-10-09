@@ -64,6 +64,9 @@ from .sync_repository_protocol import SpeculativeFailureReason
 _UNSET: Any = object()
 logger = logging.getLogger(__name__)
 _ENTITY_CONFIG_SOURCES: frozenset[str] = frozenset({"entity", "entity_default"})
+MAX_ACQUIRE_RESOURCES = 16
+_MAX_TRANSACT_ITEMS = 100
+_SlowPart = tuple[str, dict[str, int], int | None, int | None, int | None]
 
 
 def _is_custom_config(config_source: str | None) -> bool:
@@ -590,6 +593,8 @@ class SyncRateLimiter:
         limits: list[Limit] | None = None,
         use_stored_limits: bool = False,
         on_unavailable: OnUnavailable | None = None,
+        *,
+        also: dict[str, dict[str, int]] | None = None,
     ) -> Iterator[SyncLease]:
         """
         Acquire rate limit capacity.
@@ -601,26 +606,48 @@ class SyncRateLimiter:
         entity creation time via ``create_entity(cascade=True)``. When enabled,
         acquire() automatically consumes from both the entity and its parent.
 
+        Several resources can be debited in one acquire, all or none
+        (ADR-148): name the extra ones in ``also``. Each resolves its own
+        limits, ``disabled`` flag, cascade policy, shards and quota grants
+        exactly as a single-resource acquire does. When any resource is
+        rejected, disabled or unavailable, every debit the acquire wrote is
+        refunded before the exception reaches the caller. The yielded lease
+        covers every resource: its own ``adjust()``, ``consume()``,
+        ``release()`` and ``consumed`` act on ``resource``, and
+        ``lease.resource(name)`` reaches each of the others.
+
         Args:
             entity_id: Entity to acquire capacity for
             resource: Resource being accessed (e.g., "gpt-4")
             consume: Amounts to consume by limit name
-            limits: Override stored config with explicit limits (optional)
+            limits: Override stored config with explicit limits (optional).
+                Cannot be combined with ``also``.
             use_stored_limits: DEPRECATED - limits are now always resolved from
                 stored config. This parameter will be removed in v1.0.
             on_unavailable: Override default on_unavailable behavior
+            also: Further resources to debit in the same acquire, mapping each
+                resource name to its amounts by limit name (optional). At most
+                ``MAX_ACQUIRE_RESOURCES - 1`` entries, none naming
+                ``resource``.
 
         Yields:
             SyncLease for managing additional consumption
 
         Raises:
-            RateLimitExceeded: If any limit would be exceeded
+            RateLimitExceeded: If any limit would be exceeded. With ``also``,
+                carries a status for every declared limit of every resource
+                the decision evaluated, each tagged with its resource.
+            ResourceDisabled: If the resource — or, with ``also``, any of the
+                resources — is disabled. Outranks ``RateLimitExceeded``.
             RateLimiterUnavailable: If DynamoDB unavailable and BLOCK
-            ValidationError: If no limits configured at any level
+            ValidationError: If no limits configured at any level, or ``also``
+                is invalid (a bad or repeated resource name, too many
+                resources, or combined with ``limits``)
             VersionMismatchError: If ``limits`` carries a ``reset_after`` limit
                 and the stack's Lambdas predate it (#638). Never subject to
                 ``on_unavailable``.
         """
+        parts = self._acquire_parts(resource, consume, limits, also)
         self._ensure_initialized()
         if use_stored_limits:
             warnings.warn(
@@ -638,7 +665,9 @@ class SyncRateLimiter:
             slow_path_shard: int | None = None
             slow_path_shard_count: int | None = None
             slow_path_parent_shard: int | None = None
-            if self._speculative_writes:
+            if len(parts) > 1:
+                lease = self._acquire_resources(entity_id, parts)
+            elif self._speculative_writes:
                 lease, slow_path_shard, slow_path_shard_count, slow_path_parent_shard = (
                     self._try_speculative_acquire(
                         entity_id=entity_id,
@@ -678,6 +707,7 @@ class SyncRateLimiter:
                     entity_id=entity_id,
                     resource=resource,
                 ) from e
+        lease._bind_resources(tuple((name for name, _amounts in parts)))
         try:
             yield lease
             lease._commit_adjustments()
@@ -691,6 +721,7 @@ class SyncRateLimiter:
         resource: str,
         consume: dict[str, int],
         use_rejection_cache: bool = True,
+        prechecked: tuple[frozenset[int], frozenset[int]] | None = None,
     ) -> tuple[SyncLease | None, int, int | None, int | None]:
         """Try the speculative fast path for acquire (issue #315).
 
@@ -711,6 +742,8 @@ class SyncRateLimiter:
 
         ``use_rejection_cache`` is False when the caller passed ``limits=``:
         the cached states describe the stored parameters, not an override.
+        ``prechecked`` is the ``(avoid, avoid_parent)`` answer of
+        :meth:`_rejection_precheck` taken by the caller, which then skips it.
 
         Raises:
             RateLimitExceeded: If the bucket is truly exhausted (refill
@@ -721,15 +754,10 @@ class SyncRateLimiter:
         now_ms = self._repository._now_ms()
         avoid: frozenset[int] = frozenset()
         avoid_parent: frozenset[int] = frozenset()
-        if use_rejection_cache:
-            try:
-                avoid = frozenset(self._known_short_shards(entity_id, resource, consume, now_ms)[0])
-            except RateLimitExceeded:
-                time.sleep(0)
-                raise
-            avoid_parent = frozenset(
-                self._known_short_parent_shards(entity_id, resource, consume, now_ms)
-            )
+        if prechecked is not None:
+            avoid, avoid_parent = prechecked
+        elif use_rejection_cache:
+            avoid, avoid_parent = self._rejection_precheck(entity_id, resource, consume, now_ms)
         if avoid_parent:
             result = self._repository.speculative_consume(
                 entity_id=entity_id,
@@ -895,6 +923,29 @@ class SyncRateLimiter:
         for entry in entries:
             entry._initial_consumed = entry.consumed
         return (lease, result.shard_id, result.shard_count, None)
+
+    def _rejection_precheck(
+        self, entity_id: str, resource: str, consume: dict[str, int], now_ms: int
+    ) -> tuple[frozenset[int], frozenset[int]]:
+        """Consult the rejection cache for one resource before any write (ADR-147).
+
+        Returns:
+            ``(avoid, avoid_parent)``: the child shards and the parent shards
+            the last state seen says cannot fit ``consume``.
+
+        Raises:
+            RateLimitExceeded: With no DynamoDB call, when the cache already
+                knows the server would reject.
+        """
+        try:
+            avoid = frozenset(self._known_short_shards(entity_id, resource, consume, now_ms)[0])
+        except RateLimitExceeded:
+            time.sleep(0)
+            raise
+        avoid_parent = frozenset(
+            self._known_short_parent_shards(entity_id, resource, consume, now_ms)
+        )
+        return (avoid, avoid_parent)
 
     def _handle_nested_parent_failure(
         self,
@@ -1803,6 +1854,280 @@ class SyncRateLimiter:
         except QuotaMoveLostError:
             pass
         return plan_and_commit(True)
+
+    @staticmethod
+    def _acquire_parts(
+        resource: str,
+        consume: dict[str, int],
+        limits: list[Limit] | None,
+        also: dict[str, dict[str, int]] | None,
+    ) -> list[tuple[str, dict[str, int]]]:
+        """The ``(resource, consume)`` parts of one acquire, primary first (ADR-148).
+
+        Validated before any I/O. An empty or absent ``also`` is a
+        single-resource acquire, on today's path.
+
+        Raises:
+            ValidationError: For a bad resource name, the primary resource
+                named in ``also``, more than ``MAX_ACQUIRE_RESOURCES``
+                resources, or ``also`` combined with ``limits``.
+        """
+        if not also:
+            return [(resource, consume)]
+        if limits is not None:
+            raise ValidationError(
+                "also",
+                ", ".join(also),
+                "cannot be combined with limits=; a limits override has no resource",
+            )
+        if 1 + len(also) > MAX_ACQUIRE_RESOURCES:
+            raise ValidationError(
+                "also",
+                ", ".join(also),
+                f"at most {MAX_ACQUIRE_RESOURCES} resources per acquire, got {1 + len(also)}",
+            )
+        validate_resource(resource)
+        for name in also:
+            validate_resource(name)
+        if resource in also:
+            raise ValidationError(
+                "also", resource, "names the primary resource; each resource appears once"
+            )
+        return [(resource, consume), *also.items()]
+
+    def _acquire_resources(
+        self, entity_id: str, parts: list[tuple[str, dict[str, int]]]
+    ) -> SyncLease:
+        """Debit several resources for one entity, all or none (ADR-148).
+
+        1. Every resource is checked against the rejection cache before any
+           write; one known short rejects with no DynamoDB call.
+        2. The fast path runs for every resource at once
+           (:meth:`_try_speculative_acquire`, unchanged: its own shard retry,
+           cascade write and parent refund).
+        3. Resources it admitted keep their debit (decision D3); the ones it
+           could not settle are planned and committed together in one
+           transaction (:meth:`_slow_acquire_resources`).
+        4. Any rejection, disable or error refunds every debit that landed
+           before it propagates.
+
+        Returns:
+            One committed lease covering every resource.
+        """
+        validate_identifier(entity_id, "entity_id")
+        landed: list[SyncLease] = []
+        slow_parts: list[_SlowPart] = []
+        if self._speculative_writes:
+            now_ms = self._repository._now_ms()
+            prechecks: list[tuple[str, dict[str, int], tuple[frozenset[int], frozenset[int]]]] = []
+            for resource, consume in parts:
+                prechecks.append(
+                    (
+                        resource,
+                        consume,
+                        self._rejection_precheck(entity_id, resource, consume, now_ms),
+                    )
+                )
+
+            def _attempt(
+                resource: str, consume: dict[str, int], avoid: tuple[frozenset[int], frozenset[int]]
+            ) -> tuple[SyncLease | None, int, int | None, int | None] | Exception:
+                try:
+                    return self._try_speculative_acquire(
+                        entity_id=entity_id, resource=resource, consume=consume, prechecked=avoid
+                    )
+                except Exception as exc:
+                    return exc
+
+            outcomes = self._run_in_executor(
+                *[
+                    lambda resource=resource, consume=consume, avoid=avoid: _attempt(
+                        resource, consume, avoid
+                    )
+                    for resource, consume, avoid in prechecks
+                ]
+            )
+            errors: list[Exception] = []
+            for (resource, consume), outcome in zip(parts, outcomes, strict=True):
+                if isinstance(outcome, Exception):
+                    errors.append(outcome)
+                    continue
+                part_lease, shard, shard_count, parent_shard = outcome
+                if part_lease is not None:
+                    landed.append(part_lease)
+                else:
+                    slow_parts.append((resource, consume, shard, shard_count, parent_shard))
+            if errors:
+                self._refund(landed)
+                raise self._combined_error(errors, landed)
+        else:
+            slow_parts = [(resource, consume, None, None, None) for resource, consume in parts]
+        if slow_parts:
+            try:
+                slow_lease, unknown = self._slow_acquire_resources(entity_id, slow_parts)
+            except RateLimitExceeded as exc:
+                self._refund(landed)
+                if not landed:
+                    raise
+                raise RateLimitExceeded(exc.statuses + self._admitted_statuses(landed)) from exc
+            except BaseException:
+                self._refund(landed)
+                raise
+            landed.append(slow_lease)
+        else:
+            unknown = {}
+        lease = SyncLease(
+            repository=self._repository,
+            entries=[entry for part in landed for entry in part.entries],
+            _unknown_keys=unknown.get(parts[0][0], frozenset()),
+            _unknown_keys_by_resource=unknown,
+        )
+        lease._initial_committed = True
+        return lease
+
+    def _slow_acquire_resources(
+        self, entity_id: str, slow_parts: list[_SlowPart]
+    ) -> tuple[SyncLease, dict[str, frozenset[str]]]:
+        """Plan the resources the fast path could not settle; commit them together.
+
+        Each part is planned by :meth:`_do_acquire`, as a single-resource slow
+        path would plan it, and the plans are committed in **one**
+        ``TransactWriteItems`` with their ADR-145 donor debits. A plan whose
+        items would exceed DynamoDB's limit is re-planned without moves (an
+        under-admission, never a failure); a lost move re-plans every part
+        once, then once more without moves, exactly as :meth:`_slow_acquire`.
+
+        When a part is rejected or disabled, the other parts' planned quota
+        moves are committed with nothing consumed (ADR-145 I5), and nothing
+        else is written.
+
+        Returns:
+            ``(lease, unknown)``: the committed lease, and each resource's
+            ``consume`` keys that named no configured limit (Issue #455).
+        """
+
+        def _plan(part: _SlowPart, disable_moves: bool) -> SyncLease | Exception:
+            resource, consume, shard, shard_count, parent_shard = part
+            try:
+                return self._do_acquire(
+                    entity_id=entity_id,
+                    resource=resource,
+                    limits_override=None,
+                    consume=consume,
+                    shard_id=shard,
+                    shard_count=shard_count,
+                    parent_shard_id=parent_shard,
+                    disable_moves=disable_moves,
+                )
+            except Exception as exc:
+                return exc
+
+        def plan_and_commit(disable_moves: bool) -> tuple[SyncLease, dict[str, frozenset[str]]]:
+            outcomes = self._run_in_executor(
+                *[lambda part=part: _plan(part, disable_moves) for part in slow_parts]
+            )
+            planned = [outcome for outcome in outcomes if isinstance(outcome, SyncLease)]
+            errors = [outcome for outcome in outcomes if not isinstance(outcome, SyncLease)]
+            if errors:
+                error = self._combined_error(errors, planned)
+                for plan in planned:
+                    if any(entry._donor_debit is not None for entry in plan.entries):
+                        self._commit_rejected_moves(plan.entries, plan._carriers)
+                raise error
+            if not disable_moves and self._transaction_items(planned) > _MAX_TRANSACT_ITEMS:
+                return plan_and_commit(True)
+            marks = [plan._cache_mark for plan in planned]
+            lease = SyncLease(
+                repository=self._repository,
+                entries=[entry for plan in planned for entry in plan.entries],
+                _carriers=[carrier for plan in planned for carrier in plan._carriers],
+                _cache_mark=None if None in marks else min(m for m in marks if m is not None),
+            )
+            lease._commit_initial()
+            unknown = {
+                part[0]: plan._unknown_keys for part, plan in zip(slow_parts, planned, strict=True)
+            }
+            return (lease, unknown)
+
+        try:
+            return plan_and_commit(False)
+        except QuotaMoveLostError:
+            pass
+        try:
+            return plan_and_commit(False)
+        except QuotaMoveLostError:
+            pass
+        return plan_and_commit(True)
+
+    @staticmethod
+    def _transaction_items(planned: list[SyncLease]) -> int:
+        """Items one commit of these plans writes: bucket items plus donor debits."""
+        buckets = {
+            (entry.entity_id, entry.resource, entry._shard_id)
+            for plan in planned
+            for entry in (*plan.entries, *plan._carriers)
+        }
+        donors = {
+            (entry.entity_id, entry.resource, entry._donor_debit.shard_id)
+            for plan in planned
+            for entry in plan.entries
+            if entry._donor_debit is not None
+        }
+        return len(buckets) + len(donors)
+
+    def _refund(self, leases: list[SyncLease]) -> None:
+        """Refund every debit these committed leases wrote, concurrently (ADR-148).
+
+        Best effort, like any rollback: a failed refund is logged, never
+        raised over the exception that caused it.
+        """
+        entries = [entry for lease in leases for entry in lease.entries]
+        if not entries:
+            return
+        refund = SyncLease(repository=self._repository, entries=entries)
+        refund._initial_committed = True
+        refund._rollback()
+
+    def _admitted_statuses(self, leases: list[SyncLease]) -> list[LimitStatus]:
+        """The passed statuses of resources admitted on the way to a rejection.
+
+        From each declared entry's state as admitted: the ``ALL_NEW`` image of
+        a fast-path write, or the planned state of a slow-path one.
+        """
+        now_ms = self._repository._now_ms()
+        return [
+            LimitStatus(
+                entity_id=entry.entity_id,
+                resource=entry.resource,
+                limit_name=entry.limit.name,
+                limit=entry.limit.per_shard(entry.state.report_shard_count, now_ms),
+                available=calculate_available(entry.state, now_ms),
+                requested=entry.consumed,
+                exceeded=False,
+                retry_after_seconds=0.0,
+                resets_at_ms=window_end_in_force(entry.limit, entry.state, now_ms),
+            )
+            for lease in leases
+            for entry in lease.entries
+            if entry._declared
+        ]
+
+    def _combined_error(self, errors: list[Exception], admitted: list[SyncLease]) -> Exception:
+        """The one exception a multi-resource acquire raises (ADR-148).
+
+        ``ResourceDisabled`` outranks ``RateLimitExceeded``, which outranks
+        anything else. Every rejection's statuses are combined with the
+        passed statuses of the resources admitted meanwhile, so
+        ``retry_after_seconds`` is the wait until every resource can admit.
+        """
+        for error in errors:
+            if isinstance(error, ResourceDisabled):
+                return error
+        rejections = [error for error in errors if isinstance(error, RateLimitExceeded)]
+        if rejections:
+            statuses = [status for error in rejections for status in error.statuses]
+            return RateLimitExceeded(statuses + self._admitted_statuses(admitted))
+        return errors[0]
 
     def _do_acquire(
         self,
