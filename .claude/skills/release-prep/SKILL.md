@@ -161,7 +161,9 @@ Provide a release readiness summary:
 ### Next Steps
 1. Close remaining issues (if any)
 2. Close narrative epic #X
-3. Create release tag: `git tag vX.Y.Z && git push origin vX.Y.Z`
+3. Create the release tag, annotated and on the release-prep commit (the AWS-tested tree), not
+   the merge commit: `git tag -a vX.Y.Z <release-prep-commit> -m "vX.Y.Z: <theme>" && git push origin vX.Y.Z`
+   (`release.yml` refuses a lightweight tag)
 ```
 
 ## Important Notes
