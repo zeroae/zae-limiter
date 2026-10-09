@@ -12,6 +12,7 @@ import time
 import warnings
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -64,6 +65,9 @@ from .sync_repository_protocol import SpeculativeFailureReason
 _UNSET: Any = object()
 logger = logging.getLogger(__name__)
 _ENTITY_CONFIG_SOURCES: frozenset[str] = frozenset({"entity", "entity_default"})
+_SOFT_FROM_OVERRIDE = "override"
+_SOFT_FROM_CONFIG = "config"
+_SOFT_FROM_ITEM = "item"
 
 
 def _is_custom_config(config_source: str | None) -> bool:
@@ -1556,6 +1560,30 @@ class SyncRateLimiter:
         candidates = [b for b in (param_ms, reset_ms, window_ms) if b is not None]
         return (min(candidates) if candidates else None, reset_ms)
 
+    def _soft_authority(
+        self,
+        entity_id: str,
+        resource: str,
+        limits_override: list[Limit] | None,
+        config_source: str,
+        fetched: dict[tuple[str, str], bool | None],
+    ) -> str:
+        """Which source decides each limit's soft-ness on this slow pass (#467).
+
+        ``_SOFT_FROM_OVERRIDE``: the caller passed ``acquire(limits=...)`` and
+        its limits are what this pass enforces. ``_SOFT_FROM_CONFIG``: the
+        config fetch read every deciding level fresh, so config is the
+        authority and the write re-stamps the item from it. ``_SOFT_FROM_ITEM``:
+        the config cache served the limits, so an existing limit is judged by
+        the item's own ``b_{name}_soft`` stamp — the one the fast path and every
+        fan-out keep current — and a created or seeded one by an uncached read.
+        """
+        if limits_override is not None:
+            return _SOFT_FROM_OVERRIDE
+        if self._repository.limits_read_fresh(entity_id, resource, config_source, fetched):
+            return _SOFT_FROM_CONFIG
+        return _SOFT_FROM_ITEM
+
     @staticmethod
     def _admit_limit(
         entity_id: str,
@@ -1670,6 +1698,9 @@ class SyncRateLimiter:
         parent_policy = self._repository.resolve_cascade_from_fetched(
             parent_id, resource, fetched_cascade
         )
+        parent_soft_authority = self._soft_authority(
+            parent_id, resource, None, parent_config_source, fetched_cascade
+        )
         parent_entity, parent_buckets = self._fetch_entity_and_buckets(
             parent_id, resource, parent_shard
         )
@@ -1685,6 +1716,10 @@ class SyncRateLimiter:
             existing.reset_sched = limit.reset_schedule
             stored_rsa = existing.reset_after_seconds
             existing.reset_after_seconds = limit.reset_after_seconds
+            if parent_soft_authority == _SOFT_FROM_CONFIG:
+                existing.soft = limit.soft
+            elif limit.soft != existing.soft:
+                limit = replace(limit, soft=existing.soft)
             original_tk = existing.tokens_milli
             original_rf = existing.last_refill_ms
             parent_new_ws = self._open_window_if_elapsed(limit, existing, now_ms)
@@ -1725,6 +1760,8 @@ class SyncRateLimiter:
                     _window_end_ms=window_end_in_force(limit, existing, now_ms),
                     _stored_reset_after_seconds=stored_rsa,
                     _granted=parent_granted,
+                    _soft_trusted=parent_soft_authority == _SOFT_FROM_CONFIG,
+                    _soft_restamp=parent_soft_authority == _SOFT_FROM_CONFIG,
                 )
             )
         carrier = self._wcu_carrier(
@@ -1845,14 +1882,26 @@ class SyncRateLimiter:
         child_limits, child_config_source = self._resolve_limits(
             entity_id, resource, limits_override, fetched_disabled, fetched_cascade
         )
+        soft_authority: dict[str, str] = {
+            entity_id: self._soft_authority(
+                entity_id, resource, limits_override, child_config_source, fetched_disabled
+            )
+        }
+        uncached_soft: dict[str, dict[str, bool] | None] = {}
         resolved = self._repository.resolve_disabled_from_fetched(
             entity_id, resource, fetched_disabled
         )
         policy = self._repository.resolve_cascade_from_fetched(entity_id, resource, fetched_cascade)
         if resolved is None or policy is None:
-            access = self._repository.resolve_access(entity_id, resource)
+            access = self._repository.resolve_access(
+                entity_id,
+                resource,
+                include_limits=soft_authority[entity_id] == _SOFT_FROM_ITEM,
+                include_system=child_config_source == "system",
+            )
             resolved = (access.disabled, access.disabled_level)
             policy = (access.cascade, access.cascade_level)
+            uncached_soft[entity_id] = access.limit_soft
         disabled, level = resolved
         if disabled:
             raise ResourceDisabled(
@@ -1868,16 +1917,26 @@ class SyncRateLimiter:
         if entity is not None and entity.parent_id and cascades[entity_id]:
             parent_id = entity.parent_id
             entity_ids.append(parent_id)
-            parent_access = self._repository.resolve_access(parent_id, resource)
+            parent_fetched: dict[tuple[str, str], bool | None] = {}
+            parent_limits, parent_config_source = self._resolve_limits(
+                parent_id, resource, limits_override, parent_fetched
+            )
+            soft_authority[parent_id] = self._soft_authority(
+                parent_id, resource, limits_override, parent_config_source, parent_fetched
+            )
+            parent_access = self._repository.resolve_access(
+                parent_id,
+                resource,
+                include_limits=soft_authority[parent_id] == _SOFT_FROM_ITEM,
+                include_system=parent_config_source == "system",
+            )
+            uncached_soft[parent_id] = parent_access.limit_soft
             if parent_access.disabled:
                 raise ResourceDisabled(
                     entity_id=parent_id,
                     resource=resource,
                     level=parent_access.disabled_level or "resource",
                 )
-            parent_limits, parent_config_source = self._resolve_limits(
-                parent_id, resource, limits_override
-            )
             entity_limits[parent_id] = parent_limits
             entity_config_sources[parent_id] = parent_config_source
             entity_shards[parent_id] = self._repository.select_shard(
@@ -1944,6 +2003,14 @@ class SyncRateLimiter:
             else:
                 eid_shard_count = grant_count
             seed_ws = self._seed_window_starts(eid, resource, missing, seed_shard_count)
+            fresh_soft: dict[str, bool] = {}
+            if soft_authority[eid] == _SOFT_FROM_ITEM and (missing or not any_existing):
+                carried = uncached_soft.get(eid)
+                fresh_soft = (
+                    carried
+                    if carried is not None
+                    else self._repository.resolve_soft_limits(eid, resource)
+                )
             sibling_ws = self._sibling_window_starts(
                 eid, resource, entity_limits[eid], eid_shard, any_existing
             )
@@ -2012,6 +2079,15 @@ class SyncRateLimiter:
                     state.reset_sched = limit.reset_schedule
                     stored_rsa = state.reset_after_seconds
                     state.reset_after_seconds = limit.reset_after_seconds
+                if soft_authority[eid] != _SOFT_FROM_ITEM:
+                    soft = limit.soft
+                elif existing is None:
+                    soft = fresh_soft.get(limit.name, False)
+                else:
+                    soft = existing.soft
+                state.soft = soft
+                if limit.soft != soft:
+                    limit = replace(limit, soft=soft)
                 original_tk = state.tokens_milli
                 original_rf = item_rf if seed else state.last_refill_ms
                 new_ws: int | None = created_anchor
@@ -2053,6 +2129,8 @@ class SyncRateLimiter:
                         _stored_reset_after_seconds=stored_rsa,
                         _granted=granted or (is_new and limit.is_quota),
                         _donor_debit=donor,
+                        _soft_trusted=soft_authority[eid] != _SOFT_FROM_ITEM,
+                        _soft_restamp=soft_authority[eid] == _SOFT_FROM_CONFIG,
                     )
                 )
             carrier = self._wcu_carrier(
@@ -2468,7 +2546,7 @@ class SyncRateLimiter:
             else:
                 available = ceiling
             requested = needed.get(limit.name, 0)
-            exceeded = requested > 0 and available < requested
+            exceeded = requested > 0 and available < requested and (not limit.soft)
             resets_at_ms = window_ends.get(limit.name)
             wait = 0.0
             if exceeded and limit.reset_after is not None:
@@ -2644,6 +2722,10 @@ class SyncRateLimiter:
             effective_limits, _ = self._resolve_limits(entity_id, resource, limits_override=None)
         except ValidationError:
             return
+        fresh_soft = self._repository.resolve_soft_limits(entity_id, resource)
+        effective_limits = [
+            replace(lim, soft=fresh_soft.get(lim.name, False)) for lim in effective_limits
+        ]
         stale_names = {lim.name for lim in old_limits} - {lim.name for lim in effective_limits}
         self._repository.reconcile_bucket_to_defaults(
             entity_id,

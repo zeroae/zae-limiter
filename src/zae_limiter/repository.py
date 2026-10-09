@@ -101,6 +101,7 @@ _SEED_TOKEN = {
     schema.BUCKET_FIELD_WS: "w",
     schema.BUCKET_FIELD_WA: "g",
     schema.BUCKET_FIELD_GC: "k",
+    schema.BUCKET_FIELD_SOFT: "o",
 }
 
 
@@ -1561,6 +1562,31 @@ class Repository:
             MIN_READER_VERSION_FOR_RESET_AFTER, reset_after_refusal, ratchet=ratchet
         )
 
+    async def _require_soft_readers(self, limits: list[Limit]) -> None:
+        """Refuse to store a soft limit the stack cannot keep (#467, ADR-151).
+
+        The ADR-141 gate at 0.17.0: a provisioner predating soft limits erases
+        ``l_{name}_soft`` on its next full-replace apply, and a v0.15-0.16
+        client keeps creating buckets with no soft stamp. Every old reader fails
+        toward enforcement, so this protects the flag rather than safety. Free
+        when no limit is soft; otherwise one strongly consistent ``GetItem``
+        (1 RCU), then the ``client_min_version`` ratchet to 0.17.0 the first
+        time.
+
+        Raises:
+            VersionMismatchError: the record is missing, or its
+                ``lambda_version`` is unknown or predates soft limits.
+        """
+        if not any(limit.soft for limit in limits):
+            return
+        await self._require_non_enforcing_readers()
+
+    async def _require_non_enforcing_readers(self) -> None:
+        """The 0.17.0 version gate shared by soft limits and bypass (ADR-151)."""
+        from .version import MIN_READER_VERSION_FOR_NON_ENFORCING, non_enforcing_refusal
+
+        await self._require_readers(MIN_READER_VERSION_FOR_NON_ENFORCING, non_enforcing_refusal)
+
     async def _require_cascade_policy_readers(self) -> None:
         """Refuse to store a cascade policy the stack cannot keep (ADR-146).
 
@@ -2602,7 +2628,7 @@ class Repository:
     @staticmethod
     def _limit_item_attrs(
         state: BucketState, *, include_window: bool = True
-    ) -> dict[str, dict[str, str]]:
+    ) -> dict[str, dict[str, Any]]:
         """The per-limit attributes a bucket item carries for one limit.
 
         ``{field: AttributeValue}`` for ``tk``, ``cp``, ``ra``, ``rp`` and
@@ -2629,7 +2655,7 @@ class Repository:
                 path twice.
         """
         tc = state.total_consumed_milli if state.total_consumed_milli is not None else 0
-        attrs: dict[str, dict[str, str]] = {
+        attrs: dict[str, dict[str, Any]] = {
             schema.BUCKET_FIELD_TK: {"N": str(state.tokens_milli)},
             schema.BUCKET_FIELD_CP: {"N": str(state.capacity_milli)},
             schema.BUCKET_FIELD_RA: {"N": str(state.refill_amount_milli)},
@@ -2638,6 +2664,11 @@ class Repository:
         }
         if state.grant_count is not None:
             attrs[schema.BUCKET_FIELD_GC] = {"N": str(state.grant_count)}
+        # #467: a soft limit is born soft. Taken from config read uncached on
+        # this pass (ADR-151 §6.2), never from the config cache: a stale soft
+        # stamp would admit without limit for as long as it stood.
+        if state.soft:
+            attrs[schema.BUCKET_FIELD_SOFT] = {"BOOL": True}
         if include_window:
             if state.reset_after_seconds is not None:
                 attrs[schema.BUCKET_FIELD_RSA] = {"N": str(state.reset_after_seconds)}
@@ -2808,6 +2839,8 @@ class Repository:
         owner: tuple[bool, str | None] | None = None,
         pin_vu: bool = False,
         expected_vu: int | None = None,
+        soft_stamps: dict[str, bool] | None = None,
+        soft_trusted: frozenset[str] = frozenset(),
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -2915,6 +2948,17 @@ class Repository:
                 that window has to stay unapplied until a pass rolls it. No
                 condition term is needed: the ``rf`` lock already serialises
                 every other writer of the marker.
+            soft_stamps: Limit name -> soft-ness to stamp as ``b_{name}_soft``
+                (SET when true, REMOVE when false) (#467, ADR-151). Only a pass
+                whose limits were read **uncached** passes it, so a stamp left
+                wrong — by an older client, or a missed fan-out — self-heals on
+                the next fresh slow pass. A seeded name must not appear here;
+                its stamp rides in the seed.
+            soft_trusted: Names the caller admitted as soft on authority it
+                trusts over the item's stamp (config read fresh, or an
+                ``acquire(limits=...)`` override). Their balance floor is
+                omitted. Every other floor is OR'ed with the item's own soft
+                stamp, so a limit soft on the item is never rejected here.
         """
         add_parts: list[str] = []
         set_parts: list[str] = ["#rf = :now"]
@@ -3007,6 +3051,7 @@ class Repository:
             attr_values[f":wl{i}"] = {"N": str(rsa)}
 
         condition_parts: list[str] = ["#rf = :expected_rf"]
+        soft_aliases: dict[str, str] = {}
 
         # Tokens come from the loop index, never the limit name (#634):
         # `NAME_PATTERN` allows `.` and `-`, and neither is legal in an
@@ -3036,11 +3081,33 @@ class Repository:
             # Guard against concurrent speculative consumption draining tk.
             # Speculative writes modify tk without touching rf, so the rf lock
             # alone can't detect them. Ensure tk can absorb the net decrease.
+            # A soft limit has no floor (#467): one the caller trusts is
+            # omitted, and every other admits on the item's own soft stamp.
             floor = max(0, c - r)
-            if floor > 0:
+            if floor > 0 and name not in soft_trusted:
                 floor_val = f":bf{i}"
+                soft_alias = f"#bo{i}"
                 attr_values[floor_val] = {"N": str(floor)}
-                condition_parts.append(f"{tk_alias} >= {floor_val}")
+                attr_names[soft_alias] = schema.bucket_attr(name, schema.BUCKET_FIELD_SOFT)
+                soft_aliases[name] = soft_alias
+                condition_parts.append(
+                    f"(attribute_exists({soft_alias}) OR {tk_alias} >= {floor_val})"
+                )
+
+        # #467: re-stamp each limit's soft-ness from config read fresh on this
+        # pass. Positional tokens (`#bs{k}`), disjoint from the rest.
+        # One alias per attribute: a name the floor above already aliased
+        # reuses it rather than declaring a second alias for the same path.
+        for k, (name, is_soft) in enumerate(sorted((soft_stamps or {}).items())):
+            alias = soft_aliases.get(name)
+            if alias is None:
+                alias = f"#bs{k}"
+                attr_names[alias] = schema.bucket_attr(name, schema.BUCKET_FIELD_SOFT)
+            if is_soft:
+                set_parts.append(f"{alias} = :bs{k}")
+                attr_values[f":bs{k}"] = {"BOOL": True}
+            else:
+                remove_parts.append(alias)
 
         # #633: limits missing from this existing item are seeded in full.
         seeded_tz: str | None = None
@@ -3119,6 +3186,7 @@ class Repository:
         consumed: dict[str, int],
         shard_id: int = 0,
         seeds: dict[str, BucketState] | None = None,
+        soft_trusted: frozenset[str] = frozenset(),
     ) -> dict[str, Any]:
         """Build an UpdateItem for the retry write path (ADR-115 path 3).
 
@@ -3140,6 +3208,11 @@ class Repository:
                 ``attribute_not_exists(tk) OR tk >= :c``, and every parameter
                 as ``if_not_exists``. A limit another writer seeded first is
                 therefore debited, never re-seeded.
+            soft_trusted: As for :meth:`build_composite_normal` (#467): these
+                soft limits carry no balance condition, and every other limit's
+                condition admits on the item's own soft stamp. A soft seed
+                carries none either — its soft-ness came from config read
+                uncached on this pass.
         """
         add_parts: list[str] = []
         set_parts: list[str] = []
@@ -3167,7 +3240,14 @@ class Repository:
 
             add_parts.append(f"{tk_alias} {tk_neg_val}")
             add_parts.append(f"{tc_alias} {tc_val}")
-            condition_parts.append(f"{tk_alias} >= {tk_threshold}")
+            if name in soft_trusted:
+                del attr_values[tk_threshold]
+                continue
+            soft_alias = f"#bo{i}"
+            attr_names[soft_alias] = schema.bucket_attr(name, schema.BUCKET_FIELD_SOFT)
+            condition_parts.append(
+                f"(attribute_exists({soft_alias}) OR {tk_alias} >= {tk_threshold})"
+            )
 
         seeded_tz: str | None = None
         for j, (name, state) in enumerate(sorted((seeds or {}).items())):
@@ -3196,7 +3276,8 @@ class Repository:
                     set_parts.append(f"{alias} = if_not_exists({alias}, {placeholder})")
             if c:
                 attr_values[f":sq{j}"] = {"N": str(c)}
-                condition_parts.append(f"(attribute_not_exists(#st{j}) OR #st{j} >= :sq{j})")
+                if not state.soft:
+                    condition_parts.append(f"(attribute_not_exists(#st{j}) OR #st{j} >= :sq{j})")
         if seeded_tz is not None:
             set_parts.append("#stz = if_not_exists(#stz, :stz)")
             attr_names["#stz"] = schema.BUCKET_FIELD_SCHED_TZ
@@ -3597,7 +3678,18 @@ class Repository:
 
             add_parts.append(f"{tk_alias} {neg_val}")
             add_parts.append(f"{tc_alias} {pos_val}")
-            condition_parts.append(f"{tk_alias} >= {thresh_val}")
+            # A soft limit (#467, ADR-151) is decided by the server: the item's
+            # own `b_{name}_soft` stamp admits it without testing the balance,
+            # while the ADD above still debits it — into debt if need be. The
+            # client needs no knowledge of which limits are soft, so a stamp
+            # changed elsewhere takes effect on the very next write. A soft
+            # limit missing from the item fails both halves and goes to the
+            # slow path, which seeds it (#633).
+            soft_alias = f"#o{i}"
+            attr_names[soft_alias] = schema.bucket_attr(limit_name, schema.BUCKET_FIELD_SOFT)
+            condition_parts.append(
+                f"(attribute_exists({soft_alias}) OR {tk_alias} >= {thresh_val})"
+            )
 
         # Add wcu infrastructure limit consumption (1 WCU = 1000 millitokens per write)
         wcu_tk_attr = schema.bucket_attr(schema.WCU_LIMIT_NAME, schema.BUCKET_FIELD_TK)
@@ -3751,8 +3843,10 @@ class Repository:
                         b.limit_name == schema.WCU_LIMIT_NAME and b.tokens_milli < 1000
                         for b in old_buckets
                     )
+                    # A soft limit cannot have failed the condition (#467).
                     app_exhausted = any(
                         b.limit_name != schema.WCU_LIMIT_NAME
+                        and not b.soft
                         and b.tokens_milli < consume.get(b.limit_name, 0) * 1000
                         for b in old_buckets
                     )
@@ -4260,6 +4354,7 @@ class Repository:
         """
         client = await self._get_client()
         await self._require_reset_after_readers(limits)
+        await self._require_soft_readers(limits)
         cascade_explicit = cascade is not _PRESERVE_CASCADE
         if cascade_explicit:
             await self._require_cascade_policy_readers()
@@ -4459,7 +4554,7 @@ class Repository:
         # `_default_` names no bucket: widen discovery and re-resolve per
         # bucket resource (#487). A real resource is an unambiguous directive.
         unscoped = resource == schema.DEFAULT_RESOURCE
-        plans: dict[str, tuple[str, dict[str, str], dict[str, dict[str, str]]]] = {}
+        plans: dict[str, tuple[str, dict[str, str], dict[str, dict[str, Any]]]] = {}
         if not unscoped:
             plans[resource] = self._build_bucket_param_update(
                 limits, bucket_ttl_refill_multiplier, stale_limit_names
@@ -4506,7 +4601,7 @@ class Repository:
         bucket_resource: str,
         directive_limits: list[Limit],
         stale_limit_names: set[str] | None,
-    ) -> tuple[str, dict[str, str], dict[str, dict[str, str]]]:
+    ) -> tuple[str, dict[str, str], dict[str, dict[str, Any]]]:
         """Build one bucket's update from the limits resolved for ITS resource.
 
         Used only under the entity-wide (`_default_`) scope. The caller's
@@ -4551,7 +4646,7 @@ class Repository:
         limits: list[Limit],
         bucket_ttl_refill_multiplier: int | None,
         stale_limit_names: set[str] | None,
-    ) -> tuple[str, dict[str, str], dict[str, dict[str, str]]]:
+    ) -> tuple[str, dict[str, str], dict[str, dict[str, Any]]]:
         """Build the SET/REMOVE UpdateExpression for one bucket item.
 
         Args:
@@ -4569,7 +4664,7 @@ class Repository:
         set_parts: list[str] = []
         remove_parts: list[str] = []
         expr_names: dict[str, str] = {}
-        expr_values: dict[str, dict[str, str]] = {}
+        expr_values: dict[str, dict[str, Any]] = {}
 
         for i, limit in enumerate(limits):
             name = limit.name
@@ -4616,6 +4711,17 @@ class Repository:
                 expr_values[f":rsa{i}"] = {"N": str(limit.reset_after_seconds)}
             else:
                 remove_parts.append(f"#rsa{i}")
+
+            # Soft-ness travels with the limit (#467, ADR-151): SET where the
+            # resolved limit is soft, REMOVE where it is hard. Like `rsa`, no
+            # item-level default exists, so absence means hard, full stop.
+            soft_attr = schema.bucket_attr(name, schema.BUCKET_FIELD_SOFT)
+            expr_names[f"#sft{i}"] = soft_attr
+            if limit.soft:
+                set_parts.append(f"#sft{i} = :sft{i}")
+                expr_values[f":sft{i}"] = {"BOOL": True}
+            else:
+                remove_parts.append(f"#sft{i}")
 
         # Re-stamp both schedules (#222 §2.2, §3.6). The aggregator reads the
         # item and nothing else, so a bucket left holding a superseded `sched`
@@ -4726,6 +4832,8 @@ class Repository:
                     # moment a limit of that name is configured again.
                     schema.BUCKET_FIELD_SCHED,
                     schema.BUCKET_FIELD_RSCHED,
+                    # And its soft stamp (#467), for the same reason.
+                    schema.BUCKET_FIELD_SOFT,
                 )
             ):
                 alias = f"#stale{i}_{j}"
@@ -4741,7 +4849,7 @@ class Repository:
     async def _sync_one_bucket_shard_from_plans(
         self,
         pk: str,
-        plans: dict[str, tuple[str, dict[str, str], dict[str, dict[str, str]]]],
+        plans: dict[str, tuple[str, dict[str, str], dict[str, dict[str, Any]]]],
     ) -> bool:
         """Apply the plan built for this bucket's own resource.
 
@@ -4766,7 +4874,7 @@ class Repository:
         pk: str,
         update_expr: str,
         expr_names: dict[str, str],
-        expr_values: dict[str, dict[str, str]],
+        expr_values: dict[str, dict[str, Any]],
     ) -> bool:
         """Apply one shard's static-param update, tolerating a vanished shard.
 
@@ -5182,6 +5290,7 @@ class Repository:
         validate_resource(resource)
         client = await self._get_client()
         await self._require_reset_after_readers(limits)
+        await self._require_soft_readers(limits)
         cascade_explicit = cascade is not _PRESERVE_CASCADE
         if cascade_explicit:
             await self._require_cascade_policy_readers()
@@ -5217,8 +5326,13 @@ class Repository:
         if cascade_attr is not None:
             item[schema.CONFIG_FIELD_CASCADE] = cascade_attr
 
-        # Single PutItem replaces any existing config for this resource
-        await client.put_item(TableName=self.table_name, Item=item)
+        # Single PutItem replaces any existing config for this resource. The
+        # old image is free and says whether any limit's soft-ness changed
+        # (#467): only then do existing buckets need restamping.
+        replaced = await client.put_item(
+            TableName=self.table_name, Item=item, ReturnValues="ALL_OLD"
+        )
+        soft_changed = self._soft_changed(replaced.get("Attributes"), limits)
 
         # Add resource to the registry using atomic ADD operation
         await client.update_item(
@@ -5248,6 +5362,12 @@ class Repository:
         if cascade_explicit:
             await self.invalidate_config_cache()
             await self._fanout_cascade(resource=resource)
+        # A resource-level change never reaches buckets otherwise (they take
+        # new parameters at TTL, #271/#296), and left to TTL a soft -> hard
+        # change would keep admitting without limit for seven reset periods
+        # (ADR-151 §6.2). Change-only, so a routine set writes no buckets.
+        if soft_changed:
+            await self._fanout_soft(resource=resource, names=soft_changed)
 
         # Log audit event with special prefix
         await self._log_audit_event(
@@ -5343,6 +5463,7 @@ class Repository:
         )
         had_disabled = schema.CONFIG_FIELD_DISABLED in (deleted.get("Attributes") or {})
         had_cascade = schema.CONFIG_FIELD_CASCADE in (deleted.get("Attributes") or {})
+        soft_changed = self._soft_changed(deleted.get("Attributes"), [])
 
         # Remove resource from the registry using atomic DELETE operation
         await client.update_item(
@@ -5375,6 +5496,10 @@ class Repository:
         # Likewise for a cascade policy the resource level was deciding (ADR-146).
         if had_cascade:
             await self._fanout_cascade(resource=resource)
+        # A soft limit the deleted level was defining (#467): its buckets now
+        # resolve elsewhere and must not keep a soft stamp nothing backs.
+        if soft_changed:
+            await self._fanout_soft(resource=resource, names=soft_changed)
 
         # Log audit event
         await self._log_audit_event(
@@ -5431,6 +5556,7 @@ class Repository:
         """
         client = await self._get_client()
         await self._require_reset_after_readers(limits)
+        await self._require_soft_readers(limits)
 
         # Build composite config item with all limits + on_unavailable
         item: dict[str, Any] = {
@@ -5450,8 +5576,14 @@ class Repository:
         item["GSI4PK"] = {"S": self._namespace_id}
         item["GSI4SK"] = {"S": schema.pk_system(self._namespace_id)}
 
-        # Single PutItem replaces any existing system config
-        await client.put_item(TableName=self.table_name, Item=item)
+        # Single PutItem replaces any existing system config; the free old
+        # image decides the change-only soft fan-out (#467).
+        replaced = await client.put_item(
+            TableName=self.table_name, Item=item, ReturnValues="ALL_OLD"
+        )
+        soft_changed = self._soft_changed(replaced.get("Attributes"), limits)
+        if soft_changed:
+            await self._fanout_soft(resource=None, names=soft_changed)
 
         # Log audit event (ADR-106: use $SYSTEM for all system-level events)
         await self._log_audit_event(
@@ -5522,13 +5654,17 @@ class Repository:
         limits, on_unavailable = await self.get_system_defaults()
 
         # Single DeleteItem removes the composite config
-        await client.delete_item(
+        deleted = await client.delete_item(
             TableName=self.table_name,
             Key={
                 "PK": {"S": schema.pk_system(self._namespace_id)},
                 "SK": {"S": schema.sk_config()},
             },
+            ReturnValues="ALL_OLD",
         )
+        soft_changed = self._soft_changed(deleted.get("Attributes"), [])
+        if soft_changed:
+            await self._fanout_soft(resource=None, names=soft_changed)
 
         # Log audit event (ADR-106: use $SYSTEM for all system-level events)
         await self._log_audit_event(
@@ -6179,11 +6315,18 @@ class Repository:
         }
 
         counters: dict[str, int] = {}
+        overdrawn: dict[str, int] = {}
         for key, value in item.items():
             if key in excluded_keys:
                 continue
             # Counter values are stored as numbers
-            if "N" in value:
+            if "N" not in value:
+                continue
+            # `{limit}#od` counts the records that left a soft limit in debt
+            # (#467). `#` cannot occur in a limit name, so it cannot collide.
+            if key.endswith(schema.OVERDRAWN_COUNTER_SUFFIX):
+                overdrawn[key[: -len(schema.OVERDRAWN_COUNTER_SUFFIX)]] = int(value["N"])
+            else:
                 counters[key] = int(value["N"])
 
         return UsageSnapshot(
@@ -6194,6 +6337,7 @@ class Repository:
             window_type=window_type,
             counters=counters,
             total_events=total_events,
+            overdrawn=overdrawn,
         )
 
     def _calculate_window_end(self, window_start: str, window_type: str) -> str:
@@ -6607,6 +6751,13 @@ class Repository:
                     grant_count=grant_count,
                     stored_vu_ms=stored_vu,
                     stored_vu_read=True,
+                    # #467: `wcu` is never soft, whatever an item says.
+                    soft=not is_wcu
+                    and bool(
+                        item.get(schema.bucket_attr(name, schema.BUCKET_FIELD_SOFT), {}).get(
+                            "BOOL", False
+                        )
+                    ),
                 )
             )
 
@@ -6678,6 +6829,10 @@ class Repository:
             # explicit REMOVE.
             if limit.reset_after_seconds is not None:
                 base_item[attr(schema.LIMIT_FIELD_RSA)] = {"N": str(limit.reset_after_seconds)}
+            # #467: written only for a soft limit, so a hard one is
+            # byte-identical to before and the full-replace PutItem clears it.
+            if limit.soft:
+                base_item[attr(schema.LIMIT_FIELD_SOFT)] = {"BOOL": True}
 
         if hoisted_tz is not None:
             base_item[schema.CONFIG_FIELD_SCHED_TZ] = {"S": hoisted_tz}
@@ -6750,6 +6905,11 @@ class Repository:
             sched_attr = item.get(sched_name, {}).get("S")
             rsched_attr = item.get(rsched_name, {}).get("S")
             rsa_attr = item.get(rsa_name, {}).get("N")
+            soft = bool(
+                item.get(
+                    schema.limit_attr(name, schema.LIMIT_FIELD_SOFT, windowed=windowed), {}
+                ).get("BOOL", False)
+            )
             # All three decode independently — any one can be corrupt on its
             # own, and `rsched` / `rsa` are the only reset spellings a quota
             # carries (ADR-139: never both on the same limit).
@@ -6780,6 +6940,7 @@ class Repository:
                         schedule=sched,
                         reset_schedule=reset_sched,
                         reset_after=reset_after,
+                        soft=soft,
                     )
                 )
             except ValueError as exc:
@@ -7003,6 +7164,52 @@ class Repository:
         """
         return self._walk_fetched(entity_id, resource, fetched)
 
+    def limits_read_fresh(
+        self,
+        entity_id: str,
+        resource: str,
+        source: str | None,
+        fetched: dict[tuple[str, str], bool | None],
+    ) -> bool:
+        """Did one config fetch read every level that decided these limits? (#467)
+
+        ``fetched`` is the ``disabled_out`` of the same ``resolve_limits`` call:
+        it holds exactly the config keys that call read from DynamoDB rather
+        than from the config cache. The limits were read fresh when the level
+        they came from (``source``) and every level of higher precedence were
+        all read — a cached higher level could hide a newer definition. A
+        limit's soft-ness rides with the limit (ADR-151), so a fresh read is
+        the authority the slow path re-stamps ``b_{name}_soft`` from.
+        """
+        ns = self._namespace_id
+        levels = [
+            *self._walk_levels(entity_id, resource),
+            ("system", (schema.pk_system(ns), schema.sk_config())),
+        ]
+        for level, key in levels:
+            if key not in fetched:
+                return False
+            if level == source:
+                return True
+        return False
+
+    async def resolve_soft_limits(self, entity_id: str, resource: str) -> dict[str, bool]:
+        """Each resolved limit's soft-ness, read uncached (#467, ADR-151 §6.2).
+
+        A bucket the slow path creates or seeds is stamped soft from here when
+        the config cache served this pass's limits: a stale *soft* stamp is
+        unbounded over-admission (soft -> hard on a bucket that then only ever
+        takes the fast path), where a stale capacity is merely late. One
+        ``BatchGetItem`` of the four config levels (2 RCU), paid only on a
+        create or seed whose limits came from the cache.
+
+        Returns:
+            Limit name -> soft, for the limits the four-level resolution picks
+            (the first level defining any). Empty when no level defines one.
+        """
+        _level, softness = await self._resolve_soft_levels(entity_id, resource)
+        return softness
+
     def _walk_levels(self, entity_id: str, resource: str) -> list[tuple[str, tuple[str, str]]]:
         """The ADR-125 walk: entity(resource) -> entity(_default_) -> resource."""
         ns = self._namespace_id
@@ -7071,7 +7278,13 @@ class Repository:
         return access.disabled, access.disabled_level
 
     async def resolve_access(
-        self, entity_id: str, resource: str, *, consistent_read: bool = False
+        self,
+        entity_id: str,
+        resource: str,
+        *,
+        consistent_read: bool = False,
+        include_limits: bool = False,
+        include_system: bool = False,
     ) -> ConfigAccess:
         """Resolve `disabled` and the cascade policy from one uncached read.
 
@@ -7082,10 +7295,21 @@ class Repository:
         ``consistent_read`` is for a caller resolving a level it just wrote:
         the cascade fan-out (pre-release review: an eventually consistent read
         returned the old policy and the fan-out stamped every bucket with it).
+        ``include_limits`` also returns each resolved limit's soft-ness in
+        ``limit_soft`` (#467), resolved from the walk's own items: the slow
+        path stamps a created or seeded bucket from it when the config cache
+        served that pass's limits. ``include_system`` adds the system config
+        item to the same batch (+0.5 RCU), for limits the cache resolved from
+        the system level; without it a walk that defines no limit reads as
+        all-hard, the safe direction.
         """
         disabled_fetched: dict[tuple[str, str], bool | None] = {}
         cascade_fetched: dict[tuple[str, str], bool | None] = {}
         levels = self._walk_levels(entity_id, resource)
+        system_key = (schema.pk_system(self._namespace_id), schema.sk_config())
+        read_keys = [key for _, key in levels] + (
+            [system_key] if include_limits and include_system else []
+        )
 
         # A withheld item is indistinguishable in the walk from a level that
         # sets no value, so a partial BatchGetItem would let an entity marked
@@ -7094,7 +7318,7 @@ class Repository:
         # (False, None) here cannot be told apart by the caller from "nothing
         # is disabled".
         items = await self._batch_get_all(
-            [{"PK": {"S": pk}, "SK": {"S": sk}} for _, (pk, sk) in levels],
+            [{"PK": {"S": pk}, "SK": {"S": sk}} for pk, sk in read_keys],
             context=f"disabled state for {entity_id!r}/{resource!r}",
             entity_id=entity_id,
             resource=resource,
@@ -7103,19 +7327,33 @@ class Repository:
         for _level, key in levels:
             disabled_fetched[key] = None
             cascade_fetched[key] = None
+        by_key: dict[tuple[str, str], dict[str, Any]] = {}
         for item in items:
             key = (item.get("PK", {}).get("S", ""), item.get("SK", {}).get("S", ""))
+            by_key[key] = item
+            if key == system_key:
+                continue
             disabled_fetched[key] = schema.decode_disabled(item)
             cascade_fetched[key] = schema.decode_cascade(item)
 
         # Every level was just read, so neither walk can decline.
         disabled, disabled_level = self._first_explicit(levels, disabled_fetched)
         cascade, cascade_level = self._first_explicit(levels, cascade_fetched)
+        limit_soft: dict[str, bool] | None = None
+        if include_limits:
+            limit_soft = {}
+            for key in read_keys:
+                found = by_key.get(key)
+                limits = self._deserialize_composite_limits(found) if found else []
+                if limits:
+                    limit_soft = {limit.name: limit.soft for limit in limits}
+                    break
         return ConfigAccess(
             disabled=bool(disabled),
             disabled_level=disabled_level,
             cascade=cascade,
             cascade_level=cascade_level,
+            limit_soft=limit_soft,
         )
 
     async def _stamp_bucket_disabled(self, pk: str, disabled: bool) -> None:
@@ -7903,6 +8141,170 @@ class Repository:
             if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
                 raise
             # Bucket vanished between discovery and stamp — nothing to restamp.
+
+    def _soft_changed(self, old_item: dict[str, Any] | None, limits: list[Limit]) -> set[str]:
+        """Limit names whose soft-ness a config replace or delete changed (#467).
+
+        ``old_item`` is the ``ALL_OLD`` image of the write (None when the level
+        did not exist). A limit absent on either side counts as hard there, so
+        dropping a soft limit, or adding one, is a change; a hard limit coming
+        or going is not. An old image that will not deserialize is treated as
+        having changed every limit it names, so the fan-out errs toward
+        restamping.
+        """
+        new = {limit.name for limit in limits if limit.soft}
+        if not old_item:
+            return new
+        try:
+            old = {
+                limit.name for limit in self._deserialize_composite_limits(old_item) if limit.soft
+            }
+        except Exception:
+            old = set(schema.config_limit_names(old_item))
+        return old ^ new
+
+    async def _resolve_soft_levels(
+        self, entity_id: str, resource: str, *, consistent_read: bool = False
+    ) -> tuple[str | None, dict[str, bool]]:
+        """The level that decides this bucket's limits, and each one's soft-ness.
+
+        One uncached ``BatchGetItem`` of the four config levels (#467). Returns
+        ``(None, {})`` when no level defines a limit.
+        """
+        ns = self._namespace_id
+        levels = [
+            *self._walk_levels(entity_id, resource),
+            ("system", (schema.pk_system(ns), schema.sk_config())),
+        ]
+        items = await self._batch_get_all(
+            [{"PK": {"S": pk}, "SK": {"S": sk}} for _, (pk, sk) in levels],
+            consistent_read=consistent_read,
+            context=f"soft limits for {entity_id!r}/{resource!r}",
+            entity_id=entity_id,
+            resource=resource,
+        )
+        by_key = {(item["PK"]["S"], item["SK"]["S"]): item for item in items}
+        for level, key in levels:
+            item = by_key.get(key)
+            if item is None:
+                continue
+            limits = self._deserialize_composite_limits(item)
+            if limits:
+                return level, {limit.name: limit.soft for limit in limits}
+        return None, {}
+
+    async def _discover_namespace_bucket_pks(self) -> list[str]:
+        """Every bucket PK in this namespace (GSI4, ``GSI4SK begins_with BUCKET#``)."""
+        client = await self._get_client()
+        pks: list[str] = []
+        start_key: dict[str, Any] | None = None
+        while True:
+            params: dict[str, Any] = {
+                "TableName": self.table_name,
+                "IndexName": schema.GSI4_NAME,
+                "KeyConditionExpression": "GSI4PK = :pk AND begins_with(GSI4SK, :sk)",
+                "ExpressionAttributeValues": {
+                    ":pk": {"S": self._namespace_id},
+                    ":sk": {"S": schema.BUCKET_PREFIX},
+                },
+            }
+            if start_key:
+                params["ExclusiveStartKey"] = start_key
+            response = await client.query(**params)
+            for item in response.get("Items", []):
+                pk = item.get("PK", {}).get("S", "")
+                if pk:
+                    pks.append(pk)
+            start_key = response.get("LastEvaluatedKey")
+            if not start_key:
+                break
+        return pks
+
+    async def _fanout_soft(self, *, resource: str | None, names: set[str]) -> int:
+        """Restamp ``b_{name}_soft`` after a resource- or system-level change (#467).
+
+        Discovers every bucket the changed level can decide — GSI2 for one
+        resource, GSI4 for the whole namespace when ``resource`` is None (a
+        system-level change) — and stamps each from the limits resolved, read
+        strongly consistent, for **its own** entity and resource. A bucket whose
+        limits come from either entity level is left alone: the entity's own
+        param sync owns its stamps (ADR-151 §6.2). Two discovery passes, as for
+        ``disabled`` (ADR-125). Each write is a ``SET``/``REMOVE`` of soft
+        stamps under ``attribute_exists(PK)``: it moves no ``tk``, ``rf``,
+        ``gc`` or ``shard_count``.
+
+        Raises:
+            FanoutIncomplete: A write failed part-way; carries how many landed.
+                Every write is idempotent, so re-running reconciles the rest.
+
+        Returns:
+            Number of bucket items stamped.
+        """
+        await self.invalidate_config_cache()
+        stamped: set[str] = set()
+        resolved: dict[tuple[str, str], tuple[str | None, dict[str, bool]]] = {}
+        for _pass in range(2):
+            if resource is not None:
+                pks = [pk for pk, _eid in await self._discover_resource_bucket_pks(resource)]
+            else:
+                pks = await self._discover_namespace_bucket_pks()
+            for pk in pks:
+                if pk in stamped:
+                    continue
+                _ns, eid, bucket_resource, _shard = schema.parse_bucket_pk(pk)
+                key = (eid, bucket_resource)
+                if key not in resolved:
+                    resolved[key] = await self._resolve_soft_levels(
+                        eid, bucket_resource, consistent_read=True
+                    )
+                level, softness = resolved[key]
+                if level in ("entity", "entity_default"):
+                    continue
+                targets = {name: softness.get(name, False) for name in names | set(softness)}
+                try:
+                    await self._stamp_bucket_soft(pk, targets)
+                except Exception as e:
+                    raise FanoutIncomplete(len(stamped), e, resource=resource) from e
+                stamped.add(pk)
+        return len(stamped)
+
+    async def _stamp_bucket_soft(self, pk: str, targets: dict[str, bool]) -> None:
+        """SET or REMOVE ``b_{name}_soft`` on one bucket item (#467).
+
+        Positional tokens (``#f{i}``, #634). A stamp for a limit the item does
+        not carry is harmless: discovery needs the ``_tk``/``_cp`` pair.
+        """
+        client = await self._get_client()
+        set_parts: list[str] = []
+        remove_parts: list[str] = []
+        names: dict[str, str] = {}
+        values: dict[str, Any] = {}
+        for i, (name, is_soft) in enumerate(sorted(targets.items())):
+            names[f"#f{i}"] = schema.bucket_attr(name, schema.BUCKET_FIELD_SOFT)
+            if is_soft:
+                set_parts.append(f"#f{i} = :t")
+            else:
+                remove_parts.append(f"#f{i}")
+        expr = []
+        if set_parts:
+            expr.append(f"SET {', '.join(set_parts)}")
+            values[":t"] = {"BOOL": True}
+        if remove_parts:
+            expr.append(f"REMOVE {', '.join(remove_parts)}")
+        params: dict[str, Any] = {
+            "TableName": self.table_name,
+            "Key": {"PK": {"S": pk}, "SK": {"S": schema.sk_state()}},
+            "UpdateExpression": " ".join(expr),
+            "ConditionExpression": "attribute_exists(PK)",
+            "ExpressionAttributeNames": names,
+        }
+        if values:
+            params["ExpressionAttributeValues"] = values
+        try:
+            await client.update_item(**params)
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                raise
 
     async def _fanout_cascade(
         self, *, resource: str | None = None, entity_id: str | None = None

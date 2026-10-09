@@ -6,6 +6,7 @@ import random
 import warnings
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal
@@ -68,6 +69,12 @@ logger = logging.getLogger(__name__)
 #: own configuration": the per-resource level and the entity-wide ``_default_``
 #: level (ADR-136).
 _ENTITY_CONFIG_SOURCES: frozenset[str] = frozenset({"entity", "entity_default"})
+
+#: Who decides a limit's soft-ness on one slow pass (#467, ADR-151). See
+#: ``RateLimiter._soft_authority``.
+_SOFT_FROM_OVERRIDE = "override"
+_SOFT_FROM_CONFIG = "config"
+_SOFT_FROM_ITEM = "item"
 
 
 def _is_custom_config(config_source: str | None) -> bool:
@@ -1958,6 +1965,30 @@ class RateLimiter:
         candidates = [b for b in (param_ms, reset_ms, window_ms) if b is not None]
         return (min(candidates) if candidates else None), reset_ms
 
+    def _soft_authority(
+        self,
+        entity_id: str,
+        resource: str,
+        limits_override: list[Limit] | None,
+        config_source: str,
+        fetched: dict[tuple[str, str], bool | None],
+    ) -> str:
+        """Which source decides each limit's soft-ness on this slow pass (#467).
+
+        ``_SOFT_FROM_OVERRIDE``: the caller passed ``acquire(limits=...)`` and
+        its limits are what this pass enforces. ``_SOFT_FROM_CONFIG``: the
+        config fetch read every deciding level fresh, so config is the
+        authority and the write re-stamps the item from it. ``_SOFT_FROM_ITEM``:
+        the config cache served the limits, so an existing limit is judged by
+        the item's own ``b_{name}_soft`` stamp — the one the fast path and every
+        fan-out keep current — and a created or seeded one by an uncached read.
+        """
+        if limits_override is not None:
+            return _SOFT_FROM_OVERRIDE
+        if self._repository.limits_read_fresh(entity_id, resource, config_source, fetched):
+            return _SOFT_FROM_CONFIG
+        return _SOFT_FROM_ITEM
+
     @staticmethod
     def _admit_limit(
         entity_id: str,
@@ -2087,6 +2118,13 @@ class RateLimiter:
         parent_policy = self._repository.resolve_cascade_from_fetched(
             parent_id, resource, fetched_cascade
         )
+        # The fetch records the same keys for `cascade_out` as for
+        # `disabled_out`, so it also says whether the limits were read fresh
+        # (#467): every bucket here exists, so a cached pass simply trusts the
+        # items' own soft stamps.
+        parent_soft_authority = self._soft_authority(
+            parent_id, resource, None, parent_config_source, fetched_cascade
+        )
         # No unknown-key check here: the declaration in `consume` is about the
         # child. A parent tracking a subset of the child's limits is a valid
         # configuration; keys with no parent limit are simply not applied.
@@ -2124,6 +2162,11 @@ class RateLimiter:
             # `rsa`, and without this its window would never open.
             stored_rsa = existing.reset_after_seconds
             existing.reset_after_seconds = limit.reset_after_seconds
+            # Soft-ness (#467): config when read fresh, else the item's stamp.
+            if parent_soft_authority == _SOFT_FROM_CONFIG:
+                existing.soft = limit.soft
+            elif limit.soft != existing.soft:
+                limit = replace(limit, soft=existing.soft)
 
             original_tk = existing.tokens_milli
             original_rf = existing.last_refill_ms
@@ -2188,6 +2231,8 @@ class RateLimiter:
                     _window_end_ms=window_end_in_force(limit, existing, now_ms),
                     _stored_reset_after_seconds=stored_rsa,
                     _granted=parent_granted,
+                    _soft_trusted=parent_soft_authority == _SOFT_FROM_CONFIG,
+                    _soft_restamp=parent_soft_authority == _SOFT_FROM_CONFIG,
                 )
             )
 
@@ -2348,14 +2393,33 @@ class RateLimiter:
         # answer this gate. See Repository.resolve_disabled_from_fetched. The
         # cascade policy (ADR-146) walks the same levels under the same rule, so
         # one uncached read answers both when the fetch cannot.
+        # Who decides each limit's soft-ness on this pass (#467, ADR-151):
+        # the caller's override, config read fresh, or — when the config cache
+        # served the limits — the bucket item's own stamp, with a created or
+        # seeded limit's soft-ness read uncached.
+        soft_authority: dict[str, str] = {
+            entity_id: self._soft_authority(
+                entity_id, resource, limits_override, child_config_source, fetched_disabled
+            )
+        }
+        uncached_soft: dict[str, dict[str, bool] | None] = {}
         resolved = self._repository.resolve_disabled_from_fetched(
             entity_id, resource, fetched_disabled
         )
         policy = self._repository.resolve_cascade_from_fetched(entity_id, resource, fetched_cascade)
         if resolved is None or policy is None:
-            access = await self._repository.resolve_access(entity_id, resource)
+            # The same uncached read carries the soft-ness a create or seed is
+            # stamped from, so a cached pass pays no second round trip for it;
+            # only limits resolved from the system level add its item (+0.5 RCU).
+            access = await self._repository.resolve_access(
+                entity_id,
+                resource,
+                include_limits=soft_authority[entity_id] == _SOFT_FROM_ITEM,
+                include_system=child_config_source == "system",
+            )
             resolved = (access.disabled, access.disabled_level)
             policy = (access.cascade, access.cascade_level)
+            uncached_soft[entity_id] = access.limit_soft
         disabled, level = resolved
         if disabled:
             raise ResourceDisabled(
@@ -2386,18 +2450,30 @@ class RateLimiter:
             # child gate above: no parent bucket should be fetched or created
             # once the parent is disabled. The same read gives the parent's own
             # cascade policy, which its bucket is stamped with (ADR-146).
-            parent_access = await self._repository.resolve_access(parent_id, resource)
+            # Phase 2: Resolve parent limits (config, never a bucket read) so
+            # the gate's uncached read can carry their soft-ness too (#467).
+            # The parent resolves its own soft-ness (ADR-151 §8): a child's
+            # soft limit never relaxes its parent's.
+            parent_fetched: dict[tuple[str, str], bool | None] = {}
+            parent_limits, parent_config_source = await self._resolve_limits(
+                parent_id, resource, limits_override, parent_fetched
+            )
+            soft_authority[parent_id] = self._soft_authority(
+                parent_id, resource, limits_override, parent_config_source, parent_fetched
+            )
+            parent_access = await self._repository.resolve_access(
+                parent_id,
+                resource,
+                include_limits=soft_authority[parent_id] == _SOFT_FROM_ITEM,
+                include_system=parent_config_source == "system",
+            )
+            uncached_soft[parent_id] = parent_access.limit_soft
             if parent_access.disabled:
                 raise ResourceDisabled(
                     entity_id=parent_id,
                     resource=resource,
                     level=parent_access.disabled_level or "resource",
                 )
-
-            # Phase 2: Resolve parent limits + fetch parent buckets
-            parent_limits, parent_config_source = await self._resolve_limits(
-                parent_id, resource, limits_override
-            )
             entity_limits[parent_id] = parent_limits
             entity_config_sources[parent_id] = parent_config_source
             # The parent shards independently of the child (GHSA-76rv)
@@ -2510,6 +2586,17 @@ class RateLimiter:
                 # sized at, so its reset target and its `gc` agree.
                 eid_shard_count = grant_count
             seed_ws = await self._seed_window_starts(eid, resource, missing, seed_shard_count)
+            # A create or seed is stamped soft from config read uncached this
+            # pass (ADR-151 §6.2): when the cache served the limits, read the
+            # soft-ness again, uncached. Only here, never on a plain pass.
+            fresh_soft: dict[str, bool] = {}
+            if soft_authority[eid] == _SOFT_FROM_ITEM and (missing or not any_existing):
+                carried = uncached_soft.get(eid)
+                fresh_soft = (
+                    carried
+                    if carried is not None
+                    else await self._repository.resolve_soft_limits(eid, resource)
+                )
 
             # The window a shard being created joins, read off shard 0 with
             # `eid`'s own read — on a cascade that is the parent's, never the
@@ -2658,6 +2745,19 @@ class RateLimiter:
                     stored_rsa = state.reset_after_seconds
                     state.reset_after_seconds = limit.reset_after_seconds
 
+                # Soft-ness (#467): from the authority this pass trusts. A
+                # status reports what admission decided, so the limit carried
+                # into the lease agrees with the state.
+                if soft_authority[eid] != _SOFT_FROM_ITEM:
+                    soft = limit.soft
+                elif existing is None:
+                    soft = fresh_soft.get(limit.name, False)
+                else:
+                    soft = existing.soft
+                state.soft = soft
+                if limit.soft != soft:
+                    limit = replace(limit, soft=soft)
+
                 # Capture original values before try_consume modifies them (ADR-115)
                 original_tk = state.tokens_milli
                 # A seeded limit locks on the item's `rf`, never on the
@@ -2745,6 +2845,8 @@ class RateLimiter:
                         # it carries `gc` at the count it was sized at.
                         _granted=granted or (is_new and limit.is_quota),
                         _donor_debit=donor,
+                        _soft_trusted=soft_authority[eid] != _SOFT_FROM_ITEM,
+                        _soft_restamp=soft_authority[eid] == _SOFT_FROM_CONFIG,
                     )
                 )
 
@@ -3251,7 +3353,9 @@ class RateLimiter:
                 # in force now, not at the base.
                 available = ceiling
             requested = needed.get(limit.name, 0)
-            exceeded = requested > 0 and available < requested
+            # A soft limit is reported, never a reason to wait (#467): its
+            # `available` may be negative, and `overdrawn` says so.
+            exceeded = requested > 0 and available < requested and not limit.soft
 
             resets_at_ms = window_ends.get(limit.name)
             wait = 0.0
@@ -3472,6 +3576,14 @@ class RateLimiter:
         except ValidationError:
             # No fallback config — bucket left as-is (acceptance criterion #11)
             return
+
+        # The fallback may have come from the config cache. A stale capacity is
+        # merely late, but a stale *soft* stamp admits without limit, so the
+        # soft-ness written to the buckets is read uncached (#467, ADR-151).
+        fresh_soft = await self._repository.resolve_soft_limits(entity_id, resource)
+        effective_limits = [
+            replace(lim, soft=fresh_soft.get(lim.name, False)) for lim in effective_limits
+        ]
 
         # Compute stale limit names (in old entity config but not in defaults)
         stale_names = {lim.name for lim in old_limits} - {lim.name for lim in effective_limits}

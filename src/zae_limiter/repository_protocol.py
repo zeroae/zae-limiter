@@ -619,6 +619,8 @@ class RepositoryProtocol(Protocol):
         owner: tuple[bool, str | None] | None = None,
         pin_vu: bool = False,
         expected_vu: int | None = None,
+        soft_stamps: "dict[str, bool] | None" = None,
+        soft_trusted: frozenset[str] = frozenset(),
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
@@ -676,6 +678,7 @@ class RepositoryProtocol(Protocol):
         consumed: dict[str, int],
         shard_id: int = 0,
         seeds: "dict[str, BucketState] | None" = None,
+        soft_trusted: frozenset[str] = frozenset(),
     ) -> dict[str, Any]:
         """Build an UpdateItem for the retry write path (ADR-115 path 3).
 
@@ -1336,13 +1339,44 @@ class RepositoryProtocol(Protocol):
         ...
 
     async def resolve_access(
-        self, entity_id: str, resource: str, *, consistent_read: bool = False
+        self,
+        entity_id: str,
+        resource: str,
+        *,
+        consistent_read: bool = False,
+        include_limits: bool = False,
+        include_system: bool = False,
     ) -> "ConfigAccess":
         """Resolve ``disabled`` and the cascade policy from one uncached read (ADR-146).
 
         Both walks cover the same config items, so a backend answers them from
         one read. Never from cache, for the reasons ``resolve_disabled`` gives.
         ``consistent_read`` is for a caller resolving a level it just wrote.
+        ``include_limits`` also returns each resolved limit's soft-ness in
+        ``ConfigAccess.limit_soft`` from the same read (#467);
+        ``include_system`` adds the system level to it.
+        """
+        ...
+
+    def limits_read_fresh(
+        self,
+        entity_id: str,
+        resource: str,
+        source: str | None,
+        fetched: "dict[tuple[str, str], bool | None]",
+    ) -> bool:
+        """Whether one config fetch read every level that decided the limits (#467).
+
+        ``fetched`` is the ``disabled_out`` of that ``resolve_limits`` call. A
+        fresh read is the authority the slow path re-stamps soft-ness from.
+        """
+        ...
+
+    async def resolve_soft_limits(self, entity_id: str, resource: str) -> "dict[str, bool]":
+        """Each resolved limit's soft-ness, read uncached (#467, ADR-151 §6.2).
+
+        Used when the slow path creates or seeds a bucket from limits the
+        config cache served: a created bucket's soft stamp must never be stale.
         """
         ...
 

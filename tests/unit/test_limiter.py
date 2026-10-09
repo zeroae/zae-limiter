@@ -12968,3 +12968,37 @@ class TestAdjustmentCommitFailure:
 
         assert await self._consumed(repo, "user") == 10
         assert await self._consumed(repo, "org") == 10
+
+
+class TestSoftLimits:
+    """Soft limits are metered, never enforced (#467, ADR-151); sync twin generated."""
+
+    async def test_soft_limit_admits_into_debt_on_both_paths(self, limiter):
+        await limiter.set_resource_defaults(
+            "llm",
+            [Limit.per_minute("rpm", 100), Limit.per_minute("tpm", 1000, soft=True)],
+        )
+        # Slow path (create), then the warm fast path.
+        for _ in range(2):
+            async with limiter.acquire("user-1", "llm", {"rpm": 1, "tpm": 800}) as lease:
+                pass
+        assert lease.overdrawn == ["tpm"]
+        (status,) = [
+            s
+            for s in (await limiter.check_availability("user-1", "llm")).statuses
+            if s.limit_name == "tpm"
+        ]
+        assert status.soft and status.overdrawn
+
+    async def test_hard_limit_still_rejects_beside_a_soft_one(self, limiter):
+        await limiter.set_resource_defaults(
+            "llm",
+            [Limit.per_minute("rpm", 1), Limit.per_minute("tpm", 10, soft=True)],
+        )
+        async with limiter.acquire("user-1", "llm", {"rpm": 1, "tpm": 50}):
+            pass
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            async with limiter.acquire("user-1", "llm", {"rpm": 1, "tpm": 50}):
+                pass
+        assert [s.limit_name for s in exc_info.value.violations] == ["rpm"]
+        assert [s.limit_name for s in exc_info.value.passed] == ["tpm"]

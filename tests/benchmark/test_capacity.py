@@ -716,6 +716,37 @@ class TestSpeculativeCapacity:
         assert capacity_counter.put_item == 0, "Should not use PutItem"
         assert len(capacity_counter.transact_write_items) == 0, "Should not use TransactWriteItems"
 
+    def test_soft_limit_in_debt_is_still_one_write_and_no_reads(
+        self, sync_limiter, capacity_counter
+    ):
+        """#467: an exhausted soft limit is admitted by the same single write.
+
+        The server decides soft-ness from the item's own stamp, so the client
+        reads nothing to know it: 0 RCU + 1 WCU, exactly the hard success path.
+        """
+        limits = [Limit.per_minute("rpm", 1_000_000), Limit.per_minute("tpm", 100, soft=True)]
+        with sync_limiter.acquire(
+            entity_id="spec-soft", resource="api", limits=limits, consume={"rpm": 1, "tpm": 100}
+        ):
+            pass
+        sync_limiter._speculative_writes = True
+        capacity_counter.reset()
+
+        with capacity_counter.counting():
+            with sync_limiter.acquire(
+                entity_id="spec-soft",
+                resource="api",
+                limits=limits,
+                consume={"rpm": 1, "tpm": 500},
+            ) as lease:
+                pass
+
+        assert lease.overdrawn == ["tpm"]
+        assert len(capacity_counter.batch_get_item) == 0
+        assert capacity_counter.update_item == 1
+        assert capacity_counter.put_item == 0
+        assert len(capacity_counter.transact_write_items) == 0
+
 
 class TestScheduledFastPathCapacity:
     """The load-bearing claim of #222: a schedule costs the fast path nothing.

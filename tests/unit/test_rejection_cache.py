@@ -1781,6 +1781,43 @@ class TestChangesElsewhere:
                         break
         assert admitted == 2  # the scheduled capacity, not the base 4
 
+    @staticmethod
+    async def _stamp_soft(repo: Repository, soft: bool) -> None:
+        """Another process's soft fan-out (#467): SET or REMOVE `b_rpm_soft`."""
+        await repo._stamp_bucket_soft(
+            schema.pk_bucket(repo._namespace_id, "u", "r", 0), {"rpm": soft}
+        )
+
+    async def test_soft_made_elsewhere_is_seen_once_the_entry_ages_out(self, limiter, repo):
+        """Hard -> soft elsewhere: the documented under-admission, bounded by the TTL."""
+        clock = _Clock()
+        repo._rejection_cache._clock = clock
+        await _teach(limiter, repo)
+        await self._stamp_soft(repo, True)
+        with pytest.raises(RateLimitExceeded):  # still judged from the cached hard state
+            await _drain(limiter)
+        clock.now += 10
+        async with limiter.acquire("u", "r", consume={"rpm": 2}) as lease:
+            pass
+        assert lease.overdrawn == ["rpm"]
+
+    async def test_a_soft_state_is_never_rejected_locally(self, limiter, repo):
+        """The cache holds a soft image: no local rejection, the item decides."""
+        async with limiter.acquire("u", "r", consume={"rpm": 1}):  # creates the bucket
+            pass
+        await self._stamp_soft(repo, True)
+        await _drain(limiter)
+        await _drain(limiter)  # admitted into debt; the image now cached is soft
+        assert repo.get_cache_stats().local_rejections == 0
+        # Soft -> hard elsewhere is enforced on the very next request: the cache
+        # never admits, so the server's condition answers.
+        await self._stamp_soft(repo, False)
+        async with _count_client_calls(repo) as calls:
+            with pytest.raises(RateLimitExceeded):
+                await _drain(limiter)
+        assert calls  # a real write was tried, not a local rejection
+        assert repo.get_cache_stats().local_rejections == 0
+
 
 def test_recording_written_states_skips_a_backend_without_the_cache():
     """A third-party backend has no `_rejection_cache`: nothing to record."""
