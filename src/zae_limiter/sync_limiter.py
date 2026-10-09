@@ -2849,3 +2849,9 @@ class SyncRateLimiter:
             else 0,
             entities=entities,
         )
+
+    def _run_in_executor(self, *funcs: Any) -> Any:
+        """Run ``funcs`` concurrently per the repository's ``parallel_mode`` (ADR-148)."""
+        from ._parallel import run_parallel
+
+        return run_parallel(self._repository, funcs)

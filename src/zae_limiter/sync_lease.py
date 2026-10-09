@@ -835,16 +835,11 @@ class SyncLease:
                     items.append(item)
                     written.append((entity_id, resource, shard_id, group_entries, deltas))
         self._committed = True
-        landed: list[_AdjustedItem] = []
-        results: list[dict[str, Any]] | None = []
-        try:
-            for item, adjusted in zip(items, written, strict=True):
-                result = repo.write_each([item])
-                results = None if result is None or results is None else results + result
-                landed.append(adjusted)
-        finally:
-            if landed:
-                self._trim_credits_above_ceiling(landed, results)
+        landed, results, failures = self._write_independently(items, written)
+        if landed:
+            self._trim_credits_above_ceiling(landed, results)
+        if failures:
+            raise failures[0][1]
 
     def _rollback(self) -> None:
         """Write compensating deltas to restore consumed tokens (Issue #309).
@@ -879,16 +874,53 @@ class SyncLease:
                     items.append(item)
                     written.append((entity_id, resource, shard_id, group_entries, deltas))
         if items:
-            try:
-                results = repo.write_each(items)
-            except Exception:
+            landed, results, failures = self._write_independently(items, written)
+            if failures:
                 logger.warning(
                     "Failed to rollback consumed tokens for entities: %s",
-                    list(groups.keys()),
-                    exc_info=True,
+                    [(e, r, shard) for (e, r, shard, _entries, _deltas), _exc in failures],
+                    exc_info=failures[0][1],
                 )
-                return
-            self._trim_credits_above_ceiling(written, results)
+            if landed:
+                self._trim_credits_above_ceiling(landed, results)
+
+    def _write_independently(
+        self, items: list[dict[str, Any]], written: list[_AdjustedItem]
+    ) -> tuple[
+        list[_AdjustedItem], list[dict[str, Any]] | None, list[tuple[_AdjustedItem, Exception]]
+    ]:
+        """Write each item on its own, concurrently, tracking which landed (ADR-148 D7).
+
+        Adjustments and refunds are unconditional ``ADD``s with no cross-item
+        atomicity, so their order does not matter — only knowing which ones
+        landed does (#682, #679). One round trip for every item instead of one
+        each.
+
+        Returns:
+            ``(landed, results, failures)``: the items that landed (in
+            order), their per-item ``write_each`` results — None when the
+            backend reported none for any of them, which skips the #679
+            ceiling check — and each item that did not, with its exception.
+        """
+        repo = self.repository
+
+        def _write(item: dict[str, Any]) -> list[dict[str, Any]] | None | Exception:
+            try:
+                return repo.write_each([item])
+            except Exception as exc:
+                return exc
+
+        outcomes = self._run_in_executor(*[lambda item=item: _write(item) for item in items])
+        landed: list[_AdjustedItem] = []
+        results: list[dict[str, Any]] | None = []
+        failures: list[tuple[_AdjustedItem, Exception]] = []
+        for adjusted, outcome in zip(written, outcomes, strict=True):
+            if isinstance(outcome, Exception):
+                failures.append((adjusted, outcome))
+                continue
+            landed.append(adjusted)
+            results = None if outcome is None or results is None else results + outcome
+        return (landed, results, failures)
 
     def _trim_credits_above_ceiling(
         self, written: list[_AdjustedItem], results: list[dict[str, Any]] | None
@@ -945,6 +977,12 @@ class SyncLease:
                     resets.append(build(entity_id, resource, shard_id))
                     break
         return resets
+
+    def _run_in_executor(self, *funcs: Any) -> Any:
+        """Run ``funcs`` concurrently per the repository's ``parallel_mode`` (ADR-148)."""
+        from ._parallel import run_parallel
+
+        return run_parallel(self.repository, funcs)
 
 
 def _get_cancellation_reason_codes(exc: Exception) -> list[str] | None:

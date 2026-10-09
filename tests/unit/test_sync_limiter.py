@@ -10634,12 +10634,12 @@ class TestAdjustmentCommitFailure:
         assert self._consumed(repo, "user") == 15
         assert self._consumed(repo, "org") == 10
 
-    def test_a_failed_first_adjustment_refunds_nothing(self, sync_limiter):
+    def test_a_failed_child_adjustment_refunds_nothing(self, sync_limiter):
         repo = sync_limiter._repository
         self._cascade(sync_limiter)
         with pytest.raises(RuntimeError, match="throttled"):
             with sync_limiter.acquire("user", "gpt-4", consume={"rpm": 10}) as lease:
                 lease.consume(rpm=5)
-                self._fail_writes_to(repo, "user", "org")
+                self._fail_writes_to(repo, "user")
         assert self._consumed(repo, "user") == 10
-        assert self._consumed(repo, "org") == 10
+        assert self._consumed(repo, "org") == 15

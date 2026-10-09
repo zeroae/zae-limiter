@@ -1175,21 +1175,16 @@ class Lease:
         # consumption is real usage: once an adjustment write is attempted,
         # nothing refunds it (#682). The lease is committed before the first
         # write, so a failure leaves _rollback() a no-op — rolling back after
-        # an earlier item landed credited that item twice. Items are written
-        # one at a time so the ones that landed are known and still checked
-        # against the ceiling (#679) before the error propagates.
+        # an earlier item landed credited that item twice. Each item is its own
+        # write, issued concurrently (ADR-148 D7), so the ones that landed are
+        # known and still checked against the ceiling (#679) before the error
+        # propagates.
         self._committed = True
-        landed: list[_AdjustedItem] = []
-        results: list[dict[str, Any]] | None = []
-        try:
-            for item, adjusted in zip(items, written, strict=True):
-                result = await repo.write_each([item])
-                # A backend reporting no per-item result skips the ceiling check.
-                results = None if result is None or results is None else results + result
-                landed.append(adjusted)
-        finally:
-            if landed:
-                await self._trim_credits_above_ceiling(landed, results)
+        landed, results, failures = await self._write_independently(items, written)
+        if landed:
+            await self._trim_credits_above_ceiling(landed, results)
+        if failures:
+            raise failures[0][1]
 
     async def _rollback(self) -> None:
         """Write compensating deltas to restore consumed tokens (Issue #309).
@@ -1238,16 +1233,56 @@ class Lease:
                     written.append((entity_id, resource, shard_id, group_entries, deltas))
 
         if items:
-            try:
-                results = await repo.write_each(items)
-            except Exception:
+            landed, results, failures = await self._write_independently(items, written)
+            if failures:
                 logger.warning(
                     "Failed to rollback consumed tokens for entities: %s",
-                    list(groups.keys()),
-                    exc_info=True,
+                    [(e, r, shard) for (e, r, shard, _entries, _deltas), _exc in failures],
+                    exc_info=failures[0][1],
                 )
-                return
-            await self._trim_credits_above_ceiling(written, results)
+            if landed:
+                await self._trim_credits_above_ceiling(landed, results)
+
+    async def _write_independently(
+        self, items: list[dict[str, Any]], written: list[_AdjustedItem]
+    ) -> tuple[
+        list[_AdjustedItem],
+        list[dict[str, Any]] | None,
+        list[tuple[_AdjustedItem, Exception]],
+    ]:
+        """Write each item on its own, concurrently, tracking which landed (ADR-148 D7).
+
+        Adjustments and refunds are unconditional ``ADD``s with no cross-item
+        atomicity, so their order does not matter — only knowing which ones
+        landed does (#682, #679). One round trip for every item instead of one
+        each.
+
+        Returns:
+            ``(landed, results, failures)``: the items that landed (in
+            order), their per-item ``write_each`` results — None when the
+            backend reported none for any of them, which skips the #679
+            ceiling check — and each item that did not, with its exception.
+        """
+        repo = self.repository
+
+        async def _write(item: dict[str, Any]) -> list[dict[str, Any]] | None | Exception:
+            try:
+                return await repo.write_each([item])
+            except Exception as exc:
+                return exc
+
+        outcomes = await asyncio.gather(*[_write(item) for item in items])
+        landed: list[_AdjustedItem] = []
+        results: list[dict[str, Any]] | None = []
+        failures: list[tuple[_AdjustedItem, Exception]] = []
+        for adjusted, outcome in zip(written, outcomes, strict=True):
+            if isinstance(outcome, Exception):
+                failures.append((adjusted, outcome))
+                continue
+            landed.append(adjusted)
+            # A backend reporting no per-item result skips the ceiling check.
+            results = None if outcome is None or results is None else results + outcome
+        return landed, results, failures
 
     async def _trim_credits_above_ceiling(
         self,
