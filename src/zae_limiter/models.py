@@ -309,6 +309,10 @@ class Limit:
             opens a fresh window. The alternative spelling of
             ``reset_schedule``, never a companion to it — setting both is
             rejected at construction.
+        soft: Meter this limit without enforcing it (#467, ADR-151). A soft
+            limit is debited on every admitted request and may go into
+            debt, but never causes ``RateLimitExceeded``; other, hard limits
+            on the same request still gate it. Defaults to ``False``.
 
     A limit **drips or resets, never both and never neither** (ADR-137): a
     positive ``refill_amount`` alongside a ``reset_schedule`` would return the
@@ -341,6 +345,11 @@ class Limit:
     # manifests and CloudFormation all spell it `..._seconds` and take an int,
     # because a bare scalar there cannot carry a type.
     reset_after: timedelta | None = None
+    # A soft limit is metered exactly like a hard one -- debited, allowed into
+    # debt -- but never rejects (#467, ADR-151). It is part of the limit's
+    # definition, so it resolves with the limit (override, not merge) and an
+    # entity that redefines `tpm` redefines its soft-ness too.
+    soft: bool = False
 
     def __post_init__(self) -> None:
         validate_name(self.name, "name")
@@ -468,6 +477,8 @@ class Limit:
         name: str,
         rate: int,
         burst: int | None = None,
+        *,
+        soft: bool = False,
     ) -> "Limit":
         """Create a limit that refills ``rate`` tokens per second.
 
@@ -477,6 +488,7 @@ class Limit:
             burst: Optional burst ceiling. When set, ``capacity`` is
                 ``burst`` and ``refill_amount`` is ``rate``, allowing
                 temporary spikes above the sustained rate.
+            soft: Meter without enforcing (#467): debited, never rejects.
         """
         capacity = burst if burst is not None else rate
         return cls(
@@ -484,6 +496,7 @@ class Limit:
             capacity=capacity,
             refill_amount=rate,
             refill_period_seconds=1,
+            soft=soft,
         )
 
     @classmethod
@@ -492,6 +505,8 @@ class Limit:
         name: str,
         rate: int,
         burst: int | None = None,
+        *,
+        soft: bool = False,
     ) -> "Limit":
         """Create a limit that refills ``rate`` tokens per minute.
 
@@ -501,6 +516,7 @@ class Limit:
             burst: Optional burst ceiling. When set, ``capacity`` is
                 ``burst`` and ``refill_amount`` is ``rate``, allowing
                 temporary spikes above the sustained rate.
+            soft: Meter without enforcing (#467): debited, never rejects.
         """
         capacity = burst if burst is not None else rate
         return cls(
@@ -508,6 +524,7 @@ class Limit:
             capacity=capacity,
             refill_amount=rate,
             refill_period_seconds=60,
+            soft=soft,
         )
 
     @classmethod
@@ -516,6 +533,8 @@ class Limit:
         name: str,
         rate: int,
         burst: int | None = None,
+        *,
+        soft: bool = False,
     ) -> "Limit":
         """Create a limit that refills ``rate`` tokens per hour.
 
@@ -525,6 +544,7 @@ class Limit:
             burst: Optional burst ceiling. When set, ``capacity`` is
                 ``burst`` and ``refill_amount`` is ``rate``, allowing
                 temporary spikes above the sustained rate.
+            soft: Meter without enforcing (#467): debited, never rejects.
         """
         capacity = burst if burst is not None else rate
         return cls(
@@ -532,6 +552,7 @@ class Limit:
             capacity=capacity,
             refill_amount=rate,
             refill_period_seconds=3600,
+            soft=soft,
         )
 
     @classmethod
@@ -540,6 +561,8 @@ class Limit:
         name: str,
         rate: int,
         burst: int | None = None,
+        *,
+        soft: bool = False,
     ) -> "Limit":
         """Create a limit that refills ``rate`` tokens per day.
 
@@ -549,6 +572,7 @@ class Limit:
             burst: Optional burst ceiling. When set, ``capacity`` is
                 ``burst`` and ``refill_amount`` is ``rate``, allowing
                 temporary spikes above the sustained rate.
+            soft: Meter without enforcing (#467): debited, never rejects.
         """
         capacity = burst if burst is not None else rate
         return cls(
@@ -556,6 +580,7 @@ class Limit:
             capacity=capacity,
             refill_amount=rate,
             refill_period_seconds=86400,
+            soft=soft,
         )
 
     @classmethod
@@ -567,6 +592,7 @@ class Limit:
         cron: str | None = None,
         tz: str = "UTC",
         reset_after: timedelta | None = None,
+        soft: bool = False,
     ) -> "Limit":
         """An allowance of ``amount`` per window, restored in one lump.
 
@@ -598,6 +624,9 @@ class Limit:
             tz: IANA timezone ``cron`` is read in. Ignored with ``reset_after``.
             reset_after: Window length, anchored to first use. Mutually
                 exclusive with ``cron``.
+            soft: Meter without enforcing (#467): the quota is debited and
+                may go into debt within the period, never rejects, and the
+                reset restores the allowance and forgives the debt (ADR-151).
 
         Example: 10,000 a day, back to 10,000 at New York midnight
             Limit.quota("rpd", 10_000, cron="0 0 * * *",
@@ -620,6 +649,7 @@ class Limit:
             refill_period_seconds=_QUOTA_REFILL_PERIOD_SECONDS,
             reset_schedule=((ScheduleEntry.reset(cron=cron, tz=tz),) if cron is not None else ()),
             reset_after=reset_after,
+            soft=soft,
         )
 
     @classmethod
@@ -629,6 +659,8 @@ class Limit:
         capacity: int,
         refill_amount: int,
         refill_period_seconds: int,
+        *,
+        soft: bool = False,
     ) -> "Limit":
         """
         Create a custom limit with explicit refill rate.
@@ -642,6 +674,7 @@ class Limit:
             capacity=capacity,
             refill_amount=refill_amount,
             refill_period_seconds=refill_period_seconds,
+            soft=soft,
         )
 
     @property
@@ -749,6 +782,9 @@ class Limit:
         # audit events included — are byte-identical.
         if self.reset_after is not None:
             result["reset_after_seconds"] = self.reset_after_seconds
+        # Omitted when hard, so every existing payload is byte-identical.
+        if self.soft:
+            result["soft"] = True
         return result
 
     @classmethod
@@ -770,6 +806,7 @@ class Limit:
             reset_after=(
                 timedelta(seconds=reset_after_seconds) if reset_after_seconds is not None else None
             ),
+            soft=bool(data.get("soft", False)),
         )
 
     @classmethod
@@ -844,6 +881,7 @@ class Limit:
             schedule=state.sched,
             reset_schedule=state.reset_sched if is_quota else (),
             reset_after=reset_after,
+            soft=state.soft,
         )
 
     def per_shard(self, shard_count: int, now_ms: int) -> "Limit":
@@ -943,6 +981,8 @@ class Limit:
         object.__setattr__(obj, "schedule", ())
         object.__setattr__(obj, "reset_schedule", ())
         object.__setattr__(obj, "reset_after", None)
+        # `wcu` protects the partition, not the tenant: it is always hard.
+        object.__setattr__(obj, "soft", False)
         return obj
 
 
@@ -1038,7 +1078,23 @@ class LimitStatus:
     @property
     def deficit(self) -> int:
         """How many tokens short we are (0 if not exceeded)."""
+        if self.soft:
+            return 0
         return max(0, self.requested - self.available)
+
+    @property
+    def soft(self) -> bool:
+        """Whether the limit is soft: metered, never a reason to reject (#467).
+
+        A soft status is never ``exceeded`` and its ``retry_after_seconds`` is
+        0.0; inside ``RateLimitExceeded`` it is always among ``passed``.
+        """
+        return self.limit.soft
+
+    @property
+    def overdrawn(self) -> bool:
+        """A soft limit running in debt: ``soft and available < 0`` (#467)."""
+        return self.limit.soft and self.available < 0
 
 
 @dataclass(frozen=True)
@@ -1195,6 +1251,11 @@ class BucketState:
     stored_vu_ms: int | None = None
     # True only for a state read off an item, where `stored_vu_ms` is known.
     stored_vu_read: bool = False
+    # `b_{name}_soft` (#467, ADR-151): the limit is metered but never rejects.
+    # Read off the item on every image (speculative, rejection cache, slow
+    # path); the slow path overrides it from config only when that config was
+    # read fresh this pass. `try_consume` admits a soft state unconditionally.
+    soft: bool = False
 
     @property
     def tokens(self) -> int:
@@ -1477,6 +1538,7 @@ class BucketState:
             # inherits the entity's existing `ws` from a sibling (Task 8) —
             # a new shard joins the window in progress rather than opening one.
             window_start_ms=(now_ms if limit.reset_after is not None else None),
+            soft=limit.soft,
         )
         # Start at full capacity *as of now* — the scheduled share, not the
         # base one. A bucket born inside a `0.5x` window that started at the
@@ -1513,6 +1575,9 @@ class UsageSnapshot:
         window_type: Window granularity ("hourly", "daily")
         counters: Consumption by limit name (e.g., {"tpm": 5000, "rpm": 10})
         total_events: Number of consumption events in this window
+        overdrawn: Soft limits only (#467): limit name -> number of stream
+            records in the window where the limit was debited and left its
+            shard in debt. Empty when no soft limit was overdrawn.
     """
 
     entity_id: str
@@ -1522,6 +1587,7 @@ class UsageSnapshot:
     window_type: str  # "hourly", "daily"
     counters: dict[str, int]  # limit_name -> total consumed
     total_events: int
+    overdrawn: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -2142,6 +2208,9 @@ class ConfigAccess:
     disabled_level: str | None
     cascade: bool | None
     cascade_level: str | None
+    # Each resolved limit's soft-ness, read in the same uncached batch, or None
+    # when the caller did not ask for it (#467, ADR-151 §6.2).
+    limit_soft: dict[str, bool] | None = None
 
 
 def effective_cascade(policy: bool | None, entity: Entity | None) -> bool:
