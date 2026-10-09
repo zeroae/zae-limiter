@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791519718140,
+  "lastUpdate": 1791550526453,
   "repoUrl": "https://github.com/zeroae/zae-limiter",
   "entries": {
     "Benchmark": [
@@ -32856,6 +32856,149 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.014148688627022373",
             "extra": "mean: 1.0955381583999952 sec\nrounds: 5"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "psodre@gmail.com",
+            "name": "Patrick Sodré",
+            "username": "sodre"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "421392713850eee9898fa9f841b814b006641488",
+          "message": "🔖 chore: release prep v0.16.0 (#710)\n\n## Release Prep: v0.16.0\n\n**Theme:** Cost and correctness: client-side rejection cache (a failed\nconditional write costs 1 WCU), per-resource cascade policy,\ncascade/adjustment fixes\n**Milestone:**\n[v0.16.0](https://github.com/zeroae/zae-limiter/milestone/27)\n\n---\n\n## Pre-Release Checklist\n\n### Milestone Status\n- [x] All issues closed (32/32 complete, 0 open)\n- [x] All PRs merged\n- [x] Ad-hoc work tagged to milestone\n\n### Code Quality\n- [x] ADRs accepted: ADR-146 and ADR-147 in #709; no Proposed ADRs\nremain under `docs/adr/`\n- [x] AWS e2e suite passed (`pytest -m aws --run-aws`):\n`ebdb6554b611ef1187031f4873b202c5c78b6a53`, 2026-10-09 — 67 passed, 2\nskipped (gevent benchmarks under xdist), 1 xfailed (X-Ray), 2 xpassed\n(timing benchmarks), 14m24s, no leaked test stacks\n- [x] The run covers the tag: this PR's head `720667937` has the\nidentical tree (`87fa3c7d679f20d5a11ca13a80f07f6d3454130d`)\n- [x] Four pre-release reviews (correctness, regression vs v0.15.1,\ncost, other changes); every finding fixed (#705, #706, #707), withdrawn\n(#703) or documented (#708)\n\n### Backwards Compatibility\n- [x] Changes that need action on upgrade are documented under **Upgrade\nnotes** below (a cascade policy ratchets `client_min_version`; new\n`RepositoryProtocol` methods; `System.Disabled` now rejected)\n\n---\n\n# v0.16.0 — Cost and correctness\n\n## Highlights\n\n- **A rejection is not free.** A failed conditional write is charged 1\nWCU (measured on\nDynamoDB, 1,000 failed writes = 1,000 WCU). The docs had said a fast\nrejection cost nothing;\n  every cost table is corrected.\n- **Client-side rejection cache (ADR-147).** A repeat 429 inside\n`rejection_cache_ttl` (default\n1 s) is answered in memory: no DynamoDB call, 0 RCU, 0 WCU. Writes are\nsteered away from shards\nknown to be short, which also fixes an under-admission on sharded\nentities. A cascading child\nwhose parent is known short is rejected before any write. The cache only\never rejects; every\nadmission is still decided by DynamoDB. Options: `rejection_cache_ttl`\n(`0` disables),\n  `rejection_cache_size`; stat: `get_cache_stats().local_rejections`.\n\n  | Client cost, $ per million requests | v0.15.1 | v0.16.0 |\n  |---|---|---|\n  | Over-demand 2x | 1.093 | 0.783 |\n  | Over-demand 20x | 0.672 | 0.079 |\n  | Over-demand 200x | 0.630 | 0.037 |\n| Sharded entity (8 shards), 1.2x | 2.307 (547 admitted) | 1.255 (924\nadmitted) |\n  | Steady, under the limit | unchanged | unchanged |\n\n- **Per-resource cascade policy (ADR-146).** Cascade can now differ by\nresource for the same\nentity (e.g. per-model limits cascade to the org, a shared budget does\nnot). API, CLI\n(`resource|entity set-cascade / clear-cascade`), limits manifest and\nCloudFormation. With no\n  policy set, behaviour is exactly as before.\n\n## Fixes\n\n- A credit above capacity is trimmed before the fast path can spend it\n(#679, #680), and\n  rejections on that bucket stay one failed write (#706).\n- A parent's bucket carries the parent's own cascade stamp, so a middle\nentity's own acquires\ndebit its parent (#684, #685); a child's lease never reaches the\ngrandparent (#686).\n- An adjustment commit that fails part-way never refunds the initial\nconsumption (#682, #687).\n- A limits manifest rejects `disabled` on `system` instead of dropping\nit (#693, #699).\n- The slow path keeps a `vu` stamp a limit change made during the pass\n(#701).\n- The cascade-policy fan-out reads the policy it just wrote with\nstrongly consistent reads (#705).\n- A no-wait 429 retry loop no longer stalls other asyncio tasks (#704,\n#707).\n\n## Withdrawn before release\n\nADR-147 \"phase 3\" (admitting through one write built from a cached\nstate) was merged and\nremoved before this release after ten reproduced over-admissions. The\nchangelog lists both the\naddition and the removal; it never shipped. Record:\n`docs/plans/2026-10-07-adr147-phase3-withdrawn.md`.\n\n## Upgrade notes\n\n- **Run `zae-limiter upgrade`** to update the Lambdas.\n- **Setting any cascade policy** raises the stack's `client_min_version`\nto 0.16.0; older clients\n  then refuse to open it. It also requires the Lambdas at 0.16.0 first.\n- **Third-party `RepositoryProtocol` backends** must implement the new\nmethods\n(`resolve_access`, `resolve_cascade_from_fetched`, the cascade-policy\ngetters and setters,\n`get_entity(consistent_read=)`, `build_composite_normal(owner=, pin_vu=,\nexpected_vu=)`).\nUnder `on_unavailable=\"allow\"` a missing method would degrade to no\nlimiting: upgrade the\n  backend with the client.\n- **Three-level hierarchies (grandparent → parent → child) on a mixed\nfleet:** a v0.15.1 process\nrunning beside v0.16.0 can debit the grandparent outside its lease\n(#686, which v0.16.0 fixes).\n  Upgrade all clients together.\n- **Hand-written `Custom::ZaeLimiterLimits` with `System.Disabled`** now\nfails instead of being\nignored (#699), and a failed update can end in `UPDATE_ROLLBACK_FAILED`.\nRemove it before\n  upgrading the provisioner.\n\n## Known behaviour (each bounded by `rejection_cache_ttl`, one process)\n\n- A disable or entity delete made by another process can surface as a\n429 for up to the TTL.\n- During a DynamoDB outage, a bucket seen exhausted raises\n`RateLimitExceeded` instead of taking\n  the `on_unavailable` path.\n- A client that retries a 429 without waiting spins on CPU (~10,000\nretries/s vs ~100): honour\n  `retry_after_seconds`.\n- Two per-process maps are not bounded by `rejection_cache_size`\n(cascade-policy cache, entity\n  cache). See `docs/performance.md` → Rejection Cache.\n\n## Verification\n\n- AWS e2e on `ebdb6554b` (2026-10-09): 67 passed, 2 skipped, 1 xfailed,\n2 xpassed; no leaked\n  stacks. The tagged commit's tree is identical.\n- Four independent pre-release reviews (correctness, regression vs\nv0.15.1, cost, other\n  changes); every finding fixed, withdrawn or documented.\n\n---\n\n## Next Steps\n\nAfter this PR is merged, tag the release-prep commit (as for v0.15.1):\n\n```bash\ngit tag v0.16.0 720667937\ngit push origin v0.16.0\n```\n\nThen verify GitHub Actions creates the release and publishes to PyPI.\n\n---\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01ASEDQdfdZZeqM2KMM1WTMo",
+          "timestamp": "2026-10-09T08:50:11-04:00",
+          "tree_id": "87fa3c7d679f20d5a11ca13a80f07f6d3454130d",
+          "url": "https://github.com/zeroae/zae-limiter/commit/421392713850eee9898fa9f841b814b006641488"
+        },
+        "date": 1791550525475,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_acquire_release_localstack",
+            "value": 25.658988833876506,
+            "unit": "iter/sec",
+            "range": "stddev: 0.012794656856042393",
+            "extra": "mean: 38.97269711110911 msec\nrounds: 9"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackBenchmarks::test_cascade_localstack",
+            "value": 16.914783956676736,
+            "unit": "iter/sec",
+            "range": "stddev: 0.04098464330218678",
+            "extra": "mean: 59.11988013333579 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_realistic_latency",
+            "value": 41.85798998434409,
+            "unit": "iter/sec",
+            "range": "stddev: 0.006389403307615119",
+            "extra": "mean: 23.890301478260767 msec\nrounds: 23"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_acquire_two_limits_realistic_latency",
+            "value": 22.01742154901044,
+            "unit": "iter/sec",
+            "range": "stddev: 0.059054075073938984",
+            "extra": "mean: 45.418578999998495 msec\nrounds: 24"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_cascade_realistic_latency",
+            "value": 13.051350757996437,
+            "unit": "iter/sec",
+            "range": "stddev: 0.06985171694041423",
+            "extra": "mean: 76.62042178946955 msec\nrounds: 19"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackLatencyBenchmarks::test_available_realistic_latency",
+            "value": 65.91819775778609,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003377627618387465",
+            "extra": "mean: 15.170317666670167 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_batchgetitem_optimization",
+            "value": 18.049685665747447,
+            "unit": "iter/sec",
+            "range": "stddev: 0.06460854953842465",
+            "extra": "mean: 55.40262686666513 msec\nrounds: 15"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_multiple_resources",
+            "value": 24.64930410924078,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0360267689513482",
+            "extra": "mean: 40.5690966190445 msec\nrounds: 21"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestCascadeOptimizationBenchmarks::test_cascade_with_config_cache_optimization",
+            "value": 27.06637386407523,
+            "unit": "iter/sec",
+            "range": "stddev: 0.016536505112255136",
+            "extra": "mean: 36.94621248571772 msec\nrounds: 35"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_disabled_localstack",
+            "value": 15.220212294595202,
+            "unit": "iter/sec",
+            "range": "stddev: 0.09754385650193213",
+            "extra": "mean: 65.70210590000158 msec\nrounds: 20"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackOptimizationComparison::test_cascade_cache_enabled_localstack",
+            "value": 18.072413392097577,
+            "unit": "iter/sec",
+            "range": "stddev: 0.06526472673340651",
+            "extra": "mean: 55.33295295454366 msec\nrounds: 44"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_cold_localstack",
+            "value": 17.278509702273798,
+            "unit": "iter/sec",
+            "range": "stddev: 0.07563864271519004",
+            "extra": "mean: 57.875361777781286 msec\nrounds: 27"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLocalStackCascadeSpeculativeComparison::test_cascade_speculative_cache_warm_localstack",
+            "value": 21.284898616303273,
+            "unit": "iter/sec",
+            "range": "stddev: 0.055783352569545995",
+            "extra": "mean: 46.98166611111058 msec\nrounds: 36"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_first_invocation",
+            "value": 1.810847438939419,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0698532847901492",
+            "extra": "mean: 552.2276357999999 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_subsequent_invocation",
+            "value": 1.9484805522824429,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0009802121566164991",
+            "extra": "mean: 513.2204161999994 msec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_cold_start_multiple_concurrent_events",
+            "value": 0.9043848453677718,
+            "unit": "iter/sec",
+            "range": "stddev: 0.09938559535670943",
+            "extra": "mean: 1.1057239682000044 sec\nrounds: 5"
+          },
+          {
+            "name": "tests/benchmark/test_localstack.py::TestLambdaColdStartBenchmarks::test_lambda_warm_start_sustained_load",
+            "value": 0.8975949954583815,
+            "unit": "iter/sec",
+            "range": "stddev: 0.076019547580167",
+            "extra": "mean: 1.114088208000004 sec\nrounds: 5"
           }
         ]
       }
