@@ -4547,6 +4547,15 @@ process cannot see, such as another process's refund or an admin change made els
 <code>rejection_cache_ttl=0</code> on <code>Repository.open()</code> to send every rejection to DynamoDB, and
 <code>rejection_cache_size</code> (default <code>10_000</code>) to bound memory. <code>get_cache_stats().local_rejections</code>
 counts the rejections answered locally.</p>
+<div class="admonition warning">
+<p class="admonition-title">Honour <code>retry_after_seconds</code></p>
+<p>A local rejection returns in microseconds, so it no longer slows a caller that retries a
+429 at once. Such a loop now spins on CPU: measured at about 10,000 retries per second per
+looping client, against about 100 when every rejection went to DynamoDB, with the same
+number admitted. Other tasks keep running (a local rejection hands control back to the
+event loop, or to other threads and greenlets in the sync API), but the looping client
+pins a core. Wait <code>retry_after_seconds</code> before retrying, or back off.</p>
+</div>
 <p>See <a href="../../performance/#8-speculative-writes">Performance Tuning - Speculative Writes</a> for detailed cost analysis and guidance on when to disable this feature.</p>
 <h2 id="next-steps">Next Steps<a class="headerlink" href="#next-steps" title="Permanent link">&para;</a></h2>
 <ul>
