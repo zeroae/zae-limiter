@@ -83,17 +83,24 @@ class TestStampBucket:
             "PK": {"S": "ns123/BUCKET#user-1#gpt-4#0"},
             "SK": {"S": "#STATE"},
         }
-        assert kwargs["UpdateExpression"] == "SET #disabled = :true"
+        assert kwargs["UpdateExpression"] == "SET #disabled = :true REMOVE #byp"
         assert kwargs["ExpressionAttributeValues"] == {":true": {"BOOL": True}}
         assert kwargs["ConditionExpression"] == "attribute_exists(PK)"
-        assert kwargs["ExpressionAttributeNames"] == {"#disabled": "disabled"}
+        assert kwargs["ExpressionAttributeNames"] == {"#disabled": "disabled", "#byp": "bypass"}
+
+    def test_bypass_sets_its_own_attribute(self):
+        """#311: bypass is a separate stamp, never `disabled`."""
+        client = _make_client()
+        stamp_bucket(client, "test-table", "ns123/BUCKET#user-1#gpt-4#0", disabled="bypass")
+        kwargs = client.update_item.call_args.kwargs
+        assert kwargs["UpdateExpression"] == "SET #byp = :true REMOVE #disabled"
 
     def test_disabled_false_removes_attribute(self):
         client = _make_client()
         stamp_bucket(client, "test-table", "ns123/BUCKET#user-1#gpt-4#0", disabled=False)
 
         kwargs = client.update_item.call_args.kwargs
-        assert kwargs["UpdateExpression"] == "REMOVE #disabled"
+        assert kwargs["UpdateExpression"] == "REMOVE #disabled, #byp"
         assert "ExpressionAttributeValues" not in kwargs
 
     def test_conditional_check_failure_is_swallowed(self):
@@ -262,7 +269,7 @@ class TestFanoutEntity:
 
         assert count == 1
         kwargs = client.update_item.call_args.kwargs
-        assert kwargs["UpdateExpression"] == "REMOVE #disabled"
+        assert kwargs["UpdateExpression"] == "REMOVE #disabled, #byp"
 
     def test_paginates_via_last_evaluated_key(self):
         client = _make_client()
@@ -378,9 +385,9 @@ class TestFanoutEntityUnscopedOverride:
             c.kwargs["Key"]["PK"]["S"]: c.kwargs["UpdateExpression"]
             for c in client.update_item.call_args_list
         }
-        assert by_pk["ns123/BUCKET#vip-1#gpt-4#0"] == "SET #disabled = :true"
+        assert by_pk["ns123/BUCKET#vip-1#gpt-4#0"] == "SET #disabled = :true REMOVE #byp"
         # The carve-out is preserved as "not disabled", never stamped True.
-        assert by_pk["ns123/BUCKET#vip-1#claude-3#0"] == "REMOVE #disabled"
+        assert by_pk["ns123/BUCKET#vip-1#claude-3#0"] == "REMOVE #disabled, #byp"
 
     def test_clear_restamps_resource_whose_own_config_now_decides(self):
         """Regression (Critical 1): unscoped clear must stamp a bucket that
@@ -407,7 +414,7 @@ class TestFanoutEntityUnscopedOverride:
         assert count == 1
         kwargs = client.update_item.call_args.kwargs
         assert kwargs["Key"]["PK"]["S"] == "ns123/BUCKET#vip-1#gpt-4#0"
-        assert kwargs["UpdateExpression"] == "SET #disabled = :true"
+        assert kwargs["UpdateExpression"] == "SET #disabled = :true REMOVE #byp"
 
     def test_scoped_call_skips_the_override_check_entirely(self):
         """When `resource` is given (not None), the caller's directive is

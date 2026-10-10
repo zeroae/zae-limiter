@@ -58,7 +58,7 @@ from .models import (
 from .schedule import effective_params, next_boundary, prev_reset_edge, retry_after_with_schedule
 from .schema import DEFAULT_RESOURCE, WCU_LIMIT_NAME
 from .sync_config_cache import ConfigSource
-from .sync_lease import LeaseEntry, QuotaMoveLostError, SyncLease
+from .sync_lease import BypassLostError, LeaseEntry, QuotaMoveLostError, SyncLease
 from .sync_repository import SyncRepository
 from .sync_repository_protocol import SpeculativeFailureReason
 
@@ -765,7 +765,11 @@ class SyncRateLimiter:
             if result.parent_result is not None and result.parent_result.success:
                 assert result.parent_id is not None
                 self._compensate_speculative(
-                    result.parent_id, resource, consume, result.parent_result.shard_id
+                    result.parent_id,
+                    resource,
+                    consume,
+                    result.parent_result.shard_id,
+                    result.parent_result.bypassed,
                 )
             if result.failure_reason == SpeculativeFailureReason.DISABLED:
                 raise ResourceDisabled(entity_id=entity_id, resource=resource, level="bucket")
@@ -832,13 +836,18 @@ class SyncRateLimiter:
                     _shard_id=result.shard_id,
                     _cascade=result.cascade,
                     _parent_id=result.parent_id,
+                    _bypass=result.bypassed,
                 )
             )
         if result.parent_result is not None and (not result.cascade) and result.parent_id:
             parent_result = result.parent_result
             if parent_result.success and parent_result.buckets:
                 self._compensate_speculative(
-                    parent_result.buckets[0].entity_id, resource, consume, parent_result.shard_id
+                    parent_result.buckets[0].entity_id,
+                    resource,
+                    consume,
+                    parent_result.shard_id,
+                    parent_result.bypassed,
                 )
             result.parent_result = None
         if result.parent_result is not None:
@@ -856,6 +865,7 @@ class SyncRateLimiter:
                             state=state,
                             consumed=amount,
                             _shard_id=result.parent_result.shard_id,
+                            _bypass=result.parent_result.bypassed,
                         )
                     )
             else:
@@ -886,6 +896,7 @@ class SyncRateLimiter:
                             state=state,
                             consumed=amount,
                             _shard_id=parent_result.shard_id,
+                            _bypass=parent_result.bypassed,
                         )
                     )
             else:
@@ -938,23 +949,23 @@ class SyncRateLimiter:
             else None
         )
         if parent_result.failure_reason == SpeculativeFailureReason.DISABLED:
-            self._compensate_child(entity_id, resource, consume, result.shard_id)
+            self._compensate_child(entity_id, resource, consume, result.shard_id, result.bypassed)
             raise ResourceDisabled(entity_id=parent_id, resource=resource, level="bucket")
         if parent_result.failure_reason is SpeculativeFailureReason.SCHEDULE_BOUNDARY:
-            self._compensate_child(entity_id, resource, consume, result.shard_id)
+            self._compensate_child(entity_id, resource, consume, result.shard_id, result.bypassed)
             return (None, parent_hint)
         if parent_result.old_buckets is None:
-            self._compensate_child(entity_id, resource, consume, result.shard_id)
+            self._compensate_child(entity_id, resource, consume, result.shard_id, result.bypassed)
             return (None, parent_hint)
         parent_names = {b.limit_name for b in parent_result.old_buckets}
         if not all(name in parent_names for name in consume):
-            self._compensate_child(entity_id, resource, consume, result.shard_id)
+            self._compensate_child(entity_id, resource, consume, result.shard_id, result.bypassed)
             return (None, parent_hint)
         would_help, parent_statuses = would_refill_satisfy(
             parent_result.old_buckets, consume, now_ms
         )
         if not would_help:
-            self._compensate_child(entity_id, resource, consume, result.shard_id)
+            self._compensate_child(entity_id, resource, consume, result.shard_id, result.bypassed)
             child_statuses = declared_statuses(result.buckets, consume, now_ms)
             raise RateLimitExceeded(child_statuses + parent_statuses)
         if parent_result.failure_reason in (
@@ -965,7 +976,9 @@ class SyncRateLimiter:
                 parent_id, resource, parent_result, now_ms
             )
             if parent_shard != parent_result.shard_id:
-                self._compensate_child(entity_id, resource, consume, result.shard_id)
+                self._compensate_child(
+                    entity_id, resource, consume, result.shard_id, result.bypassed
+                )
                 return (None, parent_shard)
         entries: list[LeaseEntry] = []
         for state in result.buckets:
@@ -983,6 +996,7 @@ class SyncRateLimiter:
                     _shard_id=result.shard_id,
                     _cascade=result.cascade,
                     _parent_id=result.parent_id,
+                    _bypass=result.bypassed,
                 )
             )
         try:
@@ -990,11 +1004,11 @@ class SyncRateLimiter:
                 parent_id, resource, consume, entries, parent_shard, parent_shard_count
             )
         except Exception:
-            self._compensate_child(entity_id, resource, consume, result.shard_id)
+            self._compensate_child(entity_id, resource, consume, result.shard_id, result.bypassed)
             raise
         if parent_lease is not None:
             return (parent_lease, parent_hint)
-        self._compensate_child(entity_id, resource, consume, result.shard_id)
+        self._compensate_child(entity_id, resource, consume, result.shard_id, result.bypassed)
         return (None, parent_hint)
 
     def _shard_after_wcu_exhaustion(
@@ -1022,10 +1036,15 @@ class SyncRateLimiter:
         return (result.shard_id, new_count)
 
     def _compensate_child(
-        self, entity_id: str, resource: str, consume: dict[str, int], shard_id: int
+        self,
+        entity_id: str,
+        resource: str,
+        consume: dict[str, int],
+        shard_id: int,
+        bypassed: bool = False,
     ) -> None:
         """Compensate a speculatively consumed child by adding tokens back."""
-        self._compensate_speculative(entity_id, resource, consume, shard_id)
+        self._compensate_speculative(entity_id, resource, consume, shard_id, bypassed)
 
     def _shortfall(
         self,
@@ -1169,17 +1188,27 @@ class SyncRateLimiter:
         return set(parent_short)
 
     def _compensate_speculative(
-        self, entity_id: str, resource: str, consume: dict[str, int], shard_id: int
+        self,
+        entity_id: str,
+        resource: str,
+        consume: dict[str, int],
+        shard_id: int,
+        bypassed: bool = False,
     ) -> None:
         """Compensate a speculative write by adding consumed tokens back.
 
         The credit must land on the shard the speculative debit hit
         (GHSA-76rv): crediting shard 0 leaves the debited shard short and
-        mints tokens on a shard that served nothing.
+        mints tokens on a shard that served nothing. A bypassed write debited
+        no tokens (#311), so only its ``tc`` is taken back.
         """
         deltas = {name: -(amount * 1000) for name, amount in consume.items()}
         compensate_item = self._repository.build_composite_adjust(
-            entity_id=entity_id, resource=resource, deltas=deltas, shard_id=shard_id
+            entity_id=entity_id,
+            resource=resource,
+            deltas=deltas,
+            shard_id=shard_id,
+            **{"tokens": False} if bypassed else {},
         )
         self._repository.write_each([compensate_item])
 
@@ -1260,7 +1289,9 @@ class SyncRateLimiter:
                 entity_id, resource, consume, ttl_seconds, shard_id=new_shard, now_ms=now_ms
             )
             if retry.success and retry.cascade and retry.parent_id:
-                self._compensate_speculative(entity_id, resource, consume, new_shard)
+                self._compensate_speculative(
+                    entity_id, resource, consume, new_shard, retry.bypassed
+                )
                 slow_path_shard = new_shard
                 break
             if retry.success:
@@ -1303,6 +1334,7 @@ class SyncRateLimiter:
                     _shard_id=result.shard_id,
                     _cascade=result.cascade,
                     _parent_id=result.parent_id,
+                    _bypass=result.bypassed,
                 )
             )
         lease = SyncLease(entries=entries, repository=self._repository)
@@ -1566,7 +1598,7 @@ class SyncRateLimiter:
         resource: str,
         limits_override: list[Limit] | None,
         config_source: str,
-        fetched: dict[tuple[str, str], bool | None],
+        fetched: dict[tuple[str, str], bool | str | None],
     ) -> str:
         """Which source decides each limit's soft-ness on this slow pass (#467).
 
@@ -1691,7 +1723,7 @@ class SyncRateLimiter:
         Returns None if parent acquire fails (caller should compensate child).
         """
         now_ms = self._repository._now_ms()
-        fetched_cascade: dict[tuple[str, str], bool | None] = {}
+        fetched_cascade: dict[tuple[str, str], bool | str | None] = {}
         parent_limits, parent_config_source = self._resolve_limits(
             parent_id, resource, None, cascade_out=fetched_cascade
         )
@@ -1711,6 +1743,8 @@ class SyncRateLimiter:
             bucket_key = (parent_id, resource, limit.name)
             existing = parent_buckets.get(bucket_key)
             if existing is None:
+                return None
+            if existing.bypass:
                 return None
             existing.sched = limit.schedule
             existing.reset_sched = limit.reset_schedule
@@ -1817,18 +1851,24 @@ class SyncRateLimiter:
         """
 
         def plan_and_commit(disable_moves: bool) -> SyncLease:
-            lease = self._do_acquire(
-                entity_id=entity_id,
-                resource=resource,
-                limits_override=limits_override,
-                consume=consume,
-                shard_id=shard_id,
-                shard_count=shard_count,
-                parent_shard_id=parent_shard_id,
-                disable_moves=disable_moves,
-            )
-            lease._commit_initial()
-            return lease
+            for disable_bypass in (False, True):
+                lease = self._do_acquire(
+                    entity_id=entity_id,
+                    resource=resource,
+                    limits_override=limits_override,
+                    consume=consume,
+                    shard_id=shard_id,
+                    shard_count=shard_count,
+                    parent_shard_id=parent_shard_id,
+                    disable_moves=disable_moves,
+                    disable_bypass=disable_bypass,
+                )
+                try:
+                    lease._commit_initial()
+                except BypassLostError:
+                    continue
+                return lease
+            raise AssertionError("an enforced plan carries no bypass write")
 
         try:
             return plan_and_commit(False)
@@ -1850,10 +1890,13 @@ class SyncRateLimiter:
         shard_count: int | None = None,
         parent_shard_id: int | None = None,
         disable_moves: bool = False,
+        disable_bypass: bool = False,
     ) -> SyncLease:
         """Internal acquire implementation (the slow path).
 
         Args:
+            disable_bypass: Plan every entity enforced (#311), after a
+                bypass-shaped write found its stamp gone (``BypassLostError``).
             disable_moves: The third attempt after two lost ADR-145 moves
                 (design §6 step 6): a quota whose slot a sibling covers gets 0
                 this time instead of a move, and no donor debit rides. Only
@@ -1876,8 +1919,8 @@ class SyncRateLimiter:
             entity_id, resource, shard_id, shard_count
         )
         entity_shards: dict[str, tuple[int, int]] = {entity_id: (child_shard, child_shard_count)}
-        fetched_disabled: dict[tuple[str, str], bool | None] = {}
-        fetched_cascade: dict[tuple[str, str], bool | None] = {}
+        fetched_disabled: dict[tuple[str, str], bool | str | None] = {}
+        fetched_cascade: dict[tuple[str, str], bool | str | None] = {}
         child_limits, child_config_source = self._resolve_limits(
             entity_id, resource, limits_override, fetched_disabled, fetched_cascade
         )
@@ -1891,6 +1934,11 @@ class SyncRateLimiter:
             entity_id, resource, fetched_disabled
         )
         policy = self._repository.resolve_cascade_from_fetched(entity_id, resource, fetched_cascade)
+        bypass_mode: dict[str, bool] = {
+            entity_id: bool(
+                self._repository.resolve_bypass_from_fetched(entity_id, resource, fetched_disabled)
+            )
+        }
         if resolved is None or policy is None:
             access = self._repository.resolve_access(
                 entity_id,
@@ -1901,6 +1949,7 @@ class SyncRateLimiter:
             resolved = (access.disabled, access.disabled_level)
             policy = (access.cascade, access.cascade_level)
             uncached_soft[entity_id] = access.limit_soft
+            bypass_mode[entity_id] = access.bypass
         disabled, level = resolved
         if disabled:
             raise ResourceDisabled(
@@ -1916,7 +1965,7 @@ class SyncRateLimiter:
         if entity is not None and entity.parent_id and cascades[entity_id]:
             parent_id = entity.parent_id
             entity_ids.append(parent_id)
-            parent_fetched: dict[tuple[str, str], bool | None] = {}
+            parent_fetched: dict[tuple[str, str], bool | str | None] = {}
             parent_limits, parent_config_source = self._resolve_limits(
                 parent_id, resource, limits_override, parent_fetched
             )
@@ -1930,6 +1979,7 @@ class SyncRateLimiter:
                 include_system=parent_config_source == "system",
             )
             uncached_soft[parent_id] = parent_access.limit_soft
+            bypass_mode[parent_id] = parent_access.bypass
             if parent_access.disabled:
                 raise ResourceDisabled(
                     entity_id=parent_id,
@@ -1961,6 +2011,30 @@ class SyncRateLimiter:
                 state for (b_eid, _res, _name), state in existing_buckets.items() if b_eid == eid
             ]
             any_existing = bool(item_states)
+            eid_bypass = bypass_mode.get(eid, False) and (not disable_bypass)
+            if any_existing:
+                eid_bypass = eid_bypass and any(state.bypass for state in item_states)
+            if not eid_bypass:
+                for state in item_states:
+                    state.bypass = False
+            elif any_existing:
+                for limit in entity_limits[eid]:
+                    existing = existing_buckets.get((eid, resource, limit.name))
+                    if existing is None or limit.name not in consume:
+                        continue
+                    entries.append(
+                        LeaseEntry(
+                            entity_id=eid,
+                            resource=resource,
+                            limit=replace(limit, soft=existing.soft),
+                            state=existing,
+                            consumed=consume[limit.name],
+                            _shard_id=eid_shard,
+                            _shard_count=eid_shard_count,
+                            _bypass=True,
+                        )
+                    )
+                continue
             item_rf = item_states[0].last_refill_ms if item_states else now_ms
             seed_shard_count = max(
                 [eid_shard_count]
@@ -2098,11 +2172,23 @@ class SyncRateLimiter:
                         limit, state, now_ms, opened=new_ws is not None
                     )
                     granted = limit.is_quota and (reset_applied or roll_applied)
-                status, consumed = self._admit_limit(eid, resource, limit, state, consume, now_ms)
+                if eid_bypass:
+                    status = None
+                    consumed = consume.get(limit.name, 0)
+                    if state.total_consumed_milli is not None:
+                        state.total_consumed_milli += consumed * 1000
+                    state.window_start_ms = None
+                    new_ws = None
+                else:
+                    status, consumed = self._admit_limit(
+                        eid, resource, limit, state, consume, now_ms
+                    )
                 if status is not None:
                     statuses.append(status)
                 has_custom_config = _is_custom_config(entity_config_sources.get(eid))
                 boundary_ms, reset_edge_ms = self._materialisation_stamps(limit, state, now_ms)
+                if eid_bypass and limit.reset_after is not None:
+                    boundary_ms = 0
                 entries.append(
                     LeaseEntry(
                         entity_id=eid,
@@ -2130,6 +2216,7 @@ class SyncRateLimiter:
                         _donor_debit=donor,
                         _soft_trusted=soft_authority[eid] != _SOFT_FROM_ITEM,
                         _soft_restamp=soft_authority[eid] == _SOFT_FROM_CONFIG,
+                        _bypass=eid_bypass,
                     )
                 )
             carrier = self._wcu_carrier(
@@ -2330,8 +2417,8 @@ class SyncRateLimiter:
         entity_id: str,
         resource: str,
         limits_override: list[Limit] | None,
-        disabled_out: dict[tuple[str, str], bool | None] | None = None,
-        cascade_out: dict[tuple[str, str], bool | None] | None = None,
+        disabled_out: dict[tuple[str, str], bool | str | None] | None = None,
+        cascade_out: dict[tuple[str, str], bool | str | None] | None = None,
     ) -> tuple[list[Limit], ConfigSource | Literal["override"]]:
         """
         Resolve limits using four-tier hierarchy.
@@ -2518,9 +2605,11 @@ class SyncRateLimiter:
         resolved_by_name = {limit.name: limit for limit in resolved_limits}
         totals: dict[str, int] = {}
         window_ends: dict[str, int] = {}
+        bypassed = False
         for bucket in self._repository.get_buckets(entity_id):
             if bucket.resource != resource:
                 continue
+            bypassed = bypassed or bucket.bypass
             name = bucket.limit_name
             limit_for_bucket = resolved_by_name.get(name)
             totals[name] = totals.get(name, 0) + self._readable_balance(
@@ -2575,7 +2664,11 @@ class SyncRateLimiter:
                 )
             )
         return Availability(
-            entity_id=entity_id, resource=resource, checked_at_ms=now_ms, statuses=statuses
+            entity_id=entity_id,
+            resource=resource,
+            checked_at_ms=now_ms,
+            statuses=statuses,
+            bypassed=bypassed,
         )
 
     def available(

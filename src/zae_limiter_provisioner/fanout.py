@@ -26,8 +26,10 @@ from collections.abc import Callable, Iterator
 from typing import Any
 
 from zae_limiter.schema import (
+    BUCKET_FIELD_BYPASS,
     BUCKET_FIELD_DISABLED,
     DEFAULT_RESOURCE,
+    DISABLED_BYPASS,
     GSI2_NAME,
     GSI3_NAME,
     decode_cascade,
@@ -45,19 +47,30 @@ from zae_limiter.schema import (
 logger = logging.getLogger(__name__)
 
 
-def stamp_bucket(client: Any, table_name: str, pk: str, disabled: bool) -> None:
-    """Set or remove the disabled attribute on one bucket item."""
+def stamp_bucket(client: Any, table_name: str, pk: str, disabled: bool | str) -> None:
+    """Stamp one bucket item with its access mode (ADR-125, #311).
+
+    Mirrors ``Repository._stamp_bucket_disabled``: True SETs ``disabled``,
+    ``"bypass"`` SETs ``bypass``, False clears both; each write removes the
+    stamp it does not set.
+    """
     kwargs: dict[str, Any] = {
         "TableName": table_name,
         "Key": {"PK": {"S": pk}, "SK": {"S": sk_state()}},
-        "ExpressionAttributeNames": {"#disabled": BUCKET_FIELD_DISABLED},
+        "ExpressionAttributeNames": {
+            "#disabled": BUCKET_FIELD_DISABLED,
+            "#byp": BUCKET_FIELD_BYPASS,
+        },
         "ConditionExpression": "attribute_exists(PK)",
     }
-    if disabled:
-        kwargs["UpdateExpression"] = "SET #disabled = :true"
+    if disabled == DISABLED_BYPASS:
+        kwargs["UpdateExpression"] = "SET #byp = :true REMOVE #disabled"
+        kwargs["ExpressionAttributeValues"] = {":true": {"BOOL": True}}
+    elif disabled:
+        kwargs["UpdateExpression"] = "SET #disabled = :true REMOVE #byp"
         kwargs["ExpressionAttributeValues"] = {":true": {"BOOL": True}}
     else:
-        kwargs["UpdateExpression"] = "REMOVE #disabled"
+        kwargs["UpdateExpression"] = "REMOVE #disabled, #byp"
 
     try:
         client.update_item(**kwargs)
@@ -71,8 +84,10 @@ def resolve_disabled(
     namespace_id: str,
     entity_id: str,
     resource: str,
-) -> bool:
+) -> bool | str:
     """Resolve the effective disabled state for an entity+resource (ADR-125).
+
+    Returns ``"bypass"`` when the deciding level is a bypass (#311).
 
     Sync boto3 mirror of ``Repository.resolve_disabled``: walks
     entity(resource) -> entity(_default_) -> resource and returns the first
@@ -105,7 +120,7 @@ def resolve_disabled(
 
 
 def fanout_resource(
-    client: Any, table_name: str, namespace_id: str, resource: str, disabled: bool
+    client: Any, table_name: str, namespace_id: str, resource: str, disabled: bool | str
 ) -> int:
     """Stamp every bucket for a resource, honoring per-entity overrides.
 
@@ -119,9 +134,9 @@ def fanout_resource(
 
     Returns the number of buckets stamped.
     """
-    effective_by_entity: dict[str, bool] = {}
+    effective_by_entity: dict[str, bool | str] = {}
 
-    def _decide(pk: str) -> bool | None:
+    def _decide(pk: str) -> bool | str | None:
         _ns, entity_id, _res, _shard = parse_bucket_pk(pk)
         if entity_id not in effective_by_entity:
             effective_by_entity[entity_id] = resolve_disabled(
@@ -151,7 +166,7 @@ def fanout_entity(
     namespace_id: str,
     entity_id: str,
     resource: str | None,
-    disabled: bool,
+    disabled: bool | str,
 ) -> int:
     """Stamp every bucket for an entity. Returns the number stamped.
 
@@ -171,9 +186,9 @@ def fanout_entity(
     scoped to one resource, the caller's directive is unambiguous for every
     discovered bucket, so all buckets are stamped with `disabled` directly.
     """
-    effective_by_resource: dict[str, bool] = {}
+    effective_by_resource: dict[str, bool | str] = {}
 
-    def _decide(pk: str) -> bool | None:
+    def _decide(pk: str) -> bool | str | None:
         if resource is not None:
             return disabled
         _ns, _eid, bucket_resource, _shard = parse_bucket_pk(pk)
@@ -204,8 +219,8 @@ def _fanout(
     sk_name: str,
     pk_value: str,
     sk_prefix: str,
-    disabled: bool,
-    decide: Callable[[str], bool | None] | None = None,
+    disabled: bool | str,
+    decide: Callable[[str], bool | str | None] | None = None,
 ) -> int:
     """Discover and stamp matching bucket items, across two passes.
 

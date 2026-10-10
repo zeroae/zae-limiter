@@ -748,6 +748,30 @@ class TestSpeculativeCapacity:
         assert len(capacity_counter.transact_write_items) == 0
 
 
+class TestBypassCapacity:
+    """#311: a bypassed bucket costs what any acquire does, warm."""
+
+    def test_a_warm_bypassed_acquire_is_one_write_and_no_reads(
+        self, sync_limiter, capacity_counter
+    ):
+        repo = sync_limiter._repository
+        sync_limiter.set_resource_defaults("api", [Limit.per_minute("rpm", 1)])
+        repo.bypass_resource("api")
+        for _ in range(2):  # create; then the one refund that teaches the process
+            with sync_limiter.acquire("byp", "api", consume={"rpm": 1}):
+                pass
+        sync_limiter._speculative_writes = True
+        capacity_counter.reset()
+        with capacity_counter.counting():
+            with sync_limiter.acquire("byp", "api", consume={"rpm": 1}) as lease:
+                pass
+        assert lease.bypassed
+        assert len(capacity_counter.batch_get_item) == 0
+        assert capacity_counter.update_item == 1
+        assert capacity_counter.put_item == 0
+        assert len(capacity_counter.transact_write_items) == 0
+
+
 class TestScheduledFastPathCapacity:
     """The load-bearing claim of #222: a schedule costs the fast path nothing.
 

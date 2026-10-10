@@ -21,6 +21,7 @@ import boto3
 
 from zae_limiter.schema import (
     DEFAULT_RESOURCE,
+    DISABLED_BYPASS,
     RESERVED_NAMESPACE,
     pk_system,
     sk_namespace,
@@ -309,8 +310,10 @@ def _fanout_disabled_changes(
     for change in sorted(candidates, key=lambda c: 0 if c.level == "resource" else 1):
         data = change.data or {}
         try:
+            disabled: bool | str
             if change.level == "resource" and change.target:
-                disabled = bool(data.get("disabled"))
+                value = data.get("disabled")
+                disabled = value if value == DISABLED_BYPASS else bool(value)
                 fanout_resource(client, table_name, namespace_id, change.target, disabled)
             elif change.level == "entity" and change.target:
                 entity_id, resource = change.target.split("/", 1)

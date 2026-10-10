@@ -83,6 +83,11 @@ class SpeculativeResult:
     shard_id: int = 0
     shard_count: int = 1
     failure_reason: SpeculativeFailureReason | None = None
+    # The image carries the `bypass` stamp (#311): on success nothing was
+    # spent (the write was bypass-shaped, or an enforce-shaped write was
+    # refunded); on failure the bucket is bypassed and the image must not be
+    # read as a rejection.
+    bypassed: bool = False
 
 
 #: Sentinel default for the tri-state ``disabled`` parameter (ADR-125).
@@ -581,6 +586,7 @@ class RepositoryProtocol(Protocol):
         shard_count: int = 1,
         vu: int | None = None,
         rf_ms: int | None = None,
+        bypass: bool = False,
     ) -> dict[str, Any]:
         """Build a PutItem for creating a new composite bucket.
 
@@ -701,8 +707,14 @@ class RepositoryProtocol(Protocol):
         resource: str,
         deltas: dict[str, int],
         shard_id: int = 0,
+        *,
+        tokens: bool = True,
+        counter: bool = True,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the adjust write path (ADR-115 path 4).
+
+        ``tokens=False`` writes ``tc`` only (a bypassed lease, #311);
+        ``counter=False`` writes ``tk`` only (a bypass refund).
 
         Unconditional ADD for post-hoc correction. Can go negative by design.
         Positive delta = consumed more (subtract tokens, add to counter).
@@ -971,7 +983,7 @@ class RepositoryProtocol(Protocol):
         resource: str = "_default_",
         principal: str | None = None,
         *,
-        disabled: "bool | None" = PRESERVE_DISABLED,
+        disabled: "bool | str | None" = PRESERVE_DISABLED,
         cascade: "bool | None" = PRESERVE_CASCADE,
     ) -> None:
         """
@@ -1062,7 +1074,7 @@ class RepositoryProtocol(Protocol):
         limits: "list[Limit]",
         principal: str | None = None,
         *,
-        disabled: "bool | None" = PRESERVE_DISABLED,
+        disabled: "bool | str | None" = PRESERVE_DISABLED,
         cascade: "bool | None" = PRESERVE_CASCADE,
     ) -> None:
         """
@@ -1293,8 +1305,8 @@ class RepositoryProtocol(Protocol):
         self,
         entity_id: str,
         resource: str,
-        disabled_out: "dict[tuple[str, str], bool | None] | None" = None,
-        cascade_out: "dict[tuple[str, str], bool | None] | None" = None,
+        disabled_out: "dict[tuple[str, str], bool | str | None] | None" = None,
+        cascade_out: "dict[tuple[str, str], bool | str | None] | None" = None,
     ) -> "tuple[list[Limit] | None, OnUnavailableAction | None, ConfigSource | None]":
         """
         Resolve effective limits using the four-level config hierarchy.
@@ -1363,7 +1375,7 @@ class RepositoryProtocol(Protocol):
         entity_id: str,
         resource: str,
         source: str | None,
-        fetched: "dict[tuple[str, str], bool | None]",
+        fetched: "dict[tuple[str, str], bool | str | None]",
     ) -> bool:
         """Whether one config fetch read every level that decided the limits (#467).
 
@@ -1384,7 +1396,7 @@ class RepositoryProtocol(Protocol):
         self,
         entity_id: str,
         resource: str,
-        fetched: "dict[tuple[str, str], bool | None]",
+        fetched: "dict[tuple[str, str], bool | str | None]",
     ) -> "tuple[bool | None, str | None] | None":
         """Answer the cascade-policy walk from a config fetch, or decline (ADR-146).
 
@@ -1394,7 +1406,7 @@ class RepositoryProtocol(Protocol):
         """
         ...
 
-    async def get_entity_disabled(self, entity_id: str, resource: str) -> "bool | None":
+    async def get_entity_disabled(self, entity_id: str, resource: str) -> "bool | str | None":
         """Read the tri-state disabled flag from an entity config item (ADR-125).
 
         Returns True/False when set explicitly, None when unset (inherit).
@@ -1402,7 +1414,7 @@ class RepositoryProtocol(Protocol):
         """
         ...
 
-    async def get_resource_disabled(self, resource: str) -> "bool | None":
+    async def get_resource_disabled(self, resource: str) -> "bool | str | None":
         """Read the tri-state disabled flag from a resource config item (ADR-125).
 
         Returns True/False when set explicitly, None when unset (inherit).
@@ -1414,7 +1426,7 @@ class RepositoryProtocol(Protocol):
         self,
         entity_id: str,
         resource: str,
-        fetched: "dict[tuple[str, str], bool | None]",
+        fetched: "dict[tuple[str, str], bool | str | None]",
     ) -> "tuple[bool, str | None] | None":
         """Answer the disable walk from a config fetch, or decline (ADR-125).
 
@@ -1427,8 +1439,35 @@ class RepositoryProtocol(Protocol):
         """
         ...
 
+    def build_bypass_consume(
+        self,
+        entity_id: str,
+        resource: str,
+        consumed: dict[str, int],
+        shard_id: int = 0,
+    ) -> dict[str, Any]:
+        """The slow path's ``tc``-only write for a bypassed bucket (#311).
+
+        Conditioned on the item's ``bypass`` stamp, so a bypass cleared since the
+        pass read config fails the write rather than admitting unenforced.
+        """
+        ...
+
+    def resolve_bypass_from_fetched(
+        self,
+        entity_id: str,
+        resource: str,
+        fetched: "dict[tuple[str, str], bool | str | None]",
+    ) -> "bool | None":
+        """Whether the walk resolves to bypass, from a config fetch, or decline (#311)."""
+        ...
+
     async def disable_resource(self, resource: str, principal: str | None = None) -> int:
         """Disable a resource for all entities without an explicit override (ADR-125)."""
+        ...
+
+    async def bypass_resource(self, resource: str, principal: str | None = None) -> int:
+        """Bypass a resource: admit everything, debit nothing, count usage (#311)."""
         ...
 
     async def enable_resource(self, resource: str, principal: str | None = None) -> int:
@@ -1455,6 +1494,15 @@ class RepositoryProtocol(Protocol):
         principal: str | None = None,
     ) -> int:
         """Explicitly enable an entity, overriding a disabled resource."""
+        ...
+
+    async def bypass_entity(
+        self,
+        entity_id: str,
+        resource: str | None = None,
+        principal: str | None = None,
+    ) -> int:
+        """Bypass an entity, for one resource or across all of them (#311)."""
         ...
 
     async def clear_entity_disabled(
