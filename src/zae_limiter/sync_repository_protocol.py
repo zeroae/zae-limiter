@@ -21,6 +21,7 @@ if TYPE_CHECKING:
         BucketState,
         ConfigAccess,
         CreditCeiling,
+        CreditPin,
         Entity,
         Limit,
         OnUnavailableAction,
@@ -639,7 +640,7 @@ class SyncRepositoryProtocol(Protocol):
         shard_id: int = 0,
         ceilings: "dict[str, CreditCeiling] | None" = None,
         trim: bool = False,
-        pin: tuple[int, int | None] | None = None,
+        pin: "CreditPin | None" = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the adjust write path (ADR-115 path 4).
 
@@ -660,10 +661,10 @@ class SyncRepositoryProtocol(Protocol):
             trim: Build the fallback: the same unconditional ADD plus
                 ``SET vu = 0`` in one write, so the speculative fast path cannot
                 spend a balance above the ceiling before a slow pass clamps it.
-            pin: The item's (``shard_count``, ``vu``) the ceilings were computed
-                against (``vu`` ``None`` = absent), pinned beside them: a
-                doubling, a schedule change or a reset may have lowered the
-                real ceiling.
+            pin: The item's (``shard_count``, ``vu``, item-level schedule
+                strings) the ceilings were computed against (``None`` =
+                absent), pinned beside them: a doubling, a schedule change or a
+                reset may have lowered the real ceiling.
         """
         ...
 

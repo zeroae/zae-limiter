@@ -773,6 +773,8 @@ class TestWriteOnEnter:
         state.grant_count = None
         state.stored_vu_read = True
         state.stored_vu_ms = None
+        state.stored_item_sched_raw = (None, None, None)
+        state.stored_sched_raw = (None, None)
         return LeaseEntry(
             entity_id=entity_id,
             resource="gpt-4",
@@ -1146,8 +1148,8 @@ class TestWriteOnEnter:
             resource="gpt-4",
             deltas={"rpm": -5000},
             shard_id=0,
-            ceilings={"rpm": CreditCeiling(100000, 100000, None)},
-            pin=(1, None),
+            ceilings={"rpm": CreditCeiling(100000, 100000, None, (None, None))},
+            pin=(1, None, (None, None, None)),
         )
         mock_repo.write_each.assert_called_once()
 
@@ -1218,7 +1220,7 @@ class TestWriteOnEnter:
             "gpt-4",
             {"rpm": -5000},
             0,
-            {"rpm": CreditCeiling(100000, 100000, None)},
+            {"rpm": CreditCeiling(100000, 100000, None, (None, None))},
             None,
         )
         mock_repo.build_composite_adjust.assert_called_once_with(
@@ -1283,8 +1285,8 @@ class TestWriteOnEnter:
             resource="gpt-4",
             deltas={"rpm": -10000},
             shard_id=0,
-            ceilings={"rpm": CreditCeiling(100000, 100000, None)},
-            pin=(1, None),
+            ceilings={"rpm": CreditCeiling(100000, 100000, None, (None, None))},
+            pin=(1, None, (None, None, None)),
         )
         mock_repo.write_each.assert_called_once()
 
@@ -10768,6 +10770,34 @@ class TestSelfTrimmingRefunds:
         assert item[bucket_attr("q", BUCKET_FIELD_TK)]["N"] == "99000"
         assert item[BUCKET_FIELD_VU]["N"] == "0"
         spend = r1.speculative_consume("dbl", "r", {"q": 60}, shard_id=0)
+        assert not spend.success
+
+    T10 = int(datetime(2026, 10, 9, 10, 0, 0, tzinfo=UTC).timestamp() * 1000)
+
+    @staticmethod
+    def _windowed(cap_in_window):
+        base = Limit.custom("q", capacity=100, refill_amount=1, refill_period_seconds=86400)
+        return base.with_schedule((ScheduleEntry(cron="* 0-11 * * *", capacity=cap_in_window),))
+
+    def test_entity_schedule_scale_change_same_boundary(self, two):
+        """A window's capacity tuned 100 -> 50 under the same cron (#730 review): cp,
+        gc, shard_count and vu all come out identical, so only the stored schedule
+        strings show that the ceiling dropped. Spent 60 against 50 before."""
+        l1, l2, now = two
+        now[0] = self.T10
+        r1, r2 = (l1._repository, l2._repository)
+        r1.set_limits("e", [self._windowed(100)], resource="r")
+        with l1.acquire("e", "r", {"q": 1}):
+            pass
+        with pytest.raises(RuntimeError):
+            with l1.acquire("e", "r", {"q": 10}):
+                r2.set_limits("e", [self._windowed(50)], resource="r")
+                with l2.acquire("e", "r", {"q": 0}):
+                    pass
+                raise RuntimeError("body failed")
+        item = self._raw(r1, "e", resource="r")
+        assert item[BUCKET_FIELD_VU]["N"] == "0"
+        spend = r2.speculative_consume("e", "r", {"q": 60}, shard_id=0)
         assert not spend.success
 
     def test_a_lowered_limit_clamped_before_the_refund(self, two):

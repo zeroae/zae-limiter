@@ -22,7 +22,7 @@ from .bucket import (
     window_end_in_force,
 )
 from .exceptions import LeaseExpiredError, RateLimitExceeded
-from .models import BucketState, CreditCeiling, Limit, LimitStatus, QuotaDonorDebit
+from .models import BucketState, CreditCeiling, CreditPin, Limit, LimitStatus, QuotaDonorDebit
 from .schema import (
     BUCKET_FIELD_RF,
     BUCKET_FIELD_TK,
@@ -55,7 +55,7 @@ class LeaseEntry:
     _initial_consumed: int = 0
     _shard_id: int = 0
     _shard_count: int = 1
-    _stored_pin: tuple[int, int | None] | None = None
+    _stored_pin: CreditPin | None = None
     _cascade: bool = False
     _parent_id: str | None = None
     _stamp_owner: bool = False
@@ -92,6 +92,7 @@ def credit_ceilings(
                 ceiling_milli=int(state.ceiling_milli(now_ms)),
                 capacity_milli=int(state.capacity_milli),
                 grant_count=None if state.grant_count is None else int(state.grant_count),
+                sched_raw=state.stored_sched_raw,
             )
         except Exception:
             logger.warning("Could not check a credit against its ceiling", exc_info=True)
@@ -105,7 +106,7 @@ def write_credit(
     deltas: dict[str, int],
     shard_id: int,
     ceilings: dict[str, CreditCeiling],
-    pin: tuple[int, int | None] | None,
+    pin: CreditPin | None,
 ) -> None:
     """Write one adjust item whose credits trim themselves (#721, refs #680).
 
@@ -130,7 +131,7 @@ def write_credit(
     A debit, or a credit with no known ceiling, is one unconditional write.
     Errors other than the failed ceiling condition propagate to the caller.
     """
-    if ceilings and pin is None:
+    if ceilings and (pin is None or any(c.sched_raw is None for c in ceilings.values())):
         item = repository.build_composite_adjust(
             entity_id=entity_id, resource=resource, deltas=deltas, shard_id=shard_id, trim=True
         )
@@ -154,9 +155,7 @@ def write_credit(
         repository.write_each([trimmed])
 
 
-_CreditWrite = tuple[
-    str, str, int, dict[str, int], dict[str, CreditCeiling], tuple[int, int | None] | None
-]
+_CreditWrite = tuple[str, str, int, dict[str, int], dict[str, CreditCeiling], CreditPin | None]
 "(entity_id, resource, shard_id, deltas, ceilings, pin) for one adjust write (#721)."
 
 
@@ -208,11 +207,7 @@ class SyncLease:
             entry.limit.name for entry in self.entries if entry._declared
         )
         for entry in self.entries:
-            entry._stored_pin = (
-                (entry.state.shard_count, entry.state.stored_vu_ms)
-                if entry.state.stored_vu_read
-                else None
-            )
+            entry._stored_pin = credit_pin(entry.state)
 
     @property
     def consumed(self) -> dict[str, int]:
@@ -429,7 +424,7 @@ class SyncLease:
         written_images: list[
             tuple[tuple[str, str, int], list[BucketState], int, int | None, tuple[bool, str | None]]
         ] = []
-        written_pins: dict[tuple[str, str, int], tuple[int, int | None]] = {}
+        written_pins: dict[tuple[str, str, int], CreditPin | None] = {}
         for (entity_id, resource, shard_id), group_entries in groups.items():
             is_new = group_entries[0]._is_new
             has_custom_config = group_entries[0]._has_custom_config
@@ -446,7 +441,7 @@ class SyncLease:
             owner_entry = next((e for e in group_entries if e._stamp_owner), None)
             if is_new:
                 first_entry = owner_entry or group_entries[0]
-                written_pins[entity_id, resource, shard_id] = (first_entry._shard_count, vu)
+                written_pins[entity_id, resource, shard_id] = None
                 items.append(
                     repo.build_composite_create(
                         entity_id=entity_id,
@@ -549,11 +544,10 @@ class SyncLease:
                 pin = [e.state.shard_count for e in group_entries if e._seed and e.limit.is_quota]
                 pin += list(grant_counts.values())
                 written_rf = _monotonic_rf(now_ms, expected_rf, group_entries)
-                read_count = next(
-                    (e.state.shard_count for e in group_entries if not e._seed),
-                    group_entries[0].state.shard_count,
+                read_pin = next((credit_pin(e.state) for e in group_entries if not e._seed), None)
+                written_pins[entity_id, resource, shard_id] = (
+                    (read_pin[0], vu, read_pin[2]) if read_pin is not None and (not seeds) else None
                 )
-                written_pins[entity_id, resource, shard_id] = (read_count, vu)
                 read_state = next(
                     (e.state for e in group_entries if not e._seed and e.state.stored_vu_read), None
                 )
@@ -978,6 +972,16 @@ class SyncLease:
             pin = pins.pop() if len(pins) == 1 else None
             writes.append((entity_id, resource, shard_id, deltas, ceilings, pin))
         return writes
+
+
+def credit_pin(state: BucketState) -> CreditPin | None:
+    """The (``shard_count``, ``vu``, item schedule strings) a state read off an item saw.
+
+    ``None`` for a state not read off an item (#721).
+    """
+    if not state.stored_vu_read or state.stored_item_sched_raw is None:
+        return None
+    return (state.shard_count, state.stored_vu_ms, state.stored_item_sched_raw)
 
 
 def _get_cancellation_reason_codes(exc: Exception) -> list[str] | None:

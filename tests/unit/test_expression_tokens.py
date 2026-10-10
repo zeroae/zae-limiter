@@ -323,10 +323,10 @@ class TestCompositeBuilders:
             "api",
             deltas={DOTTED: -1000, "rpm": 0, HYPHENATED: -2000},
             ceilings={
-                DOTTED: CreditCeiling(5000, 10_000, None),
-                HYPHENATED: CreditCeiling(9000, 9000, 1),
+                DOTTED: CreditCeiling(5000, 10_000, None, ("1h9-17s500", None)),
+                HYPHENATED: CreditCeiling(9000, 9000, 1, (None, "1m0h0")),
             },
-            pin=(4, 1_800_000_000_000),
+            pin=(4, 1_800_000_000_000, ("1h9-17s500", None, "America/New_York")),
         )["Update"]
         assert_expression_safe(update)
         assert "ConditionExpression" in update

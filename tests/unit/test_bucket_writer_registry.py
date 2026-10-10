@@ -238,8 +238,8 @@ def _non_gc_builds() -> dict[str, list[dict[str, Any]]]:
                 "e",
                 "r",
                 deltas={"cal": -1_000, "ses": -1_000},
-                ceilings={"cal": CreditCeiling(5_000, 10_000, 2)},
-                pin=(2, None),
+                ceilings={"cal": CreditCeiling(5_000, 10_000, 2, ("1m0h0", None))},
+                pin=(2, None, ("1h9-17s500", None, "UTC")),
             )["Update"],
             repo.build_composite_adjust("e", "r", deltas={"cal": -1_000, "ses": -1_000}, trim=True)[
                 "Update"

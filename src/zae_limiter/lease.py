@@ -16,7 +16,7 @@ from .bucket import (
     window_end_in_force,
 )
 from .exceptions import LeaseExpiredError, RateLimitExceeded
-from .models import BucketState, CreditCeiling, Limit, LimitStatus, QuotaDonorDebit
+from .models import BucketState, CreditCeiling, CreditPin, Limit, LimitStatus, QuotaDonorDebit
 from .schema import (
     BUCKET_FIELD_RF,
     BUCKET_FIELD_TK,
@@ -71,7 +71,7 @@ class LeaseEntry:
     # The item's (`shard_count`, `vu`) as this lease last wrote or read it
     # (`vu` None = absent), or None when unknown (the consumption-only retry
     # leaves the item as another writer left it). A refund pins both (#721).
-    _stored_pin: tuple[int, int | None] | None = None
+    _stored_pin: CreditPin | None = None
     # Denormalized entity fields for speculative writes (Issue #315)
     _cascade: bool = False
     _parent_id: str | None = None
@@ -165,6 +165,7 @@ def credit_ceilings(
                 ceiling_milli=int(state.ceiling_milli(now_ms)),
                 capacity_milli=int(state.capacity_milli),
                 grant_count=None if state.grant_count is None else int(state.grant_count),
+                sched_raw=state.stored_sched_raw,
             )
         except Exception:
             logger.warning("Could not check a credit against its ceiling", exc_info=True)
@@ -178,7 +179,7 @@ async def write_credit(
     deltas: dict[str, int],
     shard_id: int,
     ceilings: dict[str, CreditCeiling],
-    pin: tuple[int, int | None] | None,
+    pin: CreditPin | None,
 ) -> None:
     """Write one adjust item whose credits trim themselves (#721, refs #680).
 
@@ -203,7 +204,7 @@ async def write_credit(
     A debit, or a credit with no known ceiling, is one unconditional write.
     Errors other than the failed ceiling condition propagate to the caller.
     """
-    if ceilings and pin is None:
+    if ceilings and (pin is None or any(c.sched_raw is None for c in ceilings.values())):
         item = repository.build_composite_adjust(
             entity_id=entity_id, resource=resource, deltas=deltas, shard_id=shard_id, trim=True
         )
@@ -227,9 +228,7 @@ async def write_credit(
         await repository.write_each([trimmed])
 
 
-_CreditWrite = tuple[
-    str, str, int, dict[str, int], dict[str, CreditCeiling], tuple[int, int | None] | None
-]
+_CreditWrite = tuple[str, str, int, dict[str, int], dict[str, CreditCeiling], CreditPin | None]
 """(entity_id, resource, shard_id, deltas, ceilings, pin) for one adjust write (#721)."""
 
 
@@ -309,15 +308,11 @@ class Lease:
             entry.limit.name for entry in self.entries if entry._declared
         )
         # Each state is the item as read or as a speculative write returned it
-        # (ALL_NEW), so its `shard_count` and `vu` are the item's own until
-        # `_commit_initial` writes new ones (#721). A state not read off an
-        # item does not know `vu`.
+        # (ALL_NEW), so its `shard_count`, `vu` and schedule strings are the
+        # item's own until `_commit_initial` writes new ones (#721). A state
+        # not read off an item knows none of them.
         for entry in self.entries:
-            entry._stored_pin = (
-                (entry.state.shard_count, entry.state.stored_vu_ms)
-                if entry.state.stored_vu_read
-                else None
-            )
+            entry._stored_pin = credit_pin(entry.state)
 
     @property
     def consumed(self) -> dict[str, int]:
@@ -578,7 +573,7 @@ class Lease:
         ] = []
         # (`shard_count`, `vu`) each bucket item holds once this write lands,
         # for a later refund's pin (#721).
-        written_pins: dict[tuple[str, str, int], tuple[int, int | None]] = {}
+        written_pins: dict[tuple[str, str, int], CreditPin | None] = {}
         for (entity_id, resource, shard_id), group_entries in groups.items():
             is_new = group_entries[0]._is_new
 
@@ -609,7 +604,9 @@ class Lease:
 
             if is_new:
                 first_entry = owner_entry or group_entries[0]
-                written_pins[(entity_id, resource, shard_id)] = (first_entry._shard_count, vu)
+                # A create writes schedule strings this lease never read off
+                # the item, so a refund of it has nothing to pin (#721).
+                written_pins[(entity_id, resource, shard_id)] = None
                 items.append(
                     repo.build_composite_create(
                         entity_id=entity_id,
@@ -789,12 +786,14 @@ class Lease:
                 # Computed after the loop above, which can anchor a window at
                 # this reading; the lock still compares the stored `expected_rf`.
                 written_rf = _monotonic_rf(now_ms, expected_rf, group_entries)
-                read_count = next(
-                    (e.state.shard_count for e in group_entries if not e._seed),
-                    group_entries[0].state.shard_count,
+                # The write SETs `vu` to the earliest boundary, or REMOVEs it,
+                # and leaves `shard_count` and the schedule strings as read --
+                # unless it seeds a limit, which can write `sched_tz` (#633):
+                # then a refund has nothing to pin (#721).
+                read_pin = next((credit_pin(e.state) for e in group_entries if not e._seed), None)
+                written_pins[(entity_id, resource, shard_id)] = (
+                    (read_pin[0], vu, read_pin[2]) if read_pin is not None and not seeds else None
                 )
-                # The write SETs `vu` to the earliest boundary, or REMOVEs it.
-                written_pins[(entity_id, resource, shard_id)] = (read_count, vu)
                 # The `vu` this pass read, to pin when the write sets or
                 # removes it (#701): only from a state read off the item.
                 read_state = next(
@@ -1335,6 +1334,16 @@ class Lease:
             pin = pins.pop() if len(pins) == 1 else None
             writes.append((entity_id, resource, shard_id, deltas, ceilings, pin))
         return writes
+
+
+def credit_pin(state: BucketState) -> CreditPin | None:
+    """The (``shard_count``, ``vu``, item schedule strings) a state read off an item saw.
+
+    ``None`` for a state not read off an item (#721).
+    """
+    if not state.stored_vu_read or state.stored_item_sched_raw is None:
+        return None
+    return (state.shard_count, state.stored_vu_ms, state.stored_item_sched_raw)
 
 
 def _get_cancellation_reason_codes(exc: Exception) -> list[str] | None:

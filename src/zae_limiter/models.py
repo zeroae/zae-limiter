@@ -1195,6 +1195,14 @@ class BucketState:
     stored_vu_ms: int | None = None
     # True only for a state read off an item, where `stored_vu_ms` is known.
     stored_vu_read: bool = False
+    # The raw schedule strings on the item as this state was read (#721), or
+    # `None` when the state was not read off an item. Item level: (`sched`,
+    # `rsched`, `sched_tz`); this limit's own overrides: (`b_{name}_sched`,
+    # `b_{name}_rsched`); each `None` when absent. A refund pins them: a
+    # schedule-only change moves the ceiling without moving `cp`, `gc`,
+    # `shard_count` or (when the next boundary is unchanged) `vu`.
+    stored_item_sched_raw: tuple[str | None, str | None, str | None] | None = None
+    stored_sched_raw: tuple[str | None, str | None] | None = None
 
     @property
     def tokens(self) -> int:
@@ -2185,13 +2193,24 @@ class CreditCeiling:
     ``ceiling_milli`` is ``BucketState.ceiling_milli`` from the caller's state.
     That state can be stale, so the write also pins what the ceiling was
     computed from and can be lowered by: the stored base capacity
-    (``b_{name}_cp``, moved by a limit change) and the quota grant count
-    (``b_{name}_gc``, moved by a re-grant; ``None`` = absent).
+    (``b_{name}_cp``, moved by a limit change), the quota grant count
+    (``b_{name}_gc``, moved by a re-grant; ``None`` = absent) and the limit's
+    own schedule overrides (``b_{name}_sched``, ``b_{name}_rsched``, each
+    ``None`` = absent; a schedule-only change). ``sched_raw`` is ``None`` when
+    the state was not read off the item: then nothing can be pinned and the
+    credit is trimmed outright.
     """
 
     ceiling_milli: int
     capacity_milli: int
     grant_count: int | None
+    sched_raw: tuple[str | None, str | None] | None = None
+
+
+#: (``shard_count``, ``vu``, (``sched``, ``rsched``, ``sched_tz``)) of a bucket
+#: item as a lease last wrote or read it, each ``None`` = absent: what a
+#: self-trimming credit (#721) pins beside its ``CreditCeiling``s.
+CreditPin = tuple[int, int | None, tuple[str | None, str | None, str | None]]
 
 
 @dataclass(frozen=True)

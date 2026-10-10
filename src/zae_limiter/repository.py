@@ -29,6 +29,7 @@ from .models import (
     BucketState,
     ConfigAccess,
     CreditCeiling,
+    CreditPin,
     Entity,
     Limit,
     OnUnavailableAction,
@@ -103,6 +104,14 @@ _SEED_TOKEN = {
     schema.BUCKET_FIELD_WA: "g",
     schema.BUCKET_FIELD_GC: "k",
 }
+
+
+def _pin_string(alias: str, token: str, raw: str | None, values: dict[str, Any]) -> str:
+    """A condition term holding a string attribute at ``raw``, or absent (#721)."""
+    if raw is None:
+        return f"attribute_not_exists({alias})"
+    values[token] = {"S": raw}
+    return f"{alias} = {token}"
 
 
 class Repository:
@@ -3231,7 +3240,7 @@ class Repository:
         shard_id: int = 0,
         ceilings: dict[str, CreditCeiling] | None = None,
         trim: bool = False,
-        pin: tuple[int, int | None] | None = None,
+        pin: CreditPin | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the adjust write path (ADR-115 path 4).
 
@@ -3245,8 +3254,9 @@ class Repository:
         stays at or below the ceiling. The ceiling is the caller's, computed
         from a state that may be stale, so the condition also pins everything
         that state's ceiling was computed from and that a write can lower: the
-        limit's stored ``cp`` and ``gc``, and, from ``pin``, the item's
-        ``shard_count`` and ``vu`` (``None`` = absent). When the condition
+        limit's stored ``cp``, ``gc`` and schedule overrides, and, from
+        ``pin``, the item's ``shard_count``, ``vu`` and item-level schedule
+        strings (each ``None`` = absent). When the condition
         fails — a reset edge, a refill to capacity, a doubling, a re-grant, a
         changed limit — the caller re-issues the credit with ``trim=True``: the
         same unconditional ``ADD`` plus ``SET vu = 0`` in one write. A debit,
@@ -3299,6 +3309,20 @@ class Repository:
                 else:
                     attr_values[f":bg{i}"] = {"N": str(ceiling.grant_count)}
                     condition_parts.append(f"#bg{i} = :bg{i}")
+                # ...and so is its schedule: a window's capacity or scale
+                # changed under the same cron moves only these strings (#721).
+                if ceiling.sched_raw is not None:
+                    for code, field, raw in zip(
+                        ("s", "r"),
+                        (schema.BUCKET_FIELD_SCHED, schema.BUCKET_FIELD_RSCHED),
+                        ceiling.sched_raw,
+                        strict=True,
+                    ):
+                        alias = f"#bx{code}{i}"
+                        attr_names[alias] = schema.bucket_attr(name, field)
+                        condition_parts.append(
+                            _pin_string(alias, f":bx{code}{i}", raw, attr_values)
+                        )
 
         if not add_parts:
             # Nothing to adjust
@@ -3321,7 +3345,7 @@ class Repository:
             # `rf` moves on every refill (the aggregator's included), which the
             # `tk` bound already covers, and stays put for a writer whose clock
             # lags the stored `rf` (it stamps `max(now, rf)`).
-            shard_count, vu = pin
+            shard_count, vu, item_sched = pin
             attr_names["#bsc"] = "shard_count"
             attr_values[":bsc"] = {"N": str(shard_count)}
             condition_parts.append(
@@ -3334,6 +3358,19 @@ class Repository:
             else:
                 attr_values[":bvu"] = {"N": str(vu)}
                 condition_parts.append("#bvu = :bvu")
+            # The item-level schedule every limit without an override inherits.
+            for code, field, raw in zip(
+                ("s", "r", "z"),
+                (
+                    schema.BUCKET_FIELD_SCHED,
+                    schema.BUCKET_FIELD_RSCHED,
+                    schema.BUCKET_FIELD_SCHED_TZ,
+                ),
+                item_sched,
+                strict=True,
+            ):
+                attr_names[f"#bi{code}"] = field
+                condition_parts.append(_pin_string(f"#bi{code}", f":bi{code}", raw, attr_values))
 
         update: dict[str, Any] = {
             "TableName": self.table_name,
@@ -6499,7 +6536,8 @@ class Repository:
         # §4.1). Absent on every item written before scheduling existed, where
         # UTC is harmless: it is only ever consulted alongside a compact
         # string, and those items carry none.
-        sched_tz = item.get(schema.BUCKET_FIELD_SCHED_TZ, {}).get("S") or "UTC"
+        raw_sched_tz = item.get(schema.BUCKET_FIELD_SCHED_TZ, {}).get("S")
+        sched_tz = raw_sched_tz or "UTC"
         item_sched = item.get(schema.BUCKET_FIELD_SCHED, {}).get("S")
         item_rsched = item.get(schema.BUCKET_FIELD_RSCHED, {}).get("S")
         # Keyed by (compact, reset) rather than by limit: the item-level
@@ -6643,6 +6681,11 @@ class Repository:
                     grant_count=grant_count,
                     stored_vu_ms=stored_vu,
                     stored_vu_read=True,
+                    stored_item_sched_raw=(item_sched, item_rsched, raw_sched_tz),
+                    stored_sched_raw=(
+                        item.get(schema.bucket_attr(name, schema.BUCKET_FIELD_SCHED), {}).get("S"),
+                        item.get(schema.bucket_attr(name, schema.BUCKET_FIELD_RSCHED), {}).get("S"),
+                    ),
                 )
             )
 

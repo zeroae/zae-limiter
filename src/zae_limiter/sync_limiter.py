@@ -57,7 +57,14 @@ from .models import (
 from .schedule import effective_params, next_boundary, prev_reset_edge, retry_after_with_schedule
 from .schema import DEFAULT_RESOURCE, WCU_LIMIT_NAME
 from .sync_config_cache import ConfigSource
-from .sync_lease import LeaseEntry, QuotaMoveLostError, SyncLease, credit_ceilings, write_credit
+from .sync_lease import (
+    LeaseEntry,
+    QuotaMoveLostError,
+    SyncLease,
+    credit_ceilings,
+    credit_pin,
+    write_credit,
+)
 from .sync_repository import SyncRepository
 from .sync_repository_protocol import SpeculativeFailureReason
 
@@ -1202,11 +1209,8 @@ class SyncRateLimiter:
         ceilings = credit_ceilings(
             [(b.limit_name, b) for b in buckets or ()], deltas, self._repository._now_ms()
         )
-        pin = (
-            (buckets[0].shard_count, buckets[0].stored_vu_ms)
-            if buckets and buckets[0].stored_vu_read
-            else None
-        )
+        image = buckets[0] if buckets else None
+        pin = credit_pin(image) if image is not None else None
         write_credit(self._repository, entity_id, resource, deltas, shard_id, ceilings, pin)
 
     @staticmethod
