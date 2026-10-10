@@ -95,6 +95,7 @@ AGGREGATOR = {
     "_donor_update_items": (True, False),  # the donor side of a Path 2 move
     "_quota_count_freeze": (False, True),  # Path 1 raising a legacy item freezes gc
     "_repair_quota_clones": (False, True),  # raise clones a doubling overtook, freeze
+    "_repair_clone_owner_stamps": (False, False),  # restamp clones a move overtook (ADR-150)
     "propagate_shard_count": (True, True),  # Path 1 raise + Path 2 clone put / transaction
     "try_proactive_shard": (False, False),  # shard_count on shard 0
     "update_snapshot": NOT_BUCKET,  # usage snapshot items

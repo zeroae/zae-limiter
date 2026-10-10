@@ -452,6 +452,142 @@ class TestStaleWriters:
             async with limiter.acquire("user", "gpt-4", consume={"rpm": 1}) as lease:
                 assert lease.consumed == {"rpm": 1}
 
+    @staticmethod
+    async def _doubling_record(repo: Repository) -> dict:
+        """The stream record of shard 0's 1 -> 2 doubling, its image read now."""
+        client = await repo._get_client()
+        await client.update_item(  # what the aggregator's proactive shard writes
+            TableName=TABLE,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, "user", "gpt-4", 0)},
+                "SK": {"S": schema.sk_state()},
+            },
+            UpdateExpression="SET shard_count = :n",
+            ExpressionAttributeValues={":n": {"N": "2"}},
+        )
+        new_image = await _item(repo, "user", "gpt-4")
+        old_image = {**new_image, "shard_count": {"N": "1"}}
+        return {"eventName": "MODIFY", "dynamodb": {"NewImage": new_image, "OldImage": old_image}}
+
+    async def test_an_aggregator_clone_from_before_the_move_is_restamped(self, limiter):
+        """Review of #716, finding 3: Path 2 clones copy shard 0's stream image."""
+        import boto3
+
+        from zae_limiter_aggregator.processor import propagate_shard_count
+
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        record = await self._doubling_record(repo)
+        await repo.set_parent("user", "org-b")  # lands before the lagging record
+
+        table = boto3.resource("dynamodb", region_name="us-east-1").Table(TABLE)
+        assert propagate_shard_count(table, record) == 1
+
+        assert _stamp(await _item(repo, "user", "gpt-4", 1)) == (True, "org-b", 1)
+        third_repo = await _open_repo()
+        async with RateLimiter(repository=third_repo) as third:
+            org_a = await _consumed(repo, "org-a")
+            for _ in range(10):
+                async with third.acquire("user", "gpt-4", consume={"rpm": 1}):
+                    pass
+        await third_repo.close()
+        assert await _consumed(repo, "org-a") == org_a
+
+    async def test_a_clone_resolves_the_policy_and_a_move_to_no_parent(self, limiter):
+        import boto3
+
+        from zae_limiter_aggregator.processor import (
+            _clone_owner_stamp,
+            propagate_shard_count,
+        )
+
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        await repo.set_entity_cascade("user", False)  # entity-wide policy: off
+        table = boto3.resource("dynamodb", region_name="us-east-1").Table(TABLE)
+        ns = repo._namespace_id
+        assert _clone_owner_stamp(table, ns, "user", "gpt-4") == (False, "org-a", 0)
+        assert _clone_owner_stamp(table, ns, "user", schema.DEFAULT_RESOURCE) == (
+            False,
+            "org-a",
+            0,
+        )
+        await repo.clear_entity_cascade("user")
+        await repo.set_resource_cascade("gpt-4", True)
+        assert _clone_owner_stamp(table, ns, "user", "gpt-4") == (True, "org-a", 0)
+        assert _clone_owner_stamp(table, ns, "nobody", "gpt-4") is None
+
+        record = await self._doubling_record(repo)
+        await repo.set_parent("user", None)
+        assert propagate_shard_count(table, record) == 1
+        assert _stamp(await _item(repo, "user", "gpt-4", 1)) == (False, None, 1)
+
+    async def test_a_clone_with_a_current_stamp_is_left_alone(self, limiter):
+        import boto3
+
+        from zae_limiter_aggregator.processor import propagate_shard_count
+
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        await repo.set_parent("user", "org-b")
+        record = await self._doubling_record(repo)  # taken after the move
+        table = boto3.resource("dynamodb", region_name="us-east-1").Table(TABLE)
+        with patch.object(table, "update_item", side_effect=AssertionError("restamped")):
+            assert propagate_shard_count(table, record) == 1
+        assert _stamp(await _item(repo, "user", "gpt-4", 1)) == (True, "org-b", 1)
+
+    async def test_a_failed_clone_repair_is_swallowed(self, limiter):
+        from botocore.exceptions import ClientError, EndpointConnectionError
+
+        from zae_limiter_aggregator.processor import _repair_clone_owner_stamps
+
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        await repo.set_parent("user", "org-b")
+        ns = repo._namespace_id
+        throttled = ClientError({"Error": {"Code": "ThrottlingException"}}, "UpdateItem")
+        gone = ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")
+        dropped = EndpointConnectionError(endpoint_url="http://dynamodb")
+
+        class _Table:
+            def __init__(self, get=None, update=None):
+                self.get, self.update = get, update
+
+            def get_item(self, **kwargs):
+                if self.get is not None:
+                    raise self.get
+                return {"Item": {"parent_id": None, "pgen": 5}}
+
+            def update_item(self, **kwargs):
+                raise self.update
+
+        _repair_clone_owner_stamps(_Table(get=throttled), ns, "user", "gpt-4", [1], 0)
+        for error in (throttled, gone, dropped):
+            _repair_clone_owner_stamps(_Table(update=error), ns, "user", "gpt-4", [1, 2], 0)
+
+    async def test_the_clone_restamp_is_token_safe(self, limiter):
+        import boto3
+
+        from tests.unit.test_expression_tokens import assert_expression_safe
+        from zae_limiter_aggregator.processor import _repair_clone_owner_stamps
+
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        table = boto3.resource("dynamodb", region_name="us-east-1").Table(TABLE)
+        for parent in ("org-b", None):
+            await repo.set_parent("user", parent)
+            calls = []
+            real = table.update_item
+
+            def spy(_real=real, _calls=calls, **kwargs):
+                _calls.append(kwargs)
+                return _real(**kwargs)
+
+            with patch.object(table, "update_item", spy):
+                _repair_clone_owner_stamps(table, repo._namespace_id, "user", "gpt-4", [0], 0)
+            assert len(calls) == 1
+            assert_expression_safe(calls[0])
+
     async def test_a_stale_fanout_stamp_is_skipped(self, limiter):
         repo = limiter._repository
         await _hierarchy(limiter)
