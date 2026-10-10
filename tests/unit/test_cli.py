@@ -8240,3 +8240,122 @@ class TestReportingCommandsAreReadOnly:
         assert result.exit_code == 0, result.output
         assert "Infrastructure is ready" in result.output
         assert asyncio.run(self._items()) == before
+
+
+class TestResetAndTopUpCommands:
+    """entity reset / entity top-up (ADR-149, #470)."""
+
+    @staticmethod
+    def _writable(mock_repo_class: Mock, **methods: Any) -> Mock:
+        mock_repo = Mock()
+        for name, value in methods.items():
+            setattr(mock_repo, name, AsyncMock(**value))
+        mock_repo.close = AsyncMock(return_value=None)
+        mock_repo_class.open = AsyncMock(return_value=mock_repo)
+        return mock_repo
+
+    @staticmethod
+    def _result(shards: int, amounts: dict[str, int]) -> Any:
+        from zae_limiter.models import BucketOperationResult
+
+        return BucketOperationResult("user-123", "gpt-4", shards, amounts)
+
+    @pytest.mark.parametrize("command", [["entity", "reset"], ["entity", "top-up"]])
+    def test_help(self, runner: CliRunner, command: list[str]) -> None:
+        result = runner.invoke(cli, [*command, "--help"])
+        assert result.exit_code == 0
+        assert "--resource" in result.output and "--namespace" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_reset_every_limit(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        repo = self._writable(
+            mock_repo_class, reset_bucket={"return_value": self._result(2, {"rpm": 40})}
+        )
+        result = runner.invoke(cli, ["entity", "reset", "user-123", "-r", "gpt-4"])
+        assert result.exit_code == 0, result.output
+        assert "Reset 'user-123' on 'gpt-4' (2 shards; rpm: +40)" in result.output
+        repo.reset_bucket.assert_called_once_with("user-123", "gpt-4", limits=None)
+
+    @patch("zae_limiter.repository.Repository")
+    def test_reset_named_limits(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        repo = self._writable(
+            mock_repo_class, reset_bucket={"return_value": self._result(1, {"session": 9})}
+        )
+        result = runner.invoke(
+            cli, ["entity", "reset", "user-123", "-r", "gpt-4", "-l", "session", "-l", "rpm"]
+        )
+        assert result.exit_code == 0, result.output
+        repo.reset_bucket.assert_called_once_with("user-123", "gpt-4", limits=["session", "rpm"])
+
+    @patch("zae_limiter.repository.Repository")
+    def test_reset_of_a_missing_bucket(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        self._writable(mock_repo_class, reset_bucket={"return_value": self._result(0, {})})
+        result = runner.invoke(cli, ["entity", "reset", "user-123", "-r", "gpt-4"])
+        assert result.exit_code == 0, result.output
+        assert "Nothing to reset" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_reset_failure_exits_1(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        self._writable(mock_repo_class, reset_bucket={"side_effect": RuntimeError("boom")})
+        result = runner.invoke(cli, ["entity", "reset", "user-123", "-r", "gpt-4"])
+        assert result.exit_code == 1
+        assert "Failed to reset bucket: boom" in result.output
+
+    def test_reset_needs_a_resource(self, runner: CliRunner) -> None:
+        result = runner.invoke(cli, ["entity", "reset", "user-123"])
+        assert result.exit_code != 0
+        assert "--resource" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_top_up(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        repo = self._writable(
+            mock_repo_class,
+            top_up={"return_value": self._result(1, {"session": 5000, "rpd": 7})},
+        )
+        result = runner.invoke(
+            cli,
+            [
+                *("entity", "top-up", "user-123", "-r", "gpt-4"),
+                *("--add", "session:5,000", "--add", "rpd:3", "-a", "rpd:4"),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "rpd: +7, session: +5,000" in result.output
+        assert "less than asked" not in result.output
+        repo.top_up.assert_called_once_with("user-123", "gpt-4", {"session": 5000, "rpd": 7})
+
+    @patch("zae_limiter.repository.Repository")
+    def test_top_up_granted_less_says_so(self, mock_repo_class: Mock, runner: CliRunner) -> None:
+        self._writable(mock_repo_class, top_up={"return_value": self._result(1, {"rpm": 2})})
+        result = runner.invoke(
+            cli, ["entity", "top-up", "user-123", "-r", "gpt-4", "--add", "rpm:10"]
+        )
+        assert result.exit_code == 0, result.output
+        assert "rpm granted less than asked" in result.output
+
+    @pytest.mark.parametrize("value", ["rpm", ":5", "rpm:five", "rpm:0", "rpm:-3"])
+    def test_top_up_rejects_a_malformed_addition(self, runner: CliRunner, value: str) -> None:
+        result = runner.invoke(cli, ["entity", "top-up", "user-123", "-r", "gpt-4", "--add", value])
+        assert result.exit_code != 0
+        assert "Invalid value" in result.output
+
+    @patch("zae_limiter.repository.Repository")
+    def test_top_up_refused_by_the_gate_exits_1(
+        self, mock_repo_class: Mock, runner: CliRunner
+    ) -> None:
+        from zae_limiter.exceptions import VersionMismatchError
+
+        refusal = VersionMismatchError(
+            client_version="0.17.0",
+            schema_version="1.0.0",
+            lambda_version="0.16.0",
+            message="Refusing to top up a quota above its plan: run 'zae-limiter upgrade'",
+            can_auto_update=True,
+        )
+        self._writable(mock_repo_class, top_up={"side_effect": refusal})
+        result = runner.invoke(
+            cli, ["entity", "top-up", "user-123", "-r", "gpt-4", "--add", "rpd:1"]
+        )
+        assert result.exit_code == 1
+        assert "Failed to top up bucket" in result.output
+        assert "zae-limiter upgrade" in result.output
