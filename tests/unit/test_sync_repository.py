@@ -7459,11 +7459,11 @@ class TestResetAndTopUp:
         real = repo.transact_write
         calls = []
 
-        def racing(items):
+        def racing(items, **kwargs):
             if not calls:
                 calls.append(1)
                 _op_put_shard(repo, "e", "r", [_OP_CAL], tokens={"cal": 0})
-            return real(items)
+            return real(items, **kwargs)
 
         with patch.object(repo, "transact_write", side_effect=racing):
             result = repo.top_up("e", "r", {"cal": 2})
@@ -7511,7 +7511,7 @@ class TestResetAndTopUp:
         real = repo.transact_write
         calls = []
 
-        def conflicting(items):
+        def conflicting(items, **kwargs):
             if not calls:
                 calls.append(1)
                 client = repo._get_client()
@@ -7524,7 +7524,7 @@ class TestResetAndTopUp:
                     UpdateExpression="SET rf = rf + :one",
                     ExpressionAttributeValues={":one": {"N": "1"}},
                 )
-            return real(items)
+            return real(items, **kwargs)
 
         with patch.object(repo, "transact_write", side_effect=conflicting):
             result = repo.reset_bucket("e", "r")

@@ -3346,8 +3346,16 @@ class Repository:
             }
         }
 
-    async def transact_write(self, items: list[dict[str, Any]]) -> None:
-        """Execute a write, using single-item API when possible to halve WCU cost."""
+    async def transact_write(
+        self, items: list[dict[str, Any]], client_request_token: str | None = None
+    ) -> None:
+        """Execute a write, using single-item API when possible to halve WCU cost.
+
+        ``client_request_token`` makes a multi-item transaction idempotent for
+        ten minutes (``TransactWriteItems``' ``ClientRequestToken``), so an SDK
+        retry of one whose response was lost succeeds instead of failing its
+        conditions. A single item ignores it.
+        """
         if not items:
             return
 
@@ -3363,6 +3371,10 @@ class Repository:
                 await client.delete_item(**item["Delete"])
             else:
                 await client.transact_write_items(TransactItems=items)
+        elif client_request_token is not None:
+            await client.transact_write_items(
+                TransactItems=items, ClientRequestToken=client_request_token
+            )
         else:
             await client.transact_write_items(TransactItems=items)
 
@@ -8616,6 +8628,14 @@ class Repository:
                 f"(configured: {', '.join(sorted(by_name))})",
             )
 
+        # One id per call, stamped on every shard the write touches. A failed
+        # write whose items carry it did land: its response was lost and the
+        # SDK's own retry then failed the rf lock. Re-planning would apply the
+        # operation twice (2N for one top-up), so the id is what tells the two
+        # apart.
+        operation_id = str(ULID())
+        # The result of the last write attempted, returned if its id is found.
+        pending: BucketOperationResult | None = None
         last_error: Exception | None = None
         for attempt in range(_OPERATION_MAX_ATTEMPTS):
             if attempt:
@@ -8623,17 +8643,22 @@ class Repository:
                 await asyncio.sleep(random.uniform(0, _OPERATION_RETRY_BASE_DELAY * 2**attempt))
             now_ms = self._now_ms()
             shards, raw = await self._read_operation_shards(entity_id, resource, now_ms)
-            if not shards:
+            if pending is not None and any(
+                item.get(schema.BUCKET_FIELD_OP, {}).get("S") == operation_id
+                for item in raw.values()
+            ):
+                result = pending  # the write landed; only its response was lost
+            elif not shards:
                 if operation == bucket_ops.RESET:
                     return BucketOperationResult(
                         entity_id, resource, 0, dict.fromkeys(requested, 0)
                     )
-                created = await self._top_up_new_bucket(
-                    entity_id, resource, resolved, source, requested, now_ms
+                result, landed = await self._top_up_new_bucket(
+                    entity_id, resource, resolved, source, requested, now_ms, operation_id
                 )
-                if created is None:
-                    continue  # lost the create race: re-read and plan in place
-                result = created
+                if not landed:
+                    pending = result
+                    continue  # lost the create race (or its response): re-read
             else:
                 top = max(shard.shard_count for shard in shards)
                 lagging = [shard for shard in shards if shard.shard_count < top]
@@ -8659,19 +8684,23 @@ class Repository:
                 plan = bucket_ops.plan_operation(operation, resolved, requested, shards, now_ms)
                 if plan.raises_ceiling:
                     await self._require_top_up_readers()
+                result = BucketOperationResult(entity_id, resource, len(plan.writes), plan.amounts)
                 try:
                     await self.transact_write(
                         [
-                            self.build_bucket_operation(entity_id, resource, write)
+                            self.build_bucket_operation(entity_id, resource, write, operation_id)
                             for write in plan.writes
-                        ]
+                        ],
+                        # Per attempt: a re-planned payload under the same token
+                        # would be an IdempotentParameterMismatch.
+                        client_request_token=f"{operation_id}-{attempt}",
                     )
                 except ClientError as e:
                     if e.response.get("Error", {}).get("Code") not in _OPERATION_RETRY_CODES:
                         raise
                     last_error = e
+                    pending = result
                     continue
-                result = BucketOperationResult(entity_id, resource, len(plan.writes), plan.amounts)
             if result.shards:
                 await self._log_audit_event(
                     action=(
@@ -8750,12 +8779,15 @@ class Repository:
         source: ConfigSource | None,
         requested: dict[str, int],
         now_ms: int,
-    ) -> BucketOperationResult | None:
+        operation_id: str,
+    ) -> tuple[BucketOperationResult, bool]:
         """D5: a top-up with no bucket creates shard 0 holding its share plus the quota top-up.
 
         A dripping limit is created full anyway, so it gains nothing and, when
-        no quota is named, nothing is written. Returns None when another writer
-        created the bucket first; the caller then re-reads and plans in place.
+        no quota is named, nothing is written. Returns the result and whether
+        the create is known to have landed: False when its condition failed —
+        another writer created the bucket first, or this very create landed and
+        its response was lost — and the caller re-reads to tell which.
         """
         states = {
             limit.name: BucketState.from_limit(entity_id, resource, limit, now_ms)
@@ -8766,7 +8798,7 @@ class Repository:
             name: amount if by_name[name].is_quota else 0 for name, amount in requested.items()
         }
         if not any(amounts.values()):
-            return BucketOperationResult(entity_id, resource, 0, amounts)
+            return BucketOperationResult(entity_id, resource, 0, amounts), True
         access = await self.resolve_access(entity_id, resource)
         if access.disabled:
             raise ResourceDisabled(
@@ -8785,29 +8817,28 @@ class Repository:
             if source in ("entity", "entity_default") or multiplier <= 0
             else schema.calculate_bucket_ttl_seconds(resolved, multiplier)
         )
+        create = self.build_composite_create(
+            entity_id=entity_id,
+            resource=resource,
+            states=list(states.values()),
+            now_ms=now_ms,
+            ttl_seconds=ttl_seconds,
+            cascade=effective_cascade(access.cascade, entity),
+            parent_id=entity.parent_id if entity is not None else None,
+            shard_id=0,
+            shard_count=1,
+            vu=bucket_ops.creation_vu(resolved, states, now_ms),
+            rf_ms=now_ms,
+        )
+        create["Put"]["Item"][schema.BUCKET_FIELD_OP] = {"S": operation_id}
+        result = BucketOperationResult(entity_id, resource, 1, amounts)
         try:
-            await self.transact_write(
-                [
-                    self.build_composite_create(
-                        entity_id=entity_id,
-                        resource=resource,
-                        states=list(states.values()),
-                        now_ms=now_ms,
-                        ttl_seconds=ttl_seconds,
-                        cascade=effective_cascade(access.cascade, entity),
-                        parent_id=entity.parent_id if entity is not None else None,
-                        shard_id=0,
-                        shard_count=1,
-                        vu=bucket_ops.creation_vu(resolved, states, now_ms),
-                        rf_ms=now_ms,
-                    )
-                ]
-            )
+            await self.transact_write([create])
         except ClientError as e:
             if e.response.get("Error", {}).get("Code") not in _OPERATION_RETRY_CODES:
                 raise
-            return None
-        return BucketOperationResult(entity_id, resource, 1, amounts)
+            return result, False
+        return result, True
 
     async def _require_top_up_readers(self) -> None:
         """Refuse a quota top-up above the plan the stack's readers would clamp (ADR-149).
@@ -8828,7 +8859,11 @@ class Repository:
         self._top_up_readers_proven = True
 
     def build_bucket_operation(
-        self, entity_id: str, resource: str, write: bucket_ops.ShardWrite
+        self,
+        entity_id: str,
+        resource: str,
+        write: bucket_ops.ShardWrite,
+        operation_id: str,
     ) -> dict[str, Any]:
         """Build one shard's rf-locked reset or top-up ``Update`` (ADR-149 §4.2).
 
@@ -8836,21 +8871,27 @@ class Repository:
         between the read and the write is kept), ``SET rf`` monotonic, ``vu = 0``
         to force one materialising pass that clamps anything credited in
         between, plus the grant counts, windows, applied markers and top-ups the
-        plan sets and the ``tu`` / ``wtc`` it removes. Conditioned on the
-        ``rf`` and ``shard_count`` read; ``tc``, ``disabled``, ``ttl`` and the
-        owner stamps are never touched.
+        plan sets and the ``tu`` / ``wtc`` it removes, and ``op =
+        operation_id`` so a write whose response was lost is recognised as
+        landed. Conditioned on the ``rf`` and ``shard_count`` read; ``tc``,
+        ``disabled``, ``ttl`` and the owner stamps are never touched.
 
         Tokens are positional (#634): ``#ot``/``:ot`` deltas, ``#og``/``:og``
         grant counts, ``#ow``/``:ow`` + ``#or``/``:or`` windows, ``#oa``/``:oa``
         applied markers, ``#ou``/``:ou`` top-ups, ``#ox`` / ``#oy`` removals.
         """
-        names: dict[str, str] = {"#rf": schema.BUCKET_FIELD_RF, "#vu": schema.BUCKET_FIELD_VU}
+        names: dict[str, str] = {
+            "#rf": schema.BUCKET_FIELD_RF,
+            "#vu": schema.BUCKET_FIELD_VU,
+            "#op": schema.BUCKET_FIELD_OP,
+        }
         values: dict[str, Any] = {
             ":rf": {"N": str(write.written_rf)},
             ":erf": {"N": str(write.expected_rf)},
             ":vu": {"N": "0"},
+            ":op": {"S": operation_id},
         }
-        set_parts = ["#rf = :rf", "#vu = :vu"]
+        set_parts = ["#rf = :rf", "#vu = :vu", "#op = :op"]
         add_parts: list[str] = []
         remove_parts: list[str] = []
 

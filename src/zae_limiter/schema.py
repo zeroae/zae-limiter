@@ -162,6 +162,13 @@ BUCKET_FIELD_GC = "gc"  # b_{name}_gc — grant count, per limit, per shard
 # in. Never read or written by the fast path.
 BUCKET_FIELD_TU = "tu"  # b_{name}_tu — topped-up allowance, millitokens
 
+# `op` (ADR-149): the id of the last reset or top-up written to this bucket item,
+# one per call, stamped on every shard by the same transaction. A write whose
+# response was lost (the SDK retries it, the retry fails the rf lock) is
+# recognised as landed by finding its own id, instead of being re-planned and
+# applied twice. Item-level, never read by any other writer.
+BUCKET_FIELD_OP = "op"
+
 # The explicit spelling of "this limit has no schedule of its own" (#541).
 #
 # Absence of a `b_{name}_sched` still means "inherit the item default" — that is
