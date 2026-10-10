@@ -456,6 +456,97 @@ class TestAnotherProcess:
         other_repo = other._repository
         assert other_repo._entity_cache[(other_repo._namespace_id, "user")][1] == "org-b"
 
+    async def test_a_new_parent_that_refill_would_help_is_the_one_debited(self, limiter, other):
+        """Review of #716, finding 1: the parent-only slow path must name the new parent."""
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        await self._warm(other)
+        async with limiter.acquire("org-b", "gpt-4", consume={"rpm": 100}):
+            pass  # org-b drained...
+        await _set(repo, "org-b", rf=repo._now_ms() - 86_400_000)  # ...a day ago: refill helps
+        await repo.set_parent("user", "org-b")
+        org_a, org_b = await _consumed(repo, "org-a"), await _consumed(repo, "org-b")
+
+        async with other.acquire("user", "gpt-4", consume={"rpm": 3}) as lease:
+            assert sorted(e.entity_id for e in lease.entries) == ["org-b", "user"]
+
+        assert await _consumed(repo, "org-a") == org_a
+        assert await _consumed(repo, "org-b") == org_b + 3
+
+    async def test_a_disabled_new_parent_is_the_one_reported(self, limiter, other):
+        from zae_limiter.exceptions import ResourceDisabled
+
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        await self._warm(other)
+        async with limiter.acquire("org-b", "gpt-4", consume={"rpm": 1}):
+            pass
+        await _set(repo, "org-b", disabled=True)
+        await repo.set_parent("user", "org-b")
+        org_a = await _consumed(repo, "org-a")
+
+        with pytest.raises(ResourceDisabled) as exc_info:
+            async with other.acquire("user", "gpt-4", consume={"rpm": 1}):
+                pass
+
+        assert exc_info.value.entity_id == "org-b"
+        assert await _consumed(repo, "org-a") == org_a
+
+    async def test_a_hot_new_parent_is_the_one_doubled(self, limiter, other):
+        repo = limiter._repository
+        await _hierarchy(limiter)
+        await self._warm(other)
+        async with limiter.acquire("org-b", "gpt-4", consume={"rpm": 1}):
+            pass
+        await _set(repo, "org-b", wcu_tk=-10_000_000, rf=repo._now_ms())  # hot for seconds
+        await repo.set_parent("user", "org-b")
+        org_a = await _consumed(repo, "org-a")
+
+        async with other.acquire("user", "gpt-4", consume={"rpm": 1}):
+            pass
+
+        assert int((await _item(repo, "org-b", "gpt-4"))["shard_count"]["N"]) == 2
+        assert int((await _item(repo, "org-a", "gpt-4"))["shard_count"]["N"]) == 1
+        assert await _consumed(repo, "org-a") == org_a
+
+
+async def _set(
+    repo: Repository,
+    entity_id: str,
+    *,
+    rf: int | None = None,
+    disabled: bool | None = None,
+    wcu_tk: int | None = None,
+    rpm_tk: int | None = None,
+) -> None:
+    """Rewrite a few attributes of an entity's gpt-4 shard 0, as another writer would."""
+    names: dict[str, str] = {}
+    values: dict[str, dict] = {}
+    sets = []
+    for i, (attr, value) in enumerate(
+        [
+            ("rf", None if rf is None else {"N": str(rf)}),
+            (schema.BUCKET_FIELD_DISABLED, None if disabled is None else {"BOOL": disabled}),
+            (schema.bucket_attr("wcu", "tk"), None if wcu_tk is None else {"N": str(wcu_tk)}),
+            (schema.bucket_attr("rpm", "tk"), None if rpm_tk is None else {"N": str(rpm_tk)}),
+        ]
+    ):
+        if value is not None:
+            names[f"#a{i}"] = attr
+            values[f":v{i}"] = value
+            sets.append(f"#a{i} = :v{i}")
+    client = await repo._get_client()
+    await client.update_item(
+        TableName=repo.table_name,
+        Key={
+            "PK": {"S": schema.pk_bucket(repo._namespace_id, entity_id, "gpt-4", 0)},
+            "SK": {"S": schema.sk_state()},
+        },
+        UpdateExpression="SET " + ", ".join(sets),
+        ExpressionAttributeNames=names,
+        ExpressionAttributeValues=values,
+    )
+
 
 class TestTheItemOverrulesTheDebitedParent:
     """The warm-path decision, on the result alone."""

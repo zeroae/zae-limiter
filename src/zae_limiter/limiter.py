@@ -1123,6 +1123,10 @@ class RateLimiter:
                     parent_result.shard_id,
                 )
             result.parent_result = None
+            # Refunded: from here on the only parent this call can debit is
+            # the item's. Every later use (the parent-only acquire, a disabled
+            # parent's 403, a wcu doubling) must name it, never the old one.
+            result.debited_parent_id = None
 
         # Handle parent result from parallel path (issue #318)
         if result.parent_result is not None:
