@@ -447,6 +447,7 @@ src/zae_limiter/
 ├── limiter.py         # RateLimiter (async)
 ├── config_cache.py    # Client-side config caching with TTL (CacheStats)
 ├── rejection_cache.py # Last bucket state seen per shard; rejects without a DynamoDB call (ADR-147)
+├── bucket_ops.py      # Pure planner for Repository.reset_bucket / top_up (ADR-149); not generated
 ├── sync_repository_protocol.py  # Generated: SyncRepositoryProtocol
 ├── sync_repository.py           # Generated: SyncRepository
 ├── sync_repository_builder.py   # Generated: SyncRepositoryBuilder
@@ -1533,6 +1534,7 @@ All PK and GSI PK values are prefixed with `{ns}/` where `{ns}` is the opaque na
 | Client shard propagation (#439) | `SET shard_count = :new` | `shard_count < :new` | No |
 | Limit-change sync, per shard (#468), per resource under `_default_` (#487) | `SET cp/ra/rp, sched/rsched/sched_tz, per-limit sched/rsched (compact, or "-" for unscheduled), b_{n}_rsa for a session quota, vu = 0 (+ ttl) REMOVE stale, per-limit overrides that now match the item default, b_{n}_rsa for a limit without a window` (never writes `ws`, ADR-139) | `attribute_exists(PK)` | No |
 | Disable stamp (ADR-125) | `SET disabled = :true` / `REMOVE disabled` | `attribute_exists(PK)` | No |
+| Reset / top-up, every shard in one transaction (ADR-149) | `ADD b_{n}_tk :delta` per limit, `SET rf = max(now, rf + 1, ws), vu = 0` (+ `gc`, `ws`/`rsa`, `wa`, `b_{q}_tu`) `REMOVE b_{q}_tu, b_{n}_wtc` | `rf = :read AND shard_count = :read` | Yes (optimistic lock) |
 
 **Expression tokens are positional (#634).** Every `#…` alias and `:…` placeholder in a bucket
 write is built from a loop index, never from a limit name, and the alias *value* carries the real
@@ -1815,6 +1817,51 @@ supported on system config.
   set-cascade ID on|off [--resource R]` / `entity clear-cascade ID [--resource R]`;
   `resource get-defaults` / `entity get-limits` print `Cascade: on|off (explicit)` for a level
   that sets one.
+
+### Reset and Top-Up (ADR-149, #470)
+
+`Repository.reset_bucket(entity_id, resource, limits=None, principal=None)` and
+`Repository.top_up(entity_id, resource, amounts, principal=None)` (both on
+`RepositoryProtocol`, generated sync twins; CLI `entity reset ID -r R [-l L ...]` /
+`entity top-up ID -r R --add L:N ...`) change one (entity, resource)'s balance **now**, on every
+shard. Both return `models.BucketOperationResult(entity_id, resource, shards, amounts)` (not
+exported) and write `bucket_reset` / `bucket_topped_up` audit events. Proposed until v0.17.0.
+
+- **In place, never delete** (#471's delete lost `tc`, `disabled`, `shard_count`, `gc`). Each
+  shard gets one rf-locked, zero-consumption pass; every shard of the pair goes in **one
+  transaction** (`build_bucket_operation`, positional `#ot/#og/#ow/#or/#oa/#ou/#ox/#oy` tokens).
+  Planning is pure, in `bucket_ops.plan_operation`: each shard is **materialised** first with the
+  `RateLimiter` helpers (`_apply_reset_edge`, `_apply_window_roll`, then `force_consume(0)`),
+  then the op lands as a token **delta** (`ADD`, never `SET`, so a fast-path debit in between is
+  kept). Every write: `rf = max(now, stored rf + 1, applied ws)`, `vu = 0`, condition
+  `rf = :read AND shard_count = :read`; never `tc`, `disabled`, `ttl`, owner stamps, config, the
+  parent. A conflict re-reads and re-plans (3 retries, full jitter, then `RateLimiterUnavailable`).
+- **Shards** are read strongly consistent: GSI3 discovery plus shard 0 and every slot below the
+  stored count **by key** (GSI3 can miss a just-created shard). Lagging counts are raised first
+  with the R5 freeze, then re-read (D7).
+- **Reset:** dripping → ceiling; calendar quota → share, `gc = S`, `tu` removed; session quota →
+  share, `ws = wa = now − rsa·1000` (ended **and applied**, so a pre-reset fan-out's
+  `ws <= :open_floor` fails), `wtc` removed. Not gated. Missing bucket → no-op.
+- **Top-up:** a quota gains exactly N, split by coverage `S // gc` (`split_weighted`, remainder
+  to the lowest shard, D1), and **`tu += portion`** — the whole portion, not only what lands
+  above the ceiling, or a refund of spent room is clamped away (design-validator). A dripping
+  limit gains at most its headroom (`split_by_headroom`). A session quota with no live window
+  opens one (D4). No bucket → shard 0 created holding share + N, `tu = N` (D5;
+  `ResourceDisabled` if disabled; a dripping-only top-up writes nothing). A quota never seeded on
+  the bucket is granted 0 (reported in `amounts`).
+- **`b_{name}_tu`** (`schema.BUCKET_FIELD_TU`, millitokens, quotas only): the quota's ceiling is
+  **`C // gc + tu`** (`BucketState.ceiling_milli`, aggregator clamp, `Limit.per_shard(...,
+  topped_up_milli)` in every 429, `check_availability` clamp). Removed by every reset, roll and
+  opener — client (`LeaseEntry._stored_top_up` → `build_composite_normal(cleared_top_ups=)`) and
+  aggregator (`#tq{i}`) — and never copied by a Path 2 clone. The fast path never reads it.
+- **Gate (D6):** a write that sets `tu` needs `lambda_version >= 0.17.0`
+  (`version.MIN_READER_VERSION_FOR_TOP_UP`, `top_up_refusal`) and ratchets `client_min_version`;
+  checked once per repository (`_top_up_readers_proven`). An older client or aggregator would
+  clamp the purchase away (under-admission only).
+- **ADR-145:** I1 gains a source (an operator top-up, exactly N); **I7** becomes `C // gc + tu`;
+  **I8** becomes `admitted + held + still-grantable = C + Σ top-ups this period` (the fuzz test
+  drives `top_up` and `reset_bucket`). Both methods are `@clears_rejection_cache`; another
+  process may refuse for up to its TTL (under-admission only).
 
 ### Namespace Registry
 

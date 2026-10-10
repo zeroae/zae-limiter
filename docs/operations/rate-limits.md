@@ -269,18 +269,39 @@ aws dynamodb put-item --table-name <name> \
 
 ### Reset Bucket State
 
-Reset a bucket to restore full capacity (will be recreated on next acquire):
-
-!!! warning "This is an unscheduled reset for a quota"
-    For a limit with a `reset_schedule`, deleting the item grants a fresh full allowance in the
-    middle of the current window — a second month's worth for a monthly quota. Harmless for a
-    dripping limit; not for a quota.
+Give an entity its full allowance back on one resource, on every shard, now:
 
 ```bash
-# v0.9.0+ bucket key format: PK={ns}/BUCKET#{entity}#{resource}#{shard}, SK=#STATE
-aws dynamodb delete-item --table-name <name> \
-  --key '{"PK": {"S": "{ns}/BUCKET#<entity_id>#<resource>#0"}, "SK": {"S": "#STATE"}}'
+zae-limiter entity reset <entity_id> --resource <resource>
+# or one limit only
+zae-limiter entity reset <entity_id> -r <resource> --limit <limit>
 ```
+
+```python
+await repo.reset_bucket("user-123", "gpt-4")
+```
+
+The reset is written in place: the consumption counter, the `disabled` flag, the shard count and
+the quota grant record survive, and a quota starts a new period (a session quota's window ends,
+so the next request opens a fresh one). Every shard takes one slow pass on its next acquire. It
+is audited as `bucket_reset`. See [ADR-149](../adr/149-reset-and-top-up.md).
+
+!!! warning "Do not delete bucket items"
+    Deleting a bucket item loses its consumption counter (usage snapshots go wrong), its
+    `disabled` stamp and, for a quota, its grant record, and a sharded quota whose shards are
+    not all deleted together can over-admit. Use `entity reset`.
+
+### Grant More Allowance
+
+A purchase, a goodwill credit, or the difference after a plan upgrade:
+
+```bash
+zae-limiter entity top-up <entity_id> -r <resource> --add <limit>:<tokens>
+```
+
+A quota gains exactly that many tokens for the current period (stored as `b_{limit}_tu`); a
+dripping limit gains at most the room below its ceiling. Needs Lambdas at 0.17.0 or later for a
+quota. Audited as `bucket_topped_up`.
 
 ### Debug Bucket State
 
@@ -318,6 +339,7 @@ use the `b_{limit_name}_{field}` naming convention:
 | Session window snapshot | `b_session_wtc` | The consumption counter as it stood when another shard's new window reached this one. While the window is pending (`ws` later than `wa`), the shard restores its share less whatever it consumed since, so nothing spent in between is forgiven | `4000` |
 | Session window length | `b_session_rsa` | The session window's length in seconds, copied from config so readers need no config lookup | `18000` |
 | Quota grant count | `b_rpd_gc` | Quotas only (calendar and session): the shard count this shard's current-period share was sized at ([ADR-145](../adr/145-sharded-quota-conserves-allowance.md)). The shard's ceiling is `cp // gc`, and its grant covers every shard `j` with `j % gc == this shard % gc`. An item written before the attribute existed carries none and reads as `gc = shard_count` — unless it holds more than one share at that count, in which case it is read at the smaller count whose share covers its balance (the grant that balance implies) | `2` |
+| Quota top-up | `b_rpd_tu` | Quotas only: allowance an operator topped this shard up by this period (millitokens, [ADR-149](../adr/149-reset-and-top-up.md)). The shard's ceiling is `cp // gc + tu`; the next reset or window roll removes it | `5000000` |
 
 The ceiling actually enforced is **not** `b_rpm_cp`. The schedule in force at the current
 instant is applied to the base first, and the result is then divided by `shard_count` — or, for a
