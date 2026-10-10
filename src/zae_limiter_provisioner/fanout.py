@@ -27,7 +27,9 @@ from typing import Any
 
 from zae_limiter.schema import (
     BUCKET_FIELD_DISABLED,
+    BUCKET_FIELD_PGEN,
     DEFAULT_RESOURCE,
+    ENTITY_FIELD_PGEN,
     GSI2_NAME,
     GSI3_NAME,
     decode_cascade,
@@ -307,9 +309,10 @@ def _walk_keys(namespace_id: str, entity_id: str, resource: str) -> list[tuple[s
 
 def _owner(
     client: Any, table_name: str, namespace_id: str, entity_id: str
-) -> tuple[bool, str | None] | None:
-    """An entity's META ``(cascade, parent_id)``, or None when it has no META.
+) -> tuple[bool, str | None, int] | None:
+    """An entity's META ``(cascade, parent_id, pgen)``, or None when it has no META.
 
+    ``pgen`` is the parent generation (ADR-150), 0 for an entity never moved.
     Strongly consistent, like ``resolve_cascade``.
     """
     item = client.get_item(
@@ -319,33 +322,50 @@ def _owner(
     ).get("Item")
     if item is None:
         return None
-    return item.get("cascade", {}).get("BOOL", False), item.get("parent_id", {}).get("S")
+    return (
+        item.get("cascade", {}).get("BOOL", False),
+        item.get("parent_id", {}).get("S"),
+        int(item.get(ENTITY_FIELD_PGEN, {}).get("N", "0")),
+    )
 
 
 def stamp_bucket_cascade(
-    client: Any, table_name: str, pk: str, cascade: bool, parent_id: str | None
+    client: Any,
+    table_name: str,
+    pk: str,
+    cascade: bool,
+    parent_id: str | None,
+    pgen: int | None = None,
 ) -> None:
     """Write one bucket's effective cascade policy and owner `parent_id` (ADR-146).
 
-    Mirrors ``Repository._stamp_bucket_cascade``.
+    Mirrors ``Repository._stamp_bucket_cascade``, including the parent
+    generation pin (ADR-150): a stamp older than the bucket's is skipped.
     """
+    names = {"#c": "cascade", "#p": "parent_id"}
     values: dict[str, Any] = {":c": {"BOOL": cascade}}
+    sets = ["#c = :c"]
+    condition = "attribute_exists(PK)"
     if parent_id is not None:
-        update = "SET #c = :c, #p = :p"
+        sets.append("#p = :p")
         values[":p"] = {"S": parent_id}
-    else:
-        update = "SET #c = :c REMOVE #p"
+    if pgen is not None:
+        sets.append("#pg = :pg")
+        names["#pg"] = BUCKET_FIELD_PGEN
+        values[":pg"] = {"N": str(pgen)}
+        condition += " AND (attribute_not_exists(#pg) OR #pg <= :pg)"
+    update = "SET " + ", ".join(sets) + ("" if parent_id is not None else " REMOVE #p")
     try:
         client.update_item(
             TableName=table_name,
             Key={"PK": {"S": pk}, "SK": {"S": sk_state()}},
             UpdateExpression=update,
-            ConditionExpression="attribute_exists(PK)",
-            ExpressionAttributeNames={"#c": "cascade", "#p": "parent_id"},
+            ConditionExpression=condition,
+            ExpressionAttributeNames=names,
             ExpressionAttributeValues=values,
         )
     except client.exceptions.ConditionalCheckFailedException:
-        logger.debug("Bucket %s vanished before stamping", pk)
+        logger.debug("Bucket %s vanished or a newer move stamped it", pk)
 
 
 def fanout_cascade(
@@ -376,8 +396,8 @@ def fanout_cascade(
         query = (GSI2_NAME, "GSI2PK", "GSI2SK", gsi2_pk_resource(namespace_id, scope))
         prefix = "BUCKET#"
 
-    owners: dict[str, tuple[bool, str | None] | None] = {}
-    targets: dict[tuple[str, str], tuple[bool, str | None] | None] = {}
+    owners: dict[str, tuple[bool, str | None, int] | None] = {}
+    targets: dict[tuple[str, str], tuple[bool, str | None, int] | None] = {}
     stamped: set[str] = set()
     for _pass in range(2):
         for pk in _query_bucket_pks(client, table_name, *query, prefix):
@@ -392,10 +412,10 @@ def fanout_cascade(
                 if owner is None:
                     targets[key] = None
                 else:
-                    meta_cascade, parent_id = owner
+                    meta_cascade, parent_id, pgen = owner
                     policy = resolve_cascade(client, table_name, namespace_id, eid, bucket_resource)
                     effective = bool(parent_id) and (meta_cascade if policy is None else policy)
-                    targets[key] = (effective, parent_id)
+                    targets[key] = (effective, parent_id, pgen)
             target = targets[key]
             if target is None:
                 continue

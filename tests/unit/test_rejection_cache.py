@@ -1781,6 +1781,41 @@ class TestChangesElsewhere:
                         break
         assert admitted == 2  # the scheduled capacity, not the base 4
 
+    async def test_a_move_elsewhere_debits_the_new_parent_and_admits_no_more(self, repo):
+        """ADR-150: another process moves u from org-a to a full org-b.
+
+        This process's cache still names org-a, with room; DynamoDB alone would
+        reject (org-b is spent), and org-a must end where it started.
+        """
+        roomy = Limit.per_day("rpm", 100)  # no refill to speak of during the test
+        for org in ("org-a", "org-b"):
+            await repo.create_entity(org)
+            await repo.set_limits(org, [roomy], resource="r")
+        await repo.create_entity("u", parent_id="org-a", cascade=True)
+        await repo.set_limits("u", [roomy], resource="r")
+        repo._rejection_cache._clock = _Clock()
+        async with RateLimiter(repository=repo) as limiter:
+            for _ in range(2):  # warm: the second call takes the parallel path
+                async with limiter.acquire("u", "r", consume={"rpm": 1}):
+                    pass
+            org_a = await _consumed(repo, "org-a")
+            other = Repository(
+                name="test-rejection", region="us-east-1", _skip_deprecation_warning=True
+            )
+            other._namespace_id = repo._namespace_id
+            await _stamp_current_lambdas(other)
+            async with RateLimiter(repository=other) as other_limiter:
+                async with other_limiter.acquire("org-b", "r", consume={"rpm": 100}):
+                    pass  # org-b spent
+            await other.set_parent("u", "org-b")
+            await other.close()
+
+            with pytest.raises(RateLimitExceeded) as exc_info:
+                async with limiter.acquire("u", "r", consume={"rpm": 1}):
+                    pass
+            assert {s.entity_id for s in exc_info.value.violations} == {"org-b"}
+        assert await _consumed(repo, "org-a") == org_a
+
 
 def test_recording_written_states_skips_a_backend_without_the_cache():
     """A third-party backend has no `_rejection_cache`: nothing to record."""

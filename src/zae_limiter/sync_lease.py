@@ -57,6 +57,7 @@ class LeaseEntry:
     _cascade: bool = False
     _parent_id: str | None = None
     _stamp_owner: bool = False
+    _parent_generation: int | None = None
     _declared: bool = True
     _boundary_ms: int | None = None
     _reset_edge_ms: int | None = None
@@ -335,6 +336,7 @@ class SyncLease:
         items: list[dict[str, Any]] = []
         window_fanouts: dict[tuple[str, str, int, int], dict[str, tuple[int, int]]] = {}
         quota_creates: list[tuple[str, str, int, int, list[str]]] = []
+        owner_creates: list[tuple[str, str, int, int]] = []
         written_images: list[
             tuple[tuple[str, str, int], list[BucketState], int, int | None, tuple[bool, str | None]]
         ] = []
@@ -367,6 +369,7 @@ class SyncLease:
                         shard_count=first_entry._shard_count,
                         vu=vu,
                         rf_ms=_monotonic_rf(now_ms, None, group_entries),
+                        pgen=owner_entry._parent_generation if owner_entry is not None else None,
                     )
                 )
                 created = {
@@ -377,6 +380,10 @@ class SyncLease:
                 if created:
                     window_fanouts[entity_id, resource, shard_id, first_entry._shard_count] = (
                         created
+                    )
+                if owner_entry is not None and owner_entry._parent_generation is not None:
+                    owner_creates.append(
+                        (entity_id, resource, shard_id, owner_entry._parent_generation)
                     )
                 created_quotas = [e.limit.name for e in group_entries if e.limit.is_quota]
                 if shard_id != 0 and created_quotas:
@@ -507,6 +514,9 @@ class SyncLease:
                         pin_vu=read_state is not None,
                         expected_vu=read_state.stored_vu_ms if read_state is not None else None,
                         owner=(owner_entry._cascade, owner_entry._parent_id)
+                        if owner_entry is not None
+                        else None,
+                        owner_pgen=owner_entry._parent_generation
                         if owner_entry is not None
                         else None,
                     )
@@ -656,10 +666,14 @@ class SyncLease:
         )
         if not condition_failed:
             self._repair_created_quota_shards(quota_creates)
+            self._repair_created_owner_stamps(owner_creates)
             self._fan_out_windows(window_fanouts)
         elif reissued_creates:
             self._repair_created_quota_shards(
                 [c for c in quota_creates if (c[0], c[1], c[2]) in reissued_creates]
+            )
+            self._repair_created_owner_stamps(
+                [c for c in owner_creates if (c[0], c[1], c[2]) in reissued_creates]
             )
 
     def _record_written_states(
@@ -745,6 +759,39 @@ class SyncLease:
             except Exception:
                 logger.warning(
                     "quota shard count repair failed for resource=%s shard=%d; the shard keeps its created count until a doubling reaches it",
+                    resource,
+                    shard_id,
+                    exc_info=True,
+                )
+
+    def _repair_created_owner_stamps(self, owner_creates: list[tuple[str, str, int, int]]) -> None:
+        """Re-check each owner stamp this commit created against its META (ADR-150).
+
+        A create ``Put`` cannot pin the parent generation the way the
+        rf-locked write does: there is no item to compare with. One that read
+        META before a move and lands after the move's fan-out would keep the
+        old parent, and the next process to touch the bucket would learn it
+        from the item. So after the write, one strongly consistent read of the
+        owner's META per created bucket (1 RCU, once per shard created), and
+        a pinned restamp only when a move landed in between
+        (:meth:`SyncRepository.repair_created_owner_stamp`). A move whose META
+        write comes after this read runs its fan-out after the create, which
+        finds the bucket like any other.
+
+        After the commit, like the quota repair: the caller was admitted and
+        the write landed, so a failure is logged — without the entity id,
+        routinely an API key — and swallowed. A backend without the method
+        stamps no generation worth checking.
+        """
+        repair = getattr(self.repository, "repair_created_owner_stamp", None)
+        if repair is None:
+            return
+        for entity_id, resource, shard_id, stamped in owner_creates:
+            try:
+                repair(entity_id, resource, shard_id, stamped)
+            except Exception:
+                logger.warning(
+                    "owner stamp check failed for resource=%s shard=%d; the next slow pass or a re-run of set_parent restamps it",
                     resource,
                     shard_id,
                     exc_info=True,

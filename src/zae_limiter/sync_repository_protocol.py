@@ -74,6 +74,14 @@ class SpeculativeResult:
         shard_count: The total shard count read from the bucket item. Used by
             the limiter to decide whether to retry on another shard or double
             shards when the ``wcu`` limit is exhausted.
+        pgen: The parent generation stamped on the item (ADR-150), or None
+            when the item carries none. A stamp with a generation is
+            authoritative for ``cascade`` and ``parent_id`` even when it names
+            no parent.
+        debited_parent_id: On the warm parallel cascade path, the parent the
+            nested write in ``parent_result`` went to: the cached parent, which
+            the item's ``parent_id`` can contradict after a move (ADR-150).
+            None when no parallel parent write was issued.
     """
 
     success: bool
@@ -85,6 +93,19 @@ class SpeculativeResult:
     shard_id: int = 0
     shard_count: int = 1
     failure_reason: SpeculativeFailureReason | None = None
+    pgen: int | None = None
+    debited_parent_id: str | None = None
+
+    @property
+    def stamp_is_policy(self) -> bool:
+        """Whether the item's ``cascade`` / ``parent_id`` stamp can be trusted.
+
+        A stamp carrying a parent generation is authoritative (ADR-150); one
+        without is trusted only when it carries a ``parent_id`` (ADR-146: a
+        ``cascade=False`` with no ``parent_id`` and no generation is a bucket an
+        older version created for a parent from its child's view, #684).
+        """
+        return self.pgen is not None or self.parent_id is not None
 
 
 PRESERVE_DISABLED: Any = object()
@@ -359,6 +380,34 @@ class SyncRepositoryProtocol(Protocol):
         """
         ...
 
+    def set_parent(
+        self, entity_id: str, parent_id: str | None, *, principal: str | None = None
+    ) -> int:
+        """
+        Move an entity to a new parent, or to no parent (ADR-150).
+
+        Updates the entity's parent and makes every one of its bucket items
+        name the new parent, so the next acquire debits it wherever the cascade
+        policy (ADR-146) says the entity cascades. Consumption already charged
+        to the old parent stays there.
+
+        Args:
+            entity_id: Entity to move.
+            parent_id: The new parent, which must exist, or None for no parent.
+            principal: Caller identity for audit logging.
+
+        Returns:
+            Number of bucket items restamped.
+
+        Raises:
+            ValidationError: The move would make the entity its own ancestor.
+            EntityNotFoundError: The entity or the new parent does not exist.
+            VersionMismatchError: The backend's readers predate parent moves.
+            FanoutIncomplete: The move landed but restamping stopped part-way;
+                repeating the call finishes it.
+        """
+        ...
+
     def get_bucket(
         self, entity_id: str, resource: str, limit_name: str, shard_id: int = 0
     ) -> "BucketState | None":
@@ -519,6 +568,7 @@ class SyncRepositoryProtocol(Protocol):
         shard_count: int = 1,
         vu: int | None = None,
         rf_ms: int | None = None,
+        pgen: int | None = None,
     ) -> dict[str, Any]:
         """Build a PutItem for creating a new composite bucket.
 
@@ -532,6 +582,8 @@ class SyncRepositoryProtocol(Protocol):
             parent_id: The entity's parent_id (if any)
             vu: Valid-until stamp in epoch ms, or None to omit (#222 §2.1)
             rf_ms: The ``rf`` to stamp, or None for ``now_ms`` (ADR-140)
+            pgen: The owner's parent generation read with ``cascade`` /
+                ``parent_id`` (ADR-150), or None to stamp none
         """
         ...
 
@@ -557,12 +609,16 @@ class SyncRepositoryProtocol(Protocol):
         owner: tuple[bool, str | None] | None = None,
         pin_vu: bool = False,
         expected_vu: int | None = None,
+        owner_pgen: int | None = None,
     ) -> dict[str, Any]:
         """Build an UpdateItem for the normal write path (ADR-115 path 2).
 
         ``owner`` is ``(cascade, parent_id)`` from the item owner's META, read
         this pass: when given, both stamps are rewritten so the fast path's
         denormalised copy is repaired (#684). ``None`` leaves them as stored.
+        ``owner_pgen`` is the owner's parent generation read with them
+        (ADR-150): stamped beside them, and the write is pinned on not
+        lowering it, so a pass that read META before a move cannot undo it.
 
         ``pin_vu``: when the write sets or removes ``vu``, require it to still be
         ``expected_vu`` (absent when None), the value the caller read, so a

@@ -965,6 +965,16 @@ class Entity:
     cascade: bool = False
     metadata: dict[str, str] = field(default_factory=dict)
     created_at: str | None = None
+    parent_generation: int = field(default=0, compare=False)
+    """The entity's parent generation (ADR-150): raised by every move to a new parent.
+
+    Starts at the creation instant in epoch ms, so a recreated entity is never
+    below a bucket its predecessor left behind; 0 for an entity created before
+    v0.17. Every bucket write of the entity's ``parent_id`` carries it, so a
+    writer that read an older generation can never put a previous parent back.
+    Not part of equality: two reads of one entity are equal across a move's
+    generation only through ``parent_id``.
+    """
 
     @property
     def is_parent(self) -> bool:
@@ -2071,6 +2081,7 @@ class AuditAction:
     ENTITY_DELETED = "entity_deleted"
     LIMITS_SET = "limits_set"
     LIMITS_DELETED = "limits_deleted"
+    ENTITY_PARENT_CHANGED = "entity_parent_changed"
 
 
 @dataclass

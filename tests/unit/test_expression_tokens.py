@@ -175,6 +175,22 @@ class TestCompositeBuilders:
         assert_expression_safe(update)
         assert "#opid" in update["UpdateExpression"].split("REMOVE", 1)[1]
 
+    def test_normal_owner_stamp_with_its_parent_generation(self) -> None:
+        """ADR-150: the owner stamp carries `pgen` and is pinned on it."""
+        update = _repo().build_composite_normal(
+            "user-1",
+            "api",
+            consumed={DOTTED: 1000},
+            refill_amounts={},
+            now_ms=2_000,
+            expected_rf=1_000,
+            owner=(True, "org-1"),
+            owner_pgen=3,
+        )["Update"]
+        assert_expression_safe(update)
+        assert "#opg <= :opg" in update["ConditionExpression"]
+        assert update["ExpressionAttributeValues"][":opg"] == {"N": "3"}
+
     def test_normal_removing_ttl_and_vu(self) -> None:
         update = _repo().build_composite_normal(
             "user-1",
@@ -649,6 +665,22 @@ class TestClientWritesThroughMoto:
         with patch.object(client, "update_item", spy.forward):
             await repo._stamp_bucket_cascade(pk, True, "org-1")
             await repo._stamp_bucket_cascade(pk, False, None)
+            await repo._stamp_bucket_cascade(pk, True, "org-1", 1)  # ADR-150
+            await repo._stamp_bucket_cascade(pk, False, None, 2)
+        assert spy.call_count == 4
+        for call in spy.call_args_list:
+            assert_expression_safe(call.kwargs)
+
+    async def test_parent_move_meta_write(self, limiter: RateLimiter) -> None:
+        """ADR-150: the META write, to a parent and to no parent."""
+        repo = limiter._repository
+        await repo.create_entity("org-1")
+        await repo.create_entity("user-1", parent_id="org-1")
+        client = await repo._get_client()
+        spy = await self._spy(repo)
+        with patch.object(client, "update_item", spy.forward):
+            await repo._write_parent("user-1", None)
+            await repo._write_parent("user-1", "org-1")
         assert spy.call_count == 2
         for call in spy.call_args_list:
             assert_expression_safe(call.kwargs)
