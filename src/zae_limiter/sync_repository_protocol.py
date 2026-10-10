@@ -648,7 +648,9 @@ class SyncRepositoryProtocol(Protocol):
         """
         ...
 
-    def transact_write(self, items: list[dict[str, Any]]) -> None:
+    def transact_write(
+        self, items: list[dict[str, Any]], client_request_token: str | None = None
+    ) -> None:
         """
         Execute a write of one or more items.
 
@@ -658,6 +660,8 @@ class SyncRepositoryProtocol(Protocol):
 
         Args:
             items: List of transaction items from build_bucket_put_item
+            client_request_token: Idempotency token for a multi-item
+                transaction (ADR-149); ignored for a single item.
 
         Raises:
             TransactionCanceledException: If multi-item transaction fails

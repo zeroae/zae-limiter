@@ -8690,10 +8690,13 @@ class TestResetAndTopUp:
         )
         now = _OP_T0 + 60_000
         repo._now_ms = lambda: now
-        await repo.reset_bucket("e", "r")
+        result = await repo.reset_bucket("e", "r")
         item = await _op_item(repo, "e", "r")
         ended = now - 5 * 3600 * 1000
-        assert _op_num(item, "ses", BUCKET_FIELD_TK) == 1_000_000
+        # The balance is left for the next opener to restore (PR #720 review):
+        # a share written into an ended window could be spent twice.
+        assert _op_num(item, "ses", BUCKET_FIELD_TK) == 0
+        assert result.amounts == {"ses": 1000}  # what that opener restores
         assert _op_num(item, "ses", BUCKET_FIELD_WS) == ended
         assert _op_num(item, "ses", BUCKET_FIELD_WA) == ended
         assert _op_num(item, "ses", "wtc") is None
@@ -8879,11 +8882,11 @@ class TestResetAndTopUp:
         real = repo.transact_write
         calls = []
 
-        async def racing(items):
+        async def racing(items, **kwargs):
             if not calls:
                 calls.append(1)
                 await _op_put_shard(repo, "e", "r", [_OP_CAL], tokens={"cal": 0})
-            return await real(items)
+            return await real(items, **kwargs)
 
         with patch.object(repo, "transact_write", side_effect=racing):
             result = await repo.top_up("e", "r", {"cal": 2})
@@ -8931,7 +8934,7 @@ class TestResetAndTopUp:
         real = repo.transact_write
         calls = []
 
-        async def conflicting(items):
+        async def conflicting(items, **kwargs):
             if not calls:
                 calls.append(1)
                 # Another writer moves rf between the read and the write.
@@ -8945,7 +8948,7 @@ class TestResetAndTopUp:
                     UpdateExpression="SET rf = rf + :one",
                     ExpressionAttributeValues={":one": {"N": "1"}},
                 )
-            return await real(items)
+            return await real(items, **kwargs)
 
         with patch.object(repo, "transact_write", side_effect=conflicting):
             result = await repo.reset_bucket("e", "r")
@@ -8984,6 +8987,27 @@ class TestResetAndTopUp:
             pytest.raises(ClientError),
         ):
             await repo.top_up("e", "r", {"cal": 1})
+
+    async def test_an_audit_failure_after_the_commit_does_not_raise(self, repo, caplog):
+        await repo.set_limits("e", [_OP_RPM], resource="r")
+        await _op_put_shard(repo, "e", "r", [_OP_RPM], tokens={"rpm": 0})
+        repo._now_ms = lambda: _OP_T0
+        with patch.object(repo, "_log_audit_event", side_effect=RuntimeError("throttled")):
+            result = await repo.reset_bucket("e", "r")
+        assert result.shards == 1  # it landed, and the caller is told so
+        assert "audit event could not be written" in caplog.text
+
+    async def test_an_invalid_principal_is_refused_before_any_io(self, repo):
+        with (
+            patch.object(repo, "_get_client", side_effect=AssertionError("I/O")),
+            pytest.raises(InvalidIdentifierError),
+        ):
+            await repo.reset_bucket("e", "r", principal="ops team!")
+        with (
+            patch.object(repo, "_get_client", side_effect=AssertionError("I/O")),
+            pytest.raises(InvalidIdentifierError),
+        ):
+            await repo.top_up("e", "r", {"rpm": 1}, principal="ops team!")
 
     async def test_reset_and_top_up_clear_the_rejection_cache(self, repo):
         await repo.set_limits("e", [_OP_RPM], resource="r")

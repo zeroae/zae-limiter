@@ -326,7 +326,7 @@ class TestCompositeBuilders:
             cleared_top_ups={DOTTED},
             cleared_window_marks={DOTTED},
         )
-        update = _repo().build_bucket_operation("e", "r", write)["Update"]
+        update = _repo().build_bucket_operation("e", "r", write, "01OPERATION")["Update"]
         assert_expression_safe(update)
 
     def test_bucket_operation_with_nothing_but_the_lock(self) -> None:
@@ -335,9 +335,9 @@ class TestCompositeBuilders:
         write = ShardWrite(
             shard_id=0, shard_count=1, shard_count_stored=True, expected_rf=1, written_rf=2
         )
-        update = _repo().build_bucket_operation("e", "r", write)["Update"]
+        update = _repo().build_bucket_operation("e", "r", write, "01OPERATION")["Update"]
         assert_expression_safe(update)
-        assert update["UpdateExpression"] == "SET #rf = :rf, #vu = :vu"
+        assert update["UpdateExpression"] == "SET #rf = :rf, #vu = :vu, #op = :op"
 
     def test_retry_with_seeds(self) -> None:
         seeds = self._seed_states()

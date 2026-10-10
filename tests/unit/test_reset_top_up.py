@@ -168,3 +168,210 @@ class TestSplits:
         assert split_by_headroom(0, {0: 3}) == {0: 0}
         assert split_by_headroom(5, {0: 0, 1: 0}) == {0: 0, 1: 0}
         assert split_by_headroom(3, {0: 1, 1: 1, 2: 1, 3: 1}) == {0: 1, 1: 1, 2: 1, 3: 0}
+
+
+async def _try(lim, entity, amounts):
+    try:
+        await _spend(lim, entity, amounts)
+        return True
+    except RateLimitExceeded:
+        return False
+
+
+async def _drain(lim, entity, name, cap=100):
+    n = 0
+    while n < cap and await _try(lim, entity, {name: 1}):
+        n += 1
+    return n
+
+
+class TestIdempotency:
+    """PR #720 review, finding 1: a write that landed but whose response was
+    lost is not applied twice."""
+
+    @pytest.mark.parametrize("shards", [1, 2])
+    async def test_a_top_up_whose_response_was_lost_is_applied_once(self, limiter, clock, shards):
+        """The write commits but its response is lost; botocore retries the
+        identical request, whose rf condition then fails. One top_up(5) must
+        record 5 topped-up tokens, not 10."""
+        import random as _r
+
+        repo = limiter._repository
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        await limiter.set_limits("e", [CAL], resource="r")
+        assert await _try(slow, "e", {"cal": 1})
+        if shards == 2:
+            await repo.bump_shard_count("e", "r", 1)
+            real_rr = _r.randrange
+            _r.randrange = lambda a, b=None: 1
+            try:
+                await _try(slow, "e", {"cal": 1})
+            finally:
+                _r.randrange = real_rr
+        clock[0] += 1
+        client = await repo._get_client()
+        method = "update_item" if shards == 1 else "transact_write_items"
+        real = getattr(client, method)
+        state = {"armed": True}
+
+        async def lossy(**kw):
+            if shards > 1:
+                # Idempotent for 10 minutes on DynamoDB (moto ignores it).
+                assert kw["ClientRequestToken"]
+            if state["armed"] and (shards > 1 or "#ot0" in str(kw.get("ExpressionAttributeNames"))):
+                state["armed"] = False
+                await real(**kw)  # commits server-side; the response is "lost"
+                return await real(**kw)  # the SDK's automatic retry of the same request
+            return await real(**kw)
+
+        setattr(client, method, lossy)
+        try:
+            result = await repo.top_up("e", "r", {"cal": 5})
+        finally:
+            setattr(client, method, real)
+        assert result.amounts == {"cal": 5}
+        top_ups = [await _tu(repo, "e", "cal", shard=s) or 0 for s in range(shards)]
+        assert sum(top_ups) == 5_000
+
+    async def test_a_lost_create_response_is_applied_once(self, limiter, clock):
+        """D5: the create landed, its response was lost, and the retry's
+        `attribute_not_exists(PK)` failed. The re-read finds this call's own
+        operation id and returns, instead of topping up the new bucket again."""
+        repo = limiter._repository
+        await limiter.set_limits("e", [CAL], resource="r")
+        client = await repo._get_client()
+        real = client.put_item
+
+        async def lossy(**kw):
+            await real(**kw)
+            return await real(**kw)
+
+        client.put_item = lossy
+        try:
+            result = await repo.top_up("e", "r", {"cal": 5})
+        finally:
+            client.put_item = real
+        assert (result.shards, result.amounts) == (1, {"cal": 5})
+        assert await _tu(repo, "e", "cal") == 5_000
+        clock[0] += 1
+        assert await _drain(limiter, "e", "cal") == 15
+
+
+class TestNothingFailsAfterTheCommit:
+    """PR #720 review, finding 2: an error raised after the write landed makes
+    the caller retry an operation that already happened."""
+
+    async def test_an_invalid_principal_is_refused_before_anything_is_written(self, limiter, clock):
+        from zae_limiter.exceptions import ValidationError
+
+        repo = limiter._repository
+        await limiter.set_limits("e", [CAL], resource="r")
+        assert await _try(limiter, "e", {"cal": 10})
+        clock[0] += 1
+        with pytest.raises(ValidationError):
+            await repo.top_up("e", "r", {"cal": 5}, principal="ops team!")
+        assert await _tu(repo, "e", "cal") is None  # nothing was granted
+        await repo.top_up("e", "r", {"cal": 5}, principal="ops-team")  # the caller's retry
+        clock[0] += 1
+        assert await _drain(limiter, "e", "cal") == 5  # one purchase of 5, once
+
+
+class TestResetRacingALostLock:
+    """PR #720 review, finding 3: slow-path acquires that read before a reset
+    and write after it lose their rf lock; the consumption-only retry then
+    debits whatever the reset left on the item."""
+
+    @pytest.mark.parametrize("racers", [2, 5])
+    @pytest.mark.parametrize(("limit", "name"), [(SES, "ses"), (CAL, "cal")])
+    async def test_admits_at_most_the_old_period_plus_one_allowance(
+        self, limiter, clock, limit, name, racers
+    ):
+        import asyncio
+
+        repo = limiter._repository
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        await limiter.set_limits("e", [limit], resource="r")
+        assert await _try(slow, "e", {name: 8})  # old period: 8 spent, 2 left
+        clock[0] += 1
+
+        real = repo.transact_write
+        arrived = []
+        gate = asyncio.Event()
+        state = {"armed": True}
+
+        async def hooked(items, *a, **k):
+            if state["armed"]:
+                arrived.append(1)
+                if len(arrived) == racers:
+                    state["armed"] = False
+                    await repo.reset_bucket("e", "r")  # its own write runs unhooked
+                    gate.set()
+                await gate.wait()
+            return await real(items, *a, **k)
+
+        repo.transact_write = hooked
+        try:
+            results = await asyncio.gather(*[_try(slow, "e", {name: 2}) for _ in range(racers)])
+        finally:
+            repo.transact_write = real
+        clock[0] += 1
+        after = sum(2 for ok in results if ok) + await _drain(slow, "e", name)
+        # The old period's 10 plus exactly one allowance from the reset.
+        assert 8 + after <= 20
+
+
+class TestRefundAfterATopUpEnded:
+    """PR #720 review, finding 4: a lease read with `tu`; a reset or the period
+    edge then removed it; the lease's refund must still force the clamping
+    pass, which the stale in-memory ceiling (`C // gc + tu`) skipped."""
+
+    async def _refund_into_new_period(self, limiter, clock, end_period) -> tuple[int | None, int]:
+        repo = limiter._repository
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        await limiter.set_limits("e", [CAL], resource="r")
+        await repo.top_up("e", "r", {"cal": 5})  # tk 15, tu 5
+        clock[0] += 1
+        with pytest.raises(RuntimeError):
+            async with slow.acquire("e", "r", {"cal": 5}):  # tk 10
+                await end_period(repo)
+                assert await _try(slow, "e", {"cal": 1})  # the new period's first token
+                clock[0] += 1
+                raise RuntimeError("body fails")  # rollback credits 5 -> tk 14
+        item_vu = await _vu(repo, "e")
+        clock[0] += 1
+        return item_vu, 1 + await _drain(limiter, "e", "cal")
+
+    async def test_after_a_reset(self, limiter, clock):
+        async def reset(repo):
+            await repo.reset_bucket("e", "r")
+            clock[0] += 1
+
+        vu, admitted = await self._refund_into_new_period(limiter, clock, reset)
+        assert vu == 0  # the credit above C // gc forced a clamping pass
+        # The new period admits its 10 plus, until the refund write trims
+        # itself (#721), the one old-period token the clamp cannot tell apart.
+        assert admitted <= 11
+
+    async def test_after_the_period_edge(self, limiter, clock):
+        async def edge(repo):
+            clock[0] += DAY  # past midnight
+
+        vu, admitted = await self._refund_into_new_period(limiter, clock, edge)
+        assert vu == 0
+        assert admitted <= 11  # the no-top-up baseline today; 10 after #721
+
+
+async def _vu(repo, entity, resource="r", shard=0):
+    client = await repo._get_client()
+    item = (
+        await client.get_item(
+            TableName=repo.table_name,
+            Key={
+                "PK": {"S": schema.pk_bucket(repo._namespace_id, entity, resource, shard)},
+                "SK": {"S": schema.sk_state()},
+            },
+            ConsistentRead=True,
+        )
+    )["Item"]
+    raw = item.get(schema.BUCKET_FIELD_VU)
+    return None if raw is None else int(raw["N"])

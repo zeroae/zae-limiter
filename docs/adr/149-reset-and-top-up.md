@@ -32,11 +32,15 @@ zero-consumption slow-path pass: it materialises every limit on the item as an a
 applies the operation to the named limits as a token delta (never a set), never changes the
 consumption counter, `disabled` or the parent's buckets, is conditioned on the shard's `rf`
 and `shard_count` as read, and forces the shard's next acquire through one materialising pass.
+Each call must carry one operation id, stamped on every shard it writes, so that a write whose
+response was lost is recognised as landed rather than applied a second time, and nothing may
+fail the call after the write commits.
 
 A reset restores each named limit to its full effective share and starts a new period: a quota
 records the grant at the planned shard count; a session quota's current window is marked
 ended and applied, never removed, so the next admitted request opens one and no in-flight
-rollover can re-apply the old one. A top-up of a quota adds exactly N across the shards and must
+rollover can re-apply the old one, and its balance is left for that opener to restore — a share
+written into an ended window can be spent twice. A top-up of a quota adds exactly N across the shards and must
 be recorded per shard as allowance above the ceiling for the current period, cleared by the next
 reset or window roll; a top-up of a dripping limit is bounded by its ceiling. A top-up above the
 ceiling must pass the ADR-141 version gate at 0.17.0 and ratchet `client_min_version`, because
