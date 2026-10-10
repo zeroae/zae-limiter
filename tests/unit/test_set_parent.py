@@ -959,3 +959,15 @@ class TestSyncTwin:
         with limiter.acquire("user", "gpt-4", consume={"rpm": 1}) as lease:
             assert {e.entity_id for e in lease.entries} == {"user", "org-b"}
         repo.close()
+
+
+async def test_a_backend_without_the_owner_check_is_skipped():
+    """A third-party backend stamps no generation: nothing to check after a create."""
+    from types import SimpleNamespace
+    from typing import cast
+
+    from zae_limiter.lease import Lease
+    from zae_limiter.repository_protocol import RepositoryProtocol
+
+    lease = Lease(repository=cast(RepositoryProtocol, SimpleNamespace()))
+    await lease._repair_created_owner_stamps([("user", "gpt-4", 0, 0)])
