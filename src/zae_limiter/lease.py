@@ -33,6 +33,9 @@ _CONFLICT_BASE_DELAY_S = 0.025  # 25ms cap, doubling each retry: 25ms, 50ms, 100
 # real wait rounds to 0.0, and a 429 saying "retry after 0" is read as "retry
 # now" — a hot loop driven by the rejection itself.
 _MIN_RETRY_AFTER_S = 0.001
+# The wait a contention 429 quotes (#724): the commit kept colliding with
+# concurrent transactions on the same item, which clear in milliseconds.
+_CONTENTION_RETRY_AFTER_S = 0.1
 
 if TYPE_CHECKING:
     from .repository_protocol import RepositoryProtocol
@@ -823,7 +826,11 @@ class Lease:
                         # A move that kept conflicting wrote nothing; the
                         # caller re-plans it rather than seeing a raw error.
                         raise QuotaMoveLostError from exc
-                    raise  # exhausted retries, propagate
+                    # Sustained contention, not an outage (#724): the
+                    # transaction did not apply, so nothing was debited.
+                    # Reaching `on_unavailable` would admit without limit
+                    # under ALLOW; a short 429 asks the caller to retry.
+                    raise _contention_rejection(self.entries, now_ms) from exc
                 raise  # other errors propagate unchanged
 
         if condition_failed and donor_items:
@@ -917,6 +924,11 @@ class Lease:
                     break
                 except Exception as retry_exc:
                     if not _is_condition_check_failure(retry_exc):
+                        if _is_transaction_conflict(retry_exc):
+                            # Every write in a transaction lands or none does,
+                            # and a single-item one is all there is: nothing
+                            # was debited (#724).
+                            raise _contention_rejection(self.entries, now_ms) from retry_exc
                         raise
                     codes = _get_cancellation_reason_codes(retry_exc)
                     downgraded: list[dict[str, Any]] = []
@@ -1511,6 +1523,30 @@ def _build_retry_failure_statuses(
         if any(status.exceeded for status in from_items):
             return from_items
     return _retry_statuses(entries, now_ms, None)
+
+
+def _contention_rejection(entries: list[LeaseEntry], now_ms: int) -> RateLimitExceeded:
+    """A short 429 for a commit that kept conflicting (#724).
+
+    One status per declared entry, from the in-memory state, none marked
+    exceeded: the request was not short of capacity, it lost to concurrent
+    transactions on the same items. Nothing was debited.
+    """
+    statuses = [
+        LimitStatus(
+            entity_id=entry.entity_id,
+            resource=entry.resource,
+            limit_name=entry.limit.name,
+            limit=entry.limit.per_shard(entry.state.report_shard_count, now_ms),
+            available=entry.state.tokens_milli // 1000,
+            requested=entry.consumed,
+            exceeded=False,
+            retry_after_seconds=_CONTENTION_RETRY_AFTER_S,
+            resets_at_ms=window_end_in_force(entry.limit, entry.state, now_ms),
+        )
+        for entry in [e for e in entries if e._declared] or entries
+    ]
+    return RateLimitExceeded(statuses, contended=True)
 
 
 def _retry_statuses(

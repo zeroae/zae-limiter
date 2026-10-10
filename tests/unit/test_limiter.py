@@ -1553,10 +1553,12 @@ class TestWriteOnEnter:
         mock_repo.build_composite_retry.assert_not_called()
 
     async def test_commit_initial_transaction_conflict_exhausts_retries(self):
-        """TransactionConflict exhausts retries then propagates exception.
+        """TransactionConflict exhausts retries, then a contention 429 (#724).
 
-        After max retries on TransactionConflict, the exception should propagate
-        rather than entering the consumption-only retry path.
+        After max retries on TransactionConflict the commit raises a short
+        ``RateLimitExceeded`` (``contended``, nothing exceeded) rather than the
+        raw error, which would reach ``on_unavailable``, and does not enter the
+        consumption-only retry path.
         """
         from zae_limiter.lease import _CONFLICT_MAX_RETRIES, Lease
 
@@ -1575,13 +1577,40 @@ class TestWriteOnEnter:
         mock_repo.transact_write.side_effect = conflict_exc
 
         lease = Lease(repository=mock_repo, entries=[entry])
-        with pytest.raises(type(conflict_exc)):
+        with pytest.raises(RateLimitExceeded) as exc_info:
             await lease._commit_initial()
+        assert exc_info.value.contended is True
+        assert exc_info.value.violations == []
+        assert exc_info.value.retry_after_seconds == pytest.approx(0.1)
+        assert exc_info.value.__cause__ is conflict_exc
 
         # Should have retried _CONFLICT_MAX_RETRIES times + 1 initial attempt
         assert mock_repo.transact_write.call_count == _CONFLICT_MAX_RETRIES + 1
         # Should NOT have entered consumption-only path
         mock_repo.build_composite_retry.assert_not_called()
+
+    async def test_commit_initial_conflicted_consumption_only_retry_is_a_short_429(self):
+        """The rf lock was lost, then the consumption-only retry kept conflicting (#724)."""
+        from zae_limiter.lease import _CONFLICT_MAX_RETRIES, Lease
+
+        entry = self._make_entry()
+        mock_repo = self._make_mock_repo()
+        lock_lost = ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem"
+        )
+        conflict = ClientError({"Error": {"Code": "TransactionConflictException"}}, "UpdateItem")
+        mock_repo.transact_write.side_effect = [lock_lost] + [conflict] * (
+            _CONFLICT_MAX_RETRIES + 1
+        )
+
+        lease = Lease(repository=mock_repo, entries=[entry])
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            await lease._commit_initial()
+
+        assert exc_info.value.contended is True
+        assert exc_info.value.violations == []
+        assert exc_info.value.__cause__ is conflict
+        assert mock_repo.transact_write.call_count == _CONFLICT_MAX_RETRIES + 2
 
     async def test_commit_initial_condition_check_still_enters_retry_path(self):
         """ConditionalCheckFailed still enters consumption-only retry path.
@@ -13245,6 +13274,34 @@ class TestTransactionConflictIsContention:
         assert await self._available(limiter, "user") == 8
         # The lost refund leaves the parallel debit standing on the parent.
         assert await self._available(limiter, "org") == 7
+
+    @pytest.mark.parametrize("allow", [False, True])
+    async def test_sustained_contention_is_a_short_429_not_an_outage(
+        self, limiter, monkeypatch, allow
+    ):
+        """Every write to a bucket with room conflicts: a short 429, nothing debited.
+
+        Under ALLOW this used to admit without limit (a degraded lease), under
+        BLOCK raise ``RateLimiterUnavailable``. The slow path's commit ran out
+        of conflict retries and the raw error reached ``on_unavailable``.
+        """
+        if allow:
+            self._allow(limiter, monkeypatch)
+        freeze_clock(limiter._repository)
+        await self._acquire(limiter, "solo")
+        await self._inject(limiter._repository, "solo", 10_000, speculative_only=False)
+
+        for _ in range(3):
+            with pytest.raises(RateLimitExceeded) as exc_info:
+                await self._acquire(limiter, "solo")
+            rejection = exc_info.value
+            assert rejection.contended is True
+            assert rejection.violations == []
+            assert rejection.retry_after_seconds == pytest.approx(0.1)
+            assert [s.limit_name for s in rejection.statuses] == ["rpm"]
+            assert rejection.as_dict()["contended"] is True
+
+        assert await self._available(limiter, "solo") == 9  # nothing debited
 
     async def test_a_conflicted_slow_path_commit_is_retried(self, limiter):
         """A one-item slow-path commit goes out as a plain UpdateItem."""

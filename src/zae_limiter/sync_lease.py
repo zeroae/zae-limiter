@@ -33,6 +33,7 @@ from .schema import (
 _CONFLICT_MAX_RETRIES = 3
 _CONFLICT_BASE_DELAY_S = 0.025
 _MIN_RETRY_AFTER_S = 0.001
+_CONTENTION_RETRY_AFTER_S = 0.1
 if TYPE_CHECKING:
     from .sync_repository_protocol import SyncRepositoryProtocol
 logger = logging.getLogger(__name__)
@@ -553,7 +554,7 @@ class SyncLease:
                         continue
                     if donor_items:
                         raise QuotaMoveLostError from exc
-                    raise
+                    raise _contention_rejection(self.entries, now_ms) from exc
                 raise
         if condition_failed and donor_items:
             raise QuotaMoveLostError from condition_exc
@@ -613,6 +614,8 @@ class SyncLease:
                     break
                 except Exception as retry_exc:
                     if not _is_condition_check_failure(retry_exc):
+                        if _is_transaction_conflict(retry_exc):
+                            raise _contention_rejection(self.entries, now_ms) from retry_exc
                         raise
                     codes = _get_cancellation_reason_codes(retry_exc)
                     downgraded: list[dict[str, Any]] = []
@@ -1138,6 +1141,30 @@ def _build_retry_failure_statuses(
         if any(status.exceeded for status in from_items):
             return from_items
     return _retry_statuses(entries, now_ms, None)
+
+
+def _contention_rejection(entries: list[LeaseEntry], now_ms: int) -> RateLimitExceeded:
+    """A short 429 for a commit that kept conflicting (#724).
+
+    One status per declared entry, from the in-memory state, none marked
+    exceeded: the request was not short of capacity, it lost to concurrent
+    transactions on the same items. Nothing was debited.
+    """
+    statuses = [
+        LimitStatus(
+            entity_id=entry.entity_id,
+            resource=entry.resource,
+            limit_name=entry.limit.name,
+            limit=entry.limit.per_shard(entry.state.report_shard_count, now_ms),
+            available=entry.state.tokens_milli // 1000,
+            requested=entry.consumed,
+            exceeded=False,
+            retry_after_seconds=_CONTENTION_RETRY_AFTER_S,
+            resets_at_ms=window_end_in_force(entry.limit, entry.state, now_ms),
+        )
+        for entry in [e for e in entries if e._declared] or entries
+    ]
+    return RateLimitExceeded(statuses, contended=True)
 
 
 def _retry_statuses(
