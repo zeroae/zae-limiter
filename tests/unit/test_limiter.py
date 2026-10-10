@@ -1427,6 +1427,22 @@ class TestWriteOnEnter:
             await write_credit(mock_repo, "e1", "gpt-4", {"rpm": 5000}, 0, {})
         mock_repo.write_each.assert_called_once()
 
+    async def test_a_bucket_item_with_nothing_to_refund_gets_no_write(self):
+        """Rollback writes only the bucket items the initial commit debited."""
+        from zae_limiter.lease import Lease
+
+        debited = self._make_entry(consumed=10, initial_consumed=10, entity_id="e1")
+        untouched = self._make_entry(consumed=0, initial_consumed=0, entity_id="e2")
+        debited.state.ceiling_milli.return_value = 100_000
+        mock_repo = self._make_mock_repo()
+
+        lease = Lease(repository=mock_repo, entries=[debited, untouched])
+        lease._initial_committed = True
+        await lease._rollback()
+
+        mock_repo.build_composite_adjust.assert_called_once()
+        assert mock_repo.build_composite_adjust.call_args.kwargs["entity_id"] == "e1"
+
     async def test_nothing_to_adjust_writes_nothing(self):
         from zae_limiter.lease import write_credit
 
