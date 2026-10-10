@@ -13133,6 +13133,48 @@ class TestSelfTrimmingRefunds:
         spend = await r2.speculative_consume("e", "r", {"q": 60}, shard_id=0)
         assert not spend.success
 
+    async def test_sharded_compensation_within_ceiling_cost(self, two):
+        """On a sharded entity a compensation that fits is one write and leaves `vu`
+        alone (#730 review): the pin's count came from `wcu`, which always reads as
+        one shard, so every compensation used to fail it and stamp `vu = 0`."""
+        l1, _, _ = two
+        r1 = l1._repository
+        limit = Limit.custom("q", capacity=1000, refill_amount=1, refill_period_seconds=86400)
+        await r1.set_limits("s", [limit], resource="r")
+        async with l1.acquire("s", "r", {"q": 1}):
+            pass
+        client = await r1._get_client()
+        await client.update_item(
+            TableName=r1.table_name,
+            Key={
+                "PK": {"S": pk_bucket(r1._namespace_id, "s", "r", 0)},
+                "SK": {"S": sk_state()},
+            },
+            # Two shards, and this one within its share (500 of 1000).
+            UpdateExpression="SET shard_count = :c, #tk = :tk",
+            ExpressionAttributeNames={"#tk": bucket_attr("q", BUCKET_FIELD_TK)},
+            ExpressionAttributeValues={":c": {"N": "2"}, ":tk": {"N": "400000"}},
+        )
+        result = await r1.speculative_consume("s", "r", {"q": 5}, shard_id=0)
+        assert result.success
+
+        calls: list[dict] = []
+        original = client.update_item
+
+        async def spy(**kwargs):
+            calls.append(kwargs)
+            return await original(**kwargs)
+
+        client.update_item = spy
+        try:
+            await l1._compensate_speculative("s", "r", {"q": 5}, 0, result.buckets)
+        finally:
+            client.update_item = original
+
+        assert len(calls) == 1
+        assert "ConditionExpression" in calls[0]
+        assert BUCKET_FIELD_VU not in await self._raw(r1, "s", resource="r")
+
     async def test_a_lowered_limit_clamped_before_the_refund(self, two):
         """The limit drops to 50 and another process's slow pass clamps to it (moving
         `rf`) before the refund: the in-memory ceiling is still 100."""

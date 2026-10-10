@@ -1209,7 +1209,7 @@ class SyncRateLimiter:
         ceilings = credit_ceilings(
             [(b.limit_name, b) for b in buckets or ()], deltas, self._repository._now_ms()
         )
-        image = buckets[0] if buckets else None
+        image = next((b for b in buckets or () if b.limit_name != WCU_LIMIT_NAME), None)
         pin = credit_pin(image) if image is not None else None
         write_credit(self._repository, entity_id, resource, deltas, shard_id, ceilings, pin)
 

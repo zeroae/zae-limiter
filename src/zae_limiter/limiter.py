@@ -1548,8 +1548,9 @@ class RateLimiter:
         )
         # The debit's image is the item as of that write: a speculative debit
         # moves none of what is pinned, so a later writer that did fails the
-        # pin (#721).
-        image = buckets[0] if buckets else None
+        # pin (#721). Read off a user limit: `wcu` always deserializes with
+        # `shard_count = 1`, which would fail the pin on every sharded entity.
+        image = next((b for b in buckets or () if b.limit_name != WCU_LIMIT_NAME), None)
         pin = credit_pin(image) if image is not None else None
         await write_credit(self._repository, entity_id, resource, deltas, shard_id, ceilings, pin)
 
