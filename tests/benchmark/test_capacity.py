@@ -1174,3 +1174,60 @@ class TestQuotaGrantCapacity:
             "update_item": 1,
             "transact_write_items": [2],
         }, counts
+
+
+class TestMultiResourceCapacity:
+    """Verify DynamoDB capacity for one acquire over several resources (ADR-148).
+
+    The #674 shape: ``search`` cascades to the organisation, ``budget`` is per
+    user and does not. Warm caches, so every resource takes the fast path.
+    """
+
+    @staticmethod
+    def _setup(sync_limiter, budget_capacity=1_000_000):
+        repo = sync_limiter._repository
+        repo.set_resource_defaults("search", [Limit.per_minute("rpm", 1_000_000)])
+        repo.set_resource_defaults("budget", [Limit.per_minute("weekly", budget_capacity)])
+        repo.set_resource_cascade("budget", False)
+        repo.create_entity("org")
+        repo.create_entity("user", parent_id="org", cascade=True)
+
+    @staticmethod
+    def _acquire(sync_limiter, weekly=1):
+        with sync_limiter.acquire(
+            "user", "search", {"rpm": 1}, also={"budget": {"weekly": weekly}}
+        ):
+            pass
+
+    def test_all_admitted_on_the_fast_path_is_three_wcu(self, sync_limiter, capacity_counter):
+        """Case 1: 0 RCU, 3 WCU — one UpdateItem per bucket item, nothing else."""
+        self._setup(sync_limiter)
+        for _ in range(2):  # create the buckets, then warm the entity cache
+            self._acquire(sync_limiter)
+        capacity_counter.reset()
+
+        with capacity_counter.counting():
+            self._acquire(sync_limiter)
+
+        assert capacity_counter.update_item == 3  # user/search, org/search, user/budget
+        assert capacity_counter.batch_get_item == []
+        assert capacity_counter.get_item == 0
+        assert capacity_counter.query == 0
+        assert capacity_counter.put_item == 0
+        assert capacity_counter.transact_write_items == []
+
+    def test_a_resource_the_rejection_cache_knows_is_short_costs_nothing(
+        self, sync_limiter, capacity_counter
+    ):
+        """Case 3: 0 RCU, 0 WCU, no round trip at all."""
+        self._setup(sync_limiter, budget_capacity=2)
+        for _ in range(2):  # the second fast-path write leaves budget at 0
+            self._acquire(sync_limiter)
+        capacity_counter.reset()
+
+        with capacity_counter.counting():
+            with pytest.raises(RateLimitExceeded):
+                self._acquire(sync_limiter)
+
+        assert capacity_counter.total_rcus == 0
+        assert capacity_counter.total_wcus == 0

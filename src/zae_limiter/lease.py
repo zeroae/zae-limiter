@@ -14,7 +14,7 @@ from .bucket import (
     try_consume,
     window_end_in_force,
 )
-from .exceptions import LeaseExpiredError, RateLimitExceeded
+from .exceptions import LeaseExpiredError, RateLimitExceeded, ValidationError
 from .models import BucketState, Limit, LimitStatus, QuotaDonorDebit
 from .schema import (
     BUCKET_FIELD_RF,
@@ -212,24 +212,129 @@ class Lease:
     # answer "is this key declared?". Entries are never appended after the
     # lease is built.
     _declared_names: frozenset[str] = field(init=False, default=frozenset())
+    # The resources this lease covers, primary first (ADR-148). Empty on a
+    # lease built without `_bind_resources` (internal and test leases): the
+    # lease-level methods then scope to every entry, exactly as before
+    # multi-resource acquire existed.
+    _resources: tuple[str, ...] = ()
+    # Per resource, keys acquire() already reported as unknown (Issue #455);
+    # `_unknown_keys` stays the primary resource's.
+    _unknown_keys_by_resource: dict[str, frozenset[str]] = field(default_factory=dict)
+    # Declared limit names per resource, for `resource(name)` handles.
+    _declared_by_resource: dict[str, frozenset[str]] = field(init=False, default_factory=dict)
 
     def __post_init__(self) -> None:
+        self._index_declared()
+
+    def _index_declared(self) -> None:
+        """Index declared limit names, lease-wide and per resource."""
+        by_resource: dict[str, set[str]] = {}
+        for entry in self.entries:
+            if entry._declared:
+                by_resource.setdefault(entry.resource, set()).add(entry.limit.name)
+        self._declared_by_resource = {r: frozenset(names) for r, names in by_resource.items()}
+        primary = self._primary
         self._declared_names = frozenset(
-            entry.limit.name for entry in self.entries if entry._declared
+            entry.limit.name
+            for entry in self.entries
+            if entry._declared and (primary is None or entry.resource == primary)
         )
 
+    def _bind_resources(self, resources: tuple[str, ...]) -> None:
+        """Record the resources this lease covers, primary first (ADR-148)."""
+        self._resources = resources
+        self._index_declared()
+
     @property
-    def consumed(self) -> dict[str, int]:
-        """Total consumed amounts by limit name (declared limits only)."""
+    def _primary(self) -> str | None:
+        """The primary resource, or None for a lease that never bound one."""
+        return self._resources[0] if self._resources else None
+
+    @property
+    def resources(self) -> tuple[str, ...]:
+        """The resources this lease covers, the primary one first (ADR-148).
+
+        A single-resource acquire covers one resource; ``acquire(...,
+        also={...})`` covers the primary resource and every resource in
+        ``also``, in that order. Empty on the degraded lease yielded under
+        ``on_unavailable=ALLOW``, which covers nothing.
+        """
+        if self._resources:
+            return self._resources
+        return tuple(dict.fromkeys(entry.resource for entry in self.entries))
+
+    def resource(self, name: str) -> "LeaseResource":
+        """A handle on one resource of this lease (ADR-148).
+
+        ``lease.adjust()``, ``consume()``, ``release()`` and ``consumed`` act
+        on the primary resource only — the ``resource`` argument of
+        ``acquire()`` — so a single-resource lease behaves exactly as it
+        always has. Every other resource of a multi-resource lease is reached
+        through its handle::
+
+            async with limiter.acquire(
+                "user-1", "search", consume={"rpm": 1, "units": est},
+                also={"budget": {"weekly": est}},
+            ) as lease:
+                ...
+                await lease.adjust(units=actual - est)
+                await lease.resource("budget").adjust(weekly=actual - est)
+
+        Adjustments made through a handle are written with the rest of the
+        lease's adjustments when the context exits, one write per bucket.
+        Two resources may declare limits of the same name; each handle sees
+        only its own.
+
+        On the degraded lease yielded under ``on_unavailable=ALLOW`` every
+        name returns a no-op handle.
+
+        Raises:
+            ValidationError: If ``name`` is not a resource of this lease.
+        """
+        if not self.degraded and name not in self.resources:
+            raise ValidationError(
+                "resource",
+                name,
+                f"not a resource of this lease (resources: {list(self.resources)})",
+            )
+        return LeaseResource(self, name)
+
+    def _scoped(self, resource: str | None) -> list[LeaseEntry]:
+        """The declared entries of ``resource`` (every resource for None)."""
+        return [
+            entry
+            for entry in self.entries
+            if entry._declared and (resource is None or entry.resource == resource)
+        ]
+
+    def _consumed_in(self, resource: str | None) -> dict[str, int]:
+        """Total consumed amounts by limit name, for one resource."""
         result: dict[str, int] = {}
-        for entry in self.entries:
-            if not entry._declared:
-                continue
+        for entry in self._scoped(resource):
             name = entry.limit.name
             result[name] = result.get(name, 0) + entry.consumed
         return result
 
-    def _check_declared(self, amounts: dict[str, int], method: str) -> None:
+    @property
+    def consumed(self) -> dict[str, int]:
+        """Total consumed amounts by limit name (declared limits only).
+
+        Scoped to the primary resource; use ``lease.resource(name).consumed``
+        for another resource of a multi-resource lease (ADR-148).
+        """
+        return self._consumed_in(self._primary)
+
+    def _require_open(self) -> None:
+        """Raise LeaseExpiredError once the lease has committed or rolled back."""
+        if self._committed or self._rolled_back:
+            raise LeaseExpiredError()
+
+    def _check_declared(
+        self,
+        amounts: dict[str, int],
+        method: str,
+        resource: str | None = None,
+    ) -> None:
         """Report keys that name no declared limit on this lease (Issue #455).
 
         A limit absent from ``consume`` was never checked at admission, so
@@ -250,17 +355,30 @@ class Lease:
         it has no entries by design, and warning on every call during an
         outage would turn graceful degradation into noise.
         """
+        # The primary resource (or a lease that never bound one) is the
+        # common case and keeps its precomputed set. ``resource`` names the
+        # handle's resource otherwise (ADR-148).
+        if resource is None or resource == self._primary:
+            names = self._declared_names
+            unknown = self._unknown_keys
+            label = f"lease.{method}()"
+            where = "acquire(consume=...)"
+        else:
+            names = self._declared_by_resource.get(resource, frozenset())
+            unknown = self._unknown_keys_by_resource.get(resource, frozenset())
+            label = f"lease.resource({resource!r}).{method}()"
+            where = f"acquire(also={{{resource!r}: ...}})"
         # Fast exit, no allocation: every key is declared (the common case).
-        if self.degraded or amounts.keys() <= self._declared_names:
+        if self.degraded or amounts.keys() <= names:
             return
         # Keys acquire() already reported as unknown are skipped silently.
-        undeclared = sorted(amounts.keys() - self._declared_names - self._unknown_keys)
+        undeclared = sorted(amounts.keys() - names - unknown)
         if not undeclared:
             return
-        declared = sorted(self._declared_names)
+        declared = sorted(names)
         warnings.warn(
-            f"lease.{method}() names limit(s) {undeclared} that were not declared in "
-            f"acquire(consume=...); declared limits on this lease: {declared}. "
+            f"{label} names limit(s) {undeclared} that were not declared in "
+            f"{where}; declared limits on this lease: {declared}. "
             "Undeclared keys are ignored. Name the limit in `consume` (an estimate "
             "of 0 is valid) to make it adjustable. This becomes a ValidationError "
             "in v1.0.0.",
@@ -282,23 +400,25 @@ class Lease:
 
         Only limits declared in ``acquire(consume=...)`` can be consumed;
         other keys are reported (Issue #455) and ignored.
+        On a multi-resource lease this acts on the primary resource only;
+        reach the others through :meth:`resource` (ADR-148).
 
         Args:
             **amounts: Mapping of limit_name -> amount to consume
         """
-        if self._committed or self._rolled_back:
-            raise LeaseExpiredError()
-
+        self._require_open()
         self._check_declared(amounts, "consume")
+        self._consume_in(self._primary, amounts)
 
+    def _consume_in(self, resource: str | None, amounts: dict[str, int]) -> None:
+        """Consume ``amounts`` from ``resource``'s declared limits, all or none."""
         now_ms = self.repository._now_ms()
         statuses: list[LimitStatus] = []
         updates: list[tuple[LeaseEntry, int, int]] = []  # (entry, new_tokens, new_refill)
+        scoped = self._scoped(resource)
 
         # Check all declared limits first
-        for entry in self.entries:
-            if not entry._declared:
-                continue
+        for entry in scoped:
             amount = amounts.get(entry.limit.name, 0)
             if amount <= 0:
                 continue
@@ -322,8 +442,8 @@ class Lease:
                 updates.append((entry, result.new_tokens_milli, result.new_last_refill_ms))
 
         # Also include statuses for limits not being consumed (for full visibility)
-        for entry in self.entries:
-            if entry._declared and entry.limit.name not in amounts:
+        for entry in scoped:
+            if entry.limit.name not in amounts:
                 available = calculate_available(entry.state, now_ms)
                 statuses.append(
                     LimitStatus(
@@ -376,23 +496,21 @@ class Lease:
 
         Only limits declared in ``acquire(consume=...)`` can be adjusted;
         other keys are reported (Issue #455) and ignored.
+        On a multi-resource lease this acts on the primary resource only;
+        reach the others through :meth:`resource` (ADR-148).
 
         Args:
             **amounts: Mapping of limit_name -> delta (positive = consume more)
         """
-        if self._committed or self._rolled_back:
-            raise LeaseExpiredError()
-
+        self._require_open()
         self._check_declared(amounts, "adjust")
-        self._apply_adjust(amounts)
+        self._apply_adjust(amounts, self._primary)
 
-    def _apply_adjust(self, amounts: dict[str, int]) -> None:
+    def _apply_adjust(self, amounts: dict[str, int], resource: str | None = None) -> None:
         """Apply adjust() deltas to declared entries (shared with release())."""
         now_ms = self.repository._now_ms()
 
-        for entry in self.entries:
-            if not entry._declared:
-                continue
+        for entry in self._scoped(resource):
             amount = amounts.get(entry.limit.name, 0)
             if amount == 0:
                 continue
@@ -418,16 +536,15 @@ class Lease:
 
         Only limits declared in ``acquire(consume=...)`` can be released;
         other keys are reported (Issue #455) and ignored.
+        On a multi-resource lease this acts on the primary resource only;
+        reach the others through :meth:`resource` (ADR-148).
 
         Args:
             **amounts: Mapping of limit_name -> amount to return
         """
-        if self._committed or self._rolled_back:
-            raise LeaseExpiredError()
-
+        self._require_open()
         self._check_declared(amounts, "release")
-        negated = {k: -v for k, v in amounts.items()}
-        self._apply_adjust(negated)
+        self._apply_adjust({k: -v for k, v in amounts.items()}, self._primary)
 
     async def _commit_initial(self) -> None:
         """Write initial consumption to DynamoDB on context enter (Issue #309).
@@ -1175,21 +1292,16 @@ class Lease:
         # consumption is real usage: once an adjustment write is attempted,
         # nothing refunds it (#682). The lease is committed before the first
         # write, so a failure leaves _rollback() a no-op — rolling back after
-        # an earlier item landed credited that item twice. Items are written
-        # one at a time so the ones that landed are known and still checked
-        # against the ceiling (#679) before the error propagates.
+        # an earlier item landed credited that item twice. Each item is its own
+        # write, issued concurrently (ADR-148 D7), so the ones that landed are
+        # known and still checked against the ceiling (#679) before the error
+        # propagates.
         self._committed = True
-        landed: list[_AdjustedItem] = []
-        results: list[dict[str, Any]] | None = []
-        try:
-            for item, adjusted in zip(items, written, strict=True):
-                result = await repo.write_each([item])
-                # A backend reporting no per-item result skips the ceiling check.
-                results = None if result is None or results is None else results + result
-                landed.append(adjusted)
-        finally:
-            if landed:
-                await self._trim_credits_above_ceiling(landed, results)
+        landed, results, failures = await self._write_independently(items, written)
+        if landed:
+            await self._trim_credits_above_ceiling(landed, results)
+        if failures:
+            raise failures[0][1]
 
     async def _rollback(self) -> None:
         """Write compensating deltas to restore consumed tokens (Issue #309).
@@ -1238,16 +1350,56 @@ class Lease:
                     written.append((entity_id, resource, shard_id, group_entries, deltas))
 
         if items:
-            try:
-                results = await repo.write_each(items)
-            except Exception:
+            landed, results, failures = await self._write_independently(items, written)
+            if failures:
                 logger.warning(
                     "Failed to rollback consumed tokens for entities: %s",
-                    list(groups.keys()),
-                    exc_info=True,
+                    [(e, r, shard) for (e, r, shard, _entries, _deltas), _exc in failures],
+                    exc_info=failures[0][1],
                 )
-                return
-            await self._trim_credits_above_ceiling(written, results)
+            if landed:
+                await self._trim_credits_above_ceiling(landed, results)
+
+    async def _write_independently(
+        self, items: list[dict[str, Any]], written: list[_AdjustedItem]
+    ) -> tuple[
+        list[_AdjustedItem],
+        list[dict[str, Any]] | None,
+        list[tuple[_AdjustedItem, Exception]],
+    ]:
+        """Write each item on its own, concurrently, tracking which landed (ADR-148 D7).
+
+        Adjustments and refunds are unconditional ``ADD``s with no cross-item
+        atomicity, so their order does not matter — only knowing which ones
+        landed does (#682, #679). One round trip for every item instead of one
+        each.
+
+        Returns:
+            ``(landed, results, failures)``: the items that landed (in
+            order), their per-item ``write_each`` results — None when the
+            backend reported none for any of them, which skips the #679
+            ceiling check — and each item that did not, with its exception.
+        """
+        repo = self.repository
+
+        async def _write(item: dict[str, Any]) -> list[dict[str, Any]] | None | Exception:
+            try:
+                return await repo.write_each([item])
+            except Exception as exc:
+                return exc
+
+        outcomes = await asyncio.gather(*[_write(item) for item in items])
+        landed: list[_AdjustedItem] = []
+        results: list[dict[str, Any]] | None = []
+        failures: list[tuple[_AdjustedItem, Exception]] = []
+        for adjusted, outcome in zip(written, outcomes, strict=True):
+            if isinstance(outcome, Exception):
+                failures.append((adjusted, outcome))
+                continue
+            landed.append(adjusted)
+            # A backend reporting no per-item result skips the ceiling check.
+            results = None if outcome is None or results is None else results + outcome
+        return landed, results, failures
 
     async def _trim_credits_above_ceiling(
         self,
@@ -1310,6 +1462,66 @@ class Lease:
                     resets.append(build(entity_id, resource, shard_id))
                     break
         return resets
+
+
+class LeaseResource:
+    """One resource of a lease, reached through ``Lease.resource(name)`` (ADR-148).
+
+    ``adjust()``, ``consume()``, ``release()`` and ``consumed`` behave exactly
+    as the lease-level methods do, scoped to this resource's declared limits:
+    the ones named for it in ``acquire()``'s ``consume`` (the primary
+    resource) or ``also`` (every other one). Nothing is written until the
+    lease's context exits, where every resource is reconciled together.
+    """
+
+    def __init__(self, lease: "Lease", name: str) -> None:
+        self._lease = lease
+        self.name = name
+        """The resource this handle acts on."""
+
+    @property
+    def consumed(self) -> dict[str, int]:
+        """Total consumed amounts by limit name, for this resource."""
+        return self._lease._consumed_in(self.name)
+
+    async def consume(self, **amounts: int) -> None:
+        """Consume more of this resource; see :meth:`Lease.consume`.
+
+        Raises:
+            RateLimitExceeded: If any of this resource's limits cannot cover it.
+            LeaseExpiredError: If the lease has already exited.
+        """
+        lease = self._lease
+        lease._require_open()
+        lease._check_declared(amounts, "consume", self.name)
+        lease._consume_in(self.name, amounts)
+
+    async def adjust(self, **amounts: int) -> None:
+        """Adjust this resource's consumption by delta; see :meth:`Lease.adjust`.
+
+        Never raises for capacity: the bucket may go negative.
+
+        Raises:
+            LeaseExpiredError: If the lease has already exited.
+        """
+        lease = self._lease
+        lease._require_open()
+        lease._check_declared(amounts, "adjust", self.name)
+        lease._apply_adjust(amounts, self.name)
+
+    async def release(self, **amounts: int) -> None:
+        """Return unused capacity of this resource; see :meth:`Lease.release`.
+
+        Raises:
+            LeaseExpiredError: If the lease has already exited.
+        """
+        lease = self._lease
+        lease._require_open()
+        lease._check_declared(amounts, "release", self.name)
+        lease._apply_adjust({k: -v for k, v in amounts.items()}, self.name)
+
+    def __repr__(self) -> str:
+        return f"LeaseResource({self.name!r})"
 
 
 def _get_cancellation_reason_codes(exc: Exception) -> list[str] | None:

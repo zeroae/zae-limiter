@@ -12957,14 +12957,17 @@ class TestAdjustmentCommitFailure:
         assert await self._consumed(repo, "user") == 15  # initial + adjustment, once
         assert await self._consumed(repo, "org") == 10  # initial stands, adjustment lost
 
-    async def test_a_failed_first_adjustment_refunds_nothing(self, limiter):
+    async def test_a_failed_child_adjustment_refunds_nothing(self, limiter):
         repo = limiter._repository
         await self._cascade(limiter)
 
         with pytest.raises(RuntimeError, match="throttled"):
             async with limiter.acquire("user", "gpt-4", consume={"rpm": 10}) as lease:
                 await lease.consume(rpm=5)
-                self._fail_writes_to(repo, "user", "org")
+                self._fail_writes_to(repo, "user")
 
+        # The adjustments are independent writes, issued together (ADR-148 D7):
+        # the child's fails and keeps its initial consumption, unrefunded; the
+        # parent's lands.
         assert await self._consumed(repo, "user") == 10
-        assert await self._consumed(repo, "org") == 10
+        assert await self._consumed(repo, "org") == 15
