@@ -680,6 +680,19 @@ class Repository:
 
         return self._caller_identity_arn
 
+    def _creation_generation(self) -> int:
+        """The parent generation a new entity starts at (ADR-150): now, in epoch ms.
+
+        Not 0: a bucket can outlive its entity (a delete that missed it in
+        GSI3, an acquire in flight across the delete) and keep the generation
+        the old entity reached. A recreated entity starting at 0 would sit
+        below it, and the slow path's owner stamp, pinned on ``pgen <= :read``,
+        would fail on that bucket forever, leaving the old parent on it. A
+        creation instant is above every generation the old entity reached,
+        since a move adds 1 and no entity is moved once per millisecond.
+        """
+        return self._now_ms()
+
     def _now_ms(self) -> int:
         """Current time in epoch milliseconds — the token-bucket clock (#430).
 
@@ -1817,6 +1830,7 @@ class Repository:
 
         client = await self._get_client()
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        generation = self._creation_generation()
 
         item: dict[str, Any] = {
             "PK": {"S": schema.pk_entity(self._namespace_id, entity_id)},
@@ -1825,6 +1839,7 @@ class Repository:
             "name": {"S": name or entity_id},
             "parent_id": {"S": parent_id} if parent_id else {"NULL": True},
             "cascade": {"BOOL": cascade},
+            schema.ENTITY_FIELD_PGEN: {"N": str(generation)},
             "metadata": {"M": self._serialize_map(metadata or {})},
             "created_at": {"S": now},
             # GSI4: namespace-scoped item discovery
@@ -1867,6 +1882,7 @@ class Repository:
             cascade=cascade,
             metadata=metadata or {},
             created_at=now,
+            parent_generation=generation,
         )
 
     async def get_entity(self, entity_id: str, *, consistent_read: bool = False) -> Entity | None:

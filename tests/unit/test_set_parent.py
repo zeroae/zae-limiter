@@ -25,6 +25,32 @@ async def _open_repo() -> Repository:
     return Repository(name=TABLE, region="us-east-1", _skip_deprecation_warning=True)
 
 
+@pytest.fixture(autouse=True)
+def generations_from_zero():
+    """Entities created here start at generation 0, so a test reads moves as 1, 2.
+
+    A real entity starts at its creation instant (ADR-150); only the
+    differences matter. A test that needs the real start calls ``.stop()``.
+    """
+    from zae_limiter.sync_repository import SyncRepository
+
+    patchers = [
+        patch.object(cls, "_creation_generation", return_value=0)
+        for cls in (Repository, SyncRepository)
+    ]
+    for patcher in patchers:
+        patcher.start()
+
+    class _Stopper:
+        def stop(self) -> None:
+            for patcher in patchers:
+                patcher.stop()
+
+    stopper = _Stopper()
+    yield stopper
+    stopper.stop()
+
+
 @pytest.fixture
 async def repo(mock_dynamodb):
     repo = await _open_repo()
@@ -334,6 +360,49 @@ class TestStaleWriters:
 
         assert moved == [2]
         assert _stamp(await _item(repo, "user", "gpt-4")) == (True, "org-b", 1)
+
+    async def test_a_recreated_entity_outranks_a_bucket_its_predecessor_left(
+        self, limiter, generations_from_zero
+    ):
+        """Review of #716, finding 4: generations survive delete and recreate."""
+        generations_from_zero.stop()  # the real start: the creation instant
+        repo = limiter._repository
+        await repo.set_resource_defaults("gpt-4", [RPM])
+        for org in ("org-a", "org-b", "org-c"):
+            await repo.create_entity(org)
+        await repo.create_entity("user", parent_id="org-a", cascade=True)
+        async with limiter.acquire("user", "gpt-4", consume={"rpm": 1}):
+            pass
+        await repo.set_parent("user", "org-b")
+        client = await repo._get_client()
+        await client.delete_item(  # the bucket outlives its entity
+            TableName=TABLE,
+            Key={
+                "PK": {"S": schema.pk_entity(repo._namespace_id, "user")},
+                "SK": {"S": schema.sk_meta()},
+            },
+        )
+        with patch.object(repo, "_now_ms", return_value=repo._now_ms() + 1):
+            await repo.create_entity("user", parent_id="org-c", cascade=True)
+
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        async with slow.acquire("user", "gpt-4", consume={"rpm": 1}):
+            pass  # the owner stamp lands: the new entity's generation is higher
+
+        assert _stamp(await _item(repo, "user", "gpt-4"))[:2] == (True, "org-c")
+        repo._entity_cache.clear()
+        org_b, org_c = await _consumed(repo, "org-b"), await _consumed(repo, "org-c")
+        async with limiter.acquire("user", "gpt-4", consume={"rpm": 1}):
+            pass
+        assert await _consumed(repo, "org-b") == org_b
+        assert await _consumed(repo, "org-c") == org_c + 1
+
+    async def test_a_new_entity_starts_at_its_creation_instant(self, repo, generations_from_zero):
+        generations_from_zero.stop()
+        with patch.object(repo, "_now_ms", return_value=1_800_000_000_000):
+            created = await repo.create_entity("user")
+        assert created.parent_generation == 1_800_000_000_000
+        assert (await repo.get_entity("user")).parent_generation == 1_800_000_000_000
 
     async def test_a_stale_fanout_stamp_is_skipped(self, limiter):
         repo = limiter._repository
