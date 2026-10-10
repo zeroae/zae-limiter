@@ -5442,9 +5442,9 @@ class TestCascadeEntityCache:
         compensated_entity_ids: list[str] = []
         original_compensate = sync_limiter._compensate_speculative
 
-        def tracking_compensate(entity_id, resource, consume, shard_id):
+        def tracking_compensate(entity_id, resource, consume, shard_id, *args):
             compensated_entity_ids.append(entity_id)
-            return original_compensate(entity_id, resource, consume, shard_id)
+            return original_compensate(entity_id, resource, consume, shard_id, *args)
 
         def mock_single(entity_id, resource, consume, ttl_seconds=None, shard_id=0, now_ms=None):
             if entity_id == "child-1":

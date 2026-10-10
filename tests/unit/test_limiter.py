@@ -7131,9 +7131,9 @@ class TestCascadeEntityCache:
         compensated_entity_ids: list[str] = []
         original_compensate = limiter._compensate_speculative
 
-        async def tracking_compensate(entity_id, resource, consume, shard_id):
+        async def tracking_compensate(entity_id, resource, consume, shard_id, *args):
             compensated_entity_ids.append(entity_id)
-            return await original_compensate(entity_id, resource, consume, shard_id)
+            return await original_compensate(entity_id, resource, consume, shard_id, *args)
 
         async def mock_single(
             entity_id, resource, consume, ttl_seconds=None, shard_id=0, now_ms=None
