@@ -70,6 +70,27 @@ counterpart is available with the same signature.
 The `RepositoryProtocol` defines the interface for pluggable backends.
 Implement this protocol to use a different storage backend (e.g., for testing).
 
+!!! warning "Changed in v0.17.0: `build_composite_adjust` takes three new keywords"
+    A custom backend must accept `ceilings`, `trim` and `pin` on
+    `build_composite_adjust` from v0.17.0 (#721). The lease and the limiter pass
+    them on every refund — a rollback, a `release()`, a negative `adjust()` or a
+    speculative compensation — so a backend that does not accept them raises
+    `TypeError` there.
+
+    - `ceilings`: limit name → `CreditCeiling`. Condition each credited limit on
+      its balance staying at or below `ceiling_milli` after the credit, and on the
+      stored capacity, grant count and schedule overrides it was computed from.
+      Raise `ConditionalCheckFailedException` when the condition fails.
+    - `trim=True`: the fallback the caller sends after that failure. Apply the
+      same credit unconditionally and, in the same write, mark the bucket so the
+      next acquire re-materialises it (`SET vu = 0` on DynamoDB).
+    - `pin`: the item's (`shard_count`, `vu`, item-level schedule strings) as
+      last seen, held beside the ceilings.
+
+    A backend with no fast path that spends above a ceiling can apply the credit
+    unconditionally for every combination and never raise; that is correct, just
+    without the protection.
+
 ::: zae_limiter.repository_protocol.RepositoryProtocol
     options:
       show_root_heading: true
