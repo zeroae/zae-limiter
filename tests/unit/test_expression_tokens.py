@@ -310,6 +310,62 @@ class TestCompositeBuilders:
         assert_expression_safe(update)
         assert "ConditionExpression" not in update
 
+    def test_normal_with_soft_stamps_and_floors(self) -> None:
+        """#467: soft floors OR the item's stamp, a trusted soft limit has no
+        floor, and the re-stamp reuses a floor's alias rather than declaring a
+        second one for the same attribute."""
+        update = _repo().build_composite_normal(
+            "user-1",
+            "api",
+            consumed={DOTTED: 5000, HYPHENATED: 5000, "rpm": 3000},
+            refill_amounts={},
+            now_ms=2_000,
+            expected_rf=1_000,
+            soft_stamps={DOTTED: False, HYPHENATED: True, "rpm": True},
+            soft_trusted=frozenset({HYPHENATED}),
+        )["Update"]
+        assert_expression_safe(update)
+        names = update["ExpressionAttributeNames"]
+        soft_attrs = [v for v in names.values() if v.endswith("_soft")]
+        assert len(soft_attrs) == len(set(soft_attrs)) == 3
+        assert "(attribute_exists(#bo0) OR #bt0 >= :bf0)" in update["ConditionExpression"]
+        assert "#bt1 >=" not in update["ConditionExpression"]
+
+    def test_normal_with_a_soft_seed(self) -> None:
+        from zae_limiter.models import BucketState
+
+        seed = BucketState.from_limit(
+            "user-1", "api", Limit.per_minute(HYPHENATED, 10, soft=True), 2_000
+        )
+        update = _repo().build_composite_normal(
+            "user-1",
+            "api",
+            consumed={},
+            refill_amounts={},
+            now_ms=2_000,
+            expected_rf=1_000,
+            seeds={HYPHENATED: seed},
+        )["Update"]
+        assert_expression_safe(update)
+        assert update["ExpressionAttributeValues"][":so0"] == {"BOOL": True}
+
+    def test_retry_with_soft_limits(self) -> None:
+        from zae_limiter.models import BucketState
+
+        seed = BucketState.from_limit(
+            "user-1", "api", Limit.per_minute("sess.v1", 10, soft=True), 2_000
+        )
+        update = _repo().build_composite_retry(
+            "user-1",
+            "api",
+            consumed={DOTTED: 1000, HYPHENATED: 2000, "sess.v1": 3000},
+            seeds={"sess.v1": seed},
+            soft_trusted=frozenset({HYPHENATED}),
+        )["Update"]
+        assert_expression_safe(update)
+        condition = update["ConditionExpression"]
+        assert condition == "(attribute_exists(#bo0) OR #bt0 >= :bf0)"
+
     def test_adjust(self) -> None:
         update = _repo().build_composite_adjust(
             "user-1", "api", deltas={DOTTED: 1000, "rpm": 0, HYPHENATED: -2000}
@@ -634,6 +690,20 @@ class TestClientWritesThroughMoto:
         with patch.object(client, "update_item", spy.forward):
             await repo._stamp_bucket_disabled(pk, True)
             await repo._stamp_bucket_disabled(pk, False)
+        for call in spy.call_args_list:
+            assert_expression_safe(call.kwargs)
+
+    async def test_soft_fan_out(self, limiter: RateLimiter) -> None:
+        """#467: the resource/system soft restamp, SET and REMOVE together."""
+        repo = limiter._repository
+        client = await repo._get_client()
+        spy = await self._spy(repo)
+        pk = pk_bucket(repo._namespace_id, "user-1", "api", 0)
+        with patch.object(client, "update_item", spy.forward):
+            await repo._stamp_bucket_soft(pk, {DOTTED: True, HYPHENATED: False})
+            await repo._stamp_bucket_soft(pk, {DOTTED: False})
+            await repo._stamp_bucket_soft(pk, {DOTTED: True})
+        assert spy.call_count == 3
         for call in spy.call_args_list:
             assert_expression_safe(call.kwargs)
 

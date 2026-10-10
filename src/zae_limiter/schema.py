@@ -170,6 +170,19 @@ BUCKET_FIELD_GC = "gc"  # b_{name}_gc — grant count, per limit, per shard
 # unscheduled bucket grows no schedule attributes at all.
 BUCKET_SCHED_NONE = "-"
 
+# Soft limits (#467, ADR-151). `b_{name}_soft = BOOL true` on a bucket item
+# marks the limit as metered but never enforced; absent means hard. The
+# speculative write tests it server-side (`attribute_exists(soft) OR tk >= c`),
+# so the fast path needs no knowledge of which limits are soft. Invisible to
+# pre-0.17 readers, which discover limits by the `_tk`/`_cp` pair only.
+BUCKET_FIELD_SOFT = "soft"  # b_{name}_soft
+
+# Usage-snapshot counter `{limit}#od` (#467): stream records in the window
+# where a soft limit was debited and its shard's balance ended below zero.
+# Written by the aggregator in the same snapshot `UpdateItem`; `#` cannot occur
+# in a limit name, so it cannot collide with a consumption counter.
+OVERDRAWN_COUNTER_SUFFIX = "#od"
+
 # Disable flag (ADR-125). Tri-state on config items: absent = inherit,
 # True/False = explicit. On bucket items the attribute is present only
 # when the bucket is effectively disabled, so the speculative guard can
@@ -218,6 +231,10 @@ LIMIT_FIELD_RP = "rp"  # refill_period_seconds
 LIMIT_FIELD_SCHED = "sched"  # compact-encoded schedule (#222 §4.1)
 LIMIT_FIELD_RSCHED = "rsched"  # compact-encoded reset schedule (#222 §4.1)
 LIMIT_FIELD_RSA = "rsa"  # w_{name}_rsa — duration window length, seconds (ADR-142)
+# `l_{name}_soft` (or `w_…`) = BOOL true: the limit is soft (#467, ADR-151).
+# Two-state, part of the limit's definition: absent = hard. Ignored by
+# pre-0.17 readers, which discover a limit by its `_cp` attribute.
+LIMIT_FIELD_SOFT = "soft"
 
 # IANA timezone name for every schedule on the item, hoisted out of the
 # individual entries (#222 §4.1). One attribute per item, not per limit: it is

@@ -180,7 +180,9 @@ class RateLimitExceeded(RateLimitError):  # noqa: N818
 
         Per-limit entries carry a ``kind`` of ``"rate"`` or ``"quota"`` and,
         for a quota, ``resets_at_ms`` in place of the drip fields — see
-        :meth:`_limit_shape`.
+        :meth:`_limit_shape`. Every entry also carries ``soft`` (#467): a soft
+        limit is metered but never a reason to reject, so it is always among
+        the passed limits and its ``available`` may be negative.
         """
         # One clock reading for the whole body, so two quotas on the same
         # rejection cannot report reset instants scanned from different
@@ -203,6 +205,8 @@ class RateLimitExceeded(RateLimitError):  # noqa: N818
                     "requested": s.requested,
                     "exceeded": s.exceeded,
                     "retry_after_seconds": s.retry_after_seconds,
+                    # Additive (#467): a soft limit is listed, never exceeded.
+                    "soft": s.soft,
                 }
                 for s in self.statuses
             ],

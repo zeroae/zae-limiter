@@ -5523,7 +5523,7 @@ class TestStaleLimitAliasesAreExpressionSafe:
         assert removed == {
             bucket_attr(name, field)
             for name in ("req-min", "tok.sec")
-            for field in ("tk", "cp", "ra", "rp", "tc", "sched", "rsched")
+            for field in ("tk", "cp", "ra", "rp", "tc", "sched", "rsched", "soft")
         } | {
             "sched",
             "rsched",
@@ -5531,6 +5531,8 @@ class TestStaleLimitAliasesAreExpressionSafe:
             bucket_attr("rpm", "sched"),
             bucket_attr("rpm", "rsched"),
             bucket_attr("rpm", "rsa"),
+            # A hard limit's soft stamp is REMOVEd, like its `rsa` (#467).
+            bucket_attr("rpm", "soft"),
         }
 
     @pytest.mark.asyncio
