@@ -67,6 +67,8 @@ REPOSITORY = {
     # Executors: run builders registered above.
     "transact_write": NOT_BUCKET,
     "write_each": NOT_BUCKET,
+    # Re-sends an UpdateItem its caller built, on a transaction conflict (#724).
+    "_update_item_retrying_conflict": NOT_BUCKET,
     # Config, registry, audit and version items.
     "_cleanup_entity_config_registry": NOT_BUCKET,
     "_initialize_version_record": NOT_BUCKET,

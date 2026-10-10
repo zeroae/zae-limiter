@@ -1010,9 +1010,11 @@ class RateLimiter:
             self._check_speculative_failure(result, consume, now_ms)
             # BUCKET_MISSING has no image to read a shard_count from; let the
             # slow path fall back to the entity cache in that case.
+            # CONTENTION (#724) has no image either.
             observed_count = (
                 None
-                if result.failure_reason == SpeculativeFailureReason.BUCKET_MISSING
+                if result.failure_reason
+                in (SpeculativeFailureReason.BUCKET_MISSING, SpeculativeFailureReason.CONTENTION)
                 else result.shard_count
             )
             return None, result.shard_id, observed_count, parent_hint
@@ -1508,6 +1510,15 @@ class RateLimiter:
         The credit must land on the shard the speculative debit hit
         (GHSA-76rv): crediting shard 0 leaves the debited shard short and
         mints tokens on a shard that served nothing.
+
+        Best-effort, like ``Lease._rollback``: a refund that fails — a
+        transaction conflict that outlasted its retries (#724), or any other
+        write error — is logged and swallowed, and the caller goes on to its
+        429 or slow path exactly as if it had landed. Raising here reached
+        ``on_unavailable``: a degraded lease (no limiting) against an exhausted
+        parent under ALLOW, ``RateLimiterUnavailable`` under BLOCK. A refund
+        must never turn a rejection into an admission; a lost one costs the
+        entity the tokens of one request.
         """
         deltas = {name: -(amount * 1000) for name, amount in consume.items()}
         compensate_item = self._repository.build_composite_adjust(
@@ -1516,7 +1527,16 @@ class RateLimiter:
             deltas=deltas,
             shard_id=shard_id,
         )
-        await self._repository.write_each([compensate_item])
+        try:
+            await self._repository.write_each([compensate_item])
+        except Exception as exc:
+            # The entity id is not logged: entity ids are routinely API keys.
+            logger.warning(
+                "Speculative compensation failed for resource=%s shard=%d; the debit stands (%s)",
+                resource,
+                shard_id,
+                type(exc).__name__,
+            )
 
     @staticmethod
     def _check_speculative_failure(
@@ -1624,11 +1644,14 @@ class RateLimiter:
             if retry.failure_reason in (
                 SpeculativeFailureReason.BUCKET_MISSING,
                 SpeculativeFailureReason.SCHEDULE_BOUNDARY,
+                SpeculativeFailureReason.CONTENTION,
             ):
                 # Probing further shards costs 1 RT + 1 WCU each; a missing
                 # shard is one the slow path will create with a fresh share,
                 # and a boundary-expired one is a shard the slow path will
-                # re-materialise. Both are "the fast path cannot settle this,
+                # re-materialise. A contended one (#724) is one the slow
+                # path reads and commits under its own conflict retry. All
+                # are "the fast path cannot settle this,
                 # but the slow path can" — falling through to the caller's
                 # fast rejection instead would reject on the first shard's
                 # stale balance while this one was about to be refilled.

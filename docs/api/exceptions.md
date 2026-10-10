@@ -252,6 +252,7 @@ The `as_dict()` method returns a dictionary suitable for API responses:
 {
     "error": "rate_limit_exceeded",
     "message": "Rate limit exceeded for user-123/api: [rpm]. Retry after 45.2s",
+    "contended": False,
     "retry_after_seconds": 45.2,
     "retry_after_ms": 45200,
     "limits": [
@@ -289,6 +290,17 @@ The `as_dict()` method returns a dictionary suitable for API responses:
     returned in a single `limits` array. Limits you did not name in `consume` are
     never reported, since they never gate admission. Use the `exceeded` field to
     distinguish between violations and passed limits.
+
+#### `contended`: retry shortly
+
+A `RateLimitExceeded` with `contended == True` does not mean the entity is out of
+capacity. Its write kept colliding with concurrent DynamoDB transactions on the same
+bucket item (`TransactionConflictException`), so the limiter gave up after a few
+retries instead of treating short-lived contention as an outage. Nothing was debited.
+`violations` can be empty (every status has `exceeded: false`), `primary_violation` is
+then the declared limit with the longest wait, and `retry_after_seconds` is short
+(about 0.1 s). Return it as a 429 like any other rejection; the client should simply
+retry soon.
 
 #### `kind`: how the limit recovers
 

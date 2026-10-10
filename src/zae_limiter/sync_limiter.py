@@ -808,7 +808,8 @@ class SyncRateLimiter:
             self._check_speculative_failure(result, consume, now_ms)
             observed_count = (
                 None
-                if result.failure_reason == SpeculativeFailureReason.BUCKET_MISSING
+                if result.failure_reason
+                in (SpeculativeFailureReason.BUCKET_MISSING, SpeculativeFailureReason.CONTENTION)
                 else result.shard_count
             )
             return (None, result.shard_id, observed_count, parent_hint)
@@ -1172,12 +1173,29 @@ class SyncRateLimiter:
         The credit must land on the shard the speculative debit hit
         (GHSA-76rv): crediting shard 0 leaves the debited shard short and
         mints tokens on a shard that served nothing.
+
+        Best-effort, like ``SyncLease._rollback``: a refund that fails — a
+        transaction conflict that outlasted its retries (#724), or any other
+        write error — is logged and swallowed, and the caller goes on to its
+        429 or slow path exactly as if it had landed. Raising here reached
+        ``on_unavailable``: a degraded lease (no limiting) against an exhausted
+        parent under ALLOW, ``RateLimiterUnavailable`` under BLOCK. A refund
+        must never turn a rejection into an admission; a lost one costs the
+        entity the tokens of one request.
         """
         deltas = {name: -(amount * 1000) for name, amount in consume.items()}
         compensate_item = self._repository.build_composite_adjust(
             entity_id=entity_id, resource=resource, deltas=deltas, shard_id=shard_id
         )
-        self._repository.write_each([compensate_item])
+        try:
+            self._repository.write_each([compensate_item])
+        except Exception as exc:
+            logger.warning(
+                "Speculative compensation failed for resource=%s shard=%d; the debit stands (%s)",
+                resource,
+                shard_id,
+                type(exc).__name__,
+            )
 
     @staticmethod
     def _check_speculative_failure(
@@ -1267,6 +1285,7 @@ class SyncRateLimiter:
             if retry.failure_reason in (
                 SpeculativeFailureReason.BUCKET_MISSING,
                 SpeculativeFailureReason.SCHEDULE_BOUNDARY,
+                SpeculativeFailureReason.CONTENTION,
             ):
                 slow_path_shard = new_shard
                 break
