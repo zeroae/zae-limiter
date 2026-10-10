@@ -274,3 +274,47 @@ class TestNothingFailsAfterTheCommit:
         await repo.top_up("e", "r", {"cal": 5}, principal="ops-team")  # the caller's retry
         clock[0] += 1
         assert await _drain(limiter, "e", "cal") == 5  # one purchase of 5, once
+
+
+class TestResetRacingALostLock:
+    """PR #720 review, finding 3: slow-path acquires that read before a reset
+    and write after it lose their rf lock; the consumption-only retry then
+    debits whatever the reset left on the item."""
+
+    @pytest.mark.parametrize("racers", [2, 5])
+    @pytest.mark.parametrize(("limit", "name"), [(SES, "ses"), (CAL, "cal")])
+    async def test_admits_at_most_the_old_period_plus_one_allowance(
+        self, limiter, clock, limit, name, racers
+    ):
+        import asyncio
+
+        repo = limiter._repository
+        slow = RateLimiter(repository=repo, speculative_writes=False)
+        await limiter.set_limits("e", [limit], resource="r")
+        assert await _try(slow, "e", {name: 8})  # old period: 8 spent, 2 left
+        clock[0] += 1
+
+        real = repo.transact_write
+        arrived = []
+        gate = asyncio.Event()
+        state = {"armed": True}
+
+        async def hooked(items, *a, **k):
+            if state["armed"]:
+                arrived.append(1)
+                if len(arrived) == racers:
+                    state["armed"] = False
+                    await repo.reset_bucket("e", "r")  # its own write runs unhooked
+                    gate.set()
+                await gate.wait()
+            return await real(items, *a, **k)
+
+        repo.transact_write = hooked
+        try:
+            results = await asyncio.gather(*[_try(slow, "e", {name: 2}) for _ in range(racers)])
+        finally:
+            repo.transact_write = real
+        clock[0] += 1
+        after = sum(2 for ok in results if ok) + await _drain(slow, "e", name)
+        # The old period's 10 plus exactly one allowance from the reset.
+        assert 8 + after <= 20

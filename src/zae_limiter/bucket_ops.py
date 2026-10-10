@@ -205,10 +205,9 @@ def plan_operation(
                 target = work.get(name)
                 if target is None:
                     continue
-                _reset(limit, target, write, now_ms)
-                if limit.is_quota:
+                restored += _reset(limit, target, write, now_ms) - before[name]
+                if limit.is_quota and limit.reset_after is None:
                     regranted.add(name)
-                restored += target.tokens_milli - before[name]
             amounts[name] = restored // 1000
     else:
         for name, amount in named.items():
@@ -293,22 +292,34 @@ def _grant(state: BucketState) -> int:
     return state.grant_shard_count
 
 
-def _reset(limit: Limit, state: BucketState, write: ShardWrite, now_ms: int) -> None:
-    """Restore one named limit to its full share and start a new period (§2.1)."""
+def _reset(limit: Limit, state: BucketState, write: ShardWrite, now_ms: int) -> int:
+    """Restore one named limit to its full share and start a new period (§2.1).
+
+    Returns the balance the reset gives the shard, which for a session quota
+    is the share its next opener restores rather than anything written here.
+    """
     if not limit.is_quota:
         # Debt is forgiven; the ceiling is the share.
         state.tokens_milli = state.ceiling_milli(now_ms)
-        return
-    state.grant_count = state.shard_count
-    state.topped_up_milli = None
-    state.tokens_milli = state.reset_target_milli(now_ms)
+        return state.tokens_milli
     rsa = limit.reset_after_seconds
     if rsa is None:
-        return
-    # Ended **and applied**, never removed: a rollover fan-out from a window
-    # opened before the reset is guarded by `ws <= its own ws - rsa`, which
-    # this stored `ws` fails, so it cannot land and re-roll the old window.
-    # The next admitted request opens a fresh one (idle-restart, ADR-139).
+        state.grant_count = state.shard_count
+        state.topped_up_milli = None
+        state.tokens_milli = state.reset_target_milli(now_ms)
+        return state.tokens_milli
+    # A session quota: the window is ended **and applied**, never removed — a
+    # rollover fan-out from a window opened before the reset is guarded by
+    # `ws <= its own ws - rsa`, which this stored `ws` fails, so it cannot
+    # land and re-roll the old window. The next admitted request opens a fresh
+    # one (idle-restart, ADR-139), and that opener restores the share.
+    #
+    # The balance is left alone. A share written here would sit in a window
+    # already marked ended, where a consumption-only retry whose rf lock this
+    # write broke can still spend it — and the opener then restores the share
+    # again (PR #720 review: 20 admitted against 12). `gc` and `tu` stay too:
+    # the shard's period is over, so neither counts, and the opener rewrites
+    # both.
     ended = now_ms - rsa * 1000
     state.window_start_ms = ended
     state.window_applied_ms = ended
@@ -316,6 +327,7 @@ def _reset(limit: Limit, state: BucketState, write: ShardWrite, now_ms: int) -> 
     if state.window_consumed_mark_milli is not None:
         state.window_consumed_mark_milli = None
         write.cleared_window_marks.add(limit.name)
+    return state.reset_target_milli(now_ms)
 
 
 def _open_for_top_up(limit: Limit, state: BucketState, write: ShardWrite, now_ms: int) -> bool:

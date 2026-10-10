@@ -7273,10 +7273,11 @@ class TestResetAndTopUp:
         )
         now = _OP_T0 + 60000
         repo._now_ms = lambda: now
-        repo.reset_bucket("e", "r")
+        result = repo.reset_bucket("e", "r")
         item = _op_item(repo, "e", "r")
         ended = now - 5 * 3600 * 1000
-        assert _op_num(item, "ses", BUCKET_FIELD_TK) == 1000000
+        assert _op_num(item, "ses", BUCKET_FIELD_TK) == 0
+        assert result.amounts == {"ses": 1000}
         assert _op_num(item, "ses", BUCKET_FIELD_WS) == ended
         assert _op_num(item, "ses", BUCKET_FIELD_WA) == ended
         assert _op_num(item, "ses", "wtc") is None

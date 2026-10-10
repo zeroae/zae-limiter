@@ -8510,8 +8510,9 @@ class Repository:
 
         - a dripping limit to its ceiling (debt is forgiven);
         - a calendar quota to its share, starting a new period;
-        - a session quota to its share, with its current window marked ended,
-          so the next admitted request opens a fresh one.
+        - a session quota's current window is marked ended, so the next
+          admitted request opens a fresh one at its full share (the balance
+          itself is left for that opener to restore).
 
         Nothing else changes: the consumption counter, ``disabled``,
         ``shard_count``, config, the parent's buckets and other resources are

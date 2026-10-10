@@ -8690,10 +8690,13 @@ class TestResetAndTopUp:
         )
         now = _OP_T0 + 60_000
         repo._now_ms = lambda: now
-        await repo.reset_bucket("e", "r")
+        result = await repo.reset_bucket("e", "r")
         item = await _op_item(repo, "e", "r")
         ended = now - 5 * 3600 * 1000
-        assert _op_num(item, "ses", BUCKET_FIELD_TK) == 1_000_000
+        # The balance is left for the next opener to restore (PR #720 review):
+        # a share written into an ended window could be spent twice.
+        assert _op_num(item, "ses", BUCKET_FIELD_TK) == 0
+        assert result.amounts == {"ses": 1000}  # what that opener restores
         assert _op_num(item, "ses", BUCKET_FIELD_WS) == ended
         assert _op_num(item, "ses", BUCKET_FIELD_WA) == ended
         assert _op_num(item, "ses", "wtc") is None
